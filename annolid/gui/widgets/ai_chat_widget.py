@@ -55,10 +55,22 @@ class _ChatBubble(QtWidgets.QFrame):
         self._on_copy = on_copy
         self._on_regenerate = on_regenerate
         self._allow_regenerate = bool(allow_regenerate)
+        self._raw_text = str(text or "")
+        self._preferred_text_width = 560
+        self._manual_text_width: Optional[int] = None
+        self._resize_drag_active = False
+        self._drag_anchor_global_x = 0
+        self._drag_start_text_width = 0
+        self._edge_handle_px = 12
+        self._syncing_message_height = False
 
         self.setObjectName("chatBubble")
         self.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        # Ensure QSS background colors (e.g. user bubble green) always paint.
+        self.setAutoFillBackground(True)
         self.setProperty("role", "user" if is_user else "assistant")
+        self._apply_role_palette()
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
@@ -68,11 +80,57 @@ class _ChatBubble(QtWidgets.QFrame):
         self.sender_label.setObjectName("sender")
         layout.addWidget(self.sender_label)
 
-        self.message_label = QtWidgets.QLabel(text, self)
-        self.message_label.setObjectName("message")
-        self.message_label.setWordWrap(True)
-        self.message_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        layout.addWidget(self.message_label)
+        self.message_view = QtWidgets.QTextBrowser(self)
+        self.message_view.setObjectName("messageView")
+        self.message_view.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.message_view.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        self.message_view.setAutoFillBackground(False)
+        self.message_view.setOpenExternalLinks(True)
+        self.message_view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.message_view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.message_view.setSizeAdjustPolicy(
+            QtWidgets.QAbstractScrollArea.AdjustToContents
+        )
+        self.message_view.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse | QtCore.Qt.LinksAccessibleByMouse
+        )
+        self.message_doc = QtGui.QTextDocument(self.message_view)
+        self.message_doc.setDocumentMargin(0)
+        text_option = self.message_doc.defaultTextOption()
+        text_option.setWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
+        self.message_doc.setDefaultTextOption(text_option)
+        self.message_doc.setDefaultStyleSheet(
+            """
+            p { margin: 0 0 6px 0; }
+            p:last-child { margin-bottom: 0; }
+            pre {
+                background: rgba(0,0,0,0.22);
+                border: 1px solid rgba(255,255,255,0.14);
+                border-radius: 8px;
+                padding: 8px;
+                margin: 4px 0 4px 0;
+            }
+            code {
+                background: rgba(0,0,0,0.16);
+                border-radius: 4px;
+                padding: 1px 3px;
+            }
+            a {
+                color: #7ed1ff;
+                text-decoration: none;
+            }
+            """
+        )
+        self.message_view.setDocument(self.message_doc)
+        viewport = self.message_view.viewport()
+        viewport.setAutoFillBackground(False)
+        viewport.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        viewport.setStyleSheet("background: transparent;")
+        doc_layout = self.message_doc.documentLayout()
+        if doc_layout is not None:
+            doc_layout.documentSizeChanged.connect(self._sync_message_height)
+        layout.addWidget(self.message_view)
+        self._render_markdown(self._raw_text)
 
         self.meta_label = QtWidgets.QLabel(self._ts, self)
         self.meta_label.setObjectName("meta")
@@ -130,14 +188,117 @@ class _ChatBubble(QtWidgets.QFrame):
         footer.addWidget(self.meta_label, 0, QtCore.Qt.AlignRight)
         layout.addLayout(footer)
 
+    def _apply_role_palette(self) -> None:
+        palette = self.palette()
+        if self._is_user:
+            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#25D366"))
+        else:
+            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#1f252f"))
+        self.setPalette(palette)
+
     def append_text(self, chunk: str) -> None:
-        self.message_label.setText(self.message_label.text() + chunk)
+        self._raw_text += str(chunk or "")
+        self._render_markdown(self._raw_text)
 
     def set_text(self, text: str) -> None:
-        self.message_label.setText(text)
+        self._raw_text = str(text or "")
+        self._render_markdown(self._raw_text)
 
     def text(self) -> str:
-        return self.message_label.text()
+        return str(self.message_doc.toPlainText() or "").strip()
+
+    def _render_markdown(self, text: str) -> None:
+        content = str(text or "")
+        if hasattr(self.message_doc, "setMarkdown"):
+            self.message_doc.setMarkdown(content)
+        else:
+            self.message_doc.setPlainText(content)
+        self._sync_message_height()
+
+    def _sync_message_height(self, _doc_size: Optional[QtCore.QSizeF] = None) -> None:
+        if self._syncing_message_height:
+            return
+        self._syncing_message_height = True
+        try:
+            available_width = max(220, self.width() - 24)
+            text_width = min(max(260, int(self._preferred_text_width)), available_width)
+            if int(self.message_doc.textWidth()) != int(text_width):
+                self.message_doc.setTextWidth(float(text_width))
+            self.message_doc.adjustSize()
+            doc_height = int(self.message_doc.size().height())
+            target = max(22, doc_height + 8)
+            self.message_view.setMinimumHeight(target)
+            self.message_view.setMaximumHeight(16777215)
+        finally:
+            self._syncing_message_height = False
+
+    def set_message_width(self, width: int) -> None:
+        self._preferred_text_width = max(260, int(width))
+        self._sync_message_height()
+
+    def apply_layout_width(self, text_width: int, bubble_max_width: int) -> None:
+        max_text_width = max(260, int(bubble_max_width) - 24)
+        if self._manual_text_width is not None:
+            self._preferred_text_width = min(
+                max(260, int(self._manual_text_width)), max_text_width
+            )
+            fixed_width = max(320, self._preferred_text_width + 24)
+            self.setMinimumWidth(fixed_width)
+            self.setMaximumWidth(fixed_width)
+        else:
+            self._preferred_text_width = min(max(260, int(text_width)), max_text_width)
+            fixed_width = max(320, int(bubble_max_width))
+            self.setMinimumWidth(fixed_width)
+            self.setMaximumWidth(fixed_width)
+        self._sync_message_height()
+
+    def _is_resize_handle_hit(self, pos: QtCore.QPoint) -> bool:
+        local_x = int(pos.x())
+        if self._is_user:
+            return local_x <= self._edge_handle_px
+        return local_x >= max(0, self.width() - self._edge_handle_px)
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if event.button() == QtCore.Qt.LeftButton and self._is_resize_handle_hit(
+            event.pos()
+        ):
+            self._resize_drag_active = True
+            self._drag_anchor_global_x = int(event.globalX())
+            self._drag_start_text_width = int(self._preferred_text_width)
+            self.setCursor(QtCore.Qt.SizeHorCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self._resize_drag_active:
+            delta_x = int(event.globalX()) - self._drag_anchor_global_x
+            if self._is_user:
+                new_width = self._drag_start_text_width - delta_x
+            else:
+                new_width = self._drag_start_text_width + delta_x
+            self._manual_text_width = max(260, int(new_width))
+            self._preferred_text_width = self._manual_text_width
+            self._sync_message_height()
+            event.accept()
+            return
+        if self._is_resize_handle_hit(event.pos()):
+            self.setCursor(QtCore.Qt.SizeHorCursor)
+        else:
+            self.unsetCursor()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self._resize_drag_active and event.button() == QtCore.Qt.LeftButton:
+            self._resize_drag_active = False
+            self.unsetCursor()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._sync_message_height()
 
     def _speak(self) -> None:
         if callable(self._on_speak):
@@ -190,6 +351,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self._typing_timer = QtCore.QTimer(self)
         self._typing_timer.setInterval(350)
         self._typing_timer.timeout.connect(self._on_typing_timer_tick)
+        self.enable_progress_stream = True
         self._bot_action_results: Dict[str, Dict[str, Any]] = {}
         self._quick_actions: List[tuple[str, str]] = [
             (
@@ -198,10 +360,11 @@ class AIChatWidget(QtWidgets.QWidget):
             ),
             ("Stop Stream", "stop realtime stream"),
             ("Summarize Context", "Summarize what we are doing in this session."),
-            ("Help Me Track", "Help me track the next frames in this video."),
             ("Review Memory", "Review long-term memory and list key facts."),
         ]
         self._selected_quick_action_index: Optional[int] = None
+        self._current_progress_bubble: Optional[_ChatBubble] = None
+        self._progress_lines: List[str] = []
 
         self._build_ui()
         self._apply_theme_styles()
@@ -799,25 +962,49 @@ class AIChatWidget(QtWidgets.QWidget):
                     background: #a1a7b2;
                 }}
                 QFrame#chatBubble[role="user"] {{
-                    background-color: #2a2f39;
-                    border-radius: 14px;
-                    padding: 8px 10px;
-                    border: 1px solid #3a404b;
+                    background-color: #25D366;
+                    border-radius: 16px;
+                    padding: 9px 11px;
+                    border: 1px solid #1fa855;
                 }}
                 QFrame#chatBubble[role="assistant"] {{
-                    background-color: #1c2128;
-                    border-radius: 14px;
-                    padding: 8px 10px;
-                    border: 1px solid #303640;
+                    background-color: #1f252f;
+                    border-radius: 16px;
+                    padding: 9px 11px;
+                    border: 1px solid #2f3946;
                 }}
                 QLabel#sender {{
                     color: #9ea4af;
                     font-size: 11px;
                     font-weight: 600;
                 }}
-                QLabel#message {{
+                QTextBrowser#messageView {{
                     color: #e9ebee;
                     font-size: 13px;
+                    background: transparent;
+                    border: none;
+                    selection-background-color: #2f84ff;
+                    selection-color: #f5f7fa;
+                }}
+                QFrame#chatBubble[role="user"] QLabel#sender {{
+                    color: #d7f7ea;
+                }}
+                QFrame#chatBubble[role="user"] QTextBrowser#messageView {{
+                    color: #f4fff9;
+                }}
+                QFrame#chatBubble[role="user"] QLabel#meta {{
+                    color: #c8f0e0;
+                }}
+                QFrame#chatBubble[progress="true"] {{
+                    background-color: #181d27;
+                    border: 1px solid #2a3140;
+                }}
+                QFrame#chatBubble[progress="true"] QLabel#sender {{
+                    color: #8db7ff;
+                }}
+                QFrame#chatBubble[progress="true"] QTextBrowser#messageView {{
+                    color: #bfcae2;
+                    font-size: 12px;
                 }}
                 QLabel#meta {{
                     color: #8e95a1;
@@ -852,6 +1039,39 @@ class AIChatWidget(QtWidgets.QWidget):
         bar = self.scroll_area.verticalScrollBar()
         bar.setValue(bar.maximum())
 
+    def _iter_chat_bubbles(self) -> List[_ChatBubble]:
+        bubbles: List[_ChatBubble] = []
+        for idx in range(self.chat_layout.count()):
+            item = self.chat_layout.itemAt(idx)
+            if item is None:
+                continue
+            row_layout = None
+            row_widget = item.widget()
+            if row_widget is not None:
+                row_layout = row_widget.layout()
+            if row_layout is None:
+                row_layout = item.layout()
+            if row_layout is None:
+                continue
+            for j in range(row_layout.count()):
+                widget = row_layout.itemAt(j).widget()
+                if isinstance(widget, _ChatBubble):
+                    bubbles.append(widget)
+        return bubbles
+
+    def _bubble_max_width(self) -> int:
+        viewport = self.scroll_area.viewport() if self.scroll_area is not None else None
+        base_width = (
+            int(viewport.width()) if viewport is not None else int(self.width())
+        )
+        return max(320, int(base_width) - 12)
+
+    def _reflow_chat_bubbles(self) -> None:
+        max_width = self._bubble_max_width()
+        text_width = max_width - 24
+        for bubble in self._iter_chat_bubbles():
+            bubble.apply_layout_width(text_width, max_width)
+
     def _add_bubble(
         self,
         sender: str,
@@ -860,7 +1080,16 @@ class AIChatWidget(QtWidgets.QWidget):
         is_user: bool,
         allow_regenerate: bool = False,
     ) -> _ChatBubble:
-        row = QtWidgets.QHBoxLayout()
+        # Use a row widget (not just a bare layout) so the row reliably expands
+        # to the full scroll area width, letting bubbles fill the dock width.
+        row_widget = QtWidgets.QWidget(self.chat_container)
+        row_widget.setObjectName("chatBubbleRow")
+        row_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
+        )
+        row = QtWidgets.QHBoxLayout(row_widget)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
         bubble = _ChatBubble(
             sender,
             text,
@@ -871,6 +1100,12 @@ class AIChatWidget(QtWidgets.QWidget):
             allow_regenerate=allow_regenerate,
             parent=self.chat_container,
         )
+        bubble.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum
+        )
+        bubble.apply_layout_width(
+            self._bubble_max_width() - 24, self._bubble_max_width()
+        )
         if is_user:
             row.addStretch(1)
             row.addWidget(bubble, 0, QtCore.Qt.AlignRight)
@@ -880,10 +1115,15 @@ class AIChatWidget(QtWidgets.QWidget):
 
         # Insert before trailing stretch item.
         insert_idx = max(0, self.chat_layout.count() - 1)
-        self.chat_layout.insertLayout(insert_idx, row)
+        self.chat_layout.insertWidget(insert_idx, row_widget)
+        self._reflow_chat_bubbles()
         self._update_empty_state_visibility()
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
         return bubble
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
 
     def _copy_message_text(self, text: str) -> None:
         clipboard = QtGui.QGuiApplication.clipboard()
@@ -2094,6 +2334,15 @@ class AIChatWidget(QtWidgets.QWidget):
         chat_image_path = self._prepare_chat_image()
         self._add_bubble("You", raw_prompt, is_user=True)
         assistant_name = self._assistant_display_name()
+        self._current_progress_bubble = self._add_bubble(
+            f"{assistant_name} • Thinking",
+            "Preparing response...",
+            is_user=False,
+        )
+        self._current_progress_bubble.setProperty("progress", True)
+        self._current_progress_bubble.style().unpolish(self._current_progress_bubble)
+        self._current_progress_bubble.style().polish(self._current_progress_bubble)
+        self._progress_lines = ["Preparing response..."]
         self._current_response_bubble = self._add_bubble(
             assistant_name,
             "",
@@ -2123,7 +2372,34 @@ class AIChatWidget(QtWidgets.QWidget):
         if self._current_response_bubble is None:
             return
         self._current_response_bubble.append_text(chunk)
-        self._scroll_to_bottom()
+        QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
+        QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
+
+    @QtCore.Slot(str)
+    def stream_chat_progress(self, update: str) -> None:
+        line = str(update or "").strip()
+        if not line:
+            return
+        if self._current_progress_bubble is None:
+            self._current_progress_bubble = self._add_bubble(
+                f"{self._assistant_display_name()} • Thinking",
+                line,
+                is_user=False,
+            )
+            self._current_progress_bubble.setProperty("progress", True)
+            self._current_progress_bubble.style().unpolish(
+                self._current_progress_bubble
+            )
+            self._current_progress_bubble.style().polish(self._current_progress_bubble)
+            self._progress_lines = [line]
+        elif not self._progress_lines or self._progress_lines[-1] != line:
+            self._progress_lines.append(line)
+        if self._current_progress_bubble is not None:
+            compact = self._progress_lines[-8:]
+            text = "\n".join(f"- {item}" for item in compact)
+            self._current_progress_bubble.set_text(text)
+        QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
+        QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
     @QtCore.Slot(str, bool)
     def update_chat_response(self, message: str, is_error: bool) -> None:
@@ -2149,7 +2425,10 @@ class AIChatWidget(QtWidgets.QWidget):
         self._stop_typing_indicator()
         self._on_prompt_text_changed()
         self._current_response_bubble = None
-        self._scroll_to_bottom()
+        self._current_progress_bubble = None
+        self._progress_lines = []
+        QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
+        QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _last_assistant_text(self) -> str:
         # Find last non-user bubble text.

@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from dataclasses import dataclass
 from datetime import datetime
 import importlib
 import json
 import logging
 import os
 from pathlib import Path
-import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from qtpy import QtCore
 from qtpy.QtCore import QMetaObject, QRunnable
@@ -18,7 +16,26 @@ from qtpy.QtCore import QMetaObject, QRunnable
 from annolid.core.agent.loop import AgentLoop
 from annolid.core.agent.config import load_config
 from annolid.core.agent.memory import AgentMemoryStore
-from annolid.core.agent.providers import OpenAICompatProvider, resolve_openai_compat
+from annolid.core.agent.providers import (
+    build_ollama_llm_callable,
+    dependency_error_for_kind,
+    ollama_mark_plain_mode,
+    ollama_plain_mode_decrement,
+    ollama_plain_mode_remaining,
+    recover_with_plain_ollama_reply,
+    run_gemini_chat,
+    run_ollama_streaming_chat,
+    run_openai_compat_chat,
+)
+from annolid.core.agent.providers.background_chat import (
+    OLLAMA_PLAIN_MODE_COOLDOWN_TURNS as _PROVIDER_OLLAMA_PLAIN_MODE_COOLDOWN_TURNS,
+)
+from annolid.core.agent.providers.background_chat import (
+    _OLLAMA_FORCE_PLAIN_CACHE as _PROVIDER_OLLAMA_FORCE_PLAIN_CACHE,
+)
+from annolid.core.agent.providers.background_chat import (
+    _OLLAMA_TOOL_SUPPORT_CACHE as _PROVIDER_OLLAMA_TOOL_SUPPORT_CACHE,
+)
 from annolid.core.agent.session_manager import (
     AgentSessionManager,
     PersistentSessionStore,
@@ -28,10 +45,33 @@ from annolid.core.agent.tools import (
     register_annolid_gui_tools,
     register_nanobot_style_tools,
 )
+from annolid.core.agent.tools.pdf import DownloadPdfTool
 from annolid.core.agent.tools.policy import resolve_allowed_tools
 from annolid.core.agent.utils import get_agent_workspace_path
+from annolid.core.agent.gui_backend.commands import (
+    looks_like_local_access_refusal,
+    parse_direct_gui_command,
+    prompt_may_need_tools,
+)
+from annolid.core.agent.gui_backend.paths import (
+    build_pdf_search_roots,
+    build_workspace_roots,
+    extract_pdf_path_candidates,
+    extract_video_path_candidates,
+    find_video_by_basename_in_roots,
+    list_available_pdfs_in_roots,
+    resolve_pdf_path_for_roots,
+    resolve_video_path_for_roots,
+)
+from annolid.core.agent.gui_backend.router import execute_direct_gui_command
+from annolid.core.agent.providers.ollama_utils import (
+    collect_ollama_stream,
+    extract_ollama_text,
+    format_tool_trace,
+    normalize_messages_for_ollama,
+    parse_ollama_tool_calls,
+)
 from annolid.utils.llm_settings import (
-    LLMConfig,
     provider_kind,
     resolve_agent_runtime_config,
 )
@@ -39,18 +79,12 @@ from annolid.utils.llm_settings import (
 
 _SESSION_STORE: Optional[PersistentSessionStore] = None
 _LOGGER = logging.getLogger("annolid.bot.backend")
-_OLLAMA_TOOL_SUPPORT_CACHE: Dict[str, bool] = {}
-_OLLAMA_FORCE_PLAIN_CACHE: Dict[str, int] = {}
 _GUI_DISABLED_TOOLS = {"web_search", "web_fetch", "cron", "spawn", "message"}
-_OLLAMA_PLAIN_MODE_COOLDOWN_TURNS = 2
-_DIRECT_GUI_REFUSAL_HINTS = (
-    "cannot directly access",
-    "can't directly access",
-    "cannot access your local file system",
-    "can't access your local file system",
-    "i cannot open applications",
-    "i can't open applications",
-)
+# Backward-compat aliases retained for tests/internal callers that reference
+# backend module globals directly.
+_OLLAMA_TOOL_SUPPORT_CACHE = _PROVIDER_OLLAMA_TOOL_SUPPORT_CACHE
+_OLLAMA_FORCE_PLAIN_CACHE = _PROVIDER_OLLAMA_FORCE_PLAIN_CACHE
+_OLLAMA_PLAIN_MODE_COOLDOWN_TURNS = _PROVIDER_OLLAMA_PLAIN_MODE_COOLDOWN_TURNS
 
 
 def _get_session_store() -> PersistentSessionStore:
@@ -63,6 +97,14 @@ def _get_session_store() -> PersistentSessionStore:
 def clear_chat_session(session_id: str) -> None:
     """Clear persisted chat history/facts for a specific GUI session."""
     _get_session_store().clear_session(str(session_id or "gui:annolid_bot:default"))
+
+
+@dataclass(frozen=True)
+class _AgentExecutionContext:
+    workspace: Path
+    allowed_read_roots: List[str]
+    tools: FunctionToolRegistry
+    system_prompt: str
 
 
 class StreamingChatTask(QRunnable):
@@ -94,8 +136,10 @@ class StreamingChatTask(QRunnable):
         self.workspace_memory = AgentMemoryStore(self.workspace)
         runtime_cfg = resolve_agent_runtime_config(profile="playground")
         self.max_history_messages = int(runtime_cfg.max_history_messages)
+        self._last_progress_update: str = ""
 
     def run(self) -> None:
+        self._emit_progress("Analyzing request")
         _LOGGER.info(
             "annolid-bot turn start session=%s provider=%s model=%s prompt_chars=%d",
             self.session_id,
@@ -105,6 +149,7 @@ class StreamingChatTask(QRunnable):
         )
         dep_error = self._provider_dependency_error()
         if dep_error:
+            self._emit_progress("Provider dependency check failed")
             _LOGGER.warning(
                 "annolid-bot dependency check failed session=%s provider=%s model=%s error=%s",
                 self.session_id,
@@ -121,6 +166,7 @@ class StreamingChatTask(QRunnable):
             )
             return
         try:
+            self._emit_progress("Starting agent loop")
             self._run_agent_loop()
             _LOGGER.info(
                 "annolid-bot turn stop session=%s provider=%s model=%s status=ok",
@@ -153,69 +199,60 @@ class StreamingChatTask(QRunnable):
                 self.model,
                 exc,
             )
-            try:
-                # Keep backward-compatible fallback behavior if agent loop setup fails.
-                kind = provider_kind(self.settings, self.provider)
-                if kind == "ollama":
-                    self._run_ollama()
-                elif kind == "openai_compat":
-                    self._run_openai(provider_name=self.provider)
-                elif kind == "gemini":
-                    self._run_gemini()
-                else:
-                    raise ValueError(f"Unsupported provider '{self.provider}'.")
+            self._run_provider_fallback(exc)
+
+    def _run_provider_fallback(self, original_error: Exception) -> None:
+        """Run legacy provider fallback when agent loop setup/execution fails."""
+        try:
+            # Keep backward-compatible fallback behavior if agent loop setup fails.
+            self._emit_progress("Agent loop failed, trying provider fallback")
+            kind = provider_kind(self.settings, self.provider)
+            if kind == "ollama":
+                self._run_ollama()
+            elif kind == "openai_compat":
+                self._run_openai(provider_name=self.provider)
+            elif kind == "gemini":
+                self._run_gemini()
+            else:
+                raise ValueError(f"Unsupported provider '{self.provider}'.")
+            _LOGGER.info(
+                "annolid-bot turn stop session=%s provider=%s model=%s status=fallback_ok",
+                self.session_id,
+                self.provider,
+                self.model,
+            )
+        except Exception as fallback_exc:
+            if isinstance(fallback_exc, ImportError):
+                message = self._format_dependency_error(str(fallback_exc))
+                _LOGGER.warning(
+                    "annolid-bot fallback dependency missing session=%s provider=%s model=%s error=%s",
+                    self.session_id,
+                    self.provider,
+                    self.model,
+                    fallback_exc,
+                )
+                self._emit_final(message, is_error=True)
                 _LOGGER.info(
-                    "annolid-bot turn stop session=%s provider=%s model=%s status=fallback_ok",
+                    "annolid-bot turn stop session=%s provider=%s model=%s status=dependency_missing",
                     self.session_id,
                     self.provider,
                     self.model,
                 )
-            except Exception as fallback_exc:
-                if isinstance(fallback_exc, ImportError):
-                    message = self._format_dependency_error(str(fallback_exc))
-                    _LOGGER.warning(
-                        "annolid-bot fallback dependency missing session=%s provider=%s model=%s error=%s",
-                        self.session_id,
-                        self.provider,
-                        self.model,
-                        fallback_exc,
-                    )
-                    self._emit_final(message, is_error=True)
-                    _LOGGER.info(
-                        "annolid-bot turn stop session=%s provider=%s model=%s status=dependency_missing",
-                        self.session_id,
-                        self.provider,
-                        self.model,
-                    )
-                    return
-                _LOGGER.exception(
-                    "annolid-bot fallback failed session=%s provider=%s model=%s",
-                    self.session_id,
-                    self.provider,
-                    self.model,
-                )
-                self._emit_final(
-                    f"Error in chat interaction: {exc}; fallback failed: {fallback_exc}",
-                    is_error=True,
-                )
+                return
+            _LOGGER.exception(
+                "annolid-bot fallback failed session=%s provider=%s model=%s",
+                self.session_id,
+                self.provider,
+                self.model,
+            )
+            self._emit_final(
+                f"Error in chat interaction: {original_error}; fallback failed: {fallback_exc}",
+                is_error=True,
+            )
 
     def _provider_dependency_error(self) -> Optional[str]:
         kind = provider_kind(self.settings, self.provider)
-        if kind == "openai_compat":
-            if importlib.util.find_spec("openai") is None:
-                return (
-                    "OpenAI-compatible provider requires the `openai` package. "
-                    "Install it in your Annolid environment, for example: "
-                    "`.venv/bin/pip install openai`."
-                )
-        if kind == "gemini":
-            if importlib.util.find_spec("google.generativeai") is None:
-                return (
-                    "Gemini provider requires `google-generativeai`. "
-                    "Install it in your Annolid environment, for example: "
-                    "`.venv/bin/pip install google-generativeai`."
-                )
-        return None
+        return dependency_error_for_kind(kind)
 
     def _format_dependency_error(self, raw_error: str) -> str:
         message = str(raw_error or "").strip()
@@ -242,7 +279,25 @@ class StreamingChatTask(QRunnable):
             QtCore.Q_ARG(str, chunk),
         )
 
+    def _emit_progress(self, update: str) -> None:
+        if not bool(getattr(self.widget, "enable_progress_stream", False)):
+            return
+        text = str(update or "").strip()
+        if not text or text == self._last_progress_update:
+            return
+        self._last_progress_update = text
+        QMetaObject.invokeMethod(
+            self.widget,
+            "stream_chat_progress",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, text),
+        )
+
     def _emit_final(self, message: str, *, is_error: bool) -> None:
+        if is_error:
+            self._emit_progress("Response failed")
+        else:
+            self._emit_progress("Response ready")
         QMetaObject.invokeMethod(
             self.widget,
             "update_chat_response",
@@ -315,84 +370,20 @@ class StreamingChatTask(QRunnable):
             pass
 
     def _run_agent_loop(self) -> None:
-        direct_command_text = self._execute_direct_gui_command(self.prompt)
-        if direct_command_text:
-            _LOGGER.info(
-                "annolid-bot direct gui command handled session=%s model=%s",
-                self.session_id,
-                self.model,
-            )
-            self._persist_turn(self.prompt, direct_command_text)
-            self._emit_final(direct_command_text, is_error=False)
+        if self._try_execute_direct_gui_command():
             return
 
-        workspace = get_agent_workspace_path()
-        agent_cfg = load_config()
-        allowed_read_roots = list(
-            getattr(agent_cfg.tools, "allowed_read_roots", []) or []
-        )
-        tools = FunctionToolRegistry()
-        register_nanobot_style_tools(
-            tools,
-            allowed_dir=workspace,
-            allowed_read_roots=allowed_read_roots,
-        )
-        register_annolid_gui_tools(
-            tools,
-            context_callback=self._build_gui_context_payload,
-            image_path_callback=self._get_shared_image_path,
-            open_video_callback=self._tool_gui_open_video,
-            open_pdf_callback=self._tool_gui_open_pdf,
-            set_frame_callback=self._tool_gui_set_frame,
-            set_prompt_callback=self._tool_gui_set_chat_prompt,
-            send_prompt_callback=self._tool_gui_send_chat_prompt,
-            set_chat_model_callback=self._tool_gui_set_chat_model,
-            select_annotation_model_callback=self._tool_gui_select_annotation_model,
-            track_next_frames_callback=self._tool_gui_track_next_frames,
-            set_ai_text_prompt_callback=self._tool_gui_set_ai_text_prompt,
-            run_ai_text_segmentation_callback=self._tool_gui_run_ai_text_segmentation,
-            segment_track_video_callback=self._tool_gui_segment_track_video,
-            label_behavior_segments_callback=self._tool_gui_label_behavior_segments,
-            start_realtime_stream_callback=self._tool_gui_start_realtime_stream,
-            stop_realtime_stream_callback=self._tool_gui_stop_realtime_stream,
-        )
-        for tool_name in _GUI_DISABLED_TOOLS:
-            tools.unregister(tool_name)
-        resolved_policy = resolve_allowed_tools(
-            all_tool_names=tools.tool_names,
-            tools_cfg=agent_cfg.tools,
-            provider=self.provider,
-            model=self.model,
-        )
-        for tool_name in list(tools.tool_names):
-            if tool_name not in resolved_policy.allowed_tools:
-                tools.unregister(tool_name)
-        system_prompt = self._build_compact_system_prompt(
-            workspace, allowed_read_roots=allowed_read_roots
-        )
-        _LOGGER.info(
-            "annolid-bot agent config session=%s model=%s tools=%d read_roots=%d profile=%s policy_source=%s prompt_chars=%d",
-            self.session_id,
-            self.model,
-            len(tools),
-            len(allowed_read_roots),
-            resolved_policy.profile,
-            resolved_policy.source,
-            len(system_prompt),
-        )
+        context = self._build_agent_execution_context()
+
         if self.provider == "ollama":
-            remaining_plain_turns = int(
-                _OLLAMA_FORCE_PLAIN_CACHE.get(self.model, 0) or 0
-            )
+            remaining_plain_turns = int(ollama_plain_mode_remaining(self.model) or 0)
             wants_tools = self._prompt_may_need_tools(self.prompt)
             if remaining_plain_turns > 0 and not wants_tools:
-                _OLLAMA_FORCE_PLAIN_CACHE[self.model] = max(
-                    remaining_plain_turns - 1, 0
-                )
+                updated_remaining = ollama_plain_mode_decrement(self.model)
                 _LOGGER.warning(
                     "annolid-bot model is in temporary plain mode; skipping agent/tool loop model=%s remaining_turns=%d",
                     self.model,
-                    _OLLAMA_FORCE_PLAIN_CACHE[self.model],
+                    updated_remaining,
                 )
                 text = self._recover_with_plain_ollama_reply()
                 if not text:
@@ -417,19 +408,15 @@ class StreamingChatTask(QRunnable):
                     remaining_plain_turns,
                 )
 
-        llm_callable = None
-        if self.provider == "ollama":
-            llm_callable = self._build_ollama_llm_callable()
-
         loop = AgentLoop(
-            tools=tools,
-            llm_callable=llm_callable,
+            tools=context.tools,
+            llm_callable=self._resolve_loop_llm_callable(),
             provider=self.provider,
             model=self.model,
             profile="playground",
             memory_store=self.session_store,
-            workspace=str(workspace),
-            allowed_read_roots=allowed_read_roots,
+            workspace=str(context.workspace),
+            allowed_read_roots=context.allowed_read_roots,
         )
         media: Optional[List[str]] = None
         if self.image_path and os.path.exists(self.image_path):
@@ -442,9 +429,133 @@ class StreamingChatTask(QRunnable):
                 channel="gui",
                 chat_id="annolid_bot",
                 media=media,
-                system_prompt=system_prompt,
+                system_prompt=context.system_prompt,
             )
         )
+        self._emit_progress("Received model response")
+        text, used_recovery, used_direct_gui_fallback = self._finalize_agent_text(
+            result
+        )
+        self._log_agent_result(result, used_recovery, used_direct_gui_fallback)
+        if text.strip():
+            self._persist_turn(self.prompt, text, persist_session_history=False)
+        self._emit_final(text, is_error=False)
+
+    def _try_execute_direct_gui_command(self) -> bool:
+        direct_command_text = self._execute_direct_gui_command(self.prompt)
+        if not direct_command_text:
+            return False
+        self._emit_progress("Executed direct GUI command")
+        _LOGGER.info(
+            "annolid-bot direct gui command handled session=%s model=%s",
+            self.session_id,
+            self.model,
+        )
+        self._persist_turn(self.prompt, direct_command_text)
+        self._emit_final(direct_command_text, is_error=False)
+        return True
+
+    def _build_agent_execution_context(self) -> _AgentExecutionContext:
+        self._emit_progress("Loading tools and context")
+        workspace = get_agent_workspace_path()
+        agent_cfg = load_config()
+        allowed_read_roots = list(
+            getattr(agent_cfg.tools, "allowed_read_roots", []) or []
+        )
+        tools = FunctionToolRegistry()
+        register_nanobot_style_tools(
+            tools,
+            allowed_dir=workspace,
+            allowed_read_roots=allowed_read_roots,
+        )
+        self._register_gui_tools(tools)
+        for tool_name in _GUI_DISABLED_TOOLS:
+            tools.unregister(tool_name)
+        resolved_policy = resolve_allowed_tools(
+            all_tool_names=tools.tool_names,
+            tools_cfg=agent_cfg.tools,
+            provider=self.provider,
+            model=self.model,
+        )
+        for tool_name in list(tools.tool_names):
+            if tool_name not in resolved_policy.allowed_tools:
+                tools.unregister(tool_name)
+        system_prompt = self._build_compact_system_prompt(
+            workspace, allowed_read_roots=allowed_read_roots
+        )
+        self._emit_progress("Prepared system prompt")
+        _LOGGER.info(
+            "annolid-bot agent config session=%s model=%s tools=%d read_roots=%d profile=%s policy_source=%s prompt_chars=%d",
+            self.session_id,
+            self.model,
+            len(tools),
+            len(allowed_read_roots),
+            resolved_policy.profile,
+            resolved_policy.source,
+            len(system_prompt),
+        )
+        return _AgentExecutionContext(
+            workspace=workspace,
+            allowed_read_roots=allowed_read_roots,
+            tools=tools,
+            system_prompt=system_prompt,
+        )
+
+    def _register_gui_tools(self, tools: FunctionToolRegistry) -> None:
+        register_annolid_gui_tools(
+            tools,
+            context_callback=self._build_gui_context_payload,
+            image_path_callback=self._get_shared_image_path,
+            open_video_callback=self._wrap_tool_callback(
+                "open_video", self._tool_gui_open_video
+            ),
+            open_pdf_callback=self._wrap_tool_callback(
+                "open_pdf", self._tool_gui_open_pdf
+            ),
+            set_frame_callback=self._wrap_tool_callback(
+                "set_frame", self._tool_gui_set_frame
+            ),
+            set_prompt_callback=self._wrap_tool_callback(
+                "set_prompt", self._tool_gui_set_chat_prompt
+            ),
+            send_prompt_callback=self._wrap_tool_callback(
+                "send_prompt", self._tool_gui_send_chat_prompt
+            ),
+            set_chat_model_callback=self._wrap_tool_callback(
+                "set_chat_model", self._tool_gui_set_chat_model
+            ),
+            select_annotation_model_callback=self._wrap_tool_callback(
+                "select_annotation_model", self._tool_gui_select_annotation_model
+            ),
+            track_next_frames_callback=self._wrap_tool_callback(
+                "track_next_frames", self._tool_gui_track_next_frames
+            ),
+            set_ai_text_prompt_callback=self._wrap_tool_callback(
+                "set_ai_text_prompt", self._tool_gui_set_ai_text_prompt
+            ),
+            run_ai_text_segmentation_callback=self._wrap_tool_callback(
+                "run_ai_text_segmentation", self._tool_gui_run_ai_text_segmentation
+            ),
+            segment_track_video_callback=self._wrap_tool_callback(
+                "segment_track_video", self._tool_gui_segment_track_video
+            ),
+            label_behavior_segments_callback=self._wrap_tool_callback(
+                "label_behavior_segments", self._tool_gui_label_behavior_segments
+            ),
+            start_realtime_stream_callback=self._wrap_tool_callback(
+                "start_realtime_stream", self._tool_gui_start_realtime_stream
+            ),
+            stop_realtime_stream_callback=self._wrap_tool_callback(
+                "stop_realtime_stream", self._tool_gui_stop_realtime_stream
+            ),
+        )
+
+    def _resolve_loop_llm_callable(self) -> Optional[Callable[..., Any]]:
+        if self.provider == "ollama":
+            return self._build_ollama_llm_callable()
+        return None
+
+    def _finalize_agent_text(self, result: Any) -> Tuple[str, bool, bool]:
         text = str(getattr(result, "content", "") or "").strip()
         tool_run_count = len(getattr(result, "tool_runs", ()) or ())
         used_recovery = False
@@ -470,9 +581,7 @@ class StreamingChatTask(QRunnable):
                 text = self._recover_with_plain_ollama_reply()
                 used_recovery = bool(text)
             if used_recovery:
-                _OLLAMA_FORCE_PLAIN_CACHE[self.model] = (
-                    _OLLAMA_PLAIN_MODE_COOLDOWN_TURNS
-                )
+                ollama_mark_plain_mode(self.model)
         if not text:
             text = (
                 "Model returned empty output after multiple attempts. "
@@ -482,6 +591,15 @@ class StreamingChatTask(QRunnable):
         if self.show_tool_trace:
             trace = self._format_tool_trace(getattr(result, "tool_runs", ()) or ())
             text = f"{text}\n\n{trace}".strip()
+        self._emit_progress("Finalizing response")
+        return text, used_recovery, used_direct_gui_fallback
+
+    def _log_agent_result(
+        self,
+        result: Any,
+        used_recovery: bool,
+        used_direct_gui_fallback: bool,
+    ) -> None:
         _LOGGER.info(
             "annolid-bot agent result session=%s provider=%s model=%s iterations=%s tool_runs=%d",
             self.session_id,
@@ -502,13 +620,25 @@ class StreamingChatTask(QRunnable):
                 self.session_id,
                 self.model,
             )
-        if text.strip():
-            self._persist_turn(
-                self.prompt,
-                text,
-                persist_session_history=False,
-            )
-        self._emit_final(text, is_error=False)
+
+    def _wrap_tool_callback(
+        self, name: str, callback: Callable[..., Any]
+    ) -> Callable[..., Any]:
+        label = str(name or "tool").replace("_", " ")
+
+        def _wrapped(*args, **kwargs):
+            self._emit_progress(f"Running tool: {label}")
+            result = callback(*args, **kwargs)
+            if isinstance(result, dict):
+                if bool(result.get("ok")):
+                    self._emit_progress(f"Finished tool: {label}")
+                else:
+                    self._emit_progress(f"Tool failed: {label}")
+            else:
+                self._emit_progress(f"Finished tool: {label}")
+            return result
+
+        return _wrapped
 
     def _get_shared_image_path(self) -> str:
         return str(self.image_path or "")
@@ -594,149 +724,34 @@ class StreamingChatTask(QRunnable):
 
     @staticmethod
     def _extract_pdf_path_candidates(raw: str) -> List[str]:
-        text = str(raw or "").strip()
-        if not text:
-            return []
-
-        candidates: List[str] = []
-        if re.search(r"\.pdf\b", text, flags=re.IGNORECASE):
-            candidates.append(text)
-        for line in (ln.strip() for ln in text.splitlines() if ln.strip()):
-            if re.search(r"\.pdf\b", line, flags=re.IGNORECASE):
-                candidates.append(line)
-
-        for quoted in re.findall(
-            r'["\']([^"\']+\.pdf)["\']',
-            text,
-            flags=re.IGNORECASE,
-        ):
-            candidates.append(quoted.strip())
-
-        for token in re.findall(
-            r'(?:~?/|/)[^\s`"\']+\.pdf',
-            text,
-            flags=re.IGNORECASE,
-        ):
-            candidates.append(token.strip())
-
-        for token in re.findall(
-            r"\b[\w.\-]+\.pdf\b",
-            text,
-            flags=re.IGNORECASE,
-        ):
-            candidates.append(token.strip())
-
-        if text.startswith("gui_open_pdf(") and "path=" in text:
-            match = re.search(r'path\s*=\s*["\']([^"\']+)["\']', text)
-            if match:
-                candidates.append(match.group(1).strip())
-
-        cleaned: List[str] = []
-        seen: set[str] = set()
-        for item in candidates:
-            value = str(item or "").strip().strip("`").strip()
-            if not value or value in seen:
-                continue
-            seen.add(value)
-            cleaned.append(value)
-        return cleaned
+        return extract_pdf_path_candidates(raw)
 
     def _resolve_pdf_path_for_gui_tool(self, raw_path: str) -> Optional[Path]:
-        candidates = self._extract_pdf_path_candidates(raw_path)
-        if not candidates:
-            return None
-
         try:
             cfg = load_config()
             read_roots_cfg = list(getattr(cfg.tools, "allowed_read_roots", []) or [])
         except Exception:
             read_roots_cfg = []
-
-        roots: List[Path] = [get_agent_workspace_path()]
-        roots.extend(
-            Path(str(root)).expanduser() for root in read_roots_cfg if str(root).strip()
-        )
-
-        for candidate in candidates:
-            path_obj = Path(candidate).expanduser()
-            if path_obj.exists() and path_obj.is_file():
-                return path_obj
-            if not path_obj.is_absolute():
-                for root in roots:
-                    joined = (root / path_obj).expanduser()
-                    if joined.exists() and joined.is_file():
-                        return joined
-
-        for candidate in candidates:
-            basename = Path(candidate).name
-            if not basename:
-                continue
-            for root in roots:
-                joined = (root / basename).expanduser()
-                if joined.exists() and joined.is_file():
-                    return joined
-        return None
+        roots = build_workspace_roots(get_agent_workspace_path(), read_roots_cfg)
+        return resolve_pdf_path_for_roots(raw_path, roots)
 
     def _pdf_search_roots(self) -> List[Path]:
-        roots: List[Path] = []
         workspace = get_agent_workspace_path()
-        roots.append(workspace / "downloads")
-        roots.append(workspace)
         try:
             cfg = load_config()
             read_roots_cfg = list(getattr(cfg.tools, "allowed_read_roots", []) or [])
         except Exception:
             read_roots_cfg = []
-        roots.extend(
-            Path(str(root)).expanduser() for root in read_roots_cfg if str(root).strip()
-        )
-        deduped: List[Path] = []
-        seen: set[str] = set()
-        for root in roots:
-            key = str(root)
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(root)
-        return deduped
+        return build_pdf_search_roots(workspace, read_roots_cfg)
 
     def _list_available_pdfs(
         self, *, limit: int = 8, max_scan: int = 40000
     ) -> List[Path]:
-        matches: List[Path] = []
-        scanned = 0
-        for root in self._pdf_search_roots():
-            try:
-                root_resolved = root.expanduser()
-            except Exception:
-                continue
-            if not root_resolved.exists() or not root_resolved.is_dir():
-                continue
-            try:
-                for dirpath, _dirnames, filenames in os.walk(root_resolved):
-                    for filename in filenames:
-                        scanned += 1
-                        if scanned > int(max_scan):
-                            break
-                        if not str(filename).lower().endswith(".pdf"):
-                            continue
-                        matches.append((Path(dirpath) / filename).resolve())
-                    if scanned > int(max_scan):
-                        break
-            except Exception:
-                continue
-            if scanned > int(max_scan):
-                break
-        # Prefer most recently modified PDFs.
-        unique: dict[str, Path] = {}
-        for path in matches:
-            unique[str(path)] = path
-        ranked = sorted(
-            unique.values(),
-            key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
-            reverse=True,
+        return list_available_pdfs_in_roots(
+            self._pdf_search_roots(),
+            limit=limit,
+            max_scan=max_scan,
         )
-        return ranked[: int(limit)]
 
     def _tool_gui_open_pdf(self, path: str = "") -> Dict[str, Any]:
         path_text = str(path or "").strip()
@@ -744,11 +759,20 @@ class StreamingChatTask(QRunnable):
             self._extract_pdf_path_candidates(path_text) if path_text else []
         )
         has_explicit_pdf_path = bool(path_candidates)
-        resolved_path = (
-            self._resolve_pdf_path_for_gui_tool(path_text)
-            if has_explicit_pdf_path
-            else None
-        )
+        resolved_path: Optional[Path] = None
+        if has_explicit_pdf_path:
+            url_candidate = next(
+                (
+                    candidate
+                    for candidate in path_candidates
+                    if str(candidate).lower().startswith(("http://", "https://"))
+                ),
+                "",
+            )
+            if url_candidate:
+                resolved_path = self._download_pdf_for_gui_tool(url_candidate)
+            if resolved_path is None:
+                resolved_path = self._resolve_pdf_path_for_gui_tool(path_text)
         if has_explicit_pdf_path and resolved_path is None:
             return {
                 "ok": False,
@@ -786,68 +810,50 @@ class StreamingChatTask(QRunnable):
             return {"ok": False, "error": "Failed to queue GUI PDF open action"}
         return {"ok": True, "queued": True, "path": str(resolved_path)}
 
+    def _download_pdf_for_gui_tool(self, url: str) -> Optional[Path]:
+        text = str(url or "").strip()
+        if not text.lower().startswith(("http://", "https://")):
+            return None
+        workspace = get_agent_workspace_path()
+        downloader = DownloadPdfTool(allowed_dir=workspace)
+        try:
+            payload_raw = self._run_async(downloader.execute(url=text))
+            payload = json.loads(str(payload_raw or "{}"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict) or payload.get("error"):
+            return None
+        output_path = str(payload.get("output_path") or "").strip()
+        if not output_path:
+            return None
+        candidate = Path(output_path).expanduser()
+        if not candidate.exists() or not candidate.is_file():
+            return None
+        return candidate
+
+    @staticmethod
+    def _run_async(awaitable: Any) -> Any:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(awaitable)
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(awaitable)
+        finally:
+            loop.close()
+
     @staticmethod
     def _extract_path_candidates(raw: str) -> List[str]:
-        text = str(raw or "").strip()
-        if not text:
-            return []
-
-        candidates: List[str] = []
-        candidates.append(text)
-
-        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        candidates.extend(lines)
-
-        for quoted in re.findall(
-            r'["\']([^"\']+\.(?:mp4|avi|mov|mkv|m4v|wmv|flv))["\']',
-            text,
-            flags=re.IGNORECASE,
-        ):
-            candidates.append(quoted.strip())
-
-        for token in re.findall(
-            r'(?:~?/|/)[^\s`"\']+\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)',
-            text,
-            flags=re.IGNORECASE,
-        ):
-            candidates.append(token.strip())
-        for token in re.findall(
-            r"\b[\w.\-]+\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b",
-            text,
-            flags=re.IGNORECASE,
-        ):
-            candidates.append(token.strip())
-
-        if text.startswith("gui_open_video(") and "path=" in text:
-            m = re.search(r'path\s*=\s*["\']([^"\']+)["\']', text)
-            if m:
-                candidates.append(m.group(1).strip())
-
-        cleaned: List[str] = []
-        seen: set[str] = set()
-        for item in candidates:
-            value = item.strip().strip("`").strip()
-            if not value or value in seen:
-                continue
-            seen.add(value)
-            cleaned.append(value)
-        return cleaned
+        return extract_video_path_candidates(raw)
 
     def _resolve_video_path_for_gui_tool(self, raw_path: str) -> Optional[Path]:
-        candidates = self._extract_path_candidates(raw_path)
-        if not candidates:
-            return None
-
         try:
             cfg = load_config()
             read_roots_cfg = list(getattr(cfg.tools, "allowed_read_roots", []) or [])
         except Exception:
             read_roots_cfg = []
-
-        roots: List[Path] = [get_agent_workspace_path()]
-        roots.extend(
-            Path(str(root)).expanduser() for root in read_roots_cfg if str(root).strip()
-        )
+        roots = build_workspace_roots(get_agent_workspace_path(), read_roots_cfg)
         active_video_raw: str = ""
         try:
             widget = self.widget
@@ -863,445 +869,47 @@ class StreamingChatTask(QRunnable):
                     roots.append(candidate_video.parent)
         except Exception:
             active_video_raw = ""
-
-        active_name = Path(active_video_raw).name.lower() if active_video_raw else ""
-        active_stem = Path(active_video_raw).stem.lower() if active_video_raw else ""
-        if active_video_raw:
-            for candidate in candidates:
-                cleaned = str(candidate).strip().strip("\"'`")
-                if not cleaned:
-                    continue
-                lowered = cleaned.lower()
-                if lowered in {"current video", "this video", "active video"}:
-                    return Path(active_video_raw).expanduser()
-                candidate_name = Path(cleaned).name.lower()
-                candidate_stem = Path(cleaned).stem.lower()
-                if candidate_name and candidate_name == active_name:
-                    return Path(active_video_raw).expanduser()
-                if candidate_stem and candidate_stem == active_stem:
-                    return Path(active_video_raw).expanduser()
-
-        for candidate in candidates:
-            p = Path(candidate).expanduser()
-            if p.exists():
-                return p
-            if not p.is_absolute():
-                for root in roots:
-                    joined = (root / p).expanduser()
-                    if joined.exists():
-                        return joined
-
-        for candidate in candidates:
-            basename = Path(candidate).name
-            if not basename:
-                continue
-            for root in roots:
-                joined = (root / basename).expanduser()
-                if joined.exists():
-                    return joined
-
-        # Fallback: scan allowed roots/workspace recursively by basename.
-        # This handles prompts like "mouse.mp4" when the file lives in a
-        # nested folder under an allowed directory.
-        candidate_basenames = {
-            Path(str(candidate)).name
-            for candidate in candidates
-            if Path(str(candidate)).name.strip()
-        }
-        if candidate_basenames:
-            found = self._find_video_by_basename_in_roots(
-                basenames=candidate_basenames,
-                roots=roots,
-            )
-            if found is not None:
-                return found
-        return None
+        return resolve_video_path_for_roots(
+            raw_path,
+            roots,
+            active_video_raw=active_video_raw,
+            max_scan=30000,
+        )
 
     @staticmethod
     def _find_video_by_basename_in_roots(
         *, basenames: set[str], roots: List[Path], max_scan: int = 30000
     ) -> Optional[Path]:
-        targets = {name.lower() for name in basenames if str(name).strip()}
-        if not targets:
-            return None
-        scanned = 0
-        for root in roots:
-            try:
-                root_resolved = root.expanduser()
-            except Exception:
-                continue
-            if not root_resolved.exists() or not root_resolved.is_dir():
-                continue
-            try:
-                for dirpath, _dirnames, filenames in os.walk(root_resolved):
-                    for filename in filenames:
-                        scanned += 1
-                        if scanned > max_scan:
-                            return None
-                        if filename.lower() in targets:
-                            return Path(dirpath) / filename
-            except Exception:
-                continue
-        return None
+        return find_video_by_basename_in_roots(
+            basenames=basenames,
+            roots=roots,
+            max_scan=max_scan,
+        )
 
     def _maybe_run_direct_gui_tool_from_prompt(self, prompt: str) -> str:
         return self._execute_direct_gui_command(prompt)
 
     def _execute_direct_gui_command(self, prompt: str) -> str:
         command = self._parse_direct_gui_command(prompt)
-        if not command:
-            return ""
-        name = str(command.get("name") or "")
-        args = dict(command.get("args") or {})
-        payload: Dict[str, Any]
-        if name == "open_video":
-            payload = self._tool_gui_open_video(str(args.get("path") or ""))
-            if payload.get("ok"):
-                return f"Opened video in Annolid: {payload.get('path')}"
-            return str(payload.get("error") or "Failed to open video.")
-        if name == "open_pdf":
-            payload = self._tool_gui_open_pdf(str(args.get("path") or ""))
-            if payload.get("ok"):
-                resolved = str(payload.get("path") or "").strip()
-                if resolved:
-                    return f"Opened PDF in Annolid: {resolved}"
-                return "Opened a PDF in Annolid."
-            choices = payload.get("choices")
-            if isinstance(choices, list) and choices:
-                lines = [
-                    "Multiple PDFs are available. Reply with the file name or full path to open one:",
-                ]
-                lines.extend(f"- {item}" for item in choices)
-                return "\n".join(lines)
-            return str(payload.get("error") or "Failed to open PDF.")
-        if name == "set_frame":
-            payload = self._tool_gui_set_frame(int(args.get("frame_index") or 0))
-            if payload.get("ok"):
-                return f"Moved to frame {payload.get('frame_index')}."
-            return str(payload.get("error") or "Failed to set frame.")
-        if name == "track_next_frames":
-            payload = self._tool_gui_track_next_frames(int(args.get("to_frame") or 0))
-            if payload.get("ok"):
-                return f"Started tracking to frame {payload.get('to_frame')}."
-            return str(payload.get("error") or "Failed to start tracking.")
-        if name == "segment_track_video":
-            payload = self._tool_gui_segment_track_video(
-                path=str(args.get("path") or ""),
-                text_prompt=str(args.get("text_prompt") or ""),
-                mode=str(args.get("mode") or "track"),
-                use_countgd=bool(args.get("use_countgd", False)),
-                model_name=str(args.get("model_name") or ""),
-                to_frame=(
-                    int(args.get("to_frame"))
-                    if args.get("to_frame") not in (None, "")
-                    else None
-                ),
-            )
-            if payload.get("ok"):
-                action = str(payload.get("mode") or "track")
-                basename = str(payload.get("basename") or "")
-                prompt = str(payload.get("text_prompt") or "")
-                return (
-                    f"Started {action} workflow for '{prompt}' in {basename}. "
-                    "Opened video, segmented, and saved annotations."
-                )
-            return str(payload.get("error") or "Failed to start workflow.")
-        if name == "label_behavior_segments":
-            payload = self._tool_gui_label_behavior_segments(
-                path=str(args.get("path") or ""),
-                behavior_labels=args.get("behavior_labels"),
-                segment_mode=str(args.get("segment_mode") or "timeline"),
-                segment_frames=int(args.get("segment_frames") or 60),
-                max_segments=int(args.get("max_segments") or 120),
-                subject=str(args.get("subject") or "Agent"),
-                overwrite_existing=bool(args.get("overwrite_existing", False)),
-                llm_profile=str(args.get("llm_profile") or ""),
-                llm_provider=str(args.get("llm_provider") or ""),
-                llm_model=str(args.get("llm_model") or ""),
-            )
-            if payload.get("ok"):
-                summary = (
-                    f"Labeled {payload.get('labeled_segments')} behavior segment(s) "
-                    f"using {payload.get('mode')} mode."
-                )
-                csv_path = str(payload.get("timestamps_csv") or "").strip()
-                if csv_path:
-                    summary += f" Timestamps saved to {csv_path}."
-                return summary
-            return str(payload.get("error") or "Failed to label behavior segments.")
-        if name == "start_realtime_stream":
-            payload = self._tool_gui_start_realtime_stream(
-                camera_source=str(args.get("camera_source") or ""),
-                model_name=str(args.get("model_name") or ""),
-                target_behaviors=args.get("target_behaviors"),
-                confidence_threshold=args.get("confidence_threshold"),
-                viewer_type=str(args.get("viewer_type") or ""),
-                classify_eye_blinks=bool(args.get("classify_eye_blinks", False)),
-                blink_ear_threshold=args.get("blink_ear_threshold"),
-                blink_min_consecutive_frames=args.get("blink_min_consecutive_frames"),
-            )
-            if payload.get("ok"):
-                model_name = str(payload.get("model_name") or "")
-                return (
-                    f"Started realtime stream with model {model_name}."
-                    if model_name
-                    else "Started realtime stream."
-                )
-            return str(payload.get("error") or "Failed to start realtime stream.")
-        if name == "stop_realtime_stream":
-            payload = self._tool_gui_stop_realtime_stream()
-            if payload.get("ok"):
-                return "Stopped realtime stream."
-            return str(payload.get("error") or "Failed to stop realtime stream.")
-        if name == "set_chat_model":
-            payload = self._tool_gui_set_chat_model(
-                str(args.get("provider") or ""),
-                str(args.get("model") or ""),
-            )
-            if payload.get("ok"):
-                return (
-                    f"Updated chat model to {payload.get('provider')}/"
-                    f"{payload.get('model')}."
-                )
-            return str(payload.get("error") or "Failed to update chat model.")
-        return ""
+        return execute_direct_gui_command(
+            command,
+            open_video=self._tool_gui_open_video,
+            open_pdf=self._tool_gui_open_pdf,
+            set_frame=self._tool_gui_set_frame,
+            track_next_frames=self._tool_gui_track_next_frames,
+            segment_track_video=self._tool_gui_segment_track_video,
+            label_behavior_segments=self._tool_gui_label_behavior_segments,
+            start_realtime_stream=self._tool_gui_start_realtime_stream,
+            stop_realtime_stream=self._tool_gui_stop_realtime_stream,
+            set_chat_model=self._tool_gui_set_chat_model,
+        )
 
     def _parse_direct_gui_command(self, prompt: str) -> Dict[str, Any]:
-        text = str(prompt or "").strip()
-        if not text:
-            return {}
-        lower = text.lower()
-
-        model_match = re.search(
-            r"(?:set|switch)\s+(?:chat\s+)?model\s+"
-            r"(ollama|openai|openrouter|gemini)\s*[:/]\s*([^\n]+)",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if model_match:
-            return {
-                "name": "set_chat_model",
-                "args": {
-                    "provider": model_match.group(1).strip().lower(),
-                    "model": model_match.group(2).strip().strip("."),
-                },
-            }
-
-        workflow_match = re.search(
-            r"\b(segment|track)\b\s+(?P<prompt>.+?)\s+(?:in|on)\s+(?P<path>.+)",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if workflow_match:
-            mode = workflow_match.group(1).strip().lower()
-            text_prompt = workflow_match.group("prompt").strip().strip("\"'")
-            path_text = workflow_match.group("path").strip()
-            if path_text.lower().startswith("video "):
-                path_text = path_text[6:].strip()
-            has_video_hint = bool(
-                re.search(
-                    r"\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b",
-                    path_text,
-                    flags=re.IGNORECASE,
-                )
-                or "video" in path_text.lower()
-            )
-            if text_prompt and path_text and has_video_hint:
-                to_frame_match = re.search(
-                    r"\bto\s+frame\s+(\d+)\b",
-                    text,
-                    flags=re.IGNORECASE,
-                )
-                return {
-                    "name": "segment_track_video",
-                    "args": {
-                        "path": path_text,
-                        "text_prompt": text_prompt,
-                        "mode": "track" if mode == "track" else "segment",
-                        "use_countgd": "countgd" in lower,
-                        "to_frame": (
-                            int(to_frame_match.group(1))
-                            if to_frame_match is not None
-                            else None
-                        ),
-                    },
-                }
-
-        segment_label_match = re.search(
-            r"\b(?:segment|track)\b\s+(?P<path>.+?)\s+\bwith\s+labels?\b\s+(?P<labels>.+)$",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if segment_label_match:
-            path_text = segment_label_match.group("path").strip()
-            labels_text = segment_label_match.group("labels").strip()
-            if path_text.lower().startswith("video "):
-                path_text = path_text[6:].strip()
-            if re.search(
-                r"\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b",
-                path_text,
-                flags=re.IGNORECASE,
-            ):
-                labels = [
-                    p.strip().strip("\"'`").strip(" .")
-                    for p in re.split(r",|;|\band\b", labels_text, flags=re.IGNORECASE)
-                    if p.strip().strip("\"'`").strip(" .")
-                ]
-                return {
-                    "name": "label_behavior_segments",
-                    "args": {
-                        "path": path_text,
-                        "behavior_labels": labels,
-                        "segment_mode": "uniform",
-                        "overwrite_existing": False,
-                    },
-                }
-
-        label_match = re.search(
-            r"\blabel\s+behaviors?\b.*\b(?:in|for)\b\s+(?P<path>.+)",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if label_match:
-            path_text = label_match.group("path").strip()
-            if path_text.lower().startswith("video "):
-                path_text = path_text[6:].strip()
-            if re.search(
-                r"\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b",
-                path_text,
-                flags=re.IGNORECASE,
-            ):
-                mode = "timeline" if "timeline" in lower else "uniform"
-                overwrite = "overwrite" in lower or "replace" in lower
-                return {
-                    "name": "label_behavior_segments",
-                    "args": {
-                        "path": path_text,
-                        "segment_mode": mode,
-                        "overwrite_existing": overwrite,
-                    },
-                }
-
-        stop_stream_match = re.search(
-            r"\b(?:stop|end|close)\b\s+(?:realtime|real[-\s]?time|stream)\b",
-            lower,
-        )
-        if stop_stream_match:
-            return {"name": "stop_realtime_stream", "args": {}}
-
-        if re.search(r"\b(?:realtime|real[-\s]?time|stream)\b", lower):
-            start_stream_hint = re.search(
-                r"\b(?:start|open|run|launch|begin)\b", lower
-            ) or ("mediapipe" in lower)
-            if start_stream_hint:
-                model_name = ""
-                if "mediapipe face" in lower or "face landmark" in lower:
-                    model_name = "mediapipe_face"
-                elif "mediapipe hands" in lower:
-                    model_name = "mediapipe_hands"
-                elif "mediapipe pose" in lower:
-                    model_name = "mediapipe_pose"
-                camera_source = ""
-                cam_match = re.search(
-                    r"\bcamera\s+(\d+)\b",
-                    lower,
-                )
-                if cam_match:
-                    camera_source = cam_match.group(1)
-                elif "webcam" in lower:
-                    camera_source = "0"
-                viewer_type = (
-                    "pyqt" if ("pyqt" in lower or "canvas" in lower) else "threejs"
-                )
-                classify_eye_blinks = bool(
-                    ("blink" in lower or "eye blink" in lower)
-                    and model_name == "mediapipe_face"
-                )
-                return {
-                    "name": "start_realtime_stream",
-                    "args": {
-                        "camera_source": camera_source,
-                        "model_name": model_name,
-                        "viewer_type": viewer_type,
-                        "classify_eye_blinks": classify_eye_blinks,
-                    },
-                }
-
-        track_match = re.search(
-            r"(?:track|predict)(?:\s+from\s+current)?\s+"
-            r"(?:to|until)?\s*frame\s+(\d+)",
-            lower,
-        )
-        if track_match:
-            return {
-                "name": "track_next_frames",
-                "args": {"to_frame": int(track_match.group(1))},
-            }
-
-        frame_match = re.search(
-            r"(?:go\s+to|jump\s+to|set)\s+frame\s+(\d+)",
-            lower,
-        )
-        if frame_match:
-            return {
-                "name": "set_frame",
-                "args": {"frame_index": int(frame_match.group(1))},
-            }
-
-        open_pdf_hint = (
-            "open pdf" in lower
-            or "load pdf" in lower
-            or "open a pdf" in lower
-            or "open the pdf" in lower
-            or "gui_open_pdf(" in lower
-        )
-        open_pdf_path_hint = re.match(
-            r"\s*(?:open|load)\s+[^\n]+?\.pdf\b",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if (
-            open_pdf_hint
-            or open_pdf_path_hint
-            or re.fullmatch(
-                r"(?:pdf\s+)?[^\n]+?\.pdf",
-                text,
-                flags=re.IGNORECASE,
-            )
-        ):
-            return {"name": "open_pdf", "args": {"path": text}}
-
-        open_video_hint = (
-            "open video" in lower
-            or "load video" in lower
-            or "open this video" in lower
-            or "open the video" in lower
-            or "gui_open_video(" in lower
-        )
-        open_path_hint = re.match(
-            r"\s*(?:open|load)\s+[^\n]+?\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if (
-            open_video_hint
-            or open_path_hint
-            or re.fullmatch(
-                r"(?:video\s+)?[^\n]+?\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)",
-                text,
-                flags=re.IGNORECASE,
-            )
-        ):
-            return {"name": "open_video", "args": {"path": text}}
-
-        return {}
+        return parse_direct_gui_command(prompt)
 
     @staticmethod
     def _looks_like_local_access_refusal(text: str) -> bool:
-        value = str(text or "").lower()
-        if not value:
-            return False
-        return any(hint in value for hint in _DIRECT_GUI_REFUSAL_HINTS)
+        return looks_like_local_access_refusal(text)
 
     def _tool_gui_set_frame(self, frame_index: int) -> Dict[str, Any]:
         target_frame = int(frame_index)
@@ -1688,91 +1296,14 @@ class StreamingChatTask(QRunnable):
         return {"ok": True, "queued": True}
 
     def _recover_with_plain_ollama_reply(self) -> str:
-        host = str(self.settings.get("ollama", {}).get("host") or "").strip()
-        try:
-            ollama_module = importlib.import_module("ollama")
-        except ImportError:
-            return ""
-
-        user_message: Dict[str, Any] = {
-            "role": "user",
-            "content": str(self.prompt or ""),
-        }
-        if self.image_path and os.path.exists(self.image_path):
-            user_message["images"] = [self.image_path]
-
-        # Keep this recovery intentionally simple: one streaming attempt, no tool schema.
-        def _run_stream_once(extra_nudge: bool = False) -> str:
-            prev_host_present = "OLLAMA_HOST" in os.environ
-            prev_host_value = os.environ.get("OLLAMA_HOST")
-            try:
-                if host:
-                    os.environ["OLLAMA_HOST"] = host
-                else:
-                    os.environ.pop("OLLAMA_HOST", None)
-                msgs = [user_message]
-                if extra_nudge:
-                    msgs.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Reply with plain text in one short paragraph."
-                            ),
-                        }
-                    )
-                stream_iter = ollama_module.chat(
-                    model=self.model,
-                    messages=msgs,
-                    stream=True,
-                )
-                chunks: List[str] = []
-                for part in stream_iter:
-                    if "message" in part and "content" in part["message"]:
-                        chunk = str(part["message"]["content"] or "")
-                        if chunk:
-                            chunks.append(chunk)
-                return "".join(chunks).strip()
-            finally:
-                if prev_host_present and prev_host_value is not None:
-                    os.environ["OLLAMA_HOST"] = prev_host_value
-                else:
-                    os.environ.pop("OLLAMA_HOST", None)
-
-        try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                text_stream = executor.submit(_run_stream_once, False).result(
-                    timeout=35
-                )
-            _LOGGER.info(
-                "annolid-bot plain ollama stream recovery model=%s content_chars=%d",
-                self.model,
-                len(text_stream),
-            )
-            if text_stream:
-                return text_stream
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                text_stream_nudge = executor.submit(_run_stream_once, True).result(
-                    timeout=35
-                )
-            _LOGGER.info(
-                "annolid-bot plain ollama stream-nudge recovery model=%s content_chars=%d",
-                self.model,
-                len(text_stream_nudge),
-            )
-            return text_stream_nudge
-        except FutureTimeoutError:
-            _LOGGER.warning(
-                "annolid-bot plain ollama recovery timed out model=%s",
-                self.model,
-            )
-            return ""
-        except Exception as exc:
-            _LOGGER.warning(
-                "annolid-bot plain ollama recovery failed model=%s error=%s",
-                self.model,
-                exc,
-            )
-            return ""
+        return recover_with_plain_ollama_reply(
+            prompt=self.prompt,
+            image_path=self.image_path,
+            model=self.model,
+            settings=self.settings,
+            logger=_LOGGER,
+            import_module=importlib.import_module,
+        )
 
     @staticmethod
     def _read_text_limited(path: Path, max_chars: int) -> str:
@@ -1824,459 +1355,80 @@ class StreamingChatTask(QRunnable):
         return "\n\n".join(parts)
 
     def _build_ollama_llm_callable(self):
-        host = str(self.settings.get("ollama", {}).get("host") or "").strip()
-        try:
-            ollama_module = importlib.import_module("ollama")
-        except ImportError as exc:
-            raise ImportError(
-                "The python 'ollama' package is required for Ollama agent mode."
-            ) from exc
-
-        def _coerce_tool_calls(tool_calls_payload: Any) -> List[Dict[str, Any]]:
-            """Accept either raw Ollama tool_calls or already-normalized tool calls."""
-            if not isinstance(tool_calls_payload, list):
-                return []
-            # If a payload already looks like our normalized shape, keep it.
-            if tool_calls_payload and all(
-                isinstance(item, dict) and "name" in item for item in tool_calls_payload
-            ):
-                return [
-                    dict(item) for item in tool_calls_payload if isinstance(item, dict)
-                ]
-            return self._parse_ollama_tool_calls(tool_calls_payload)
-
-        async def _call(
-            messages: List[Dict[str, Any]],
-            tools: List[Dict[str, Any]],
-            model_id: str,
-        ) -> Dict[str, Any]:
-            prepared = self._normalize_messages_for_ollama(messages)
-            supports_tools = _OLLAMA_TOOL_SUPPORT_CACHE.get(model_id, True)
-            if (
-                tools
-                and not supports_tools
-                and self._prompt_may_need_tools(self.prompt)
-            ):
-                supports_tools = True
-                _LOGGER.info(
-                    "annolid-bot forcing tool reprobe for tool-intent prompt model=%s",
-                    model_id,
-                )
-            effective_tools = (
-                [dict(t) for t in tools] if (tools and supports_tools) else None
-            )
-            _LOGGER.info(
-                "annolid-bot ollama request model=%s effective_tools_sent=%d supports_tools=%s",
-                model_id,
-                len(effective_tools or []),
-                supports_tools,
-            )
-
-            def _invoke_chat_stream(
-                tools_payload: Optional[List[Dict[str, Any]]],
-            ) -> Dict[str, Any]:
-                prev_host_present = "OLLAMA_HOST" in os.environ
-                prev_host_value = os.environ.get("OLLAMA_HOST")
-                try:
-                    if host:
-                        os.environ["OLLAMA_HOST"] = host
-                    else:
-                        os.environ.pop("OLLAMA_HOST", None)
-                    stream_iter = ollama_module.chat(
-                        model=model_id,
-                        messages=prepared,
-                        tools=tools_payload,
-                        stream=True,
-                    )
-                    content, tool_calls, done_reason = self._collect_ollama_stream(
-                        stream_iter
-                    )
-                    return {
-                        "done_reason": done_reason,
-                        "message": {"content": content, "tool_calls": tool_calls},
-                    }
-                finally:
-                    if prev_host_present and prev_host_value is not None:
-                        os.environ["OLLAMA_HOST"] = prev_host_value
-                    else:
-                        os.environ.pop("OLLAMA_HOST", None)
-
-            try:
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(_invoke_chat_stream, effective_tools), 60
-                )
-            except Exception as exc:
-                msg = str(exc)
-                if "400" in msg and effective_tools:
-                    _LOGGER.warning(
-                        "annolid-bot ollama tool-call request rejected; retrying without tools model=%s error=%s",
-                        model_id,
-                        exc,
-                    )
-                    _OLLAMA_TOOL_SUPPORT_CACHE[model_id] = False
-
-                    def _invoke_chat_without_tools() -> Dict[str, Any]:
-                        return _invoke_chat_stream(None)
-
-                    response = await asyncio.wait_for(
-                        asyncio.to_thread(_invoke_chat_without_tools), 60
-                    )
-                else:
-                    raise
-            msg = dict(response.get("message") or {})
-            tool_calls = _coerce_tool_calls(msg.get("tool_calls"))
-            content = self._extract_ollama_text(response)
-            _LOGGER.info(
-                "annolid-bot ollama raw response model=%s done_reason=%s content_chars=%d tool_calls=%d",
-                model_id,
-                str(response.get("done_reason") or ""),
-                len(content),
-                len(tool_calls),
-            )
-            if tool_calls:
-                _OLLAMA_TOOL_SUPPORT_CACHE[model_id] = True
-                _OLLAMA_FORCE_PLAIN_CACHE.pop(model_id, None)
-            if not content.strip() and not tool_calls:
-                # Empirically: some "cloud" models return empty content when a tools schema is provided,
-                # but produce text when tools are omitted. Do a single fast retry without tools and cache.
-                if effective_tools is not None:
-                    _LOGGER.warning(
-                        "annolid-bot ollama returned empty content with tools; retrying once without tools model=%s",
-                        model_id,
-                    )
-                    _OLLAMA_TOOL_SUPPORT_CACHE[model_id] = False
-                    response2 = await asyncio.wait_for(
-                        asyncio.to_thread(_invoke_chat_stream, None), 60
-                    )
-                    msg2 = dict(response2.get("message") or {})
-                    tool_calls2 = _coerce_tool_calls(msg2.get("tool_calls"))
-                    content2 = self._extract_ollama_text(response2)
-                    _LOGGER.info(
-                        "annolid-bot ollama no-tools retry model=%s done_reason=%s content_chars=%d tool_calls=%d",
-                        model_id,
-                        str(response2.get("done_reason") or ""),
-                        len(content2),
-                        len(tool_calls2),
-                    )
-                    if content2.strip() or tool_calls2:
-                        response = response2
-                        tool_calls = tool_calls2
-                        content = content2
-                if not content.strip() and not tool_calls:
-                    _LOGGER.warning(
-                        "annolid-bot ollama returned empty content (tools=%s) model=%s",
-                        bool(effective_tools),
-                        model_id,
-                    )
-                    if effective_tools is None:
-                        _OLLAMA_FORCE_PLAIN_CACHE[model_id] = (
-                            _OLLAMA_PLAIN_MODE_COOLDOWN_TURNS
-                        )
-            return {
-                "content": content,
-                "tool_calls": tool_calls,
-                "finish_reason": str(response.get("done_reason") or "stop"),
-                "usage": {},
-                "reasoning_content": None,
-            }
-
-        return _call
+        return build_ollama_llm_callable(
+            prompt=self.prompt,
+            settings=self.settings,
+            parse_tool_calls=self._parse_ollama_tool_calls,
+            normalize_messages=self._normalize_messages_for_ollama,
+            extract_text=self._extract_ollama_text,
+            prompt_may_need_tools=self._prompt_may_need_tools,
+            logger=_LOGGER,
+            import_module=importlib.import_module,
+        )
 
     @classmethod
     def _collect_ollama_stream(
         cls, stream_iter: Any
     ) -> Tuple[str, List[Dict[str, Any]], str]:
-        """Collect non-streaming output from an Ollama stream iterator.
-
-        Some models/providers return empty content for stream=False; stream=True is more reliable.
-        """
-        chunks: List[str] = []
-        tool_calls_by_id: Dict[str, Dict[str, Any]] = {}
-        done_reason = "stop"
-        for part in stream_iter:
-            if not isinstance(part, dict):
-                continue
-            done_reason = str(part.get("done_reason") or done_reason)
-            msg = part.get("message")
-            if isinstance(msg, dict):
-                content = msg.get("content")
-                if isinstance(content, str) and content:
-                    chunks.append(content)
-                raw_tool_calls = msg.get("tool_calls")
-                if raw_tool_calls:
-                    for call in cls._parse_ollama_tool_calls(raw_tool_calls):
-                        call_id = str(call.get("id") or f"call_{len(tool_calls_by_id)}")
-                        tool_calls_by_id[call_id] = call
-        return "".join(chunks).strip(), list(tool_calls_by_id.values()), done_reason
+        return collect_ollama_stream(stream_iter, cls._parse_ollama_tool_calls)
 
     @staticmethod
     def _parse_ollama_tool_calls(raw_calls: Any) -> List[Dict[str, Any]]:
-        tool_calls: List[Dict[str, Any]] = []
-        for idx, item in enumerate(list(raw_calls or [])):
-            if not isinstance(item, dict):
-                continue
-            fn = item.get("function")
-            if not isinstance(fn, dict):
-                continue
-            name = str(fn.get("name") or "").strip()
-            if not name:
-                continue
-            args = fn.get("arguments", {})
-            if isinstance(args, str):
-                try:
-                    parsed = json.loads(args)
-                    args = parsed if isinstance(parsed, dict) else {"_raw": args}
-                except json.JSONDecodeError:
-                    args = {"_raw": args}
-            elif not isinstance(args, dict):
-                args = {"_raw": args}
-            call_id = str(item.get("id") or f"ollama_call_{idx}")
-            tool_calls.append(
-                {
-                    "id": call_id,
-                    "name": name,
-                    "arguments": dict(args),
-                }
-            )
-        return tool_calls
+        return parse_ollama_tool_calls(raw_calls)
 
     @staticmethod
     def _normalize_messages_for_ollama(
         messages: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        normalized: List[Dict[str, Any]] = []
-        for msg in messages:
-            role = str(msg.get("role") or "")
-            content = msg.get("content")
-            out: Dict[str, Any] = {"role": role}
-            if isinstance(content, list):
-                text_parts: List[str] = []
-                images: List[Any] = []
-                for item in content:
-                    if not isinstance(item, dict):
-                        continue
-                    if item.get("type") == "text":
-                        text_parts.append(str(item.get("text") or ""))
-                    elif item.get("type") == "image_url":
-                        image_url = item.get("image_url") or {}
-                        if isinstance(image_url, dict):
-                            url = str(image_url.get("url") or "")
-                            if url.startswith("data:image/") and ";base64," in url:
-                                try:
-                                    images.append(
-                                        base64.b64decode(url.split(";base64,", 1)[1])
-                                    )
-                                except Exception:
-                                    continue
-                out["content"] = "\n".join([p for p in text_parts if p]).strip()
-                if images:
-                    out["images"] = images
-            else:
-                out["content"] = str(content or "")
-                existing_images = msg.get("images")
-                if isinstance(existing_images, list) and existing_images:
-                    out["images"] = list(existing_images)
-            normalized.append(out)
-        return normalized
+        return normalize_messages_for_ollama(messages)
 
     @staticmethod
     def _extract_ollama_text(response: Dict[str, Any]) -> str:
-        msg = response.get("message") or {}
-        if isinstance(msg, dict):
-            content = msg.get("content")
-            if isinstance(content, str) and content.strip():
-                return content
-            if isinstance(content, list):
-                parts: List[str] = []
-                for item in content:
-                    if isinstance(item, dict):
-                        text = item.get("text")
-                        if isinstance(text, str) and text.strip():
-                            parts.append(text)
-                    elif isinstance(item, str) and item.strip():
-                        parts.append(item)
-                if parts:
-                    return "\n".join(parts).strip()
-            thinking = msg.get("thinking")
-            if isinstance(thinking, str) and thinking.strip():
-                return thinking
-            text = msg.get("text")
-            if isinstance(text, str) and text.strip():
-                return text
-            output_text = msg.get("output_text")
-            if isinstance(output_text, str) and output_text.strip():
-                return output_text
-            output = msg.get("output")
-            if isinstance(output, str) and output.strip():
-                return output
-
-        fallback = response.get("response")
-        if isinstance(fallback, str) and fallback.strip():
-            return fallback
-        top_text = response.get("text")
-        if isinstance(top_text, str) and top_text.strip():
-            return top_text
-        output_text_top = response.get("output_text")
-        if isinstance(output_text_top, str) and output_text_top.strip():
-            return output_text_top
-        return ""
+        return extract_ollama_text(response)
 
     @staticmethod
     def _format_tool_trace(tool_runs: Any) -> str:
-        lines: List[str] = []
-        for run in tool_runs:
-            name = str(getattr(run, "name", "") or "").strip()
-            args = getattr(run, "arguments", {}) or {}
-            result = str(getattr(run, "result", "") or "").strip()
-            if not name:
-                continue
-            lines.append(f"- `{name}` args={args}")
-            if result:
-                lines.append(f"  -> {result}")
-        if not lines:
-            return "[Tool Trace]\n(no tool calls)"
-        return "[Tool Trace]\n" + "\n".join(lines)
+        return format_tool_trace(tool_runs)
 
     @staticmethod
     def _prompt_may_need_tools(prompt: str) -> bool:
-        text = str(prompt or "").lower()
-        if not text:
-            return False
-        hints = (
-            "tool",
-            "search",
-            "read",
-            "list",
-            "open",
-            "download",
-            "fetch",
-            "extract",
-            "video",
-            "frame",
-            "track",
-            "segment",
-            "prompt",
-            "label",
-            "workspace",
-            "file",
-            "gui_",
-            "use ",
-        )
-        return any(token in text for token in hints)
+        return prompt_may_need_tools(prompt)
 
     def _run_ollama(self) -> None:
-        ollama_module = globals().get("ollama")
-        if ollama_module is None:
-            try:
-                ollama_module = importlib.import_module("ollama")
-            except ImportError as exc:
-                raise ImportError(
-                    "The python 'ollama' package is not installed."
-                ) from exc
-            globals()["ollama"] = ollama_module
-
-        host = self.settings.get("ollama", {}).get("host")
-        prev_host_present = "OLLAMA_HOST" in os.environ
-        prev_host_value = os.environ.get("OLLAMA_HOST")
-        try:
-            if host:
-                os.environ["OLLAMA_HOST"] = host
-            else:
-                os.environ.pop("OLLAMA_HOST", None)
-
-            messages = self._load_history_messages()
-            user_message = {"role": "user", "content": self.prompt}
-            if self.image_path and os.path.exists(self.image_path):
-                user_message["images"] = [self.image_path]
-            messages.append(user_message)
-
-            stream = ollama_module.chat(
-                model=self.model,
-                messages=messages,
-                stream=True,
-            )
-            full_response = ""
-            for part in stream:
-                if "message" in part and "content" in part["message"]:
-                    chunk = part["message"]["content"]
-                    full_response += chunk
-                    self._emit_chunk(chunk)
-                elif "error" in part:
-                    self._emit_final(f"Stream error: {part['error']}", is_error=True)
-                    return
-
-            if not full_response.strip():
-                self._emit_final("No response from Ollama.", is_error=True)
-            else:
-                self._persist_turn(self.prompt, full_response)
-                self._emit_final("", is_error=False)
-        finally:
-            if prev_host_present and prev_host_value is not None:
-                os.environ["OLLAMA_HOST"] = prev_host_value
-            else:
-                os.environ.pop("OLLAMA_HOST", None)
+        run_ollama_streaming_chat(
+            prompt=self.prompt,
+            image_path=self.image_path,
+            model=self.model,
+            settings=self.settings,
+            load_history_messages=self._load_history_messages,
+            emit_chunk=self._emit_chunk,
+            emit_final=lambda message, is_error: self._emit_final(
+                message, is_error=is_error
+            ),
+            persist_turn=lambda user_text, assistant_text: self._persist_turn(
+                user_text, assistant_text
+            ),
+        )
 
     def _run_openai(self, provider_name: str = "openai") -> None:
-        provider_key = str(provider_name or "openai").strip().lower()
-        provider_block = dict(self.settings.get(provider_key, {}) or {})
-        cfg = LLMConfig(
-            provider=provider_key,
+        user_prompt, text = run_openai_compat_chat(
+            prompt=self.prompt,
+            image_path=self.image_path,
             model=self.model,
-            params=provider_block,
+            provider_name=provider_name,
+            settings=self.settings,
+            load_history_messages=self._load_history_messages,
         )
-        resolved = resolve_openai_compat(cfg)
-        provider = OpenAICompatProvider(resolved=resolved)
-
-        user_prompt = self.prompt
-        if self.image_path and os.path.exists(self.image_path):
-            user_prompt += (
-                f"\n\n[Note: Image context available at {self.image_path}. "
-                "Use this visual context in your response.]"
-            )
-
-        messages = self._load_history_messages()
-        messages.append({"role": "user", "content": user_prompt})
-
-        async def _chat_once() -> str:
-            model_lower = (self.model or "").lower()
-            # Keep existing behavior: avoid temperature for GPT-5 models.
-            temperature = 0.7 if "gpt-5" not in model_lower else None
-            resp = await provider.chat(
-                messages=messages,
-                model=self.model,
-                temperature=temperature,
-            )
-            return str(resp.content or "")
-
-        text = asyncio.run(_chat_once())
         self._persist_turn(user_prompt, text)
         self._emit_final(text, is_error=False)
 
     def _run_gemini(self) -> None:
-        try:
-            import google.generativeai as genai  # type: ignore
-        except ImportError as exc:
-            raise ImportError(
-                "The 'google-generativeai' package is required for Gemini providers."
-            ) from exc
-
-        config = self.settings.get(self.provider, {})
-        api_key = config.get("api_key")
-        if not api_key:
-            raise ValueError("Gemini API key is missing. Configure it in settings.")
-
-        genai.configure(api_key=api_key)
-        model_name = self.model or "gemini-1.5-flash"
-        model = genai.GenerativeModel(model_name)
-
-        user_prompt = self.prompt
-        if self.image_path and os.path.exists(self.image_path):
-            user_prompt += (
-                f"\n\n[Note: Image context available at {self.image_path}. "
-                "Use this visual context in your response.]"
-            )
-
-        result = model.generate_content(user_prompt)
-        text = getattr(result, "text", "") or ""
+        user_prompt, text = run_gemini_chat(
+            prompt=self.prompt,
+            image_path=self.image_path,
+            model=self.model,
+            provider_name=self.provider,
+            settings=self.settings,
+        )
         self._persist_turn(user_prompt, text)
         self._emit_final(text, is_error=False)

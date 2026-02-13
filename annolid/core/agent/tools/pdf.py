@@ -339,6 +339,15 @@ class DownloadPdfTool(FunctionTool):
         stem = str(path.stem or "").strip().lower()
         return stem in {"pdf", "download", "file", "document", "paper"}
 
+    def _should_rename_downloaded_pdf(self, saved_path: Path, safe_title: str) -> bool:
+        title_value = str(safe_title or "").strip()
+        if not title_value:
+            return False
+        current_value = self._sanitize_filename(str(saved_path.stem or ""))
+        if not current_value:
+            return True
+        return current_value.lower() != title_value.lower()
+
     @staticmethod
     def _sanitize_filename(text: str, *, max_len: int = 100) -> str:
         cleaned = "".join(
@@ -438,10 +447,10 @@ class DownloadPdfTool(FunctionTool):
             )
             return json.dumps(payload)
 
-        if not user_provided_output and self._is_generic_pdf_name(saved_path):
+        if not user_provided_output:
             title = self._extract_pdf_title(saved_path)
             safe_title = self._sanitize_filename(str(title or ""))
-            if safe_title:
+            if self._should_rename_downloaded_pdf(saved_path, safe_title):
                 target_path = self._unique_path(
                     saved_path.with_name(f"{safe_title}.pdf")
                 )

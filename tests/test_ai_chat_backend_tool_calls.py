@@ -357,6 +357,42 @@ def test_gui_open_video_resolves_by_basename_recursively_in_allowed_root(
     assert payload["path"] == str(video_file)
 
 
+def test_gui_open_pdf_downloads_url_then_queues(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+
+    downloaded_pdf = tmp_path / "downloads" / "paper.pdf"
+    downloaded_pdf.parent.mkdir(parents=True, exist_ok=True)
+    downloaded_pdf.write_bytes(b"%PDF-1.4 fake")
+
+    task._download_pdf_for_gui_tool = lambda _url: downloaded_pdf  # type: ignore[method-assign]
+    payload = task._tool_gui_open_pdf(
+        "open pdf https://www.biorxiv.org/content/10.64898/2026.01.20.700446v2.full.pdf"
+    )
+    assert payload["ok"] is True
+    assert payload["queued"] is True
+    assert payload["path"] == str(downloaded_pdf)
+    assert calls == ["bot_open_pdf"]
+
+
+def test_extract_pdf_path_candidates_includes_url() -> None:
+    task = StreamingChatTask("hi", widget=None)
+    candidates = task._extract_pdf_path_candidates(
+        "download and open https://example.org/a/paper.full.pdf?download=1"
+    )
+    assert any(candidate.startswith("https://example.org/") for candidate in candidates)
+
+
 def test_resolve_video_path_uses_active_video_basename(
     monkeypatch, tmp_path: Path
 ) -> None:

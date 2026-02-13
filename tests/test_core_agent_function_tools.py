@@ -824,6 +824,67 @@ def test_download_pdf_tool_renames_generic_pdf_filename(
     assert not (tmp_path / "downloads" / "pdf.pdf").exists()
 
 
+def test_download_pdf_tool_renames_non_generic_when_title_differs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class _FakePdfResponse:
+        status_code = 200
+        headers = {"content-type": "application/pdf"}
+        url = "https://www.biorxiv.org/content/10.64898/2026.01.20.700446v2.full.pdf"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield b"%PDF-1.4 fake"
+
+    class _FakeStreamContext:
+        async def __aenter__(self):
+            return _FakePdfResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def stream(self, method, url, headers=None):
+            del method, url, headers
+            return _FakeStreamContext()
+
+    fake_httpx = types.SimpleNamespace(AsyncClient=_FakeClient)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    tool = DownloadPdfTool(allowed_dir=tmp_path)
+    monkeypatch.setattr(
+        tool,
+        "_extract_pdf_title",
+        lambda _path: "A Better Paper Title",
+    )
+    result = asyncio.run(
+        tool.execute(
+            url="https://www.biorxiv.org/content/10.64898/2026.01.20.700446v2.full.pdf"
+        )
+    )
+    payload = json.loads(result)
+
+    output_path = Path(str(payload["output_path"]))
+    assert payload["is_pdf"] is True
+    assert payload["renamed"] is True
+    assert output_path.name == "A_Better_Paper_Title.pdf"
+    assert output_path.exists()
+    assert not (tmp_path / "downloads" / "2026.01.20.700446v2.full.pdf").exists()
+
+
 def test_register_annolid_gui_tools_and_context_payload() -> None:
     calls: list[tuple[str, object]] = []
 
