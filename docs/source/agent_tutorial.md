@@ -64,3 +64,17 @@ For long ranges, increase the step size (e.g., `2–5s`) to reduce runtime and o
 3. Use embedding search to find & label similar frames.
 4. Rerun with anchors if you’ve corrected key frames.
 5. Switch to Classic Mode when you only want manual labeling.
+
+## 11. Annolid Bot for Local Repo Tasks
+
+In **AI Chat Studio**, Annolid Bot can inspect and modify your local Annolid workspace with file tools and repo-introspection helpers:
+
+- `code_search(...)` to find where behavior, flags, or APIs are implemented.
+- `code_explain(...)` to summarize Python modules/classes/functions and calls.
+- `read_file(...)`, `write_file(...)`, `edit_file(...)` for targeted updates.
+
+For safer edits, ask the bot to:
+
+1. run `code_search` first,
+2. explain the target with `code_explain`,
+3. apply the smallest edit and report changed files/tests.

@@ -15,6 +15,8 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
         "write_file",
         "edit_file",
         "list_dir",
+        "code_search",
+        "code_explain",
         "exec",
         "video_info",
         "video_sample_frames",
@@ -45,7 +47,14 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
 
 TOOL_GROUPS: Mapping[str, Set[str]] = {
     "group:runtime": {"exec"},
-    "group:fs": {"read_file", "write_file", "edit_file", "list_dir"},
+    "group:fs": {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "code_search",
+        "code_explain",
+    },
     "group:web": {"web_search", "web_fetch", "download_url"},
     "group:ui": {
         "gui_context",

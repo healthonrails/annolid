@@ -13,6 +13,8 @@ import pytest
 
 from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_builtin import (
+    CodeExplainTool,
+    CodeSearchTool,
     CronTool,
     DownloadUrlTool,
     EditFileTool,
@@ -407,10 +409,77 @@ def test_memory_set_tool_writes_long_term_memory(tmp_path: Path) -> None:
     assert "- Use higher threshold for arena C" in memory_text
 
 
+def test_code_search_tool_finds_matches_with_context(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    target = workspace / "module.py"
+    target.write_text(
+        "def load_config(path):\n"
+        "    return path\n"
+        "\n"
+        "def save_config(path, content):\n"
+        "    return content\n",
+        encoding="utf-8",
+    )
+    tool = CodeSearchTool(allowed_dir=workspace)
+    result = asyncio.run(
+        tool.execute(
+            query="config",
+            path=str(workspace),
+            glob="*.py",
+            context_lines=1,
+            max_results=10,
+        )
+    )
+    payload = json.loads(result)
+    assert payload["count"] >= 2
+    assert payload["truncated"] is False
+    first = payload["results"][0]
+    assert first["path"] == "module.py"
+    assert "context" in first
+
+
+def test_code_explain_tool_describes_module_and_symbol(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    target = workspace / "analyzer.py"
+    target.write_text(
+        '"""Behavior analysis helpers."""\n'
+        "import json\n"
+        "\n"
+        "class Runner:\n"
+        '    """Executes processing."""\n'
+        "    def run(self, value):\n"
+        "        return json.dumps(value)\n"
+        "\n"
+        "def normalize(data):\n"
+        "    return str(data).strip()\n",
+        encoding="utf-8",
+    )
+    tool = CodeExplainTool(allowed_dir=workspace)
+
+    module_result = asyncio.run(tool.execute(path=str(target)))
+    module_payload = json.loads(module_result)
+    assert module_payload["module_docstring"] == "Behavior analysis helpers."
+    assert any(item["name"] == "Runner" for item in module_payload["classes"])
+    assert any(item["name"] == "normalize" for item in module_payload["functions"])
+
+    symbol_result = asyncio.run(
+        tool.execute(path=str(target), symbol="Runner.run", include_source=True)
+    )
+    symbol_payload = json.loads(symbol_result)
+    assert symbol_payload["kind"] == "function"
+    assert symbol_payload["name"] == "run"
+    assert "json.dumps" in symbol_payload["calls"]
+    assert "def run" in symbol_payload["source"]
+
+
 def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     registry = FunctionToolRegistry()
     register_nanobot_style_tools(registry, allowed_dir=tmp_path)
     assert registry.has("read_file")
+    assert registry.has("code_search")
+    assert registry.has("code_explain")
     assert registry.has("memory_search")
     assert registry.has("memory_get")
     assert registry.has("memory_set")
