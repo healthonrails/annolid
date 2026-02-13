@@ -653,6 +653,38 @@ class StreamingChatTask(QRunnable):
         roots.extend(
             Path(str(root)).expanduser() for root in read_roots_cfg if str(root).strip()
         )
+        active_video_raw: str = ""
+        try:
+            widget = self.widget
+            host = getattr(widget, "host_window_widget", None) if widget else None
+            if host is None and widget is not None:
+                host_getter = getattr(widget, "window", None)
+                if callable(host_getter):
+                    host = host_getter()
+            active_video_raw = str(getattr(host, "video_file", "") or "").strip()
+            if active_video_raw:
+                candidate_video = Path(active_video_raw).expanduser()
+                if candidate_video.exists():
+                    roots.append(candidate_video.parent)
+        except Exception:
+            active_video_raw = ""
+
+        active_name = Path(active_video_raw).name.lower() if active_video_raw else ""
+        active_stem = Path(active_video_raw).stem.lower() if active_video_raw else ""
+        if active_video_raw:
+            for candidate in candidates:
+                cleaned = str(candidate).strip().strip("\"'`")
+                if not cleaned:
+                    continue
+                lowered = cleaned.lower()
+                if lowered in {"current video", "this video", "active video"}:
+                    return Path(active_video_raw).expanduser()
+                candidate_name = Path(cleaned).name.lower()
+                candidate_stem = Path(cleaned).stem.lower()
+                if candidate_name and candidate_name == active_name:
+                    return Path(active_video_raw).expanduser()
+                if candidate_stem and candidate_stem == active_stem:
+                    return Path(active_video_raw).expanduser()
 
         for candidate in candidates:
             p = Path(candidate).expanduser()
@@ -672,6 +704,49 @@ class StreamingChatTask(QRunnable):
                 joined = (root / basename).expanduser()
                 if joined.exists():
                     return joined
+
+        # Fallback: scan allowed roots/workspace recursively by basename.
+        # This handles prompts like "mouse.mp4" when the file lives in a
+        # nested folder under an allowed directory.
+        candidate_basenames = {
+            Path(str(candidate)).name
+            for candidate in candidates
+            if Path(str(candidate)).name.strip()
+        }
+        if candidate_basenames:
+            found = self._find_video_by_basename_in_roots(
+                basenames=candidate_basenames,
+                roots=roots,
+            )
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    def _find_video_by_basename_in_roots(
+        *, basenames: set[str], roots: List[Path], max_scan: int = 30000
+    ) -> Optional[Path]:
+        targets = {name.lower() for name in basenames if str(name).strip()}
+        if not targets:
+            return None
+        scanned = 0
+        for root in roots:
+            try:
+                root_resolved = root.expanduser()
+            except Exception:
+                continue
+            if not root_resolved.exists() or not root_resolved.is_dir():
+                continue
+            try:
+                for dirpath, _dirnames, filenames in os.walk(root_resolved):
+                    for filename in filenames:
+                        scanned += 1
+                        if scanned > max_scan:
+                            return None
+                        if filename.lower() in targets:
+                            return Path(dirpath) / filename
+            except Exception:
+                continue
         return None
 
     def _maybe_run_direct_gui_tool_from_prompt(self, prompt: str) -> str:

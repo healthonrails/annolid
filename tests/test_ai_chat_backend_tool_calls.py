@@ -311,6 +311,89 @@ def test_gui_open_video_resolves_by_basename_in_roots(
     assert payload["path"] == str(video_file)
 
 
+def test_gui_open_video_resolves_by_basename_recursively_in_allowed_root(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    root = tmp_path / "downloads"
+    nested = root / "session_01" / "videos"
+    nested.mkdir(parents=True, exist_ok=True)
+    video_file = nested / "mouse.mp4"
+    video_file.write_bytes(b"fake")
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            allowed_read_roots = [str(root)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=None)
+    task._invoke_widget_slot = lambda *args, **kwargs: True  # type: ignore[method-assign]
+    payload = task._tool_gui_open_video("please open mouse.mp4")
+    assert payload["ok"] is True
+    assert payload["path"] == str(video_file)
+
+
+def test_resolve_video_path_uses_active_video_basename(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    external_dir = tmp_path / "external"
+    external_dir.mkdir(parents=True, exist_ok=True)
+    active_video = external_dir / "mouse.mp4"
+    active_video.write_bytes(b"fake")
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            allowed_read_roots = [str(workspace)]
+
+    class _Host:
+        video_file = str(active_video)
+
+    class _Widget:
+        host_window_widget = _Host()
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: workspace)
+
+    task = StreamingChatTask("hi", widget=_Widget())
+    resolved = task._resolve_video_path_for_gui_tool("track mouse in video mouse.mp4")
+    assert resolved == active_video
+
+
+def test_resolve_video_path_uses_active_video_even_if_missing_on_disk(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    # Simulate GUI session where active video path is known but currently not resolvable.
+    active_video = tmp_path / "external" / "mouse.mp4"
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            allowed_read_roots = [str(workspace)]
+
+    class _Host:
+        video_file = str(active_video)
+
+    class _Widget:
+        host_window_widget = _Host()
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: workspace)
+
+    task = StreamingChatTask("hi", widget=_Widget())
+    resolved = task._resolve_video_path_for_gui_tool("track mouse in video mouse.mp4")
+    assert resolved == active_video
+
+
 def test_prompt_may_need_tools_heuristic() -> None:
     assert StreamingChatTask._prompt_may_need_tools("use tool to open video") is True
     assert StreamingChatTask._prompt_may_need_tools("please list_dir workspace") is True

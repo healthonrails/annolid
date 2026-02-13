@@ -19,22 +19,13 @@ from .artifacts import FileArtifactStore, content_hash
 from .detection import DetectionResult, DetectionTool
 from .embedding import EmbeddingResult, EmbeddingTool
 from .function_base import FunctionTool
-from .function_builtin import (
-    CronTool,
-    EditFileTool,
-    ExecTool,
-    ListDirTool,
-    MemoryGetTool,
-    MemorySetTool,
-    MemorySearchTool,
-    MessageTool,
-    ReadFileTool,
-    SpawnTool,
-    WebFetchTool,
-    WebSearchTool,
-    WriteFileTool,
-    register_nanobot_style_tools,
-)
+from .cron import CronTool
+from .filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from .memory import MemoryGetTool, MemorySetTool, MemorySearchTool
+from .messaging import MessageTool, SpawnTool
+from .nanobot import register_nanobot_style_tools
+from .shell import ExecTool
+from .web import WebFetchTool, WebSearchTool
 from .function_gui import (
     GuiContextTool,
     GuiLabelBehaviorSegmentsTool,
