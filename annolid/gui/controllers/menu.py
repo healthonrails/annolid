@@ -34,6 +34,7 @@ class MenuController:
     def setup(self) -> None:
         """Create actions, populate menus/toolbars, and configure custom menus."""
         self._ensure_all_menus()
+        self._ensure_docks_menu()
         self._create_core_actions()
         self._populate_tools_and_menus()
         self._reorder_top_menus()
@@ -79,6 +80,71 @@ class MenuController:
         # Settings menu
         if not hasattr(w.menus, "settings"):
             w.menus.settings = QtWidgets.QMenu(w.tr("&Settings"), w)
+
+    def _ensure_docks_menu(self) -> None:
+        """Create a dynamic View->Docks submenu for showing/hiding dock widgets."""
+        w = self._window
+        self._docks_menu = QtWidgets.QMenu(w.tr("&Docks"), w)
+        self._docks_menu.aboutToShow.connect(self._populate_docks_menu)
+
+    def _iter_toggleable_docks(self) -> list[QtWidgets.QDockWidget]:
+        w = self._window
+        docks = [
+            dock
+            for dock in w.findChildren(QtWidgets.QDockWidget)
+            if isinstance(dock, QtWidgets.QDockWidget)
+        ]
+        # Keep menu stable and easy to scan.
+        docks.sort(key=lambda d: str(d.windowTitle() or d.objectName() or "").lower())
+        return docks
+
+    def _set_all_docks_visible(self, visible: bool) -> None:
+        for dock in self._iter_toggleable_docks():
+            try:
+                dock.setVisible(bool(visible))
+            except Exception:
+                continue
+
+    def _populate_docks_menu(self) -> None:
+        menu = getattr(self, "_docks_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        # PDF view control is not a dock, but users expect it near dock/view toggles.
+        try:
+            toggle_pdf_view_action = getattr(
+                self._window, "toggle_pdf_view_action", None
+            )
+            if isinstance(toggle_pdf_view_action, QtWidgets.QAction):
+                toggle_pdf_view_action.setChecked(self._is_pdf_view_active())
+                menu.addAction(toggle_pdf_view_action)
+                menu.addSeparator()
+        except Exception:
+            pass
+        docks = self._iter_toggleable_docks()
+        if not docks:
+            no_docks = QtWidgets.QAction(self._window.tr("No docks available"), menu)
+            no_docks.setEnabled(False)
+            menu.addAction(no_docks)
+            return
+
+        for dock in docks:
+            try:
+                action = dock.toggleViewAction()
+                title = str(dock.windowTitle() or dock.objectName() or "").strip()
+                if title:
+                    action.setText(title)
+                menu.addAction(action)
+            except Exception:
+                continue
+
+        menu.addSeparator()
+        show_all = QtWidgets.QAction(self._window.tr("Show All Docks"), menu)
+        show_all.triggered.connect(lambda: self._set_all_docks_visible(True))
+        menu.addAction(show_all)
+        hide_all = QtWidgets.QAction(self._window.tr("Hide All Docks"), menu)
+        hide_all.triggered.connect(lambda: self._set_all_docks_visible(False))
+        menu.addAction(hide_all)
 
     def _create_core_actions(self) -> None:
         w = self._window
@@ -583,6 +649,14 @@ class MenuController:
             self._close_pdf_view,
             tip=w.tr("Close the PDF view and return to canvas"),
         )
+        w.toggle_pdf_view_action = self._action_factory(
+            w.tr("PDF View"),
+            self._toggle_pdf_view,
+            tip=w.tr("Show or hide the current PDF view"),
+            checkable=True,
+            enabled=True,
+            checked=False,
+        )
         w.threejs_example_helix_action = self._action_factory(
             w.tr("Helix Point Cloud"),
             lambda: w.open_threejs_example("helix_points_csv"),
@@ -855,19 +929,18 @@ class MenuController:
         # VIEW MENU - Display toggles and 3D visualization
         # ============================================================
         view_sections = [
+            (self._docks_menu.menuAction(),),
             (
                 actions["toggle_pose_edges"],
                 actions["toggle_pose_bbox_display"],
                 actions["toggle_agent_mode"],
                 actions["toggle_toolbar"],
-                actions["toggle_embedding_search"],
                 w.patch_similarity_action,
                 w.pca_map_action,
             ),
             (
                 w.open_3d_viewer_action,
                 w.close_3d_viewer_action,
-                w.close_pdf_action,
                 actions["sam3d_reconstruct"],
                 w.threejs_examples_menu.menuAction(),
             ),
@@ -1133,6 +1206,70 @@ class MenuController:
             and self._window.pdf_manager is not None
         ):
             self._window.pdf_manager.close_pdf()
+
+    def _is_pdf_view_active(self) -> bool:
+        """Return True when the PDF viewer is the current central view."""
+        try:
+            viewer_stack = getattr(self._window, "_viewer_stack", None)
+            pdf_manager = getattr(self._window, "pdf_manager", None)
+            if viewer_stack is None or pdf_manager is None:
+                return False
+            pdf_widget = pdf_manager.pdf_widget()
+            if pdf_widget is None:
+                return False
+            return viewer_stack.currentWidget() is pdf_widget
+        except Exception:
+            return False
+
+    def _toggle_pdf_view(self, checked: bool) -> None:
+        """Show/hide PDF view without closing the loaded PDF session."""
+        pdf_manager = getattr(self._window, "pdf_manager", None)
+        if pdf_manager is None:
+            return
+        pdf_widget = pdf_manager.pdf_widget()
+        if checked:
+            if pdf_widget is None:
+                # No loaded PDF yet; keep action off and guide user to open one.
+                action = getattr(self._window, "toggle_pdf_view_action", None)
+                if isinstance(action, QtWidgets.QAction):
+                    action.blockSignals(True)
+                    try:
+                        action.setChecked(False)
+                    finally:
+                        action.blockSignals(False)
+                self._window.statusBar().showMessage(
+                    self._window.tr("No PDF is loaded. Open a PDF first."),
+                    3000,
+                )
+                return
+            self._window._set_active_view("pdf")
+            # Restore PDF helper docks if they were hidden while keeping loaded document.
+            for dock in (
+                getattr(pdf_manager, "pdf_tts_dock", None),
+                getattr(pdf_manager, "pdf_controls_dock", None),
+                getattr(pdf_manager, "pdf_reader_dock", None),
+                getattr(pdf_manager, "pdf_log_dock", None),
+            ):
+                try:
+                    if dock is not None:
+                        dock.show()
+                except Exception:
+                    continue
+            return
+
+        # Hide PDF view and related docks, but do not close/clear current PDF document.
+        self._window._set_active_view("canvas")
+        for dock in (
+            getattr(pdf_manager, "pdf_tts_dock", None),
+            getattr(pdf_manager, "pdf_controls_dock", None),
+            getattr(pdf_manager, "pdf_reader_dock", None),
+            getattr(pdf_manager, "pdf_log_dock", None),
+        ):
+            try:
+                if dock is not None:
+                    dock.hide()
+            except Exception:
+                continue
 
     def _open_3d_file(self) -> None:
         """Open a 3D model file dialog and load it in the Three.js viewer."""
