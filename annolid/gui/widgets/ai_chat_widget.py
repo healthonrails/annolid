@@ -99,28 +99,7 @@ class _ChatBubble(QtWidgets.QFrame):
         text_option = self.message_doc.defaultTextOption()
         text_option.setWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
         self.message_doc.setDefaultTextOption(text_option)
-        self.message_doc.setDefaultStyleSheet(
-            """
-            p { margin: 0 0 6px 0; }
-            p:last-child { margin-bottom: 0; }
-            pre {
-                background: rgba(0,0,0,0.22);
-                border: 1px solid rgba(255,255,255,0.14);
-                border-radius: 8px;
-                padding: 8px;
-                margin: 4px 0 4px 0;
-            }
-            code {
-                background: rgba(0,0,0,0.16);
-                border-radius: 4px;
-                padding: 1px 3px;
-            }
-            a {
-                color: #7ed1ff;
-                text-decoration: none;
-            }
-            """
-        )
+        self._apply_message_doc_styles()
         self.message_view.setDocument(self.message_doc)
         viewport = self.message_view.viewport()
         viewport.setAutoFillBackground(False)
@@ -191,10 +170,65 @@ class _ChatBubble(QtWidgets.QFrame):
     def _apply_role_palette(self) -> None:
         palette = self.palette()
         if self._is_user:
-            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#25D366"))
+            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#145C4C"))
+            palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor("#F3FFF8"))
+            palette.setColor(QtGui.QPalette.Text, QtGui.QColor("#F3FFF8"))
         else:
             palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#1f252f"))
         self.setPalette(palette)
+
+    def _apply_message_doc_styles(self) -> None:
+        if self._is_user:
+            self.message_doc.setDefaultStyleSheet(
+                """
+                body, p, li, ul, ol, blockquote {
+                    color: #F3FFF8;
+                }
+                p { margin: 0 0 6px 0; }
+                p:last-child { margin-bottom: 0; }
+                pre {
+                    background: rgba(0,0,0,0.18);
+                    border: 1px solid rgba(255,255,255,0.16);
+                    border-radius: 8px;
+                    padding: 8px;
+                    margin: 4px 0 4px 0;
+                    color: #F3FFF8;
+                }
+                code {
+                    background: rgba(0,0,0,0.16);
+                    border-radius: 4px;
+                    padding: 1px 3px;
+                    color: #F3FFF8;
+                }
+                a {
+                    color: #9BD2FF;
+                    text-decoration: none;
+                }
+                """
+            )
+        else:
+            self.message_doc.setDefaultStyleSheet(
+                """
+                p { margin: 0 0 6px 0; }
+                p:last-child { margin-bottom: 0; }
+                pre {
+                    background: rgba(0,0,0,0.22);
+                    border: 1px solid rgba(255,255,255,0.14);
+                    border-radius: 8px;
+                    padding: 8px;
+                    margin: 4px 0 4px 0;
+                }
+                code {
+                    background: rgba(0,0,0,0.16);
+                    border-radius: 4px;
+                    padding: 1px 3px;
+                }
+                a {
+                    color: #7ed1ff;
+                    text-decoration: none;
+                }
+                """
+            )
 
     def append_text(self, chunk: str) -> None:
         self._raw_text += str(chunk or "")
@@ -246,8 +280,18 @@ class _ChatBubble(QtWidgets.QFrame):
             self.setMinimumWidth(fixed_width)
             self.setMaximumWidth(fixed_width)
         else:
-            self._preferred_text_width = min(max(260, int(text_width)), max_text_width)
-            fixed_width = max(320, int(bubble_max_width))
+            if self._is_user:
+                # Keep user bubbles compact and close to message size.
+                ideal = int(self.message_doc.idealWidth()) if self.message_doc else 320
+                self._preferred_text_width = min(max(260, ideal + 12), max_text_width)
+                fixed_width = min(
+                    max(280, self._preferred_text_width + 24), int(bubble_max_width)
+                )
+            else:
+                self._preferred_text_width = min(
+                    max(260, int(text_width)), max_text_width
+                )
+                fixed_width = max(320, int(bubble_max_width))
             self.setMinimumWidth(fixed_width)
             self.setMaximumWidth(fixed_width)
         self._sync_message_height()
@@ -476,9 +520,16 @@ class AIChatWidget(QtWidgets.QWidget):
         self.tool_trace_checkbox = QtWidgets.QCheckBox("Trace", self)
         self.tool_trace_checkbox.setChecked(False)
         self.tool_trace_checkbox.setObjectName("chatInlineToggle")
+        self.allow_web_tools_checkbox = QtWidgets.QCheckBox("Allow web", self)
+        self.allow_web_tools_checkbox.setChecked(False)
+        self.allow_web_tools_checkbox.setObjectName("chatInlineToggle")
+        self.allow_web_tools_checkbox.setToolTip(
+            "Allow web_search/web_fetch tools for this chat turn."
+        )
         share_bar.addWidget(self.attach_canvas_checkbox)
         share_bar.addWidget(self.attach_window_checkbox)
         share_bar.addWidget(self.tool_trace_checkbox)
+        share_bar.addWidget(self.allow_web_tools_checkbox)
 
         self.share_canvas_button = QtWidgets.QToolButton(self)
         self.share_canvas_button.setText("")
@@ -962,10 +1013,10 @@ class AIChatWidget(QtWidgets.QWidget):
                     background: #a1a7b2;
                 }}
                 QFrame#chatBubble[role="user"] {{
-                    background-color: #25D366;
+                    background-color: #145C4C;
                     border-radius: 16px;
                     padding: 9px 11px;
-                    border: 1px solid #1fa855;
+                    border: 1px solid #1d7a65;
                 }}
                 QFrame#chatBubble[role="assistant"] {{
                     background-color: #1f252f;
@@ -987,13 +1038,25 @@ class AIChatWidget(QtWidgets.QWidget):
                     selection-color: #f5f7fa;
                 }}
                 QFrame#chatBubble[role="user"] QLabel#sender {{
-                    color: #d7f7ea;
+                    color: #C2E9DD;
                 }}
                 QFrame#chatBubble[role="user"] QTextBrowser#messageView {{
-                    color: #f4fff9;
+                    color: #F3FFF8;
                 }}
                 QFrame#chatBubble[role="user"] QLabel#meta {{
-                    color: #c8f0e0;
+                    color: #C2E9DD;
+                }}
+                QFrame#chatBubble[role="user"] QPushButton#bubbleSpeakButton,
+                QFrame#chatBubble[role="user"] QPushButton#bubbleCopyButton,
+                QFrame#chatBubble[role="user"] QPushButton#bubbleRegenerateButton {{
+                    border: 1px solid #2a8b74;
+                    background: #196a57;
+                    color: #F3FFF8;
+                }}
+                QFrame#chatBubble[role="user"] QPushButton#bubbleSpeakButton:hover,
+                QFrame#chatBubble[role="user"] QPushButton#bubbleCopyButton:hover,
+                QFrame#chatBubble[role="user"] QPushButton#bubbleRegenerateButton:hover {{
+                    background: #1f7661;
                 }}
                 QFrame#chatBubble[progress="true"] {{
                     background-color: #181d27;
@@ -1088,7 +1151,7 @@ class AIChatWidget(QtWidgets.QWidget):
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
         )
         row = QtWidgets.QHBoxLayout(row_widget)
-        row.setContentsMargins(0, 0, 0, 0)
+        row.setContentsMargins(6, 1, 6, 1)
         row.setSpacing(0)
         bubble = _ChatBubble(
             sender,
@@ -2364,6 +2427,7 @@ class AIChatWidget(QtWidgets.QWidget):
             settings=self.llm_settings,
             session_id=self.session_id,
             show_tool_trace=self.tool_trace_checkbox.isChecked(),
+            enable_web_tools=self.allow_web_tools_checkbox.isChecked(),
         )
         self.thread_pool.start(task)
 

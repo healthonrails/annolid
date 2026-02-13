@@ -8,6 +8,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from qtpy import QtCore
@@ -79,7 +80,23 @@ from annolid.utils.llm_settings import (
 
 _SESSION_STORE: Optional[PersistentSessionStore] = None
 _LOGGER = logging.getLogger("annolid.bot.backend")
-_GUI_DISABLED_TOOLS = {"web_search", "web_fetch", "cron", "spawn", "message"}
+_GUI_ALWAYS_DISABLED_TOOLS = {"cron", "spawn", "message"}
+_GUI_WEB_TOOLS = {"web_search", "web_fetch"}
+_WEB_ACCESS_REFUSAL_HINTS = (
+    "don't have web browsing capabilities",
+    "do not have web browsing capabilities",
+    "cannot directly fetch urls",
+    "can't directly fetch urls",
+    "i cannot directly fetch urls",
+    "i can't directly fetch urls",
+    "cannot browse the web",
+    "can't browse the web",
+    "cannot access external websites",
+    "can't access external websites",
+    "cannot access the internet",
+    "can't access the internet",
+    "no browsing capability",
+)
 # Backward-compat aliases retained for tests/internal callers that reference
 # backend module globals directly.
 _OLLAMA_TOOL_SUPPORT_CACHE = _PROVIDER_OLLAMA_TOOL_SUPPORT_CACHE
@@ -121,6 +138,7 @@ class StreamingChatTask(QRunnable):
         session_id: str = "gui:annolid_bot:default",
         session_store: Optional[PersistentSessionStore] = None,
         show_tool_trace: bool = False,
+        enable_web_tools: bool = False,
     ):
         super().__init__()
         self.prompt = prompt
@@ -132,6 +150,7 @@ class StreamingChatTask(QRunnable):
         self.session_id = str(session_id or "gui:annolid_bot:default")
         self.session_store = session_store or _get_session_store()
         self.show_tool_trace = bool(show_tool_trace)
+        self.enable_web_tools = bool(enable_web_tools)
         self.workspace = get_agent_workspace_path()
         self.workspace_memory = AgentMemoryStore(self.workspace)
         runtime_cfg = resolve_agent_runtime_config(profile="playground")
@@ -434,7 +453,8 @@ class StreamingChatTask(QRunnable):
         )
         self._emit_progress("Received model response")
         text, used_recovery, used_direct_gui_fallback = self._finalize_agent_text(
-            result
+            result,
+            tools=context.tools,
         )
         self._log_agent_result(result, used_recovery, used_direct_gui_fallback)
         if text.strip():
@@ -469,7 +489,10 @@ class StreamingChatTask(QRunnable):
             allowed_read_roots=allowed_read_roots,
         )
         self._register_gui_tools(tools)
-        for tool_name in _GUI_DISABLED_TOOLS:
+        disabled_tools = set(_GUI_ALWAYS_DISABLED_TOOLS)
+        if not self.enable_web_tools:
+            disabled_tools.update(_GUI_WEB_TOOLS)
+        for tool_name in disabled_tools:
             tools.unregister(tool_name)
         resolved_policy = resolve_allowed_tools(
             all_tool_names=tools.tool_names,
@@ -555,7 +578,12 @@ class StreamingChatTask(QRunnable):
             return self._build_ollama_llm_callable()
         return None
 
-    def _finalize_agent_text(self, result: Any) -> Tuple[str, bool, bool]:
+    def _finalize_agent_text(
+        self,
+        result: Any,
+        *,
+        tools: Optional[FunctionToolRegistry] = None,
+    ) -> Tuple[str, bool, bool]:
         text = str(getattr(result, "content", "") or "").strip()
         tool_run_count = len(getattr(result, "tool_runs", ()) or ())
         used_recovery = False
@@ -572,6 +600,10 @@ class StreamingChatTask(QRunnable):
                 )
                 if not text or self._looks_like_local_access_refusal(text):
                     text = direct_gui_text
+        if self.enable_web_tools and self._looks_like_web_access_refusal(text):
+            web_fallback = self._try_web_fetch_fallback(self.prompt, tools)
+            if web_fallback:
+                text = web_fallback
         # Final safety net: if the model still returns empty after our in-call retry,
         # attempt a single plain Ollama stream request (no tools) and use it.
         if not text and self.provider == "ollama":
@@ -910,6 +942,117 @@ class StreamingChatTask(QRunnable):
     @staticmethod
     def _looks_like_local_access_refusal(text: str) -> bool:
         return looks_like_local_access_refusal(text)
+
+    @staticmethod
+    def _looks_like_web_access_refusal(text: str) -> bool:
+        value = str(text or "").lower()
+        if not value:
+            return False
+        return any(hint in value for hint in _WEB_ACCESS_REFUSAL_HINTS)
+
+    @staticmethod
+    def _extract_web_urls(text: str) -> List[str]:
+        raw = str(text or "")
+        if not raw:
+            return []
+        candidates = re.findall(r"https?://[^\s<>\"]+", raw, flags=re.IGNORECASE)
+        urls: List[str] = []
+        for item in candidates:
+            cleaned = str(item or "").strip().rstrip(").,;!?")
+            if cleaned and cleaned not in urls:
+                urls.append(cleaned)
+        return urls
+
+    def _candidate_web_urls_for_prompt(self, prompt: str) -> List[str]:
+        urls = self._extract_web_urls(prompt)
+        if urls:
+            return urls
+        history = self._load_history_messages()
+        # Prefer the most recent user-provided URL when the current turn uses
+        # references like "that page" without repeating the link.
+        for msg in reversed(history):
+            if str(msg.get("role") or "") != "user":
+                continue
+            content = str(msg.get("content") or "")
+            if not content:
+                continue
+            from_msg = self._extract_web_urls(content)
+            if from_msg:
+                return from_msg
+        return []
+
+    @staticmethod
+    def _build_extractive_summary(
+        text: str,
+        *,
+        max_sentences: int = 6,
+        max_chars: int = 1200,
+    ) -> str:
+        source = " ".join(str(text or "").split()).strip()
+        if not source:
+            return ""
+        chunks = re.split(r"(?<=[.!?])\s+", source)
+        picked: List[str] = []
+        total = 0
+        for chunk in chunks:
+            sentence = str(chunk or "").strip()
+            if not sentence:
+                continue
+            if picked and total + 1 + len(sentence) > max_chars:
+                break
+            if not picked and len(sentence) > max_chars:
+                picked.append(sentence[: max_chars - 3].rstrip() + "...")
+                break
+            picked.append(sentence)
+            total += len(sentence) + 1
+            if len(picked) >= max_sentences:
+                break
+        return " ".join(picked).strip()
+
+    def _try_web_fetch_fallback(
+        self,
+        prompt: str,
+        tools: Optional[FunctionToolRegistry],
+    ) -> str:
+        registry = tools
+        if registry is None:
+            return ""
+        if not registry.has("web_fetch"):
+            return ""
+        urls = self._candidate_web_urls_for_prompt(prompt)
+        if not urls:
+            return ""
+        target_url = urls[0]
+        try:
+            self._emit_progress("Retrying with web_fetch")
+            payload_raw = self._run_async(
+                registry.execute(
+                    "web_fetch",
+                    {"url": target_url, "extractMode": "text", "maxChars": 12000},
+                )
+            )
+        except Exception:
+            return ""
+        try:
+            payload = json.loads(str(payload_raw or "{}"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            return ""
+        if payload.get("error"):
+            return ""
+        page_text = str(payload.get("text") or "").strip()
+        if not page_text:
+            return ""
+        summary = self._build_extractive_summary(page_text)
+        if not summary:
+            return ""
+        source_url = str(payload.get("finalUrl") or target_url).strip() or target_url
+        return (
+            f"Summary of {source_url}:\n{summary}\n\n"
+            f"Source: {source_url}\n"
+            "(Generated via web_fetch fallback after a browsing-capability refusal.)"
+        )
 
     def _tool_gui_set_frame(self, frame_index: int) -> Dict[str, Any]:
         target_frame = int(frame_index)
@@ -1322,6 +1465,12 @@ class StreamingChatTask(QRunnable):
         parts: List[str] = [
             "You are Annolid Bot. Be concise, practical, and return plain text answers."
         ]
+        if self.enable_web_tools:
+            parts.append(
+                "Web tools are enabled (`web_search`, `web_fetch`). "
+                "When a user asks about a URL or web page, use web tools to retrieve "
+                "content before answering. Do not claim you cannot browse."
+            )
         roots = [str(r).strip() for r in (allowed_read_roots or []) if str(r).strip()]
         if roots:
             parts.append(

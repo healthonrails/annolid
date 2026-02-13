@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 from annolid.gui.widgets.ai_chat_backend import StreamingChatTask
@@ -171,6 +172,68 @@ def test_compact_system_prompt_includes_allowed_read_roots(tmp_path: Path) -> No
     )
     assert "Allowed Read Roots" in prompt
     assert "/Users/chenyang/Downloads/test_annolid_videos_batch" in prompt
+
+
+def test_build_agent_context_disables_web_tools_by_default(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            allowed_read_roots = []
+
+    class _Resolved:
+        profile = "full"
+        source = "test"
+        allowed_tools = None
+
+    def _resolve_policy(*, all_tool_names, tools_cfg, provider, model):
+        del tools_cfg, provider, model
+        payload = _Resolved()
+        payload.allowed_tools = set(all_tool_names)
+        return payload
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "resolve_allowed_tools", _resolve_policy)
+
+    task = StreamingChatTask("hi", widget=None, enable_web_tools=False)
+    context = task._build_agent_execution_context()
+    tool_names = set(context.tools.tool_names)
+    assert "web_search" not in tool_names
+    assert "web_fetch" not in tool_names
+    assert "cron" not in tool_names
+    assert "spawn" not in tool_names
+    assert "message" not in tool_names
+
+
+def test_build_agent_context_enables_web_tools_when_requested(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            allowed_read_roots = []
+
+    class _Resolved:
+        profile = "full"
+        source = "test"
+        allowed_tools = None
+
+    def _resolve_policy(*, all_tool_names, tools_cfg, provider, model):
+        del tools_cfg, provider, model
+        payload = _Resolved()
+        payload.allowed_tools = set(all_tool_names)
+        return payload
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "resolve_allowed_tools", _resolve_policy)
+
+    task = StreamingChatTask("hi", widget=None, enable_web_tools=True)
+    context = task._build_agent_execution_context()
+    tool_names = set(context.tools.tool_names)
+    assert "web_search" in tool_names
+    assert "web_fetch" in tool_names
+    assert "cron" not in tool_names
+    assert "spawn" not in tool_names
+    assert "message" not in tool_names
 
 
 def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> None:
@@ -555,6 +618,122 @@ def test_local_access_refusal_heuristic() -> None:
     )
     assert (
         StreamingChatTask._looks_like_local_access_refusal("Opened the video.") is False
+    )
+
+
+def test_web_access_refusal_heuristic() -> None:
+    assert (
+        StreamingChatTask._looks_like_web_access_refusal(
+            "I don't have web browsing capabilities."
+        )
+        is True
+    )
+    assert (
+        StreamingChatTask._looks_like_web_access_refusal(
+            "I cannot directly fetch URLs. To summarize that page, share the content."
+        )
+        is True
+    )
+    assert (
+        StreamingChatTask._looks_like_web_access_refusal("Fetched via web_fetch.")
+        is False
+    )
+
+
+def test_finalize_agent_text_uses_web_fetch_fallback_on_refusal() -> None:
+    class _DummyRegistry:
+        def has(self, name: str) -> bool:
+            return name == "web_fetch"
+
+        async def execute(self, name: str, params: dict) -> str:
+            assert name == "web_fetch"
+            assert params["url"].startswith("https://")
+            return json.dumps(
+                {
+                    "finalUrl": params["url"],
+                    "text": (
+                        "BrainGlobe AtlasAPI provides atlas loading, metadata, "
+                        "resolution details, and structures metadata. "
+                        "The atlas details page explains fields such as species, "
+                        "orientation, shape, and resolution."
+                    ),
+                }
+            )
+
+    class _Result:
+        content = "I don't have web browsing capabilities."
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "summarize https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html",
+        widget=None,
+        enable_web_tools=True,
+    )
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=_DummyRegistry(),  # type: ignore[arg-type]
+    )
+    assert used_recovery is False
+    assert used_direct_gui_fallback is False
+    assert (
+        "Summary of https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+        in text
+    )
+    assert (
+        "Source: https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+        in text
+    )
+
+
+def test_web_fetch_fallback_uses_recent_history_url_when_prompt_has_no_url() -> None:
+    class _DummyRegistry:
+        def has(self, name: str) -> bool:
+            return name == "web_fetch"
+
+        async def execute(self, name: str, params: dict) -> str:
+            assert name == "web_fetch"
+            assert (
+                params["url"]
+                == "https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+            )
+            return json.dumps(
+                {
+                    "finalUrl": params["url"],
+                    "text": "Atlas details documentation describes metadata and anatomy structures.",
+                }
+            )
+
+    class _Store:
+        def get_history(self, session_id: str):
+            del session_id
+            return [
+                {
+                    "role": "user",
+                    "content": "summarize https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html",
+                },
+                {
+                    "role": "assistant",
+                    "content": "I cannot directly fetch URLs.",
+                },
+            ]
+
+        def append_history(self, session_id: str, messages, *, max_messages: int):
+            del session_id, messages, max_messages
+
+    class _Result:
+        content = "I cannot directly fetch URLs. To summarize that page, provide text."
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "summarize that page",
+        widget=None,
+        enable_web_tools=True,
+        session_store=_Store(),  # type: ignore[arg-type]
+    )
+    text, _, _ = task._finalize_agent_text(_Result(), tools=_DummyRegistry())  # type: ignore[arg-type]
+    assert (
+        "Summary of https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+        in text
     )
 
 
