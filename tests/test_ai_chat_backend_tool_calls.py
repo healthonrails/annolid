@@ -439,6 +439,18 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_model["name"] == "set_chat_model"
     assert parsed_model["args"]["provider"] == "openrouter"
 
+    parsed_behavior = task._parse_direct_gui_command(
+        "segment mouse.mp4 with labels walking, rearing"
+    )
+    assert parsed_behavior["name"] == "label_behavior_segments"
+    assert parsed_behavior["args"]["path"] == "mouse.mp4"
+    assert parsed_behavior["args"]["behavior_labels"] == ["walking", "rearing"]
+
+    parsed_non_open = task._parse_direct_gui_command(
+        "segment mouse.mp4 with labels walking"
+    )
+    assert parsed_non_open["name"] != "open_video"
+
 
 def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend

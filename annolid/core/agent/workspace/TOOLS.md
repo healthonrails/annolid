@@ -51,6 +51,8 @@ Safety notes:
 - `gui_set_ai_text_prompt(text, use_countgd?)`
 - `gui_run_ai_text_segmentation()`
 - `gui_segment_track_video(path, text_prompt, mode?, use_countgd?, model_name?, to_frame?)`
+- `gui_label_behavior_segments(path?, behavior_labels?, segment_mode?, segment_frames?, max_segments?, subject?, overwrite_existing?, llm_profile?, llm_provider?, llm_model?)`
+  - Saves timeline labels and exports `<video_stem>_timestamps.csv` automatically.
 
 ## Communication and Delegation
 

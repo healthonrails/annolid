@@ -37,6 +37,7 @@ from .function_builtin import (
 )
 from .function_gui import (
     GuiContextTool,
+    GuiLabelBehaviorSegmentsTool,
     GuiOpenVideoTool,
     GuiRunAiTextSegmentationTool,
     GuiSegmentTrackVideoTool,
@@ -111,6 +112,7 @@ __all__ = [
     "GuiSetAiTextPromptTool",
     "GuiRunAiTextSegmentationTool",
     "GuiSegmentTrackVideoTool",
+    "GuiLabelBehaviorSegmentsTool",
     "GuiSharedImagePathTool",
     "MessageTool",
     "SpawnTool",

@@ -35,6 +35,7 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
         "gui_set_ai_text_prompt",
         "gui_run_ai_text_segmentation",
         "gui_segment_track_video",
+        "gui_label_behavior_segments",
     },
     "messaging": {"message", "spawn", "cron"},
 }
@@ -57,6 +58,7 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "gui_set_ai_text_prompt",
         "gui_run_ai_text_segmentation",
         "gui_segment_track_video",
+        "gui_label_behavior_segments",
     },
     "group:automation": {"cron", "spawn"},
     "group:messaging": {"message"},

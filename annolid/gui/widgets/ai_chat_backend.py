@@ -351,6 +351,7 @@ class StreamingChatTask(QRunnable):
             set_ai_text_prompt_callback=self._tool_gui_set_ai_text_prompt,
             run_ai_text_segmentation_callback=self._tool_gui_run_ai_text_segmentation,
             segment_track_video_callback=self._tool_gui_segment_track_video,
+            label_behavior_segments_callback=self._tool_gui_label_behavior_segments,
         )
         for tool_name in _GUI_DISABLED_TOOLS:
             tools.unregister(tool_name)
@@ -718,6 +719,29 @@ class StreamingChatTask(QRunnable):
                     "Opened video, segmented, and saved annotations."
                 )
             return str(payload.get("error") or "Failed to start workflow.")
+        if name == "label_behavior_segments":
+            payload = self._tool_gui_label_behavior_segments(
+                path=str(args.get("path") or ""),
+                behavior_labels=args.get("behavior_labels"),
+                segment_mode=str(args.get("segment_mode") or "timeline"),
+                segment_frames=int(args.get("segment_frames") or 60),
+                max_segments=int(args.get("max_segments") or 120),
+                subject=str(args.get("subject") or "Agent"),
+                overwrite_existing=bool(args.get("overwrite_existing", False)),
+                llm_profile=str(args.get("llm_profile") or ""),
+                llm_provider=str(args.get("llm_provider") or ""),
+                llm_model=str(args.get("llm_model") or ""),
+            )
+            if payload.get("ok"):
+                summary = (
+                    f"Labeled {payload.get('labeled_segments')} behavior segment(s) "
+                    f"using {payload.get('mode')} mode."
+                )
+                csv_path = str(payload.get("timestamps_csv") or "").strip()
+                if csv_path:
+                    summary += f" Timestamps saved to {csv_path}."
+                return summary
+            return str(payload.get("error") or "Failed to label behavior segments.")
         if name == "set_chat_model":
             payload = self._tool_gui_set_chat_model(
                 str(args.get("provider") or ""),
@@ -792,6 +816,61 @@ class StreamingChatTask(QRunnable):
                     },
                 }
 
+        segment_label_match = re.search(
+            r"\b(?:segment|track)\b\s+(?P<path>.+?)\s+\bwith\s+labels?\b\s+(?P<labels>.+)$",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if segment_label_match:
+            path_text = segment_label_match.group("path").strip()
+            labels_text = segment_label_match.group("labels").strip()
+            if path_text.lower().startswith("video "):
+                path_text = path_text[6:].strip()
+            if re.search(
+                r"\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b",
+                path_text,
+                flags=re.IGNORECASE,
+            ):
+                labels = [
+                    p.strip().strip("\"'`").strip(" .")
+                    for p in re.split(r",|;|\band\b", labels_text, flags=re.IGNORECASE)
+                    if p.strip().strip("\"'`").strip(" .")
+                ]
+                return {
+                    "name": "label_behavior_segments",
+                    "args": {
+                        "path": path_text,
+                        "behavior_labels": labels,
+                        "segment_mode": "uniform",
+                        "overwrite_existing": False,
+                    },
+                }
+
+        label_match = re.search(
+            r"\blabel\s+behaviors?\b.*\b(?:in|for)\b\s+(?P<path>.+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if label_match:
+            path_text = label_match.group("path").strip()
+            if path_text.lower().startswith("video "):
+                path_text = path_text[6:].strip()
+            if re.search(
+                r"\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b",
+                path_text,
+                flags=re.IGNORECASE,
+            ):
+                mode = "timeline" if "timeline" in lower else "uniform"
+                overwrite = "overwrite" in lower or "replace" in lower
+                return {
+                    "name": "label_behavior_segments",
+                    "args": {
+                        "path": path_text,
+                        "segment_mode": mode,
+                        "overwrite_existing": overwrite,
+                    },
+                }
+
         track_match = re.search(
             r"(?:track|predict)(?:\s+from\s+current)?\s+"
             r"(?:to|until)?\s*frame\s+(\d+)",
@@ -820,10 +899,19 @@ class StreamingChatTask(QRunnable):
             or "open the video" in lower
             or "gui_open_video(" in lower
         )
-        if open_video_hint or re.search(
-            r"\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b",
+        open_path_hint = re.match(
+            r"\s*(?:open|load)\s+[^\n]+?\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b",
             text,
             flags=re.IGNORECASE,
+        )
+        if (
+            open_video_hint
+            or open_path_hint
+            or re.fullmatch(
+                r"(?:video\s+)?[^\n]+?\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)",
+                text,
+                flags=re.IGNORECASE,
+            )
         ):
             return {"name": "open_video", "args": {"path": text}}
 
@@ -1023,6 +1111,91 @@ class StreamingChatTask(QRunnable):
             "model_name": resolved_model,
             "to_frame": None if target_frame == -1 else target_frame,
         }
+
+    def _tool_gui_label_behavior_segments(
+        self,
+        *,
+        path: str = "",
+        behavior_labels: Any = None,
+        segment_mode: str = "timeline",
+        segment_frames: int = 60,
+        max_segments: int = 120,
+        subject: str = "Agent",
+        overwrite_existing: bool = False,
+        llm_profile: str = "",
+        llm_provider: str = "",
+        llm_model: str = "",
+    ) -> Dict[str, Any]:
+        resolved_path = None
+        if str(path or "").strip():
+            resolved_path = self._resolve_video_path_for_gui_tool(str(path))
+            if resolved_path is None:
+                return {
+                    "ok": False,
+                    "error": "Video not found from provided path/text.",
+                    "input": str(path or "").strip(),
+                }
+
+        labels: list[str] = []
+        if isinstance(behavior_labels, list):
+            labels = [str(v).strip() for v in behavior_labels if str(v).strip()]
+        elif isinstance(behavior_labels, str):
+            labels = [p.strip() for p in behavior_labels.split(",") if p.strip()]
+
+        mode_norm = str(segment_mode or "timeline").strip().lower()
+        if mode_norm not in {"timeline", "uniform"}:
+            return {
+                "ok": False,
+                "error": "segment_mode must be 'timeline' or 'uniform'",
+            }
+        frames = max(1, int(segment_frames))
+        max_seg = max(1, int(max_segments))
+        ok = self._invoke_widget_slot(
+            "bot_label_behavior_segments",
+            QtCore.Q_ARG(str, str(resolved_path) if resolved_path else ""),
+            QtCore.Q_ARG(str, ",".join(labels)),
+            QtCore.Q_ARG(str, mode_norm),
+            QtCore.Q_ARG(int, frames),
+            QtCore.Q_ARG(int, max_seg),
+            QtCore.Q_ARG(str, str(subject or "Agent")),
+            QtCore.Q_ARG(bool, bool(overwrite_existing)),
+            QtCore.Q_ARG(str, str(llm_profile or "")),
+            QtCore.Q_ARG(str, str(llm_provider or "")),
+            QtCore.Q_ARG(str, str(llm_model or "")),
+        )
+        if not ok:
+            return {"ok": False, "error": "Failed to queue behavior labeling action"}
+
+        widget_result: Dict[str, Any] = {}
+        try:
+            widget = self.widget
+            getter = getattr(widget, "get_bot_action_result", None) if widget else None
+            if callable(getter):
+                payload = getter("label_behavior_segments")
+                if isinstance(payload, dict):
+                    widget_result = payload
+        except Exception:
+            widget_result = {}
+        if widget_result:
+            if not bool(widget_result.get("ok", False)):
+                return {
+                    "ok": False,
+                    "error": str(
+                        widget_result.get("error")
+                        or "Behavior segment labeling failed in GUI."
+                    ),
+                }
+            return {
+                "ok": True,
+                "mode": str(widget_result.get("mode") or mode_norm),
+                "labeled_segments": int(widget_result.get("labeled_segments") or 0),
+                "evaluated_segments": int(widget_result.get("evaluated_segments") or 0),
+                "skipped_segments": int(widget_result.get("skipped_segments") or 0),
+                "labels_used": list(widget_result.get("labels_used") or labels),
+                "timestamps_csv": str(widget_result.get("timestamps_csv") or ""),
+                "timestamps_rows": int(widget_result.get("timestamps_rows") or 0),
+            }
+        return {"ok": True, "queued": True, "mode": mode_norm}
 
     def _recover_with_plain_ollama_reply(self) -> str:
         host = str(self.settings.get("ollama", {}).get("host") or "").strip()

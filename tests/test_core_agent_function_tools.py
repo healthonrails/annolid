@@ -519,6 +519,9 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         segment_track_video_callback=lambda **kwargs: _mark(
             "segment_track_video", kwargs
         ),
+        label_behavior_segments_callback=lambda **kwargs: _mark(
+            "label_behavior_segments", kwargs
+        ),
     )
     assert registry.has("gui_context")
     assert registry.has("gui_shared_image_path")
@@ -532,6 +535,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_set_ai_text_prompt")
     assert registry.has("gui_run_ai_text_segmentation")
     assert registry.has("gui_segment_track_video")
+    assert registry.has("gui_label_behavior_segments")
     ctx = asyncio.run(registry.execute("gui_context", {}))
     ctx_payload = json.loads(ctx)
     assert ctx_payload["provider"] == "ollama"
@@ -572,6 +576,17 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
             },
         )
     )
+    asyncio.run(
+        registry.execute(
+            "gui_label_behavior_segments",
+            {
+                "path": "/tmp/a.mp4",
+                "behavior_labels": ["walking", "eating"],
+                "segment_mode": "uniform",
+                "segment_frames": 30,
+            },
+        )
+    )
     assert calls == [
         ("open_video", "/tmp/a.mp4"),
         ("set_frame", 3),
@@ -589,6 +604,15 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
                 "text_prompt": "mouse",
                 "mode": "track",
                 "to_frame": 120,
+            },
+        ),
+        (
+            "label_behavior_segments",
+            {
+                "path": "/tmp/a.mp4",
+                "behavior_labels": ["walking", "eating"],
+                "segment_mode": "uniform",
+                "segment_frames": 30,
             },
         ),
     ]

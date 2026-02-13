@@ -357,6 +357,49 @@ class GuiSegmentTrackVideoTool(FunctionTool):
         return await _run_callback(self._segment_track_video_callback, **kwargs)
 
 
+class GuiLabelBehaviorSegmentsTool(FunctionTool):
+    def __init__(
+        self, label_behavior_segments_callback: Optional[ActionCallback] = None
+    ):
+        self._label_behavior_segments_callback = label_behavior_segments_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_label_behavior_segments"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Auto-label behavior intervals from video segments using an LLM model "
+            "and write labels into the Annolid behavior timeline."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "behavior_labels": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "segment_mode": {"type": "string", "enum": ["timeline", "uniform"]},
+                "segment_frames": {"type": "integer", "minimum": 1},
+                "max_segments": {"type": "integer", "minimum": 1},
+                "subject": {"type": "string"},
+                "overwrite_existing": {"type": "boolean"},
+                "llm_profile": {"type": "string"},
+                "llm_provider": {"type": "string"},
+                "llm_model": {"type": "string"},
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._label_behavior_segments_callback, **kwargs)
+
+
 def register_annolid_gui_tools(
     registry: FunctionToolRegistry,
     *,
@@ -372,6 +415,7 @@ def register_annolid_gui_tools(
     set_ai_text_prompt_callback: Optional[ActionCallback] = None,
     run_ai_text_segmentation_callback: Optional[ActionCallback] = None,
     segment_track_video_callback: Optional[ActionCallback] = None,
+    label_behavior_segments_callback: Optional[ActionCallback] = None,
 ) -> None:
     """Register GUI-only tools for Annolid Bot sessions."""
     registry.register(GuiContextTool(context_callback=context_callback))
@@ -398,5 +442,10 @@ def register_annolid_gui_tools(
     registry.register(
         GuiSegmentTrackVideoTool(
             segment_track_video_callback=segment_track_video_callback
+        )
+    )
+    registry.register(
+        GuiLabelBehaviorSegmentsTool(
+            label_behavior_segments_callback=label_behavior_segments_callback
         )
     )
