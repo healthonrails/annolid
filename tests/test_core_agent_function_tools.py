@@ -522,6 +522,10 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         label_behavior_segments_callback=lambda **kwargs: _mark(
             "label_behavior_segments", kwargs
         ),
+        start_realtime_stream_callback=lambda **kwargs: _mark(
+            "start_realtime_stream", kwargs
+        ),
+        stop_realtime_stream_callback=lambda: _mark("stop_realtime_stream"),
     )
     assert registry.has("gui_context")
     assert registry.has("gui_shared_image_path")
@@ -536,6 +540,8 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_run_ai_text_segmentation")
     assert registry.has("gui_segment_track_video")
     assert registry.has("gui_label_behavior_segments")
+    assert registry.has("gui_start_realtime_stream")
+    assert registry.has("gui_stop_realtime_stream")
     ctx = asyncio.run(registry.execute("gui_context", {}))
     ctx_payload = json.loads(ctx)
     assert ctx_payload["provider"] == "ollama"
@@ -587,6 +593,17 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
             },
         )
     )
+    asyncio.run(
+        registry.execute(
+            "gui_start_realtime_stream",
+            {
+                "camera_source": "0",
+                "model_name": "mediapipe_face",
+                "classify_eye_blinks": True,
+            },
+        )
+    )
+    asyncio.run(registry.execute("gui_stop_realtime_stream", {}))
     assert calls == [
         ("open_video", "/tmp/a.mp4"),
         ("set_frame", 3),
@@ -615,4 +632,13 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
                 "segment_frames": 30,
             },
         ),
+        (
+            "start_realtime_stream",
+            {
+                "camera_source": "0",
+                "model_name": "mediapipe_face",
+                "classify_eye_blinks": True,
+            },
+        ),
+        ("stop_realtime_stream", None),
     ]

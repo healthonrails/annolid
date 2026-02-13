@@ -36,6 +36,8 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
         "gui_run_ai_text_segmentation",
         "gui_segment_track_video",
         "gui_label_behavior_segments",
+        "gui_start_realtime_stream",
+        "gui_stop_realtime_stream",
     },
     "messaging": {"message", "spawn", "cron"},
 }
@@ -59,6 +61,8 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "gui_run_ai_text_segmentation",
         "gui_segment_track_video",
         "gui_label_behavior_segments",
+        "gui_start_realtime_stream",
+        "gui_stop_realtime_stream",
     },
     "group:automation": {"cron", "spawn"},
     "group:messaging": {"message"},

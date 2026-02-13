@@ -451,6 +451,17 @@ def test_parse_direct_gui_command_variants() -> None:
     )
     assert parsed_non_open["name"] != "open_video"
 
+    parsed_stream = task._parse_direct_gui_command(
+        "open stream with model mediapipe face and classify eye blinks"
+    )
+    assert parsed_stream["name"] == "start_realtime_stream"
+    assert parsed_stream["args"]["model_name"] == "mediapipe_face"
+    assert parsed_stream["args"]["viewer_type"] == "threejs"
+    assert parsed_stream["args"]["classify_eye_blinks"] is True
+
+    parsed_stop_stream = task._parse_direct_gui_command("stop realtime stream")
+    assert parsed_stop_stream["name"] == "stop_realtime_stream"
+
 
 def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
@@ -479,3 +490,11 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
 
     out_model = task._execute_direct_gui_command("set chat model ollama/qwen3:8b")
     assert "Updated chat model to ollama/qwen3:8b." == out_model
+
+    out_stream = task._execute_direct_gui_command(
+        "open stream with model mediapipe face and classify eye blinks"
+    )
+    assert "Started realtime stream with model mediapipe_face." == out_stream
+
+    out_stop_stream = task._execute_direct_gui_command("stop realtime stream")
+    assert "Stopped realtime stream." == out_stop_stream

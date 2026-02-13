@@ -37,6 +37,14 @@ class RealtimeManager(QtCore.QObject):
         self.realtime_log_enabled = False
         self.realtime_log_fp = None
         self.realtime_log_path = None
+        self._classify_eye_blinks = False
+        self._blink_ear_threshold = 0.21
+        self._blink_min_consecutive_frames = 2
+        self._blink_state: Dict[str, Any] = {
+            "closed_frames": 0,
+            "blink_count": 0,
+            "eyes_closed": False,
+        }
 
         # Dock + control widget
         self.realtime_control_dock = QtWidgets.QDockWidget(
@@ -94,7 +102,8 @@ class RealtimeManager(QtCore.QObject):
         realtime_config: "RealtimeConfig",
         extras: Dict[str, Any],
     ):
-        self.show_control_dialog()
+        if not bool(extras.get("suppress_control_dock", False)):
+            self.show_control_dialog()
         if self.realtime_perception_worker is not None:
             QtWidgets.QMessageBox.information(
                 self.window,
@@ -176,6 +185,20 @@ class RealtimeManager(QtCore.QObject):
         self.realtime_log_fp = None
         self.realtime_log_path = None
         self.realtime_log_enabled = bool(extras.get("log_enabled", False))
+        self._classify_eye_blinks = bool(extras.get("classify_eye_blinks", False))
+        self._blink_ear_threshold = float(extras.get("blink_ear_threshold", 0.21))
+        self._blink_ear_threshold = max(0.05, min(0.6, self._blink_ear_threshold))
+        self._blink_min_consecutive_frames = int(
+            extras.get("blink_min_consecutive_frames", 2)
+        )
+        self._blink_min_consecutive_frames = max(
+            1, min(30, self._blink_min_consecutive_frames)
+        )
+        self._blink_state = {
+            "closed_frames": 0,
+            "blink_count": 0,
+            "eyes_closed": False,
+        }
 
         status_message = (
             self.window.tr("Realtime inference starting with %s")
@@ -512,18 +535,109 @@ class RealtimeManager(QtCore.QObject):
 
         return shapes
 
+    @staticmethod
+    def _point_from_keypoints(keypoints: Any, idx: int) -> Optional[np.ndarray]:
+        if not isinstance(keypoints, list):
+            return None
+        if idx < 0 or idx >= len(keypoints):
+            return None
+        point = keypoints[idx]
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            return None
+        try:
+            return np.array([float(point[0]), float(point[1])], dtype=np.float32)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _eye_aspect_ratio(
+        p1: np.ndarray,
+        p2: np.ndarray,
+        p3: np.ndarray,
+        p4: np.ndarray,
+        p5: np.ndarray,
+        p6: np.ndarray,
+    ) -> float:
+        horiz = float(np.linalg.norm(p1 - p4))
+        if horiz <= 1e-6:
+            return 0.0
+        vert = float(np.linalg.norm(p2 - p6) + np.linalg.norm(p3 - p5))
+        return vert / (2.0 * horiz)
+
+    def _classify_eye_blink(self, detection: Dict[str, Any]) -> Dict[str, Any]:
+        keypoints = detection.get("keypoints_pixels") or detection.get("keypoints")
+        if not isinstance(keypoints, list) or len(keypoints) < 388:
+            return detection
+
+        # MediaPipe face mesh indices for EAR computation.
+        right_idx = (33, 160, 158, 133, 153, 144)
+        left_idx = (362, 385, 387, 263, 373, 380)
+        right_pts = [self._point_from_keypoints(keypoints, idx) for idx in right_idx]
+        left_pts = [self._point_from_keypoints(keypoints, idx) for idx in left_idx]
+        if any(pt is None for pt in right_pts) or any(pt is None for pt in left_pts):
+            return detection
+
+        right_ear = self._eye_aspect_ratio(*right_pts)  # type: ignore[arg-type]
+        left_ear = self._eye_aspect_ratio(*left_pts)  # type: ignore[arg-type]
+        ear = float((right_ear + left_ear) / 2.0)
+
+        closed = ear < float(self._blink_ear_threshold)
+        state = self._blink_state
+        behavior = "eyes_open"
+        if closed:
+            state["closed_frames"] = int(state.get("closed_frames", 0)) + 1
+            state["eyes_closed"] = True
+            behavior = "eyes_closed"
+        else:
+            was_closed = bool(state.get("eyes_closed", False))
+            closed_frames = int(state.get("closed_frames", 0))
+            if was_closed and closed_frames >= int(self._blink_min_consecutive_frames):
+                state["blink_count"] = int(state.get("blink_count", 0)) + 1
+                behavior = "eye_blink"
+            state["closed_frames"] = 0
+            state["eyes_closed"] = False
+
+        updated = dict(detection)
+        updated["behavior"] = behavior
+        metadata = dict(updated.get("metadata") or {})
+        metadata["eye_aspect_ratio"] = ear
+        metadata["eyes_closed"] = bool(closed)
+        metadata["blink_count"] = int(state.get("blink_count", 0))
+        metadata["blink_ear_threshold"] = float(self._blink_ear_threshold)
+        updated["metadata"] = metadata
+        return updated
+
+    def _apply_behavior_classification(self, detections: List[dict]) -> List[dict]:
+        if not self._classify_eye_blinks:
+            return list(detections or [])
+        transformed: List[dict] = []
+        for detection in detections or []:
+            payload = dict(detection or {})
+            label = str(payload.get("behavior", "") or "").lower()
+            keypoint_labels = payload.get("keypoint_labels") or []
+            is_face = "face" in label or (
+                isinstance(keypoint_labels, list)
+                and bool(keypoint_labels)
+                and str(keypoint_labels[0]).startswith("face_")
+            )
+            if is_face:
+                payload = self._classify_eye_blink(payload)
+            transformed.append(payload)
+        return transformed
+
     # ------------------------------------------------------------------ slots
     @QtCore.Slot(object, dict, list)
     def _on_realtime_frame(self, qimage, metadata, detections):
         if not self.realtime_running:
             return
 
+        effective_detections = self._apply_behavior_classification(detections)
         shapes = []
         if qimage is not None:
             pixmap = QtGui.QPixmap.fromImage(qimage)
             self.window.canvas.loadPixmap(pixmap, clear_shapes=False)
             shapes = self._convert_detections_to_shapes(
-                detections, pixmap.width(), pixmap.height()
+                effective_detections, pixmap.width(), pixmap.height()
             )
             if hasattr(self.window.canvas, "setRealtimeShapes"):
                 self.window.canvas.setRealtimeShapes(shapes)
@@ -537,14 +651,14 @@ class RealtimeManager(QtCore.QObject):
         if threejs_manager:
             viewer = threejs_manager.viewer_widget()
             if viewer and viewer.isVisible():
-                viewer.update_realtime_data(qimage, detections)
+                viewer.update_realtime_data(qimage, effective_detections)
 
         if self.realtime_log_fp:
             try:
                 record = {
                     "timestamp": time.time(),
                     "frame_metadata": metadata,
-                    "detections": detections,
+                    "detections": effective_detections,
                 }
                 json.dump(record, self.realtime_log_fp)
                 self.realtime_log_fp.write("\n")
@@ -563,7 +677,7 @@ class RealtimeManager(QtCore.QObject):
             logger.debug(
                 "Realtime detections for frame %s: %d",
                 metadata.get("frame_index"),
-                len(detections),
+                len(effective_detections),
             )
 
         self.window.canvas.update()
@@ -620,6 +734,7 @@ class RealtimeManager(QtCore.QObject):
         self._shutdown_realtime_subscriber()
         self.realtime_running = False
         self.realtime_perception_worker = None
+        self._classify_eye_blinks = False
         self.realtime_control_widget.set_running(False)
         if hasattr(self.window.canvas, "setRealtimeShapes"):
             self.window.canvas.setRealtimeShapes([])

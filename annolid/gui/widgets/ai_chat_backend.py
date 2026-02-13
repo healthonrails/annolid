@@ -352,6 +352,8 @@ class StreamingChatTask(QRunnable):
             run_ai_text_segmentation_callback=self._tool_gui_run_ai_text_segmentation,
             segment_track_video_callback=self._tool_gui_segment_track_video,
             label_behavior_segments_callback=self._tool_gui_label_behavior_segments,
+            start_realtime_stream_callback=self._tool_gui_start_realtime_stream,
+            stop_realtime_stream_callback=self._tool_gui_stop_realtime_stream,
         )
         for tool_name in _GUI_DISABLED_TOOLS:
             tools.unregister(tool_name)
@@ -742,6 +744,30 @@ class StreamingChatTask(QRunnable):
                     summary += f" Timestamps saved to {csv_path}."
                 return summary
             return str(payload.get("error") or "Failed to label behavior segments.")
+        if name == "start_realtime_stream":
+            payload = self._tool_gui_start_realtime_stream(
+                camera_source=str(args.get("camera_source") or ""),
+                model_name=str(args.get("model_name") or ""),
+                target_behaviors=args.get("target_behaviors"),
+                confidence_threshold=args.get("confidence_threshold"),
+                viewer_type=str(args.get("viewer_type") or ""),
+                classify_eye_blinks=bool(args.get("classify_eye_blinks", False)),
+                blink_ear_threshold=args.get("blink_ear_threshold"),
+                blink_min_consecutive_frames=args.get("blink_min_consecutive_frames"),
+            )
+            if payload.get("ok"):
+                model_name = str(payload.get("model_name") or "")
+                return (
+                    f"Started realtime stream with model {model_name}."
+                    if model_name
+                    else "Started realtime stream."
+                )
+            return str(payload.get("error") or "Failed to start realtime stream.")
+        if name == "stop_realtime_stream":
+            payload = self._tool_gui_stop_realtime_stream()
+            if payload.get("ok"):
+                return "Stopped realtime stream."
+            return str(payload.get("error") or "Failed to stop realtime stream.")
         if name == "set_chat_model":
             payload = self._tool_gui_set_chat_model(
                 str(args.get("provider") or ""),
@@ -868,6 +894,51 @@ class StreamingChatTask(QRunnable):
                         "path": path_text,
                         "segment_mode": mode,
                         "overwrite_existing": overwrite,
+                    },
+                }
+
+        stop_stream_match = re.search(
+            r"\b(?:stop|end|close)\b\s+(?:realtime|real[-\s]?time|stream)\b",
+            lower,
+        )
+        if stop_stream_match:
+            return {"name": "stop_realtime_stream", "args": {}}
+
+        if re.search(r"\b(?:realtime|real[-\s]?time|stream)\b", lower):
+            start_stream_hint = re.search(
+                r"\b(?:start|open|run|launch|begin)\b", lower
+            ) or ("mediapipe" in lower)
+            if start_stream_hint:
+                model_name = ""
+                if "mediapipe face" in lower or "face landmark" in lower:
+                    model_name = "mediapipe_face"
+                elif "mediapipe hands" in lower:
+                    model_name = "mediapipe_hands"
+                elif "mediapipe pose" in lower:
+                    model_name = "mediapipe_pose"
+                camera_source = ""
+                cam_match = re.search(
+                    r"\bcamera\s+(\d+)\b",
+                    lower,
+                )
+                if cam_match:
+                    camera_source = cam_match.group(1)
+                elif "webcam" in lower:
+                    camera_source = "0"
+                viewer_type = (
+                    "pyqt" if ("pyqt" in lower or "canvas" in lower) else "threejs"
+                )
+                classify_eye_blinks = bool(
+                    ("blink" in lower or "eye blink" in lower)
+                    and model_name == "mediapipe_face"
+                )
+                return {
+                    "name": "start_realtime_stream",
+                    "args": {
+                        "camera_source": camera_source,
+                        "model_name": model_name,
+                        "viewer_type": viewer_type,
+                        "classify_eye_blinks": classify_eye_blinks,
                     },
                 }
 
@@ -1196,6 +1267,117 @@ class StreamingChatTask(QRunnable):
                 "timestamps_rows": int(widget_result.get("timestamps_rows") or 0),
             }
         return {"ok": True, "queued": True, "mode": mode_norm}
+
+    def _tool_gui_start_realtime_stream(
+        self,
+        *,
+        camera_source: str = "",
+        model_name: str = "",
+        target_behaviors: Any = None,
+        confidence_threshold: Optional[float] = None,
+        viewer_type: str = "threejs",
+        classify_eye_blinks: bool = False,
+        blink_ear_threshold: Optional[float] = None,
+        blink_min_consecutive_frames: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        model_text = str(model_name or "").strip()
+        camera_text = str(camera_source or "").strip()
+        viewer = str(viewer_type or "threejs").strip().lower()
+        if viewer not in {"pyqt", "threejs"}:
+            viewer = "threejs"
+
+        targets: list[str] = []
+        if isinstance(target_behaviors, list):
+            targets = [str(v).strip() for v in target_behaviors if str(v).strip()]
+        elif isinstance(target_behaviors, str):
+            targets = [p.strip() for p in target_behaviors.split(",") if p.strip()]
+
+        threshold = None
+        if confidence_threshold is not None:
+            try:
+                threshold = float(confidence_threshold)
+            except Exception:
+                return {
+                    "ok": False,
+                    "error": "confidence_threshold must be a float in [0, 1].",
+                }
+            threshold = max(0.0, min(1.0, threshold))
+
+        ear_threshold = None
+        if blink_ear_threshold is not None:
+            try:
+                ear_threshold = float(blink_ear_threshold)
+            except Exception:
+                return {"ok": False, "error": "blink_ear_threshold must be a float."}
+            ear_threshold = max(0.05, min(0.6, ear_threshold))
+
+        min_blink_frames = None
+        if blink_min_consecutive_frames is not None:
+            try:
+                min_blink_frames = int(blink_min_consecutive_frames)
+            except Exception:
+                return {
+                    "ok": False,
+                    "error": "blink_min_consecutive_frames must be an integer.",
+                }
+            min_blink_frames = max(1, min(30, min_blink_frames))
+
+        ok = self._invoke_widget_slot(
+            "bot_start_realtime_stream",
+            QtCore.Q_ARG(str, camera_text),
+            QtCore.Q_ARG(str, model_text),
+            QtCore.Q_ARG(str, ",".join(targets)),
+            QtCore.Q_ARG(float, threshold if threshold is not None else -1.0),
+            QtCore.Q_ARG(str, viewer),
+            QtCore.Q_ARG(bool, bool(classify_eye_blinks)),
+            QtCore.Q_ARG(float, ear_threshold if ear_threshold is not None else -1.0),
+            QtCore.Q_ARG(int, min_blink_frames if min_blink_frames is not None else -1),
+        )
+        if not ok:
+            return {"ok": False, "error": "Failed to queue realtime start action"}
+        widget_result: Dict[str, Any] = {}
+        try:
+            widget = self.widget
+            getter = getattr(widget, "get_bot_action_result", None) if widget else None
+            if callable(getter):
+                payload = getter("start_realtime_stream")
+                if isinstance(payload, dict):
+                    widget_result = payload
+        except Exception:
+            widget_result = {}
+        if widget_result:
+            if not bool(widget_result.get("ok", False)):
+                return {
+                    "ok": False,
+                    "error": str(
+                        widget_result.get("error") or "Realtime stream failed to start."
+                    ),
+                }
+            return {
+                "ok": True,
+                "model_name": str(widget_result.get("model_name") or model_text),
+                "camera_source": str(
+                    widget_result.get("camera_source") or camera_text or "0"
+                ),
+                "viewer_type": str(widget_result.get("viewer_type") or viewer),
+                "classify_eye_blinks": bool(
+                    widget_result.get("classify_eye_blinks", classify_eye_blinks)
+                ),
+            }
+        return {
+            "ok": True,
+            "queued": True,
+            "model_name": model_text,
+            "camera_source": camera_text or "0",
+            "viewer_type": viewer,
+            "classify_eye_blinks": bool(classify_eye_blinks),
+        }
+
+    def _tool_gui_stop_realtime_stream(self) -> Dict[str, Any]:
+        ok = self._invoke_widget_slot("bot_stop_realtime_stream")
+        if not ok:
+            return {"ok": False, "error": "Failed to queue realtime stop action"}
+        return {"ok": True, "queued": True}
 
     def _recover_with_plain_ollama_reply(self) -> str:
         host = str(self.settings.get("ollama", {}).get("host") or "").strip()

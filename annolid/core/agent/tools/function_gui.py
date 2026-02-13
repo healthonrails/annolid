@@ -400,6 +400,78 @@ class GuiLabelBehaviorSegmentsTool(FunctionTool):
         return await _run_callback(self._label_behavior_segments_callback, **kwargs)
 
 
+class GuiStartRealtimeStreamTool(FunctionTool):
+    def __init__(self, start_realtime_stream_callback: Optional[ActionCallback] = None):
+        self._start_realtime_stream_callback = start_realtime_stream_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_start_realtime_stream"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Start realtime inference stream in Annolid and optionally enable "
+            "MediaPipe face blink classification."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "camera_source": {"type": "string"},
+                "model_name": {"type": "string"},
+                "target_behaviors": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "confidence_threshold": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                },
+                "viewer_type": {"type": "string", "enum": ["pyqt", "threejs"]},
+                "classify_eye_blinks": {"type": "boolean"},
+                "blink_ear_threshold": {
+                    "type": "number",
+                    "minimum": 0.05,
+                    "maximum": 0.6,
+                },
+                "blink_min_consecutive_frames": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                },
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._start_realtime_stream_callback, **kwargs)
+
+
+class GuiStopRealtimeStreamTool(FunctionTool):
+    def __init__(self, stop_realtime_stream_callback: Optional[ActionCallback] = None):
+        self._stop_realtime_stream_callback = stop_realtime_stream_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_stop_realtime_stream"
+
+    @property
+    def description(self) -> str:
+        return "Stop the current realtime inference stream in Annolid."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs: Any) -> str:
+        del kwargs
+        return await _run_callback(self._stop_realtime_stream_callback)
+
+
 def register_annolid_gui_tools(
     registry: FunctionToolRegistry,
     *,
@@ -416,6 +488,8 @@ def register_annolid_gui_tools(
     run_ai_text_segmentation_callback: Optional[ActionCallback] = None,
     segment_track_video_callback: Optional[ActionCallback] = None,
     label_behavior_segments_callback: Optional[ActionCallback] = None,
+    start_realtime_stream_callback: Optional[ActionCallback] = None,
+    stop_realtime_stream_callback: Optional[ActionCallback] = None,
 ) -> None:
     """Register GUI-only tools for Annolid Bot sessions."""
     registry.register(GuiContextTool(context_callback=context_callback))
@@ -447,5 +521,15 @@ def register_annolid_gui_tools(
     registry.register(
         GuiLabelBehaviorSegmentsTool(
             label_behavior_segments_callback=label_behavior_segments_callback
+        )
+    )
+    registry.register(
+        GuiStartRealtimeStreamTool(
+            start_realtime_stream_callback=start_realtime_stream_callback
+        )
+    )
+    registry.register(
+        GuiStopRealtimeStreamTool(
+            stop_realtime_stream_callback=stop_realtime_stream_callback
         )
     )

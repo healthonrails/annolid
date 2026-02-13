@@ -5,8 +5,9 @@ from typing import Callable, Iterable, Optional, Tuple
 
 from qtpy import QtCore, QtWidgets
 
-from annolid.realtime.config import Config as RealtimeConfig
+from annolid.gui.realtime_launch import build_realtime_launch_payload
 from annolid.gui.models_registry import MODEL_REGISTRY, ModelConfig
+from annolid.realtime.config import Config as RealtimeConfig
 
 
 class RealtimeControlWidget(QtWidgets.QWidget):
@@ -140,6 +141,14 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         )
         self.enable_eye_control = QtWidgets.QCheckBox(self.tr("Enable Eye Control"))
         self.enable_hand_control = QtWidgets.QCheckBox(self.tr("Enable Hand Control"))
+        self.classify_eye_blinks = QtWidgets.QCheckBox(self.tr("Classify Eye Blinks"))
+        self.blink_ear_threshold_spin = QtWidgets.QDoubleSpinBox()
+        self.blink_ear_threshold_spin.setRange(0.05, 0.60)
+        self.blink_ear_threshold_spin.setDecimals(3)
+        self.blink_ear_threshold_spin.setSingleStep(0.005)
+        self.blink_min_frames_spin = QtWidgets.QSpinBox()
+        self.blink_min_frames_spin.setRange(1, 30)
+        self.blink_min_frames_spin.setValue(2)
         self.publish_frames_check.toggled.connect(self._on_publish_frames_toggled)
         self.log_check = QtWidgets.QCheckBox(self.tr("Log detections to NDJSON"))
         self.log_check.toggled.connect(self._on_log_toggled)
@@ -164,11 +173,20 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         output_layout.addWidget(self.publish_annotated_check, 1, 0, 1, 3)
         output_layout.addWidget(self.enable_eye_control, 2, 0, 1, 1)
         output_layout.addWidget(self.enable_hand_control, 2, 1, 1, 2)
-        output_layout.addWidget(self.log_check, 3, 0, 1, 3)
-        output_layout.addWidget(self.log_path_edit, 3, 0, 1, 2)
-        output_layout.addWidget(browse_log_btn, 3, 2)
-        output_layout.addWidget(QtWidgets.QLabel(self.tr("Preferred Viewer")), 4, 0)
-        output_layout.addWidget(self.viewer_combo, 4, 1, 1, 2)
+        output_layout.addWidget(self.classify_eye_blinks, 3, 0, 1, 3)
+        output_layout.addWidget(
+            QtWidgets.QLabel(self.tr("Blink EAR Threshold")), 4, 0, 1, 1
+        )
+        output_layout.addWidget(self.blink_ear_threshold_spin, 4, 1, 1, 2)
+        output_layout.addWidget(
+            QtWidgets.QLabel(self.tr("Blink Min Frames")), 5, 0, 1, 1
+        )
+        output_layout.addWidget(self.blink_min_frames_spin, 5, 1, 1, 2)
+        output_layout.addWidget(self.log_check, 6, 0, 1, 3)
+        output_layout.addWidget(self.log_path_edit, 6, 0, 1, 2)
+        output_layout.addWidget(browse_log_btn, 6, 2)
+        output_layout.addWidget(QtWidgets.QLabel(self.tr("Preferred Viewer")), 7, 0)
+        output_layout.addWidget(self.viewer_combo, 7, 1, 1, 2)
         main_layout.addWidget(output_group)
 
         # --- Buttons / Status ------------------------------------------------
@@ -233,14 +251,18 @@ class RealtimeControlWidget(QtWidgets.QWidget):
                 targets = ", ".join(possible)
         self.targets_edit.setText(str(targets or ""))
 
-        self.width_spin.setValue(int(defaults.get("frame_width", 640)))
-        self.height_spin.setValue(int(defaults.get("frame_height", 480)))
+        self.width_spin.setValue(int(defaults.get("frame_width", 1280)))
+        self.height_spin.setValue(int(defaults.get("frame_height", 960)))
         self.max_fps_spin.setValue(float(defaults.get("max_fps", 30.0)))
         self.confidence_spin.setValue(
             float(
                 defaults.get("confidence_threshold", defaults.get("confidence", 0.25))
             )
         )
+        viewer_type = str(defaults.get("viewer_type", "threejs") or "threejs")
+        viewer_index = self.viewer_combo.findData(viewer_type)
+        if viewer_index >= 0:
+            self.viewer_combo.setCurrentIndex(viewer_index)
 
         self.publish_frames_check.setChecked(bool(defaults.get("publish_frames", True)))
         self.publish_annotated_check.setChecked(
@@ -250,23 +272,52 @@ class RealtimeControlWidget(QtWidgets.QWidget):
                 )
             )
         )
+        self.enable_eye_control.setChecked(
+            bool(defaults.get("enable_eye_control", False))
+        )
+        self.enable_hand_control.setChecked(
+            bool(defaults.get("enable_hand_control", False))
+        )
 
         self.log_check.setChecked(bool(defaults.get("log_to_ndjson", False)))
+        self.classify_eye_blinks.setChecked(
+            bool(defaults.get("classify_eye_blinks", False))
+        )
+        self.blink_ear_threshold_spin.setValue(
+            float(defaults.get("blink_ear_threshold", 0.21))
+        )
+        self.blink_min_frames_spin.setValue(
+            int(defaults.get("blink_min_consecutive_frames", 2))
+        )
         log_path = defaults.get("log_path") or defaults.get("ndjson_path") or ""
         if log_path:
             self.log_path_edit.setText(str(log_path))
         self._on_publish_frames_toggled(self.publish_frames_check.isChecked())
+        self._update_blink_controls()
 
     # UI slots
     def _on_model_combo_changed(self, index: int):
         data = self.model_combo.itemData(index)
         if data == "__custom__":
             self._browse_model_file()
+            self._update_blink_controls()
             return
 
         if isinstance(data, ModelConfig):
             self.model_path_edit.setText(str(data.weight_file))
             self._custom_model_path = None
+        self._update_blink_controls()
+
+    def _update_blink_controls(self) -> None:
+        model_text = str(self.model_path_edit.text() or "").strip().lower()
+        is_face_model = (
+            "mediapipe_face" in model_text or "face_landmarker" in model_text
+        )
+        self.classify_eye_blinks.setEnabled(is_face_model)
+        self.blink_ear_threshold_spin.setEnabled(is_face_model)
+        self.blink_min_frames_spin.setEnabled(is_face_model)
+        if not is_face_model:
+            self.classify_eye_blinks.setChecked(False)
 
     def _browse_model_file(self):
         last_path = self.model_path_edit.text().strip() or str(Path.home())
@@ -349,51 +400,27 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         publisher = self.publisher_edit.text().strip() or "tcp://*:5555"
         subscriber = self.subscriber_edit.text().strip() or "tcp://127.0.0.1:5555"
 
-        camera_raw = self.camera_edit.text().strip()
-        if not camera_raw:
-            camera_value: object = 0
-        else:
-            try:
-                camera_value = int(camera_raw)
-            except ValueError:
-                camera_value = camera_raw
-
         targets_text = self.targets_edit.text().strip()
-        if targets_text:
-            targets_list = [
-                token.strip() for token in targets_text.split(",") if token.strip()
-            ]
-        else:
-            targets_list = []
-
-        config = RealtimeConfig(
-            camera_index=camera_value,
+        return build_realtime_launch_payload(
+            camera_source=self.camera_edit.text().strip(),
+            model_name=model_path,
+            target_behaviors_csv=targets_text,
+            confidence_threshold=float(self.confidence_spin.value()),
+            viewer_type=str(self.viewer_combo.currentData() or "threejs"),
+            enable_eye_control=self.enable_eye_control.isChecked(),
+            enable_hand_control=self.enable_hand_control.isChecked(),
+            classify_eye_blinks=self.classify_eye_blinks.isChecked(),
+            blink_ear_threshold=float(self.blink_ear_threshold_spin.value()),
+            blink_min_consecutive_frames=int(self.blink_min_frames_spin.value()),
+            subscriber_address=subscriber,
+            log_enabled=self.log_check.isChecked(),
+            log_path=self.log_path_edit.text().strip(),
             server_address=self.server_edit.text().strip() or "localhost",
             server_port=int(self.port_spin.value()),
-            model_base_name=model_path,
             publisher_address=publisher,
-            target_behaviors=targets_list,
-            confidence_threshold=float(self.confidence_spin.value()),
             frame_width=int(self.width_spin.value()),
             frame_height=int(self.height_spin.value()),
             max_fps=float(self.max_fps_spin.value()),
-            visualize=False,
-            pause_on_recording_stop=True,
-            mask_encoding="rle",
             publish_frames=self.publish_frames_check.isChecked(),
             publish_annotated_frames=self.publish_annotated_check.isChecked(),
-            frame_encoding="jpg",
-            frame_quality=80,
         )
-
-        log_enabled = self.log_check.isChecked()
-        log_path = self.log_path_edit.text().strip()
-        extras = {
-            "subscriber_address": subscriber,
-            "log_enabled": log_enabled,
-            "log_path": log_path,
-            "viewer_type": self.viewer_combo.currentData(),
-            "enable_eye_control": self.enable_eye_control.isChecked(),
-            "enable_hand_control": self.enable_hand_control.isChecked(),
-        }
-        return config, extras

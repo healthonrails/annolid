@@ -15,6 +15,10 @@ from annolid.core.agent.session_manager import (
     AgentSessionManager,
     PersistentSessionStore,
 )
+from annolid.gui.realtime_launch import (
+    build_realtime_launch_payload,
+    resolve_realtime_model_weight,
+)
 from annolid.gui.widgets.ai_chat_audio_controller import ChatAudioController
 from annolid.gui.widgets.ai_chat_backend import StreamingChatTask, clear_chat_session
 from annolid.gui.widgets.ai_chat_session_dialog import ChatSessionManagerDialog
@@ -187,6 +191,17 @@ class AIChatWidget(QtWidgets.QWidget):
         self._typing_timer.setInterval(350)
         self._typing_timer.timeout.connect(self._on_typing_timer_tick)
         self._bot_action_results: Dict[str, Dict[str, Any]] = {}
+        self._quick_actions: List[tuple[str, str]] = [
+            (
+                "Start Blink Stream",
+                "open stream with model mediapipe face and classify eye blinks",
+            ),
+            ("Stop Stream", "stop realtime stream"),
+            ("Summarize Context", "Summarize what we are doing in this session."),
+            ("Help Me Track", "Help me track the next frames in this video."),
+            ("Review Memory", "Review long-term memory and list key facts."),
+        ]
+        self._selected_quick_action_index: Optional[int] = None
 
         self._build_ui()
         self._apply_theme_styles()
@@ -395,21 +410,24 @@ class AIChatWidget(QtWidgets.QWidget):
         row = QtWidgets.QHBoxLayout()
         row.setSpacing(6)
         self.quick_action_buttons: List[QtWidgets.QPushButton] = []
-        actions = [
-            ("Summarize Context", "Summarize what we are doing in this session."),
-            ("Help Me Track", "Help me track the next frames in this video."),
-            ("Review Memory", "Review long-term memory and list key facts."),
-        ]
-        for label, prompt in actions:
-            btn = QtWidgets.QPushButton(label, self)
-            btn.setObjectName("quickActionButton")
-            btn.setToolTip(prompt)
-            btn.clicked.connect(
-                lambda _checked=False, p=prompt: self._apply_quick_action(p)
-            )
-            self.quick_action_buttons.append(btn)
-            row.addWidget(btn, 0)
-        row.addStretch(1)
+        self.quick_actions_layout = QtWidgets.QHBoxLayout()
+        self.quick_actions_layout.setSpacing(6)
+        row.addLayout(self.quick_actions_layout, 1)
+        self.add_quick_action_button = QtWidgets.QToolButton(self)
+        self.add_quick_action_button.setObjectName("chatComposerIconButton")
+        self.add_quick_action_button.setText("+")
+        self.add_quick_action_button.setToolTip("Add quick prompt")
+        self.add_quick_action_button.clicked.connect(self._add_quick_action)
+        row.addWidget(self.add_quick_action_button, 0)
+        self.remove_quick_action_button = QtWidgets.QToolButton(self)
+        self.remove_quick_action_button.setObjectName("chatComposerIconButton")
+        self.remove_quick_action_button.setText("-")
+        self.remove_quick_action_button.setToolTip("Remove selected quick prompt")
+        self.remove_quick_action_button.clicked.connect(
+            self._remove_selected_quick_action
+        )
+        row.addWidget(self.remove_quick_action_button, 0)
+        self._refresh_quick_action_buttons()
         return row
 
     def _build_prompt_meta_row(self) -> QtWidgets.QWidget:
@@ -476,9 +494,94 @@ class AIChatWidget(QtWidgets.QWidget):
         self._on_prompt_text_changed()
 
     def _apply_quick_action(self, text: str) -> None:
-        self.prompt_text_edit.setPlainText(str(text or "").strip())
+        prompt_text = str(text or "").strip()
+        if not prompt_text:
+            return
+        existing_text = self.prompt_text_edit.toPlainText().rstrip()
+        if existing_text:
+            merged_text = f"{existing_text}\n{prompt_text}"
+        else:
+            merged_text = prompt_text
+        self.prompt_text_edit.setPlainText(merged_text)
+        cursor = self.prompt_text_edit.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        self.prompt_text_edit.setTextCursor(cursor)
         self.prompt_text_edit.setFocus()
         self._on_prompt_text_changed()
+
+    def _refresh_quick_action_buttons(self) -> None:
+        while self.quick_actions_layout.count():
+            item = self.quick_actions_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.quick_action_buttons = []
+        if self._selected_quick_action_index is not None and (
+            self._selected_quick_action_index < 0
+            or self._selected_quick_action_index >= len(self._quick_actions)
+        ):
+            self._selected_quick_action_index = None
+        for idx, (label, prompt) in enumerate(self._quick_actions):
+            btn = QtWidgets.QPushButton(label, self)
+            btn.setObjectName("quickActionButton")
+            btn.setToolTip(prompt)
+            btn.setCheckable(True)
+            btn.setChecked(idx == self._selected_quick_action_index)
+            btn.clicked.connect(
+                lambda _checked=False, i=idx: self._on_quick_action_clicked(i)
+            )
+            self.quick_action_buttons.append(btn)
+            self.quick_actions_layout.addWidget(btn, 0)
+        self.quick_actions_layout.addStretch(1)
+        self.remove_quick_action_button.setEnabled(
+            self._selected_quick_action_index is not None
+        )
+
+    def _on_quick_action_clicked(self, index: int) -> None:
+        if index < 0 or index >= len(self._quick_actions):
+            return
+        self._selected_quick_action_index = index
+        for idx, btn in enumerate(self.quick_action_buttons):
+            btn.setChecked(idx == index)
+        self._apply_quick_action(self._quick_actions[index][1])
+
+    def _add_quick_action(self) -> None:
+        label, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "Add Quick Prompt",
+            "Button label:",
+        )
+        label_text = str(label or "").strip()
+        if not ok or not label_text:
+            return
+        prompt, ok = QtWidgets.QInputDialog.getMultiLineText(
+            self,
+            "Add Quick Prompt",
+            "Prompt text:",
+            "",
+        )
+        prompt_text = str(prompt or "").strip()
+        if not ok or not prompt_text:
+            return
+        self._quick_actions.append((label_text, prompt_text))
+        self._selected_quick_action_index = len(self._quick_actions) - 1
+        self._refresh_quick_action_buttons()
+
+    def _remove_selected_quick_action(self) -> None:
+        index = self._selected_quick_action_index
+        if index is None or index < 0 or index >= len(self._quick_actions):
+            QtWidgets.QMessageBox.information(
+                self,
+                "Quick Prompts",
+                "Select a quick prompt button to remove.",
+            )
+            return
+        self._quick_actions.pop(index)
+        if self._quick_actions:
+            self._selected_quick_action_index = min(index, len(self._quick_actions) - 1)
+        else:
+            self._selected_quick_action_index = None
+        self._refresh_quick_action_buttons()
 
     @staticmethod
     def _set_button_icon(
@@ -1764,6 +1867,105 @@ class AIChatWidget(QtWidgets.QWidget):
         except Exception as exc:
             self._set_bot_action_result(
                 "label_behavior_segments",
+                {"ok": False, "error": str(exc)},
+            )
+            self.status_label.setText(f"Bot action failed: {exc}")
+
+    @QtCore.Slot(str, str, str, float, str, bool, float, int)
+    def bot_start_realtime_stream(
+        self,
+        camera_source: str = "",
+        model_name: str = "",
+        target_behaviors_csv: str = "",
+        confidence_threshold: float = -1.0,
+        viewer_type: str = "threejs",
+        classify_eye_blinks: bool = False,
+        blink_ear_threshold: float = -1.0,
+        blink_min_consecutive_frames: int = -1,
+    ) -> None:
+        self._set_bot_action_result(
+            "start_realtime_stream",
+            {"ok": False, "error": "Realtime stream did not start."},
+        )
+        host = self.host_window_widget or self.window()
+        manager = getattr(host, "realtime_manager", None)
+        if manager is None:
+            self._set_bot_action_result(
+                "start_realtime_stream",
+                {"ok": False, "error": "Realtime manager is unavailable."},
+            )
+            self.status_label.setText(
+                "Bot action failed: realtime manager unavailable."
+            )
+            return
+        try:
+            realtime_config, extras = build_realtime_launch_payload(
+                camera_source=camera_source,
+                model_name=model_name,
+                target_behaviors_csv=target_behaviors_csv,
+                confidence_threshold=confidence_threshold,
+                viewer_type=viewer_type,
+                enable_eye_control=False,
+                enable_hand_control=False,
+                classify_eye_blinks=bool(classify_eye_blinks),
+                blink_ear_threshold=blink_ear_threshold,
+                blink_min_consecutive_frames=blink_min_consecutive_frames,
+                suppress_control_dock=True,
+            )
+            model_weight = resolve_realtime_model_weight(model_name)
+            camera_value = realtime_config.camera_index
+
+            start_handler = getattr(manager, "_handle_realtime_start_request", None)
+            if callable(start_handler):
+                start_handler(realtime_config, extras)
+            else:
+                starter = getattr(manager, "start_realtime_inference", None)
+                if not callable(starter):
+                    raise RuntimeError("Realtime start API is unavailable.")
+                starter(realtime_config, extras)
+
+            self._set_bot_action_result(
+                "start_realtime_stream",
+                {
+                    "ok": True,
+                    "model_name": model_weight,
+                    "camera_source": str(camera_value),
+                    "viewer_type": str(extras["viewer_type"]),
+                    "classify_eye_blinks": bool(classify_eye_blinks),
+                },
+            )
+            self.status_label.setText(
+                f"Realtime started with {model_weight} on source {camera_value}."
+            )
+        except Exception as exc:
+            self._set_bot_action_result(
+                "start_realtime_stream",
+                {"ok": False, "error": str(exc)},
+            )
+            self.status_label.setText(f"Bot action failed: {exc}")
+
+    @QtCore.Slot()
+    def bot_stop_realtime_stream(self) -> None:
+        self._set_bot_action_result(
+            "stop_realtime_stream",
+            {"ok": False, "error": "Realtime stream did not stop."},
+        )
+        host = self.host_window_widget or self.window()
+        stopper = getattr(host, "stop_realtime_inference", None)
+        if not callable(stopper):
+            self._set_bot_action_result(
+                "stop_realtime_stream",
+                {"ok": False, "error": "Realtime stop API is unavailable."},
+            )
+            self.status_label.setText("Bot action failed: realtime stop unavailable.")
+            return
+        try:
+            stopper()
+            self._set_bot_action_result("stop_realtime_stream", {"ok": True})
+            self.status_label.setText("Realtime stream stopped.")
+        except Exception as exc:
+            self._set_bot_action_result(
+                "stop_realtime_stream",
                 {"ok": False, "error": str(exc)},
             )
             self.status_label.setText(f"Bot action failed: {exc}")

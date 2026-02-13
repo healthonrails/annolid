@@ -53,6 +53,8 @@ Safety notes:
 - `gui_segment_track_video(path, text_prompt, mode?, use_countgd?, model_name?, to_frame?)`
 - `gui_label_behavior_segments(path?, behavior_labels?, segment_mode?, segment_frames?, max_segments?, subject?, overwrite_existing?, llm_profile?, llm_provider?, llm_model?)`
   - Saves timeline labels and exports `<video_stem>_timestamps.csv` automatically.
+- `gui_start_realtime_stream(camera_source?, model_name?, target_behaviors?, confidence_threshold?, viewer_type?, classify_eye_blinks?, blink_ear_threshold?, blink_min_consecutive_frames?)`
+- `gui_stop_realtime_stream()`
 
 ## Communication and Delegation
 

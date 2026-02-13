@@ -189,8 +189,12 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         from qtpy.QtCore import QBuffer, QIODevice
 
         base64_data = ""
+        frame_width = 0
+        frame_height = 0
         if qimage is not None and not qimage.isNull():
             # Convert QImage to base64 JPEG
+            frame_width = int(qimage.width())
+            frame_height = int(qimage.height())
             buffer = QBuffer()
             buffer.open(QIODevice.WriteOnly)
             qimage.save(buffer, "JPG", 80)
@@ -212,7 +216,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
 
         js_code = (
             f"if (window.updateRealtimeData) {{ "
-            f"window.updateRealtimeData('{base64_data}', {json.dumps(minimal_detections)});"
+            f"window.updateRealtimeData('{base64_data}', {json.dumps(minimal_detections)}, {frame_width}, {frame_height});"
             f"}}"
         )
         self._web_view.page().runJavaScript(js_code)

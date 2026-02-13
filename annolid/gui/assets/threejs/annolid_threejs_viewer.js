@@ -548,13 +548,55 @@ async function boot() {
 
     const poseKeypoints = new THREE.Group();
     const poseSkeleton = new THREE.Group();
+    const behaviorLabels = new THREE.Group();
+    const irisGroup = new THREE.Group();
     poseGroup.add(poseKeypoints);
     poseGroup.add(poseSkeleton);
+    poseGroup.add(behaviorLabels);
+    poseGroup.add(irisGroup);
     // Render on top
     poseGroup.renderOrder = 999;
 
-    window.updateRealtimeData = (base64Frame, detections) => {
+    const createBehaviorLabelSprite = (text, colorHex) => {
+      const labelText = String(text || "").trim();
+      if (!labelText) return null;
+      const c = document.createElement("canvas");
+      c.width = 512;
+      c.height = 128;
+      const ctx = c.getContext("2d");
+      if (!ctx) return null;
+      ctx.clearRect(0, 0, c.width, c.height);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+      ctx.fillRect(8, 12, c.width - 16, c.height - 24);
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(8, 12, c.width - 16, c.height - 24);
+      ctx.font = "bold 48px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = colorHex || "#ffffff";
+      ctx.fillText(labelText, c.width / 2, c.height / 2);
+      const texture = new THREE.CanvasTexture(c);
+      texture.needsUpdate = true;
+      const material = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthTest: false,
+        depthWrite: false
+      });
+      const sprite = new THREE.Sprite(material);
+      sprite.scale.set(2.8, 0.7, 1.0);
+      sprite.renderOrder = 1001;
+      return sprite;
+    };
+
+    window.updateRealtimeData = (base64Frame, detections, frameWidthArg = 0, frameHeightArg = 0) => {
       if (!realtimeEnabled) return;
+      const overlayZ = (videoPlane && Number.isFinite(videoPlane.position.z))
+        ? (videoPlane.position.z + 0.02)
+        : -4.98;
+      const labelZ = overlayZ + 0.02;
+      const gazeZ = overlayZ + 0.03;
 
       // 1. Update Video Frame
       if (base64Frame) {
@@ -584,11 +626,14 @@ async function boot() {
       // 2. Update Poses and Hands
       poseKeypoints.clear();
       poseSkeleton.clear();
+      behaviorLabels.clear();
+      irisGroup.clear();
       handGroup.clear();
 
       if (detections && detections.length > 0) {
         detections.forEach((det, detIdx) => {
-          const kps = det.keypoints_pixels || det.keypoints;
+          // Prefer normalized keypoints because scene mapping assumes [0..1].
+          const kps = det.keypoints || det.keypoints_pixels;
           if (!kps) return;
 
           const color = new THREE.Color().setHSL((detIdx * 0.1) % 1, 0.8, 0.5);
@@ -598,18 +643,36 @@ async function boot() {
           const points = [];
           const aspect = videoPlane.scale.x / videoPlane.scale.y;
 
-          kps.forEach(kp => {
-            let nx = kp[0];
-            let ny = kp[1];
+          const frameW = Number(frameWidthArg || 0) > 0
+            ? Number(frameWidthArg)
+            : (videoTexture && videoTexture.image ? Number(videoTexture.image.width || 0) : 0);
+          const frameH = Number(frameHeightArg || 0) > 0
+            ? Number(frameHeightArg)
+            : (videoTexture && videoTexture.image ? Number(videoTexture.image.height || 0) : 0);
+
+          const projected = new Array(kps.length);
+          kps.forEach((kp, kpIdx) => {
+            if (!Array.isArray(kp) || kp.length < 2) return;
+            let nx = Number(kp[0]);
+            let ny = Number(kp[1]);
+            if (!Number.isFinite(nx) || !Number.isFinite(ny)) return;
+            const looksNormalized = nx >= 0 && nx <= 1.2 && ny >= 0 && ny <= 1.2;
+            if (!looksNormalized && frameW > 1 && frameH > 1) {
+              nx = nx / frameW;
+              ny = ny / frameH;
+            }
+            nx = Math.max(0, Math.min(1, nx));
+            ny = Math.max(0, Math.min(1, ny));
 
             // Map normalized [0..1] to scene space [-aspect*5, aspect*5] and [5, -5]
             const x = (nx - 0.5) * (aspect * 10);
             const y = -(ny - 0.5) * 10;
+            projected[kpIdx] = { x, y };
 
             const kpMesh = new THREE.Mesh(sphereGeo, sphereMat);
-            kpMesh.position.set(x, y, 0.01); // Slightly in front of plane
+            kpMesh.position.set(x, y, overlayZ); // Slightly in front of video plane
             poseKeypoints.add(kpMesh);
-            points.push(new THREE.Vector3(x, y, 0.01));
+            points.push(new THREE.Vector3(x, y, overlayZ));
           });
 
           // Draw skeleton if we have multiple points
@@ -619,14 +682,83 @@ async function boot() {
             const line = new THREE.Line(lineGeo, lineMat);
             poseSkeleton.add(line);
           }
+          const behaviorText = String(det.behavior || "").trim();
+          if (behaviorText && points.length > 0) {
+            const labelSprite = createBehaviorLabelSprite(
+              behaviorText,
+              `#${color.getHexString()}`
+            );
+            if (labelSprite) {
+              // Show behavior labels in a fixed top-left stack on the frame.
+              const labelMarginX = 1.4;
+              const labelMarginY = 0.5;
+              const lineSpacing = 0.78;
+              const labelX = -(aspect * 5) + labelMarginX;
+              const labelY = 5 - labelMarginY - (detIdx * lineSpacing);
+              labelSprite.position.set(labelX, labelY, labelZ);
+              behaviorLabels.add(labelSprite);
+            }
+          }
+
+          // Iris visualization for MediaPipe face landmarks.
+          if (projected.length >= 478) {
+            const LEFT_IRIS = [468, 469, 470, 471, 472];
+            const RIGHT_IRIS = [473, 474, 475, 476, 477];
+            const renderIris = (indices, colorHex) => {
+              const center = projected[indices[0]];
+              if (!center) return;
+              const ringPts = indices
+                .slice(1)
+                .map((idx) => projected[idx])
+                .filter((p) => !!p);
+              if (ringPts.length < 2) return;
+
+              // Estimate iris radius from boundary landmarks.
+              let sum = 0.0;
+              ringPts.forEach((p) => {
+                const dx = p.x - center.x;
+                const dy = p.y - center.y;
+                sum += Math.sqrt(dx * dx + dy * dy);
+              });
+              const radius = Math.max(0.03, Math.min(0.25, sum / ringPts.length));
+
+              const ringGeo = new THREE.RingGeometry(radius * 0.72, radius, 24);
+              const ringMat = new THREE.MeshBasicMaterial({
+                color: colorHex,
+                transparent: true,
+                opacity: 0.9,
+                side: THREE.DoubleSide,
+                depthTest: false,
+                depthWrite: false
+              });
+              const ring = new THREE.Mesh(ringGeo, ringMat);
+              ring.position.set(center.x, center.y, overlayZ + 0.015);
+              irisGroup.add(ring);
+
+              const pupilGeo = new THREE.SphereGeometry(radius * 0.26, 12, 12);
+              const pupilMat = new THREE.MeshBasicMaterial({
+                color: colorHex,
+                transparent: true,
+                opacity: 0.95,
+                depthTest: false,
+                depthWrite: false
+              });
+              const pupil = new THREE.Mesh(pupilGeo, pupilMat);
+              pupil.position.set(center.x, center.y, overlayZ + 0.02);
+              irisGroup.add(pupil);
+            };
+            renderIris(LEFT_IRIS, 0x33ffcc);
+            renderIris(RIGHT_IRIS, 0x66ccff);
+          }
+
+          // Keep hand pinch state available for downstream gaze/interaction logic.
+          let leftPinch = null;
+          let rightPinch = null;
 
           // 4. Update Hand Controls
           if (det.metadata && det.metadata.hands) {
             const handsData = det.metadata.hands;
             const aspect = videoPlane.scale.x / videoPlane.scale.y;
-
-            let leftPinch = null;
-            let rightPinch = null;
 
             handsData.forEach((hand) => {
               const color = hand.label === "Left" ? 0x33ff66 : 0x3366ff;
@@ -643,7 +775,7 @@ async function boot() {
                 const x = (kp[0] - 0.5) * (aspect * 10);
                 const y = -(kp[1] - 0.5) * 10;
                 const mesh = new THREE.Mesh(geo, mat);
-                mesh.position.set(x, y, 0.02);
+                mesh.position.set(x, y, overlayZ + 0.01);
                 handGroup.add(mesh);
 
                 // Pinch visual
@@ -756,7 +888,7 @@ async function boot() {
             const gx = (gaze[0] * (aspect * 5)) * lerpFactor + gazeReticle.position.x * (1 - lerpFactor);
             const gy = (-gaze[1] * 5) * lerpFactor + gazeReticle.position.y * (1 - lerpFactor);
 
-            gazeReticle.position.set(gx, gy, 0.05);
+            gazeReticle.position.set(gx, gy, gazeZ);
             gazeReticle.visible = true;
 
             if (window.__annolidEnableEyeControl && root.children.length > 0) {
