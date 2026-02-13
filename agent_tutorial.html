@@ -171,6 +171,21 @@
 <li><p>Switch to Classic Mode when you only want manual labeling.</p></li>
 </ol>
 </section>
+<section id="annolid-bot-for-local-repo-tasks">
+<h2>11. Annolid Bot for Local Repo Tasks<a class="headerlink" href="#annolid-bot-for-local-repo-tasks" title="Link to this heading"></a></h2>
+<p>In <strong>AI Chat Studio</strong>, Annolid Bot can inspect and modify your local Annolid workspace with file tools and repo-introspection helpers:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">code_search(...)</span></code> to find where behavior, flags, or APIs are implemented.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">code_explain(...)</span></code> to summarize Python modules/classes/functions and calls.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">read_file(...)</span></code>, <code class="docutils literal notranslate"><span class="pre">write_file(...)</span></code>, <code class="docutils literal notranslate"><span class="pre">edit_file(...)</span></code> for targeted updates.</p></li>
+</ul>
+<p>For safer edits, ask the bot to:</p>
+<ol class="arabic simple">
+<li><p>run <code class="docutils literal notranslate"><span class="pre">code_search</span></code> first,</p></li>
+<li><p>explain the target with <code class="docutils literal notranslate"><span class="pre">code_explain</span></code>,</p></li>
+<li><p>apply the smallest edit and report changed files/tests.</p></li>
+</ol>
+</section>
 </section>
 
 
