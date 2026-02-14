@@ -4116,6 +4116,26 @@
         return task;
       }
 
+      async function _annolidRenderPageSafely(pageNum, epoch, maxRetries) {
+        const retries = Math.max(0, parseInt(maxRetries, 10) || 0);
+        let lastErr = null;
+        for (let attempt = 0; attempt <= retries; attempt++) {
+          try {
+            await renderPage(pageNum, epoch);
+            return true;
+          } catch (e) {
+            lastErr = e;
+            if (attempt < retries) {
+              await new Promise((r) => setTimeout(r, 120 * (attempt + 1)));
+            }
+          }
+        }
+        try {
+          console.warn("Annolid renderPage failed", { pageNum, retries, error: lastErr });
+        } catch (e) { }
+        return false;
+      }
+
       function _annolidNormalizeRefText(text) {
         return _annolidNormalizeText(String(text || "")).toLowerCase();
       }
@@ -4407,7 +4427,7 @@
         const target = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
         return _annolidQueueRender(async (epoch) => {
           while (nextPage <= target && nextPage <= total) {
-            await renderPage(nextPage, epoch);
+            await _annolidRenderPageSafely(nextPage, epoch, 2);
             nextPage += 1;
             await new Promise(r => setTimeout(r, 0));
           }
@@ -5178,7 +5198,7 @@
         return _annolidQueueRender(async (epoch) => {
           let count = 0;
           while (nextPage <= total && count < maxCount) {
-            await renderPage(nextPage, epoch);
+            await _annolidRenderPageSafely(nextPage, epoch, 2);
             nextPage += 1;
             count += 1;
             await new Promise(r => setTimeout(r, 0));
@@ -5186,8 +5206,27 @@
         });
       }
 
+      function _annolidScheduleBackgroundRender(startDelayMs) {
+        const myEpoch = renderEpoch;
+        const delay = Math.max(0, parseInt(startDelayMs, 10) || 0);
+        const tick = () => {
+          if (myEpoch !== renderEpoch) return;
+          if (nextPage > total) return;
+          renderMore(2).then(() => {
+            if (myEpoch !== renderEpoch) return;
+            if (nextPage > total) return;
+            setTimeout(tick, 120);
+          }).catch(() => {
+            if (myEpoch !== renderEpoch) return;
+            setTimeout(tick, 300);
+          });
+        };
+        setTimeout(tick, delay);
+      }
+
       await renderMore(2);
       await _annolidResumeFromSavedState(false);
+      _annolidScheduleBackgroundRender(300);
       _annolidUpdatePersistenceButtons();
       if (container) {
         let scrollScheduled = false;
