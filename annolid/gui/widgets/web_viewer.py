@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Optional
+from typing import Dict, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
 from annolid.utils.logger import logger
@@ -208,6 +208,9 @@ class WebViewerWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self._web_view = None
         self._current_url = ""
+        self._thread_pool = QtCore.QThreadPool.globalInstance()
+        self._speaking = False
+        self._active_speak_token: Optional[_SpeakToken] = None
         self._build_ui()
 
     @property
@@ -269,6 +272,8 @@ class WebViewerWidget(QtWidgets.QWidget):
         self.open_in_browser_button.clicked.connect(self.open_current_in_browser)
         self._web_view.urlChanged.connect(self._on_url_changed)
         self._web_view.loadFinished.connect(self._on_load_finished)
+        self._web_view.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self._web_view.customContextMenuRequested.connect(self._show_context_menu)
 
     def _normalize_url(self, url: str) -> QtCore.QUrl:
         value = str(url or "").strip()
@@ -539,3 +544,263 @@ class WebViewerWidget(QtWidgets.QWidget):
             self.status_changed.emit(f"Loaded: {self._current_url}")
             return
         self.status_changed.emit("Failed to load page.")
+
+    def _show_context_menu(self, position: QtCore.QPoint) -> None:
+        if self._web_view is None:
+            return
+        page = self._web_view.page()
+        if page is None:
+            return
+        global_pos = self._web_view.mapToGlobal(position)
+
+        def show_menu(selection: object) -> None:
+            selected_text = (str(selection) if selection is not None else "").strip()
+            if not selected_text:
+                selected_text = str(self._web_view.selectedText() or "").strip()
+            menu = page.createStandardContextMenu()
+            menu.insertSeparator(menu.actions()[0] if menu.actions() else None)
+
+            speak_action = QtWidgets.QAction("Speak selection", self)
+            speak_action.setEnabled(bool(selected_text) and not self._speaking)
+            speak_action.triggered.connect(
+                lambda: self._speak_selected_text(selected_text)
+            )
+            menu.insertAction(
+                menu.actions()[0] if menu.actions() else None, speak_action
+            )
+
+            if self._speaking:
+                stop_action = QtWidgets.QAction("Stop speaking", self)
+                stop_action.triggered.connect(self._cancel_speaking)
+                menu.insertAction(
+                    menu.actions()[0] if menu.actions() else None, stop_action
+                )
+
+            menu.exec_(global_pos)
+
+        try:
+            page.runJavaScript(
+                """(() => {
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!sel || sel.isCollapsed) return '';
+  return sel.toString();
+})()""",
+                show_menu,
+            )
+        except Exception:
+            show_menu(None)
+
+    def _speak_selected_text(self, text: str) -> None:
+        cleaned = " ".join(str(text or "").strip().split())
+        if not cleaned:
+            self.status_changed.emit("No selected text to speak.")
+            return
+        if self._speaking:
+            self.status_changed.emit("Already speaking. Use 'Stop speaking' first.")
+            return
+
+        settings = self._tts_settings_snapshot()
+        token = _SpeakToken()
+        self._active_speak_token = token
+        self._speaking = True
+        self.status_changed.emit("Speaking selected text…")
+        self._thread_pool.start(_WebSpeakTask(self, cleaned, settings, token))
+
+    def _cancel_speaking(self) -> None:
+        if self._active_speak_token is not None:
+            self._active_speak_token.cancelled = True
+            self.status_changed.emit("Stopping speech…")
+
+    @staticmethod
+    def _tts_settings_snapshot() -> Dict[str, object]:
+        from annolid.utils.tts_settings import default_tts_settings, load_tts_settings
+
+        settings = load_tts_settings()
+        defaults = default_tts_settings()
+        return {
+            "engine": settings.get("engine", defaults.get("engine", "auto")),
+            "voice": settings.get("voice", defaults["voice"]),
+            "pocket_voice": settings.get(
+                "pocket_voice", defaults.get("pocket_voice", "alba")
+            ),
+            "pocket_prompt_path": settings.get(
+                "pocket_prompt_path", defaults.get("pocket_prompt_path", "")
+            ),
+            "pocket_speed": settings.get(
+                "pocket_speed", defaults.get("pocket_speed", 1.0)
+            ),
+            "lang": settings.get("lang", defaults["lang"]),
+            "speed": settings.get("speed", defaults["speed"]),
+            "chatterbox_voice_path": settings.get(
+                "chatterbox_voice_path", defaults.get("chatterbox_voice_path", "")
+            ),
+            "chatterbox_dtype": settings.get(
+                "chatterbox_dtype", defaults.get("chatterbox_dtype", "fp32")
+            ),
+            "chatterbox_max_new_tokens": settings.get(
+                "chatterbox_max_new_tokens",
+                defaults.get("chatterbox_max_new_tokens", 1024),
+            ),
+            "chatterbox_repetition_penalty": settings.get(
+                "chatterbox_repetition_penalty",
+                defaults.get("chatterbox_repetition_penalty", 1.2),
+            ),
+            "chatterbox_apply_watermark": settings.get(
+                "chatterbox_apply_watermark",
+                defaults.get("chatterbox_apply_watermark", False),
+            ),
+        }
+
+    @QtCore.Slot(str)
+    def _on_speak_status(self, message: str) -> None:
+        text = str(message or "").strip()
+        if text:
+            self.status_changed.emit(text)
+
+    @QtCore.Slot()
+    def _on_speak_finished(self) -> None:
+        self._speaking = False
+        self._active_speak_token = None
+
+
+class _SpeakToken:
+    def __init__(self) -> None:
+        self.cancelled = False
+
+
+class _WebSpeakTask(QtCore.QRunnable):
+    """Background task to stream TTS chunks for selected web text."""
+
+    def __init__(
+        self,
+        widget: WebViewerWidget,
+        text: str,
+        tts_settings: Dict[str, object],
+        token: Optional[_SpeakToken] = None,
+    ) -> None:
+        super().__init__()
+        self.widget = widget
+        self.text = text
+        self.tts_settings = tts_settings
+        self.token = token
+
+    def run(self) -> None:  # pragma: no cover - involves audio device/TTS backends
+        try:
+            text = str(self.text or "").strip()
+            if not text:
+                return
+            chunks = self._chunk_text(text)
+            if not chunks:
+                return
+
+            def cancelled() -> bool:
+                return bool(self.token is not None and self.token.cancelled)
+
+            from concurrent.futures import ThreadPoolExecutor
+
+            from annolid.agents.tts_router import synthesize_tts
+            from annolid.utils.audio_playback import play_audio_buffer
+
+            def synthesize(chunk: str):
+                audio_data = synthesize_tts(chunk, self.tts_settings)
+                if not audio_data:
+                    raise RuntimeError("No audio returned by TTS engine.")
+                return audio_data
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                current_future = executor.submit(synthesize, chunks[0])
+                for idx in range(len(chunks)):
+                    if cancelled():
+                        return
+                    samples, sample_rate = current_future.result()
+                    next_future = None
+                    if idx + 1 < len(chunks):
+                        next_future = executor.submit(synthesize, chunks[idx + 1])
+                    QtCore.QMetaObject.invokeMethod(
+                        self.widget,
+                        "_on_speak_status",
+                        QtCore.Qt.QueuedConnection,
+                        QtCore.Q_ARG(
+                            str, f"Speaking selected text ({idx + 1}/{len(chunks)})…"
+                        ),
+                    )
+                    if cancelled():
+                        return
+                    played = play_audio_buffer(samples, int(sample_rate), blocking=True)
+                    if not played:
+                        raise RuntimeError("No usable audio device found.")
+                    if next_future is None:
+                        break
+                    current_future = next_future
+
+            if not cancelled():
+                QtCore.QMetaObject.invokeMethod(
+                    self.widget,
+                    "_on_speak_status",
+                    QtCore.Qt.QueuedConnection,
+                    QtCore.Q_ARG(str, "Finished speaking selected text."),
+                )
+        except Exception as exc:
+            QtCore.QMetaObject.invokeMethod(
+                self.widget,
+                "_on_speak_status",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(str, f"Speak selection failed: {exc}"),
+            )
+        finally:
+            QtCore.QMetaObject.invokeMethod(
+                self.widget,
+                "_on_speak_finished",
+                QtCore.Qt.QueuedConnection,
+            )
+
+    @staticmethod
+    def _chunk_text(text: str, max_chars: int = 420) -> list[str]:
+        import re
+
+        cleaned = re.sub(r"\s+", " ", str(text or "").strip())
+        if not cleaned:
+            return []
+        sentences = re.split(r"(?<=[.!?。！？])\s+", cleaned)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        if not sentences:
+            return [cleaned]
+
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = 0
+
+        for sentence in sentences:
+            sentence_len = len(sentence)
+            add_len = sentence_len + (1 if current else 0)
+            if current and current_len + add_len > max_chars:
+                chunks.append(" ".join(current))
+                current = [sentence]
+                current_len = sentence_len
+            else:
+                current.append(sentence)
+                current_len += add_len
+            if sentence_len > max_chars:
+                if current:
+                    chunks.append(" ".join(current[:-1]).strip())
+                current = []
+                current_len = 0
+                words = sentence.split()
+                piece: list[str] = []
+                piece_len = 0
+                for word in words:
+                    extra = len(word) + (1 if piece else 0)
+                    if piece and piece_len + extra > max_chars:
+                        chunks.append(" ".join(piece))
+                        piece = [word]
+                        piece_len = len(word)
+                    else:
+                        piece.append(word)
+                        piece_len += extra
+                if piece:
+                    current = [" ".join(piece)]
+                    current_len = len(current[0])
+
+        if current:
+            chunks.append(" ".join(current))
+        return [c for c in chunks if c.strip()]
