@@ -5,6 +5,8 @@ def test_supports_threejs_canvas_known_extensions():
     assert supports_threejs_canvas("model.stl")
     assert supports_threejs_canvas("mesh.obj")
     assert supports_threejs_canvas("cloud.ply")
+    assert supports_threejs_canvas("avatar.glb")
+    assert supports_threejs_canvas("scene.gltf")
     assert supports_threejs_canvas("points.csv")
     assert supports_threejs_canvas("points.xyz")
 

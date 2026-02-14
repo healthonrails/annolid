@@ -249,7 +249,7 @@ class MenuController:
                 "text": w.tr("Open &3D File…"),
                 "slot": self._open_3d_file,
                 "tip": w.tr(
-                    "Open a 3D model file (STL, OBJ, PLY, CSV, XYZ) in Three.js viewer. OBJ files with MTL material files are supported."
+                    "Open a 3D model file (STL, OBJ, PLY, GLB, GLTF, CSV, XYZ) in Three.js viewer. OBJ files with MTL material files are supported."
                 ),
                 "icon_path": here / "icons/visualization.png",
             },
@@ -1288,7 +1288,7 @@ class MenuController:
 
         start_dir = getattr(self._window, "lastOpenDir", str(Path.home()))
         filters = self._window.tr(
-            "3D Models (*.stl *.obj *.ply *.csv *.xyz);;OBJ with Materials (*.obj *.mtl);;All Files (*)"
+            "3D Models (*.stl *.obj *.ply *.glb *.gltf *.csv *.xyz);;OBJ with Materials (*.obj *.mtl);;All Files (*)"
         )
         filename, _ = QtWidgets.QFileDialog.getOpenFileName(
             self._window,

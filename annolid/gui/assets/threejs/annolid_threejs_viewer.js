@@ -38,6 +38,9 @@ async function boot() {
     const { MTLLoader } = await import(
       `${THREE_ESM_BASE}/examples/jsm/loaders/MTLLoader.js`
     );
+    const { GLTFLoader } = await import(
+      `${THREE_ESM_BASE}/examples/jsm/loaders/GLTFLoader.js`
+    );
 
     const renderer = new THREE.WebGLRenderer({
       canvas,
@@ -484,6 +487,18 @@ async function boot() {
           (err) => {
             console.warn("MTL load failed, falling back to simple OBJ:", err);
             loadOBJ();
+          }
+        );
+      } else if (ext === "glb" || ext === "gltf") {
+        const loader = new GLTFLoader();
+        loader.load(
+          modelUrl,
+          (gltf) => {
+            addLoadedObject(gltf.scene || new THREE.Group());
+          },
+          undefined,
+          (err) => {
+            setStatus(`Failed to load ${ext.toUpperCase()}: ${err}`, "error");
           }
         );
       } else if (ext === "csv" || ext === "xyz") {

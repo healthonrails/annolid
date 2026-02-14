@@ -175,6 +175,10 @@ def _ensure_threejs_http_server() -> str:
                         content_type = "model/mtl"
                     elif suffix == ".ply":
                         content_type = "model/ply"
+                    elif suffix == ".glb":
+                        content_type = "model/gltf-binary"
+                    elif suffix == ".gltf":
+                        content_type = "model/gltf+json"
                     elif suffix in (".png", ".jpg", ".jpeg"):
                         content_type = f"image/{suffix[1:]}"
                     else:
