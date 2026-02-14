@@ -7,6 +7,7 @@ import uuid
 from typing import Dict, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
+from annolid.gui.widgets.bot_explain import explain_selection_with_annolid_bot
 from annolid.gui.widgets.dictionary_lookup import DictionaryLookupTask
 from annolid.utils.logger import logger
 
@@ -577,6 +578,15 @@ class WebViewerWidget(QtWidgets.QWidget):
                 menu.actions()[0] if menu.actions() else None, lookup_action
             )
 
+            explain_action = QtWidgets.QAction("Explain with Annolid Bot", self)
+            explain_action.setEnabled(bool(selected_text))
+            explain_action.triggered.connect(
+                lambda: self._request_bot_explanation(selected_text)
+            )
+            menu.insertAction(
+                menu.actions()[0] if menu.actions() else None, explain_action
+            )
+
             speak_action = QtWidgets.QAction("Speak selection", self)
             speak_action.setEnabled(bool(selected_text) and not self._speaking)
             speak_action.triggered.connect(
@@ -718,6 +728,15 @@ class WebViewerWidget(QtWidgets.QWidget):
         dialog.raise_()
         dialog.activateWindow()
         self._active_dictionary_dialog = dialog
+
+    def _request_bot_explanation(self, selected_text: str) -> None:
+        ok, message = explain_selection_with_annolid_bot(
+            self,
+            selected_text,
+            source_hint=str(self._current_url or "").strip(),
+        )
+        if message:
+            self.status_changed.emit(message if ok else f"Explain failed: {message}")
 
     def _speak_selected_text(self, text: str) -> None:
         cleaned = " ".join(str(text or "").strip().split())

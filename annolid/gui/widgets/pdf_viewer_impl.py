@@ -38,6 +38,7 @@ from annolid.gui.widgets.pdf_viewer_server import (
     _ensure_pdfjs_http_server,
     _register_pdfjs_http_pdf,
 )
+from annolid.gui.widgets.bot_explain import explain_selection_with_annolid_bot
 from annolid.gui.widgets.dictionary_lookup import DictionaryLookupTask
 from annolid.gui.widgets.pdf_user_state import (
     delete_pdf_state,
@@ -922,6 +923,12 @@ class PdfViewerWidget(QtWidgets.QWidget):
         menu.insertAction(
             menu.actions()[0] if menu.actions() else None, lookup_save_action
         )
+        explain_action = QtWidgets.QAction("Explain with Annolid Bot", self)
+        explain_action.setEnabled(bool(selected_text))
+        explain_action.triggered.connect(
+            lambda: self._request_bot_explanation(selected_text)
+        )
+        menu.insertAction(menu.actions()[0] if menu.actions() else None, explain_action)
         speak_action = QtWidgets.QAction("Speak selection", self)
         speak_action.setEnabled(self._has_selection() and not self._speaking)
         speak_action.triggered.connect(self._request_speak_selection)
@@ -974,6 +981,14 @@ class PdfViewerWidget(QtWidgets.QWidget):
             )
             menu.insertAction(
                 menu.actions()[0] if menu.actions() else None, lookup_save_action
+            )
+            explain_action = QtWidgets.QAction("Explain with Annolid Bot", self)
+            explain_action.setEnabled(bool(selected_text))
+            explain_action.triggered.connect(
+                lambda: self._request_bot_explanation(selected_text)
+            )
+            menu.insertAction(
+                menu.actions()[0] if menu.actions() else None, explain_action
             )
             speak_action = QtWidgets.QAction("Speak selection", self)
             speak_action.setEnabled(not self._speaking)
@@ -1818,6 +1833,27 @@ class PdfViewerWidget(QtWidgets.QWidget):
         dialog.raise_()
         dialog.activateWindow()
         self._active_dictionary_dialog = dialog
+
+    def _request_bot_explanation(self, selected_text: str) -> None:
+        source_hint = ""
+        if self._pdf_path is not None:
+            try:
+                source_hint = (
+                    f"{self._pdf_path.name} page {int(self._current_page) + 1}"
+                )
+            except Exception:
+                source_hint = str(self._pdf_path)
+        ok, message = explain_selection_with_annolid_bot(
+            self,
+            selected_text,
+            source_hint=source_hint,
+        )
+        if message:
+            QtWidgets.QToolTip.showText(
+                QtGui.QCursor.pos(),
+                message if ok else f"Explain failed: {message}",
+                self,
+            )
 
     def _request_speak_selection(self) -> None:
         text = self._selected_text()
