@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+import uuid
 from typing import Dict, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
+from annolid.gui.widgets.dictionary_lookup import DictionaryLookupTask
 from annolid.utils.logger import logger
 
 try:
@@ -211,6 +214,9 @@ class WebViewerWidget(QtWidgets.QWidget):
         self._thread_pool = QtCore.QThreadPool.globalInstance()
         self._speaking = False
         self._active_speak_token: Optional[_SpeakToken] = None
+        self._dictionary_lookup_id = ""
+        self._dictionary_popup_pos: Optional[QtCore.QPoint] = None
+        self._active_dictionary_dialog: Optional[QtWidgets.QDialog] = None
         self._build_ui()
 
     @property
@@ -560,6 +566,17 @@ class WebViewerWidget(QtWidgets.QWidget):
             menu = page.createStandardContextMenu()
             menu.insertSeparator(menu.actions()[0] if menu.actions() else None)
 
+            lookup_action = QtWidgets.QAction("Look up in dictionary…", self)
+            lookup_action.setEnabled(bool(self._extract_single_word(selected_text)))
+            lookup_action.triggered.connect(
+                lambda: self._request_dictionary_lookup(
+                    selected_text, global_pos=global_pos
+                )
+            )
+            menu.insertAction(
+                menu.actions()[0] if menu.actions() else None, lookup_action
+            )
+
             speak_action = QtWidgets.QAction("Speak selection", self)
             speak_action.setEnabled(bool(selected_text) and not self._speaking)
             speak_action.triggered.connect(
@@ -589,6 +606,118 @@ class WebViewerWidget(QtWidgets.QWidget):
             )
         except Exception:
             show_menu(None)
+
+    @staticmethod
+    def _extract_single_word(text: str) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return ""
+        word_chars = (
+            r"A-Za-z"
+            r"À-ÖØ-öø-ÿ"
+            r"Ā-ſ"
+            r"Ḁ-ỿ"
+            r"\u4e00-\u9fff"
+            r"\u3400-\u4dbf"
+        )
+        cleaned = re.sub(rf"[^{word_chars}'\u2019-]+", " ", raw)
+        tokens = [tok for tok in cleaned.strip().split() if tok]
+        if len(tokens) != 1:
+            return ""
+        return tokens[0].strip("'\u2019-").lower()
+
+    def _request_dictionary_lookup(
+        self, selected_text: str, *, global_pos: Optional[QtCore.QPoint] = None
+    ) -> None:
+        word = self._extract_single_word(selected_text)
+        if not word:
+            QtWidgets.QToolTip.showText(
+                QtGui.QCursor.pos(),
+                "Select exactly one word to look up.",
+                self,
+            )
+            return
+        self._dictionary_lookup_id = uuid.uuid4().hex
+        self._dictionary_popup_pos = global_pos
+        QtWidgets.QToolTip.showText(
+            QtGui.QCursor.pos(),
+            f"Looking up “{word}”…",
+            self,
+        )
+        self._thread_pool.start(
+            DictionaryLookupTask(
+                widget=self,
+                request_id=self._dictionary_lookup_id,
+                word=word,
+            )
+        )
+
+    @QtCore.Slot(str, str, str, str)
+    def _on_dictionary_lookup_finished(
+        self,
+        request_id: str,
+        word: str,
+        html: str,
+        error: str,
+    ) -> None:
+        if request_id != self._dictionary_lookup_id:
+            return
+        self._show_dictionary_popup(
+            word,
+            html=html,
+            error=error,
+            global_pos=self._dictionary_popup_pos,
+        )
+
+    def _show_dictionary_popup(
+        self,
+        word: str,
+        *,
+        html: str = "",
+        error: str = "",
+        global_pos: Optional[QtCore.QPoint] = None,
+    ) -> None:
+        if self._active_dictionary_dialog is not None:
+            try:
+                self._active_dictionary_dialog.close()
+            except Exception:
+                pass
+            self._active_dictionary_dialog = None
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        dialog.setWindowTitle(f"Dictionary: {word}")
+        dialog.setModal(False)
+        dialog.resize(520, 420)
+
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        view = QtWidgets.QTextBrowser(dialog)
+        view.setOpenExternalLinks(True)
+        if error:
+            view.setPlainText(str(error))
+        else:
+            view.setHtml(html or "")
+        layout.addWidget(view, 1)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Close, parent=dialog
+        )
+        buttons.rejected.connect(dialog.close)
+        buttons.accepted.connect(dialog.close)
+        layout.addWidget(buttons, 0)
+
+        anchor = global_pos if global_pos is not None else QtGui.QCursor.pos()
+        try:
+            dialog.move(anchor + QtCore.QPoint(12, 12))
+        except Exception:
+            pass
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self._active_dictionary_dialog = dialog
 
     def _speak_selected_text(self, text: str) -> None:
         cleaned = " ".join(str(text or "").strip().split())
