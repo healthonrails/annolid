@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
+from annolid.utils.logger import logger
 
 try:
     from qtpy import QtWebEngineWidgets  # type: ignore
@@ -12,6 +14,189 @@ try:
 except Exception:
     QtWebEngineWidgets = None  # type: ignore
     _WEBENGINE_AVAILABLE = False
+
+
+def _is_ignorable_js_console_message(message: str) -> bool:
+    value = str(message or "").strip().lower()
+    if not value:
+        return True
+    noisy_markers = (
+        "unrecognized feature: 'attribution-reporting'",
+        "unrecognized feature: 'browsing-topics'",
+        "deprecated api for given entry type",
+        "window.webkitstorageinfo is deprecated",
+        "three.webglprogram: gl.getprograminfolog() warning",
+        "crossmark script out of date",
+    )
+    return any(marker in value for marker in noisy_markers)
+
+
+if _WEBENGINE_AVAILABLE:
+
+    class _AnnolidWebEnginePage(QtWebEngineWidgets.QWebEnginePage):
+        """Embedded browser page with compatibility helpers and noise filtering."""
+
+        def __init__(self, parent: Optional[QtCore.QObject] = None) -> None:
+            super().__init__(parent)
+            self._console_seen: dict[str, int] = {}
+            self._console_last_cleanup = time.monotonic()
+            self._install_compat_scripts()
+
+        def _install_compat_scripts(self) -> None:
+            # Add minimal polyfills for older QtWebEngine Chromium builds.
+            compat_js = r"""
+(() => {
+  // Polyfill crypto.randomUUID() for older Chromium builds used by QtWebEngine.
+  try {
+    const c = (typeof globalThis !== "undefined" && globalThis.crypto) ? globalThis.crypto : null;
+    if (c && typeof c.getRandomValues === "function" && typeof c.randomUUID !== "function") {
+      c.randomUUID = function randomUUID() {
+        const bytes = new Uint8Array(16);
+        c.getRandomValues(bytes);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40; // RFC 4122 version 4
+        bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
+        const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+        return (
+          hex.slice(0, 8) + "-" +
+          hex.slice(8, 12) + "-" +
+          hex.slice(12, 16) + "-" +
+          hex.slice(16, 20) + "-" +
+          hex.slice(20)
+        );
+      };
+    }
+  } catch (e) {}
+
+  // Polyfill .at() used by modern bundles.
+  const defineAt = (proto) => {
+    if (!proto || Object.prototype.hasOwnProperty.call(proto, "at")) return;
+    Object.defineProperty(proto, "at", {
+      value: function at(index) {
+        const len = this == null ? 0 : this.length >>> 0;
+        if (!len) return undefined;
+        let i = Number(index) || 0;
+        if (Number.isNaN(i)) i = 0;
+        if (i < 0) i += len;
+        if (i < 0 || i >= len) return undefined;
+        return this[i];
+      },
+      writable: true,
+      enumerable: false,
+      configurable: true
+    });
+  };
+  try {
+    defineAt(Array.prototype);
+    defineAt(String.prototype);
+    if (typeof Int8Array !== "undefined") defineAt(Int8Array.prototype);
+    if (typeof Uint8Array !== "undefined") defineAt(Uint8Array.prototype);
+    if (typeof Uint8ClampedArray !== "undefined") defineAt(Uint8ClampedArray.prototype);
+    if (typeof Int16Array !== "undefined") defineAt(Int16Array.prototype);
+    if (typeof Uint16Array !== "undefined") defineAt(Uint16Array.prototype);
+    if (typeof Int32Array !== "undefined") defineAt(Int32Array.prototype);
+    if (typeof Uint32Array !== "undefined") defineAt(Uint32Array.prototype);
+    if (typeof Float32Array !== "undefined") defineAt(Float32Array.prototype);
+    if (typeof Float64Array !== "undefined") defineAt(Float64Array.prototype);
+    if (typeof BigInt64Array !== "undefined") defineAt(BigInt64Array.prototype);
+    if (typeof BigUint64Array !== "undefined") defineAt(BigUint64Array.prototype);
+  } catch (e) {}
+
+  // Fallback for unsupported :modal selector in older selector engines.
+  try {
+    const proto = (typeof Element !== "undefined" && Element.prototype) ? Element.prototype : null;
+    const nativeMatches = proto && (proto.matches || proto.msMatchesSelector || proto.webkitMatchesSelector);
+    if (proto && typeof nativeMatches === "function" && !proto.__annolidModalCompatPatched) {
+      Object.defineProperty(proto, "__annolidModalCompatPatched", {
+        value: true, writable: false, enumerable: false, configurable: true
+      });
+      proto.matches = function patchedMatches(selector) {
+        try {
+          return nativeMatches.call(this, selector);
+        } catch (err) {
+          const raw = String(selector || "");
+          if (!raw || raw.indexOf(":modal") < 0) throw err;
+          const hasNotModal = /:not\(\s*:modal\s*\)/.test(raw);
+          const sanitized = raw
+            .replace(/:not\(\s*:modal\s*\)/g, "")
+            .replace(/:modal\b/g, "")
+            .trim();
+          if (!sanitized) {
+            return hasNotModal;
+          }
+          try {
+            const base = !!nativeMatches.call(this, sanitized);
+            if (!base) return false;
+            // We cannot reliably detect top-layer modal state on older engines.
+            // Treat :modal as false and :not(:modal) as true after base selector match.
+            return hasNotModal;
+          } catch (innerErr) {
+            throw err;
+          }
+        }
+      };
+    }
+  } catch (e) {}
+})();
+            """.strip()
+            try:
+                script = QtWebEngineWidgets.QWebEngineScript()
+                script.setName("annolid_polyfills")
+                script.setSourceCode(compat_js)
+                script.setInjectionPoint(
+                    QtWebEngineWidgets.QWebEngineScript.DocumentCreation
+                )
+                script.setWorldId(QtWebEngineWidgets.QWebEngineScript.MainWorld)
+                script.setRunsOnSubFrames(True)
+                self.scripts().insert(script)
+            except Exception:
+                pass
+
+        def _cleanup_console_seen(self) -> None:
+            now = time.monotonic()
+            if now - self._console_last_cleanup < 120:
+                return
+            if len(self._console_seen) > 500:
+                self._console_seen.clear()
+            self._console_last_cleanup = now
+
+        def javaScriptConsoleMessage(  # noqa: N802 - Qt override
+            self,
+            level: "QtWebEngineWidgets.QWebEnginePage.JavaScriptConsoleMessageLevel",
+            message: str,
+            lineNumber: int,
+            sourceID: str,
+        ) -> None:
+            msg = str(message or "").strip()
+            if _is_ignorable_js_console_message(msg):
+                return
+
+            self._cleanup_console_seen()
+            count = self._console_seen.get(msg, 0) + 1
+            self._console_seen[msg] = count
+            if count > 3:
+                if count == 4:
+                    logger.info("QtWebEngine js: suppressing repeated message: %s", msg)
+                return
+
+            try:
+                info_level = getattr(
+                    QtWebEngineWidgets.QWebEnginePage, "InfoMessageLevel", None
+                )
+                warning_level = getattr(
+                    QtWebEngineWidgets.QWebEnginePage, "WarningMessageLevel", None
+                )
+                if warning_level is not None and level == warning_level:
+                    logger.warning(
+                        "QtWebEngine js: %s (%s:%s)", msg, sourceID, lineNumber
+                    )
+                elif info_level is not None and level == info_level:
+                    logger.info("QtWebEngine js: %s (%s:%s)", msg, sourceID, lineNumber)
+                else:
+                    logger.error(
+                        "QtWebEngine js: %s (%s:%s)", msg, sourceID, lineNumber
+                    )
+            except Exception:
+                pass
 
 
 class WebViewerWidget(QtWidgets.QWidget):
@@ -71,6 +256,10 @@ class WebViewerWidget(QtWidgets.QWidget):
         root.addWidget(toolbar, 0)
 
         self._web_view = QtWebEngineWidgets.QWebEngineView(self)
+        try:
+            self._web_view.setPage(_AnnolidWebEnginePage(self._web_view))
+        except Exception:
+            pass
         root.addWidget(self._web_view, 1)
 
         self.back_button.clicked.connect(self._web_view.back)

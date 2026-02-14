@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import threading
 import time
-from typing import Callable, Dict
+from typing import Callable, Dict, Iterator
 
 import numpy as np
 from qtpy import QtCore
@@ -64,18 +65,82 @@ class ChatAudioController:
                 from annolid.utils.audio_playback import play_audio_buffer
                 from annolid.agents.tts_router import synthesize_tts
 
-                audio_data = synthesize_tts(value, self._tts_settings_snapshot())
-                if not audio_data:
-                    raise RuntimeError("No audio generated.")
-                samples, sample_rate = audio_data
-                played = play_audio_buffer(samples, sample_rate, blocking=True)
-                if not played:
-                    raise RuntimeError("No usable audio device found.")
+                settings = self._tts_settings_snapshot()
+                chunks = list(self._iter_tts_chunks(value))
+                if not chunks:
+                    raise RuntimeError("No text chunks generated.")
+
+                any_played = False
+                for idx, chunk in enumerate(chunks, start=1):
+                    if len(chunks) > 1:
+                        self._set_status_text(f"Reading chunk {idx}/{len(chunks)}…")
+                    audio_data = synthesize_tts(chunk, settings)
+                    if not audio_data:
+                        raise RuntimeError("No audio generated.")
+                    samples, sample_rate = audio_data
+                    played = play_audio_buffer(samples, sample_rate, blocking=True)
+                    if not played:
+                        raise RuntimeError("No usable audio device found.")
+                    any_played = True
+                if not any_played:
+                    raise RuntimeError("No audio was played.")
                 self._set_status_text("Reply read aloud.")
             except Exception as exc:
                 self._set_status_text(f"Read failed: {exc}")
 
         threading.Thread(target=_run_tts, daemon=True).start()
+
+    @staticmethod
+    def _iter_tts_chunks(
+        text: str, max_chunk_chars: int = 700, fallback_chunk_chars: int = 300
+    ) -> Iterator[str]:
+        """
+        Yield chunks suitable for robust TTS synthesis/playback on long messages.
+
+        The first pass splits by sentence/newline boundaries. Oversized segments are
+        then split by punctuation and finally by word-safe fixed length.
+        """
+        cleaned = " ".join(str(text or "").strip().split())
+        if not cleaned:
+            return
+
+        # Keep end punctuation attached to sentence chunks.
+        sentence_parts = re.split(r"(?<=[.!?])\s+|\n+", cleaned)
+        sentence_parts = [part.strip() for part in sentence_parts if part.strip()]
+        if not sentence_parts:
+            sentence_parts = [cleaned]
+
+        for sentence in sentence_parts:
+            if len(sentence) <= max_chunk_chars:
+                yield sentence
+                continue
+
+            # Split oversized sentence by punctuation separators first.
+            sub_parts = re.split(r"(?<=[,;:])\s+", sentence)
+            sub_parts = [part.strip() for part in sub_parts if part.strip()]
+            if not sub_parts:
+                sub_parts = [sentence]
+
+            for sub in sub_parts:
+                if len(sub) <= max_chunk_chars:
+                    yield sub
+                    continue
+
+                # Last fallback: bounded word chunks.
+                words = sub.split()
+                current: list[str] = []
+                current_len = 0
+                for word in words:
+                    add_len = len(word) + (1 if current else 0)
+                    if current and current_len + add_len > fallback_chunk_chars:
+                        yield " ".join(current)
+                        current = [word]
+                        current_len = len(word)
+                    else:
+                        current.append(word)
+                        current_len += add_len
+                if current:
+                    yield " ".join(current)
 
     def toggle_recording(self) -> None:
         if not self._is_recording:
