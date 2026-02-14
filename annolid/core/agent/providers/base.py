@@ -43,3 +43,7 @@ class LLMProvider(ABC):
     @abstractmethod
     def get_default_model(self) -> str:
         raise NotImplementedError
+
+    async def close(self) -> None:
+        """Optional provider cleanup hook for long-lived async clients."""
+        return None

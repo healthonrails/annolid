@@ -140,6 +140,23 @@ _OPEN_PDF_SUGGESTION_HINTS = (
     "cannot access local file",
     "can't access local file",
 )
+_WEB_CONTEXT_HINTS = (
+    "this page",
+    "current page",
+    "open page",
+    "web page",
+    "website",
+    "site",
+    "browser",
+    "tab",
+)
+_PDF_CONTEXT_HINTS = (
+    "pdf",
+    "document",
+    "paper",
+    "article",
+    "manuscript",
+)
 # Backward-compat aliases retained for tests/internal callers that reference
 # backend module globals directly.
 _OLLAMA_TOOL_SUPPORT_CACHE = _PROVIDER_OLLAMA_TOOL_SUPPORT_CACHE
@@ -1517,6 +1534,17 @@ class StreamingChatTask(QRunnable):
             return ""
         if not bool(state.get("ok")) or not bool(state.get("has_page")):
             return ""
+        if not self._should_use_open_page_fallback(self.prompt):
+            prompt_tokens = set(self._topic_tokens(self.prompt))
+            page_hint_text = " ".join(
+                [
+                    str(state.get("title") or ""),
+                    str(state.get("url") or ""),
+                ]
+            )
+            page_tokens = set(self._topic_tokens(page_hint_text))
+            if not (prompt_tokens and page_tokens and (prompt_tokens & page_tokens)):
+                return ""
         page_payload = self._tool_gui_web_get_dom_text(max_chars=9000)
         if not isinstance(page_payload, dict) or not bool(page_payload.get("ok")):
             return ""
@@ -2051,6 +2079,7 @@ class StreamingChatTask(QRunnable):
     def _build_compact_system_prompt(
         self, workspace: Path, *, allowed_read_roots: Optional[List[str]] = None
     ) -> str:
+        short_prompt = len(str(self.prompt or "").strip()) <= 80
         parts: List[str] = [
             "You are Annolid Bot. Be concise, practical, and return plain text answers."
         ]
@@ -2061,15 +2090,18 @@ class StreamingChatTask(QRunnable):
                 "content before answering. Do not claim you cannot browse."
             )
             parts.append(
-                "If an embedded web page is already open, treat it as the default "
-                "active context: read/operate on that page first. Only ask user to "
-                "open a URL if there is no open page or they explicitly request a "
-                "different site."
+                "Do not assume the currently open embedded page is relevant. "
+                "Use it only when the user explicitly asks about the open/current page "
+                "or references that page URL/topic."
             )
-            live_web_context = self._build_live_web_context_prompt_block()
+            live_web_context = self._build_live_web_context_prompt_block(
+                include_snapshot=self._should_attach_live_web_context(self.prompt)
+            )
             if live_web_context:
                 parts.append(live_web_context)
-        live_pdf_context = self._build_live_pdf_context_prompt_block()
+        live_pdf_context = self._build_live_pdf_context_prompt_block(
+            include_snapshot=self._should_attach_live_pdf_context(self.prompt)
+        )
         if live_pdf_context:
             parts.append(live_pdf_context)
         roots = [str(r).strip() for r in (allowed_read_roots or []) if str(r).strip()]
@@ -2081,10 +2113,14 @@ class StreamingChatTask(QRunnable):
             parts.append(
                 "# Allowed Read Roots\n" + "\n".join(f"- {root}" for root in roots[:20])
             )
-        agents_md = self._read_text_limited(workspace / "AGENTS.md", 2400)
+        agents_limit = 900 if short_prompt else 1600
+        memory_limit = 500 if short_prompt else 900
+        agents_md = self._read_text_limited(workspace / "AGENTS.md", agents_limit)
         if agents_md:
             parts.append(f"# Workspace Instructions\n{agents_md}")
-        memory_md = self._read_text_limited(workspace / "memory" / "MEMORY.md", 1400)
+        memory_md = self._read_text_limited(
+            workspace / "memory" / "MEMORY.md", memory_limit
+        )
         if memory_md:
             parts.append(f"# Long-term Memory\n{memory_md}")
         skills_dir = workspace / "skills"
@@ -2104,7 +2140,67 @@ class StreamingChatTask(QRunnable):
                 )
         return "\n\n".join(parts)
 
-    def _build_live_web_context_prompt_block(self) -> str:
+    @staticmethod
+    def _contains_hint(text: str, hints: Tuple[str, ...]) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        return any(h in lowered for h in hints)
+
+    @staticmethod
+    def _looks_like_url_request(text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if "http://" in lowered or "https://" in lowered or "www." in lowered:
+            return True
+        return bool(
+            re.search(
+                r"\b[a-z0-9][a-z0-9\-]{0,62}(?:\.[a-z0-9][a-z0-9\-]{0,62})+\b",
+                lowered,
+            )
+        )
+
+    def _should_attach_live_web_context(self, prompt: str) -> bool:
+        return self._contains_hint(
+            prompt, _WEB_CONTEXT_HINTS
+        ) or self._looks_like_url_request(prompt)
+
+    def _should_attach_live_pdf_context(self, prompt: str) -> bool:
+        return self._contains_hint(prompt, _PDF_CONTEXT_HINTS)
+
+    def _should_use_open_page_fallback(self, prompt: str) -> bool:
+        return self._should_attach_live_web_context(prompt)
+
+    @staticmethod
+    def _topic_tokens(text: str) -> List[str]:
+        raw = re.findall(r"[a-zA-Z0-9_]+", str(text or "").lower())
+        stop = {
+            "the",
+            "a",
+            "an",
+            "and",
+            "or",
+            "to",
+            "for",
+            "of",
+            "in",
+            "on",
+            "at",
+            "is",
+            "are",
+            "my",
+            "me",
+            "your",
+            "you",
+            "check",
+            "current",
+            "latest",
+            "today",
+        }
+        return [t for t in raw if len(t) > 2 and t not in stop]
+
+    def _build_live_web_context_prompt_block(
+        self, *, include_snapshot: bool = True
+    ) -> str:
         state = self._tool_gui_web_get_state()
         if not isinstance(state, dict):
             return ""
@@ -2112,60 +2208,59 @@ class StreamingChatTask(QRunnable):
             return ""
         if not bool(state.get("has_page")):
             return "No embedded web page is currently open."
-        page_payload = self._tool_gui_web_get_dom_text(max_chars=2500)
-        if not isinstance(page_payload, dict) or not bool(page_payload.get("ok")):
-            url = str(state.get("url") or "").strip()
-            title = str(state.get("title") or "").strip()
-            return (
-                "Embedded web page is open but text snapshot failed. "
-                f"URL: {url or '[unknown]'} | Title: {title or '[unknown]'}"
-            )
-        text = str(page_payload.get("text") or "").strip()
-        if len(text) > 1200:
-            text = text[:1200].rstrip() + "\n...[truncated]"
-        url = str(page_payload.get("url") or state.get("url") or "").strip()
-        title = str(page_payload.get("title") or state.get("title") or "").strip()
+        url = str(state.get("url") or "").strip()
+        title = str(state.get("title") or "").strip()
+        snapshot_block = "Visible text snapshot: [omitted to save tokens]"
+        if include_snapshot:
+            page_payload = self._tool_gui_web_get_dom_text(max_chars=1200)
+            if isinstance(page_payload, dict) and bool(page_payload.get("ok")):
+                text = str(page_payload.get("text") or "").strip()
+                if len(text) > 600:
+                    text = text[:600].rstrip() + "\n...[truncated]"
+                url = str(page_payload.get("url") or url).strip()
+                title = str(page_payload.get("title") or title).strip()
+                snapshot_block = f"Visible text snapshot:\n{text or '[empty]'}"
+            else:
+                snapshot_block = "Visible text snapshot unavailable."
         return (
             "# Active Embedded Web Page\n"
             f"URL: {url or '[unknown]'}\n"
             f"Title: {title or '[unknown]'}\n"
-            "Visible text snapshot:\n"
-            f"{text or '[empty]'}"
+            f"{snapshot_block}"
         )
 
-    def _build_live_pdf_context_prompt_block(self) -> str:
+    def _build_live_pdf_context_prompt_block(
+        self, *, include_snapshot: bool = True
+    ) -> str:
         state = self._tool_gui_pdf_get_state()
         if not isinstance(state, dict):
             return ""
         if not bool(state.get("ok")) or not bool(state.get("has_pdf")):
             return ""
-        payload = self._tool_gui_pdf_get_text(max_chars=2500, pages=2)
-        if not isinstance(payload, dict) or not bool(payload.get("ok")):
-            title = str(state.get("title") or "").strip()
-            path = str(state.get("path") or "").strip()
-            page = int(state.get("current_page") or 0)
-            total = int(state.get("total_pages") or 0)
-            return (
-                "# Active PDF\n"
-                f"Path: {path or '[unknown]'}\n"
-                f"Title: {title or '[unknown]'}\n"
-                f"Page: {page}/{total}\n"
-                "Text snapshot unavailable."
-            )
-        text = str(payload.get("text") or "").strip()
-        if len(text) > 1200:
-            text = text[:1200].rstrip() + "\n...[truncated]"
-        title = str(payload.get("title") or state.get("title") or "").strip()
-        path = str(payload.get("path") or state.get("path") or "").strip()
-        page = int(payload.get("current_page") or state.get("current_page") or 0)
-        total = int(payload.get("total_pages") or state.get("total_pages") or 0)
+        title = str(state.get("title") or "").strip()
+        path = str(state.get("path") or "").strip()
+        page = int(state.get("current_page") or 0)
+        total = int(state.get("total_pages") or 0)
+        snapshot_block = "Text snapshot: [omitted to save tokens]"
+        if include_snapshot:
+            payload = self._tool_gui_pdf_get_text(max_chars=1200, pages=1)
+            if isinstance(payload, dict) and bool(payload.get("ok")):
+                text = str(payload.get("text") or "").strip()
+                if len(text) > 600:
+                    text = text[:600].rstrip() + "\n...[truncated]"
+                title = str(payload.get("title") or title).strip()
+                path = str(payload.get("path") or path).strip()
+                page = int(payload.get("current_page") or page or 0)
+                total = int(payload.get("total_pages") or total or 0)
+                snapshot_block = f"Text snapshot:\n{text or '[empty]'}"
+            else:
+                snapshot_block = "Text snapshot unavailable."
         return (
             "# Active PDF\n"
             f"Path: {path or '[unknown]'}\n"
             f"Title: {title or '[unknown]'}\n"
             f"Page: {page}/{total}\n"
-            "Text snapshot:\n"
-            f"{text or '[empty]'}"
+            f"{snapshot_block}"
         )
 
     def _build_ollama_llm_callable(self):

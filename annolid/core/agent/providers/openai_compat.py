@@ -162,7 +162,7 @@ class OpenAICompatProvider(LLMProvider):
         try:
             payload: Dict[str, Any] = {
                 "model": model or self._resolved.model,
-                "messages": [dict(m) for m in messages],
+                "messages": list(messages),
                 "max_tokens": int(max_tokens),
             }
             if temperature is not None:
@@ -175,9 +175,13 @@ class OpenAICompatProvider(LLMProvider):
             return LLMResponse(
                 content=f"Error calling LLM: {exc}", finish_reason="error"
             )
-        finally:
-            await self._close_client(client)
         return self._parse_response(completion)
+
+    async def close(self) -> None:
+        client = self._client
+        if client is None:
+            return
+        await self._close_client(client)
 
     def _parse_response(self, completion: Any) -> LLMResponse:
         choices = self._get_value(completion, "choices", None)

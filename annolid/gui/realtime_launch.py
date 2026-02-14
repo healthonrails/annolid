@@ -25,6 +25,8 @@ def parse_camera_source(camera_source: object) -> object:
     value = str(camera_source or "").strip()
     if not value:
         return 0
+    if value.lower() in {"default", "camera", "webcam", "cam", "cam0"}:
+        return 0
     try:
         return int(value)
     except Exception:

@@ -63,6 +63,14 @@ class AgentMemoryConfig:
     include_facts_in_system_prompt: bool = True
 
 
+@dataclass(frozen=True)
+class _ToolSchemaIndex:
+    schema: Dict[str, Any]
+    name: str
+    desc: str
+    tokens: frozenset[str]
+
+
 class InMemorySessionStore:
     """Thread-safe in-process memory store for chat history and facts."""
 
@@ -179,14 +187,22 @@ class AgentLoop:
         self._context_builder = context_builder
         self._subagent_manager = subagent_manager
         self._interleave_post_tool_guidance = bool(interleave_post_tool_guidance)
+        self._provider_impl: Optional[Any] = None
 
         self._provider = provider
         self._model_override = model
         self._profile = profile
         self._llm_callable = llm_callable
+        self._cached_tool_signature: Optional[tuple[tuple[str, str], ...]] = None
+        self._cached_tool_index: List[_ToolSchemaIndex] = []
+        self._cached_default_tools: List[Dict[str, Any]] = []
 
         if self._llm_callable is None:
-            self._llm_callable, self._resolved_model = self._build_default_llm_callable(
+            (
+                self._llm_callable,
+                self._resolved_model,
+                self._provider_impl,
+            ) = self._build_default_llm_callable(
                 profile=profile,
                 provider=provider,
                 model=model,
@@ -272,6 +288,9 @@ class AgentLoop:
         final_content = ""
         stopped_reason = "done"
         all_tool_definitions = self._tools.get_definitions()
+        tool_signature = self._tool_signature(all_tool_definitions)
+        tool_index = self._get_cached_tool_index(all_tool_definitions, tool_signature)
+        default_tools = self._get_cached_default_tools(tool_index, tool_signature)
         repeated_tool_cycles = 0
         last_tool_cycle_signature: Optional[tuple[str, ...]] = None
         last_iteration = 0
@@ -280,6 +299,8 @@ class AgentLoop:
             last_iteration = iteration
             tool_definitions = self._select_relevant_tool_definitions(
                 all_tool_definitions=all_tool_definitions,
+                tool_index=tool_index,
+                default_tool_definitions=default_tools,
                 user_message_text=user_message_text,
                 messages=messages,
             )
@@ -455,6 +476,15 @@ class AgentLoop:
 
     def clear_memory(self, session_id: str) -> None:
         self._memory_store.clear_session(session_id)
+
+    async def close(self) -> None:
+        provider = self._provider_impl
+        self._provider_impl = None
+        if provider is None:
+            return
+        close_fn = getattr(provider, "close", None)
+        if callable(close_fn):
+            await close_fn()
 
     def set_subagent_manager(self, manager: Optional["SubagentManager"]) -> None:
         self._subagent_manager = manager
@@ -805,40 +835,103 @@ class AgentLoop:
     @classmethod
     def _score_tool_schema(
         cls,
-        schema: Mapping[str, Any],
+        tool_entry: _ToolSchemaIndex,
         query_tokens: Sequence[str],
     ) -> int:
         if not query_tokens:
             return 0
-        fn = schema.get("function")
-        if not isinstance(fn, Mapping):
-            return 0
-        name = str(fn.get("name") or "").lower()
-        desc = str(fn.get("description") or "").lower()
-        tool_tokens = cls._build_tool_tokens(schema)
         score = 0
         for token in query_tokens:
-            if token in tool_tokens:
+            if token in tool_entry.tokens:
                 score += 2
-            if token and token in name:
+            if token and token in tool_entry.name:
                 score += 3
-            if token and token in desc:
+            if token and token in tool_entry.desc:
                 score += 1
         return score
+
+    @classmethod
+    def _compile_tool_index(
+        cls,
+        all_tool_definitions: Sequence[Mapping[str, Any]],
+    ) -> List[_ToolSchemaIndex]:
+        compiled: List[_ToolSchemaIndex] = []
+        for schema in all_tool_definitions:
+            schema_dict = dict(schema)
+            fn = schema_dict.get("function")
+            if not isinstance(fn, Mapping):
+                continue
+            compiled.append(
+                _ToolSchemaIndex(
+                    schema=schema_dict,
+                    name=str(fn.get("name") or "").lower(),
+                    desc=str(fn.get("description") or "").lower(),
+                    tokens=frozenset(cls._build_tool_tokens(schema_dict)),
+                )
+            )
+        return compiled
+
+    @staticmethod
+    def _tool_signature(
+        all_tool_definitions: Sequence[Mapping[str, Any]],
+    ) -> tuple[tuple[str, str], ...]:
+        pairs: List[tuple[str, str]] = []
+        for schema in all_tool_definitions:
+            fn = schema.get("function")
+            if not isinstance(fn, Mapping):
+                continue
+            pairs.append(
+                (
+                    str(fn.get("name") or ""),
+                    str(fn.get("description") or ""),
+                )
+            )
+        return tuple(sorted(pairs))
+
+    def _get_cached_tool_index(
+        self,
+        all_tool_definitions: Sequence[Mapping[str, Any]],
+        signature: tuple[tuple[str, str], ...],
+    ) -> List[_ToolSchemaIndex]:
+        if self._cached_tool_signature == signature and len(
+            self._cached_tool_index
+        ) == len(signature):
+            return list(self._cached_tool_index)
+        compiled = self._compile_tool_index(all_tool_definitions)
+        self._cached_tool_signature = signature
+        self._cached_tool_index = list(compiled)
+        self._cached_default_tools = []
+        return compiled
+
+    def _get_cached_default_tools(
+        self,
+        tool_index: Sequence[_ToolSchemaIndex],
+        signature: tuple[tuple[str, str], ...],
+    ) -> List[Dict[str, Any]]:
+        if self._cached_tool_signature == signature and self._cached_default_tools:
+            return list(self._cached_default_tools)
+        tools = [entry.schema for entry in tool_index]
+        defaults = self._select_default_tool_definitions(tools)
+        self._cached_default_tools = list(defaults)
+        return defaults
 
     def _select_relevant_tool_definitions(
         self,
         *,
         all_tool_definitions: Sequence[Mapping[str, Any]],
+        tool_index: Sequence[_ToolSchemaIndex],
+        default_tool_definitions: Sequence[Mapping[str, Any]],
         user_message_text: str,
         messages: Sequence[Mapping[str, Any]],
     ) -> List[Dict[str, Any]]:
-        tools = [dict(t) for t in all_tool_definitions]
+        tools = [entry.schema for entry in tool_index] or [
+            dict(t) for t in all_tool_definitions
+        ]
         if len(tools) <= 2:
-            return tools
+            return [dict(t) for t in tools]
         user_tokens = self._tokenize_text(user_message_text)
         if not user_tokens:
-            return self._select_default_tool_definitions(tools)
+            return [dict(t) for t in default_tool_definitions]
 
         # Use recent interaction context to improve follow-up turns.
         tail_text_parts: List[str] = []
@@ -850,12 +943,13 @@ class AgentLoop:
         query_tokens = list(dict.fromkeys([*user_tokens, *tail_tokens]))
 
         scored: List[tuple[int, Dict[str, Any]]] = []
-        for schema in tools:
-            score = self._score_tool_schema(schema, query_tokens)
+        entries = list(tool_index) or self._compile_tool_index(tools)
+        for entry in entries:
+            score = self._score_tool_schema(entry, query_tokens)
             if score > 0:
-                scored.append((score, schema))
+                scored.append((score, entry.schema))
         if not scored:
-            return self._select_default_tool_definitions(tools)
+            return [dict(t) for t in default_tool_definitions]
 
         scored.sort(
             key=lambda item: (
@@ -884,7 +978,7 @@ class AgentLoop:
             )
             if read_file_schema is not None:
                 selected.append(read_file_schema)
-        return selected or tools
+        return selected or [dict(t) for t in default_tool_definitions]
 
     @classmethod
     def _select_default_tool_definitions(
@@ -1021,7 +1115,7 @@ class AgentLoop:
         profile: Optional[str],
         provider: Optional[str],
         model: Optional[str],
-    ) -> tuple[LLMCallable, str]:
+    ) -> tuple[LLMCallable, str, Any]:
         cfg = resolve_llm_config(
             profile=profile,
             provider=provider,
@@ -1050,8 +1144,8 @@ class AgentLoop:
             model_id: str,
         ) -> Mapping[str, Any]:
             resp = await provider_impl.chat(
-                messages=[dict(m) for m in messages],
-                tools=[dict(t) for t in tools] if tools else None,
+                messages=list(messages),
+                tools=list(tools) if tools else None,
                 model=model_id,
                 temperature=self._default_temperature,
             )
@@ -1068,4 +1162,4 @@ class AgentLoop:
                 "reasoning_content": resp.reasoning_content,
             }
 
-        return _call, model_name
+        return _call, model_name, provider_impl

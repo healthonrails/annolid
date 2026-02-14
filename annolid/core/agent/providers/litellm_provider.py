@@ -111,7 +111,7 @@ class LiteLLMProvider(LLMProvider):
         resolved_model = self._resolve_model(model or self.default_model)
         payload: Dict[str, Any] = {
             "model": resolved_model,
-            "messages": [dict(m) for m in messages],
+            "messages": list(messages),
             "max_tokens": int(max_tokens),
         }
         if temperature is not None:
@@ -128,7 +128,7 @@ class LiteLLMProvider(LLMProvider):
         if self.extra_headers:
             payload["extra_headers"] = dict(self.extra_headers)
         if tools:
-            payload["tools"] = [dict(t) for t in tools]
+            payload["tools"] = list(tools)
             payload["tool_choice"] = "auto"
 
         try:

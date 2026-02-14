@@ -1482,9 +1482,6 @@ class AIChatWidget(QtWidgets.QWidget):
     def set_host_window(self, window: Optional[QtWidgets.QWidget]) -> None:
         self.host_window_widget = window
 
-    def _set_bot_action_result(self, action: str, result: Dict[str, Any]) -> None:
-        self._bot_action_results[str(action)] = dict(result or {})
-
     def get_bot_action_result(self, action: str) -> Dict[str, Any]:
         payload = self._bot_action_results.get(str(action), {})
         return dict(payload or {})
@@ -1675,8 +1672,34 @@ class AIChatWidget(QtWidgets.QWidget):
         except Exception as exc:
             self.status_label.setText(f"Bot action failed: {exc}")
 
-    def _set_bot_action_result(self, payload: Dict[str, Any]) -> None:
-        self._bot_action_result = dict(payload or {})
+    def _set_bot_action_result(self, *args: Any, **kwargs: Any) -> None:
+        """
+        Backward-compatible bot action result setter.
+        Supports both call styles:
+        - _set_bot_action_result(payload_dict)
+        - _set_bot_action_result(action_name, payload_dict)
+        """
+        # Preferred path: two positional args => (action, payload)
+        action = ""
+        payload: Dict[str, Any] = {}
+        if len(args) >= 2:
+            action = str(args[0] or "").strip()
+            payload = dict(args[1] or {})
+        elif len(args) == 1:
+            value = args[0]
+            if isinstance(value, dict):
+                payload = dict(value or {})
+                action = str(payload.get("action") or "").strip()
+            else:
+                action = str(value or "").strip()
+                payload = dict(kwargs.get("result") or {})
+        else:
+            action = str(kwargs.get("action") or "").strip()
+            payload = dict(kwargs.get("result") or kwargs.get("payload") or {})
+
+        if action:
+            self._bot_action_results[action] = dict(payload)
+        self._bot_action_result = dict(payload)
 
     def _resolve_web_manager(self):
         host = self.host_window_widget or self.window()
@@ -2418,6 +2441,11 @@ class AIChatWidget(QtWidgets.QWidget):
             {"ok": False, "error": "Realtime stream did not start."},
         )
         host = self.host_window_widget or self.window()
+        resolved_camera_source = str(camera_source or "").strip()
+        if not resolved_camera_source:
+            host_video = str(getattr(host, "video_file", "") or "").strip()
+            if host_video and Path(host_video).exists():
+                resolved_camera_source = host_video
         manager = getattr(host, "realtime_manager", None)
         if manager is None:
             self._set_bot_action_result(
@@ -2430,7 +2458,7 @@ class AIChatWidget(QtWidgets.QWidget):
             return
         try:
             realtime_config, extras = build_realtime_launch_payload(
-                camera_source=camera_source,
+                camera_source=resolved_camera_source,
                 model_name=model_name,
                 target_behaviors_csv=target_behaviors_csv,
                 confidence_threshold=confidence_threshold,

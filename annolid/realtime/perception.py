@@ -1,5 +1,6 @@
 import argparse
 import json
+import sys
 import signal
 import socket
 import statistics
@@ -33,7 +34,6 @@ import cv2
 import numpy as np
 import zmq
 import zmq.asyncio
-from ffpyplayer.pic import Image, SWScale
 from tree_config.utils import (
     yaml_loads as orig_yaml_loads,
     get_yaml,
@@ -280,6 +280,18 @@ class NetworkProtocolHandler:
 # --- Enhanced Color Space Converter ---
 
 
+def _load_ffpyplayer_pic():
+    """Lazy-load ffpyplayer.pic to avoid FFmpeg dylib conflicts when unused."""
+    try:
+        from ffpyplayer.pic import Image as _Image, SWScale as _SWScale  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(
+            "Remote video decoding requires ffpyplayer. "
+            "Install with `pip install ffpyplayer` or use a local camera/video source."
+        ) from exc
+    return _Image, _SWScale
+
+
 class ColorSpaceConverter:
     """Handles color space conversion with caching and error handling."""
 
@@ -287,12 +299,13 @@ class ColorSpaceConverter:
         self._converter_cache = {}
         self._warned_formats = set()
 
-    def get_converter(self, width: int, height: int, input_format: str) -> SWScale:
+    def get_converter(self, width: int, height: int, input_format: str):
         """Get or create a converter with caching."""
         cache_key = (width, height, input_format)
 
         if cache_key not in self._converter_cache:
             try:
+                _, SWScale = _load_ffpyplayer_pic()
                 # Suppress ffmpeg warnings for known non-accelerated conversions
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
@@ -313,7 +326,7 @@ class ColorSpaceConverter:
 
         return self._converter_cache[cache_key]
 
-    def convert_frame(self, img: Image) -> np.ndarray:
+    def convert_frame(self, img) -> np.ndarray:
         """Convert image to BGR format."""
         try:
             width, height = img.get_size()
@@ -351,12 +364,14 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
         self._connection_lock = asyncio.Lock()
         self._frame_processor = ColorSpaceConverter()
         self._paused = False
+        self.last_error: Optional[str] = None
 
     async def connect(self) -> bool:
         """Connect to remote server with proper error handling."""
         async with self._connection_lock:
             if self._is_active:
                 return True
+            self.last_error = None
 
             logger.info(
                 f"Connecting to {self.config.server_address}:{self.config.server_port}"
@@ -380,6 +395,7 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
 
             except (OSError, socket.gaierror, asyncio.TimeoutError) as e:
                 logger.warning(f"Remote connection failed: {e}")
+                self.last_error = str(e)
                 await self._cleanup_connection()
                 return False
 
@@ -512,6 +528,7 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
     def _process_raw_frame(self, raw_frame_data) -> Tuple[np.ndarray, Dict[str, Any]]:
         """Process raw frame data into numpy array with enhanced error handling."""
         try:
+            Image, _ = _load_ffpyplayer_pic()
             plane_buffers, pix_fmt, size, linesize, metadata = raw_frame_data
             img = Image(
                 plane_buffers=plane_buffers,
@@ -580,6 +597,7 @@ class CameraSource:
         self.recording_manager = recording_manager
         self.cap: Optional[cv2.VideoCapture] = None
         self._lock = asyncio.Lock()
+        self.last_error: Optional[str] = None
 
     async def connect(self) -> bool:
         """Connect to local camera."""
@@ -588,6 +606,7 @@ class CameraSource:
                 return True
 
             logger.info(f"Connecting to camera: {self.config.camera_index}")
+            self.last_error = None
             try:
                 self.cap = await asyncio.to_thread(self._init_camera)
                 if self.cap and self.cap.isOpened():
@@ -597,34 +616,82 @@ class CameraSource:
                     return True
                 else:
                     logger.error("Failed to open camera")
+                    self.last_error = self._build_camera_open_failure_message()
                     return False
             except Exception as e:
                 logger.error(f"Camera connection error: {e}")
+                self.last_error = str(e)
                 return False
+
+    def _build_camera_open_failure_message(self) -> str:
+        source = str(self.config.camera_index or "").strip() or "0"
+        if source.isdigit() and sys.platform == "darwin":
+            return (
+                "Failed to open camera. On macOS, camera permission must be granted to "
+                "Annolid/Python in System Settings > Privacy & Security > Camera. "
+                "If running from a worker thread, set OPENCV_AVFOUNDATION_SKIP_AUTH=1 "
+                "and request permission in the main app process first."
+            )
+        return f"Failed to open camera source: {source}"
 
     def _init_camera(self) -> Optional[cv2.VideoCapture]:
         """Initialize camera in thread."""
         try:
-            source = (
-                int(self.config.camera_index)
-                if str(self.config.camera_index).isdigit()
-                else self.config.camera_index
-            )
-            cap = cv2.VideoCapture(source)
 
-            if cap.isOpened():
-                # Set camera properties
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.frame_width)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.frame_height)
-                # Reduce buffer for lower latency
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                return cap
-            else:
-                cap.release()
+            def _open_capture(candidate):
+                cap_obj = cv2.VideoCapture(candidate)
+                if cap_obj.isOpened():
+                    cap_obj.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.frame_width)
+                    cap_obj.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.frame_height)
+                    # Reduce buffer for lower latency
+                    cap_obj.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    return cap_obj
+                cap_obj.release()
                 return None
+
+            candidates = self._build_camera_candidates()
+
+            seen: set[str] = set()
+            for candidate in candidates:
+                key = str(candidate)
+                if key in seen:
+                    continue
+                seen.add(key)
+                cap = _open_capture(candidate)
+                if cap is not None:
+                    return cap
+            return None
         except Exception as e:
             logger.error(f"Camera initialization failed: {e}")
             return None
+
+    def _build_camera_candidates(self) -> list[object]:
+        """
+        Build candidate camera sources, always including local camera 0 fallback.
+        Priority:
+        1) Requested source
+        2) Nearby local indices
+        3) Guaranteed local fallback [0, 1, 2]
+        """
+        raw_source = str(self.config.camera_index or "").strip()
+        candidates: list[object] = []
+        aliases = {"", "default", "camera", "webcam", "cam", "cam0"}
+
+        if raw_source.lower() in aliases:
+            candidates.extend([0, 1, 2])
+        elif raw_source.isdigit():
+            idx = int(raw_source)
+            candidates.append(idx)
+            if idx != 0:
+                candidates.append(0)
+            candidates.extend([1, 2])
+        else:
+            # Explicit path/URL/custom identifier first.
+            candidates.append(self.config.camera_index)
+            # Then local camera fallbacks.
+            candidates.extend([0, 1, 2])
+
+        return candidates
 
     async def get_frame(self) -> Optional[Tuple[np.ndarray, Dict[str, Any]]]:
         """Read frame from camera."""
@@ -701,7 +768,29 @@ class HybridVideoSource:
                 logger.info("Connected to local source")
                 return
 
+            # Last-resort hard fallback: force camera index 0 and retry once.
+            if str(self.config.camera_index).strip() != "0":
+                logger.warning(
+                    "Local source '%s' unavailable; retrying with fallback camera 0.",
+                    self.config.camera_index,
+                )
+                self.config.camera_index = 0
+                if await self.local.connect():
+                    self.state = SourceState.USING_LOCAL
+                    logger.info("Connected to fallback local camera 0")
+                    return
+
             self.state = SourceState.DISCONNECTED
+            details: List[str] = []
+            if self.remote.last_error:
+                details.append(f"remote={self.remote.last_error}")
+            if self.local.last_error:
+                details.append(f"local={self.local.last_error}")
+            detail_text = "; ".join(details)
+            if detail_text:
+                raise RuntimeError(
+                    f"Failed to connect to any video source ({detail_text})"
+                )
             raise RuntimeError("Failed to connect to any video source")
 
     async def get_frame(self) -> Optional[Tuple[np.ndarray, Dict[str, Any]]]:

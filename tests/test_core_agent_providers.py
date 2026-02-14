@@ -104,7 +104,9 @@ def test_openai_compat_provider_handles_empty_choices() -> None:
     assert resp.has_tool_calls is False
 
 
-def test_openai_compat_provider_parses_dict_response_and_closes_client() -> None:
+def test_openai_compat_provider_parses_dict_response_and_reuses_client_until_closed() -> (
+    None
+):
     class _FakeCompletions:
         async def create(self, **kwargs):  # noqa: ANN003
             del kwargs
@@ -159,6 +161,8 @@ def test_openai_compat_provider_parses_dict_response_and_closes_client() -> None
     assert resp.content == "ok"
     assert resp.has_tool_calls is True
     assert resp.tool_calls[0].name == "echo"
+    assert closed["value"] is False
+    __import__("asyncio").run(provider.close())
     assert closed["value"] is True
 
 

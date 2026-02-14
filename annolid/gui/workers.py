@@ -6,6 +6,7 @@ import glob
 import json
 import logging
 import os
+import sys
 import threading
 import inspect
 from collections import deque
@@ -1042,6 +1043,10 @@ class PerceptionProcessWorker(QtCore.QThread):
 
     def run(self):
         try:
+            # macOS: avoid AVFoundation permission prompts from this worker thread.
+            # Permission should be requested in the main app process.
+            if sys.platform == "darwin":
+                os.environ.setdefault("OPENCV_AVFOUNDATION_SKIP_AUTH", "1")
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
             self._loop.run_until_complete(self._run_main())
