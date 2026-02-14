@@ -9,6 +9,7 @@ from .filesystem import (
     EditFileTool,
     ListDirTool,
     ReadFileTool,
+    RenameFileTool,
     WriteFileTool,
 )
 from .function_registry import FunctionToolRegistry
@@ -65,6 +66,7 @@ def register_nanobot_style_tools(
     )
     registry.register(WriteFileTool(allowed_dir=allowed_dir))
     registry.register(EditFileTool(allowed_dir=allowed_dir))
+    registry.register(RenameFileTool(allowed_dir=allowed_dir))
     registry.register(
         ListDirTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )

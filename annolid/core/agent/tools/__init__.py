@@ -20,7 +20,13 @@ from .detection import DetectionResult, DetectionTool
 from .embedding import EmbeddingResult, EmbeddingTool
 from .function_base import FunctionTool
 from .cron import CronTool
-from .filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from .filesystem import (
+    EditFileTool,
+    ListDirTool,
+    ReadFileTool,
+    RenameFileTool,
+    WriteFileTool,
+)
 from .memory import MemoryGetTool, MemorySetTool, MemorySearchTool
 from .messaging import MessageTool, SpawnTool
 from .nanobot import register_nanobot_style_tools
@@ -91,6 +97,7 @@ __all__ = [
     "ReadFileTool",
     "WriteFileTool",
     "EditFileTool",
+    "RenameFileTool",
     "ListDirTool",
     "MemorySearchTool",
     "MemoryGetTool",

@@ -202,6 +202,89 @@ class ListDirTool(FunctionTool):
             return f"Error listing directory: {exc}"
 
 
+class RenameFileTool(FunctionTool):
+    def __init__(self, allowed_dir: Path | None = None):
+        self._allowed_dir = allowed_dir
+
+    @property
+    def name(self) -> str:
+        return "rename_file"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Rename or move a file/directory within the writable workspace. "
+            "Use new_name to rename in-place, or new_path for an explicit destination."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "new_name": {"type": "string"},
+                "new_path": {"type": "string"},
+                "overwrite": {"type": "boolean"},
+            },
+            "required": ["path"],
+        }
+
+    async def execute(
+        self,
+        path: str,
+        new_name: str = "",
+        new_path: str = "",
+        overwrite: bool = False,
+        **kwargs: Any,
+    ) -> str:
+        del kwargs
+        try:
+            source = _resolve_write_path(path, allowed_dir=self._allowed_dir)
+            if not source.exists():
+                return f"Error: File not found: {path}"
+
+            target: Path
+            explicit_target = str(new_path or "").strip()
+            rename_name = str(new_name or "").strip()
+            if explicit_target:
+                target = _resolve_write_path(
+                    explicit_target, allowed_dir=self._allowed_dir
+                )
+            elif rename_name:
+                if Path(rename_name).name != rename_name:
+                    return (
+                        "Error: new_name must be a base name without path separators."
+                    )
+                target = source.with_name(rename_name)
+                target = _resolve_write_path(str(target), allowed_dir=self._allowed_dir)
+            else:
+                return "Error: Provide either new_name or new_path."
+
+            if source == target:
+                return f"No-op: Source and destination are the same ({source})."
+
+            if target.exists():
+                if not overwrite:
+                    return (
+                        f"Error: Target already exists: {target}. "
+                        "Set overwrite=true to replace it."
+                    )
+                if target.is_dir():
+                    return (
+                        "Error: overwrite=true does not replace existing directories."
+                    )
+                target.unlink()
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source.rename(target)
+            return f"Successfully renamed {source} -> {target}"
+        except PermissionError as exc:
+            return f"Error: {exc}"
+        except Exception as exc:
+            return f"Error renaming file: {exc}"
+
+
 __all__ = [
     "ReadFileTool",
     "ExtractPdfTextTool",
@@ -210,4 +293,5 @@ __all__ = [
     "WriteFileTool",
     "EditFileTool",
     "ListDirTool",
+    "RenameFileTool",
 ]

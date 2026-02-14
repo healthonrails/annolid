@@ -17,6 +17,7 @@ def execute_direct_gui_command(
     start_realtime_stream: Callable[..., Dict[str, Any]],
     stop_realtime_stream: Callable[[], Dict[str, Any]],
     set_chat_model: Callable[[str, str], Dict[str, Any]],
+    rename_file: Callable[..., Dict[str, Any]],
 ) -> str:
     if not command:
         return ""
@@ -160,5 +161,23 @@ def execute_direct_gui_command(
                 f"{payload.get('model')}."
             )
         return str(payload.get("error") or "Failed to update chat model.")
+
+    if name == "rename_file":
+        payload = rename_file(
+            source_path=str(args.get("source_path") or ""),
+            new_name=str(args.get("new_name") or ""),
+            new_path=str(args.get("new_path") or ""),
+            use_active_file=bool(args.get("use_active_file", False)),
+            overwrite=bool(args.get("overwrite", False)),
+        )
+        if payload.get("ok"):
+            old_path = str(payload.get("old_path") or "").strip()
+            new_path = str(payload.get("new_path") or "").strip()
+            if old_path and new_path:
+                return f"Renamed file: {old_path} -> {new_path}"
+            if new_path:
+                return f"Renamed file to: {new_path}"
+            return "Renamed file."
+        return str(payload.get("error") or "Failed to rename file.")
 
     return ""

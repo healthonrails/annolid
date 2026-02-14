@@ -12,6 +12,50 @@ _DIRECT_GUI_REFUSAL_HINTS = (
     "i can't open applications",
 )
 
+_ACTIVE_FILE_HINTS = {
+    "this file",
+    "this pdf",
+    "active file",
+    "active pdf",
+    "current file",
+    "current pdf",
+    "opened file",
+    "opened pdf",
+    "open file",
+    "open pdf",
+    "document",
+    "this document",
+    "current document",
+}
+
+
+def _strip_wrapping_quotes(text: str) -> str:
+    value = str(text or "").strip()
+    if len(value) >= 2 and (
+        (value[0] == "'" and value[-1] == "'")
+        or (value[0] == '"' and value[-1] == '"')
+        or (value[0] == "`" and value[-1] == "`")
+    ):
+        return value[1:-1].strip()
+    return value
+
+
+def _strip_trailing_punctuation(text: str) -> str:
+    return str(text or "").strip().rstrip(").,;!?")
+
+
+def _looks_like_path(value: str) -> bool:
+    token = str(value or "").strip()
+    if not token:
+        return False
+    if token.startswith(("~", "/", "./", "../")):
+        return True
+    if "\\" in token or "/" in token:
+        return True
+    if re.match(r"^[a-zA-Z]:\\", token):
+        return True
+    return False
+
 
 def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
     text = str(prompt or "").strip()
@@ -33,6 +77,48 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                 "model": model_match.group(2).strip().strip("."),
             },
         }
+
+    rename_with_title_match = re.match(
+        r"\s*rename\s+(?P<src>.+?)\s+with\s+title\s+(?P<dst>.+?)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    rename_to_match = re.match(
+        r"\s*rename\s+(?P<src>.+?)\s+(?:to|as|->)\s+(?P<dst>.+?)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    rename_match = rename_with_title_match or rename_to_match
+    if rename_match:
+        src_raw = _strip_wrapping_quotes(
+            _strip_trailing_punctuation(rename_match.group("src") or "")
+        )
+        dst_raw = _strip_wrapping_quotes(
+            _strip_trailing_punctuation(rename_match.group("dst") or "")
+        )
+        if src_raw.lower().startswith("file "):
+            src_raw = src_raw[5:].strip()
+        if src_raw.lower().startswith("pdf "):
+            src_raw = src_raw[4:].strip()
+
+        if not dst_raw:
+            return {}
+
+        src_lower = src_raw.lower()
+        use_active = src_lower in _ACTIVE_FILE_HINTS or src_lower.startswith("this ")
+        source_path = "" if use_active else src_raw
+        args: Dict[str, Any] = {
+            "source_path": source_path,
+            "use_active_file": bool(use_active),
+            "overwrite": ("overwrite" in lower or "replace" in lower),
+        }
+        if _looks_like_path(dst_raw):
+            args["new_path"] = dst_raw
+            args["new_name"] = ""
+        else:
+            args["new_name"] = dst_raw
+            args["new_path"] = ""
+        return {"name": "rename_file", "args": args}
 
     workflow_match = re.search(
         r"\b(segment|track)\b\s+(?P<prompt>.+?)\s+(?:in|on)\s+(?P<path>.+)",

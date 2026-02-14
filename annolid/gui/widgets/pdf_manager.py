@@ -101,6 +101,39 @@ class PdfManager(QtCore.QObject):
         except Exception:
             pass
 
+    def _prune_missing_recent_pdfs(self) -> None:
+        before = list(self._pdf_files)
+        kept: list[str] = []
+        for raw in before:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            try:
+                candidate = Path(text)
+                if not candidate.exists() or not candidate.is_file():
+                    continue
+            except Exception:
+                continue
+            kept.append(text)
+        if kept != before:
+            self._pdf_files = kept[-self._RECENT_PDFS_LIMIT :]
+            self._save_recent_pdfs()
+
+    def _remove_recent_pdf(self, pdf_path: str) -> None:
+        value = str(pdf_path or "").strip()
+        if not value:
+            return
+        try:
+            resolved = str(Path(value).expanduser().resolve())
+        except Exception:
+            resolved = value
+        updated = [p for p in self._pdf_files if str(p).strip() != resolved]
+        if updated == self._pdf_files:
+            return
+        self._pdf_files = updated[-self._RECENT_PDFS_LIMIT :]
+        self._save_recent_pdfs()
+        self._populate_pdf_file_list()
+
     # ------------------------------------------------------------------ setup
     def ensure_pdf_viewer(self) -> PdfViewerWidget:
         if self.pdf_viewer is None:
@@ -255,11 +288,38 @@ class PdfManager(QtCore.QObject):
     # ------------------------------------------------------------------ actions
     def show_pdf_in_viewer(self, pdf_path: str) -> None:
         """Load a PDF into the viewer and display it in place of the canvas."""
+        requested_path = str(pdf_path or "").strip()
+        if not requested_path:
+            return
+        candidate = Path(requested_path).expanduser()
+        if not candidate.exists() or not candidate.is_file():
+            self._remove_recent_pdf(str(candidate))
+            logger.warning("Skipping missing PDF path: %s", candidate)
+            QtWidgets.QMessageBox.warning(
+                self.window,
+                self.window.tr("PDF Missing"),
+                self.window.tr("PDF file not found:\n%1").replace("%1", str(candidate)),
+            )
+            self.window._set_active_view("canvas")
+            return
+
         viewer = self.ensure_pdf_viewer()
         try:
-            viewer.load_pdf(pdf_path)
+            viewer.load_pdf(str(candidate))
         except Exception as exc:  # pragma: no cover - user-facing dialog
-            logger.error("Failed to open PDF %s: %s", pdf_path, exc, exc_info=True)
+            if isinstance(exc, FileNotFoundError):
+                self._remove_recent_pdf(str(candidate))
+                logger.warning("PDF no longer exists: %s", candidate)
+                QtWidgets.QMessageBox.warning(
+                    self.window,
+                    self.window.tr("PDF Missing"),
+                    self.window.tr("PDF file not found:\n%1").replace(
+                        "%1", str(candidate)
+                    ),
+                )
+                self.window._set_active_view("canvas")
+                return
+            logger.error("Failed to open PDF %s: %s", candidate, exc, exc_info=True)
             QtWidgets.QMessageBox.critical(
                 self.window,
                 self.window.tr("Failed to Open PDF"),
@@ -277,7 +337,7 @@ class PdfManager(QtCore.QObject):
         self._close_unrelated_docks_for_pdf()
         self.ensure_pdf_tts_dock()
         # Pick a reasonable default TTS language/voice early so the dock reflects it immediately.
-        self._auto_select_tts_from_pdf_language(str(pdf_path))
+        self._auto_select_tts_from_pdf_language(str(candidate))
         self.ensure_pdf_controls_dock()
         self.ensure_pdf_reader_dock()
         self.ensure_pdf_log_dock()
@@ -286,10 +346,10 @@ class PdfManager(QtCore.QObject):
             self.pdf_viewer.fit_to_width()
         except Exception:
             pass
-        self._record_pdf_entry(str(pdf_path))
-        self.window.lastOpenDir = str(Path(pdf_path).parent)
+        self._record_pdf_entry(str(candidate))
+        self.window.lastOpenDir = str(candidate.parent)
         self.window.statusBar().showMessage(
-            self.window.tr("Loaded PDF %1").replace("%1", Path(pdf_path).name), 3000
+            self.window.tr("Loaded PDF %1").replace("%1", candidate.name), 3000
         )
         try:
             close_action = getattr(getattr(self.window, "actions", None), "close", None)
@@ -670,6 +730,7 @@ class PdfManager(QtCore.QObject):
         widget = getattr(self.window, "fileListWidget", None)
         if widget is None:
             return
+        self._prune_missing_recent_pdfs()
         widget.clear()
         for path in self._pdf_files:
             name = Path(path).name
@@ -691,7 +752,19 @@ class PdfManager(QtCore.QObject):
         path = item.data(Qt.UserRole)
         if not path:
             return
-        self.show_pdf_in_viewer(str(path))
+        path_text = str(path).strip()
+        if not path_text:
+            return
+        if not Path(path_text).exists():
+            self._remove_recent_pdf(path_text)
+            self.window.statusBar().showMessage(
+                self.window.tr("PDF missing on disk: %1").replace(
+                    "%1", Path(path_text).name
+                ),
+                4000,
+            )
+            return
+        self.show_pdf_in_viewer(path_text)
 
     def _pdf_prev_page(self) -> None:
         if self.pdf_viewer is not None:

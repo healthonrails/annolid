@@ -48,6 +48,7 @@ from annolid.core.agent.tools import (
     register_nanobot_style_tools,
 )
 from annolid.core.agent.tools.pdf import DownloadPdfTool
+from annolid.core.agent.tools.filesystem import RenameFileTool
 from annolid.core.agent.tools.policy import resolve_allowed_tools
 from annolid.core.agent.utils import get_agent_workspace_path
 from annolid.core.agent.gui_backend.commands import (
@@ -1291,6 +1292,7 @@ class StreamingChatTask(QRunnable):
             start_realtime_stream=self._tool_gui_start_realtime_stream,
             stop_realtime_stream=self._tool_gui_stop_realtime_stream,
             set_chat_model=self._tool_gui_set_chat_model,
+            rename_file=self._tool_gui_rename_file,
         )
 
     def _parse_direct_gui_command(self, prompt: str) -> Dict[str, Any]:
@@ -1936,6 +1938,94 @@ class StreamingChatTask(QRunnable):
         if not ok:
             return {"ok": False, "error": "Failed to queue realtime stop action"}
         return {"ok": True, "queued": True}
+
+    def _tool_gui_rename_file(
+        self,
+        source_path: str = "",
+        new_name: str = "",
+        new_path: str = "",
+        use_active_file: bool = False,
+        overwrite: bool = False,
+    ) -> Dict[str, Any]:
+        source_text = str(source_path or "").strip()
+        target_name = str(new_name or "").strip()
+        target_path = str(new_path or "").strip()
+        if not target_name and not target_path:
+            return {
+                "ok": False,
+                "error": "Provide a new_name or new_path for rename.",
+            }
+
+        current_path: Optional[Path] = None
+        if source_text:
+            current_path = Path(source_text).expanduser()
+        elif bool(use_active_file):
+            pdf_state = self._tool_gui_pdf_get_state()
+            if isinstance(pdf_state, dict) and bool(pdf_state.get("ok")):
+                active_pdf_path = str(pdf_state.get("path") or "").strip()
+                if active_pdf_path:
+                    current_path = Path(active_pdf_path).expanduser()
+            if current_path is None:
+                widget = self.widget
+                host = getattr(widget, "host_window_widget", None) if widget else None
+                active_video = str(getattr(host, "video_file", "") or "").strip()
+                if active_video:
+                    current_path = Path(active_video).expanduser()
+        if current_path is None:
+            return {
+                "ok": False,
+                "error": "No source file provided and no active file found.",
+            }
+        if not current_path.exists() or not current_path.is_file():
+            return {
+                "ok": False,
+                "error": f"Source file is missing: {current_path}",
+            }
+
+        if target_name and not Path(target_name).suffix and current_path.suffix:
+            target_name = f"{target_name}{current_path.suffix}"
+
+        workspace = get_agent_workspace_path()
+        renamer = RenameFileTool(allowed_dir=workspace)
+        result_text = str(
+            self._run_async(
+                renamer.execute(
+                    path=str(current_path),
+                    new_name=target_name,
+                    new_path=target_path,
+                    overwrite=bool(overwrite),
+                )
+            )
+            or ""
+        )
+        if not result_text.startswith("Successfully renamed "):
+            return {
+                "ok": False,
+                "error": result_text or "Rename failed.",
+                "path": str(current_path),
+                "requested_new_name": target_name,
+                "requested_new_path": target_path,
+            }
+
+        if target_path:
+            resolved_new_path = Path(target_path).expanduser()
+        else:
+            resolved_new_path = current_path.with_name(target_name)
+        reopened = False
+        if resolved_new_path.exists() and resolved_new_path.suffix.lower() == ".pdf":
+            reopened = bool(
+                self._invoke_widget_slot(
+                    "bot_open_pdf", QtCore.Q_ARG(str, str(resolved_new_path))
+                )
+            )
+
+        return {
+            "ok": True,
+            "renamed": True,
+            "old_path": str(current_path),
+            "new_path": str(resolved_new_path),
+            "reopened": reopened,
+        }
 
     def _recover_with_plain_ollama_reply(self) -> str:
         return recover_with_plain_ollama_reply(

@@ -16,6 +16,7 @@ from .filesystem import (
     EditFileTool,
     ListDirTool,
     ReadFileTool,
+    RenameFileTool,
     WriteFileTool,
 )
 from .git import (
@@ -50,6 +51,7 @@ __all__ = [
     "ExtractPdfImagesTool",
     "WriteFileTool",
     "EditFileTool",
+    "RenameFileTool",
     "ListDirTool",
     "CodeSearchTool",
     "CodeExplainTool",

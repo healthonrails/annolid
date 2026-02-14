@@ -139,3 +139,31 @@ def test_policy_group_pdf_includes_open_and_extract_tools() -> None:
         "extract_pdf_text",
         "extract_pdf_images",
     }
+
+
+def test_policy_group_fs_includes_rename_file() -> None:
+    cfg = ToolsConfig(
+        profile="minimal",
+        allow=["group:fs"],
+    )
+    all_tools = [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "rename_file",
+        "list_dir",
+        "exec",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="ollama",
+        model="qwen3",
+    )
+    assert resolved.allowed_tools == {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "rename_file",
+        "list_dir",
+    }

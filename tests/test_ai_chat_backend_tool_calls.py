@@ -1211,6 +1211,16 @@ def test_parse_direct_gui_command_variants() -> None:
     parsed_stop_stream = task._parse_direct_gui_command("stop realtime stream")
     assert parsed_stop_stream["name"] == "stop_realtime_stream"
 
+    parsed_rename_pdf = task._parse_direct_gui_command(
+        "rename this pdf with title A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf"
+    )
+    assert parsed_rename_pdf["name"] == "rename_file"
+    assert parsed_rename_pdf["args"]["use_active_file"] is True
+    assert (
+        parsed_rename_pdf["args"]["new_name"]
+        == "A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf"
+    )
+
 
 def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
@@ -1229,6 +1239,14 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
 
     task = StreamingChatTask("hi", widget=None)
     task._invoke_widget_slot = lambda *args, **kwargs: True  # type: ignore[method-assign]
+    task._tool_gui_rename_file = lambda **kwargs: {  # type: ignore[method-assign]
+        **kwargs,
+        "ok": True,
+        "old_path": str(pdf_file),
+        "new_path": str(
+            tmp_path / "A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf"
+        ),
+    }
 
     out_pdf = task._execute_direct_gui_command("open pdf")
     assert "Opened PDF in Annolid:" in out_pdf
@@ -1263,3 +1281,39 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
 
     out_stop_stream = task._execute_direct_gui_command("stop realtime stream")
     assert "Stopped realtime stream." == out_stop_stream
+
+    out_rename = task._execute_direct_gui_command(
+        "rename this pdf with title A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf"
+    )
+    assert "Renamed file:" in out_rename
+
+
+def test_tool_gui_rename_file_uses_active_pdf(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    pdf_file = tmp_path / "Microsoft_Word_-_Manual_docx.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4 fake")
+
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=None)
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": str(pdf_file),
+        "title": pdf_file.name,
+    }
+    calls: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+
+    payload = task._tool_gui_rename_file(
+        new_name="A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf",
+        use_active_file=True,
+    )
+    assert payload["ok"] is True
+    assert payload["renamed"] is True
+    assert (
+        Path(payload["new_path"]).name
+        == "A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf"
+    )
+    assert calls == ["bot_open_pdf"]

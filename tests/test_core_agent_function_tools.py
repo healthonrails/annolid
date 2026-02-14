@@ -35,6 +35,7 @@ from annolid.core.agent.tools.function_builtin import (
     MemorySearchTool,
     OpenPdfTool,
     ReadFileTool,
+    RenameFileTool,
     WebSearchTool,
     WriteFileTool,
     register_nanobot_style_tools,
@@ -111,6 +112,47 @@ def test_filesystem_tools_round_trip(tmp_path: Path) -> None:
     assert "Successfully edited" in edited
     listed = asyncio.run(list_dir.execute(path=str(tmp_path)))
     assert "note.txt" in listed
+
+
+def test_rename_file_tool_rename_and_overwrite(tmp_path: Path) -> None:
+    writer = WriteFileTool(allowed_dir=tmp_path)
+    renamer = RenameFileTool(allowed_dir=tmp_path)
+    src = tmp_path / "old.pdf"
+    dst = tmp_path / "new.pdf"
+    conflict = tmp_path / "conflict.pdf"
+
+    asyncio.run(writer.execute(path=str(src), content="v1"))
+    asyncio.run(writer.execute(path=str(conflict), content="v2"))
+
+    denied = asyncio.run(
+        renamer.execute(path=str(src), new_path=str(conflict), overwrite=False)
+    )
+    assert "Target already exists" in denied
+
+    renamed = asyncio.run(
+        renamer.execute(path=str(src), new_path=str(dst), overwrite=False)
+    )
+    assert "Successfully renamed" in renamed
+    assert not src.exists()
+    assert dst.exists()
+
+    replaced = asyncio.run(
+        renamer.execute(path=str(conflict), new_path=str(dst), overwrite=True)
+    )
+    assert "Successfully renamed" in replaced
+    assert not conflict.exists()
+    assert dst.read_text(encoding="utf-8") == "v2"
+
+
+def test_rename_file_tool_rejects_invalid_new_name(tmp_path: Path) -> None:
+    writer = WriteFileTool(allowed_dir=tmp_path)
+    renamer = RenameFileTool(allowed_dir=tmp_path)
+    src = tmp_path / "paper.pdf"
+    asyncio.run(writer.execute(path=str(src), content="pdf"))
+    result = asyncio.run(
+        renamer.execute(path=str(src), new_name="nested/path/illegal.pdf")
+    )
+    assert "new_name must be a base name" in result
 
 
 def test_read_file_rejects_pdf_with_actionable_message(tmp_path: Path) -> None:
@@ -605,6 +647,7 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     registry = FunctionToolRegistry()
     register_nanobot_style_tools(registry, allowed_dir=tmp_path)
     assert registry.has("read_file")
+    assert registry.has("rename_file")
     assert registry.has("code_search")
     assert registry.has("code_explain")
     assert registry.has("git_status")
