@@ -80,6 +80,11 @@ gui = [
     "PyQt5>=5.15.7",
 ]
 
+vtk = [
+    # 3D volume rendering and Analyze/NIfTI readers for Open 3D workflows.
+    "vtk>=9.2.0",
+]
+
 sam3 = [
     "iopath>=0.1.9",
     "ftfy>=6.1.1",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import re
+import struct
 import tempfile
 import json
 import types
@@ -81,6 +82,8 @@ VOLUME_FILE_EXTS = (
     ".tiff",
     ".nii",
     ".nii.gz",
+    ".hdr",
+    ".img",
     ".zarr",
     ".zarr.json",
     ".zgroup",
@@ -88,7 +91,7 @@ VOLUME_FILE_EXTS = (
 DICOM_EXTS = (".dcm", ".dicom", ".ima")
 VOLUME_SOURCE_FILTERS = (
     "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff "
-    "*.nii *.nii.gz *.dcm *.dicom *.ima *.IMA *.zarr *.zarr.json *.zgroup);;All files (*.*)"
+    "*.nii *.nii.gz *.hdr *.img *.dcm *.dicom *.ima *.IMA *.zarr *.zarr.json *.zgroup);;All files (*.*)"
 )
 TIFF_SUFFIXES = (".tif", ".tiff")
 OME_TIFF_SUFFIXES = (".ome.tif", ".ome.tiff")
@@ -2014,6 +2017,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                     is_out_of_core=False,
                     volume_shape=tuple(int(x) for x in vol.shape[:3]),
                 )
+            if suffix in (".hdr", ".img"):
+                return self._read_analyze_volume(path)
             if suffix in (".dcm", ".ima", ".dicom"):
                 # Treat as a DICOM series from the containing folder
                 volume, spacing = self._read_dicom_series(path.parent)
@@ -2046,6 +2051,181 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         except Exception as e:
             # Re-raise with context so upper layer shows a concise message
             raise RuntimeError(f"Failed to read volume from '{path}': {e}")
+
+    def _find_companion_file(self, path: Path, suffix: str) -> Optional[Path]:
+        """Find sibling file with suffix using a case-insensitive lookup."""
+        direct = path.with_suffix(suffix)
+        if direct.exists():
+            return direct
+        parent = path.parent
+        stem = path.stem.lower()
+        target_suffix = suffix.lower()
+        try:
+            for child in parent.iterdir():
+                if not child.is_file():
+                    continue
+                if child.stem.lower() == stem and child.suffix.lower() == target_suffix:
+                    return child
+        except Exception:
+            return None
+        return None
+
+    def _vtk_image_has_scalars(self, vtk_img) -> bool:
+        try:
+            dims = vtk_img.GetDimensions()
+            if len(dims) < 3 or any(int(d) <= 0 for d in dims[:3]):
+                return False
+            point_data = vtk_img.GetPointData()
+            if point_data is None:
+                return False
+            scalars = point_data.GetScalars()
+            if scalars is None:
+                return False
+            return int(scalars.GetNumberOfTuples()) > 0
+        except Exception:
+            return False
+
+    def _analyze_dtype(self, datatype_code: int, endian: str) -> np.dtype:
+        mapping = {
+            2: np.uint8,
+            4: np.int16,
+            8: np.int32,
+            16: np.float32,
+            64: np.float64,
+            256: np.int8,
+            512: np.uint16,
+            768: np.uint32,
+            1024: np.int64,
+            1280: np.uint64,
+        }
+        base = mapping.get(int(datatype_code))
+        if base is None:
+            raise RuntimeError(f"Unsupported Analyze datatype code: {datatype_code}")
+        dtype = np.dtype(base)
+        if dtype.itemsize > 1:
+            dtype = dtype.newbyteorder(endian)
+        return dtype
+
+    def _read_analyze_header(self, header_path: Path):
+        header = header_path.read_bytes()
+        if len(header) < 348:
+            raise RuntimeError("Analyze header is too small (expected >= 348 bytes).")
+
+        sizeof_hdr_le = struct.unpack_from("<i", header, 0)[0]
+        sizeof_hdr_be = struct.unpack_from(">i", header, 0)[0]
+        if sizeof_hdr_le == 348:
+            endian = "<"
+        elif sizeof_hdr_be == 348:
+            endian = ">"
+        else:
+            raise RuntimeError("Invalid Analyze header (sizeof_hdr != 348).")
+
+        dims_raw = struct.unpack_from(f"{endian}8h", header, 40)
+        ndim = max(0, int(dims_raw[0]))
+        dims = [int(v) for v in dims_raw[1 : 1 + max(3, ndim)]]
+        while len(dims) < 3:
+            dims.append(1)
+        dims = [d if d > 0 else 1 for d in dims]
+        x, y, z = dims[0], dims[1], dims[2]
+
+        datatype = int(struct.unpack_from(f"{endian}h", header, 70)[0])
+        bitpix = int(struct.unpack_from(f"{endian}h", header, 72)[0])
+        pixdim = struct.unpack_from(f"{endian}8f", header, 76)
+        spacing = (
+            float(pixdim[1]) if float(pixdim[1]) > 0 else 1.0,
+            float(pixdim[2]) if float(pixdim[2]) > 0 else 1.0,
+            float(pixdim[3]) if float(pixdim[3]) > 0 else 1.0,
+        )
+        vox_offset = float(struct.unpack_from(f"{endian}f", header, 108)[0])
+        offset = max(0, int(round(vox_offset)))
+        dtype = self._analyze_dtype(datatype, endian)
+
+        expected_bits = int(dtype.itemsize * 8)
+        if bitpix > 0 and bitpix != expected_bits:
+            logger.warning(
+                "Analyze header bitpix (%s) does not match dtype size (%s bits).",
+                bitpix,
+                expected_bits,
+            )
+
+        return dtype, (x, y, z), spacing, offset
+
+    def _read_analyze_numpy(
+        self, header_path: Path, image_path: Path
+    ) -> tuple[np.ndarray, tuple[float, float, float]]:
+        dtype, (x, y, z), spacing, offset = self._read_analyze_header(header_path)
+        voxel_count = int(x * y * z)
+        arr = np.fromfile(
+            str(image_path), dtype=dtype, count=voxel_count, offset=offset
+        )
+        if arr.size != voxel_count and offset > 0:
+            # Analyze 7.5 commonly stores vox_offset as zero; tolerate bad offsets.
+            arr = np.fromfile(str(image_path), dtype=dtype, count=voxel_count, offset=0)
+        if arr.size != voxel_count:
+            raise RuntimeError(
+                f"Analyze data size mismatch: expected {voxel_count} voxels, got {arr.size}."
+            )
+        if arr.dtype.byteorder not in ("=", "|"):
+            # NumPy 2.0 removed ndarray.newbyteorder(); normalize to native-endian
+            # using a dtype view after byteswap.
+            arr = arr.byteswap().view(arr.dtype.newbyteorder("="))
+        volume = arr.reshape((z, y, x))
+        return volume, spacing
+
+    def _read_analyze_via_vtk_reader(self, header_path: Path):
+        try:
+            from vtkmodules.vtkIOImage import vtkAnalyzeReader
+        except Exception:
+            return None
+        try:
+            reader = vtkAnalyzeReader()
+            reader.SetFileName(str(header_path))
+            reader.Update()
+            vtk_img = reader.GetOutput()
+            if self._vtk_image_has_scalars(vtk_img):
+                return vtk_img
+        except Exception:
+            return None
+        return None
+
+    def _read_analyze_volume(self, path: Path) -> _VolumeData:
+        header = path if path.suffix.lower() == ".hdr" else None
+        image = path if path.suffix.lower() == ".img" else None
+        if header is None:
+            header = self._find_companion_file(path, ".hdr")
+        if image is None:
+            image = self._find_companion_file(path, ".img")
+        if header is None:
+            raise RuntimeError("Analyze header (.hdr) file was not found.")
+        if image is None:
+            raise RuntimeError("Analyze image (.img) file was not found.")
+
+        analyze_error = None
+        try:
+            vol, spacing = self._read_analyze_numpy(header, image)
+        except Exception as exc:
+            analyze_error = exc
+            vtk_img = self._read_analyze_via_vtk_reader(header)
+            if vtk_img is None:
+                raise RuntimeError(
+                    f"Unable to decode Analyze volume. {analyze_error}"
+                ) from exc
+            vol = self._vtk_image_to_numpy(vtk_img)
+            s = vtk_img.GetSpacing()
+            spacing = (s[0], s[1], s[2])
+
+        if vol.size == 0:
+            raise RuntimeError("Analyze volume contains no voxels.")
+        vol = self._normalize_to_float01(vol)
+        return _VolumeData(
+            array=vol,
+            spacing=spacing,
+            vmin=float(vol.min()),
+            vmax=float(vol.max()),
+            is_grayscale=vol.ndim == 3,
+            is_out_of_core=False,
+            volume_shape=tuple(int(x) for x in vol.shape[:3]),
+        )
 
     def _is_tiff_candidate(self, path: Path) -> bool:
         name_lower = path.name.lower()
@@ -2859,6 +3039,10 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         """If user picks a file inside a Zarr store, return the store root."""
         try:
             p = path
+            if p.is_file() and p.suffix.lower() in (".img", ".hdr"):
+                hdr_candidate = self._find_companion_file(p, ".hdr")
+                if hdr_candidate is not None:
+                    return hdr_candidate
             if p.is_file():
                 if p.name.lower() in ("zarr.json", ".zgroup"):
                     return p.parent
@@ -5658,6 +5842,19 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         return poly
 
     # -------------------- Source type helpers --------------------
+    @staticmethod
+    def _path_matches_ext(path: Path, exts: Tuple[str, ...]) -> bool:
+        """Match both simple suffixes and compound extensions like '.nii.gz'."""
+        name = path.name.lower()
+        suffix = path.suffix.lower()
+        for ext in exts:
+            ext_l = str(ext or "").lower()
+            if not ext_l:
+                continue
+            if suffix == ext_l or name.endswith(ext_l):
+                return True
+        return False
+
     def _resolve_initial_source(self, path: Path) -> Path:
         """If a directory was provided, auto-pick the first supported file."""
         try:
@@ -5682,7 +5879,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
         def _find(exts: Tuple[str, ...]) -> Optional[Path]:
             for entry in entries:
-                if entry.is_file() and entry.suffix.lower() in exts:
+                if entry.is_file() and self._path_matches_ext(entry, exts):
                     return entry
                 if entry.is_dir() and self._is_zarr_candidate(entry):
                     return entry
@@ -5713,11 +5910,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         ext = path.suffix.lower()
         name = path.name.lower()
         return (
-            ext in VOLUME_FILE_EXTS
+            self._path_matches_ext(path, VOLUME_FILE_EXTS)
             or ext in DICOM_EXTS
-            or name.endswith(".ome.tif")
-            or name.endswith(".nii")
-            or name.endswith(".nii.gz")
             or name.endswith(".zarr")
             or name.endswith("zarr.json")
             or name.endswith(".zgroup")

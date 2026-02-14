@@ -33,7 +33,7 @@ class ViewerToolsMixin:
                 else "."
             )
             filters = self.tr(
-                "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.dcm *.dicom *.ima *.IMA *.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.zarr *.zarr.json *.zgroup);;All files (*.*)"
+                "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.hdr *.img *.dcm *.dicom *.ima *.IMA *.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.zarr *.zarr.json *.zgroup);;All files (*.*)"
             )
             dialog = QtWidgets.QFileDialog(
                 self, self.tr("Choose 3D Volume (TIFF/NIfTI/DICOM/Zarr)")
