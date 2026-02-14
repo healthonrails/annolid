@@ -2578,6 +2578,11 @@ class PdfViewerWidget(QtWidgets.QWidget):
     def current_page_index(self) -> int:
         return int(self._current_page)
 
+    def current_pdf_path(self) -> str:
+        if self._pdf_path is None:
+            return ""
+        return str(self._pdf_path)
+
     def set_zoom_percent(self, percent: float) -> None:
         self._set_zoom_factor(float(percent) / 100.0)
 

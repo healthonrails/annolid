@@ -54,7 +54,18 @@ Safety notes:
 - `gui_context()`
 - `gui_shared_image_path()`
 - `gui_open_video(path)`
+- `gui_open_url(url)`
+- `gui_open_in_browser(url)`
+- `gui_web_get_dom_text(max_chars?)`
+- `gui_web_click(selector)`
+- `gui_web_type(selector, text, submit?)`
+- `gui_web_scroll(delta_y?)`
+- `gui_web_find_forms()`
+- `gui_web_run_steps(steps, stop_on_error?, max_steps?)`
 - `gui_open_pdf(path?)`
+- `gui_pdf_get_state()`
+- `gui_pdf_get_text(max_chars?, pages?)`
+- `gui_pdf_find_sections(max_sections?, max_pages?)`
 - `gui_set_frame(frame_index)`
 - `gui_set_chat_prompt(text)`
 - `gui_send_chat_prompt()`

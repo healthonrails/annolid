@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import quote_plus
 
 from qtpy import QtCore
 from qtpy.QtCore import QMetaObject, QRunnable
@@ -97,6 +98,47 @@ _WEB_ACCESS_REFUSAL_HINTS = (
     "can't access the internet",
     "no browsing capability",
 )
+_KNOWLEDGE_GAP_HINTS = (
+    "i don't have access to",
+    "i do not have access to",
+    "i don't know",
+    "i do not know",
+    "i'm not sure",
+    "i am not sure",
+    "i cannot determine",
+    "i can't determine",
+    "you can check by",
+    "check a website",
+    "check an app",
+    "can't check",
+    "cannot check",
+    "isn't configured",
+    "is not configured",
+    "not configured",
+    "web search api",
+    "api key",
+    "in your browser",
+)
+_OPEN_URL_SUGGESTION_HINTS = (
+    "open your browser",
+    "in your browser",
+    "search for",
+    "go to ",
+    "visit ",
+    "check weather.gov",
+    "check accuweather",
+)
+_OPEN_PDF_SUGGESTION_HINTS = (
+    "open pdf",
+    "open the pdf",
+    "upload pdf",
+    "share the pdf",
+    "provide the pdf",
+    "cannot access your local file",
+    "can't access your local file",
+    "cannot access local file",
+    "can't access local file",
+)
 # Backward-compat aliases retained for tests/internal callers that reference
 # backend module globals directly.
 _OLLAMA_TOOL_SUPPORT_CACHE = _PROVIDER_OLLAMA_TOOL_SUPPORT_CACHE
@@ -138,7 +180,7 @@ class StreamingChatTask(QRunnable):
         session_id: str = "gui:annolid_bot:default",
         session_store: Optional[PersistentSessionStore] = None,
         show_tool_trace: bool = False,
-        enable_web_tools: bool = False,
+        enable_web_tools: bool = True,
     ):
         super().__init__()
         self.prompt = prompt
@@ -532,8 +574,41 @@ class StreamingChatTask(QRunnable):
             open_video_callback=self._wrap_tool_callback(
                 "open_video", self._tool_gui_open_video
             ),
+            open_url_callback=self._wrap_tool_callback(
+                "open_url", self._tool_gui_open_url
+            ),
+            open_in_browser_callback=self._wrap_tool_callback(
+                "open_in_browser", self._tool_gui_open_in_browser
+            ),
+            web_get_dom_text_callback=self._wrap_tool_callback(
+                "web_get_dom_text", self._tool_gui_web_get_dom_text
+            ),
+            web_click_callback=self._wrap_tool_callback(
+                "web_click", self._tool_gui_web_click
+            ),
+            web_type_callback=self._wrap_tool_callback(
+                "web_type", self._tool_gui_web_type
+            ),
+            web_scroll_callback=self._wrap_tool_callback(
+                "web_scroll", self._tool_gui_web_scroll
+            ),
+            web_find_forms_callback=self._wrap_tool_callback(
+                "web_find_forms", self._tool_gui_web_find_forms
+            ),
+            web_run_steps_callback=self._wrap_tool_callback(
+                "web_run_steps", self._tool_gui_web_run_steps
+            ),
             open_pdf_callback=self._wrap_tool_callback(
                 "open_pdf", self._tool_gui_open_pdf
+            ),
+            pdf_get_state_callback=self._wrap_tool_callback(
+                "pdf_get_state", self._tool_gui_pdf_get_state
+            ),
+            pdf_get_text_callback=self._wrap_tool_callback(
+                "pdf_get_text", self._tool_gui_pdf_get_text
+            ),
+            pdf_find_sections_callback=self._wrap_tool_callback(
+                "pdf_find_sections", self._tool_gui_pdf_find_sections
             ),
             set_frame_callback=self._wrap_tool_callback(
                 "set_frame", self._tool_gui_set_frame
@@ -600,10 +675,34 @@ class StreamingChatTask(QRunnable):
                 )
                 if not text or self._looks_like_local_access_refusal(text):
                     text = direct_gui_text
-        if self.enable_web_tools and self._looks_like_web_access_refusal(text):
-            web_fallback = self._try_web_fetch_fallback(self.prompt, tools)
-            if web_fallback:
-                text = web_fallback
+        if self.enable_web_tools:
+            if self._looks_like_open_url_suggestion(text):
+                open_page_fallback = self._try_open_page_content_fallback()
+                if open_page_fallback:
+                    text = open_page_fallback
+            refusal_or_gap = self._looks_like_web_access_refusal(
+                text
+            ) or self._looks_like_knowledge_gap_response(text)
+            if refusal_or_gap:
+                open_page_fallback = self._try_open_page_content_fallback()
+                if open_page_fallback:
+                    text = open_page_fallback
+                else:
+                    browser_fallback = self._try_browser_search_fallback(
+                        self.prompt, tools
+                    )
+                    if browser_fallback:
+                        text = browser_fallback
+                    else:
+                        web_fallback = self._try_web_fetch_fallback(self.prompt, tools)
+                        if web_fallback:
+                            text = web_fallback
+        if self._looks_like_local_access_refusal(
+            text
+        ) or self._looks_like_open_pdf_suggestion(text):
+            open_pdf_fallback = self._try_open_pdf_content_fallback()
+            if open_pdf_fallback:
+                text = open_pdf_fallback
         # Final safety net: if the model still returns empty after our in-call retry,
         # attempt a single plain Ollama stream request (no tools) and use it.
         if not text and self.provider == "ollama":
@@ -706,6 +805,12 @@ class StreamingChatTask(QRunnable):
                     with_context = getattr(host, key, None)
                     if with_context not in (None, ""):
                         payload[key] = with_context
+            web_state = self._tool_gui_web_get_state()
+            if isinstance(web_state, dict):
+                payload["web"] = web_state
+            pdf_state = self._tool_gui_pdf_get_state()
+            if isinstance(pdf_state, dict):
+                payload["pdf"] = pdf_state
         return payload
 
     def _invoke_widget_slot(self, slot_name: str, *qargs: Any) -> bool:
@@ -733,6 +838,22 @@ class StreamingChatTask(QRunnable):
             )
             return False
 
+    def _invoke_widget_json_slot(self, slot_name: str, *qargs: Any) -> Dict[str, Any]:
+        widget = self.widget
+        if widget is not None:
+            try:
+                setattr(widget, "_bot_action_result", {})
+            except Exception:
+                pass
+        ok = self._invoke_widget_slot(slot_name, *qargs)
+        if not ok:
+            return {"ok": False, "error": f"Failed to run GUI action: {slot_name}"}
+        if widget is not None:
+            payload = getattr(widget, "_bot_action_result", None)
+            if isinstance(payload, dict) and payload:
+                return dict(payload)
+        return {"ok": True}
+
     def _tool_gui_open_video(self, path: str) -> Dict[str, Any]:
         video_path = self._resolve_video_path_for_gui_tool(path)
         if video_path is None:
@@ -755,29 +876,14 @@ class StreamingChatTask(QRunnable):
         return {"ok": True, "queued": True, "path": str(video_path)}
 
     def _tool_gui_open_url(self, url: str) -> Dict[str, Any]:
-        text = str(url or "").strip()
-        candidates = self._extract_web_urls(text)
-        if text.lower().startswith(("http://", "https://")) and text not in candidates:
-            candidates.insert(0, text.rstrip(").,;!?"))
-        if not candidates:
-            domain_match = re.search(
-                r"\b(?:www\.)?[a-z0-9][a-z0-9\-]{0,62}"
-                r"(?:\.[a-z0-9][a-z0-9\-]{0,62})+(?::\d+)?(?:/[^\s<>\"]*)?",
-                text,
-                flags=re.IGNORECASE,
-            )
-            if domain_match:
-                domain_url = str(domain_match.group(0) or "").strip().rstrip(").,;!?")
-                if domain_url:
-                    candidates.append(f"https://{domain_url}")
-        if not candidates:
+        target_url = self._extract_first_web_url(url)
+        if not target_url:
             return {
                 "ok": False,
                 "error": "URL not found in provided text.",
-                "input": text,
+                "input": str(url or "").strip(),
                 "hint": "Provide a URL, for example google.com or https://example.org.",
             }
-        target_url = str(candidates[0] or "").strip()
         if not target_url.lower().startswith(("http://", "https://")):
             return {
                 "ok": False,
@@ -788,6 +894,180 @@ class StreamingChatTask(QRunnable):
         if not ok:
             return {"ok": False, "error": "Failed to queue GUI URL open action"}
         return {"ok": True, "queued": True, "url": target_url}
+
+    def _tool_gui_open_in_browser(self, url: str) -> Dict[str, Any]:
+        target_url = self._extract_first_web_url(url)
+        if not target_url:
+            return {
+                "ok": False,
+                "error": "URL not found in provided text.",
+                "input": str(url or "").strip(),
+                "hint": "Provide a URL, for example google.com or https://example.org.",
+            }
+        ok = self._invoke_widget_slot(
+            "bot_open_in_browser", QtCore.Q_ARG(str, target_url)
+        )
+        if not ok:
+            return {"ok": False, "error": "Failed to queue browser open action"}
+        return {"ok": True, "queued": True, "url": target_url}
+
+    def _tool_gui_web_get_dom_text(self, max_chars: int = 8000) -> Dict[str, Any]:
+        limit = max(200, min(int(max_chars or 8000), 200000))
+        payload = self._invoke_widget_json_slot(
+            "bot_web_get_dom_text", QtCore.Q_ARG(int, limit)
+        )
+        if "max_chars" not in payload:
+            payload["max_chars"] = limit
+        return payload
+
+    def _tool_gui_web_get_state(self) -> Dict[str, Any]:
+        return self._invoke_widget_json_slot("bot_web_get_state")
+
+    def _tool_gui_web_click(self, selector: str) -> Dict[str, Any]:
+        value = str(selector or "").strip()
+        if not value:
+            return {"ok": False, "error": "selector is required"}
+        payload = self._invoke_widget_json_slot(
+            "bot_web_click", QtCore.Q_ARG(str, value)
+        )
+        if "selector" not in payload:
+            payload["selector"] = value
+        return payload
+
+    def _tool_gui_web_type(
+        self, selector: str, text: str, submit: bool = False
+    ) -> Dict[str, Any]:
+        selector_text = str(selector or "").strip()
+        if not selector_text:
+            return {"ok": False, "error": "selector is required"}
+        payload = self._invoke_widget_json_slot(
+            "bot_web_type",
+            QtCore.Q_ARG(str, selector_text),
+            QtCore.Q_ARG(str, str(text or "")),
+            QtCore.Q_ARG(bool, bool(submit)),
+        )
+        if "selector" not in payload:
+            payload["selector"] = selector_text
+        return payload
+
+    def _tool_gui_web_scroll(self, delta_y: int = 800) -> Dict[str, Any]:
+        value = int(delta_y or 0)
+        payload = self._invoke_widget_json_slot(
+            "bot_web_scroll", QtCore.Q_ARG(int, value)
+        )
+        if "delta_y" not in payload and "deltaY" not in payload:
+            payload["delta_y"] = value
+        return payload
+
+    def _tool_gui_web_find_forms(self) -> Dict[str, Any]:
+        return self._invoke_widget_json_slot("bot_web_find_forms")
+
+    def _tool_gui_web_run_steps(
+        self,
+        steps: Any,
+        stop_on_error: bool = True,
+        max_steps: int = 12,
+    ) -> Dict[str, Any]:
+        if not isinstance(steps, list) or not steps:
+            return {"ok": False, "error": "steps must be a non-empty list"}
+        limit = max(1, min(int(max_steps or 12), 50))
+        if len(steps) > limit:
+            return {
+                "ok": False,
+                "error": f"Too many steps ({len(steps)}), max_steps={limit}",
+            }
+
+        results: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+        halt_on_error = bool(stop_on_error)
+
+        for idx, raw_step in enumerate(steps):
+            if not isinstance(raw_step, dict):
+                payload = {"ok": False, "error": "step must be an object"}
+                results.append({"index": idx, "action": "", "result": payload})
+                errors.append({"index": idx, "error": payload["error"]})
+                if halt_on_error:
+                    break
+                continue
+
+            action = str(raw_step.get("action") or "").strip().lower()
+            if not action:
+                payload = {"ok": False, "error": "step.action is required"}
+                results.append({"index": idx, "action": action, "result": payload})
+                errors.append({"index": idx, "error": payload["error"]})
+                if halt_on_error:
+                    break
+                continue
+
+            if action == "open_url":
+                payload = self._tool_gui_open_url(str(raw_step.get("url") or ""))
+            elif action == "open_in_browser":
+                payload = self._tool_gui_open_in_browser(str(raw_step.get("url") or ""))
+            elif action in {"get_text", "dom_text", "snapshot"}:
+                payload = self._tool_gui_web_get_dom_text(
+                    int(raw_step.get("max_chars") or 8000)
+                )
+            elif action == "click":
+                payload = self._tool_gui_web_click(str(raw_step.get("selector") or ""))
+            elif action == "type":
+                payload = self._tool_gui_web_type(
+                    str(raw_step.get("selector") or ""),
+                    str(raw_step.get("text") or ""),
+                    submit=bool(raw_step.get("submit", False)),
+                )
+            elif action == "scroll":
+                payload = self._tool_gui_web_scroll(int(raw_step.get("delta_y") or 800))
+            elif action == "find_forms":
+                payload = self._tool_gui_web_find_forms()
+            elif action == "wait":
+                wait_ms = max(0, min(int(raw_step.get("wait_ms") or 500), 60000))
+                QtCore.QThread.msleep(wait_ms)
+                payload = {"ok": True, "wait_ms": wait_ms}
+            else:
+                payload = {"ok": False, "error": f"Unsupported action: {action}"}
+
+            results.append({"index": idx, "action": action, "result": payload})
+            if not bool(payload.get("ok")):
+                errors.append(
+                    {
+                        "index": idx,
+                        "action": action,
+                        "error": str(payload.get("error") or "step failed"),
+                    }
+                )
+                if halt_on_error:
+                    break
+
+        return {
+            "ok": len(errors) == 0,
+            "steps_requested": len(steps),
+            "steps_run": len(results),
+            "stop_on_error": halt_on_error,
+            "results": results,
+            "errors": errors,
+        }
+
+    @staticmethod
+    def _extract_first_web_url(text: str) -> str:
+        raw = str(text or "").strip()
+        if not raw:
+            return ""
+        candidates = StreamingChatTask._extract_web_urls(raw)
+        if raw.lower().startswith(("http://", "https://")) and raw not in candidates:
+            candidates.insert(0, raw.rstrip(").,;!?"))
+        if not candidates:
+            domain_match = re.search(
+                r"\b(?:www\.)?[a-z0-9][a-z0-9\-]{0,62}"
+                r"(?:\.[a-z0-9][a-z0-9\-]{0,62})+(?::\d+)?(?:/[^\s<>\"]*)?",
+                raw,
+                flags=re.IGNORECASE,
+            )
+            if domain_match:
+                domain_url = str(domain_match.group(0) or "").strip().rstrip(").,;!?")
+                if domain_url:
+                    return f"https://{domain_url}"
+            return ""
+        return str(candidates[0] or "").strip()
 
     @staticmethod
     def _extract_pdf_path_candidates(raw: str) -> List[str]:
@@ -880,6 +1160,43 @@ class StreamingChatTask(QRunnable):
             return {"ok": False, "error": "Failed to queue GUI PDF open action"}
         return {"ok": True, "queued": True, "path": str(resolved_path)}
 
+    def _tool_gui_pdf_get_state(self) -> Dict[str, Any]:
+        return self._invoke_widget_json_slot("bot_pdf_get_state")
+
+    def _tool_gui_pdf_get_text(
+        self, max_chars: int = 8000, pages: int = 2
+    ) -> Dict[str, Any]:
+        limit = max(200, min(int(max_chars or 8000), 200000))
+        pages_limit = max(1, min(int(pages or 2), 5))
+        payload = self._invoke_widget_json_slot(
+            "bot_pdf_get_text",
+            QtCore.Q_ARG(int, limit),
+            QtCore.Q_ARG(int, pages_limit),
+        )
+        if "max_chars" not in payload:
+            payload["max_chars"] = limit
+        if "pages" not in payload:
+            payload["pages"] = pages_limit
+        return payload
+
+    def _tool_gui_pdf_find_sections(
+        self,
+        max_sections: int = 20,
+        max_pages: int = 12,
+    ) -> Dict[str, Any]:
+        sections_limit = max(1, min(int(max_sections or 20), 200))
+        pages_limit = max(1, min(int(max_pages or 12), 100))
+        payload = self._invoke_widget_json_slot(
+            "bot_pdf_find_sections",
+            QtCore.Q_ARG(int, sections_limit),
+            QtCore.Q_ARG(int, pages_limit),
+        )
+        if "max_sections" not in payload:
+            payload["max_sections"] = sections_limit
+        if "max_pages" not in payload:
+            payload["max_pages"] = pages_limit
+        return payload
+
     def _download_pdf_for_gui_tool(self, url: str) -> Optional[Path]:
         text = str(url or "").strip()
         if not text.lower().startswith(("http://", "https://")):
@@ -965,6 +1282,7 @@ class StreamingChatTask(QRunnable):
             command,
             open_video=self._tool_gui_open_video,
             open_url=self._tool_gui_open_url,
+            open_in_browser=self._tool_gui_open_in_browser,
             open_pdf=self._tool_gui_open_pdf,
             set_frame=self._tool_gui_set_frame,
             track_next_frames=self._tool_gui_track_next_frames,
@@ -988,6 +1306,27 @@ class StreamingChatTask(QRunnable):
         if not value:
             return False
         return any(hint in value for hint in _WEB_ACCESS_REFUSAL_HINTS)
+
+    @staticmethod
+    def _looks_like_knowledge_gap_response(text: str) -> bool:
+        value = str(text or "").lower()
+        if not value:
+            return False
+        return any(hint in value for hint in _KNOWLEDGE_GAP_HINTS)
+
+    @staticmethod
+    def _looks_like_open_url_suggestion(text: str) -> bool:
+        value = str(text or "").lower()
+        if not value:
+            return False
+        return any(hint in value for hint in _OPEN_URL_SUGGESTION_HINTS)
+
+    @staticmethod
+    def _looks_like_open_pdf_suggestion(text: str) -> bool:
+        value = str(text or "").lower()
+        if not value:
+            return False
+        return any(hint in value for hint in _OPEN_PDF_SUGGESTION_HINTS)
 
     @staticmethod
     def _extract_web_urls(text: str) -> List[str]:
@@ -1092,6 +1431,127 @@ class StreamingChatTask(QRunnable):
             f"Source: {source_url}\n"
             "(Generated via web_fetch fallback after a browsing-capability refusal.)"
         )
+
+    @staticmethod
+    def _extract_page_text_from_web_steps(payload: Dict[str, Any]) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        for item in payload.get("results", []) or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("action") or "").lower() not in {
+                "get_text",
+                "dom_text",
+                "snapshot",
+            }:
+                continue
+            result_payload = item.get("result")
+            if not isinstance(result_payload, dict):
+                continue
+            text_value = str(result_payload.get("text") or "").strip()
+            if text_value:
+                return text_value
+        return ""
+
+    def _try_browser_search_fallback(
+        self,
+        prompt: str,
+        tools: Optional[FunctionToolRegistry],
+    ) -> str:
+        registry = tools
+        if registry is None:
+            return ""
+        if not registry.has("gui_web_run_steps"):
+            return ""
+        query = " ".join(str(prompt or "").split()).strip()
+        if not query:
+            return ""
+        if len(query) > 280:
+            query = query[:280].rstrip()
+        encoded_query = quote_plus(query)
+        steps = [
+            {
+                "action": "open_url",
+                "url": f"https://www.google.com/search?q={encoded_query}",
+            },
+            {"action": "wait", "wait_ms": 1200},
+            {"action": "get_text", "max_chars": 9000},
+        ]
+        try:
+            self._emit_progress("Retrying with browser search workflow")
+            payload_raw = self._run_async(
+                registry.execute(
+                    "gui_web_run_steps",
+                    {"steps": steps, "stop_on_error": True, "max_steps": 12},
+                )
+            )
+        except Exception:
+            return ""
+
+        try:
+            payload = json.loads(str(payload_raw or "{}"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict) or payload.get("error"):
+            return ""
+        if not bool(payload.get("ok")):
+            return ""
+        page_text = self._extract_page_text_from_web_steps(payload)
+        if not page_text:
+            return ""
+        summary = self._build_extractive_summary(
+            page_text, max_sentences=8, max_chars=1400
+        )
+        if not summary:
+            return ""
+        return (
+            f"Web lookup via embedded browser:\n{summary}\n\n"
+            "Source: Google search results page (embedded web viewer)."
+        )
+
+    def _try_open_page_content_fallback(self) -> str:
+        state = self._tool_gui_web_get_state()
+        if not isinstance(state, dict):
+            return ""
+        if not bool(state.get("ok")) or not bool(state.get("has_page")):
+            return ""
+        page_payload = self._tool_gui_web_get_dom_text(max_chars=9000)
+        if not isinstance(page_payload, dict) or not bool(page_payload.get("ok")):
+            return ""
+        page_text = str(page_payload.get("text") or "").strip()
+        if not page_text:
+            return ""
+        summary = self._build_extractive_summary(
+            page_text, max_sentences=8, max_chars=1400
+        )
+        if not summary:
+            return ""
+        url = str(page_payload.get("url") or state.get("url") or "").strip()
+        title = str(page_payload.get("title") or state.get("title") or "").strip()
+        source = title or url or "active embedded web page"
+        return f"Using the currently open page ({source}):\n{summary}"
+
+    def _try_open_pdf_content_fallback(self) -> str:
+        state = self._tool_gui_pdf_get_state()
+        if not isinstance(state, dict):
+            return ""
+        if not bool(state.get("ok")) or not bool(state.get("has_pdf")):
+            return ""
+        pdf_payload = self._tool_gui_pdf_get_text(max_chars=9000, pages=2)
+        if not isinstance(pdf_payload, dict) or not bool(pdf_payload.get("ok")):
+            return ""
+        pdf_text = str(pdf_payload.get("text") or "").strip()
+        if not pdf_text:
+            return ""
+        summary = self._build_extractive_summary(
+            pdf_text, max_sentences=8, max_chars=1400
+        )
+        if not summary:
+            return ""
+        title = str(pdf_payload.get("title") or state.get("title") or "").strip()
+        path = str(pdf_payload.get("path") or state.get("path") or "").strip()
+        source = title or path or "active PDF"
+        return f"Using the currently open PDF ({source}):\n{summary}"
 
     def _tool_gui_set_frame(self, frame_index: int) -> Dict[str, Any]:
         target_frame = int(frame_index)
@@ -1510,6 +1970,18 @@ class StreamingChatTask(QRunnable):
                 "When a user asks about a URL or web page, use web tools to retrieve "
                 "content before answering. Do not claim you cannot browse."
             )
+            parts.append(
+                "If an embedded web page is already open, treat it as the default "
+                "active context: read/operate on that page first. Only ask user to "
+                "open a URL if there is no open page or they explicitly request a "
+                "different site."
+            )
+            live_web_context = self._build_live_web_context_prompt_block()
+            if live_web_context:
+                parts.append(live_web_context)
+        live_pdf_context = self._build_live_pdf_context_prompt_block()
+        if live_pdf_context:
+            parts.append(live_pdf_context)
         roots = [str(r).strip() for r in (allowed_read_roots or []) if str(r).strip()]
         if roots:
             parts.append(
@@ -1541,6 +2013,70 @@ class StreamingChatTask(QRunnable):
                     f"skill before using it. Skills: {preview}"
                 )
         return "\n\n".join(parts)
+
+    def _build_live_web_context_prompt_block(self) -> str:
+        state = self._tool_gui_web_get_state()
+        if not isinstance(state, dict):
+            return ""
+        if not bool(state.get("ok")):
+            return ""
+        if not bool(state.get("has_page")):
+            return "No embedded web page is currently open."
+        page_payload = self._tool_gui_web_get_dom_text(max_chars=2500)
+        if not isinstance(page_payload, dict) or not bool(page_payload.get("ok")):
+            url = str(state.get("url") or "").strip()
+            title = str(state.get("title") or "").strip()
+            return (
+                "Embedded web page is open but text snapshot failed. "
+                f"URL: {url or '[unknown]'} | Title: {title or '[unknown]'}"
+            )
+        text = str(page_payload.get("text") or "").strip()
+        if len(text) > 1200:
+            text = text[:1200].rstrip() + "\n...[truncated]"
+        url = str(page_payload.get("url") or state.get("url") or "").strip()
+        title = str(page_payload.get("title") or state.get("title") or "").strip()
+        return (
+            "# Active Embedded Web Page\n"
+            f"URL: {url or '[unknown]'}\n"
+            f"Title: {title or '[unknown]'}\n"
+            "Visible text snapshot:\n"
+            f"{text or '[empty]'}"
+        )
+
+    def _build_live_pdf_context_prompt_block(self) -> str:
+        state = self._tool_gui_pdf_get_state()
+        if not isinstance(state, dict):
+            return ""
+        if not bool(state.get("ok")) or not bool(state.get("has_pdf")):
+            return ""
+        payload = self._tool_gui_pdf_get_text(max_chars=2500, pages=2)
+        if not isinstance(payload, dict) or not bool(payload.get("ok")):
+            title = str(state.get("title") or "").strip()
+            path = str(state.get("path") or "").strip()
+            page = int(state.get("current_page") or 0)
+            total = int(state.get("total_pages") or 0)
+            return (
+                "# Active PDF\n"
+                f"Path: {path or '[unknown]'}\n"
+                f"Title: {title or '[unknown]'}\n"
+                f"Page: {page}/{total}\n"
+                "Text snapshot unavailable."
+            )
+        text = str(payload.get("text") or "").strip()
+        if len(text) > 1200:
+            text = text[:1200].rstrip() + "\n...[truncated]"
+        title = str(payload.get("title") or state.get("title") or "").strip()
+        path = str(payload.get("path") or state.get("path") or "").strip()
+        page = int(payload.get("current_page") or state.get("current_page") or 0)
+        total = int(payload.get("total_pages") or state.get("total_pages") or 0)
+        return (
+            "# Active PDF\n"
+            f"Path: {path or '[unknown]'}\n"
+            f"Title: {title or '[unknown]'}\n"
+            f"Page: {page}/{total}\n"
+            "Text snapshot:\n"
+            f"{text or '[empty]'}"
+        )
 
     def _build_ollama_llm_callable(self):
         return build_ollama_llm_callable(

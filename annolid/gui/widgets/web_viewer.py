@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -117,6 +118,222 @@ class WebViewerWidget(QtWidgets.QWidget):
         self._current_url = ""
         self.url_edit.clear()
         self._web_view.setUrl(QtCore.QUrl("about:blank"))
+
+    def get_state(self) -> dict:
+        if self._web_view is None:
+            return {
+                "ok": False,
+                "webengine_available": bool(_WEBENGINE_AVAILABLE),
+                "has_page": False,
+                "url": "",
+                "title": "",
+            }
+        page = self._web_view.page()
+        title = ""
+        if page is not None:
+            try:
+                title = str(page.title() or "").strip()
+            except Exception:
+                title = ""
+        current_url = ""
+        try:
+            current_url = str(self._web_view.url().toString() or "").strip()
+        except Exception:
+            current_url = str(self._current_url or "").strip()
+        if not current_url:
+            current_url = str(self._current_url or "").strip()
+        has_page = bool(current_url) and current_url.lower() != "about:blank"
+        return {
+            "ok": True,
+            "webengine_available": bool(_WEBENGINE_AVAILABLE),
+            "has_page": bool(has_page),
+            "url": current_url,
+            "title": title,
+        }
+
+    def _run_js_sync(self, script: str, *, timeout_ms: int = 5000) -> object:
+        if self._web_view is None:
+            return {"error": "Embedded web view is unavailable."}
+        page = self._web_view.page()
+        if page is None:
+            return {"error": "Web page object is unavailable."}
+
+        loop = QtCore.QEventLoop(self)
+        timer = QtCore.QTimer(self)
+        timer.setSingleShot(True)
+        result: dict[str, object] = {"done": False, "value": None}
+
+        def _finish(value: object) -> None:
+            if bool(result.get("done")):
+                return
+            result["done"] = True
+            result["value"] = value
+            loop.quit()
+
+        timer.timeout.connect(lambda: _finish({"error": "JavaScript timed out."}))
+        page.runJavaScript(script, _finish)
+        timer.start(max(100, int(timeout_ms)))
+        loop.exec_()
+        timer.stop()
+        return result.get("value")
+
+    def get_page_text(self, max_chars: int = 8000) -> dict:
+        if self._web_view is None:
+            return {"ok": False, "error": "Embedded web view is unavailable."}
+        limit = max(200, min(int(max_chars or 8000), 200000))
+        script = """
+(() => {
+  const text = String((document && document.body && document.body.innerText) || "");
+  const title = String((document && document.title) || "");
+  const href = String((window && window.location && window.location.href) || "");
+  return { ok: true, text, title, url: href, length: text.length };
+})()
+        """.strip()
+        payload = self._run_js_sync(script)
+        if not isinstance(payload, dict):
+            return {"ok": False, "error": "Failed to read page text."}
+        if payload.get("error"):
+            return {"ok": False, "error": str(payload.get("error") or "")}
+        text = str(payload.get("text") or "")
+        truncated = len(text) > limit
+        if truncated:
+            text = text[:limit]
+        return {
+            "ok": True,
+            "url": str(payload.get("url") or self._current_url),
+            "title": str(payload.get("title") or ""),
+            "text": text,
+            "length": int(payload.get("length") or len(text)),
+            "truncated": truncated,
+        }
+
+    def click_selector(self, selector: str) -> dict:
+        value = str(selector or "").strip()
+        if not value:
+            return {"ok": False, "error": "selector is required"}
+        selector_js = json.dumps(value)
+        script = f"""
+(() => {{
+  const selector = {selector_js};
+  const el = document.querySelector(selector);
+  if (!el) return {{ ok: false, error: "Element not found", selector }};
+  try {{ el.scrollIntoView({{ behavior: "instant", block: "center" }}); }} catch (e) {{}}
+  try {{
+    el.dispatchEvent(new MouseEvent("click", {{ bubbles: true, cancelable: true, view: window }}));
+    if (typeof el.click === "function") el.click();
+  }} catch (err) {{
+    return {{ ok: false, error: String(err), selector }};
+  }}
+  const tag = String(el.tagName || "").toLowerCase();
+  const text = String(el.innerText || el.textContent || "").trim();
+  return {{ ok: true, selector, tag, text: text.slice(0, 200) }};
+}})()
+        """.strip()
+        payload = self._run_js_sync(script)
+        if isinstance(payload, dict):
+            return dict(payload)
+        return {"ok": False, "error": "Failed to click selector."}
+
+    def type_selector(self, selector: str, text: str, submit: bool = False) -> dict:
+        selector_value = str(selector or "").strip()
+        if not selector_value:
+            return {"ok": False, "error": "selector is required"}
+        selector_js = json.dumps(selector_value)
+        text_js = json.dumps(str(text or ""))
+        submit_js = "true" if bool(submit) else "false"
+        script = f"""
+(() => {{
+  const selector = {selector_js};
+  const value = {text_js};
+  const submit = {submit_js};
+  const el = document.querySelector(selector);
+  if (!el) return {{ ok: false, error: "Element not found", selector }};
+  try {{ el.focus(); }} catch (e) {{}}
+
+  const isInputLike = (
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLTextAreaElement ||
+    el.isContentEditable
+  );
+  if (!isInputLike) {{
+    return {{ ok: false, error: "Element is not input-like", selector }};
+  }}
+
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {{
+    el.value = value;
+  }} else if (el.isContentEditable) {{
+    el.textContent = value;
+  }}
+  el.dispatchEvent(new Event("input", {{ bubbles: true }}));
+  el.dispatchEvent(new Event("change", {{ bubbles: true }}));
+
+  let submitted = false;
+  if (submit) {{
+    const form = (el.form || el.closest("form"));
+    if (form) {{
+      try {{ form.requestSubmit ? form.requestSubmit() : form.submit(); submitted = true; }} catch (e) {{}}
+    }} else {{
+      try {{
+        el.dispatchEvent(new KeyboardEvent("keydown", {{ key: "Enter", bubbles: true }}));
+        el.dispatchEvent(new KeyboardEvent("keyup", {{ key: "Enter", bubbles: true }}));
+      }} catch (e) {{}}
+    }}
+  }}
+  return {{ ok: true, selector, typedChars: value.length, submitted }};
+}})()
+        """.strip()
+        payload = self._run_js_sync(script)
+        if isinstance(payload, dict):
+            return dict(payload)
+        return {"ok": False, "error": "Failed to type into selector."}
+
+    def scroll_by(self, delta_y: int = 800) -> dict:
+        amount = int(delta_y or 0)
+        script = f"""
+(() => {{
+  const deltaY = {amount};
+  window.scrollBy(0, deltaY);
+  const y = Number(window.scrollY || window.pageYOffset || 0);
+  const total = Number(
+    (document && document.documentElement && document.documentElement.scrollHeight) ||
+    (document && document.body && document.body.scrollHeight) || 0
+  );
+  return {{ ok: true, deltaY, scrollY: y, scrollHeight: total }};
+}})()
+        """.strip()
+        payload = self._run_js_sync(script)
+        if isinstance(payload, dict):
+            return dict(payload)
+        return {"ok": False, "error": "Failed to scroll page."}
+
+    def find_forms(self) -> dict:
+        script = """
+(() => {
+  const forms = Array.from(document.forms || []).slice(0, 50).map((form, i) => {
+    const fields = Array.from(form.elements || []).slice(0, 200).map((el) => ({
+      name: String(el.name || ""),
+      id: String(el.id || ""),
+      type: String(el.type || el.tagName || "").toLowerCase(),
+      placeholder: String(el.placeholder || ""),
+      required: !!el.required
+    }));
+    return {
+      index: i,
+      id: String(form.id || ""),
+      name: String(form.name || ""),
+      method: String(form.method || "get").toLowerCase(),
+      action: String(form.action || ""),
+      fieldCount: fields.length,
+      fields
+    };
+  });
+  return { ok: true, count: forms.length, forms };
+})()
+        """.strip()
+        payload = self._run_js_sync(script)
+        if isinstance(payload, dict):
+            return dict(payload)
+        return {"ok": False, "error": "Failed to inspect forms."}
 
     def _on_url_entered(self) -> None:
         text = str(self.url_edit.text() or "").strip()

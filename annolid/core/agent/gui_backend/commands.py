@@ -195,6 +195,33 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             "args": {"frame_index": int(frame_match.group(1))},
         }
 
+    browser_http_match = re.match(
+        r"\s*(?:open|load|show)\s+(?:this\s+)?(?P<url>https?://[^\s<>\"]+)\s+"
+        r"(?:in\s+(?:the\s+)?)?browser\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if browser_http_match:
+        url_text = str(browser_http_match.group("url") or "").strip().rstrip(").,;!?")
+        return {"name": "open_in_browser", "args": {"url": url_text}}
+
+    browser_domain_match = re.match(
+        r"\s*(?:open|load|show)\s+(?:this\s+)?"
+        r"(?P<url>(?:www\.)?[a-z0-9][a-z0-9\-]{0,62}"
+        r"(?:\.[a-z0-9][a-z0-9\-]{0,62})+(?::\d+)?(?:/[^\s<>\"]*)?)\s+"
+        r"(?:in\s+(?:the\s+)?)?browser\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if browser_domain_match:
+        url_text = str(browser_domain_match.group("url") or "").strip().rstrip(").,;!?")
+        normalized = (
+            url_text
+            if url_text.lower().startswith(("http://", "https://"))
+            else f"https://{url_text}"
+        )
+        return {"name": "open_in_browser", "args": {"url": normalized}}
+
     explicit_url_open = re.match(
         r"\s*(?:open|load|show)\s+(?:this\s+)?(?P<url>https?://[^\s<>\"]+)\s*$",
         text,

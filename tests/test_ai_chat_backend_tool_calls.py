@@ -263,6 +263,36 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
     open_payload = task._tool_gui_open_video(str(video_file))
     assert open_payload["ok"] is True
     assert open_payload["queued"] is True
+    open_url_payload = task._tool_gui_open_url("google.com")
+    assert open_url_payload["ok"] is True
+    assert open_url_payload["queued"] is True
+    assert open_url_payload["url"] == "https://google.com"
+    open_in_browser_payload = task._tool_gui_open_in_browser("google.com")
+    assert open_in_browser_payload["ok"] is True
+    assert open_in_browser_payload["queued"] is True
+    assert open_in_browser_payload["url"] == "https://google.com"
+    web_text_payload = task._tool_gui_web_get_dom_text(1200)
+    assert web_text_payload["ok"] is True
+    web_click_payload = task._tool_gui_web_click("button.submit")
+    assert web_click_payload["ok"] is True
+    web_type_payload = task._tool_gui_web_type(
+        "input[name='q']",
+        "annolid",
+        submit=True,
+    )
+    assert web_type_payload["ok"] is True
+    web_scroll_payload = task._tool_gui_web_scroll(600)
+    assert web_scroll_payload["ok"] is True
+    web_forms_payload = task._tool_gui_web_find_forms()
+    assert web_forms_payload["ok"] is True
+    pdf_state_payload = task._tool_gui_pdf_get_state()
+    assert pdf_state_payload["ok"] is True
+    pdf_text_payload = task._tool_gui_pdf_get_text(max_chars=900, pages=2)
+    assert pdf_text_payload["ok"] is True
+    pdf_sections_payload = task._tool_gui_pdf_find_sections(
+        max_sections=12, max_pages=6
+    )
+    assert pdf_sections_payload["ok"] is True
     pdf_file = tmp_path / "paper.pdf"
     pdf_file.write_bytes(b"%PDF-1.4 fake")
     open_pdf_payload = task._tool_gui_open_pdf()
@@ -312,6 +342,16 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
 
     assert calls == [
         "bot_open_video",
+        "bot_open_url",
+        "bot_open_in_browser",
+        "bot_web_get_dom_text",
+        "bot_web_click",
+        "bot_web_type",
+        "bot_web_scroll",
+        "bot_web_find_forms",
+        "bot_pdf_get_state",
+        "bot_pdf_get_text",
+        "bot_pdf_find_sections",
         "bot_open_pdf",
         "bot_open_pdf",
         "bot_set_frame",
@@ -525,6 +565,34 @@ def test_gui_open_url_queues_for_domain_without_scheme(
     assert calls == ["bot_open_url"]
 
 
+def test_gui_web_run_steps_executes_sequence(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+
+    payload = task._tool_gui_web_run_steps(
+        [
+            {"action": "open_url", "url": "google.com"},
+            {"action": "click", "selector": "button.submit"},
+            {"action": "scroll", "delta_y": 400},
+        ],
+        stop_on_error=True,
+        max_steps=10,
+    )
+    assert payload["ok"] is True
+    assert payload["steps_run"] == 3
+    assert calls == ["bot_open_url", "bot_web_click", "bot_web_scroll"]
+
+
 def test_extract_pdf_path_candidates_includes_url() -> None:
     task = StreamingChatTask("hi", widget=None)
     candidates = task._extract_pdf_path_candidates(
@@ -717,6 +785,27 @@ def test_web_access_refusal_heuristic() -> None:
     )
 
 
+def test_knowledge_gap_heuristic() -> None:
+    assert (
+        StreamingChatTask._looks_like_knowledge_gap_response(
+            "I don't have access to weather data or your location information."
+        )
+        is True
+    )
+    assert (
+        StreamingChatTask._looks_like_knowledge_gap_response(
+            "I can access weather data."
+        )
+        is False
+    )
+    assert (
+        StreamingChatTask._looks_like_knowledge_gap_response(
+            "I can't check the weather right now (web search API isn't configured)."
+        )
+        is True
+    )
+
+
 def test_finalize_agent_text_uses_web_fetch_fallback_on_refusal() -> None:
     class _DummyRegistry:
         def has(self, name: str) -> bool:
@@ -760,6 +849,234 @@ def test_finalize_agent_text_uses_web_fetch_fallback_on_refusal() -> None:
         "Source: https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
         in text
     )
+
+
+def test_finalize_agent_text_uses_browser_search_fallback_on_knowledge_gap() -> None:
+    class _DummyRegistry:
+        def has(self, name: str) -> bool:
+            return name == "gui_web_run_steps"
+
+        async def execute(self, name: str, params: dict) -> str:
+            assert name == "gui_web_run_steps"
+            steps = params.get("steps", [])
+            assert isinstance(steps, list) and steps
+            assert steps[0]["action"] == "open_url"
+            assert (
+                steps[0]["url"]
+                == "https://www.google.com/search?q=latest+malaria+guidance"
+            )
+            return json.dumps(
+                {
+                    "ok": True,
+                    "results": [
+                        {"action": "open_url", "result": {"ok": True}},
+                        {"action": "wait", "result": {"ok": True}},
+                        {
+                            "action": "get_text",
+                            "result": {
+                                "ok": True,
+                                "text": (
+                                    "The latest WHO update reports key facts "
+                                    "about malaria prevention and treatment."
+                                ),
+                            },
+                        },
+                    ],
+                }
+            )
+
+    class _Result:
+        content = (
+            "I don't have access to that information directly. "
+            "You can check by searching on the web."
+        )
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "latest malaria guidance",
+        widget=None,
+        enable_web_tools=True,
+    )
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=_DummyRegistry(),  # type: ignore[arg-type]
+    )
+    assert used_recovery is False
+    assert used_direct_gui_fallback is False
+    assert "Web lookup via embedded browser" in text
+    assert "malaria prevention and treatment" in text
+
+
+def test_finalize_agent_text_uses_browser_search_fallback_when_web_api_unconfigured() -> (
+    None
+):
+    class _DummyRegistry:
+        def has(self, name: str) -> bool:
+            return name == "gui_web_run_steps"
+
+        async def execute(self, name: str, params: dict) -> str:
+            assert name == "gui_web_run_steps"
+            steps = params.get("steps")
+            assert isinstance(steps, list)
+            assert steps[0]["action"] == "open_url"
+            assert (
+                steps[0]["url"]
+                == "https://www.google.com/search?q=check+weather+in+Ithaca+NY"
+            )
+            return json.dumps(
+                {
+                    "ok": True,
+                    "results": [
+                        {
+                            "action": "get_text",
+                            "result": {
+                                "ok": True,
+                                "text": "Ithaca weather today: 39 F, light rain, wind 6 mph.",
+                            },
+                        }
+                    ],
+                }
+            )
+
+    class _Result:
+        content = (
+            "I can't check the weather right now (web search API isn't configured). "
+            "Search 'Ithaca NY weather' in your browser."
+        )
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "check weather in Ithaca NY",
+        widget=None,
+        enable_web_tools=True,
+    )
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=_DummyRegistry(),  # type: ignore[arg-type]
+    )
+    assert used_recovery is False
+    assert used_direct_gui_fallback is False
+    assert "Web lookup via embedded browser" in text
+    assert "Ithaca weather today" in text
+
+
+def test_finalize_agent_text_prefers_open_page_content_before_browser_search() -> None:
+    class _Result:
+        content = (
+            "I can't check the weather right now (web search API isn't configured). "
+            "Search 'Ithaca NY weather' in your browser."
+        )
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "what is today's weather in Ithaca NY",
+        widget=None,
+        enable_web_tools=True,
+    )
+    task._tool_gui_web_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_page": True,
+        "url": "https://weather.com/weather/today/l/Ithaca+NY",
+        "title": "Ithaca Weather",
+    }
+    task._tool_gui_web_get_dom_text = lambda max_chars=8000: {  # type: ignore[method-assign]
+        "ok": True,
+        "url": "https://weather.com/weather/today/l/Ithaca+NY",
+        "title": "Ithaca Weather",
+        "text": "Current conditions in Ithaca NY: 39 F, light rain, wind 6 mph.",
+    }
+
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=None,
+    )
+    assert used_recovery is False
+    assert used_direct_gui_fallback is False
+    assert "Using the currently open page" in text
+    assert "Current conditions in Ithaca NY" in text
+
+
+def test_build_live_web_context_prompt_block_includes_open_page_snapshot() -> None:
+    task = StreamingChatTask("hi", widget=None, enable_web_tools=True)
+    task._tool_gui_web_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_page": True,
+        "url": "https://example.org",
+        "title": "Example Domain",
+    }
+    task._tool_gui_web_get_dom_text = lambda max_chars=2500: {  # type: ignore[method-assign]
+        "ok": True,
+        "url": "https://example.org",
+        "title": "Example Domain",
+        "text": "Example Domain This domain is for use in illustrative examples.",
+    }
+    block = task._build_live_web_context_prompt_block()
+    assert "Active Embedded Web Page" in block
+    assert "https://example.org" in block
+    assert "illustrative examples" in block
+
+
+def test_finalize_agent_text_prefers_open_pdf_content_on_local_access_refusal() -> None:
+    class _Result:
+        content = (
+            "I can't access your local file system. Please open the PDF and share it."
+        )
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "summarize this pdf",
+        widget=None,
+        enable_web_tools=True,
+    )
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": "/tmp/paper.pdf",
+        "title": "paper.pdf",
+        "current_page": 3,
+        "total_pages": 12,
+    }
+    task._tool_gui_pdf_get_text = lambda max_chars=8000, pages=2: {  # type: ignore[method-assign]
+        "ok": True,
+        "path": "/tmp/paper.pdf",
+        "title": "paper.pdf",
+        "current_page": 3,
+        "total_pages": 12,
+        "text": "This paper presents a robust segmentation method with strong benchmarks.",
+    }
+
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=None,
+    )
+    assert used_recovery is False
+    assert used_direct_gui_fallback is False
+    assert "Using the currently open PDF" in text
+    assert "robust segmentation method" in text
+
+
+def test_build_live_pdf_context_prompt_block_includes_snapshot() -> None:
+    task = StreamingChatTask("hi", widget=None, enable_web_tools=True)
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": "/tmp/paper.pdf",
+        "title": "paper.pdf",
+        "current_page": 3,
+        "total_pages": 12,
+    }
+    task._tool_gui_pdf_get_text = lambda max_chars=2500, pages=2: {  # type: ignore[method-assign]
+        "ok": True,
+        "path": "/tmp/paper.pdf",
+        "title": "paper.pdf",
+        "current_page": 3,
+        "total_pages": 12,
+        "text": "This section describes the method and evaluation setup.",
+    }
+    block = task._build_live_pdf_context_prompt_block()
+    assert "Active PDF" in block
+    assert "/tmp/paper.pdf" in block
+    assert "evaluation setup" in block
 
 
 def test_web_fetch_fallback_uses_recent_history_url_when_prompt_has_no_url() -> None:
@@ -842,6 +1159,12 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_open_domain["name"] == "open_url"
     assert parsed_open_domain["args"]["url"] == "https://google.com"
 
+    parsed_open_domain_browser = task._parse_direct_gui_command(
+        "open google.com in browser"
+    )
+    assert parsed_open_domain_browser["name"] == "open_in_browser"
+    assert parsed_open_domain_browser["args"]["url"] == "https://google.com"
+
     parsed_domain_only = task._parse_direct_gui_command("google.com")
     assert parsed_domain_only["name"] == "open_url"
     assert parsed_domain_only["args"]["url"] == "https://google.com"
@@ -917,6 +1240,9 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         "Opened URL in Annolid: https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
         == out_url
     )
+
+    out_url_browser = task._execute_direct_gui_command("open google.com in browser")
+    assert "Opened URL in browser: https://google.com" == out_url_browser
 
     out_video = task._execute_direct_gui_command("open video mouse.mp4")
     assert "Opened video in Annolid:" in out_video

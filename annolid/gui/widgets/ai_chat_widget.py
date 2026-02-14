@@ -383,6 +383,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self._snapshot_paths: List[str] = []
         self._current_response_bubble: Optional[_ChatBubble] = None
         self.is_streaming_chat = False
+        self._bot_action_result: Dict[str, Any] = {}
         self.session_id = self._new_startup_session_id()
         self._applying_theme_styles = False
         self.thread_pool = QThreadPool()
@@ -521,7 +522,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self.tool_trace_checkbox.setChecked(False)
         self.tool_trace_checkbox.setObjectName("chatInlineToggle")
         self.allow_web_tools_checkbox = QtWidgets.QCheckBox("Allow web", self)
-        self.allow_web_tools_checkbox.setChecked(False)
+        self.allow_web_tools_checkbox.setChecked(True)
         self.allow_web_tools_checkbox.setObjectName("chatInlineToggle")
         self.allow_web_tools_checkbox.setToolTip(
             "Allow web_search/web_fetch tools for this chat turn."
@@ -1674,6 +1675,17 @@ class AIChatWidget(QtWidgets.QWidget):
         except Exception as exc:
             self.status_label.setText(f"Bot action failed: {exc}")
 
+    def _set_bot_action_result(self, payload: Dict[str, Any]) -> None:
+        self._bot_action_result = dict(payload or {})
+
+    def _resolve_web_manager(self):
+        host = self.host_window_widget or self.window()
+        return getattr(host, "web_manager", None)
+
+    def _resolve_pdf_manager(self):
+        host = self.host_window_widget or self.window()
+        return getattr(host, "pdf_manager", None)
+
     @QtCore.Slot(str)
     def bot_open_pdf(self, pdf_path: str = "") -> None:
         host = self.host_window_widget or self.window()
@@ -1720,6 +1732,174 @@ class AIChatWidget(QtWidgets.QWidget):
             self.status_label.setText(f"Opened URL in browser: {target_url}")
             return
         self.status_label.setText("Bot action failed: could not open URL.")
+
+    @QtCore.Slot(str)
+    def bot_open_in_browser(self, url: str) -> None:
+        target_url = str(url or "").strip()
+        if not target_url:
+            self.status_label.setText("Bot action failed: empty URL.")
+            return
+        parsed = QtCore.QUrl(target_url)
+        if not parsed.isValid() or parsed.scheme().lower() not in {"http", "https"}:
+            self.status_label.setText("Bot action failed: invalid URL.")
+            return
+        opened = QtGui.QDesktopServices.openUrl(parsed)
+        if opened:
+            self.status_label.setText(f"Opened URL in browser: {target_url}")
+            return
+        self.status_label.setText("Bot action failed: could not open URL.")
+
+    @QtCore.Slot(int)
+    def bot_web_get_dom_text(self, max_chars: int) -> None:
+        manager = self._resolve_web_manager()
+        if manager is None:
+            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
+            self._set_bot_action_result(payload)
+            self.status_label.setText("Bot action failed: web manager unavailable.")
+            return
+        try:
+            payload = manager.get_page_text(max_chars=int(max_chars))
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+        self._set_bot_action_result(payload)
+        self.status_label.setText(
+            "Captured page text." if payload.get("ok") else "Bot action failed."
+        )
+
+    @QtCore.Slot()
+    def bot_web_get_state(self) -> None:
+        manager = self._resolve_web_manager()
+        if manager is None:
+            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
+            self._set_bot_action_result(payload)
+            self.status_label.setText("Bot action failed: web manager unavailable.")
+            return
+        try:
+            payload = manager.get_web_state()
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+        self._set_bot_action_result(payload)
+
+    @QtCore.Slot()
+    def bot_pdf_get_state(self) -> None:
+        manager = self._resolve_pdf_manager()
+        if manager is None:
+            payload = {"ok": False, "error": "PDF manager is unavailable."}
+            self._set_bot_action_result(payload)
+            self.status_label.setText("Bot action failed: PDF manager unavailable.")
+            return
+        try:
+            payload = manager.get_pdf_state()
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+        self._set_bot_action_result(payload)
+
+    @QtCore.Slot(int, int)
+    def bot_pdf_get_text(self, max_chars: int, pages: int) -> None:
+        manager = self._resolve_pdf_manager()
+        if manager is None:
+            payload = {"ok": False, "error": "PDF manager is unavailable."}
+            self._set_bot_action_result(payload)
+            self.status_label.setText("Bot action failed: PDF manager unavailable.")
+            return
+        try:
+            payload = manager.get_pdf_text(max_chars=int(max_chars), pages=int(pages))
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+        self._set_bot_action_result(payload)
+        self.status_label.setText(
+            "Captured PDF text." if payload.get("ok") else "Bot action failed."
+        )
+
+    @QtCore.Slot(int, int)
+    def bot_pdf_find_sections(self, max_sections: int, max_pages: int) -> None:
+        manager = self._resolve_pdf_manager()
+        if manager is None:
+            payload = {"ok": False, "error": "PDF manager is unavailable."}
+            self._set_bot_action_result(payload)
+            self.status_label.setText("Bot action failed: PDF manager unavailable.")
+            return
+        try:
+            payload = manager.get_pdf_sections(
+                max_sections=int(max_sections),
+                max_pages=int(max_pages),
+            )
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+        self._set_bot_action_result(payload)
+        self.status_label.setText(
+            "Detected PDF sections." if payload.get("ok") else "Bot action failed."
+        )
+
+    @QtCore.Slot(str)
+    def bot_web_click(self, selector: str) -> None:
+        manager = self._resolve_web_manager()
+        if manager is None:
+            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
+            self._set_bot_action_result(payload)
+            self.status_label.setText("Bot action failed: web manager unavailable.")
+            return
+        try:
+            payload = manager.click_selector(str(selector or ""))
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+        self._set_bot_action_result(payload)
+        self.status_label.setText(
+            "Clicked selector." if payload.get("ok") else "Bot action failed."
+        )
+
+    @QtCore.Slot(str, str, bool)
+    def bot_web_type(self, selector: str, text: str, submit: bool) -> None:
+        manager = self._resolve_web_manager()
+        if manager is None:
+            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
+            self._set_bot_action_result(payload)
+            self.status_label.setText("Bot action failed: web manager unavailable.")
+            return
+        try:
+            payload = manager.type_selector(
+                str(selector or ""), str(text or ""), submit=bool(submit)
+            )
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+        self._set_bot_action_result(payload)
+        self.status_label.setText(
+            "Typed into selector." if payload.get("ok") else "Bot action failed."
+        )
+
+    @QtCore.Slot(int)
+    def bot_web_scroll(self, delta_y: int) -> None:
+        manager = self._resolve_web_manager()
+        if manager is None:
+            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
+            self._set_bot_action_result(payload)
+            self.status_label.setText("Bot action failed: web manager unavailable.")
+            return
+        try:
+            payload = manager.scroll_by(delta_y=int(delta_y))
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+        self._set_bot_action_result(payload)
+        self.status_label.setText(
+            "Scrolled page." if payload.get("ok") else "Bot action failed."
+        )
+
+    @QtCore.Slot()
+    def bot_web_find_forms(self) -> None:
+        manager = self._resolve_web_manager()
+        if manager is None:
+            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
+            self._set_bot_action_result(payload)
+            self.status_label.setText("Bot action failed: web manager unavailable.")
+            return
+        try:
+            payload = manager.find_forms()
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+        self._set_bot_action_result(payload)
+        self.status_label.setText(
+            "Inspected forms." if payload.get("ok") else "Bot action failed."
+        )
 
     @QtCore.Slot(int)
     def bot_set_frame(self, frame_index: int) -> None:

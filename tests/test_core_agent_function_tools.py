@@ -898,7 +898,34 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         context_callback=lambda: {"provider": "ollama", "frame_number": 12},
         image_path_callback=lambda: "/tmp/shared.png",
         open_video_callback=lambda path: _mark("open_video", path),
+        open_url_callback=lambda url: _mark("open_url", url),
+        open_in_browser_callback=lambda url: _mark("open_in_browser", url),
+        web_get_dom_text_callback=lambda max_chars=8000: _mark(
+            "web_get_dom_text", max_chars
+        ),
+        web_click_callback=lambda selector: _mark("web_click", selector),
+        web_type_callback=lambda selector, text, submit=False: _mark(
+            "web_type", {"selector": selector, "text": text, "submit": bool(submit)}
+        ),
+        web_scroll_callback=lambda delta_y=800: _mark("web_scroll", delta_y),
+        web_find_forms_callback=lambda: _mark("web_find_forms"),
+        web_run_steps_callback=lambda steps, stop_on_error=True, max_steps=12: _mark(
+            "web_run_steps",
+            {
+                "steps": steps,
+                "stop_on_error": bool(stop_on_error),
+                "max_steps": int(max_steps),
+            },
+        ),
         open_pdf_callback=lambda path="": _mark("open_pdf", path or None),
+        pdf_get_state_callback=lambda: _mark("pdf_get_state"),
+        pdf_get_text_callback=lambda max_chars=8000, pages=2: _mark(
+            "pdf_get_text", {"max_chars": int(max_chars), "pages": int(pages)}
+        ),
+        pdf_find_sections_callback=lambda max_sections=20, max_pages=12: _mark(
+            "pdf_find_sections",
+            {"max_sections": int(max_sections), "max_pages": int(max_pages)},
+        ),
         set_frame_callback=lambda frame_index: _mark("set_frame", frame_index),
         set_prompt_callback=lambda text: _mark("set_prompt", text),
         send_prompt_callback=lambda: _mark("send_prompt"),
@@ -927,7 +954,18 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_context")
     assert registry.has("gui_shared_image_path")
     assert registry.has("gui_open_video")
+    assert registry.has("gui_open_url")
+    assert registry.has("gui_open_in_browser")
+    assert registry.has("gui_web_get_dom_text")
+    assert registry.has("gui_web_click")
+    assert registry.has("gui_web_type")
+    assert registry.has("gui_web_scroll")
+    assert registry.has("gui_web_find_forms")
+    assert registry.has("gui_web_run_steps")
     assert registry.has("gui_open_pdf")
+    assert registry.has("gui_pdf_get_state")
+    assert registry.has("gui_pdf_get_text")
+    assert registry.has("gui_pdf_find_sections")
     assert registry.has("gui_set_frame")
     assert registry.has("gui_set_chat_prompt")
     assert registry.has("gui_send_chat_prompt")
@@ -948,12 +986,60 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert image_payload["image_path"] == "/tmp/shared.png"
     result = asyncio.run(registry.execute("gui_open_video", {"path": "/tmp/a.mp4"}))
     assert json.loads(result)["ok"] is True
+    open_url = asyncio.run(
+        registry.execute("gui_open_url", {"url": "https://example.org"})
+    )
+    assert json.loads(open_url)["ok"] is True
+    open_in_browser = asyncio.run(
+        registry.execute("gui_open_in_browser", {"url": "https://example.org"})
+    )
+    assert json.loads(open_in_browser)["ok"] is True
+    web_get_dom_text = asyncio.run(
+        registry.execute("gui_web_get_dom_text", {"max_chars": 1200})
+    )
+    assert json.loads(web_get_dom_text)["ok"] is True
+    web_click = asyncio.run(
+        registry.execute("gui_web_click", {"selector": "button.submit"})
+    )
+    assert json.loads(web_click)["ok"] is True
+    web_type = asyncio.run(
+        registry.execute(
+            "gui_web_type",
+            {"selector": "input[name='q']", "text": "annolid", "submit": True},
+        )
+    )
+    assert json.loads(web_type)["ok"] is True
+    web_scroll = asyncio.run(registry.execute("gui_web_scroll", {"delta_y": 600}))
+    assert json.loads(web_scroll)["ok"] is True
+    web_find_forms = asyncio.run(registry.execute("gui_web_find_forms", {}))
+    assert json.loads(web_find_forms)["ok"] is True
+    web_run_steps = asyncio.run(
+        registry.execute(
+            "gui_web_run_steps",
+            {
+                "steps": [{"action": "open_url", "url": "https://example.org"}],
+                "stop_on_error": True,
+                "max_steps": 5,
+            },
+        )
+    )
+    assert json.loads(web_run_steps)["ok"] is True
     open_pdf = asyncio.run(registry.execute("gui_open_pdf", {}))
     assert json.loads(open_pdf)["ok"] is True
     open_pdf_with_path = asyncio.run(
         registry.execute("gui_open_pdf", {"path": "/tmp/paper.pdf"})
     )
     assert json.loads(open_pdf_with_path)["ok"] is True
+    pdf_state = asyncio.run(registry.execute("gui_pdf_get_state", {}))
+    assert json.loads(pdf_state)["ok"] is True
+    pdf_text = asyncio.run(
+        registry.execute("gui_pdf_get_text", {"max_chars": 1200, "pages": 2})
+    )
+    assert json.loads(pdf_text)["ok"] is True
+    pdf_sections = asyncio.run(
+        registry.execute("gui_pdf_find_sections", {"max_sections": 10, "max_pages": 8})
+    )
+    assert json.loads(pdf_sections)["ok"] is True
     asyncio.run(registry.execute("gui_set_frame", {"frame_index": 3}))
     asyncio.run(registry.execute("gui_set_chat_prompt", {"text": "describe this"}))
     asyncio.run(registry.execute("gui_send_chat_prompt", {}))
@@ -1010,8 +1096,29 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     asyncio.run(registry.execute("gui_stop_realtime_stream", {}))
     assert calls == [
         ("open_video", "/tmp/a.mp4"),
+        ("open_url", "https://example.org"),
+        ("open_in_browser", "https://example.org"),
+        ("web_get_dom_text", 1200),
+        ("web_click", "button.submit"),
+        (
+            "web_type",
+            {"selector": "input[name='q']", "text": "annolid", "submit": True},
+        ),
+        ("web_scroll", 600),
+        ("web_find_forms", None),
+        (
+            "web_run_steps",
+            {
+                "steps": [{"action": "open_url", "url": "https://example.org"}],
+                "stop_on_error": True,
+                "max_steps": 5,
+            },
+        ),
         ("open_pdf", None),
         ("open_pdf", "/tmp/paper.pdf"),
+        ("pdf_get_state", None),
+        ("pdf_get_text", {"max_chars": 1200, "pages": 2}),
+        ("pdf_find_sections", {"max_sections": 10, "max_pages": 8}),
         ("set_frame", 3),
         ("set_prompt", "describe this"),
         ("send_prompt", None),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Optional, TYPE_CHECKING
 
 from qtpy import QtCore, QtWidgets
@@ -827,3 +828,203 @@ class PdfManager(QtCore.QObject):
     # ------------------------------------------------------------------ helpers
     def pdf_widget(self) -> Optional[PdfViewerWidget]:
         return self.pdf_viewer
+
+    def get_pdf_state(self) -> dict:
+        viewer = self.pdf_viewer
+        if viewer is None:
+            return {
+                "ok": True,
+                "has_pdf": False,
+                "path": "",
+                "title": "",
+                "current_page": 0,
+                "total_pages": 0,
+            }
+        path = ""
+        try:
+            path = str(viewer.current_pdf_path() or "").strip()
+        except Exception:
+            path = ""
+        total_pages = 0
+        current_page = 0
+        try:
+            total_pages = max(0, int(viewer.page_count() or 0))
+        except Exception:
+            total_pages = 0
+        try:
+            current_page = max(0, int(viewer.current_page_index() or 0))
+        except Exception:
+            current_page = 0
+        has_pdf = bool(path)
+        return {
+            "ok": True,
+            "has_pdf": has_pdf,
+            "path": path,
+            "title": Path(path).name if has_pdf else "",
+            "current_page": (current_page + 1) if has_pdf else 0,
+            "total_pages": total_pages if has_pdf else 0,
+            "pdfjs_active": bool(getattr(viewer, "pdfjs_active", lambda: False)()),
+        }
+
+    def get_pdf_text(self, max_chars: int = 8000, pages: int = 2) -> dict:
+        state = self.get_pdf_state()
+        if not bool(state.get("has_pdf")):
+            return {"ok": False, "error": "No PDF is currently open in Annolid."}
+        path_text = str(state.get("path") or "").strip()
+        if not path_text:
+            return {"ok": False, "error": "Active PDF path is unavailable."}
+        try:
+            import fitz  # type: ignore
+        except Exception:
+            return {"ok": False, "error": "PyMuPDF (pymupdf) is required."}
+        path = Path(path_text)
+        if not path.exists():
+            return {"ok": False, "error": f"Active PDF is missing on disk: {path_text}"}
+
+        limit = max(200, min(int(max_chars or 8000), 200000))
+        pages_limit = max(1, min(int(pages or 2), 5))
+        total_pages = int(state.get("total_pages") or 0)
+        start_index = max(0, int(state.get("current_page") or 1) - 1)
+        if total_pages > 0:
+            start_index = min(start_index, total_pages - 1)
+
+        text_parts: list[str] = []
+        pages_read = 0
+        try:
+            with fitz.open(str(path)) as doc:
+                total_pages = int(getattr(doc, "page_count", 0) or 0)
+                if total_pages <= 0:
+                    return {"ok": False, "error": "PDF has no pages."}
+                start_index = min(start_index, total_pages - 1)
+                end_index = min(start_index + pages_limit, total_pages)
+                for idx in range(start_index, end_index):
+                    page = doc.load_page(idx)
+                    chunk = str(page.get_text("text") or "").strip()
+                    if chunk:
+                        text_parts.append(chunk)
+                    pages_read += 1
+        except Exception as exc:
+            return {"ok": False, "error": f"Failed to read active PDF text: {exc}"}
+
+        text = "\n\n".join(text_parts).strip()
+        truncated = len(text) > limit
+        if truncated:
+            text = text[:limit]
+        return {
+            "ok": True,
+            "path": path_text,
+            "title": path.name,
+            "current_page": start_index + 1,
+            "total_pages": total_pages,
+            "pages_read": pages_read,
+            "text": text,
+            "length": len(text),
+            "truncated": truncated,
+        }
+
+    def get_pdf_sections(self, max_sections: int = 20, max_pages: int = 12) -> dict:
+        state = self.get_pdf_state()
+        if not bool(state.get("has_pdf")):
+            return {"ok": False, "error": "No PDF is currently open in Annolid."}
+        path_text = str(state.get("path") or "").strip()
+        if not path_text:
+            return {"ok": False, "error": "Active PDF path is unavailable."}
+        try:
+            import fitz  # type: ignore
+        except Exception:
+            return {"ok": False, "error": "PyMuPDF (pymupdf) is required."}
+        path = Path(path_text)
+        if not path.exists():
+            return {"ok": False, "error": f"Active PDF is missing on disk: {path_text}"}
+
+        section_limit = max(1, min(int(max_sections or 20), 200))
+        page_limit = max(1, min(int(max_pages or 12), 100))
+        found: list[dict[str, object]] = []
+        seen: set[str] = set()
+        total_pages = 0
+        scanned_pages = 0
+        common_titles = {
+            "abstract",
+            "introduction",
+            "background",
+            "related work",
+            "methods",
+            "materials and methods",
+            "results",
+            "discussion",
+            "conclusion",
+            "conclusions",
+            "references",
+            "acknowledgments",
+            "acknowledgements",
+            "supplementary materials",
+        }
+
+        def _is_section_candidate(line: str) -> bool:
+            text = " ".join(str(line or "").split()).strip()
+            if len(text) < 3 or len(text) > 140:
+                return False
+            if text.endswith(".") and len(text.split()) > 5:
+                return False
+            lowered = text.lower()
+            if lowered in common_titles:
+                return True
+            if re.match(
+                r"^(?:\d+(?:\.\d+){0,4}|[ivxlcdm]+)\s+[a-z0-9].*$",
+                lowered,
+                flags=re.IGNORECASE,
+            ):
+                return True
+            words = text.split()
+            if len(words) > 14:
+                return False
+            alpha = [c for c in text if c.isalpha()]
+            if not alpha:
+                return False
+            upper_ratio = sum(1 for c in alpha if c.isupper()) / max(len(alpha), 1)
+            title_ratio = sum(1 for w in words if w[:1].isupper()) / max(len(words), 1)
+            starts_cap = bool(text[:1].isupper())
+            return starts_cap and (upper_ratio >= 0.65 or title_ratio >= 0.75)
+
+        try:
+            with fitz.open(str(path)) as doc:
+                total_pages = int(getattr(doc, "page_count", 0) or 0)
+                if total_pages <= 0:
+                    return {"ok": False, "error": "PDF has no pages."}
+                end_page = min(page_limit, total_pages)
+                for page_index in range(end_page):
+                    scanned_pages += 1
+                    page = doc.load_page(page_index)
+                    lines = str(page.get_text("text") or "").splitlines()
+                    for line_idx, line in enumerate(lines):
+                        title = " ".join(str(line or "").split()).strip()
+                        if not _is_section_candidate(title):
+                            continue
+                        key = re.sub(r"\s+", " ", title.lower()).strip()
+                        if not key or key in seen:
+                            continue
+                        seen.add(key)
+                        found.append(
+                            {
+                                "title": title,
+                                "page": page_index + 1,
+                                "line": line_idx + 1,
+                            }
+                        )
+                        if len(found) >= section_limit:
+                            break
+                    if len(found) >= section_limit:
+                        break
+        except Exception as exc:
+            return {"ok": False, "error": f"Failed to detect PDF sections: {exc}"}
+
+        return {
+            "ok": True,
+            "path": path_text,
+            "title": path.name,
+            "sections": found,
+            "count": len(found),
+            "max_sections": section_limit,
+            "scanned_pages": scanned_pages,
+            "total_pages": total_pages,
+        }

@@ -57,6 +57,38 @@ class WebManager(QtCore.QObject):
     def viewer_widget(self) -> Optional[WebViewerWidget]:
         return self.web_viewer
 
+    def get_page_text(self, max_chars: int = 8000) -> dict:
+        viewer = self.ensure_web_viewer()
+        return viewer.get_page_text(max_chars=max_chars)
+
+    def click_selector(self, selector: str) -> dict:
+        viewer = self.ensure_web_viewer()
+        return viewer.click_selector(selector)
+
+    def type_selector(self, selector: str, text: str, submit: bool = False) -> dict:
+        viewer = self.ensure_web_viewer()
+        return viewer.type_selector(selector, text, submit=submit)
+
+    def scroll_by(self, delta_y: int = 800) -> dict:
+        viewer = self.ensure_web_viewer()
+        return viewer.scroll_by(delta_y=delta_y)
+
+    def find_forms(self) -> dict:
+        viewer = self.ensure_web_viewer()
+        return viewer.find_forms()
+
+    def get_web_state(self) -> dict:
+        viewer = self.web_viewer
+        if viewer is None:
+            return {
+                "ok": True,
+                "webengine_available": True,
+                "has_page": False,
+                "url": "",
+                "title": "",
+            }
+        return viewer.get_state()
+
     def close_web(self) -> None:
         """Close embedded web view and return to canvas."""
         viewer = self.web_viewer
