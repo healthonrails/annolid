@@ -146,8 +146,7 @@ class GuiOpenPdfTool(FunctionTool):
         }
 
     async def execute(self, **kwargs: Any) -> str:
-        del kwargs
-        return await _run_callback(self._open_pdf_callback)
+        return await _run_callback(self._open_pdf_callback, **kwargs)
 
 
 class GuiSetFrameTool(FunctionTool):

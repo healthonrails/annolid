@@ -92,6 +92,14 @@ class ToolingDialogsMixin:
                 if pdf_index != -1:
                     self._viewer_stack.setCurrentIndex(pdf_index)
                     return
+        if mode == "web" and getattr(self, "web_manager", None) is not None:
+            self.set_unrelated_docks_visible(False)
+            viewer = self.web_manager.viewer_widget()
+            if viewer is not None:
+                web_index = self._viewer_stack.indexOf(viewer)
+                if web_index != -1:
+                    self._viewer_stack.setCurrentIndex(web_index)
+                    return
         if mode == "threejs" and getattr(self, "threejs_manager", None) is not None:
             self.set_unrelated_docks_visible(False)
             viewer = self.threejs_manager.viewer_widget()
@@ -105,6 +113,11 @@ class ToolingDialogsMixin:
     def show_pdf_in_viewer(self, pdf_path: str) -> None:
         if self.pdf_manager is not None:
             self.pdf_manager.show_pdf_in_viewer(pdf_path)
+
+    def show_web_in_viewer(self, url: str) -> bool:
+        if self.web_manager is not None:
+            return bool(self.web_manager.show_url_in_viewer(url))
+        return False
 
     @QtCore.Slot(str)
     def _apply_pdf_selection_to_caption(self, text: str) -> None:

@@ -754,6 +754,41 @@ class StreamingChatTask(QRunnable):
             return {"ok": False, "error": "Failed to queue GUI video open action"}
         return {"ok": True, "queued": True, "path": str(video_path)}
 
+    def _tool_gui_open_url(self, url: str) -> Dict[str, Any]:
+        text = str(url or "").strip()
+        candidates = self._extract_web_urls(text)
+        if text.lower().startswith(("http://", "https://")) and text not in candidates:
+            candidates.insert(0, text.rstrip(").,;!?"))
+        if not candidates:
+            domain_match = re.search(
+                r"\b(?:www\.)?[a-z0-9][a-z0-9\-]{0,62}"
+                r"(?:\.[a-z0-9][a-z0-9\-]{0,62})+(?::\d+)?(?:/[^\s<>\"]*)?",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if domain_match:
+                domain_url = str(domain_match.group(0) or "").strip().rstrip(").,;!?")
+                if domain_url:
+                    candidates.append(f"https://{domain_url}")
+        if not candidates:
+            return {
+                "ok": False,
+                "error": "URL not found in provided text.",
+                "input": text,
+                "hint": "Provide a URL, for example google.com or https://example.org.",
+            }
+        target_url = str(candidates[0] or "").strip()
+        if not target_url.lower().startswith(("http://", "https://")):
+            return {
+                "ok": False,
+                "error": "Only http:// and https:// URLs are supported.",
+                "url": target_url,
+            }
+        ok = self._invoke_widget_slot("bot_open_url", QtCore.Q_ARG(str, target_url))
+        if not ok:
+            return {"ok": False, "error": "Failed to queue GUI URL open action"}
+        return {"ok": True, "queued": True, "url": target_url}
+
     @staticmethod
     def _extract_pdf_path_candidates(raw: str) -> List[str]:
         return extract_pdf_path_candidates(raw)
@@ -790,9 +825,10 @@ class StreamingChatTask(QRunnable):
         path_candidates = (
             self._extract_pdf_path_candidates(path_text) if path_text else []
         )
+        generic_url_candidates = self._extract_web_urls(path_text) if path_text else []
         has_explicit_pdf_path = bool(path_candidates)
         resolved_path: Optional[Path] = None
-        if has_explicit_pdf_path:
+        if has_explicit_pdf_path or generic_url_candidates:
             url_candidate = next(
                 (
                     candidate
@@ -801,17 +837,19 @@ class StreamingChatTask(QRunnable):
                 ),
                 "",
             )
+            if not url_candidate and generic_url_candidates:
+                url_candidate = str(generic_url_candidates[0] or "").strip()
             if url_candidate:
                 resolved_path = self._download_pdf_for_gui_tool(url_candidate)
             if resolved_path is None:
                 resolved_path = self._resolve_pdf_path_for_gui_tool(path_text)
-        if has_explicit_pdf_path and resolved_path is None:
+        if (has_explicit_pdf_path or generic_url_candidates) and resolved_path is None:
             return {
                 "ok": False,
-                "error": "PDF not found from provided path/text.",
+                "error": "PDF not found or URL did not resolve to a PDF.",
                 "input": path_text,
                 "hint": (
-                    "Provide an absolute path, or a filename located in workspace/read-roots."
+                    "Provide an absolute/local PDF path, or a URL that serves application/pdf."
                 ),
             }
         if resolved_path is None:
@@ -926,6 +964,7 @@ class StreamingChatTask(QRunnable):
         return execute_direct_gui_command(
             command,
             open_video=self._tool_gui_open_video,
+            open_url=self._tool_gui_open_url,
             open_pdf=self._tool_gui_open_pdf,
             set_frame=self._tool_gui_set_frame,
             track_next_frames=self._tool_gui_track_next_frames,

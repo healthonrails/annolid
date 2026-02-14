@@ -448,6 +448,83 @@ def test_gui_open_pdf_downloads_url_then_queues(monkeypatch, tmp_path: Path) -> 
     assert calls == ["bot_open_pdf"]
 
 
+def test_gui_open_pdf_downloads_non_suffix_url_then_queues(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+
+    downloaded_pdf = tmp_path / "downloads" / "paper.pdf"
+    downloaded_pdf.parent.mkdir(parents=True, exist_ok=True)
+    downloaded_pdf.write_bytes(b"%PDF-1.4 fake")
+
+    task._download_pdf_for_gui_tool = lambda _url: downloaded_pdf  # type: ignore[method-assign]
+    payload = task._tool_gui_open_pdf("open url https://example.org/download?id=12345")
+    assert payload["ok"] is True
+    assert payload["queued"] is True
+    assert payload["path"] == str(downloaded_pdf)
+    assert calls == ["bot_open_pdf"]
+
+
+def test_gui_open_url_queues(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+
+    payload = task._tool_gui_open_url(
+        "open this page https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+    )
+    assert payload["ok"] is True
+    assert payload["queued"] is True
+    assert (
+        payload["url"]
+        == "https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+    )
+    assert calls == ["bot_open_url"]
+
+
+def test_gui_open_url_queues_for_domain_without_scheme(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+
+    payload = task._tool_gui_open_url("google.com")
+    assert payload["ok"] is True
+    assert payload["queued"] is True
+    assert payload["url"] == "https://google.com"
+    assert calls == ["bot_open_url"]
+
+
 def test_extract_pdf_path_candidates_includes_url() -> None:
     task = StreamingChatTask("hi", widget=None)
     candidates = task._extract_pdf_path_candidates(
@@ -742,6 +819,33 @@ def test_parse_direct_gui_command_variants() -> None:
     parsed_pdf = task._parse_direct_gui_command("open pdf")
     assert parsed_pdf["name"] == "open_pdf"
 
+    parsed_open_url_direct = task._parse_direct_gui_command(
+        "open https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+    )
+    assert parsed_open_url_direct["name"] == "open_url"
+    assert (
+        parsed_open_url_direct["args"]["url"]
+        == "https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+    )
+
+    parsed_open_url = task._parse_direct_gui_command(
+        "open url https://example.org/download?id=12345"
+    )
+    assert parsed_open_url["name"] == "open_url"
+
+    parsed_open_url_pdf = task._parse_direct_gui_command(
+        "open url https://example.org/paper.pdf?download=1"
+    )
+    assert parsed_open_url_pdf["name"] == "open_pdf"
+
+    parsed_open_domain = task._parse_direct_gui_command("open google.com")
+    assert parsed_open_domain["name"] == "open_url"
+    assert parsed_open_domain["args"]["url"] == "https://google.com"
+
+    parsed_domain_only = task._parse_direct_gui_command("google.com")
+    assert parsed_domain_only["name"] == "open_url"
+    assert parsed_domain_only["args"]["url"] == "https://google.com"
+
     parsed_video = task._parse_direct_gui_command(
         "Please open video /tmp/fish_demo.mp4"
     )
@@ -805,6 +909,14 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
 
     out_pdf = task._execute_direct_gui_command("open pdf")
     assert "Opened PDF in Annolid:" in out_pdf
+
+    out_url = task._execute_direct_gui_command(
+        "open https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+    )
+    assert (
+        "Opened URL in Annolid: https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+        == out_url
+    )
 
     out_video = task._execute_direct_gui_command("open video mouse.mp4")
     assert "Opened video in Annolid:" in out_video

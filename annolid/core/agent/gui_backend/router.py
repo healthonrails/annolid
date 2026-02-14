@@ -7,6 +7,7 @@ def execute_direct_gui_command(
     command: Dict[str, Any],
     *,
     open_video: Callable[[str], Dict[str, Any]],
+    open_url: Callable[[str], Dict[str, Any]],
     open_pdf: Callable[[str], Dict[str, Any]],
     set_frame: Callable[[int], Dict[str, Any]],
     track_next_frames: Callable[[int], Dict[str, Any]],
@@ -27,6 +28,15 @@ def execute_direct_gui_command(
         if payload.get("ok"):
             return f"Opened video in Annolid: {payload.get('path')}"
         return str(payload.get("error") or "Failed to open video.")
+
+    if name == "open_url":
+        payload = open_url(str(args.get("url") or ""))
+        if payload.get("ok"):
+            resolved = str(payload.get("url") or "").strip()
+            if resolved:
+                return f"Opened URL in Annolid: {resolved}"
+            return "Opened URL in Annolid."
+        return str(payload.get("error") or "Failed to open URL.")
 
     if name == "open_pdf":
         payload = open_pdf(str(args.get("path") or ""))

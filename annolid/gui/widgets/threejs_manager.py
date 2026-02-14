@@ -57,6 +57,12 @@ class ThreeJsManager(QtCore.QObject):
         # Hide unrelated docks when switching to the 3D canvas.
         self.window.set_unrelated_docks_visible(False)
         self.window._set_active_view("threejs")
+        try:
+            close_action = getattr(getattr(self.window, "actions", None), "close", None)
+            if close_action is not None:
+                close_action.setEnabled(True)
+        except Exception:
+            pass
         self.window.statusBar().showMessage(
             self.window.tr("Loaded 3D model %1").replace("%1", path.name), 3000
         )
@@ -71,6 +77,12 @@ class ThreeJsManager(QtCore.QObject):
             return False
         self.window.set_unrelated_docks_visible(False)
         self.window._set_active_view("threejs")
+        try:
+            close_action = getattr(getattr(self.window, "actions", None), "close", None)
+            if close_action is not None:
+                close_action.setEnabled(True)
+        except Exception:
+            pass
         return True
 
     def viewer_widget(self) -> Optional[ThreeJsViewerWidget]:

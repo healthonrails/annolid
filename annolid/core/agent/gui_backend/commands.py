@@ -195,6 +195,56 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             "args": {"frame_index": int(frame_match.group(1))},
         }
 
+    explicit_url_open = re.match(
+        r"\s*(?:open|load|show)\s+(?:this\s+)?(?P<url>https?://[^\s<>\"]+)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    bare_url = re.match(
+        r"\s*(?P<url>https?://[^\s<>\"]+)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    url_match = explicit_url_open or bare_url
+    if url_match:
+        url_text = str(url_match.group("url") or "").strip().rstrip(").,;!?")
+        if re.search(r"\.pdf(?:\b|[?#])", url_text, flags=re.IGNORECASE):
+            return {"name": "open_pdf", "args": {"path": url_text}}
+        return {"name": "open_url", "args": {"url": url_text}}
+
+    domain_pattern = (
+        r"(?P<url>(?:www\.)?[a-z0-9][a-z0-9\-]{0,62}"
+        r"(?:\.[a-z0-9][a-z0-9\-]{0,62})+(?::\d+)?(?:/[^\s<>\"]*)?)"
+    )
+    explicit_domain_open = re.match(
+        r"\s*(?:open|load|show)\s+(?:this\s+)?" + domain_pattern + r"\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    bare_domain = re.match(
+        r"\s*" + domain_pattern + r"\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    domain_match = explicit_domain_open or bare_domain
+    if domain_match:
+        url_text = str(domain_match.group("url") or "").strip().rstrip(").,;!?")
+        if re.search(
+            r"\.(?:mp4|avi|mov|mkv|m4v|wmv|flv|pdf|png|jpe?g|gif|tiff?|bmp)\b",
+            url_text,
+            flags=re.IGNORECASE,
+        ) and not url_text.lower().startswith(("www.", "http://", "https://")):
+            pass
+        else:
+            normalized = (
+                url_text
+                if url_text.lower().startswith(("http://", "https://"))
+                else f"https://{url_text}"
+            )
+            if re.search(r"\.pdf(?:\b|[?#])", normalized, flags=re.IGNORECASE):
+                return {"name": "open_pdf", "args": {"path": normalized}}
+            return {"name": "open_url", "args": {"url": normalized}}
+
     open_pdf_hint = (
         "open pdf" in lower
         or "load pdf" in lower
@@ -202,6 +252,25 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         or "open the pdf" in lower
         or "gui_open_pdf(" in lower
     )
+    open_url_hint = re.search(
+        r"\b(?:open|load|show)\s+(?:this\s+)?(?:url|link|website|web\s+page)\b",
+        lower,
+    )
+    url_in_text = re.search(r"https?://[^\s<>\"]+", text, flags=re.IGNORECASE)
+    domain_in_text = re.search(
+        r"\b(?:www\.)?[a-z0-9][a-z0-9\-]{0,62}"
+        r"(?:\.[a-z0-9][a-z0-9\-]{0,62})+(?::\d+)?(?:/[^\s<>\"]*)?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if open_url_hint and (url_in_text or domain_in_text):
+        raw_url = url_in_text.group(0) if url_in_text else domain_in_text.group(0)
+        url_text = str(raw_url or "").strip().rstrip(").,;!?")
+        if not url_text.lower().startswith(("http://", "https://")):
+            url_text = f"https://{url_text}"
+        if re.search(r"\.pdf(?:\b|[?#])", url_text, flags=re.IGNORECASE):
+            return {"name": "open_pdf", "args": {"path": url_text}}
+        return {"name": "open_url", "args": {"url": url_text}}
     open_pdf_path_hint = re.match(
         r"\s*(?:open|load)\s+[^\n]+?\.pdf\b",
         text,

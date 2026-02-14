@@ -13,7 +13,47 @@ from annolid.utils.logger import logger
 class WindowLifecycleMixin:
     """File close lifecycle, realtime proxies, and window geometry persistence."""
 
+    def _close_active_non_canvas_view(self) -> bool:
+        """Close currently active PDF/Web/3D viewer and return to canvas."""
+        viewer_stack = getattr(self, "_viewer_stack", None)
+        if viewer_stack is None:
+            return False
+        try:
+            current = viewer_stack.currentWidget()
+        except Exception:
+            return False
+
+        try:
+            pdf_manager = getattr(self, "pdf_manager", None)
+            if pdf_manager is not None and current is pdf_manager.pdf_widget():
+                pdf_manager.close_pdf()
+                return True
+        except Exception:
+            pass
+
+        try:
+            web_manager = getattr(self, "web_manager", None)
+            if web_manager is not None and current is web_manager.viewer_widget():
+                web_manager.close_web()
+                return True
+        except Exception:
+            pass
+
+        try:
+            threejs_manager = getattr(self, "threejs_manager", None)
+            if (
+                threejs_manager is not None
+                and current is threejs_manager.viewer_widget()
+            ):
+                threejs_manager.close_threejs()
+                return True
+        except Exception:
+            pass
+        return False
+
     def closeFile(self, _value=False, *, suppress_tracking_prompt=False):
+        if self._close_active_non_canvas_view():
+            return
         if not self.mayContinue():
             return
         self._set_active_view("canvas")

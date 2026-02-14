@@ -290,6 +290,12 @@ class PdfManager(QtCore.QObject):
         self.window.statusBar().showMessage(
             self.window.tr("Loaded PDF %1").replace("%1", Path(pdf_path).name), 3000
         )
+        try:
+            close_action = getattr(getattr(self.window, "actions", None), "close", None)
+            if close_action is not None:
+                close_action.setEnabled(True)
+        except Exception:
+            pass
 
     def close_pdf(self) -> None:
         """Close PDF view, restore docks, and return to canvas."""

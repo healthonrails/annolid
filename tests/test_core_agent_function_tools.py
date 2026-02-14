@@ -898,7 +898,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         context_callback=lambda: {"provider": "ollama", "frame_number": 12},
         image_path_callback=lambda: "/tmp/shared.png",
         open_video_callback=lambda path: _mark("open_video", path),
-        open_pdf_callback=lambda: _mark("open_pdf"),
+        open_pdf_callback=lambda path="": _mark("open_pdf", path or None),
         set_frame_callback=lambda frame_index: _mark("set_frame", frame_index),
         set_prompt_callback=lambda text: _mark("set_prompt", text),
         send_prompt_callback=lambda: _mark("send_prompt"),
@@ -950,6 +950,10 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert json.loads(result)["ok"] is True
     open_pdf = asyncio.run(registry.execute("gui_open_pdf", {}))
     assert json.loads(open_pdf)["ok"] is True
+    open_pdf_with_path = asyncio.run(
+        registry.execute("gui_open_pdf", {"path": "/tmp/paper.pdf"})
+    )
+    assert json.loads(open_pdf_with_path)["ok"] is True
     asyncio.run(registry.execute("gui_set_frame", {"frame_index": 3}))
     asyncio.run(registry.execute("gui_set_chat_prompt", {"text": "describe this"}))
     asyncio.run(registry.execute("gui_send_chat_prompt", {}))
@@ -1007,6 +1011,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert calls == [
         ("open_video", "/tmp/a.mp4"),
         ("open_pdf", None),
+        ("open_pdf", "/tmp/paper.pdf"),
         ("set_frame", 3),
         ("set_prompt", "describe this"),
         ("send_prompt", None),

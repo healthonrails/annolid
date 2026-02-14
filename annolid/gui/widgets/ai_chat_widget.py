@@ -1700,6 +1700,27 @@ class AIChatWidget(QtWidgets.QWidget):
         except Exception as exc:
             self.status_label.setText(f"Bot action failed: {exc}")
 
+    @QtCore.Slot(str)
+    def bot_open_url(self, url: str) -> None:
+        target_url = str(url or "").strip()
+        if not target_url:
+            self.status_label.setText("Bot action failed: empty URL.")
+            return
+        parsed = QtCore.QUrl(target_url)
+        if not parsed.isValid() or parsed.scheme().lower() not in {"http", "https"}:
+            self.status_label.setText("Bot action failed: invalid URL.")
+            return
+        host = self.host_window_widget or self.window()
+        show_web = getattr(host, "show_web_in_viewer", None)
+        if callable(show_web) and bool(show_web(target_url)):
+            self.status_label.setText(f"Opened URL in canvas: {target_url}")
+            return
+        opened = QtGui.QDesktopServices.openUrl(parsed)
+        if opened:
+            self.status_label.setText(f"Opened URL in browser: {target_url}")
+            return
+        self.status_label.setText("Bot action failed: could not open URL.")
+
     @QtCore.Slot(int)
     def bot_set_frame(self, frame_index: int) -> None:
         host = self.host_window_widget or self.window()
