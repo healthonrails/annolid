@@ -2122,11 +2122,15 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
         dims_raw = struct.unpack_from(f"{endian}8h", header, 40)
         ndim = max(0, int(dims_raw[0]))
-        dims = [int(v) for v in dims_raw[1 : 1 + max(3, ndim)]]
-        while len(dims) < 3:
+        dims = [int(v) for v in dims_raw[1 : 1 + max(4, ndim)]]
+        while len(dims) < 4:
             dims.append(1)
         dims = [d if d > 0 else 1 for d in dims]
-        x, y, z = dims[0], dims[1], dims[2]
+        x, y, z, t = dims[0], dims[1], dims[2], dims[3]
+        if ndim > 4 and any(int(v) > 1 for v in dims_raw[5 : 1 + ndim]):
+            logger.warning(
+                "Analyze volume has dimensions >4D; extra dimensions will be ignored."
+            )
 
         datatype = int(struct.unpack_from(f"{endian}h", header, 70)[0])
         bitpix = int(struct.unpack_from(f"{endian}h", header, 72)[0])
@@ -2138,6 +2142,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         )
         vox_offset = float(struct.unpack_from(f"{endian}f", header, 108)[0])
         offset = max(0, int(round(vox_offset)))
+        scale = float(struct.unpack_from(f"{endian}f", header, 112)[0])
+        if not np.isfinite(scale) or scale == 0.0:
+            scale = 1.0
         dtype = self._analyze_dtype(datatype, endian)
 
         expected_bits = int(dtype.itemsize * 8)
@@ -2148,13 +2155,15 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 expected_bits,
             )
 
-        return dtype, (x, y, z), spacing, offset
+        return dtype, (x, y, z, t), spacing, offset, scale
 
     def _read_analyze_numpy(
         self, header_path: Path, image_path: Path
-    ) -> tuple[np.ndarray, tuple[float, float, float]]:
-        dtype, (x, y, z), spacing, offset = self._read_analyze_header(header_path)
-        voxel_count = int(x * y * z)
+    ) -> tuple[np.ndarray, tuple[float, float, float], np.dtype]:
+        dtype, (x, y, z, t), spacing, offset, scale = self._read_analyze_header(
+            header_path
+        )
+        voxel_count = int(x * y * z * t)
         arr = np.fromfile(
             str(image_path), dtype=dtype, count=voxel_count, offset=offset
         )
@@ -2169,8 +2178,18 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             # NumPy 2.0 removed ndarray.newbyteorder(); normalize to native-endian
             # using a dtype view after byteswap.
             arr = arr.byteswap().view(arr.dtype.newbyteorder("="))
-        volume = arr.reshape((z, y, x))
-        return volume, spacing
+        if t > 1:
+            logger.info(
+                "Analyze volume has %d timepoints; using the first volume for 3D view.",
+                t,
+            )
+            arr = arr.reshape((t, z, y, x))[0]
+        else:
+            arr = arr.reshape((z, y, x))
+        if scale != 1.0:
+            arr = arr.astype(np.float32, copy=False) * float(scale)
+        volume = arr
+        return volume, spacing, np.dtype(dtype)
 
     def _read_analyze_via_vtk_reader(self, header_path: Path):
         try:
@@ -2201,8 +2220,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             raise RuntimeError("Analyze image (.img) file was not found.")
 
         analyze_error = None
+        source_dtype: Optional[np.dtype] = None
         try:
-            vol, spacing = self._read_analyze_numpy(header, image)
+            vol, spacing, source_dtype = self._read_analyze_numpy(header, image)
         except Exception as exc:
             analyze_error = exc
             vtk_img = self._read_analyze_via_vtk_reader(header)
@@ -2213,10 +2233,18 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             vol = self._vtk_image_to_numpy(vtk_img)
             s = vtk_img.GetSpacing()
             spacing = (s[0], s[1], s[2])
+            source_dtype = np.dtype(vol.dtype)
 
         if vol.size == 0:
             raise RuntimeError("Analyze volume contains no voxels.")
-        vol = self._normalize_to_float01(vol)
+        # Preserve integer label maps; normalize scalar intensity volumes.
+        is_label_volume = self._is_label_volume(
+            source_dtype or np.dtype(vol.dtype),
+            types.SimpleNamespace(path=header.stem, name=header.name),
+            path,
+        )
+        if not is_label_volume:
+            vol = self._normalize_to_float01(vol)
         return _VolumeData(
             array=vol,
             spacing=spacing,
@@ -2225,6 +2253,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             is_grayscale=vol.ndim == 3,
             is_out_of_core=False,
             volume_shape=tuple(int(x) for x in vol.shape[:3]),
+            is_label_map=is_label_volume,
         )
 
     def _is_tiff_candidate(self, path: Path) -> bool:

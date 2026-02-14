@@ -63,7 +63,18 @@ class ViewerToolsMixin:
                     try:
                         p = Path(raw)
                         if p.is_file():
+                            if p.suffix.lower() in (".img", ".hdr"):
+                                stem_l = p.stem.lower()
+                                for child in p.parent.iterdir():
+                                    if (
+                                        child.is_file()
+                                        and child.stem.lower() == stem_l
+                                        and child.suffix.lower() == ".hdr"
+                                    ):
+                                        return str(child)
                             if p.name.lower() == "zarr.json":
+                                return str(p.parent)
+                            if p.name.lower() == ".zgroup":
                                 return str(p.parent)
                             if (p.parent / ".zarray").exists():
                                 return str(p.parent)
@@ -73,8 +84,13 @@ class ViewerToolsMixin:
                                 cur.name.lower().endswith(".zarr")
                                 or (cur / ".zarray").exists()
                                 or (cur / "zarr.json").exists()
+                                or (cur / ".zgroup").exists()
                             ):
                                 return str(cur)
+                            if (cur / "data" / ".zarray").exists() or (
+                                cur / "data" / "zarr.json"
+                            ).exists():
+                                return str(cur / "data")
                             cur = cur.parent
                     except Exception:
                         pass
