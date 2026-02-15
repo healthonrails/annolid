@@ -6,6 +6,9 @@ from typing import List, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
 
+
+# os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+
 try:
     from qtpy import QtWebEngineWidgets  # type: ignore
 

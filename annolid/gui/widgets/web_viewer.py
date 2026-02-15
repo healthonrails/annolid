@@ -12,6 +12,171 @@ from annolid.gui.widgets.bot_explain import explain_selection_with_annolid_bot
 from annolid.gui.widgets.dictionary_lookup import DictionaryLookupTask
 from annolid.utils.logger import logger
 
+import os
+import platform
+import shutil
+import subprocess
+
+# Disable Chromium-level sandbox (needed in addition to the rpath fix).
+# os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+
+
+def _setup_webengine_process() -> None:
+    """Set up a sandboxed-free copy of QtWebEngineProcess on macOS.
+
+    The default ``QtWebEngineProcess.app`` inside the `.venv` bundle is
+    subject to strict macOS sandboxing that blocks it from loading Qt
+    frameworks (dyld error: ``file system sandbox blocked open``).
+
+    This function copies the bundle to the user's cache directory, patches
+    its rpath to point absolutely to the `.venv` libraries, re-signs it
+    with an ad-hoc signature, and sets ``QTWEBENGINEPROCESS_PATH`` to use
+    this unrestricted copy.
+    """
+    if platform.system() != "Darwin":
+        return
+
+    try:
+        import PyQt5
+
+        # Source paths
+        qt_lib = Path(PyQt5.__file__).parent / "Qt5" / "lib"
+        webengine_core = qt_lib / "QtWebEngineCore.framework"
+        src_process_app = webengine_core / "Helpers" / "QtWebEngineProcess.app"
+        src_resources = webengine_core / "Resources"
+
+        if not src_process_app.exists():
+            return
+
+        # Target paths (User Cache)
+        # We try a "bare binary" approach: copy just the executable, stripping the
+        # .app bundle structure. This often avoids macOS automatically applying
+        # the 'com.apple.WebEngine' sandbox profile which blocks .venv access.
+        #
+        # Layout:
+        #   .../QtWebEngine/QtWebEngineProcess  (the binary)
+        #   .../QtWebEngine/Resources           (symlink to .venv resources)
+        #
+        # QtWebEngineProcess will look for resources relative to itself.
+        cache_base = Path.home() / "Library" / "Caches" / "Annolid" / "QtWebEngine"
+        target_executable = cache_base / "QtWebEngineProcess"
+
+        # Re-create cache if version/binary changed (simple check: existence)
+        if not target_executable.exists():
+            # Clean up potential partial state or old structure
+            if cache_base.exists():
+                shutil.rmtree(cache_base)
+
+            cache_base.mkdir(parents=True, exist_ok=True)
+
+            # Copy the binary directly
+            src_executable = (
+                src_process_app / "Contents" / "MacOS" / "QtWebEngineProcess"
+            )
+            shutil.copy2(src_executable, target_executable)
+
+        # Clean up old "Resources" subdirectory if it exists from previous versions
+        old_resources_dir = cache_base / "Resources"
+        if old_resources_dir.exists():
+            if old_resources_dir.is_dir():
+                shutil.rmtree(old_resources_dir)
+            else:
+                old_resources_dir.unlink()
+        # Copy resources directly into the cache_base directory (flattened structure)
+        # The bare binary (no .app bundle) expects resources next to it.
+        # We use a stamp file to avoid re-copying if already done for this version.
+        stamp_file = cache_base / ".resources_copied_v2"
+        if not stamp_file.exists():
+            for item in src_resources.iterdir():
+                dest = cache_base / item.name
+                if dest.exists() or dest.is_symlink():
+                    if dest.is_dir():
+                        shutil.rmtree(dest)
+                    else:
+                        dest.unlink()
+
+                if item.is_dir():
+                    shutil.copytree(item, dest)
+                else:
+                    shutil.copy2(item, dest)
+
+            # Copy required Frameworks to bypass sandbox
+            # The sandbox prevents the isolated process from reading the .venv lib dir.
+            frameworks_dir = cache_base / "Frameworks"
+            if frameworks_dir.exists():
+                shutil.rmtree(frameworks_dir)
+            frameworks_dir.mkdir()
+
+            required_frameworks = [
+                "QtWebEngineCore.framework",
+                "QtQuick.framework",
+                "QtQmlModels.framework",
+                "QtWebChannel.framework",
+                "QtQml.framework",
+                "QtNetwork.framework",
+                "QtPositioning.framework",
+                "QtCore.framework",
+                "QtGui.framework",
+            ]
+
+            for fw_name in required_frameworks:
+                src_fw = qt_lib / fw_name
+                if src_fw.exists():
+                    shutil.copytree(src_fw, frameworks_dir / fw_name, symlinks=True)
+
+            # Create empty qt.conf to prevent Qt from looking elsewhere
+            with open(cache_base / "qt.conf", "w") as f:
+                f.write("[Paths]\nPrefix = .\n")
+
+            stamp_file.touch()
+
+        # Patch rpath to prefer local Frameworks
+        # We add @loader_path/Frameworks to the rpath list.
+        # Use absolute path for install_name_tool to ensure it's found
+        install_name_tool = "/usr/bin/install_name_tool"
+        if not os.path.exists(install_name_tool):
+            # Fallback to just command name if not in standard location
+            install_name_tool = "install_name_tool"
+
+        subprocess.run(
+            [
+                install_name_tool,
+                "-add_rpath",
+                "@loader_path/Frameworks",
+                str(target_executable),
+            ],
+            capture_output=True,
+        )
+        # Also try to remove the absolute path if it exists, to be clean, but ignore errors
+        qt_lib_str = str(qt_lib.resolve())
+        subprocess.run(
+            [install_name_tool, "-delete_rpath", qt_lib_str, str(target_executable)],
+            capture_output=True,
+        )
+
+        # Ad-hoc sign (force)
+        subprocess.run(
+            ["codesign", "--force", "--sign", "-", str(target_executable)],
+            capture_output=True,
+        )
+
+        # Tell Qt to use this process
+        os.environ["QTWEBENGINEPROCESS_PATH"] = str(target_executable)
+        logger.info(
+            "Redirected QtWebEngineProcess to cached bare binary: %s", target_executable
+        )
+
+    except Exception as exc:
+        logger.warning("Failed to setup QtWebEngineProcess copy: %s", exc)
+        # Log traceback for debugging if it's a file not found error
+        if isinstance(exc, FileNotFoundError) or logger.isEnabledFor(10):  # DEBUG
+            import traceback
+
+            logger.warning("Traceback:\n%s", traceback.format_exc())
+
+
+_setup_webengine_process()
+
 try:
     from qtpy import QtWebEngineWidgets  # type: ignore
 
@@ -49,6 +214,10 @@ def _is_ignorable_js_console_message(message: str) -> bool:
         "contains an invalid source",
         # Common external page JavaScript errors that are not actionable
         "uncaught referenceerror: _d is not defined",
+        # CORS errors for external site fonts - these are external site issues, not actionable
+        "access to font at",
+        "has been blocked by cors policy",
+        "no 'access-control-allow-origin' header is present on the requested resource",
     )
     return any(marker in value for marker in noisy_markers)
 
@@ -239,6 +408,7 @@ class WebViewerWidget(QtWidgets.QWidget):
         self._active_dictionary_dialog: Optional[QtWidgets.QDialog] = None
         self._js_running = False
         self._last_scrape_time = 0.0
+        self._pdf_prompted_urls: set = set()
         self._build_ui()
 
     @property
@@ -385,6 +555,21 @@ class WebViewerWidget(QtWidgets.QWidget):
         self._web_view = QtWebEngineWidgets.QWebEngineView(self)
         try:
             self._web_view.setPage(_AnnolidWebEnginePage(self._web_view))
+        except Exception:
+            pass
+        # Enable Chromium built-in PDF viewer so PDFs render inline.
+        try:
+            settings = self._web_view.settings()
+            plugins_attr = getattr(
+                QtWebEngineWidgets.QWebEngineSettings, "PluginsEnabled", None
+            )
+            pdf_attr = getattr(
+                QtWebEngineWidgets.QWebEngineSettings, "PdfViewerEnabled", None
+            )
+            if plugins_attr is not None:
+                settings.setAttribute(plugins_attr, True)
+            if pdf_attr is not None:
+                settings.setAttribute(pdf_attr, True)
         except Exception:
             pass
         root.addWidget(self._web_view, 1)
@@ -691,11 +876,49 @@ class WebViewerWidget(QtWidgets.QWidget):
         self._current_url = text
         self.url_edit.setText(text)
 
+    def _is_pdf_url(self, url: str) -> bool:
+        """Check if the URL points to a PDF file.
+
+        ArXiv ``/pdf/`` URLs render via their own viewer and are handled
+        natively by the Chromium PDF plugin, so they are *not* flagged.
+        """
+        url_lower = url.lower()
+        # ArXiv /pdf/ URLs render inline; treat as normal pages.
+        if "arxiv.org/pdf/" in url_lower:
+            return False
+        return (
+            url_lower.endswith(".pdf") or ".pdf?" in url_lower or ".pdf#" in url_lower
+        )
+
     def _on_load_finished(self, ok: bool) -> None:
-        if ok:
-            self.status_changed.emit(f"Loaded: {self._current_url}")
+        url = self._current_url
+
+        # Check if this is a PDF URL - prompt to open in system browser
+        if self._is_pdf_url(url) and url not in self._pdf_prompted_urls:
+            self._pdf_prompted_urls.add(url)
+            # Ask user to open PDF in system browser
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "Open PDF",
+                "This URL points to a PDF file which may not display properly in the embedded browser.\n\n"
+                f"URL: {url}\n\n"
+                "Would you like to open it in your system browser instead?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.Yes,
+            )
+            if reply == QtWidgets.QMessageBox.Yes:
+                self.open_current_in_browser()
+                return
+            # If user says No, just show the content as-is
+            self.status_changed.emit(f"Loaded: {url}")
             return
-        self.status_changed.emit("Failed to load page.")
+
+        if not ok:
+            # If load failed and it's not a PDF URL we already handled
+            self.status_changed.emit("Failed to load page.")
+            return
+
+        self.status_changed.emit(f"Loaded: {url}")
 
     def _show_context_menu(self, position: QtCore.QPoint) -> None:
         if self._web_view is None:
