@@ -231,6 +231,8 @@ class WebViewerWidget(QtWidgets.QWidget):
         self._dictionary_lookup_id = ""
         self._dictionary_popup_pos: Optional[QtCore.QPoint] = None
         self._active_dictionary_dialog: Optional[QtWidgets.QDialog] = None
+        self._js_running = False
+        self._last_scrape_time = 0.0
         self._build_ui()
 
     @property
@@ -372,10 +374,13 @@ class WebViewerWidget(QtWidgets.QWidget):
     def _run_js_sync(self, script: str, *, timeout_ms: int = 5000) -> object:
         if self._web_view is None:
             return {"error": "Embedded web view is unavailable."}
+        if self._js_running:
+            return {"error": "Another JavaScript task is already running."}
         page = self._web_view.page()
         if page is None:
             return {"error": "Web page object is unavailable."}
 
+        self._js_running = True
         loop = QtCore.QEventLoop(self)
         timer = QtCore.QTimer(self)
         timer.setSingleShot(True)
@@ -389,23 +394,40 @@ class WebViewerWidget(QtWidgets.QWidget):
             loop.quit()
 
         timer.timeout.connect(lambda: _finish({"error": "JavaScript timed out."}))
-        page.runJavaScript(script, _finish)
-        timer.start(max(100, int(timeout_ms)))
-        loop.exec_()
-        timer.stop()
+        try:
+            page.runJavaScript(script, _finish)
+            timer.start(max(100, int(timeout_ms)))
+            loop.exec_()
+        finally:
+            timer.stop()
+            self._js_running = False
         return result.get("value")
 
     def get_page_text(self, max_chars: int = 8000) -> dict:
         if self._web_view is None:
             return {"ok": False, "error": "Embedded web view is unavailable."}
+
+        # Throttle scrapes to avoid thrashing the V8 engine
+        now = time.monotonic()
+        if now - self._last_scrape_time < 0.5:
+            time.sleep(0.5)  # Minimal safety delay
+        self._last_scrape_time = time.monotonic()
+
         limit = max(200, min(int(max_chars or 8000), 200000))
-        script = """
-(() => {
-  const text = String((document && document.body && document.body.innerText) || "");
-  const title = String((document && document.title) || "");
-  const href = String((window && window.location && window.location.href) || "");
-  return { ok: true, text, title, url: href, length: text.length };
-})()
+        # Optimize script to truncate inside JS context to save IPC bandwidth
+        script = f"""
+(() => {{
+  try {{
+    const text = String((document && document.body && document.body.innerText) || "");
+    const title = String((document && document.title) || "");
+    const href = String((window && window.location && window.location.href) || "");
+    const truncated = text.length > {limit + 1000};
+    const part = truncated ? text.slice(0, {limit}) : text;
+    return {{ ok: true, text: part, title, url: href, length: text.length, truncated }};
+  }} catch (e) {{
+    return {{ ok: false, error: String(e) }};
+  }}
+}})()
         """.strip()
         payload = self._run_js_sync(script)
         if not isinstance(payload, dict):

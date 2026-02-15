@@ -416,9 +416,6 @@ class AIChatWidget(QtWidgets.QWidget):
     def _build_header_bar(self) -> QtWidgets.QWidget:
         header_widget = QtWidgets.QWidget(self)
         header_widget.setObjectName("headerBar")
-        header_widget.setStyleSheet(
-            "background-color: #111317; border-bottom: 1px solid #2f333b;"
-        )
         header_layout = QtWidgets.QHBoxLayout(header_widget)
         header_layout.setContentsMargins(16, 12, 16, 12)
         header_layout.setSpacing(12)
@@ -516,6 +513,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self.scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
 
         self.chat_container = QtWidgets.QWidget(self.scroll_area)
+        self.chat_container.setObjectName("chatContainer")
         self.chat_layout = QtWidgets.QVBoxLayout(self.chat_container)
         self.chat_layout.setContentsMargins(16, 16, 16, 16)
         self.chat_layout.setSpacing(16)
@@ -907,112 +905,148 @@ class AIChatWidget(QtWidgets.QWidget):
             return
         self._applying_theme_styles = True
         try:
+            palette = self.palette()
+            is_dark = palette.color(QtGui.QPalette.Window).lightness() < 128
+
+            # Theme-aware colors
+            if is_dark:
+                bg_main = "#111317"
+                bg_input = "#1a1d23"
+                fg_main = "#e7e8ea"
+                border_main = "#31353c"
+                title_fg = "#f4f5f6"
+                subtitle_fg = "#9ea4af"
+                bubble_user_bg = "#2b5c54"
+                bubble_user_border = "#3a756b"
+                bubble_assistant_bg = "#1f2228"
+                bubble_assistant_border = "#31353e"
+            else:
+                bg_main = "#ffffff"
+                bg_input = "#f1f3f4"
+                fg_main = "#202124"
+                border_main = "#dadce0"
+                title_fg = "#1a73e8"
+                subtitle_fg = "#5f6368"
+                bubble_user_bg = "#e8f0fe"
+                bubble_user_border = "#c6dafc"
+                bubble_assistant_bg = "#f1f3f4"
+                bubble_assistant_border = "#e0e0e0"
+
             self.setStyleSheet(
-                """
-                QWidget#AIChatWidget {
-                    background: #111317;
-                    color: #e7e8ea;
+                f"""
+                QWidget#AIChatWidget {{
+                    background: {bg_main};
+                    color: {fg_main};
                     border: none;
                     outline: none;
-                }
-                QWidget {
-                    background: #111317;
-                    color: #e7e8ea;
+                }}
+                /* Specific containers to avoid broad QWidget styling */
+                #chatContainer, #headerBar, #inputBarContainer {{
+                    background: {bg_main};
+                    color: {fg_main};
                     border: none;
-                }
-                QComboBox {
-                    border: 1px solid #31353c;
+                }}
+                QComboBox {{
+                    border: 1px solid {border_main};
                     border-radius: 8px;
-                    background: #1a1d23;
-                    color: #e7e8ea;
+                    background: {bg_input};
+                    color: {fg_main};
                     min-height: 24px;
                     padding: 3px 8px;
-                }
-                QScrollArea {
+                }}
+                QScrollArea {{
                     border: none;
-                    background: #111317;
-                }
-                QPlainTextEdit {
-                    border: 1px solid #343943;
+                    background: {bg_main};
+                }}
+                QScrollArea > QWidget > QWidget {{
+                    border: none;
+                    background: {bg_main};
+                }}
+                QPlainTextEdit {{
+                    border: 1px solid {border_main};
                     border-radius: 12px;
-                    background: #1a1d23;
+                    background: {bg_input};
                     padding: 8px;
                     font-size: 14px;
-                    color: #e7e8ea;
-                }
-                QPlainTextEdit:focus {
-                     border: 1px solid #5a6270;
-                }
-                QLabel#chatTitleLabel {
-                    color: #f4f5f6;
+                    color: {fg_main};
+                }}
+                QPlainTextEdit:focus {{
+                     border: 1px solid {title_fg};
+                }}
+                QLabel#chatTitleLabel {{
+                    color: {title_fg};
                     font-size: 18px;
                     font-weight: 700;
-                }
-                QLabel#chatSubtitleLabel {
-                    color: #9ea4af;
+                    background: transparent;
+                }}
+                QLabel#chatSubtitleLabel {{
+                    color: {subtitle_fg};
                     font-size: 12px;
-                }
-                QPushButton#quickActionButton {
-                    border: 1px solid #373d47;
+                    background: transparent;
+                }}
+                QPushButton#quickActionButton {{
+                    border: 1px solid {border_main};
                     border-radius: 14px;
                     padding: 6px 12px;
                     font-size: 12px;
-                    background: #2a2f38;
-                    color: #e7e8ea;
-                }
-                QPushButton#quickActionButton:hover {
-                    background: #363d49;
-                }
+                    background: {bg_input};
+                    color: {fg_main};
+                }}
+                QPushButton#quickActionButton:hover {{
+                    background: {bubble_assistant_border};
+                }}
                 /* Input Bar Icons */
-                QToolButton#chatInputButton {
+                QToolButton#chatInputButton {{
                     background: transparent;
                     border: none;
                     border-radius: 6px;
-                }
-                QToolButton#chatInputButton:hover {
-                    background: rgba(255, 255, 255, 0.08);
-                }
+                }}
+                QToolButton#chatInputButton:hover {{
+                    background: rgba(128, 128, 128, 0.15);
+                }}
                 /* Chat Bubbles */
-                QFrame#chatBubble {
+                QFrame#chatBubble {{
                      border-radius: 12px;
-                }
-                QFrame#chatBubble[role="user"] {
-                    background-color: #2b5c54;
-                    border: 1px solid #3a756b;
+                }}
+                QFrame#chatBubble[role="user"] {{
+                    background-color: {bubble_user_bg};
+                    border: 1px solid {bubble_user_border};
                     margin-left: 40px;
-                }
-                QFrame#chatBubble[role="assistant"] {
-                    background-color: #1f2228;
-                    border: 1px solid #31353e;
+                }}
+                QFrame#chatBubble[role="assistant"] {{
+                    background-color: {bubble_assistant_bg};
+                    border: 1px solid {bubble_assistant_border};
                     margin-right: 40px;
-                }
+                }}
                 /* Bubble Actions */
-                QPushButton#bubbleActionButton {
+                QPushButton#bubbleActionButton {{
                     background: transparent;
                     border: none;
                     border-radius: 4px;
                     padding: 2px;
-                }
-                QPushButton#bubbleActionButton:hover {
-                     background: rgba(255, 255, 255, 0.1);
-                }
-                QLabel#sender {
-                    color: #8a8f99;
+                }}
+                QPushButton#bubbleActionButton:hover {{
+                     background: rgba(128, 128, 128, 0.1);
+                }}
+                QLabel#sender {{
+                    color: {subtitle_fg};
                     font-size: 11px;
                     font-weight: 600;
                     margin-bottom: 2px;
-                }
-                QLabel#meta {
-                    color: #6a707c;
+                    background: transparent;
+                }}
+                QLabel#meta {{
+                    color: {subtitle_fg};
                     font-size: 10px;
-                }
+                    background: transparent;
+                }}
                 /* Floating Input Bar */
-                QFrame#inputBarContainer {
-                    background: #1a1d23;
-                    border-top: 1px solid #2f333b;
+                QFrame#inputBarContainer {{
+                    background: {bg_input};
+                    border-top: 1px solid {border_main};
                     border-bottom-left-radius: 12px;
                     border-bottom-right-radius: 12px;
-                }
+                }}
                 """
             )
         finally:
