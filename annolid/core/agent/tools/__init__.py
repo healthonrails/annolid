@@ -82,6 +82,17 @@ from .utility import (
     register_builtin_utility_tools,
 )
 from .vector_index import NumpyEmbeddingIndex, SearchResult
+from .mcp_browser import (
+    McpBrowserClickTool,
+    McpBrowserCloseTool,
+    McpBrowserNavigateTool,
+    McpBrowserScreenshotTool,
+    McpBrowserScrollTool,
+    McpBrowserSnapshotTool,
+    McpBrowserTypeTool,
+    McpBrowserWaitTool,
+    register_mcp_browser_tools,
+)
 
 __all__ = [
     "ArtifactStore",
@@ -171,4 +182,13 @@ __all__ = [
     "ToolContext",
     "ToolError",
     "content_hash",
+    "McpBrowserNavigateTool",
+    "McpBrowserClickTool",
+    "McpBrowserTypeTool",
+    "McpBrowserSnapshotTool",
+    "McpBrowserScreenshotTool",
+    "McpBrowserScrollTool",
+    "McpBrowserCloseTool",
+    "McpBrowserWaitTool",
+    "register_mcp_browser_tools",
 ]

@@ -83,7 +83,21 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "github_pr_status",
         "github_pr_checks",
     },
-    "group:web": {"web_search", "web_fetch", "download_url", "download_pdf"},
+    "group:web": {
+        "web_search",
+        "web_fetch",
+        "download_url",
+        "download_pdf",
+        # MCP browser tools (require Playwright MCP server configured)
+        "mcp_browser_navigate",
+        "mcp_browser_click",
+        "mcp_browser_type",
+        "mcp_browser_snapshot",
+        "mcp_browser_screenshot",
+        "mcp_browser_scroll",
+        "mcp_browser_close",
+        "mcp_browser_wait",
+    },
     "group:ui": {
         "gui_context",
         "gui_shared_image_path",
