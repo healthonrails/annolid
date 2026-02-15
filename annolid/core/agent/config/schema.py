@@ -145,6 +145,32 @@ class ExecToolConfig:
 
 
 @dataclass
+class MCPServerConfig:
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
+    url: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "MCPServerConfig":
+        payload = data or {}
+        return cls(
+            command=str(payload.get("command", "")),
+            args=list(payload.get("args", [])),
+            env=dict(payload.get("env", {})),
+            url=str(payload.get("url", "")),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "command": self.command,
+            "args": self.args,
+            "env": self.env,
+            "url": self.url,
+        }
+
+
+@dataclass
 class ToolPolicyConfig:
     profile: str = ""
     allow: list[str] = field(default_factory=list)
@@ -187,6 +213,7 @@ class ToolsConfig:
     profile: str = "full"
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
+    mcp_servers: Dict[str, MCPServerConfig] = field(default_factory=dict)
     by_provider: Dict[str, ToolPolicyConfig] = field(default_factory=dict)
 
     @classmethod
@@ -217,6 +244,13 @@ class ToolsConfig:
             if isinstance(deny_raw, (list, tuple))
             else []
         )
+        mcp_raw = payload.get("mcp_servers", payload.get("mcpServers", {}))
+        mcp_servers: Dict[str, MCPServerConfig] = {}
+        if isinstance(mcp_raw, dict):
+            for name, value in mcp_raw.items():
+                mcp_servers[str(name)] = MCPServerConfig.from_dict(
+                    value if isinstance(value, dict) else None
+                )
         by_provider_raw = payload.get("by_provider", payload.get("byProvider", {}))
         by_provider: Dict[str, ToolPolicyConfig] = {}
         if isinstance(by_provider_raw, dict):
@@ -232,6 +266,7 @@ class ToolsConfig:
             profile=str(payload.get("profile") or "full").strip().lower() or "full",
             allow=allow,
             deny=deny,
+            mcp_servers=mcp_servers,
             by_provider=by_provider,
         )
 
@@ -243,6 +278,9 @@ class ToolsConfig:
             "profile": self.profile,
             "allow": list(self.allow),
             "deny": list(self.deny),
+            "mcp_servers": {
+                name: cfg.to_dict() for name, cfg in self.mcp_servers.items()
+            },
             "by_provider": {
                 key: value.to_dict() for key, value in self.by_provider.items()
             },

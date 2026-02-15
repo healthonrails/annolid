@@ -1742,17 +1742,26 @@ class AIChatWidget(QtWidgets.QWidget):
             self.status_label.setText("Bot action failed: empty URL.")
             return
         parsed = QtCore.QUrl(target_url)
-        if not parsed.isValid() or parsed.scheme().lower() not in {"http", "https"}:
-            self.status_label.setText("Bot action failed: invalid URL.")
-            return
+        if parsed.isValid() and parsed.scheme().lower() in {"http", "https", "file"}:
+            normalized = parsed.toString()
+        else:
+            local_path = Path(target_url).expanduser()
+            if local_path.exists() and local_path.is_file():
+                normalized = QtCore.QUrl.fromLocalFile(str(local_path)).toString()
+                parsed = QtCore.QUrl(normalized)
+            else:
+                self.status_label.setText(
+                    "Bot action failed: invalid URL or file path."
+                )
+                return
         host = self.host_window_widget or self.window()
         show_web = getattr(host, "show_web_in_viewer", None)
-        if callable(show_web) and bool(show_web(target_url)):
-            self.status_label.setText(f"Opened URL in canvas: {target_url}")
+        if callable(show_web) and bool(show_web(normalized)):
+            self.status_label.setText(f"Opened URL in canvas: {normalized}")
             return
         opened = QtGui.QDesktopServices.openUrl(parsed)
         if opened:
-            self.status_label.setText(f"Opened URL in browser: {target_url}")
+            self.status_label.setText(f"Opened URL in browser: {normalized}")
             return
         self.status_label.setText("Bot action failed: could not open URL.")
 

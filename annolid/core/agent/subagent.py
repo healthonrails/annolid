@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable, Dict, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, Optional, Sequence
 
 from .loop import AgentLoop
 from .tools import (
@@ -42,7 +42,7 @@ class SubagentManager:
     def __init__(
         self,
         *,
-        loop_factory: Callable[[], AgentLoop],
+        loop_factory: Callable[[], AgentLoop | Awaitable[AgentLoop]],
         announce_callback: Optional[AnnounceCallback] = None,
         workspace: Optional[Path] = None,
         max_iterations: int = 15,
@@ -107,7 +107,11 @@ class SubagentManager:
 
     async def _run_subagent(self, meta: SubagentTask) -> None:
         try:
-            loop = self._loop_factory()
+            loop_or_coro = self._loop_factory()
+            if asyncio.iscoroutine(loop_or_coro):
+                loop = await loop_or_coro
+            else:
+                loop = loop_or_coro
             prompt = self._build_subagent_prompt(meta.task)
             result = await loop.run(
                 meta.task,
@@ -170,17 +174,21 @@ class SubagentManager:
         )
 
 
-def build_subagent_tools_registry(
+async def build_subagent_tools_registry(
     workspace: Optional[Path] = None,
     allowed_read_roots: Optional[Sequence[str | Path]] = None,
+    mcp_servers: dict | None = None,
+    stack: Any | None = None,
 ) -> FunctionToolRegistry:
     """Create a default function-tool registry suitable for subagents."""
 
     registry = FunctionToolRegistry()
-    register_nanobot_style_tools(
+    await register_nanobot_style_tools(
         registry,
         allowed_dir=Path(workspace) if workspace is not None else None,
         allowed_read_roots=allowed_read_roots,
+        mcp_servers=mcp_servers,
+        stack=stack,
     )
     allowed_dir = Path(workspace) if workspace is not None else None
     registry.register(

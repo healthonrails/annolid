@@ -5,10 +5,13 @@ import platform
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import pytest
+
 from annolid.core.agent.context import AgentContextBuilder
 from annolid.core.agent.loop import AgentLoop
 from annolid.core.agent.skills import AgentSkillsLoader
 from annolid.core.agent.subagent import SubagentManager, build_subagent_tools_registry
+from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_registry import FunctionToolRegistry
 
 
@@ -168,7 +171,7 @@ def test_subagent_manager_runs_background_task(tmp_path: Path) -> None:
 def test_build_subagent_tools_registry_excludes_recursive_tools(
     tmp_path: Path,
 ) -> None:
-    registry = build_subagent_tools_registry(tmp_path)
+    registry = asyncio.run(build_subagent_tools_registry(tmp_path))
     assert registry.has("read_file")
     assert registry.has("write_file")
     assert registry.has("edit_file")
@@ -202,3 +205,81 @@ def test_subagent_prompt_includes_time_and_skills_path(tmp_path: Path) -> None:
     assert "UTC" in prompt
     assert "## Skills" in prompt
     assert str(tmp_path / "skills") in prompt
+
+
+def test_agent_loop_connects_mcp_without_overwriting_existing_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ExistingTool(FunctionTool):
+        @property
+        def name(self) -> str:
+            return "existing_tool"
+
+        @property
+        def description(self) -> str:
+            return "Existing"
+
+        @property
+        def parameters(self) -> dict[str, Any]:
+            return {"type": "object", "properties": {}}
+
+        async def execute(self, **kwargs: Any) -> str:
+            del kwargs
+            return "existing-ok"
+
+    class _MCPTool(FunctionTool):
+        @property
+        def name(self) -> str:
+            return "mcp_demo_ping"
+
+        @property
+        def description(self) -> str:
+            return "Ping"
+
+        @property
+        def parameters(self) -> dict[str, Any]:
+            return {"type": "object", "properties": {}}
+
+        async def execute(self, **kwargs: Any) -> str:
+            del kwargs
+            return "pong"
+
+    calls: list[dict[str, Any]] = []
+
+    async def _fake_connect(mcp_servers, registry, stack) -> None:  # type: ignore[no-untyped-def]
+        del stack
+        calls.append(dict(mcp_servers))
+        registry.register(_MCPTool())
+
+    import annolid.core.agent.tools.mcp as mcp_tools
+
+    monkeypatch.setattr(mcp_tools, "connect_mcp_servers", _fake_connect)
+
+    async def _fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        return {"content": "done"}
+
+    registry = FunctionToolRegistry()
+    existing = _ExistingTool()
+    registry.register(existing)
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=_fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+        mcp_servers={"demo": {"command": "echo", "args": ["ok"]}},
+    )
+    result = asyncio.run(loop.run("hello", use_memory=False))
+
+    assert result.content == "done"
+    assert len(calls) == 1
+    assert registry.get("existing_tool") is existing
+    assert registry.has("mcp_demo_ping")
+    assert loop._mcp_connected is False  # cleanup happens at end of run
+    assert loop._mcp_stack is None

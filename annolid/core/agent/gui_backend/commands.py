@@ -423,6 +423,18 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
     ):
         return {"name": "open_video", "args": {"path": text}}
 
+    open_local_html_hint = re.match(
+        r"\s*(?:open|load|show)\s+[^\n]+?\.(?:html?|xhtml?)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if open_local_html_hint or re.fullmatch(
+        r"[^\n]+?\.(?:html?|xhtml?)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return {"name": "open_url", "args": {"url": text}}
+
     return {}
 
 

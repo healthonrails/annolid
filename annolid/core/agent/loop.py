@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import AsyncExitStack
 import json
 import logging
 import re
@@ -164,6 +165,7 @@ class AgentLoop:
         allowed_read_roots: Optional[Sequence[str | Path]] = None,
         context_builder: Optional[AgentContextBuilder] = None,
         subagent_manager: Optional["SubagentManager"] = None,
+        mcp_servers: Optional[Dict[str, Any]] = None,
         interleave_post_tool_guidance: bool = True,
         logger: Optional[logging.Logger] = None,
     ) -> None:
@@ -186,6 +188,9 @@ class AgentLoop:
         self._allowed_read_roots = tuple(str(p) for p in (allowed_read_roots or ()))
         self._context_builder = context_builder
         self._subagent_manager = subagent_manager
+        self._mcp_servers = mcp_servers or {}
+        self._mcp_stack: Optional[AsyncExitStack] = None
+        self._mcp_connected = False
         self._interleave_post_tool_guidance = bool(interleave_post_tool_guidance)
         self._provider_impl: Optional[Any] = None
 
@@ -236,139 +241,171 @@ class AgentLoop:
             self._memory_config.enabled if use_memory is None else bool(use_memory)
         )
         self._set_tool_context(channel=channel, chat_id=chat_id)
-        messages: List[Dict[str, Any]] = []
-        user_message_text = str(user_message)
-        self._persist_long_term_memory_note_from_user_text(user_message_text)
-        memory_history: List[Dict[str, Any]] = []
-        memory_facts: Dict[str, str] = {}
-        if memory_enabled:
-            memory_history = self._memory_store.get_history(session_id)
-            memory_facts = self._memory_store.get_facts(session_id)
-            if len(memory_history) > max(2, int(self._memory_config.memory_window)):
-                memory_history = await self._consolidate_memory(
-                    session_id=session_id,
-                    history=memory_history,
-                )
-
-        if system_prompt:
-            messages.append({"role": "system", "content": str(system_prompt)})
-        elif self._context_builder is not None:
-            contextual = self._context_builder.build_system_prompt(
-                skill_names=skill_names
-            )
-            if channel and chat_id:
-                contextual += (
-                    f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
-                )
-            messages.append({"role": "system", "content": contextual})
-        if (
-            memory_enabled
-            and memory_facts
-            and self._memory_config.include_facts_in_system_prompt
-        ):
-            messages.append(
-                {
-                    "role": "system",
-                    "content": self._format_memory_facts(memory_facts),
-                }
-            )
-        if memory_enabled and memory_history:
-            messages.extend(memory_history)
-        if history:
-            messages.extend([dict(m) for m in history])
-        if self._context_builder is not None and media:
-            user_payload = self._context_builder.build_user_content(
-                user_message_text, media
-            )
-            messages.append({"role": "user", "content": user_payload})
-        else:
-            messages.append({"role": "user", "content": user_message_text})
-
-        tool_runs: List[AgentToolRun] = []
-        final_content = ""
-        stopped_reason = "done"
-        all_tool_definitions = self._tools.get_definitions()
-        tool_signature = self._tool_signature(all_tool_definitions)
-        tool_index = self._get_cached_tool_index(all_tool_definitions, tool_signature)
-        default_tools = self._get_cached_default_tools(tool_index, tool_signature)
-        repeated_tool_cycles = 0
-        last_tool_cycle_signature: Optional[tuple[str, ...]] = None
-        last_iteration = 0
-
-        for iteration in range(1, self._max_iterations + 1):
-            last_iteration = iteration
-            tool_definitions = self._select_relevant_tool_definitions(
-                all_tool_definitions=all_tool_definitions,
-                tool_index=tool_index,
-                default_tool_definitions=default_tools,
-                user_message_text=user_message_text,
-                messages=messages,
-            )
-            response = await self._llm_callable(
-                messages,
-                tool_definitions,
-                self.model,
-            )
-            assistant_text = str(response.get("content") or "")
-            tool_calls = self._sanitize_tool_calls(self._extract_tool_calls(response))
-
-            if tool_calls:
-                tool_cycle_signature = tuple(
-                    f"{call.get('name', '')}:{json.dumps(call.get('arguments', {}), ensure_ascii=False, sort_keys=True)}"
-                    for call in tool_calls
-                )
-                if tool_cycle_signature == last_tool_cycle_signature:
-                    repeated_tool_cycles += 1
-                else:
-                    repeated_tool_cycles = 0
-                    last_tool_cycle_signature = tool_cycle_signature
-                if repeated_tool_cycles >= 2:
-                    stopped_reason = "repeated_tool_calls"
-                    final_content = (
-                        "Agent tool loop stalled on repeated identical tool calls. "
-                        "Please revise the prompt or switch model."
+        await self._connect_mcp()
+        try:
+            messages: List[Dict[str, Any]] = []
+            user_message_text = str(user_message)
+            self._persist_long_term_memory_note_from_user_text(user_message_text)
+            memory_history: List[Dict[str, Any]] = []
+            memory_facts: Dict[str, str] = {}
+            if memory_enabled:
+                memory_history = self._memory_store.get_history(session_id)
+                memory_facts = self._memory_store.get_facts(session_id)
+                if len(memory_history) > max(2, int(self._memory_config.memory_window)):
+                    memory_history = await self._consolidate_memory(
+                        session_id=session_id,
+                        history=memory_history,
                     )
-                    break
 
+            if system_prompt:
+                messages.append({"role": "system", "content": str(system_prompt)})
+            elif self._context_builder is not None:
+                contextual = self._context_builder.build_system_prompt(
+                    skill_names=skill_names
+                )
+                if channel and chat_id:
+                    contextual += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+                messages.append({"role": "system", "content": contextual})
+            if (
+                memory_enabled
+                and memory_facts
+                and self._memory_config.include_facts_in_system_prompt
+            ):
                 messages.append(
                     {
-                        "role": "assistant",
-                        "content": assistant_text,
-                        "tool_calls": [
-                            self._to_openai_tool_call(tc) for tc in tool_calls
-                        ],
+                        "role": "system",
+                        "content": self._format_memory_facts(memory_facts),
                     }
                 )
-                for call in tool_calls:
-                    call_id = str(call.get("id") or "")
-                    name = str(call.get("name") or "")
-                    raw_args = call.get("arguments")
-                    args = self._normalize_args(raw_args)
-                    result = await self._tools.execute(name, args)
-                    tool_runs.append(
-                        AgentToolRun(
-                            call_id=call_id,
-                            name=name,
-                            arguments=dict(args),
-                            result=str(result),
-                        )
+            if memory_enabled and memory_history:
+                messages.extend(memory_history)
+            if history:
+                messages.extend([dict(m) for m in history])
+            if self._context_builder is not None and media:
+                user_payload = self._context_builder.build_user_content(
+                    user_message_text, media
+                )
+                messages.append({"role": "user", "content": user_payload})
+            else:
+                messages.append({"role": "user", "content": user_message_text})
+
+            tool_runs: List[AgentToolRun] = []
+            final_content = ""
+            stopped_reason = "done"
+            all_tool_definitions = self._tools.get_definitions()
+            tool_signature = self._tool_signature(all_tool_definitions)
+            tool_index = self._get_cached_tool_index(
+                all_tool_definitions, tool_signature
+            )
+            default_tools = self._get_cached_default_tools(tool_index, tool_signature)
+            repeated_tool_cycles = 0
+            last_tool_cycle_signature: Optional[tuple[str, ...]] = None
+            last_iteration = 0
+
+            for iteration in range(1, self._max_iterations + 1):
+                last_iteration = iteration
+                tool_definitions = self._select_relevant_tool_definitions(
+                    all_tool_definitions=all_tool_definitions,
+                    tool_index=tool_index,
+                    default_tool_definitions=default_tools,
+                    user_message_text=user_message_text,
+                    messages=messages,
+                )
+                response = await self._llm_callable(
+                    messages,
+                    tool_definitions,
+                    self.model,
+                )
+                assistant_text = str(response.get("content") or "")
+                tool_calls = self._sanitize_tool_calls(
+                    self._extract_tool_calls(response)
+                )
+
+                if tool_calls:
+                    tool_cycle_signature = tuple(
+                        f"{call.get('name', '')}:{json.dumps(call.get('arguments', {}), ensure_ascii=False, sort_keys=True)}"
+                        for call in tool_calls
                     )
+                    if tool_cycle_signature == last_tool_cycle_signature:
+                        repeated_tool_cycles += 1
+                    else:
+                        repeated_tool_cycles = 0
+                        last_tool_cycle_signature = tool_cycle_signature
+                    if repeated_tool_cycles >= 2:
+                        stopped_reason = "repeated_tool_calls"
+                        final_content = (
+                            "Agent tool loop stalled on repeated identical tool calls. "
+                            "Please revise the prompt or switch model."
+                        )
+                        break
+
                     messages.append(
                         {
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "name": name,
-                            "content": str(result),
+                            "role": "assistant",
+                            "content": assistant_text,
+                            "tool_calls": [
+                                self._to_openai_tool_call(tc) for tc in tool_calls
+                            ],
                         }
                     )
-                self._append_post_tool_guidance(messages)
-                continue
+                    for call in tool_calls:
+                        call_id = str(call.get("id") or "")
+                        name = str(call.get("name") or "")
+                        raw_args = call.get("arguments")
+                        args = self._normalize_args(raw_args)
+                        result = await self._tools.execute(name, args)
+                        tool_runs.append(
+                            AgentToolRun(
+                                call_id=call_id,
+                                name=name,
+                                arguments=dict(args),
+                                result=str(result),
+                            )
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": call_id,
+                                "name": name,
+                                "content": str(result),
+                            }
+                        )
+                    self._append_post_tool_guidance(messages)
+                    continue
 
-            repeated_tool_cycles = 0
-            last_tool_cycle_signature = None
+                repeated_tool_cycles = 0
+                last_tool_cycle_signature = None
 
-            final_content = assistant_text
-            if memory_enabled and str(final_content).strip():
+                final_content = assistant_text
+                if memory_enabled and str(final_content).strip():
+                    tools_used = self._extract_tools_used(tool_runs)
+                    self._memory_store.append_history(
+                        session_id,
+                        [
+                            {"role": "user", "content": user_message_text},
+                            {
+                                "role": "assistant",
+                                "content": str(final_content),
+                                "tools_used": tools_used,
+                            },
+                        ],
+                        max_messages=self._history_persist_limit(),
+                    )
+                return AgentLoopResult(
+                    content=final_content,
+                    messages=messages,
+                    iterations=iteration,
+                    tool_runs=tuple(tool_runs),
+                    stopped_reason=stopped_reason,
+                )
+
+            if stopped_reason == "done":
+                stopped_reason = "max_iterations"
+                if not final_content:
+                    final_content = (
+                        "Reached max iterations before producing a final response."
+                    )
+            if memory_enabled:
                 tools_used = self._extract_tools_used(tool_runs)
                 self._memory_store.append_history(
                     session_id,
@@ -385,38 +422,42 @@ class AgentLoop:
             return AgentLoopResult(
                 content=final_content,
                 messages=messages,
-                iterations=iteration,
+                iterations=last_iteration or self._max_iterations,
                 tool_runs=tuple(tool_runs),
                 stopped_reason=stopped_reason,
             )
+        finally:
+            await self._disconnect_mcp()
 
-        if stopped_reason == "done":
-            stopped_reason = "max_iterations"
-            if not final_content:
-                final_content = (
-                    "Reached max iterations before producing a final response."
-                )
-        if memory_enabled:
-            tools_used = self._extract_tools_used(tool_runs)
-            self._memory_store.append_history(
-                session_id,
-                [
-                    {"role": "user", "content": user_message_text},
-                    {
-                        "role": "assistant",
-                        "content": str(final_content),
-                        "tools_used": tools_used,
-                    },
-                ],
-                max_messages=self._history_persist_limit(),
-            )
-        return AgentLoopResult(
-            content=final_content,
-            messages=messages,
-            iterations=last_iteration or self._max_iterations,
-            tool_runs=tuple(tool_runs),
-            stopped_reason=stopped_reason,
-        )
+    async def _connect_mcp(self) -> None:
+        """Connect to configured MCP servers (one-time, lazy)."""
+        if self._mcp_connected or not self._mcp_servers:
+            return
+        from .tools.mcp import connect_mcp_servers
+
+        self._mcp_stack = AsyncExitStack()
+        await self._mcp_stack.__aenter__()
+        try:
+            await connect_mcp_servers(self._mcp_servers, self._tools, self._mcp_stack)
+        except Exception:
+            try:
+                await self._mcp_stack.aclose()
+            except Exception:
+                pass
+            self._mcp_stack = None
+            raise
+        self._mcp_connected = True
+
+    async def _disconnect_mcp(self) -> None:
+        if self._mcp_stack is None:
+            self._mcp_connected = False
+            return
+        try:
+            await self._mcp_stack.aclose()
+        except Exception:
+            pass
+        self._mcp_stack = None
+        self._mcp_connected = False
 
     def remember(self, session_id: str, key: str, value: str) -> None:
         self._memory_store.set_fact(session_id, key, value)
@@ -480,11 +521,11 @@ class AgentLoop:
     async def close(self) -> None:
         provider = self._provider_impl
         self._provider_impl = None
-        if provider is None:
-            return
-        close_fn = getattr(provider, "close", None)
-        if callable(close_fn):
-            await close_fn()
+        if provider is not None:
+            close_fn = getattr(provider, "close", None)
+            if callable(close_fn):
+                await close_fn()
+        await self._disconnect_mcp()
 
     def set_subagent_manager(self, manager: Optional["SubagentManager"]) -> None:
         self._subagent_manager = manager
@@ -716,19 +757,24 @@ class AgentLoop:
         except Exception:
             return None
 
-        def _loop_factory() -> "AgentLoop":
-            tools = build_subagent_tools_registry(
-                Path(self._workspace) if self._workspace else None,
-                allowed_read_roots=self._allowed_read_roots,
-            )
-            return AgentLoop(
-                tools=tools,
-                llm_callable=self._llm_callable,
-                model=self.model,
-                max_iterations=min(self._max_iterations, 10),
-                workspace=self._workspace,
-                allowed_read_roots=self._allowed_read_roots,
-            )
+        def _loop_factory() -> Awaitable["AgentLoop"]:
+            async def _create():
+                tools = await build_subagent_tools_registry(
+                    Path(self._workspace) if self._workspace else None,
+                    allowed_read_roots=self._allowed_read_roots,
+                    mcp_servers=self._mcp_servers,
+                )
+                return AgentLoop(
+                    tools=tools,
+                    llm_callable=self._llm_callable,
+                    model=self.model,
+                    max_iterations=min(self._max_iterations, 10),
+                    workspace=self._workspace,
+                    allowed_read_roots=self._allowed_read_roots,
+                    mcp_servers=self._mcp_servers,
+                )
+
+            return _create()
 
         workspace_path = Path(self._workspace) if self._workspace else None
         return SubagentManager(loop_factory=_loop_factory, workspace=workspace_path)

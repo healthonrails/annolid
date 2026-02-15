@@ -150,6 +150,8 @@ _WEB_CONTEXT_HINTS = (
     "browser",
     "tab",
 )
+_EMBEDDED_SEARCH_URL_TEMPLATE = "https://html.duckduckgo.com/html/?q={query}"
+_EMBEDDED_SEARCH_SOURCE = "DuckDuckGo search results page (embedded web viewer)."
 _PDF_CONTEXT_HINTS = (
     "pdf",
     "document",
@@ -449,10 +451,13 @@ class StreamingChatTask(QRunnable):
             pass
 
     def _run_agent_loop(self) -> None:
+        asyncio.run(self._run_agent_loop_async())
+
+    async def _run_agent_loop_async(self) -> None:
         if self._try_execute_direct_gui_command():
             return
 
-        context = self._build_agent_execution_context()
+        context = await self._build_agent_execution_context()
 
         if self.provider == "ollama":
             remaining_plain_turns = int(ollama_plain_mode_remaining(self.model) or 0)
@@ -496,20 +501,19 @@ class StreamingChatTask(QRunnable):
             memory_store=self.session_store,
             workspace=str(context.workspace),
             allowed_read_roots=context.allowed_read_roots,
+            mcp_servers=self.settings.get("tools", {}).get("mcp_servers", {}),
         )
         media: Optional[List[str]] = None
         if self.image_path and os.path.exists(self.image_path):
             media = [self.image_path]
 
-        result = asyncio.run(
-            loop.run(
-                self.prompt,
-                session_id=self.session_id,
-                channel="gui",
-                chat_id="annolid_bot",
-                media=media,
-                system_prompt=context.system_prompt,
-            )
+        result = await loop.run(
+            self.prompt,
+            session_id=self.session_id,
+            channel="gui",
+            chat_id="annolid_bot",
+            media=media,
+            system_prompt=context.system_prompt,
         )
         self._emit_progress("Received model response")
         text, used_recovery, used_direct_gui_fallback = self._finalize_agent_text(
@@ -535,7 +539,7 @@ class StreamingChatTask(QRunnable):
         self._emit_final(direct_command_text, is_error=False)
         return True
 
-    def _build_agent_execution_context(self) -> _AgentExecutionContext:
+    async def _build_agent_execution_context(self) -> _AgentExecutionContext:
         self._emit_progress("Loading tools and context")
         workspace = get_agent_workspace_path()
         agent_cfg = load_config()
@@ -543,7 +547,7 @@ class StreamingChatTask(QRunnable):
             getattr(agent_cfg.tools, "allowed_read_roots", []) or []
         )
         tools = FunctionToolRegistry()
-        register_nanobot_style_tools(
+        await register_nanobot_style_tools(
             tools,
             allowed_dir=workspace,
             allowed_read_roots=allowed_read_roots,
@@ -894,18 +898,37 @@ class StreamingChatTask(QRunnable):
         return {"ok": True, "queued": True, "path": str(video_path)}
 
     def _tool_gui_open_url(self, url: str) -> Dict[str, Any]:
-        target_url = self._extract_first_web_url(url)
+        raw_text = str(url or "").strip()
+        target_url = self._extract_first_web_url(raw_text)
+        if not target_url:
+            candidate = raw_text
+            lowered = candidate.lower()
+            for prefix in ("open ", "load ", "show ", "open url ", "open file "):
+                if lowered.startswith(prefix):
+                    candidate = candidate[len(prefix) :].strip()
+                    lowered = candidate.lower()
+                    break
+            candidate_path = Path(candidate).expanduser()
+            if candidate_path.exists() and candidate_path.is_file():
+                target_url = str(candidate_path)
         if not target_url:
             return {
                 "ok": False,
-                "error": "URL not found in provided text.",
-                "input": str(url or "").strip(),
-                "hint": "Provide a URL, for example google.com or https://example.org.",
+                "error": "URL or local file path not found in provided text.",
+                "input": raw_text,
+                "hint": (
+                    "Provide a URL (e.g. google.com) or an existing local file path "
+                    "(e.g. /path/to/file.html)."
+                ),
             }
-        if not target_url.lower().startswith(("http://", "https://")):
+        lower_target = target_url.lower()
+        if not (
+            lower_target.startswith(("http://", "https://", "file://"))
+            or Path(target_url).expanduser().is_file()
+        ):
             return {
                 "ok": False,
-                "error": "Only http:// and https:// URLs are supported.",
+                "error": "Only http(s) URLs or existing local files are supported.",
                 "url": target_url,
             }
         ok = self._invoke_widget_slot("bot_open_url", QtCore.Q_ARG(str, target_url))
@@ -1491,7 +1514,7 @@ class StreamingChatTask(QRunnable):
         steps = [
             {
                 "action": "open_url",
-                "url": f"https://www.google.com/search?q={encoded_query}",
+                "url": _EMBEDDED_SEARCH_URL_TEMPLATE.format(query=encoded_query),
             },
             {"action": "wait", "wait_ms": 1200},
             {"action": "get_text", "max_chars": 9000},
@@ -1525,7 +1548,7 @@ class StreamingChatTask(QRunnable):
             return ""
         return (
             f"Web lookup via embedded browser:\n{summary}\n\n"
-            "Source: Google search results page (embedded web viewer)."
+            f"Source: {_EMBEDDED_SEARCH_SOURCE}"
         )
 
     def _try_open_page_content_fallback(self) -> str:

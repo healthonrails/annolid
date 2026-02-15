@@ -4,6 +4,7 @@ import json
 import re
 import time
 import uuid
+from pathlib import Path
 from typing import Dict, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -24,6 +25,12 @@ def _is_ignorable_js_console_message(message: str) -> bool:
     value = str(message or "").strip().lower()
     if not value:
         return True
+    noisy_exact = {
+        "error",
+        "[object object]",
+    }
+    if value in noisy_exact:
+        return True
     noisy_markers = (
         "unrecognized feature: 'attribution-reporting'",
         "unrecognized feature: 'browsing-topics'",
@@ -31,6 +38,12 @@ def _is_ignorable_js_console_message(message: str) -> bool:
         "window.webkitstorageinfo is deprecated",
         "three.webglprogram: gl.getprograminfolog() warning",
         "crossmark script out of date",
+        "failed to find a valid digest in the 'integrity' attribute for resource",
+        "uncaught referenceerror: solvesimplechallenge is not defined",
+        "uncaught typeerror: cannot read property 'style' of undefined",
+        "atom change detected, updating - store value:",
+        "rangeerror: value longoffset out of range for intl.datetimeformat options property timezonename",
+        "was preloaded using link preload but not used within a few seconds from the window's load event",
     )
     return any(marker in value for marker in noisy_markers)
 
@@ -286,10 +299,14 @@ class WebViewerWidget(QtWidgets.QWidget):
         value = str(url or "").strip()
         if not value:
             return QtCore.QUrl()
+        # Existing file path support (absolute/relative) for local HTML and docs.
+        local_path = Path(value).expanduser()
+        if local_path.exists() and local_path.is_file():
+            return QtCore.QUrl.fromLocalFile(str(local_path.resolve()))
         if "://" not in value:
             value = f"https://{value}"
         parsed = QtCore.QUrl(value)
-        if parsed.scheme().lower() not in {"http", "https"}:
+        if parsed.scheme().lower() not in {"http", "https", "file"}:
             return QtCore.QUrl()
         return parsed
 

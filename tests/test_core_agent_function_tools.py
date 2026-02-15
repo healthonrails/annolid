@@ -12,6 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+import re
 
 from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_builtin import (
@@ -48,6 +49,7 @@ from annolid.core.agent.tools.function_video import (
 )
 from annolid.core.agent.tools.function_gui import register_annolid_gui_tools
 from annolid.core.agent.tools.function_registry import FunctionToolRegistry
+from annolid.core.agent.tools.mcp import MCPToolWrapper
 
 
 class _EchoTool(FunctionTool):
@@ -645,7 +647,7 @@ def test_github_tools_report_missing_gh_cli(tmp_path: Path, monkeypatch) -> None
 
 def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     registry = FunctionToolRegistry()
-    register_nanobot_style_tools(registry, allowed_dir=tmp_path)
+    asyncio.run(register_nanobot_style_tools(registry, allowed_dir=tmp_path))
     assert registry.has("read_file")
     assert registry.has("rename_file")
     assert registry.has("code_search")
@@ -669,6 +671,59 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("cron")
     assert registry.has("download_url")
     assert registry.has("download_pdf")
+
+
+def test_mcp_tool_wrapper_sanitizes_name_and_schema() -> None:
+    class _ToolDef:
+        name = "search.web"
+        description = "Search"
+        inputSchema = {"properties": {"query": {"type": "string"}}}
+
+    wrapper = MCPToolWrapper(
+        session=object(),
+        server_name="weather-server:v1",
+        tool_def=_ToolDef(),
+    )
+    assert re.match(r"^[A-Za-z0-9_]+$", wrapper.name)
+    assert len(wrapper.name) <= 64
+    assert wrapper.parameters["type"] == "object"
+    assert "query" in wrapper.parameters["properties"]
+
+
+def test_mcp_tool_wrapper_execute_falls_back_to_structured_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _TextContent:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    fake_mcp = types.SimpleNamespace(
+        types=types.SimpleNamespace(TextContent=_TextContent)
+    )
+    monkeypatch.setitem(sys.modules, "mcp", fake_mcp)
+
+    class _ToolDef:
+        name = "tool"
+        description = "Tool"
+        inputSchema = {"type": "object", "properties": {}}
+
+    class _Session:
+        async def call_tool(self, name: str, arguments: dict) -> object:
+            assert name == "tool"
+            assert arguments == {"x": 1}
+            return types.SimpleNamespace(
+                content=[],
+                structuredContent={"ok": True, "value": 1},
+                isError=False,
+            )
+
+    wrapper = MCPToolWrapper(
+        session=_Session(),
+        server_name="s",
+        tool_def=_ToolDef(),
+    )
+    payload = asyncio.run(wrapper.execute(x=1))
+    assert json.loads(payload) == {"ok": True, "value": 1}
 
 
 def test_download_url_tool_saves_file_and_blocks_outside_dir(

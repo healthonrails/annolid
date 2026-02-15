@@ -140,7 +140,7 @@ def _cmd_agent_validate_tools(_: argparse.Namespace) -> int:
         registry.register("dummy", _DummyTool)
         register_builtin_utility_tools(registry)
         fn_registry = FunctionToolRegistry()
-        register_nanobot_style_tools(fn_registry)
+        asyncio.run(register_nanobot_style_tools(fn_registry))
         instance = registry.create("dummy")
         ok = (
             isinstance(instance, _DummyTool)

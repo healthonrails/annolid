@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Awaitable, Callable, Sequence
+from typing import Any, Awaitable, Callable, Sequence
 
 from .code import CodeExplainTool, CodeSearchTool
+from .mcp import connect_mcp_servers
 from .cron import CronTool
 from .filesystem import (
     EditFileTool,
@@ -33,13 +34,15 @@ from .shell import ExecTool
 from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
 
 
-def register_nanobot_style_tools(
+async def register_nanobot_style_tools(
     registry: FunctionToolRegistry,
     *,
     allowed_dir: Path | None = None,
     allowed_read_roots: Sequence[str | Path] | None = None,
     send_callback: Callable[[str, str, str], Awaitable[None] | None] | None = None,
     spawn_callback: Callable[[str, str | None], Awaitable[str] | str] | None = None,
+    mcp_servers: dict | None = None,
+    stack: Any | None = None,
 ) -> None:
     """Register a Nanobot-like default tool set."""
 
@@ -124,6 +127,9 @@ def register_nanobot_style_tools(
     registry.register(MessageTool(send_callback=send_callback))
     registry.register(SpawnTool(spawn_callback=spawn_callback))
     registry.register(CronTool(send_callback=send_callback))
+
+    if mcp_servers and stack:
+        await connect_mcp_servers(mcp_servers, registry, stack)
 
 
 __all__ = ["register_nanobot_style_tools"]

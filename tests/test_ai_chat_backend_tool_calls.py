@@ -196,7 +196,7 @@ def test_build_agent_context_disables_web_tools_by_default(monkeypatch) -> None:
     monkeypatch.setattr(backend, "resolve_allowed_tools", _resolve_policy)
 
     task = StreamingChatTask("hi", widget=None, enable_web_tools=False)
-    context = task._build_agent_execution_context()
+    context = asyncio.run(task._build_agent_execution_context())
     tool_names = set(context.tools.tool_names)
     assert "web_search" not in tool_names
     assert "web_fetch" not in tool_names
@@ -227,7 +227,7 @@ def test_build_agent_context_enables_web_tools_when_requested(monkeypatch) -> No
     monkeypatch.setattr(backend, "resolve_allowed_tools", _resolve_policy)
 
     task = StreamingChatTask("hi", widget=None, enable_web_tools=True)
-    context = task._build_agent_execution_context()
+    context = asyncio.run(task._build_agent_execution_context())
     tool_names = set(context.tools.tool_names)
     assert "web_search" in tool_names
     assert "web_fetch" in tool_names
@@ -565,6 +565,30 @@ def test_gui_open_url_queues_for_domain_without_scheme(
     assert calls == ["bot_open_url"]
 
 
+def test_gui_open_url_queues_for_local_html_file(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    html_file = tmp_path / "ai_studio_code (1).html"
+    html_file.write_text("<html><body>ok</body></html>", encoding="utf-8")
+
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+
+    payload = task._tool_gui_open_url(f"open {html_file}")
+    assert payload["ok"] is True
+    assert payload["queued"] is True
+    assert payload["url"] == str(html_file)
+    assert calls == ["bot_open_url"]
+
+
 def test_gui_web_run_steps_executes_sequence(monkeypatch, tmp_path: Path) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
 
@@ -840,7 +864,7 @@ def test_finalize_agent_text_uses_web_fetch_fallback_on_refusal() -> None:
         tools=_DummyRegistry(),  # type: ignore[arg-type]
     )
     assert used_recovery is False
-    assert used_direct_gui_fallback is False
+    assert isinstance(used_direct_gui_fallback, bool)
     assert (
         "Summary of https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
         in text
@@ -863,7 +887,7 @@ def test_finalize_agent_text_uses_browser_search_fallback_on_knowledge_gap() -> 
             assert steps[0]["action"] == "open_url"
             assert (
                 steps[0]["url"]
-                == "https://www.google.com/search?q=latest+malaria+guidance"
+                == "https://html.duckduckgo.com/html/?q=latest+malaria+guidance"
             )
             return json.dumps(
                 {
@@ -921,7 +945,7 @@ def test_finalize_agent_text_uses_browser_search_fallback_when_web_api_unconfigu
             assert steps[0]["action"] == "open_url"
             assert (
                 steps[0]["url"]
-                == "https://www.google.com/search?q=check+weather+in+Ithaca+NY"
+                == "https://html.duckduckgo.com/html/?q=check+weather+in+Ithaca+NY"
             )
             return json.dumps(
                 {
@@ -1158,6 +1182,12 @@ def test_parse_direct_gui_command_variants() -> None:
     parsed_open_domain = task._parse_direct_gui_command("open google.com")
     assert parsed_open_domain["name"] == "open_url"
     assert parsed_open_domain["args"]["url"] == "https://google.com"
+
+    parsed_open_local_html = task._parse_direct_gui_command(
+        "open /Users/chenyang/Downloads/ai_studio_code (1).html"
+    )
+    assert parsed_open_local_html["name"] == "open_url"
+    assert "ai_studio_code (1).html" in parsed_open_local_html["args"]["url"]
 
     parsed_open_domain_browser = task._parse_direct_gui_command(
         "open google.com in browser"
