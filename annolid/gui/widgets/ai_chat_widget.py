@@ -56,7 +56,7 @@ class _ChatBubble(QtWidgets.QFrame):
         self._on_regenerate = on_regenerate
         self._allow_regenerate = bool(allow_regenerate)
         self._raw_text = str(text or "")
-        self._preferred_text_width = 560
+        # self._preferred_text_width = 600 # Removed for full width
         self._manual_text_width: Optional[int] = None
         self._resize_drag_active = False
         self._drag_anchor_global_x = 0
@@ -67,19 +67,25 @@ class _ChatBubble(QtWidgets.QFrame):
         self.setObjectName("chatBubble")
         self.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
-        # Ensure QSS background colors (e.g. user bubble green) always paint.
         self.setAutoFillBackground(True)
         self.setProperty("role", "user" if is_user else "assistant")
-        self._apply_role_palette()
 
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(4)
+        # Main layout for the bubble
+        self.main_layout = QtWidgets.QVBoxLayout(self)
+        self.main_layout.setContentsMargins(12, 10, 12, 10)
+        self.main_layout.setSpacing(4)
 
-        self.sender_label = QtWidgets.QLabel(sender, self)
-        self.sender_label.setObjectName("sender")
-        layout.addWidget(self.sender_label)
+        # Header: Sender + Timestamp + Buttons (hidden by default, show on hover?)
+        # For now, keep buttons in a footer or header. Let's try header for cleaner look?
+        # Actually footer is standard for "actions".
 
+        # Sender Label
+        if not self._is_user:
+            self.sender_label = QtWidgets.QLabel(sender, self)
+            self.sender_label.setObjectName("sender")
+            self.main_layout.addWidget(self.sender_label)
+
+        # Message Body
         self.message_view = QtWidgets.QTextBrowser(self)
         self.message_view.setObjectName("messageView")
         self.message_view.setFrameShape(QtWidgets.QFrame.NoFrame)
@@ -94,6 +100,7 @@ class _ChatBubble(QtWidgets.QFrame):
         self.message_view.setTextInteractionFlags(
             QtCore.Qt.TextSelectableByMouse | QtCore.Qt.LinksAccessibleByMouse
         )
+
         self.message_doc = QtGui.QTextDocument(self.message_view)
         self.message_doc.setDocumentMargin(0)
         text_option = self.message_doc.defaultTextOption()
@@ -101,132 +108,132 @@ class _ChatBubble(QtWidgets.QFrame):
         self.message_doc.setDefaultTextOption(text_option)
         self._apply_message_doc_styles()
         self.message_view.setDocument(self.message_doc)
+
         viewport = self.message_view.viewport()
         viewport.setAutoFillBackground(False)
         viewport.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         viewport.setStyleSheet("background: transparent;")
+
         doc_layout = self.message_doc.documentLayout()
         if doc_layout is not None:
             doc_layout.documentSizeChanged.connect(self._sync_message_height)
-        layout.addWidget(self.message_view)
+
+        self.main_layout.addWidget(self.message_view)
         self._render_markdown(self._raw_text)
 
-        self.meta_label = QtWidgets.QLabel(self._ts, self)
-        self.meta_label.setObjectName("meta")
-        self.meta_label.setAlignment(QtCore.Qt.AlignVCenter)
+        # Footer: Actions + Timestamp
+        self.footer_layout = QtWidgets.QHBoxLayout()
+        self.footer_layout.setContentsMargins(0, 4, 0, 0)
+        self.footer_layout.setSpacing(8)
 
-        self.speak_button = QtWidgets.QPushButton("Speak", self)
-        self.speak_button.setObjectName("bubbleSpeakButton")
-        self.speak_button.setToolTip("Read this message aloud")
-        self.speak_button.setCursor(QtCore.Qt.PointingHandCursor)
-        style = self.style()
-        icon = style.standardIcon(QtWidgets.QStyle.SP_MediaVolume)
-        if icon.isNull():
-            icon = QtGui.QIcon.fromTheme("audio-volume-high")
-        self.speak_button.setIcon(icon)
-        self.speak_button.setText("")
-        self.speak_button.setFixedSize(24, 22)
-        self.speak_button.setIconSize(QtCore.QSize(14, 14))
-        self.speak_button.clicked.connect(self._speak)
+        # Action Buttons
+        self.actions_layout = QtWidgets.QHBoxLayout()
+        self.actions_layout.setSpacing(4)
 
-        self.copy_button = QtWidgets.QPushButton("", self)
-        self.copy_button.setObjectName("bubbleCopyButton")
-        self.copy_button.setToolTip("Copy message text")
-        self.copy_button.setCursor(QtCore.Qt.PointingHandCursor)
-        copy_icon = self.style().standardIcon(
-            QtWidgets.QStyle.SP_FileDialogDetailedView
-        )
-        if copy_icon.isNull():
-            copy_icon = QtGui.QIcon.fromTheme("edit-copy")
-        self.copy_button.setIcon(copy_icon)
-        self.copy_button.setFixedSize(24, 22)
-        self.copy_button.setIconSize(QtCore.QSize(14, 14))
-        self.copy_button.clicked.connect(self._copy_text)
-
-        self.regenerate_button = QtWidgets.QPushButton("", self)
-        self.regenerate_button.setObjectName("bubbleRegenerateButton")
-        self.regenerate_button.setToolTip("Regenerate this reply")
-        self.regenerate_button.setCursor(QtCore.Qt.PointingHandCursor)
-        regen_icon = self.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload)
-        if regen_icon.isNull():
-            regen_icon = QtGui.QIcon.fromTheme("view-refresh")
-        self.regenerate_button.setIcon(regen_icon)
-        self.regenerate_button.setFixedSize(24, 22)
-        self.regenerate_button.setIconSize(QtCore.QSize(14, 14))
+        self.speak_button = self._create_action_button("🔊", "Read aloud")
+        self.copy_button = self._create_action_button("📋", "Copy text")
+        self.regenerate_button = self._create_action_button("🔄", "Regenerate")
         self.regenerate_button.setVisible(
             (not self._is_user) and self._allow_regenerate
         )
+
+        # Connect callbacks
+        self.speak_button.clicked.connect(self._speak)
+        self.copy_button.clicked.connect(self._copy_text)
         self.regenerate_button.clicked.connect(self._regenerate)
 
-        footer = QtWidgets.QHBoxLayout()
-        footer.setContentsMargins(0, 0, 0, 0)
-        footer.addWidget(self.speak_button, 0, QtCore.Qt.AlignLeft)
-        footer.addWidget(self.copy_button, 0, QtCore.Qt.AlignLeft)
-        footer.addWidget(self.regenerate_button, 0, QtCore.Qt.AlignLeft)
-        footer.addStretch(1)
-        footer.addWidget(self.meta_label, 0, QtCore.Qt.AlignRight)
-        layout.addLayout(footer)
+        self.actions_layout.addWidget(self.speak_button)
+        self.actions_layout.addWidget(self.copy_button)
+        self.actions_layout.addWidget(self.regenerate_button)
+        self.actions_layout.addStretch(1)
+
+        self.footer_layout.addLayout(self.actions_layout)
+
+        # Timestamp
+        self.meta_label = QtWidgets.QLabel(self._ts, self)
+        self.meta_label.setObjectName("meta")
+        self.meta_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self.footer_layout.addWidget(self.meta_label)
+
+        self.main_layout.addLayout(self.footer_layout)
+
+        # Determine theme styling
+        self._apply_role_palette()
+
+    def _create_action_button(self, text_icon, tooltip):
+        btn = QtWidgets.QPushButton(text_icon, self)
+        btn.setObjectName("bubbleActionButton")
+        btn.setToolTip(tooltip)
+        btn.setCursor(QtCore.Qt.PointingHandCursor)
+        # Styling for "cool" flat look
+        btn.setStyleSheet("""
+            QPushButton#bubbleActionButton {
+                background: transparent;
+                border: none;
+                color: #808080;
+                font-size: 14px;
+                padding: 4px;
+                border-radius: 4px;
+            }
+            QPushButton#bubbleActionButton:hover {
+                background: rgba(255, 255, 255, 0.1);
+                color: #E0E0E0;
+            }
+            QPushButton#bubbleActionButton:pressed {
+                background: rgba(255, 255, 255, 0.2);
+            }
+        """)
+        btn.setFixedSize(28, 28)
+        return btn
 
     def _apply_role_palette(self) -> None:
-        palette = self.palette()
-        if self._is_user:
-            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#145C4C"))
-            palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor("#F3FFF8"))
-            palette.setColor(QtGui.QPalette.Text, QtGui.QColor("#F3FFF8"))
-        else:
-            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#1f252f"))
-        self.setPalette(palette)
+        # We handle most coloring in QSS now based on property "role"
+        pass
 
     def _apply_message_doc_styles(self) -> None:
+        # Enhanced CSS for internal text browser
+        base_css = """
+            body, p, li, ul, ol, blockquote {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                font-size: 13px;
+                line-height: 1.4;
+            }
+            p { margin: 0 0 8px 0; }
+            p:last-child { margin-bottom: 0; }
+            a { text-decoration: none; font-weight: 500; }
+            pre {
+                font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+                font-size: 12px;
+                border-radius: 6px;
+                padding: 10px;
+                margin: 8px 0;
+            }
+            code {
+                font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+                font-size: 12px;
+                padding: 2px 4px;
+                border-radius: 4px;
+            }
+        """
+
         if self._is_user:
             self.message_doc.setDefaultStyleSheet(
-                """
-                body, p, li, ul, ol, blockquote {
-                    color: #F3FFF8;
-                }
-                p { margin: 0 0 6px 0; }
-                p:last-child { margin-bottom: 0; }
-                pre {
-                    background: rgba(0,0,0,0.18);
-                    border: 1px solid rgba(255,255,255,0.16);
-                    border-radius: 8px;
-                    padding: 8px;
-                    margin: 4px 0 4px 0;
-                    color: #F3FFF8;
-                }
-                code {
-                    background: rgba(0,0,0,0.16);
-                    border-radius: 4px;
-                    padding: 1px 3px;
-                    color: #F3FFF8;
-                }
-                a {
-                    color: #9BD2FF;
-                    text-decoration: none;
-                }
+                base_css
+                + """
+                body, p, li, ul, ol, blockquote { color: #FFFFFF; }
+                a { color: #d0e8ff; }
+                pre { background: rgba(0,0,0,0.2); color: #FFFFFF; border: 1px solid rgba(255,255,255,0.2); }
+                code { background: rgba(0,0,0,0.2); color: #FFFFFF; }
                 """
             )
         else:
             self.message_doc.setDefaultStyleSheet(
-                """
-                p { margin: 0 0 6px 0; }
-                p:last-child { margin-bottom: 0; }
-                pre {
-                    background: rgba(0,0,0,0.22);
-                    border: 1px solid rgba(255,255,255,0.14);
-                    border-radius: 8px;
-                    padding: 8px;
-                    margin: 4px 0 4px 0;
-                }
-                code {
-                    background: rgba(0,0,0,0.16);
-                    border-radius: 4px;
-                    padding: 1px 3px;
-                }
-                a {
-                    color: #7ed1ff;
-                    text-decoration: none;
-                }
+                base_css
+                + """
+                body, p, li, ul, ol, blockquote { color: #E0E0E0; }
+                a { color: #64B5F6; }
+                pre { background: #2b2d31; color: #E0E0E0; border: 1px solid #3f4148; }
+                code { background: #2f3136; color: #E0E0E0; }
                 """
             )
 
@@ -254,94 +261,54 @@ class _ChatBubble(QtWidgets.QFrame):
             return
         self._syncing_message_height = True
         try:
-            available_width = max(220, self.width() - 24)
-            text_width = min(max(260, int(self._preferred_text_width)), available_width)
-            if int(self.message_doc.textWidth()) != int(text_width):
-                self.message_doc.setTextWidth(float(text_width))
-            self.message_doc.adjustSize()
+            # We want the bubble text to be comfortable reading width, but fill if needed.
+            # Max width constraint is handled by parent layout/Application.
+
+            # The message view needs to resize to fit its content height
+            # Force update text width to match viewport
+            vp_width = self.message_view.viewport().width()
+            if vp_width > 0:
+                self.message_doc.setTextWidth(float(vp_width))
+
             doc_height = int(self.message_doc.size().height())
-            target = max(22, doc_height + 8)
-            self.message_view.setMinimumHeight(target)
-            self.message_view.setMaximumHeight(16777215)
+
+            # Add padding: top/bottom margins of layout (10+10) + spacing + safety
+            target_height = doc_height + 25
+
+            # Calculate max allowed height (e.g. 60% of window height) to prevent huge bubbles
+            # from taking over the entire screen.
+            parent_window = self.window()
+            max_limit = 600
+            if parent_window:
+                max_limit = int(max(parent_window.height() * 0.6, 200))
+
+            if target_height > max_limit:
+                self.message_view.setFixedHeight(max_limit)
+                self.message_view.setVerticalScrollBarPolicy(
+                    QtCore.Qt.ScrollBarAsNeeded
+                )
+            else:
+                self.message_view.setFixedHeight(target_height)
+                self.message_view.setVerticalScrollBarPolicy(
+                    QtCore.Qt.ScrollBarAlwaysOff
+                )
+
         finally:
             self._syncing_message_height = False
 
-    def set_message_width(self, width: int) -> None:
-        self._preferred_text_width = max(260, int(width))
-        self._sync_message_height()
-
-    def apply_layout_width(self, text_width: int, bubble_max_width: int) -> None:
-        max_text_width = max(260, int(bubble_max_width) - 24)
-        if self._manual_text_width is not None:
-            self._preferred_text_width = min(
-                max(260, int(self._manual_text_width)), max_text_width
-            )
-            fixed_width = max(320, self._preferred_text_width + 24)
-            self.setMinimumWidth(fixed_width)
-            self.setMaximumWidth(fixed_width)
-        else:
-            if self._is_user:
-                # Keep user bubbles compact and close to message size.
-                ideal = int(self.message_doc.idealWidth()) if self.message_doc else 320
-                self._preferred_text_width = min(max(260, ideal + 12), max_text_width)
-                fixed_width = min(
-                    max(280, self._preferred_text_width + 24), int(bubble_max_width)
-                )
-            else:
-                self._preferred_text_width = min(
-                    max(260, int(text_width)), max_text_width
-                )
-                fixed_width = max(320, int(bubble_max_width))
-            self.setMinimumWidth(fixed_width)
-            self.setMaximumWidth(fixed_width)
-        self._sync_message_height()
-
-    def _is_resize_handle_hit(self, pos: QtCore.QPoint) -> bool:
-        local_x = int(pos.x())
-        if self._is_user:
-            return local_x <= self._edge_handle_px
-        return local_x >= max(0, self.width() - self._edge_handle_px)
-
-    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
-        if event.button() == QtCore.Qt.LeftButton and self._is_resize_handle_hit(
-            event.pos()
-        ):
-            self._resize_drag_active = True
-            self._drag_anchor_global_x = int(event.globalX())
-            self._drag_start_text_width = int(self._preferred_text_width)
-            self.setCursor(QtCore.Qt.SizeHorCursor)
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
-        if self._resize_drag_active:
-            delta_x = int(event.globalX()) - self._drag_anchor_global_x
-            if self._is_user:
-                new_width = self._drag_start_text_width - delta_x
-            else:
-                new_width = self._drag_start_text_width + delta_x
-            self._manual_text_width = max(260, int(new_width))
-            self._preferred_text_width = self._manual_text_width
-            self._sync_message_height()
-            event.accept()
-            return
-        if self._is_resize_handle_hit(event.pos()):
-            self.setCursor(QtCore.Qt.SizeHorCursor)
-        else:
-            self.unsetCursor()
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
-        if self._resize_drag_active and event.button() == QtCore.Qt.LeftButton:
-            self._resize_drag_active = False
-            self.unsetCursor()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
+        self._sync_message_height()
+
+    def set_message_width(self, width: int) -> None:
+        # Simplified: The layout handles width now mostly, but we can hint the doc.
+        if self.message_doc:
+            self.message_doc.setTextWidth(float(width))
+
+    def apply_layout_width(self, text_width: int, bubble_max_width: int) -> None:
+        # This is called by parent to enforce max widths
+        if self.message_doc:
+            self.message_doc.setTextWidth(float(text_width))
         self._sync_message_height()
 
     def _speak(self) -> None:
@@ -356,6 +323,9 @@ class _ChatBubble(QtWidgets.QFrame):
         if callable(self._on_regenerate):
             self._on_regenerate(self.text())
 
+    # Simplified drag resizing - removed for now to clean up, unless strictly needed.
+    # It was a bit complex and rarely used feature in chat widgets.
+
 
 class AIChatWidget(QtWidgets.QWidget):
     """Annolid Bot chat UI for local/cloud models with visual sharing and streaming."""
@@ -366,6 +336,7 @@ class AIChatWidget(QtWidgets.QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self.setObjectName("AIChatWidget")
         self.llm_settings = load_llm_settings()
         self._providers = ProviderRegistry(self.llm_settings, save_llm_settings)
         self.provider_labels: Dict[str, str] = self._providers.labels()
@@ -419,13 +390,20 @@ class AIChatWidget(QtWidgets.QWidget):
 
     def _build_ui(self) -> None:
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(12, 10, 12, 10)
-        root.setSpacing(10)
-        root.addLayout(self._build_header_bar())
-        root.addWidget(self._build_chat_area(), 1)
-        root.addLayout(self._build_quick_actions_row())
-        root.addWidget(self._build_composer_panel())
-        root.addWidget(self._build_status_label())
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # 1. Header
+        root.addWidget(self._build_header_bar())
+
+        # 2. Chat Area
+        self.chat_area = self._build_chat_area()
+        root.addWidget(self.chat_area, 1)
+
+        # 3. Input Area Container
+        self.input_container = self._build_input_container()
+        root.addWidget(self.input_container)
+
         self._audio_controller = ChatAudioController(
             status_label=self.status_label,
             talk_button=self.talk_button,
@@ -435,70 +413,84 @@ class AIChatWidget(QtWidgets.QWidget):
         self._wire_ui_signals()
         self._refresh_header_chips()
 
-    def _build_header_bar(self) -> QtWidgets.QHBoxLayout:
-        header_bar = QtWidgets.QHBoxLayout()
-        header_bar.setSpacing(8)
-
-        self.back_button = QtWidgets.QToolButton(self)
-        self.back_button.setObjectName("chatTopIconButton")
-        self.back_button.setToolTip("Back")
-        self.back_button.setEnabled(False)
-        self._set_button_icon(
-            self.back_button,
-            QtWidgets.QStyle.SP_ArrowBack,
-            "go-previous",
+    def _build_header_bar(self) -> QtWidgets.QWidget:
+        header_widget = QtWidgets.QWidget(self)
+        header_widget.setObjectName("headerBar")
+        header_widget.setStyleSheet(
+            "background-color: #111317; border-bottom: 1px solid #2f333b;"
         )
-        header_bar.addWidget(self.back_button, 0)
+        header_layout = QtWidgets.QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(16, 12, 16, 12)
+        header_layout.setSpacing(12)
 
+        # Bot Icon
         self.bot_icon_label = QtWidgets.QLabel(self)
         self.bot_icon_label.setObjectName("chatBotIconLabel")
-        self.bot_icon_label.setFixedSize(34, 34)
+        self.bot_icon_label.setFixedSize(32, 32)
         self.bot_icon_label.setAlignment(QtCore.Qt.AlignCenter)
         self._set_bot_icon()
-        header_bar.addWidget(self.bot_icon_label, 0)
+        header_layout.addWidget(self.bot_icon_label)
 
+        # Title & Model Info
         title_col = QtWidgets.QVBoxLayout()
         title_col.setContentsMargins(0, 0, 0, 0)
-        title_col.setSpacing(1)
+        title_col.setSpacing(2)
+
         self.chat_title_label = QtWidgets.QLabel("Annolid Bot", self)
+        self.chat_title_label.setObjectName("chatTitleLabel")
         self.chat_title_label.setObjectName("chatTitleLabel")
         title_col.addWidget(self.chat_title_label)
 
         self.session_chip_label = QtWidgets.QLabel(self)
         self.session_chip_label.setObjectName("chatSubtitleLabel")
         title_col.addWidget(self.session_chip_label)
-        header_bar.addLayout(title_col, 1)
 
-        self.clear_chat_button = QtWidgets.QToolButton(self)
-        self.clear_chat_button.setObjectName("chatTopIconButton")
-        self.clear_chat_button.setToolTip("Clear conversation")
-        header_bar.addWidget(self.clear_chat_button, 0)
-
-        self.sessions_button = QtWidgets.QToolButton(self)
-        self.sessions_button.setObjectName("chatTopIconButton")
-        self.sessions_button.setToolTip("Manage sessions")
-        header_bar.addWidget(self.sessions_button, 0)
-
-        self.configure_button = QtWidgets.QToolButton(self)
-        self.configure_button.setObjectName("chatTopIconButton")
-        self.configure_button.setToolTip("Configure providers and defaults")
-        header_bar.addWidget(self.configure_button, 0)
-        return header_bar
-
-    def _build_provider_bar(self) -> QtWidgets.QHBoxLayout:
-        top_bar = QtWidgets.QHBoxLayout()
-        self.provider_selector = QtWidgets.QComboBox(self)
-        self._populate_provider_selector()
-        idx = self.provider_selector.findData(self.selected_provider)
-        if idx >= 0:
-            self.provider_selector.setCurrentIndex(idx)
-        top_bar.addWidget(self.provider_selector, 2)
-
+        # Model Selector (Compact)
         self.model_selector = QtWidgets.QComboBox(self)
         self.model_selector.setEditable(True)
         self.model_selector.setInsertPolicy(QtWidgets.QComboBox.InsertAtTop)
-        top_bar.addWidget(self.model_selector, 3)
-        return top_bar
+        self.model_selector.setMinimumWidth(150)
+        # We need to populate this later, but for now add to layout
+        title_col.addWidget(self.model_selector)
+
+        header_layout.addLayout(title_col, 1)
+
+        # Spacer
+        header_layout.addStretch(0)
+
+        # Session & Settings Actions
+        self.clear_chat_button = self._create_header_button(
+            "edit-clear", "Clear conversation", QtWidgets.QStyle.SP_BrowserStop
+        )
+        header_layout.addWidget(self.clear_chat_button)
+
+        self.sessions_button = self._create_header_button(
+            "view-list-details",
+            "Manage sessions",
+            QtWidgets.QStyle.SP_FileDialogDetailedView,
+        )
+        header_layout.addWidget(self.sessions_button)
+
+        self.configure_button = self._create_header_button(
+            "preferences-system", "Settings", QtWidgets.QStyle.SP_FileDialogInfoView
+        )
+        header_layout.addWidget(self.configure_button)
+
+        # Hidden provider selector (we keep it for logic compatibility but hide it or effectively replace it)
+        # Actually, let's keep it but maybe invisible if we only care about model?
+        # For now, let's add it to the header but compact.
+        self.provider_selector = QtWidgets.QComboBox(self)
+        self.provider_selector.setFixedWidth(0)  # Hide visually but keep object
+        self.provider_selector.setVisible(False)
+        self._populate_provider_selector()
+
+        return header_widget
+
+    def _build_provider_bar(self) -> QtWidgets.QHBoxLayout:
+        # Compatibility method - elements are now in header/input
+        # We return a dummy layout to satisfy any callers if they exist
+        # though ideally we shouldn't have any external callers.
+        return QtWidgets.QHBoxLayout()
 
     def _populate_provider_selector(self) -> None:
         self.provider_labels = self._providers.labels()
@@ -510,54 +502,24 @@ class AIChatWidget(QtWidgets.QWidget):
         finally:
             self.provider_selector.blockSignals(False)
 
-    def _build_share_bar(self) -> QtWidgets.QHBoxLayout:
-        share_bar = QtWidgets.QHBoxLayout()
-        share_bar.setSpacing(6)
-        self.attach_canvas_checkbox = QtWidgets.QCheckBox("Attach canvas", self)
-        self.attach_canvas_checkbox.setChecked(False)
-        self.attach_canvas_checkbox.setObjectName("chatInlineToggle")
-        self.attach_window_checkbox = QtWidgets.QCheckBox("Attach window", self)
-        self.attach_window_checkbox.setObjectName("chatInlineToggle")
-        self.tool_trace_checkbox = QtWidgets.QCheckBox("Trace", self)
-        self.tool_trace_checkbox.setChecked(False)
-        self.tool_trace_checkbox.setObjectName("chatInlineToggle")
-        self.allow_web_tools_checkbox = QtWidgets.QCheckBox("Allow web", self)
-        self.allow_web_tools_checkbox.setChecked(True)
-        self.allow_web_tools_checkbox.setObjectName("chatInlineToggle")
-        self.allow_web_tools_checkbox.setToolTip(
-            "Allow web_search/web_fetch tools for this chat turn."
-        )
-        share_bar.addWidget(self.attach_canvas_checkbox)
-        share_bar.addWidget(self.attach_window_checkbox)
-        share_bar.addWidget(self.tool_trace_checkbox)
-        share_bar.addWidget(self.allow_web_tools_checkbox)
-
-        self.share_canvas_button = QtWidgets.QToolButton(self)
-        self.share_canvas_button.setText("")
-        self.share_canvas_button.setObjectName("chatComposerIconButton")
-        self.share_canvas_button.setToolTip("Capture the current canvas and attach it.")
-        self.share_window_button = QtWidgets.QToolButton(self)
-        self.share_window_button.setText("")
-        self.share_window_button.setObjectName("chatComposerIconButton")
-        self.share_window_button.setToolTip("Capture the window and attach it.")
-        share_bar.addWidget(self.share_canvas_button)
-        share_bar.addWidget(self.share_window_button)
-        share_bar.addStretch(1)
-        return share_bar
-
-    def _build_shared_image_label(self) -> QtWidgets.QLabel:
-        self.shared_image_label = QtWidgets.QLabel("Shared image: none", self)
-        self.shared_image_label.setObjectName("sharedImageLabel")
-        return self.shared_image_label
+    def _create_header_button(self, theme_icon, tooltip, style_icon):
+        btn = QtWidgets.QToolButton(self)
+        btn.setObjectName("chatTopIconButton")
+        btn.setToolTip(tooltip)
+        self._set_button_icon(btn, style_icon, theme_icon)
+        return btn
 
     def _build_chat_area(self) -> QtWidgets.QScrollArea:
         self.scroll_area = QtWidgets.QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+
         self.chat_container = QtWidgets.QWidget(self.scroll_area)
         self.chat_layout = QtWidgets.QVBoxLayout(self.chat_container)
-        self.chat_layout.setContentsMargins(8, 8, 8, 8)
-        self.chat_layout.setSpacing(8)
+        self.chat_layout.setContentsMargins(16, 16, 16, 16)
+        self.chat_layout.setSpacing(16)
+
         self.empty_state_label = QtWidgets.QLabel(
             "Start a conversation with Annolid Bot.\nTip: press Ctrl+Enter to send quickly.",
             self.chat_container,
@@ -570,100 +532,169 @@ class AIChatWidget(QtWidgets.QWidget):
         self.scroll_area.setWidget(self.chat_container)
         return self.scroll_area
 
-    def _build_input_bar(self) -> QtWidgets.QHBoxLayout:
-        input_bar = QtWidgets.QHBoxLayout()
-        input_bar.setSpacing(8)
-        self.prompt_text_edit = QtWidgets.QPlainTextEdit(self)
-        self.prompt_text_edit.setPlaceholderText("Message Annolid Bot…")
-        self.prompt_text_edit.setFixedHeight(118)
-        self.prompt_text_edit.setToolTip("Type a message. Use Ctrl+Enter to send.")
-        input_bar.addWidget(self.prompt_text_edit, 1)
-
-        side_buttons = QtWidgets.QVBoxLayout()
-        side_buttons.setSpacing(8)
-        self.send_button = QtWidgets.QToolButton(self)
-        self.send_button.setObjectName("sendButton")
-        self.send_button.setText("")
-        self.send_button.setToolTip("Send message (Ctrl+Enter).")
-        self.send_button.setFixedSize(42, 42)
-
-        self.talk_button = QtWidgets.QToolButton(self)
-        self.talk_button.setObjectName("talkButton")
-        self.talk_button.setText("")
-        self.talk_button.setToolTip("Record voice input.")
-        self.talk_button.setFixedSize(36, 36)
-        self._set_button_icon(
-            self.send_button,
-            QtWidgets.QStyle.SP_ArrowForward,
-            "go-up",
-        )
-        self._set_button_icon(
-            self.talk_button,
-            QtWidgets.QStyle.SP_MediaPlay,
-            "audio-input-microphone",
-        )
-        side_buttons.addWidget(self.send_button)
-        side_buttons.addWidget(self.talk_button)
-        side_buttons.addStretch(1)
-        input_bar.addLayout(side_buttons)
-        return input_bar
-
-    def _build_composer_panel(self) -> QtWidgets.QFrame:
-        panel = QtWidgets.QFrame(self)
-        panel.setObjectName("chatComposerPanel")
-        layout = QtWidgets.QVBoxLayout(panel)
-        layout.setContentsMargins(12, 10, 12, 10)
+    def _build_input_container(self) -> QtWidgets.QFrame:
+        container = QtWidgets.QFrame(self)
+        container.setObjectName("inputBarContainer")
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(8)
-        layout.addLayout(self._build_input_bar())
-        layout.addLayout(self._build_provider_bar())
-        layout.addLayout(self._build_share_bar())
-        layout.addWidget(self._build_shared_image_label())
-        layout.addWidget(self._build_prompt_meta_row())
-        return panel
 
-    def _build_quick_actions_row(self) -> QtWidgets.QHBoxLayout:
-        row = QtWidgets.QHBoxLayout()
-        row.setSpacing(6)
-        self.quick_action_buttons: List[QtWidgets.QPushButton] = []
+        # 1. Quick Actions (Horizontal Scroll if needed, or just row)
         self.quick_actions_layout = QtWidgets.QHBoxLayout()
         self.quick_actions_layout.setSpacing(6)
-        row.addLayout(self.quick_actions_layout, 1)
+        self.quick_action_buttons = []
+
         self.add_quick_action_button = QtWidgets.QToolButton(self)
-        self.add_quick_action_button.setObjectName("chatComposerIconButton")
-        self.add_quick_action_button.setText("+")
+        self.add_quick_action_button.setObjectName("chatInputButton")
+        self.add_quick_action_button.setText("➕")
         self.add_quick_action_button.setToolTip("Add quick prompt")
         self.add_quick_action_button.clicked.connect(self._add_quick_action)
-        row.addWidget(self.add_quick_action_button, 0)
+
         self.remove_quick_action_button = QtWidgets.QToolButton(self)
-        self.remove_quick_action_button.setObjectName("chatComposerIconButton")
-        self.remove_quick_action_button.setText("-")
+        self.remove_quick_action_button.setObjectName("chatInputButton")
+        self.remove_quick_action_button.setText("➖")
         self.remove_quick_action_button.setToolTip("Remove selected quick prompt")
         self.remove_quick_action_button.clicked.connect(
             self._remove_selected_quick_action
         )
-        row.addWidget(self.remove_quick_action_button, 0)
+
+        layout.addLayout(self.quick_actions_layout)
         self._refresh_quick_action_buttons()
-        return row
 
-    def _build_prompt_meta_row(self) -> QtWidgets.QWidget:
-        row = QtWidgets.QWidget(self)
-        row.setObjectName("promptMetaRow")
-        layout = QtWidgets.QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        self.prompt_hint_label = QtWidgets.QLabel("Ctrl+Enter to send", row)
-        self.prompt_hint_label.setObjectName("promptHintLabel")
-        layout.addWidget(self.prompt_hint_label, 0)
-        layout.addStretch(1)
-        self.prompt_count_label = QtWidgets.QLabel("0/4000", row)
-        self.prompt_count_label.setObjectName("promptCountLabel")
-        layout.addWidget(self.prompt_count_label, 0)
-        return row
+        # 2. Main Input Row (Attach | Text | Send/Mic)
+        input_row = QtWidgets.QHBoxLayout()
+        input_row.setSpacing(10)
 
-    def _build_status_label(self) -> QtWidgets.QLabel:
+        # Attach / Tools Group
+        tools_layout = QtWidgets.QHBoxLayout()
+        tools_layout.setSpacing(2)
+
+        self.attach_file_button = self._create_input_icon("📎", "Attach file")
+        self.share_canvas_button = self._create_input_icon("🎨", "Share Canvas")
+        self.share_window_button = self._create_input_icon("🪟", "Share Window")
+
+        tools_layout.addWidget(self.attach_file_button)
+        tools_layout.addWidget(self.share_canvas_button)
+        tools_layout.addWidget(self.share_window_button)
+        input_row.addLayout(tools_layout)
+
+        # Text Input
+        self.prompt_text_edit = QtWidgets.QPlainTextEdit(self)
+        self.prompt_text_edit.setPlaceholderText("Message Annolid Bot...")
+        self.prompt_text_edit.setFixedHeight(50)
+        self.prompt_text_edit.setToolTip("Type a message. Use Ctrl+Enter to send.")
+        input_row.addWidget(self.prompt_text_edit, 1)
+
+        # Send / Talk Group
+        send_layout = QtWidgets.QHBoxLayout()
+        send_layout.setSpacing(4)
+
+        self.talk_button = QtWidgets.QToolButton(self)
+        self.talk_button.setObjectName("talkButton")
+        self.talk_button.setText("🎤")
+        self.talk_button.setToolTip("Record voice input")
+        self.talk_button.setFixedSize(36, 36)
+
+        self.send_button = QtWidgets.QToolButton(self)
+        self.send_button.setObjectName("sendButton")
+        self.send_button.setText("🚀")
+        self.send_button.setToolTip("Send message (Ctrl+Enter)")
+        self.send_button.setFixedSize(36, 36)
+
+        send_layout.addWidget(self.talk_button)
+        send_layout.addWidget(self.send_button)
+        input_row.addLayout(send_layout)
+
+        layout.addLayout(input_row)
+
+        # 3. Meta / Status Row
+        meta_row = QtWidgets.QHBoxLayout()
+        meta_row.setContentsMargins(4, 0, 4, 0)
         self.status_label = QtWidgets.QLabel("", self)
         self.status_label.setObjectName("chatStatusLabel")
-        return self.status_label
+        meta_row.addWidget(self.status_label, 1)
+
+        self.prompt_count_label = QtWidgets.QLabel("0/4000", self)
+        self.prompt_count_label.setObjectName("promptCountLabel")
+        meta_row.addWidget(self.prompt_count_label, 0)
+
+        layout.addLayout(meta_row)
+
+        # Hidden logic toggles (keep objects for logic compatibility)
+        self._create_hidden_toggles(layout)
+
+        return container
+
+    def _create_input_icon(self, text_icon, tooltip):
+        btn = QtWidgets.QToolButton(self)
+        btn.setObjectName("chatInputButton")
+        btn.setText(text_icon)
+        btn.setToolTip(tooltip)
+        btn.setFixedSize(28, 28)
+        # Use a larger font for emojis
+        font = btn.font()
+        font.setPointSize(14)
+        btn.setFont(font)
+        return btn
+
+    def _create_hidden_toggles(self, layout):
+        # We might want to expose these via a menu later, but for now defaults
+        self.attach_canvas_checkbox = QtWidgets.QCheckBox("Attach canvas", self)
+        self.attach_canvas_checkbox.setChecked(False)
+        self.attach_canvas_checkbox.setVisible(False)
+
+        self.attach_window_checkbox = QtWidgets.QCheckBox("Attach window", self)
+        self.attach_window_checkbox.setVisible(False)
+
+        self.tool_trace_checkbox = QtWidgets.QCheckBox("Trace", self)
+        self.tool_trace_checkbox.setChecked(False)
+        self.tool_trace_checkbox.setVisible(False)
+
+        self.allow_web_tools_checkbox = QtWidgets.QCheckBox("Allow web", self)
+        self.allow_web_tools_checkbox.setChecked(True)
+        self.allow_web_tools_checkbox.setVisible(False)
+
+        layout.addWidget(self.attach_canvas_checkbox)
+        layout.addWidget(self.attach_window_checkbox)
+        layout.addWidget(self.tool_trace_checkbox)
+        layout.addWidget(self.allow_web_tools_checkbox)
+
+        # Shared image label logic expects this object
+        self.shared_image_label = QtWidgets.QLabel("", self)
+        self.shared_image_label.setVisible(False)
+        layout.addWidget(self.shared_image_label)
+
+    def _attach_file(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Attach File",
+            "",
+            "All Files (*)",
+        )
+        if path:
+            # For now, just append to prompt with a note
+            # In a real implementation we would add it to a list of attachments
+            current = self.prompt_text_edit.toPlainText()
+            if current:
+                current += "\n"
+            self.prompt_text_edit.setPlainText(current + f"[Attached: {path}]")
+
+    def _share_canvas_now(self) -> None:
+        # Toggle checkbox and update state (if available)
+        if not self.attach_canvas_checkbox.isChecked():
+            self.attach_canvas_checkbox.setChecked(True)
+        QtWidgets.QMessageBox.information(
+            self, "Canvas Attached", "Canvas image will be sent with your next message."
+        )
+
+    def _share_window_now(self) -> None:
+        if not self.attach_window_checkbox.isChecked():
+            self.attach_window_checkbox.setChecked(True)
+        QtWidgets.QMessageBox.information(
+            self,
+            "Window Attached",
+            "Window screenshot will be sent with your next message.",
+        )
 
     def _wire_ui_signals(self) -> None:
         self.provider_selector.currentIndexChanged.connect(self.on_provider_changed)
@@ -678,34 +709,10 @@ class AIChatWidget(QtWidgets.QWidget):
         self.send_button.clicked.connect(self.chat_with_model)
         self.share_canvas_button.clicked.connect(self._share_canvas_now)
         self.share_window_button.clicked.connect(self._share_window_now)
+        self.attach_file_button.clicked.connect(self._attach_file)
         self.talk_button.clicked.connect(self.toggle_recording)
         self.clear_chat_button.clicked.connect(self.clear_chat_conversation)
         self.sessions_button.clicked.connect(self.open_session_manager_dialog)
-        self._set_button_icon(
-            self.clear_chat_button,
-            QtWidgets.QStyle.SP_BrowserStop,
-            "edit-clear",
-        )
-        self._set_button_icon(
-            self.sessions_button,
-            QtWidgets.QStyle.SP_FileDialogDetailedView,
-            "view-list-details",
-        )
-        self._set_button_icon(
-            self.configure_button,
-            QtWidgets.QStyle.SP_FileDialogInfoView,
-            "preferences-system",
-        )
-        self._set_button_icon(
-            self.share_canvas_button,
-            QtWidgets.QStyle.SP_FileDialogNewFolder,
-            "insert-image",
-        )
-        self._set_button_icon(
-            self.share_window_button,
-            QtWidgets.QStyle.SP_DesktopIcon,
-            "window-new",
-        )
         self._on_prompt_text_changed()
 
     def _apply_quick_action(self, text: str) -> None:
@@ -747,7 +754,10 @@ class AIChatWidget(QtWidgets.QWidget):
             )
             self.quick_action_buttons.append(btn)
             self.quick_actions_layout.addWidget(btn, 0)
+
         self.quick_actions_layout.addStretch(1)
+        self.quick_actions_layout.addWidget(self.add_quick_action_button)
+        self.quick_actions_layout.addWidget(self.remove_quick_action_button)
         self.remove_quick_action_button.setEnabled(
             self._selected_quick_action_index is not None
         )
@@ -755,9 +765,18 @@ class AIChatWidget(QtWidgets.QWidget):
     def _on_quick_action_clicked(self, index: int) -> None:
         if index < 0 or index >= len(self._quick_actions):
             return
+
+        # If already selected, maybe toggle off?
+        # But user wants to click and then click - to remove.
+        # So we must keep it selected.
         self._selected_quick_action_index = index
+
         for idx, btn in enumerate(self.quick_action_buttons):
             btn.setChecked(idx == index)
+
+        # Update the removal button state immediately
+        self.remove_quick_action_button.setEnabled(True)
+
         self._apply_quick_action(self._quick_actions[index][1])
 
     def _add_quick_action(self) -> None:
@@ -890,201 +909,110 @@ class AIChatWidget(QtWidgets.QWidget):
         try:
             self.setStyleSheet(
                 """
-                QWidget {{
+                QWidget#AIChatWidget {
                     background: #111317;
                     color: #e7e8ea;
-                }}
-                QComboBox {{
+                    border: none;
+                    outline: none;
+                }
+                QWidget {
+                    background: #111317;
+                    color: #e7e8ea;
+                    border: none;
+                }
+                QComboBox {
                     border: 1px solid #31353c;
-                    border-radius: 10px;
+                    border-radius: 8px;
                     background: #1a1d23;
                     color: #e7e8ea;
                     min-height: 24px;
                     padding: 3px 8px;
-                }}
-                QScrollArea {{
-                    border: 1px solid #2f333b;
-                    border-radius: 14px;
-                    background: #151920;
-                }}
-                QPlainTextEdit {{
+                }
+                QScrollArea {
+                    border: none;
+                    background: #111317;
+                }
+                QPlainTextEdit {
                     border: 1px solid #343943;
-                    border-radius: 14px;
-                    background: #1d2129;
-                    padding: 10px;
-                    font-size: 14px;
-                }}
-                QFrame#chatComposerPanel {{
-                    border: 1px solid #2f333b;
-                    border-radius: 22px;
+                    border-radius: 12px;
                     background: #1a1d23;
-                }}
-                QToolButton#chatTopIconButton {{
-                    border: 1px solid transparent;
-                    border-radius: 14px;
-                    background: transparent;
-                    min-width: 28px;
-                    min-height: 28px;
-                }}
-                QToolButton#chatTopIconButton:hover {{
-                    background: #232832;
-                    border-color: #343943;
-                }}
-                QLabel#chatTitleLabel {{
+                    padding: 8px;
+                    font-size: 14px;
+                    color: #e7e8ea;
+                }
+                QPlainTextEdit:focus {
+                     border: 1px solid #5a6270;
+                }
+                QLabel#chatTitleLabel {
                     color: #f4f5f6;
-                    font-size: 27px;
+                    font-size: 18px;
                     font-weight: 700;
-                }}
-                QLabel#chatSubtitleLabel {{
+                }
+                QLabel#chatSubtitleLabel {
                     color: #9ea4af;
-                    font-size: 11px;
-                }}
-                QLabel#chatBotIconLabel {{
-                    border: 1px solid #353b47;
-                    border-radius: 17px;
-                    background: #1f2530;
-                    padding: 2px;
-                }}
-                QPushButton:hover {{
-                    background: #2b3038;
-                }}
-                QToolButton#chatComposerIconButton, QToolButton#talkButton {{
-                    border: 1px solid #3a404b;
-                    border-radius: 16px;
-                    background: #252a33;
-                    min-width: 32px;
-                    min-height: 32px;
-                }}
-                QToolButton#chatComposerIconButton:hover, QToolButton#talkButton:hover {{
-                    background: #313744;
-                }}
-                QPushButton#quickActionButton {{
+                    font-size: 12px;
+                }
+                QPushButton#quickActionButton {
                     border: 1px solid #373d47;
                     border-radius: 14px;
-                    padding: 4px 12px;
+                    padding: 6px 12px;
                     font-size: 12px;
-                    font-weight: 600;
                     background: #2a2f38;
-                }}
-                QPushButton#quickActionButton:hover {{
+                    color: #e7e8ea;
+                }
+                QPushButton#quickActionButton:hover {
                     background: #363d49;
-                }}
-                QLabel#sharedImageLabel, QLabel#chatStatusLabel {{
-                    color: #9ea4af;
-                    font-size: 11px;
-                }}
-                QLabel#chatEmptyState {{
-                    border: 1px dashed #3b4049;
-                    border-radius: 14px;
-                    background: #181c23;
-                    color: #a9afba;
-                    padding: 16px;
-                    margin: 20px 12px;
-                    font-size: 12px;
-                }}
-                QWidget#promptMetaRow {{
-                    background: transparent;
-                }}
-                QLabel#promptHintLabel, QLabel#promptCountLabel {{
-                    color: #8f96a2;
-                    font-size: 11px;
-                }}
-                QLabel#promptCountLabel[limitReached="true"] {{
-                    color: #ff6a57;
-                    font-weight: 700;
-                }}
-                QCheckBox#chatInlineToggle {{
-                    color: #9aa1ac;
-                    font-size: 11px;
-                    font-weight: 600;
-                }}
-                QToolButton#sendButton {{
-                    border: 1px solid #6f7684;
-                    border-radius: 21px;
-                    background: #8d939e;
-                    color: #111317;
-                    font-weight: 800;
-                }}
-                QToolButton#sendButton:disabled {{
-                    border-color: #4b505a;
-                    background: #4a4f58;
-                    color: #7f8591;
-                }}
-                QToolButton#sendButton:hover {{
-                    background: #a1a7b2;
-                }}
-                QFrame#chatBubble[role="user"] {{
-                    background-color: #145C4C;
-                    border-radius: 16px;
-                    padding: 9px 11px;
-                    border: 1px solid #1d7a65;
-                }}
-                QFrame#chatBubble[role="assistant"] {{
-                    background-color: #1f252f;
-                    border-radius: 16px;
-                    padding: 9px 11px;
-                    border: 1px solid #2f3946;
-                }}
-                QLabel#sender {{
-                    color: #9ea4af;
-                    font-size: 11px;
-                    font-weight: 600;
-                }}
-                QTextBrowser#messageView {{
-                    color: #e9ebee;
-                    font-size: 13px;
+                }
+                /* Input Bar Icons */
+                QToolButton#chatInputButton {
                     background: transparent;
                     border: none;
-                    selection-background-color: #2f84ff;
-                    selection-color: #f5f7fa;
-                }}
-                QFrame#chatBubble[role="user"] QLabel#sender {{
-                    color: #C2E9DD;
-                }}
-                QFrame#chatBubble[role="user"] QTextBrowser#messageView {{
-                    color: #F3FFF8;
-                }}
-                QFrame#chatBubble[role="user"] QLabel#meta {{
-                    color: #C2E9DD;
-                }}
-                QFrame#chatBubble[role="user"] QPushButton#bubbleSpeakButton,
-                QFrame#chatBubble[role="user"] QPushButton#bubbleCopyButton,
-                QFrame#chatBubble[role="user"] QPushButton#bubbleRegenerateButton {{
-                    border: 1px solid #2a8b74;
-                    background: #196a57;
-                    color: #F3FFF8;
-                }}
-                QFrame#chatBubble[role="user"] QPushButton#bubbleSpeakButton:hover,
-                QFrame#chatBubble[role="user"] QPushButton#bubbleCopyButton:hover,
-                QFrame#chatBubble[role="user"] QPushButton#bubbleRegenerateButton:hover {{
-                    background: #1f7661;
-                }}
-                QFrame#chatBubble[progress="true"] {{
-                    background-color: #181d27;
-                    border: 1px solid #2a3140;
-                }}
-                QFrame#chatBubble[progress="true"] QLabel#sender {{
-                    color: #8db7ff;
-                }}
-                QFrame#chatBubble[progress="true"] QTextBrowser#messageView {{
-                    color: #bfcae2;
-                    font-size: 12px;
-                }}
-                QLabel#meta {{
-                    color: #8e95a1;
-                    font-size: 10px;
-                }}
-                QPushButton#bubbleSpeakButton, QPushButton#bubbleCopyButton, QPushButton#bubbleRegenerateButton {{
-                    border: 1px solid #424855;
                     border-radius: 6px;
-                    background: #2a3039;
-                    padding: 2px 6px;
-                    min-height: 18px;
+                }
+                QToolButton#chatInputButton:hover {
+                    background: rgba(255, 255, 255, 0.08);
+                }
+                /* Chat Bubbles */
+                QFrame#chatBubble {
+                     border-radius: 12px;
+                }
+                QFrame#chatBubble[role="user"] {
+                    background-color: #2b5c54;
+                    border: 1px solid #3a756b;
+                    margin-left: 40px;
+                }
+                QFrame#chatBubble[role="assistant"] {
+                    background-color: #1f2228;
+                    border: 1px solid #31353e;
+                    margin-right: 40px;
+                }
+                /* Bubble Actions */
+                QPushButton#bubbleActionButton {
+                    background: transparent;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 2px;
+                }
+                QPushButton#bubbleActionButton:hover {
+                     background: rgba(255, 255, 255, 0.1);
+                }
+                QLabel#sender {
+                    color: #8a8f99;
+                    font-size: 11px;
+                    font-weight: 600;
+                    margin-bottom: 2px;
+                }
+                QLabel#meta {
+                    color: #6a707c;
                     font-size: 10px;
-                }}
-                QPushButton#bubbleSpeakButton:hover, QPushButton#bubbleCopyButton:hover, QPushButton#bubbleRegenerateButton:hover {{
-                    background: #353c48;
-                }}
+                }
+                /* Floating Input Bar */
+                QFrame#inputBarContainer {
+                    background: #1a1d23;
+                    border-top: 1px solid #2f333b;
+                    border-bottom-left-radius: 12px;
+                    border-bottom-right-radius: 12px;
+                }
                 """
             )
         finally:
@@ -1164,18 +1092,15 @@ class AIChatWidget(QtWidgets.QWidget):
             allow_regenerate=allow_regenerate,
             parent=self.chat_container,
         )
+        # Make bubbles full width as requested
         bubble.setSizePolicy(
-            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Minimum
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum
         )
         bubble.apply_layout_width(
             self._bubble_max_width() - 24, self._bubble_max_width()
         )
-        if is_user:
-            row.addStretch(1)
-            row.addWidget(bubble, 0, QtCore.Qt.AlignRight)
-        else:
-            row.addWidget(bubble, 0, QtCore.Qt.AlignLeft)
-            row.addStretch(1)
+        # Remove addStretch and Alignment to force full width
+        row.addWidget(bubble)
 
         # Insert before trailing stretch item.
         insert_idx = max(0, self.chat_layout.count() - 1)
