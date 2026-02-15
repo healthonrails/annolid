@@ -155,7 +155,7 @@ When changing:
 
 When behavior changes, update docs in the same PR/commit set:
 - `README.md` for user-facing workflow changes.
-- `docs/` for detailed guidance.
+- `docs/` for detailed guidance (e.g., [MCP Tutorial](docs/mcp.md)).
 - `RELEASING.md` for release-process updates.
 
 Documentation must be concrete, command-driven, and platform-aware (Linux/macOS/Windows where relevant).

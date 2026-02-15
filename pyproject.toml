@@ -26,6 +26,7 @@ classifiers = [
 
 dependencies = [
     # Avoid NumPy 2 ABI breakage with compiled deps.
+    'loguru>=0.7.0',
     'numpy>=1.24',
     'numba>=0.60.0',
     'scipy>=1.5.2',
