@@ -27,6 +27,7 @@ class WebManager(QtCore.QObject):
             viewer.status_changed.connect(
                 lambda msg: self.window.statusBar().showMessage(msg, 3000)
             )
+            viewer.close_requested.connect(self.close_web)
             self.viewer_stack.addWidget(viewer)
             self.web_viewer = viewer
         return self.web_viewer

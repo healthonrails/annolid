@@ -44,6 +44,11 @@ def _is_ignorable_js_console_message(message: str) -> bool:
         "atom change detected, updating - store value:",
         "rangeerror: value longoffset out of range for intl.datetimeformat options property timezonename",
         "was preloaded using link preload but not used within a few seconds from the window's load event",
+        # QtWebEngine CSP warnings about external site CSP headers (not our code)
+        "the source list for content security policy directive",
+        "contains an invalid source",
+        # Common external page JavaScript errors that are not actionable
+        "uncaught referenceerror: _d is not defined",
     )
     return any(marker in value for marker in noisy_markers)
 
@@ -220,6 +225,7 @@ class WebViewerWidget(QtWidgets.QWidget):
     """Simple embedded browser for opening web pages inside the shared canvas stack."""
 
     status_changed = QtCore.Signal(str)
+    close_requested = QtCore.Signal()
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -239,6 +245,28 @@ class WebViewerWidget(QtWidgets.QWidget):
     def webengine_available(self) -> bool:
         return bool(_WEBENGINE_AVAILABLE)
 
+    @staticmethod
+    def _apply_nav_icon(
+        button: QtWidgets.QToolButton, theme_icon: str, fallback: str
+    ) -> None:
+        """Apply navigation icon to button using theme or fallback."""
+        icon = QtGui.QIcon.fromTheme(theme_icon)
+        if icon.isNull():
+            # Use text fallback if theme icon is not available
+            button.setText(fallback)
+            font = button.font()
+            font.setPointSize(14)
+            button.setFont(font)
+        else:
+            button.setIcon(icon)
+            button.setIconSize(QtCore.QSize(18, 18))
+
+    def _update_nav_buttons(self) -> None:
+        """Update navigation button states based on history."""
+        if self._web_view is not None:
+            self.back_button.setEnabled(self._web_view.history().canGoBack())
+            self.forward_button.setEnabled(self._web_view.history().canGoForward())
+
     def _build_ui(self) -> None:
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -253,31 +281,105 @@ class WebViewerWidget(QtWidgets.QWidget):
             root.addWidget(placeholder, 1)
             return
 
+        # Create Chrome-style toolbar
         toolbar = QtWidgets.QWidget(self)
+        toolbar.setObjectName("webViewerToolbar")
         toolbar_layout = QtWidgets.QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(8, 6, 8, 6)
-        toolbar_layout.setSpacing(6)
+        toolbar_layout.setContentsMargins(8, 4, 8, 4)
+        toolbar_layout.setSpacing(4)
 
+        # Navigation button style
+        nav_button_style = """
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 4px;
+                padding: 4px;
+                color: #5f6368;
+            }
+            QToolButton:hover {
+                background-color: #e8eaed;
+            }
+            QToolButton:pressed {
+                background-color: #dfe0e0;
+            }
+            QToolButton:disabled {
+                color: #9aa0a6;
+            }
+        """
+
+        # Back button
         self.back_button = QtWidgets.QToolButton(toolbar)
-        self.back_button.setText("<")
-        self.back_button.setToolTip("Back")
+        self.back_button.setToolTip("Go back")
+        self.back_button.setEnabled(False)
+        self._apply_nav_icon(self.back_button, "go-previous", "←")
+        self.back_button.setStyleSheet(nav_button_style)
         toolbar_layout.addWidget(self.back_button)
 
+        # Forward button
         self.forward_button = QtWidgets.QToolButton(toolbar)
-        self.forward_button.setText(">")
-        self.forward_button.setToolTip("Forward")
+        self.forward_button.setToolTip("Go forward")
+        self.forward_button.setEnabled(False)
+        self._apply_nav_icon(self.forward_button, "go-next", "→")
+        self.forward_button.setStyleSheet(nav_button_style)
         toolbar_layout.addWidget(self.forward_button)
 
+        # Reload button
         self.reload_button = QtWidgets.QToolButton(toolbar)
-        self.reload_button.setText("Reload")
+        self.reload_button.setToolTip("Reload this page")
+        self._apply_nav_icon(self.reload_button, "view-refresh", "↻")
+        self.reload_button.setStyleSheet(nav_button_style)
         toolbar_layout.addWidget(self.reload_button)
 
+        # Address bar (Chrome-style Omnibox)
         self.url_edit = QtWidgets.QLineEdit(toolbar)
-        self.url_edit.setPlaceholderText("https://")
+        self.url_edit.setPlaceholderText("Search or enter URL")
+        self.url_edit.setObjectName("webViewerUrlEdit")
+
+        # Chrome-style address bar styling
+        address_bar_style = """
+            QLineEdit {
+                background-color: #f1f3f4;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 12px;
+                font-size: 13px;
+                color: #202124;
+            }
+            QLineEdit:focus {
+                background-color: #ffffff;
+                border: 2px solid #4285f4;
+                padding: 6px 10px;
+            }
+            QLineEdit:hover {
+                background-color: #e8eaed;
+            }
+        """
+
+        self.url_edit.setStyleSheet(address_bar_style)
         toolbar_layout.addWidget(self.url_edit, 1)
 
-        self.open_in_browser_button = QtWidgets.QPushButton("Open in Browser", toolbar)
+        # Lock/security icon placeholder
+        self.security_icon = QtWidgets.QLabel(toolbar)
+        self.security_icon.setText("🔒")
+        self.security_icon.setToolTip("Connection is secure")
+        self.security_icon.setStyleSheet("padding: 2px;")
+        toolbar_layout.addWidget(self.security_icon)
+
+        # Open in browser button (Chrome-style)
+        self.open_in_browser_button = QtWidgets.QToolButton(toolbar)
+        self.open_in_browser_button.setToolTip("Open in default browser")
+        self._apply_nav_icon(self.open_in_browser_button, "external-browser", "↗")
+        self.open_in_browser_button.setStyleSheet(nav_button_style)
         toolbar_layout.addWidget(self.open_in_browser_button)
+
+        # Close button to close the web viewer tab
+        self.close_button = QtWidgets.QToolButton(toolbar)
+        self.close_button.setToolTip("Close this tab")
+        self._apply_nav_icon(self.close_button, "window-close", "✕")
+        self.close_button.setStyleSheet(nav_button_style)
+        toolbar_layout.addWidget(self.close_button)
+
         root.addWidget(toolbar, 0)
 
         self._web_view = QtWebEngineWidgets.QWebEngineView(self)
@@ -292,10 +394,14 @@ class WebViewerWidget(QtWidgets.QWidget):
         self.reload_button.clicked.connect(self._web_view.reload)
         self.url_edit.returnPressed.connect(self._on_url_entered)
         self.open_in_browser_button.clicked.connect(self.open_current_in_browser)
+        self.close_button.clicked.connect(self.close_requested.emit)
         self._web_view.urlChanged.connect(self._on_url_changed)
         self._web_view.loadFinished.connect(self._on_load_finished)
         self._web_view.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self._web_view.customContextMenuRequested.connect(self._show_context_menu)
+
+        # Update navigation button states when URL changes (QWebEngineHistory doesn't have changed signal)
+        self._web_view.urlChanged.connect(self._update_nav_buttons)
 
     def _normalize_url(self, url: str) -> QtCore.QUrl:
         value = str(url or "").strip()
@@ -690,7 +796,7 @@ class WebViewerWidget(QtWidgets.QWidget):
         self._dictionary_popup_pos = global_pos
         QtWidgets.QToolTip.showText(
             QtGui.QCursor.pos(),
-            f"Looking up “{word}”…",
+            f'Looking up "{word}"…',
             self,
         )
         self._thread_pool.start(
