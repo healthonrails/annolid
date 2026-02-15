@@ -857,7 +857,7 @@ class AIChatWidget(QtWidgets.QWidget):
             return
         dots = "." * ((self._typing_tick % 3) + 1)
         self._typing_tick += 1
-        self.status_label.setText(f"{self._assistant_display_name()} is typing{dots}")
+        self.status_label.setText(f"{self._assistant_display_name()} • Thinking{dots}")
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
         if (
@@ -2635,15 +2635,7 @@ class AIChatWidget(QtWidgets.QWidget):
         chat_image_path = self._prepare_chat_image()
         self._add_bubble("You", raw_prompt, is_user=True)
         assistant_name = self._assistant_display_name()
-        self._current_progress_bubble = self._add_bubble(
-            f"{assistant_name} • Thinking",
-            "Preparing response...",
-            is_user=False,
-        )
-        self._current_progress_bubble.setProperty("progress", True)
-        self._current_progress_bubble.style().unpolish(self._current_progress_bubble)
-        self._current_progress_bubble.style().polish(self._current_progress_bubble)
-        self._progress_lines = ["Preparing response..."]
+        self.status_label.setText(f"{assistant_name} • Thinking")
         self._current_response_bubble = self._add_bubble(
             assistant_name,
             "",
@@ -2682,26 +2674,9 @@ class AIChatWidget(QtWidgets.QWidget):
         line = str(update or "").strip()
         if not line:
             return
-        if self._current_progress_bubble is None:
-            self._current_progress_bubble = self._add_bubble(
-                f"{self._assistant_display_name()} • Thinking",
-                line,
-                is_user=False,
-            )
-            self._current_progress_bubble.setProperty("progress", True)
-            self._current_progress_bubble.style().unpolish(
-                self._current_progress_bubble
-            )
-            self._current_progress_bubble.style().polish(self._current_progress_bubble)
-            self._progress_lines = [line]
-        elif not self._progress_lines or self._progress_lines[-1] != line:
-            self._progress_lines.append(line)
-        if self._current_progress_bubble is not None:
-            compact = self._progress_lines[-8:]
-            text = "\n".join(f"- {item}" for item in compact)
-            self._current_progress_bubble.set_text(text)
-        QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
-        QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
+        # Show progress updates in status label after "Thinking..."
+        assistant_name = self._assistant_display_name()
+        self.status_label.setText(f"{assistant_name} • Thinking... {line}")
 
     @QtCore.Slot(str, bool)
     def update_chat_response(self, message: str, is_error: bool) -> None:
