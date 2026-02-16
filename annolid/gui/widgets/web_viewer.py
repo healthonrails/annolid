@@ -20,9 +20,14 @@ import platform
 # This must serve as early as possible before QApplication is initialized or QtWebEngine is used
 if platform.system() == "Darwin":
     # Fix 1: Disable sandbox to prevent "Library not loaded" crashes in helper process
-    # Fix 2: Disable GPU to prevent white screen / rendering artifacts
+    # Fix 2: Add compatibility flags to ensure WebGL works while avoiding white screens
     current_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
-    required_flags = ["--no-sandbox", "--disable-gpu", "--disable-software-rasterizer"]
+    required_flags = [
+        "--no-sandbox",
+        "--ignore-gpu-blocklist",
+        "--use-gl=desktop",
+        "--enable-webgl-draft-extensions",
+    ]
 
     flags_to_add = [f for f in required_flags if f not in current_flags]
     if flags_to_add:
