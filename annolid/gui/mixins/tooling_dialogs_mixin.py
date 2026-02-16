@@ -82,10 +82,15 @@ class ToolingDialogsMixin:
         dlg.exec_()
 
     def _set_active_view(self, mode: str = "canvas") -> None:
+        # Toggle main toolbar visibility.
+        if hasattr(self, "tools"):
+            self.tools.setVisible(mode == "canvas")
+
         if mode == "canvas":
             self.set_unrelated_docks_visible(True)
 
         if mode == "pdf" and getattr(self, "pdf_manager", None) is not None:
+            self.set_unrelated_docks_visible(False)
             viewer = self.pdf_manager.pdf_widget()
             if viewer is not None:
                 pdf_index = self._viewer_stack.indexOf(viewer)
