@@ -263,7 +263,7 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
     open_payload = task._tool_gui_open_video(str(video_file))
     assert open_payload["ok"] is True
     assert open_payload["queued"] is True
-    open_url_payload = task._tool_gui_open_url("google.com")
+    open_url_payload = asyncio.run(task._tool_gui_open_url("google.com"))
     assert open_url_payload["ok"] is True
     assert open_url_payload["queued"] is True
     assert open_url_payload["url"] == "https://google.com"
@@ -295,11 +295,11 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
     assert pdf_sections_payload["ok"] is True
     pdf_file = tmp_path / "paper.pdf"
     pdf_file.write_bytes(b"%PDF-1.4 fake")
-    open_pdf_payload = task._tool_gui_open_pdf()
+    open_pdf_payload = asyncio.run(task._tool_gui_open_pdf())
     assert open_pdf_payload["ok"] is True
     assert open_pdf_payload["queued"] is True
     assert open_pdf_payload["path"] == str(pdf_file)
-    open_pdf_by_path_payload = task._tool_gui_open_pdf(str(pdf_file))
+    open_pdf_by_path_payload = asyncio.run(task._tool_gui_open_pdf(str(pdf_file)))
     assert open_pdf_by_path_payload["ok"] is True
     assert open_pdf_by_path_payload["path"] == str(pdf_file)
 
@@ -478,9 +478,14 @@ def test_gui_open_pdf_downloads_url_then_queues(monkeypatch, tmp_path: Path) -> 
     downloaded_pdf.parent.mkdir(parents=True, exist_ok=True)
     downloaded_pdf.write_bytes(b"%PDF-1.4 fake")
 
-    task._download_pdf_for_gui_tool = lambda _url: downloaded_pdf  # type: ignore[method-assign]
-    payload = task._tool_gui_open_pdf(
-        "open pdf https://www.biorxiv.org/content/10.64898/2026.01.20.700446v2.full.pdf"
+    async def mock_download(_url):
+        return downloaded_pdf
+
+    task._download_pdf_for_gui_tool = mock_download  # type: ignore[method-assign]
+    payload = asyncio.run(
+        task._tool_gui_open_pdf(
+            "open pdf https://www.biorxiv.org/content/10.64898/2026.01.20.700446v2.full.pdf"
+        )
     )
     assert payload["ok"] is True
     assert payload["queued"] is True
@@ -508,8 +513,13 @@ def test_gui_open_pdf_downloads_non_suffix_url_then_queues(
     downloaded_pdf.parent.mkdir(parents=True, exist_ok=True)
     downloaded_pdf.write_bytes(b"%PDF-1.4 fake")
 
-    task._download_pdf_for_gui_tool = lambda _url: downloaded_pdf  # type: ignore[method-assign]
-    payload = task._tool_gui_open_pdf("open url https://example.org/download?id=12345")
+    async def mock_download(_url):
+        return downloaded_pdf
+
+    task._download_pdf_for_gui_tool = mock_download  # type: ignore[method-assign]
+    payload = asyncio.run(
+        task._tool_gui_open_pdf("open url https://example.org/download?id=12345")
+    )
     assert payload["ok"] is True
     assert payload["queued"] is True
     assert payload["path"] == str(downloaded_pdf)
@@ -530,8 +540,10 @@ def test_gui_open_url_queues(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
     task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
 
-    payload = task._tool_gui_open_url(
-        "open this page https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+    payload = asyncio.run(
+        task._tool_gui_open_url(
+            "open this page https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+        )
     )
     assert payload["ok"] is True
     assert payload["queued"] is True
@@ -558,7 +570,7 @@ def test_gui_open_url_queues_for_domain_without_scheme(
     calls: list[str] = []
     task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
 
-    payload = task._tool_gui_open_url("google.com")
+    payload = asyncio.run(task._tool_gui_open_url("google.com"))
     assert payload["ok"] is True
     assert payload["queued"] is True
     assert payload["url"] == "https://google.com"
@@ -582,7 +594,7 @@ def test_gui_open_url_queues_for_local_html_file(monkeypatch, tmp_path: Path) ->
     calls: list[str] = []
     task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
 
-    payload = task._tool_gui_open_url(f"open {html_file}")
+    payload = asyncio.run(task._tool_gui_open_url(f"open {html_file}"))
     assert payload["ok"] is True
     assert payload["queued"] is True
     assert payload["url"] == str(html_file)
@@ -603,14 +615,16 @@ def test_gui_web_run_steps_executes_sequence(monkeypatch, tmp_path: Path) -> Non
     calls: list[str] = []
     task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
 
-    payload = task._tool_gui_web_run_steps(
-        [
-            {"action": "open_url", "url": "google.com"},
-            {"action": "click", "selector": "button.submit"},
-            {"action": "scroll", "delta_y": 400},
-        ],
-        stop_on_error=True,
-        max_steps=10,
+    payload = asyncio.run(
+        task._tool_gui_web_run_steps(
+            [
+                {"action": "open_url", "url": "google.com"},
+                {"action": "click", "selector": "button.submit"},
+                {"action": "scroll", "delta_y": 400},
+            ],
+            stop_on_error=True,
+            max_steps=10,
+        )
     )
     assert payload["ok"] is True
     assert payload["steps_run"] == 3
@@ -1278,42 +1292,54 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         ),
     }
 
-    out_pdf = task._execute_direct_gui_command("open pdf")
+    out_pdf = asyncio.run(task._execute_direct_gui_command("open pdf"))
     assert "Opened PDF in Annolid:" in out_pdf
 
-    out_url = task._execute_direct_gui_command(
-        "open https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+    out_url = asyncio.run(
+        task._execute_direct_gui_command(
+            "open https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
+        )
     )
     assert (
         "Opened URL in Annolid: https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
         == out_url
     )
 
-    out_url_browser = task._execute_direct_gui_command("open google.com in browser")
+    out_url_browser = asyncio.run(
+        task._execute_direct_gui_command("open google.com in browser")
+    )
     assert "Opened URL in browser: https://google.com" == out_url_browser
 
-    out_video = task._execute_direct_gui_command("open video mouse.mp4")
+    out_video = asyncio.run(task._execute_direct_gui_command("open video mouse.mp4"))
     assert "Opened video in Annolid:" in out_video
 
-    out_frame = task._execute_direct_gui_command("set frame 5")
+    out_frame = asyncio.run(task._execute_direct_gui_command("set frame 5"))
     assert "Moved to frame 5." == out_frame
 
-    out_track = task._execute_direct_gui_command("track to frame 60")
+    out_track = asyncio.run(task._execute_direct_gui_command("track to frame 60"))
     assert "Started tracking to frame 60." == out_track
 
-    out_model = task._execute_direct_gui_command("set chat model ollama/qwen3:8b")
+    out_model = asyncio.run(
+        task._execute_direct_gui_command("set chat model ollama/qwen3:8b")
+    )
     assert "Updated chat model to ollama/qwen3:8b." == out_model
 
-    out_stream = task._execute_direct_gui_command(
-        "open stream with model mediapipe face and classify eye blinks"
+    out_stream = asyncio.run(
+        task._execute_direct_gui_command(
+            "open stream with model mediapipe face and classify eye blinks"
+        )
     )
     assert "Started realtime stream with model mediapipe_face." == out_stream
 
-    out_stop_stream = task._execute_direct_gui_command("stop realtime stream")
+    out_stop_stream = asyncio.run(
+        task._execute_direct_gui_command("stop realtime stream")
+    )
     assert "Stopped realtime stream." == out_stop_stream
 
-    out_rename = task._execute_direct_gui_command(
-        "rename this pdf with title A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf"
+    out_rename = asyncio.run(
+        task._execute_direct_gui_command(
+            "rename this pdf with title A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf"
+        )
     )
     assert "Renamed file:" in out_rename
 

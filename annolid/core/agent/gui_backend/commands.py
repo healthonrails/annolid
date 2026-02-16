@@ -215,6 +215,22 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                 },
             }
 
+    list_pdfs_match = re.search(
+        r"\b(?:list|show|find|search)\b\s+(?:all\s+)?(?:the\s+)?(?:local\s+)?pdfs?\b",
+        lower,
+    )
+    if list_pdfs_match:
+        query_match = re.search(
+            r"\b(?:by|for|containing|named)\s+(?P<query>.+)$",
+            lower,
+        )
+        return {
+            "name": "list_pdfs",
+            "args": {
+                "query": query_match.group("query").strip() if query_match else None
+            },
+        }
+
     stop_stream_match = re.search(
         r"\b(?:stop|end|close)\b\s+(?:realtime|real[-\s]?time|stream)\b",
         lower,

@@ -1,23 +1,23 @@
-from __future__ import annotations
-
+import asyncio
 from typing import Any, Callable, Dict
 
 
-def execute_direct_gui_command(
+async def execute_direct_gui_command(
     command: Dict[str, Any],
     *,
-    open_video: Callable[[str], Dict[str, Any]],
-    open_url: Callable[[str], Dict[str, Any]],
-    open_in_browser: Callable[[str], Dict[str, Any]],
-    open_pdf: Callable[[str], Dict[str, Any]],
-    set_frame: Callable[[int], Dict[str, Any]],
-    track_next_frames: Callable[[int], Dict[str, Any]],
-    segment_track_video: Callable[..., Dict[str, Any]],
-    label_behavior_segments: Callable[..., Dict[str, Any]],
-    start_realtime_stream: Callable[..., Dict[str, Any]],
-    stop_realtime_stream: Callable[[], Dict[str, Any]],
-    set_chat_model: Callable[[str, str], Dict[str, Any]],
-    rename_file: Callable[..., Dict[str, Any]],
+    open_video: Callable[[str], Any],
+    open_url: Callable[[str], Any],
+    open_in_browser: Callable[[str], Any],
+    open_pdf: Callable[[str], Any],
+    set_frame: Callable[[int], Any],
+    track_next_frames: Callable[[int], Any],
+    segment_track_video: Callable[..., Any],
+    label_behavior_segments: Callable[..., Any],
+    start_realtime_stream: Callable[..., Any],
+    stop_realtime_stream: Callable[[], Any],
+    list_pdfs: Callable[..., Any],
+    set_chat_model: Callable[[str, str], Any],
+    rename_file: Callable[..., Any],
 ) -> str:
     if not command:
         return ""
@@ -25,14 +25,20 @@ def execute_direct_gui_command(
     args = dict(command.get("args") or {})
     payload: Dict[str, Any]
 
+    async def _run(func: Callable, *a, **kw):
+        res = func(*a, **kw)
+        if asyncio.iscoroutine(res):
+            return await res
+        return res
+
     if name == "open_video":
-        payload = open_video(str(args.get("path") or ""))
+        payload = await _run(open_video, str(args.get("path") or ""))
         if payload.get("ok"):
             return f"Opened video in Annolid: {payload.get('path')}"
         return str(payload.get("error") or "Failed to open video.")
 
     if name == "open_url":
-        payload = open_url(str(args.get("url") or ""))
+        payload = await _run(open_url, str(args.get("url") or ""))
         if payload.get("ok"):
             resolved = str(payload.get("url") or "").strip()
             if resolved:
@@ -41,7 +47,7 @@ def execute_direct_gui_command(
         return str(payload.get("error") or "Failed to open URL.")
 
     if name == "open_in_browser":
-        payload = open_in_browser(str(args.get("url") or ""))
+        payload = await _run(open_in_browser, str(args.get("url") or ""))
         if payload.get("ok"):
             resolved = str(payload.get("url") or "").strip()
             if resolved:
@@ -50,7 +56,7 @@ def execute_direct_gui_command(
         return str(payload.get("error") or "Failed to open URL in browser.")
 
     if name == "open_pdf":
-        payload = open_pdf(str(args.get("path") or ""))
+        payload = await _run(open_pdf, str(args.get("path") or ""))
         if payload.get("ok"):
             resolved = str(payload.get("path") or "").strip()
             if resolved:
@@ -66,19 +72,20 @@ def execute_direct_gui_command(
         return str(payload.get("error") or "Failed to open PDF.")
 
     if name == "set_frame":
-        payload = set_frame(int(args.get("frame_index") or 0))
+        payload = await _run(set_frame, int(args.get("frame_index") or 0))
         if payload.get("ok"):
             return f"Moved to frame {payload.get('frame_index')}."
         return str(payload.get("error") or "Failed to set frame.")
 
     if name == "track_next_frames":
-        payload = track_next_frames(int(args.get("to_frame") or 0))
+        payload = await _run(track_next_frames, int(args.get("to_frame") or 0))
         if payload.get("ok"):
             return f"Started tracking to frame {payload.get('to_frame')}."
         return str(payload.get("error") or "Failed to start tracking.")
 
     if name == "segment_track_video":
-        payload = segment_track_video(
+        payload = await _run(
+            segment_track_video,
             path=str(args.get("path") or ""),
             text_prompt=str(args.get("text_prompt") or ""),
             mode=str(args.get("mode") or "track"),
@@ -101,7 +108,8 @@ def execute_direct_gui_command(
         return str(payload.get("error") or "Failed to start workflow.")
 
     if name == "label_behavior_segments":
-        payload = label_behavior_segments(
+        payload = await _run(
+            label_behavior_segments,
             path=str(args.get("path") or ""),
             behavior_labels=args.get("behavior_labels"),
             segment_mode=str(args.get("segment_mode") or "timeline"),
@@ -125,7 +133,8 @@ def execute_direct_gui_command(
         return str(payload.get("error") or "Failed to label behavior segments.")
 
     if name == "start_realtime_stream":
-        payload = start_realtime_stream(
+        payload = await _run(
+            start_realtime_stream,
             camera_source=str(args.get("camera_source") or ""),
             model_name=str(args.get("model_name") or ""),
             target_behaviors=args.get("target_behaviors"),
@@ -145,13 +154,27 @@ def execute_direct_gui_command(
         return str(payload.get("error") or "Failed to start realtime stream.")
 
     if name == "stop_realtime_stream":
-        payload = stop_realtime_stream()
+        payload = await _run(stop_realtime_stream)
         if payload.get("ok"):
             return "Stopped realtime stream."
         return str(payload.get("error") or "Failed to stop realtime stream.")
 
+    if name == "list_pdfs":
+        payload = await _run(list_pdfs, query=args.get("query"))
+        if payload.get("ok"):
+            files = payload.get("files", [])
+            if not files:
+                return "No local PDF files found."
+            lines = [f"Found {payload.get('count')} PDF(s):"]
+            lines.extend(f"- {f}" for f in files)
+            if payload.get("truncated"):
+                lines.append("... (showing top results)")
+            return "\n".join(lines)
+        return str(payload.get("error") or "Failed to list PDF files.")
+
     if name == "set_chat_model":
-        payload = set_chat_model(
+        payload = await _run(
+            set_chat_model,
             str(args.get("provider") or ""),
             str(args.get("model") or ""),
         )
@@ -163,7 +186,8 @@ def execute_direct_gui_command(
         return str(payload.get("error") or "Failed to update chat model.")
 
     if name == "rename_file":
-        payload = rename_file(
+        payload = await _run(
+            rename_file,
             source_path=str(args.get("source_path") or ""),
             new_name=str(args.get("new_name") or ""),
             new_path=str(args.get("new_path") or ""),
@@ -179,5 +203,7 @@ def execute_direct_gui_command(
                 return f"Renamed file to: {new_path}"
             return "Renamed file."
         return str(payload.get("error") or "Failed to rename file.")
+
+    return ""
 
     return ""

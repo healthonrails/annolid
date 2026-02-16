@@ -11,6 +11,9 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
 
 from qtpy import QtCore
 from qtpy.QtCore import QMetaObject, QRunnable
@@ -453,9 +456,10 @@ class StreamingChatTask(QRunnable):
     def _run_agent_loop(self) -> None:
         asyncio.run(self._run_agent_loop_async())
 
-    async def _run_agent_loop_async(self) -> None:
-        if self._try_execute_direct_gui_command():
-            return
+    async def _run_agent_loop_async(self) -> bool:
+        # Check for direct command match first (e.g. "open video path/to/file.mp4")
+        if await self._try_execute_direct_gui_command():
+            return True
 
         context = await self._build_agent_execution_context()
 
@@ -484,7 +488,7 @@ class StreamingChatTask(QRunnable):
                 if text.strip():
                     self._persist_turn(self.prompt, text)
                 self._emit_final(text, is_error=False)
-                return
+                return True
             if remaining_plain_turns > 0 and wants_tools:
                 _LOGGER.info(
                     "annolid-bot bypassing temporary plain mode due tool-intent prompt model=%s remaining_turns=%d",
@@ -524,9 +528,22 @@ class StreamingChatTask(QRunnable):
         if text.strip():
             self._persist_turn(self.prompt, text, persist_session_history=False)
         self._emit_final(text, is_error=False)
+        return False
 
-    def _try_execute_direct_gui_command(self) -> bool:
-        direct_command_text = self._execute_direct_gui_command(self.prompt)
+    async def _try_execute_direct_gui_command(self) -> bool:
+        """Attempt to execute a direct GUI command if the prompt matches a pattern."""
+        if not self.prompt:
+            return False
+        try:
+            direct_command_text = await self._execute_direct_gui_command(self.prompt)
+        except Exception as exc:
+            _LOGGER.warning(
+                "annolid-bot direct gui command failed session=%s model=%s error=%s",
+                self.session_id,
+                self.model,
+                exc,
+            )
+            return False
         if not direct_command_text:
             return False
         self._emit_progress("Executed direct GUI command")
@@ -667,6 +684,12 @@ class StreamingChatTask(QRunnable):
             ),
             stop_realtime_stream_callback=self._wrap_tool_callback(
                 "stop_realtime_stream", self._tool_gui_stop_realtime_stream
+            ),
+            arxiv_search_callback=self._wrap_tool_callback(
+                "arxiv_search", self._tool_gui_arxiv_search
+            ),
+            list_pdfs_callback=self._wrap_tool_callback(
+                "list_pdfs", self._tool_gui_list_pdfs
             ),
         )
 
@@ -897,9 +920,29 @@ class StreamingChatTask(QRunnable):
             return {"ok": False, "error": "Failed to queue GUI video open action"}
         return {"ok": True, "queued": True, "path": str(video_path)}
 
-    def _tool_gui_open_url(self, url: str) -> Dict[str, Any]:
+    async def _tool_gui_open_url(self, url: str) -> Dict[str, Any]:
+        """Open a URL. Supports local files, HTTP(S) links, and special handling for arXiv."""
         raw_text = str(url or "").strip()
         target_url = self._extract_first_web_url(raw_text)
+
+        # Check arXiv PDF/Abstract URL
+        candidate_url = target_url or raw_text
+        arxiv_match = re.search(
+            r"arxiv\.org/(?:pdf|abs)/(\d{4}\.\d{4,5}(?:v\d+)?)", candidate_url
+        )
+        if arxiv_match:
+            arxiv_id = arxiv_match.group(1)
+            self._emit_progress(f"arXiv: {arxiv_id}")
+            # Run until finished (wait/block this chat turn)
+            # Reusing safe wrapper which handles its own errors
+            await self._safe_run_arxiv_search(query=f"id:{arxiv_id}")
+            # We return ok=True so the router thinks it handled it.
+            # safe_run_arxiv_search already emitted progress/success.
+            return {
+                "ok": True,
+                "url": f"https://arxiv.org/abs/{arxiv_id}",
+                "id": arxiv_id,
+            }
         if not target_url:
             candidate = raw_text
             lowered = candidate.lower()
@@ -1003,7 +1046,7 @@ class StreamingChatTask(QRunnable):
     def _tool_gui_web_find_forms(self) -> Dict[str, Any]:
         return self._invoke_widget_json_slot("bot_web_find_forms")
 
-    def _tool_gui_web_run_steps(
+    async def _tool_gui_web_run_steps(
         self,
         steps: Any,
         stop_on_error: bool = True,
@@ -1041,7 +1084,7 @@ class StreamingChatTask(QRunnable):
                 continue
 
             if action == "open_url":
-                payload = self._tool_gui_open_url(str(raw_step.get("url") or ""))
+                payload = await self._tool_gui_open_url(str(raw_step.get("url") or ""))
             elif action == "open_in_browser":
                 payload = self._tool_gui_open_in_browser(str(raw_step.get("url") or ""))
             elif action in {"get_text", "dom_text", "snapshot"}:
@@ -1141,7 +1184,7 @@ class StreamingChatTask(QRunnable):
             max_scan=max_scan,
         )
 
-    def _tool_gui_open_pdf(self, path: str = "") -> Dict[str, Any]:
+    async def _tool_gui_open_pdf(self, path: str = "") -> Dict[str, Any]:
         path_text = str(path or "").strip()
         path_candidates = (
             self._extract_pdf_path_candidates(path_text) if path_text else []
@@ -1161,7 +1204,7 @@ class StreamingChatTask(QRunnable):
             if not url_candidate and generic_url_candidates:
                 url_candidate = str(generic_url_candidates[0] or "").strip()
             if url_candidate:
-                resolved_path = self._download_pdf_for_gui_tool(url_candidate)
+                resolved_path = await self._download_pdf_for_gui_tool(url_candidate)
             if resolved_path is None:
                 resolved_path = self._resolve_pdf_path_for_gui_tool(path_text)
         if (has_explicit_pdf_path or generic_url_candidates) and resolved_path is None:
@@ -1238,14 +1281,14 @@ class StreamingChatTask(QRunnable):
             payload["max_pages"] = pages_limit
         return payload
 
-    def _download_pdf_for_gui_tool(self, url: str) -> Optional[Path]:
+    async def _download_pdf_for_gui_tool(self, url: str) -> Optional[Path]:
         text = str(url or "").strip()
         if not text.lower().startswith(("http://", "https://")):
             return None
         workspace = get_agent_workspace_path()
         downloader = DownloadPdfTool(allowed_dir=workspace)
         try:
-            payload_raw = self._run_async(downloader.execute(url=text))
+            payload_raw = await downloader.execute(url=text)
             payload = json.loads(str(payload_raw or "{}"))
         except Exception:
             return None
@@ -1315,11 +1358,16 @@ class StreamingChatTask(QRunnable):
         )
 
     def _maybe_run_direct_gui_tool_from_prompt(self, prompt: str) -> str:
-        return self._execute_direct_gui_command(prompt)
+        # This method is called from _finalize_agent_text, which is not async.
+        # So we need to run the async _execute_direct_gui_command synchronously.
+        return self._run_async(self._execute_direct_gui_command(prompt))
 
-    def _execute_direct_gui_command(self, prompt: str) -> str:
+    async def _execute_direct_gui_command(self, prompt: str) -> str:
+        """Route direct command to the router and get back a result string."""
         command = self._parse_direct_gui_command(prompt)
-        return execute_direct_gui_command(
+        if not command:
+            return ""
+        return await execute_direct_gui_command(
             command,
             open_video=self._tool_gui_open_video,
             open_url=self._tool_gui_open_url,
@@ -1331,6 +1379,7 @@ class StreamingChatTask(QRunnable):
             label_behavior_segments=self._tool_gui_label_behavior_segments,
             start_realtime_stream=self._tool_gui_start_realtime_stream,
             stop_realtime_stream=self._tool_gui_stop_realtime_stream,
+            list_pdfs=self._tool_gui_list_pdfs,
             set_chat_model=self._tool_gui_set_chat_model,
             rename_file=self._tool_gui_rename_file,
         )
@@ -1878,6 +1927,184 @@ class StreamingChatTask(QRunnable):
                 "timestamps_rows": int(widget_result.get("timestamps_rows") or 0),
             }
         return {"ok": True, "queued": True, "mode": mode_norm}
+
+    async def _safe_run_arxiv_search(self, query: str) -> None:
+        """Wrapper to safely execute arXiv search and handle errors/progress."""
+        try:
+            result = await self._tool_gui_arxiv_search(query=query)
+            if not result.get("ok"):
+                error_msg = result.get("error", "Unknown error")
+                self._emit_progress(f"arXiv download failed: {error_msg}")
+            else:
+                open_result = result.get("open_result", {})
+                if not open_result.get("ok"):
+                    self._emit_progress(
+                        f"Downloaded but failed to open: {open_result.get('error')}"
+                    )
+                else:
+                    self._emit_progress("Opened PDF successfully.")
+        except Exception as exc:
+            logging.error("ArXiv operation crashed", exc_info=True)
+            self._emit_progress(f"Error during arXiv operation: {str(exc)}")
+
+    def _tool_gui_list_pdfs(self, query: str = None) -> Dict[str, Any]:
+        """List local PDF files available in the workspace."""
+        workspace = get_agent_workspace_path()
+        search_dirs = [workspace, workspace / "downloads"]
+
+        found_files: List[Path] = []
+        for d in search_dirs:
+            if d.exists() and d.is_dir():
+                found_files.extend(list(d.glob("*.pdf")))
+
+        # Unique files by path
+        unique_files = {str(f.absolute()): f for f in found_files}
+        pdf_files = list(unique_files.values())
+
+        if query:
+            q = str(query).lower().strip()
+            pdf_files = [f for f in pdf_files if q in f.name.lower()]
+
+        # Sort by modification time (newest first)
+        pdf_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+
+        # Limit results for efficiency
+        max_results = 20
+        truncated = len(pdf_files) > max_results
+        pdf_files = pdf_files[:max_results]
+
+        rel_paths = []
+        for f in pdf_files:
+            try:
+                rel_paths.append(str(f.relative_to(workspace)))
+            except ValueError:
+                rel_paths.append(str(f))
+
+        return {
+            "ok": True,
+            "files": rel_paths,
+            "count": len(found_files),
+            "showing": len(rel_paths),
+            "truncated": truncated,
+        }
+
+    async def _tool_gui_arxiv_search(
+        self, query: str, max_results: int = 1
+    ) -> Dict[str, Any]:
+        """Search arXiv, download top result PDF, and open it."""
+        try:
+            self._emit_progress(f"Searching arXiv for '{query}'...")
+
+            # Use thread executor for blocking urllib call
+            base_url = "http://export.arxiv.org/api/query"
+            if query.startswith("id:"):
+                final_query = query
+            else:
+                final_query = f"all:{query}"
+
+            safe_query = urllib.parse.quote(final_query)
+            url = f"{base_url}?search_query={safe_query}&start=0&max_results={max_results}"
+            self._emit_progress(f"arXiv: {query}")
+            loop = asyncio.get_running_loop()
+
+            def fetch_feed():
+                with urllib.request.urlopen(url, timeout=10) as response:
+                    return response.read()
+
+            xml_data = await loop.run_in_executor(None, fetch_feed)
+            self._emit_progress("Metadata received. Parsing...")
+
+            # Parse XML
+            root = ET.fromstring(xml_data)
+            ns = {"atom": "http://www.w3.org/2005/Atom"}
+            entry = root.find("atom:entry", ns)
+
+            if entry is None:
+                return {
+                    "ok": False,
+                    "error": f"No papers found for query: {query}",
+                    "query": query,
+                }
+
+            title_elem = entry.find("atom:title", ns)
+            title = (title_elem.text or "Untitled").strip().replace("\n", " ")
+
+            id_elem = entry.find("atom:id", ns)
+            id_url = (id_elem.text or "").strip()
+
+            # Find PDF link
+            pdf_link = None
+            for link in entry.findall("atom:link", ns):
+                if link.attrib.get("title") == "pdf":
+                    pdf_link = link.attrib.get("href")
+                    break
+
+            if not pdf_link and id_url:
+                # Fallback: construct from ID (e.g. http://arxiv.org/abs/2103.00020 -> pdf)
+                arxiv_id = id_url.split("/")[-1]
+                pdf_link = f"http://arxiv.org/pdf/{arxiv_id}.pdf"
+
+            if not pdf_link:
+                return {
+                    "ok": False,
+                    "error": "Could not find PDF link for paper.",
+                    "title": title,
+                }
+
+            self._emit_progress(f"Found: {title}")
+            self._emit_progress("Downloading PDF...")
+
+            # Use DownloadPdfTool to download and save
+            workspace_dir = Path(self.workspace)
+            # Ensure downloads directory exists
+            downloads_dir = workspace_dir / "downloads"
+            downloads_dir.mkdir(parents=True, exist_ok=True)
+
+            # Generate safe filename
+            safe_title = "".join(c for c in title if c.isalnum() or c in " ._-").strip()
+            # Limit length
+            if len(safe_title) > 100:
+                safe_title = safe_title[:100].rstrip(" ._-")
+            filename = f"{safe_title}.pdf"
+            output_path = str(downloads_dir / filename)
+
+            downloader = DownloadPdfTool(allowed_dir=workspace_dir)
+
+            # Reuse execute logic which handles content-type check etc.
+            dl_result_json = await downloader.execute(
+                url=pdf_link, output_path=output_path, overwrite=True
+            )
+
+            try:
+                dl_result = json.loads(dl_result_json)
+            except Exception:
+                dl_result = {"error": "Invalid download response"}
+
+            if dl_result.get("error"):
+                return {
+                    "ok": False,
+                    "error": f"Download failed: {dl_result['error']}",
+                    "url": pdf_link,
+                }
+
+            final_path = dl_result.get("output_path", output_path)
+
+            self._emit_progress("Opening PDF...")
+
+            # Open PDF
+            # _tool_gui_open_pdf calls widget slot 'bot_open_pdf'
+            # Need to call existing method on self
+            open_res = self._tool_gui_open_pdf(path=final_path)
+
+            return {
+                "ok": True,
+                "title": title,
+                "path": final_path,
+                "open_result": open_res,
+            }
+
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
 
     def _tool_gui_start_realtime_stream(
         self,

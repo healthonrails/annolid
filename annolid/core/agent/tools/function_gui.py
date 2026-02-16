@@ -809,6 +809,70 @@ class GuiStopRealtimeStreamTool(FunctionTool):
         return await _run_callback(self._stop_realtime_stream_callback)
 
 
+class GuiArxivSearchTool(FunctionTool):
+    def __init__(self, arxiv_search_callback: Optional[ActionCallback] = None):
+        self._arxiv_search_callback = arxiv_search_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_arxiv_search"
+
+    @property
+    def description(self) -> str:
+        return "Search arXiv for papers, download the best match, and open it in Annolid's PDF viewer."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "minLength": 1},
+                "max_results": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5,
+                    "default": 1,
+                },
+            },
+            "required": ["query"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._arxiv_search_callback, **kwargs)
+
+
+class GuiListPdfsTool(FunctionTool):
+    def __init__(self, list_pdfs_callback: Optional[ActionCallback] = None):
+        self._list_pdfs_callback = list_pdfs_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_list_pdfs"
+
+    @property
+    def description(self) -> str:
+        return (
+            "List all local PDF files available in the workspace downloads or "
+            "other accessible directories."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Optional search query to filter PDF files by name.",
+                }
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._list_pdfs_callback, **kwargs)
+
+
 def register_annolid_gui_tools(
     registry: FunctionToolRegistry,
     *,
@@ -827,6 +891,8 @@ def register_annolid_gui_tools(
     pdf_get_state_callback: Optional[ActionCallback] = None,
     pdf_get_text_callback: Optional[ActionCallback] = None,
     pdf_find_sections_callback: Optional[ActionCallback] = None,
+    arxiv_search_callback: Optional[ActionCallback] = None,
+    list_pdfs_callback: Optional[ActionCallback] = None,
     set_frame_callback: Optional[ActionCallback] = None,
     set_prompt_callback: Optional[ActionCallback] = None,
     send_prompt_callback: Optional[ActionCallback] = None,
@@ -902,3 +968,5 @@ def register_annolid_gui_tools(
             stop_realtime_stream_callback=stop_realtime_stream_callback
         )
     )
+    registry.register(GuiArxivSearchTool(arxiv_search_callback=arxiv_search_callback))
+    registry.register(GuiListPdfsTool(list_pdfs_callback=list_pdfs_callback))

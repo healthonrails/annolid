@@ -12,170 +12,25 @@ from annolid.gui.widgets.bot_explain import explain_selection_with_annolid_bot
 from annolid.gui.widgets.dictionary_lookup import DictionaryLookupTask
 from annolid.utils.logger import logger
 
+
 import os
 import platform
-import shutil
-import subprocess
 
-# Disable Chromium-level sandbox (needed in addition to the rpath fix).
-# os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+# Configure QtWebEngine environment variables for stability on macOS
+# This must serve as early as possible before QApplication is initialized or QtWebEngine is used
+if platform.system() == "Darwin":
+    # Fix 1: Disable sandbox to prevent "Library not loaded" crashes in helper process
+    # Fix 2: Disable GPU to prevent white screen / rendering artifacts
+    current_flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+    required_flags = ["--no-sandbox", "--disable-gpu", "--disable-software-rasterizer"]
 
+    flags_to_add = [f for f in required_flags if f not in current_flags]
+    if flags_to_add:
+        new_flags = f"{current_flags} {' '.join(flags_to_add)}".strip()
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = new_flags
 
-def _setup_webengine_process() -> None:
-    """Set up a sandboxed-free copy of QtWebEngineProcess on macOS.
-
-    The default ``QtWebEngineProcess.app`` inside the `.venv` bundle is
-    subject to strict macOS sandboxing that blocks it from loading Qt
-    frameworks (dyld error: ``file system sandbox blocked open``).
-
-    This function copies the bundle to the user's cache directory, patches
-    its rpath to point absolutely to the `.venv` libraries, re-signs it
-    with an ad-hoc signature, and sets ``QTWEBENGINEPROCESS_PATH`` to use
-    this unrestricted copy.
-    """
-    if platform.system() != "Darwin":
-        return
-
-    try:
-        import PyQt5
-
-        # Source paths
-        qt_lib = Path(PyQt5.__file__).parent / "Qt5" / "lib"
-        webengine_core = qt_lib / "QtWebEngineCore.framework"
-        src_process_app = webengine_core / "Helpers" / "QtWebEngineProcess.app"
-        src_resources = webengine_core / "Resources"
-
-        if not src_process_app.exists():
-            return
-
-        # Target paths (User Cache)
-        # We try a "bare binary" approach: copy just the executable, stripping the
-        # .app bundle structure. This often avoids macOS automatically applying
-        # the 'com.apple.WebEngine' sandbox profile which blocks .venv access.
-        #
-        # Layout:
-        #   .../QtWebEngine/QtWebEngineProcess  (the binary)
-        #   .../QtWebEngine/Resources           (symlink to .venv resources)
-        #
-        # QtWebEngineProcess will look for resources relative to itself.
-        cache_base = Path.home() / "Library" / "Caches" / "Annolid" / "QtWebEngine"
-        target_executable = cache_base / "QtWebEngineProcess"
-
-        # Re-create cache if version/binary changed (simple check: existence)
-        if not target_executable.exists():
-            # Clean up potential partial state or old structure
-            if cache_base.exists():
-                shutil.rmtree(cache_base)
-
-            cache_base.mkdir(parents=True, exist_ok=True)
-
-            # Copy the binary directly
-            src_executable = (
-                src_process_app / "Contents" / "MacOS" / "QtWebEngineProcess"
-            )
-            shutil.copy2(src_executable, target_executable)
-
-        # Clean up old "Resources" subdirectory if it exists from previous versions
-        old_resources_dir = cache_base / "Resources"
-        if old_resources_dir.exists():
-            if old_resources_dir.is_dir():
-                shutil.rmtree(old_resources_dir)
-            else:
-                old_resources_dir.unlink()
-        # Copy resources directly into the cache_base directory (flattened structure)
-        # The bare binary (no .app bundle) expects resources next to it.
-        # We use a stamp file to avoid re-copying if already done for this version.
-        stamp_file = cache_base / ".resources_copied_v2"
-        if not stamp_file.exists():
-            for item in src_resources.iterdir():
-                dest = cache_base / item.name
-                if dest.exists() or dest.is_symlink():
-                    if dest.is_dir():
-                        shutil.rmtree(dest)
-                    else:
-                        dest.unlink()
-
-                if item.is_dir():
-                    shutil.copytree(item, dest)
-                else:
-                    shutil.copy2(item, dest)
-
-            # Copy required Frameworks to bypass sandbox
-            # The sandbox prevents the isolated process from reading the .venv lib dir.
-            frameworks_dir = cache_base / "Frameworks"
-            if frameworks_dir.exists():
-                shutil.rmtree(frameworks_dir)
-            frameworks_dir.mkdir()
-
-            required_frameworks = [
-                "QtWebEngineCore.framework",
-                "QtQuick.framework",
-                "QtQmlModels.framework",
-                "QtWebChannel.framework",
-                "QtQml.framework",
-                "QtNetwork.framework",
-                "QtPositioning.framework",
-                "QtCore.framework",
-                "QtGui.framework",
-            ]
-
-            for fw_name in required_frameworks:
-                src_fw = qt_lib / fw_name
-                if src_fw.exists():
-                    shutil.copytree(src_fw, frameworks_dir / fw_name, symlinks=True)
-
-            # Create empty qt.conf to prevent Qt from looking elsewhere
-            with open(cache_base / "qt.conf", "w") as f:
-                f.write("[Paths]\nPrefix = .\n")
-
-            stamp_file.touch()
-
-        # Patch rpath to prefer local Frameworks
-        # We add @loader_path/Frameworks to the rpath list.
-        # Use absolute path for install_name_tool to ensure it's found
-        install_name_tool = "/usr/bin/install_name_tool"
-        if not os.path.exists(install_name_tool):
-            # Fallback to just command name if not in standard location
-            install_name_tool = "install_name_tool"
-
-        subprocess.run(
-            [
-                install_name_tool,
-                "-add_rpath",
-                "@loader_path/Frameworks",
-                str(target_executable),
-            ],
-            capture_output=True,
-        )
-        # Also try to remove the absolute path if it exists, to be clean, but ignore errors
-        qt_lib_str = str(qt_lib.resolve())
-        subprocess.run(
-            [install_name_tool, "-delete_rpath", qt_lib_str, str(target_executable)],
-            capture_output=True,
-        )
-
-        # Ad-hoc sign (force)
-        subprocess.run(
-            ["codesign", "--force", "--sign", "-", str(target_executable)],
-            capture_output=True,
-        )
-
-        # Tell Qt to use this process
-        os.environ["QTWEBENGINEPROCESS_PATH"] = str(target_executable)
-        logger.info(
-            "Redirected QtWebEngineProcess to cached bare binary: %s", target_executable
-        )
-
-    except Exception as exc:
-        logger.warning("Failed to setup QtWebEngineProcess copy: %s", exc)
-        # Log traceback for debugging if it's a file not found error
-        if isinstance(exc, FileNotFoundError) or logger.isEnabledFor(10):  # DEBUG
-            import traceback
-
-            logger.warning("Traceback:\n%s", traceback.format_exc())
-
-
-_setup_webengine_process()
+    # Fix 3: Ensure layer backing for proper composition
+    os.environ["QT_MAC_WANTS_LAYER"] = "1"
 
 try:
     from qtpy import QtWebEngineWidgets  # type: ignore
