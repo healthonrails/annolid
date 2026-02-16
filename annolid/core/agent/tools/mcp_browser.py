@@ -7,7 +7,7 @@ using the MCP protocol to connect to a Playwright MCP server.
 import json
 from typing import Any, Dict, Optional
 
-from loguru import logger
+from annolid.utils.logger import logger
 
 from .function_base import FunctionTool
 from .function_registry import FunctionToolRegistry
@@ -78,7 +78,7 @@ async def _ensure_mcp_browser_session(mcp_servers: Dict[str, Any]) -> Optional[A
         logger.warning("mcp package not installed")
         return None
     except Exception as e:
-        logger.error("Failed to connect to MCP browser: {}", e)
+        logger.error("Failed to connect to MCP browser: %s", e)
         return None
 
 

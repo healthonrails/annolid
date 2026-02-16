@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+from annolid.utils.logger import logger
 from collections import OrderedDict
 from contextlib import suppress
 from typing import Any, Optional
@@ -22,11 +22,10 @@ class AgentBusService:
         max_idempotency_cache: int = 512,
         default_dm_scope: str = "main",
         default_main_session_key: str = "",
-        logger: Optional[logging.Logger] = None,
     ) -> None:
         self.bus = bus
         self.loop = loop
-        self._logger = logger or logging.getLogger("annolid.agent.bus.service")
+        self._logger = logger
         self._max_idempotency_cache = max(16, int(max_idempotency_cache))
         self._default_dm_scope = str(default_dm_scope or "").strip() or "main"
         self._default_main_session_key = str(default_main_session_key or "").strip()
@@ -44,7 +43,6 @@ class AgentBusService:
         loop: AgentLoop,
         agent_config: Any,
         max_idempotency_cache: int = 512,
-        logger: Optional[logging.Logger] = None,
     ) -> "AgentBusService":
         dm_scope = "main"
         main_key = "main"
@@ -64,7 +62,6 @@ class AgentBusService:
             max_idempotency_cache=max_idempotency_cache,
             default_dm_scope=dm_scope,
             default_main_session_key=main_key,
-            logger=logger,
         )
 
     async def start(self) -> None:
@@ -86,8 +83,10 @@ class AgentBusService:
         while self._running:
             try:
                 inbound = await self.bus.consume_inbound()
-                print(
-                    f"AgentBusService: New message from {inbound.sender_id} via {inbound.channel}"
+                self._logger.info(
+                    "New message from %s via %s",
+                    inbound.sender_id,
+                    inbound.channel,
                 )
                 await self._process_inbound(inbound)
             except asyncio.CancelledError:
@@ -147,8 +146,8 @@ class AgentBusService:
             )
         outbound = self._annotate_outbound(outbound)
         self._store_idempotency(cache_key, outbound)
-        print(
-            f"AgentBusService: Publishing reply to {outbound.chat_id} via {outbound.channel}"
+        self._logger.info(
+            "Publishing reply to %s via %s", outbound.chat_id, outbound.channel
         )
         await self.bus.publish_outbound(outbound)
 

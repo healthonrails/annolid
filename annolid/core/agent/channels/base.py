@@ -1,5 +1,4 @@
-from __future__ import annotations
-
+from annolid.utils.logger import logger
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
@@ -51,8 +50,10 @@ class BaseChannel(ABC):
         metadata: Optional[dict[str, Any]] = None,
     ) -> bool:
         if not self.is_allowed(sender_id):
-            print(
-                f"Channel {self.name}: Message from {sender_id} blocked by allow_from list."
+            logger.warning(
+                "Channel %s: Message from %s blocked by allow_from list.",
+                self.name,
+                sender_id,
             )
             return False
         normalized_meta = self._normalize_session_metadata(

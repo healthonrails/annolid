@@ -6,7 +6,7 @@ import re
 from contextlib import AsyncExitStack
 from typing import Any, Dict
 
-from loguru import logger
+from annolid.utils.logger import logger
 
 from .function_base import FunctionTool
 from .function_registry import FunctionToolRegistry
@@ -115,7 +115,7 @@ async def connect_mcp_servers(
                 )
             else:
                 logger.warning(
-                    f"MCP server '{name}': no command or url configured, skipping"
+                    "MCP server '%s': no command or url configured, skipping", name
                 )
                 continue
 
@@ -127,13 +127,13 @@ async def connect_mcp_servers(
                 wrapper = MCPToolWrapper(session, name, tool_def)
                 registry.register(wrapper)
                 logger.debug(
-                    f"MCP: registered tool '{wrapper.name}' from server '{name}'"
+                    "MCP: registered tool '%s' from server '%s'", wrapper.name, name
                 )
 
             logger.info(
-                "MCP server '{}': connected, {} tools registered",
+                "MCP server '%s': connected, %d tools registered",
                 name,
                 len(tools.tools),
             )
         except Exception as e:
-            logger.error("MCP server '{}': failed to connect: {}", name, e)
+            logger.error("MCP server '%s': failed to connect: %s", name, e)

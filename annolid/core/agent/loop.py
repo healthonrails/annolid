@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import AsyncExitStack
 import json
-import logging
+from annolid.utils.logger import logger
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -167,7 +167,6 @@ class AgentLoop:
         subagent_manager: Optional["SubagentManager"] = None,
         mcp_servers: Optional[Dict[str, Any]] = None,
         interleave_post_tool_guidance: bool = True,
-        logger: Optional[logging.Logger] = None,
     ) -> None:
         self._tools = tools
         runtime_cfg = resolve_agent_runtime_config(profile=profile)
@@ -178,7 +177,7 @@ class AgentLoop:
         )
         self._max_iterations = resolved_max_iterations
         self._default_temperature = float(runtime_cfg.temperature)
-        self._logger = logger or logging.getLogger("annolid.agent.loop")
+        self._logger = logger
         self._memory_config = memory_config or AgentMemoryConfig(
             max_history_messages=runtime_cfg.max_history_messages,
             memory_window=runtime_cfg.memory_window,
@@ -241,8 +240,11 @@ class AgentLoop:
             self._memory_config.enabled if use_memory is None else bool(use_memory)
         )
         self._set_tool_context(channel=channel, chat_id=chat_id)
-        print(
-            f"AgentLoop: Processing message from {chat_id} on {channel} using model {self.model}"
+        self._logger.info(
+            "Processing message from %s on %s using model %s",
+            chat_id,
+            channel,
+            self.model,
         )
         await self._connect_mcp()
         try:

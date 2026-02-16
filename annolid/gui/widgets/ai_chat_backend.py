@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from datetime import datetime
 import importlib
 import json
-import logging
 import os
 from pathlib import Path
 import re
+import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
 import urllib.request
@@ -81,10 +81,10 @@ from annolid.utils.llm_settings import (
     provider_kind,
     resolve_agent_runtime_config,
 )
+from annolid.utils.logger import logger
 
 
 _SESSION_STORE: Optional[PersistentSessionStore] = None
-_LOGGER = logging.getLogger("annolid.bot.backend")
 _GUI_ALWAYS_DISABLED_TOOLS = {"cron", "spawn", "message"}
 _GUI_WEB_TOOLS = {"web_search", "web_fetch"}
 _WEB_ACCESS_REFUSAL_HINTS = (
@@ -223,8 +223,8 @@ class StreamingChatTask(QRunnable):
         self._last_progress_update: str = ""
 
     def run(self) -> None:
-        self._emit_progress("Analyzing request")
-        _LOGGER.info(
+        """Execute the chat task flow."""
+        logger.info(
             "annolid-bot turn start session=%s provider=%s model=%s prompt_chars=%d",
             self.session_id,
             self.provider,
@@ -234,7 +234,7 @@ class StreamingChatTask(QRunnable):
         dep_error = self._provider_dependency_error()
         if dep_error:
             self._emit_progress("Provider dependency check failed")
-            _LOGGER.warning(
+            logger.warning(
                 "annolid-bot dependency check failed session=%s provider=%s model=%s error=%s",
                 self.session_id,
                 self.provider,
@@ -242,7 +242,7 @@ class StreamingChatTask(QRunnable):
                 dep_error,
             )
             self._emit_final(dep_error, is_error=True)
-            _LOGGER.info(
+            logger.info(
                 "annolid-bot turn stop session=%s provider=%s model=%s status=dependency_missing",
                 self.session_id,
                 self.provider,
@@ -252,7 +252,7 @@ class StreamingChatTask(QRunnable):
         try:
             self._emit_progress("Starting agent loop")
             self._run_agent_loop()
-            _LOGGER.info(
+            logger.info(
                 "annolid-bot turn stop session=%s provider=%s model=%s status=ok",
                 self.session_id,
                 self.provider,
@@ -261,7 +261,7 @@ class StreamingChatTask(QRunnable):
         except Exception as exc:
             if isinstance(exc, ImportError):
                 message = self._format_dependency_error(str(exc))
-                _LOGGER.warning(
+                logger.warning(
                     "annolid-bot agent dependency missing session=%s provider=%s model=%s error=%s",
                     self.session_id,
                     self.provider,
@@ -269,14 +269,14 @@ class StreamingChatTask(QRunnable):
                     exc,
                 )
                 self._emit_final(message, is_error=True)
-                _LOGGER.info(
+                logger.info(
                     "annolid-bot turn stop session=%s provider=%s model=%s status=dependency_missing",
                     self.session_id,
                     self.provider,
                     self.model,
                 )
                 return
-            _LOGGER.warning(
+            logger.warning(
                 "annolid-bot agent loop failed; trying provider fallback session=%s provider=%s model=%s error=%s",
                 self.session_id,
                 self.provider,
@@ -299,7 +299,7 @@ class StreamingChatTask(QRunnable):
                 self._run_gemini()
             else:
                 raise ValueError(f"Unsupported provider '{self.provider}'.")
-            _LOGGER.info(
+            logger.info(
                 "annolid-bot turn stop session=%s provider=%s model=%s status=fallback_ok",
                 self.session_id,
                 self.provider,
@@ -308,7 +308,7 @@ class StreamingChatTask(QRunnable):
         except Exception as fallback_exc:
             if isinstance(fallback_exc, ImportError):
                 message = self._format_dependency_error(str(fallback_exc))
-                _LOGGER.warning(
+                logger.warning(
                     "annolid-bot fallback dependency missing session=%s provider=%s model=%s error=%s",
                     self.session_id,
                     self.provider,
@@ -316,14 +316,14 @@ class StreamingChatTask(QRunnable):
                     fallback_exc,
                 )
                 self._emit_final(message, is_error=True)
-                _LOGGER.info(
+                logger.info(
                     "annolid-bot turn stop session=%s provider=%s model=%s status=dependency_missing",
                     self.session_id,
                     self.provider,
                     self.model,
                 )
                 return
-            _LOGGER.exception(
+            logger.exception(
                 "annolid-bot fallback failed session=%s provider=%s model=%s",
                 self.session_id,
                 self.provider,
@@ -468,7 +468,7 @@ class StreamingChatTask(QRunnable):
             wants_tools = self._prompt_may_need_tools(self.prompt)
             if remaining_plain_turns > 0 and not wants_tools:
                 updated_remaining = ollama_plain_mode_decrement(self.model)
-                _LOGGER.warning(
+                logger.warning(
                     "annolid-bot model is in temporary plain mode; skipping agent/tool loop model=%s remaining_turns=%d",
                     self.model,
                     updated_remaining,
@@ -490,7 +490,7 @@ class StreamingChatTask(QRunnable):
                 self._emit_final(text, is_error=False)
                 return True
             if remaining_plain_turns > 0 and wants_tools:
-                _LOGGER.info(
+                logger.info(
                     "annolid-bot bypassing temporary plain mode due tool-intent prompt model=%s remaining_turns=%d",
                     self.model,
                     remaining_plain_turns,
@@ -537,7 +537,7 @@ class StreamingChatTask(QRunnable):
         try:
             direct_command_text = await self._execute_direct_gui_command(self.prompt)
         except Exception as exc:
-            _LOGGER.warning(
+            logger.warning(
                 "annolid-bot direct gui command failed session=%s model=%s error=%s",
                 self.session_id,
                 self.model,
@@ -547,7 +547,7 @@ class StreamingChatTask(QRunnable):
         if not direct_command_text:
             return False
         self._emit_progress("Executed direct GUI command")
-        _LOGGER.info(
+        logger.info(
             "annolid-bot direct gui command handled session=%s model=%s",
             self.session_id,
             self.model,
@@ -589,7 +589,7 @@ class StreamingChatTask(QRunnable):
             workspace, allowed_read_roots=allowed_read_roots
         )
         self._emit_progress("Prepared system prompt")
-        _LOGGER.info(
+        logger.info(
             "annolid-bot agent config session=%s model=%s tools=%d read_roots=%d profile=%s policy_source=%s prompt_chars=%d",
             self.session_id,
             self.model,
@@ -714,7 +714,7 @@ class StreamingChatTask(QRunnable):
             direct_gui_text = self._maybe_run_direct_gui_tool_from_prompt(self.prompt)
             used_direct_gui_fallback = bool(direct_gui_text)
             if used_direct_gui_fallback:
-                _LOGGER.info(
+                logger.info(
                     "annolid-bot direct gui fallback executed session=%s model=%s",
                     self.session_id,
                     self.model,
@@ -777,7 +777,7 @@ class StreamingChatTask(QRunnable):
         used_recovery: bool,
         used_direct_gui_fallback: bool,
     ) -> None:
-        _LOGGER.info(
+        logger.info(
             "annolid-bot agent result session=%s provider=%s model=%s iterations=%s tool_runs=%d",
             self.session_id,
             self.provider,
@@ -786,13 +786,13 @@ class StreamingChatTask(QRunnable):
             len(getattr(result, "tool_runs", ()) or ()),
         )
         if used_recovery:
-            _LOGGER.info(
+            logger.info(
                 "annolid-bot recovered empty agent reply with plain ollama answer session=%s model=%s",
                 self.session_id,
                 self.model,
             )
         if used_direct_gui_fallback:
-            _LOGGER.info(
+            logger.info(
                 "annolid-bot responded from direct gui fallback session=%s model=%s",
                 self.session_id,
                 self.model,
@@ -876,7 +876,7 @@ class StreamingChatTask(QRunnable):
                 return invoked
             return True
         except Exception as exc:
-            _LOGGER.warning(
+            logger.warning(
                 "annolid-bot gui slot invoke failed session=%s slot=%s error=%s",
                 self.session_id,
                 slot_name,
@@ -2312,7 +2312,7 @@ class StreamingChatTask(QRunnable):
             image_path=self.image_path,
             model=self.model,
             settings=self.settings,
-            logger=_LOGGER,
+            logger=logger,
             import_module=importlib.import_module,
         )
 
@@ -2522,7 +2522,7 @@ class StreamingChatTask(QRunnable):
             normalize_messages=self._normalize_messages_for_ollama,
             extract_text=self._extract_ollama_text,
             prompt_may_need_tools=self._prompt_may_need_tools,
-            logger=_LOGGER,
+            logger=logger,
             import_module=importlib.import_module,
         )
 

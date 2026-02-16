@@ -1,17 +1,16 @@
 import asyncio
 import email
 import imaplib
-import logging
 import smtplib
 from email.message import EmailMessage
 from typing import Any, Awaitable, Callable, Optional
 
 from annolid.core.agent.bus import OutboundMessage
+from annolid.utils.logger import logger
 
 from .base import BaseChannel
 
 SendCallback = Callable[[OutboundMessage], Awaitable[None] | None]
-logger = logging.getLogger("annolid.agent.channels.email")
 
 
 class EmailChannel(BaseChannel):
@@ -70,10 +69,10 @@ class EmailChannel(BaseChannel):
         password = str(self.config.get("password") or "").replace(" ", "").strip()
 
         if not all([imap_host, user, password]):
-            print("IMAP not configured for background polling.")
+            logger.warning("IMAP not configured for background polling.")
             return
 
-        print(f"Polling IMAP for {user}...")
+        logger.info("Polling IMAP for %s...", user)
 
         def _sync_poll():
             messages = []
@@ -118,10 +117,10 @@ class EmailChannel(BaseChannel):
 
         new_emails = await asyncio.to_thread(_sync_poll)
         if new_emails:
-            print(f"Found {len(new_emails)} new email(s).")
+            logger.info("Found %d new email(s).", len(new_emails))
 
         for em in new_emails:
-            print(f"Ingesting email from {em['sender']}: {em['subject']}")
+            logger.info("Ingesting email from %s: %s", em["sender"], em["subject"])
             await self.ingest(
                 sender_email=em["sender"], subject=em["subject"], body=em["body"]
             )

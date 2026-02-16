@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from annolid.utils.logger import logger
 from typing import Optional
 
 from qtpy import QtCore, QtWidgets
@@ -138,7 +139,7 @@ class AIChatManager(QtCore.QObject):
                     # In background mode, we use a standard loop.
                     workspace = get_agent_workspace_path()
                     loop_instance = AgentLoop(tools=tools, workspace=workspace)
-                    print(f"AgentLoop initialized with workspace: {workspace}")
+                    logger.info("AgentLoop initialized with workspace: %s", workspace)
 
                     self._bus_service = AgentBusService.from_agent_config(
                         bus=self._background_bus,
@@ -154,11 +155,11 @@ class AIChatManager(QtCore.QObject):
                     await self._bus_service.start()
                     await self._channel_manager.start_all()
 
-                    print(
+                    logger.info(
                         "Annolid Bot background services started (Email monitor enabled)"
                     )
                 except Exception as exc:
-                    print(f"Failed to start background services: {exc}")
+                    logger.exception("Failed to start background services: %s", exc)
 
             # Schedule the start coroutine
             loop.create_task(_async_start())
