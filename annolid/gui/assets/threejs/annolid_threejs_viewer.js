@@ -47,7 +47,7 @@ async function boot() {
       antialias: true,
       alpha: false,
     });
-    renderer.setPixelRatio(Math.max(1, window.devicePixelRatio || 1));
+    renderer.setPixelRatio(Math.min(Math.max(1, window.devicePixelRatio || 1), 2));
     renderer.setSize(canvas.clientWidth || 800, canvas.clientHeight || 600, false);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
@@ -522,7 +522,8 @@ async function boot() {
     }
 
     // --- Real-time Video and Pose Integration ---
-    let videoPlane, videoTexture;
+    let videoPlane, videoTexture, videoCanvas, videoCtx;
+    let realtimeFrameSeq = 0;
     const poseGroup = new THREE.Group();
     scene.add(poseGroup);
 
@@ -545,8 +546,23 @@ async function boot() {
     scene.add(gazeReticle);
 
     const initRealtimeVideo = () => {
-      // Use RGBAFormat for better compatibility with newer Three.js data textures
-      videoTexture = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1, THREE.RGBAFormat);
+      // Use a persistent CanvasTexture to avoid texture-object churn in embedded Chromium.
+      videoCanvas = document.createElement("canvas");
+      videoCanvas.width = 2;
+      videoCanvas.height = 2;
+      videoCtx = videoCanvas.getContext("2d", { alpha: false });
+      if (videoCtx) {
+        videoCtx.fillStyle = "#000";
+        videoCtx.fillRect(0, 0, videoCanvas.width, videoCanvas.height);
+      }
+      videoTexture = new THREE.CanvasTexture(videoCanvas);
+      videoTexture.colorSpace = THREE.SRGBColorSpace;
+      videoTexture.minFilter = THREE.LinearFilter;
+      videoTexture.magFilter = THREE.LinearFilter;
+      videoTexture.wrapS = THREE.ClampToEdgeWrapping;
+      videoTexture.wrapT = THREE.ClampToEdgeWrapping;
+      videoTexture.generateMipmaps = false;
+      videoTexture.needsUpdate = true;
       const material = new THREE.MeshBasicMaterial({
         map: videoTexture,
         side: THREE.DoubleSide,
@@ -605,6 +621,31 @@ async function boot() {
       return sprite;
     };
 
+    const clearGroupAndDispose = (group) => {
+      if (!group) return;
+      const nodes = [...group.children];
+      nodes.forEach((node) => {
+        if (node.geometry && typeof node.geometry.dispose === "function") {
+          node.geometry.dispose();
+        }
+        const disposeMaterial = (mat) => {
+          if (!mat) return;
+          if (mat.map && typeof mat.map.dispose === "function") {
+            mat.map.dispose();
+          }
+          if (typeof mat.dispose === "function") {
+            mat.dispose();
+          }
+        };
+        if (Array.isArray(node.material)) {
+          node.material.forEach(disposeMaterial);
+        } else {
+          disposeMaterial(node.material);
+        }
+      });
+      group.clear();
+    };
+
     window.updateRealtimeData = (base64Frame, detections, frameWidthArg = 0, frameHeightArg = 0) => {
       if (!realtimeEnabled) return;
       const overlayZ = (videoPlane && Number.isFinite(videoPlane.position.z))
@@ -615,35 +656,40 @@ async function boot() {
 
       // 1. Update Video Frame
       if (base64Frame) {
+        const seq = ++realtimeFrameSeq;
         const img = new Image();
         img.onload = () => {
-          if (!videoPlane) return;
+          if (!videoPlane || !videoTexture || !videoCanvas || !videoCtx) return;
+          // Drop stale async decodes so older textures do not race newer ones.
+          if (seq !== realtimeFrameSeq) return;
 
-          if (!videoTexture || videoTexture.image.width !== img.width || videoTexture.image.height !== img.height) {
-            if (videoTexture) videoTexture.dispose();
-            videoTexture = new THREE.Texture(img);
-            videoTexture.colorSpace = THREE.SRGBColorSpace;
-            videoTexture.needsUpdate = true;
-            videoPlane.material.map = videoTexture;
-
-            // Adjust plane size to maintain aspect ratio
-            const aspect = img.width / img.height;
-            videoPlane.scale.set(aspect * 10, 10, 1);
-          } else {
-            videoTexture.image = img;
-            videoTexture.needsUpdate = true;
+          // Keep a fixed texture object; only update canvas pixels.
+          if (videoCanvas.width !== img.width || videoCanvas.height !== img.height) {
+            videoCanvas.width = img.width;
+            videoCanvas.height = img.height;
           }
+          videoCtx.clearRect(0, 0, videoCanvas.width, videoCanvas.height);
+          videoCtx.drawImage(img, 0, 0, videoCanvas.width, videoCanvas.height);
+          videoTexture.needsUpdate = true;
+          if (videoPlane.material.map !== videoTexture) {
+            videoPlane.material.map = videoTexture;
+            videoPlane.material.needsUpdate = true;
+          }
+
+          // Adjust plane size to maintain aspect ratio
+          const aspect = img.width / Math.max(1, img.height);
+          videoPlane.scale.set(aspect * 10, 10, 1);
           videoPlane.visible = true;
         };
         img.src = `data:image/jpeg;base64,${base64Frame}`;
       }
 
       // 2. Update Poses and Hands
-      poseKeypoints.clear();
-      poseSkeleton.clear();
-      behaviorLabels.clear();
-      irisGroup.clear();
-      handGroup.clear();
+      clearGroupAndDispose(poseKeypoints);
+      clearGroupAndDispose(poseSkeleton);
+      clearGroupAndDispose(behaviorLabels);
+      clearGroupAndDispose(irisGroup);
+      clearGroupAndDispose(handGroup);
 
       if (detections && detections.length > 0) {
         detections.forEach((det, detIdx) => {

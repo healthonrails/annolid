@@ -10,7 +10,6 @@ THREEJS_EXAMPLE_IDS = (
     "sphere_points_ply",
     "brain_viewer_html",
     "two_mice_html",
-    "cool_point_cloud_importmap_html",
 )
 
 
@@ -24,7 +23,6 @@ def generate_threejs_example(example_id: str, out_dir: str | Path) -> Path:
         "sphere_points_ply": _build_sphere_points_ply,
         "brain_viewer_html": _build_brain_viewer_html,
         "two_mice_html": _build_two_mice_html,
-        "cool_point_cloud_importmap_html": _build_cool_point_cloud_importmap_html,
     }
     builder = builders.get(example_id)
     if builder is not None:
@@ -35,16 +33,6 @@ def generate_threejs_example(example_id: str, out_dir: str | Path) -> Path:
 def _build_brain_viewer_html(_out: Path) -> Path:
     # This is a standalone HTML example bundled with the app.
     return Path(__file__).resolve().parent / "assets" / "threejs" / "points_3d.html"
-
-
-def _build_cool_point_cloud_importmap_html(_out: Path) -> Path:
-    # This is a standalone HTML example bundled with the app.
-    return (
-        Path(__file__).resolve().parent
-        / "assets"
-        / "threejs"
-        / "cool_point_cloud_importmap.html"
-    )
 
 
 def _build_two_mice_html(_out: Path) -> Path:
