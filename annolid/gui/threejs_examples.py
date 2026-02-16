@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Callable
 
 THREEJS_EXAMPLE_IDS = (
     "helix_points_csv",
     "wave_surface_obj",
     "sphere_points_ply",
     "brain_viewer_html",
+    "two_mice_html",
+    "cool_point_cloud_importmap_html",
 )
 
 
@@ -15,26 +18,56 @@ def generate_threejs_example(example_id: str, out_dir: str | Path) -> Path:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    if example_id == "brain_viewer_html":
-        # This is a standalone HTML example, return the asset path
-        asset_path = (
-            Path(__file__).resolve().parent / "assets" / "threejs" / "points_3d.html"
-        )
-        return asset_path
-
-    if example_id == "helix_points_csv":
-        path = out / "helix_points.csv"
-        _write_helix_points_csv(path)
-        return path
-    if example_id == "wave_surface_obj":
-        path = out / "wave_surface.obj"
-        _write_wave_surface_obj(path)
-        return path
-    if example_id == "sphere_points_ply":
-        path = out / "sphere_points.ply"
-        _write_sphere_points_ply(path)
-        return path
+    builders: dict[str, Callable[[Path], Path]] = {
+        "helix_points_csv": _build_helix_points_csv,
+        "wave_surface_obj": _build_wave_surface_obj,
+        "sphere_points_ply": _build_sphere_points_ply,
+        "brain_viewer_html": _build_brain_viewer_html,
+        "two_mice_html": _build_two_mice_html,
+        "cool_point_cloud_importmap_html": _build_cool_point_cloud_importmap_html,
+    }
+    builder = builders.get(example_id)
+    if builder is not None:
+        return builder(out)
     raise ValueError(f"Unknown Three.js example: {example_id}")
+
+
+def _build_brain_viewer_html(_out: Path) -> Path:
+    # This is a standalone HTML example bundled with the app.
+    return Path(__file__).resolve().parent / "assets" / "threejs" / "points_3d.html"
+
+
+def _build_cool_point_cloud_importmap_html(_out: Path) -> Path:
+    # This is a standalone HTML example bundled with the app.
+    return (
+        Path(__file__).resolve().parent
+        / "assets"
+        / "threejs"
+        / "cool_point_cloud_importmap.html"
+    )
+
+
+def _build_two_mice_html(_out: Path) -> Path:
+    # This is a standalone HTML example bundled with the app.
+    return Path(__file__).resolve().parent / "assets" / "threejs" / "two_mice.html"
+
+
+def _build_helix_points_csv(out: Path) -> Path:
+    path = out / "helix_points.csv"
+    _write_helix_points_csv(path)
+    return path
+
+
+def _build_wave_surface_obj(out: Path) -> Path:
+    path = out / "wave_surface.obj"
+    _write_wave_surface_obj(path)
+    return path
+
+
+def _build_sphere_points_ply(out: Path) -> Path:
+    path = out / "sphere_points.ply"
+    _write_sphere_points_ply(path)
+    return path
 
 
 def _write_helix_points_csv(path: Path) -> None:

@@ -72,6 +72,7 @@ def _ensure_threejs_http_server() -> str:
                         "annolid_threejs_viewer.js",
                         "annolid_threejs_viewer.css",
                         "points_3d.html",
+                        "two_mice.html",
                         "parser.worker.js",
                     }:
                         self.send_error(404)

@@ -677,11 +677,17 @@ class MenuController:
             lambda: w.open_threejs_example("brain_viewer_html"),
             tip=w.tr("Open the standalone Brain 3D point cloud viewer in a browser"),
         )
+        w.threejs_example_two_mice_action = self._action_factory(
+            w.tr("Two Mice"),
+            lambda: w.open_threejs_example("two_mice_html"),
+            tip=w.tr("Open an animated importmap-based Three.js point cloud"),
+        )
         w.threejs_examples_menu = QtWidgets.QMenu(w.tr("3D Examples"), w)
         w.threejs_examples_menu.addAction(w.threejs_example_helix_action)
         w.threejs_examples_menu.addAction(w.threejs_example_wave_action)
         w.threejs_examples_menu.addAction(w.threejs_example_sphere_action)
         w.threejs_examples_menu.addAction(w.threejs_example_brain_viewer_action)
+        w.threejs_examples_menu.addAction(w.threejs_example_two_mice_action)
 
         # ------------------------------------------------------------------
         # Pose/keypoint annotation helpers (visible vs occluded)

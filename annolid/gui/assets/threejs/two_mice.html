@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Annolid: High-Fidelity Mouse Study</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body {
+      margin: 0; width: 100%; height: 100%; overflow: hidden;
+      background: radial-gradient(circle at 50% 15%, #272727 0%, #0c0c0c 70%);
+      font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    }
+    #c { display: block; width: 100%; height: 100%; }
+
+    /* Engineering HUD */
+    .overlay {
+      position: absolute; inset: 0; pointer-events: none;
+      background: radial-gradient(circle at 50% 50%, transparent 50%, rgba(0,0,0,0.4) 100%);
+    }
+    .hud {
+      position: absolute; bottom: 30px; left: 30px;
+      color: rgba(255, 255, 255, 0.9);
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 12px;
+      border-left: 3px solid #88b6ff;
+      padding-left: 15px;
+      background: linear-gradient(90deg, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0) 100%);
+      padding: 10px 15px;
+      backdrop-filter: blur(4px);
+    }
+    .hud h1 { margin: 0 0 5px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 2px; color: #fff; }
+    .data-row { display: flex; justify-content: space-between; width: 200px; margin-bottom: 2px; }
+    .label { color: #888; }
+    .val { color: #3498db; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div class="overlay"></div>
+  <div class="hud">
+    <h1>Subject: Mus musculus</h1>
+    <div class="data-row"><span class="label">RENDERER</span><span class="val">PBR / PHYSICAL</span></div>
+    <div class="data-row"><span class="label">GEOMETRY</span><span class="val">ANATOMICAL MESH</span></div>
+    <div class="data-row"><span class="label">LIGHTING</span><span class="val">SOFTBOX STUDIO</span></div>
+    <div class="data-row"><span class="label">STATE</span><span class="val">CURIOUS / ALERT</span></div>
+  </div>
+
+  <!--
+    FIX: We use 'esm.sh' here.
+    This auto-resolves the internal dependency that OrbitControls has on 'three',
+    preventing the "Failed to resolve module specifier" error.
+  -->
+  <script type="module">
+    import * as THREE from 'https://esm.sh/three@0.151.3';
+    import { OrbitControls } from 'https://esm.sh/three@0.151.3/examples/jsm/controls/OrbitControls';
+    import { CapsuleGeometry } from 'https://esm.sh/three@0.151.3/src/geometries/CapsuleGeometry.js?target=es2022';
+
+    // --- 1. SCENE SETUP ---
+    const canvas = document.querySelector('#c');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // three.js removed physicallyCorrectLights in newer versions.
+    if ("useLegacyLights" in renderer) renderer.useLegacyLights = false;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0d0d0d);
+    scene.fog = new THREE.Fog(0x101010, 36, 110);
+
+    const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 30, 60);
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;
+    controls.target.set(0, 2, 0);
+    controls.maxPolarAngle = Math.PI / 2 - 0.05; // Don't go below floor
+
+    // --- 2. MATERIALS ---
+    function createFurMaps(baseA = '#d7d2cc', baseB = '#8e867d', root = '#4f4a44') {
+      const size = 256;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+
+      const grad = ctx.createLinearGradient(0, 0, size, size);
+      grad.addColorStop(0, baseA);
+      grad.addColorStop(0.6, baseB);
+      grad.addColorStop(1, root);
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, size, size);
+
+      for (let i = 0; i < 9000; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const len = 2 + Math.random() * 5;
+        const angle = Math.random() * Math.PI * 2;
+        const alpha = 0.05 + Math.random() * 0.08;
+        ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+        ctx.lineWidth = 0.25 + Math.random() * 0.6;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(angle) * len, y + Math.sin(angle) * len);
+        ctx.stroke();
+      }
+
+      const furMap = new THREE.CanvasTexture(canvas);
+      furMap.wrapS = furMap.wrapT = THREE.RepeatWrapping;
+      furMap.repeat.set(1.8, 1.8);
+      furMap.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      furMap.needsUpdate = true;
+      return furMap;
+    }
+
+    const whiteFurMap = createFurMaps('#d6d0ca', '#b3aaa0', '#6f675f');
+    const darkFurMap = createFurMaps('#5f5a53', '#3f3b36', '#23211f');
+
+    const skinMaterial = new THREE.MeshPhysicalMaterial({
+      color: 0xc9c4bd,
+      roughness: 0.78,
+      metalness: 0.0,
+      sheen: 0.85,
+      sheenColor: 0xd9d7d0,
+      clearcoat: 0.08,
+      clearcoatRoughness: 0.7,
+      map: whiteFurMap,
+      bumpMap: whiteFurMap,
+      bumpScale: 0.08
+    });
+
+    const earMaterial = new THREE.MeshPhysicalMaterial({
+      color: 0xffbeb8,
+      roughness: 0.42,
+      transmission: 0.08,
+      thickness: 0.35,
+      sheen: 0.4,
+      sheenColor: 0xffe2df
+    });
+
+    const tailMaterial = new THREE.MeshPhysicalMaterial({
+      color: 0xe7b0a4,
+      roughness: 0.5,
+      clearcoat: 0.2,
+      clearcoatRoughness: 0.65
+    });
+
+    const pawMaterial = new THREE.MeshPhysicalMaterial({
+      color: 0xe2a79c,
+      roughness: 0.55,
+      clearcoat: 0.1,
+      clearcoatRoughness: 0.8
+    });
+
+    const noseMaterial = new THREE.MeshPhysicalMaterial({
+      color: 0xd89a93,
+      roughness: 0.2,
+      clearcoat: 0.4,
+      clearcoatRoughness: 0.35
+    });
+
+    const eyeMaterial = new THREE.MeshStandardMaterial({
+      color: 0x0b0b0b,
+      roughness: 0.04,
+      metalness: 0.15,
+      envMapIntensity: 1.3
+    });
+
+    const eyeHighlightMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.95
+    });
+
+    // --- 3. MOUSE CLASS (Procedural Model) ---
+    class ProceduralMouse {
+      constructor(colorOffset = 0) {
+        this.mesh = new THREE.Group();
+        this.animationTime = Math.random() * 100;
+
+        // --- Body Construction ---
+        // Main Body (Capsule)
+        // Note: We use the imported CapsuleGeometry or fallback if tree-shaking fails
+        const bodyGeo = new CapsuleGeometry(3.6, 8.4, 8, 14);
+        bodyGeo.rotateX(Math.PI / 2); // Lay flat
+        this.body = new THREE.Mesh(bodyGeo, skinMaterial.clone());
+        if (colorOffset) {
+          this.body.material.color.setHex(0x5d5750);
+          this.body.material.map = darkFurMap;
+          this.body.material.bumpMap = darkFurMap;
+          this.body.material.sheenColor = new THREE.Color(0x9f9a93);
+        }
+        this.body.castShadow = true;
+        this.mesh.add(this.body);
+
+        // Head Group (Pivot at neck)
+        this.headGroup = new THREE.Group();
+        this.headGroup.position.set(0, 1.5, 5); // Front of body
+        this.body.add(this.headGroup);
+
+        // Head Mesh (Deformed Sphere)
+        const headGeo = new THREE.SphereGeometry(3.25, 28, 24);
+        headGeo.scale(1, 0.82, 1.45); // Snout shape
+        this.head = new THREE.Mesh(headGeo, this.body.material);
+        this.head.position.set(0, 0, 1.5);
+        this.head.castShadow = true;
+        this.headGroup.add(this.head);
+
+        const snoutGeo = new THREE.SphereGeometry(1.5, 22, 18);
+        snoutGeo.scale(1.1, 0.72, 1.15);
+        this.snout = new THREE.Mesh(snoutGeo, this.body.material);
+        this.snout.position.set(0, -0.62, 3.85);
+        this.head.add(this.snout);
+
+        const noseGeo = new THREE.SphereGeometry(0.32, 16, 14);
+        noseGeo.scale(1.2, 0.7, 1);
+        const nose = new THREE.Mesh(noseGeo, noseMaterial);
+        nose.position.set(0, -0.05, 5.25);
+        this.head.add(nose);
+
+        // Ears
+        const earGeo = new THREE.CylinderGeometry(1.55, 1.8, 0.16, 24);
+        earGeo.rotateX(Math.PI / 2);
+
+        const earL = new THREE.Mesh(earGeo, earMaterial);
+        earL.position.set(2.15, 1.92, -0.45);
+        earL.rotation.set(0.15, -0.55, 0.45);
+        earL.castShadow = true;
+        this.head.add(earL);
+
+        const earR = new THREE.Mesh(earGeo, earMaterial);
+        earR.position.set(-2.15, 1.92, -0.45);
+        earR.rotation.set(0.15, 0.55, -0.45);
+        earR.castShadow = true;
+        this.head.add(earR);
+
+        // Eyes
+        const eyeGeo = new THREE.SphereGeometry(0.44, 14, 12);
+        const eyeL = new THREE.Mesh(eyeGeo, eyeMaterial);
+        eyeL.position.set(1.32, 0.95, 2.95);
+        this.head.add(eyeL);
+
+        const eyeR = new THREE.Mesh(eyeGeo, eyeMaterial);
+        eyeR.position.set(-1.32, 0.95, 2.95);
+        this.head.add(eyeR);
+
+        const eyeHLGeo = new THREE.SphereGeometry(0.12, 8, 8);
+        const eyeHLL = new THREE.Mesh(eyeHLGeo, eyeHighlightMaterial);
+        eyeHLL.position.set(1.45, 1.1, 3.2);
+        this.head.add(eyeHLL);
+        const eyeHLR = new THREE.Mesh(eyeHLGeo, eyeHighlightMaterial);
+        eyeHLR.position.set(-1.45, 1.1, 3.2);
+        this.head.add(eyeHLR);
+
+        // Whiskers (Lines)
+        const whiskerMat = new THREE.LineBasicMaterial({ color: 0xf2efeb, transparent: true, opacity: 0.72 });
+        const whiskerGeo = new THREE.BufferGeometry();
+        const pts = [];
+        for (let i = 0; i < 7; i++) {
+            pts.push(new THREE.Vector3(0.4, 0, 0));
+            pts.push(new THREE.Vector3(3.8, (Math.random() - 0.5) * 0.9, (Math.random() - 0.5) * 0.7));
+        }
+        whiskerGeo.setFromPoints(pts);
+
+        const wL = new THREE.LineSegments(whiskerGeo, whiskerMat);
+        wL.position.set(1.25, -0.48, 4.3);
+        wL.rotation.y = 0.5;
+        this.head.add(wL);
+
+        const wR = new THREE.LineSegments(whiskerGeo, whiskerMat);
+        wR.position.set(-1.25, -0.48, 4.3);
+        wR.rotation.y = -0.5;
+        wR.scale.x = -1;
+        this.head.add(wR);
+
+        // --- Limbs ---
+        this.limbs = [];
+        const legGeo = new CapsuleGeometry(0.8, 3.2, 6, 10);
+        legGeo.translate(0, -1.5, 0); // Pivot at top
+        const pawGeo = new THREE.SphereGeometry(0.42, 12, 10);
+        pawGeo.scale(1.2, 0.6, 1.35);
+
+        const legPos = [
+            { x: -2, y: -1, z: 3 }, // FL
+            { x: 2, y: -1, z: 3 },  // FR
+            { x: -2.2, y: -0.5, z: -3 }, // BL
+            { x: 2.2, y: -0.5, z: -3 }   // BR
+        ];
+
+        legPos.forEach(pos => {
+            const leg = new THREE.Mesh(legGeo, this.body.material);
+            leg.position.set(pos.x, pos.y, pos.z);
+            leg.castShadow = true;
+            this.body.add(leg);
+            this.limbs.push(leg);
+
+            const paw = new THREE.Mesh(pawGeo, pawMaterial);
+            paw.position.set(0, -3.15, 0.15);
+            paw.castShadow = true;
+            leg.add(paw);
+        });
+
+        // --- Tail (Procedural Curve) ---
+        this.tailBase = new THREE.Object3D();
+        this.tailBase.position.set(0, -0.15, -4.35);
+        this.body.add(this.tailBase);
+
+        this.tailSegments = 20;
+        this.tailCurve = new THREE.CatmullRomCurve3(
+            new Array(10).fill(0).map((_, i) => new THREE.Vector3(0, -0.1 * i, -i * 1.35))
+        );
+        this.tailGeo = new THREE.TubeGeometry(this.tailCurve, this.tailSegments, 0.48, 8, false);
+        this.tail = new THREE.Mesh(this.tailGeo, tailMaterial);
+        this.tail.castShadow = true;
+        this.tailBase.add(this.tail);
+        this._tailUpdateTick = 0;
+      }
+
+      update(t) {
+        const time = t + this.animationTime;
+
+        // 1. Locomotion Logic
+        const speed = 7.5;
+        this.body.position.y = 4.45 + Math.sin(time * speed * 2) * 0.19;
+        this.body.rotation.z = Math.sin(time * speed) * 0.045;
+        this.body.rotation.x = Math.sin(time * speed * 2) * 0.03;
+
+        // 2. Leg Animation
+        this.limbs.forEach((leg, i) => {
+            const offset = (i === 0 || i === 3) ? 0 : Math.PI;
+            const angle = Math.sin(time * speed + offset) * 0.58;
+            leg.rotation.x = angle;
+        });
+
+        // 3. Head Animation
+        this.headGroup.rotation.y = Math.sin(time * 0.6) * 0.28;
+        this.headGroup.rotation.x = Math.sin(time * 1.4) * 0.1 - 0.08;
+        this.head.scale.z = 1.45 + Math.sin(time * 19) * 0.013; // Breath/twitch
+
+        // 4. Tail Physics
+        const points = [new THREE.Vector3(0, 0, 0)];
+
+        for(let i=1; i<10; i++) {
+            const zOff = -i * 1.35;
+            const wave = Math.sin(time * 3 - i * 0.52) * (i * 0.18);
+            const pt = new THREE.Vector3(wave, -i * 0.12 + Math.sin(i) * 0.15, zOff);
+            points.push(pt);
+        }
+
+        this.tailCurve.points = points;
+        this._tailUpdateTick += 1;
+        if (this._tailUpdateTick % 3 === 0) {
+          this.tailGeo.dispose();
+          this.tailGeo = new THREE.TubeGeometry(this.tailCurve, this.tailSegments, 0.48, 8, false);
+          this.tail.geometry = this.tailGeo;
+        }
+      }
+    }
+
+    // --- 4. WORLD POPULATION ---
+    const mice = [];
+    const mouse1 = new ProceduralMouse(0); // White
+    mouse1.mesh.position.set(-8, 0, 0);
+    mouse1.mesh.rotation.y = 1;
+    scene.add(mouse1.mesh);
+    mice.push(mouse1);
+
+    const mouse2 = new ProceduralMouse(1); // Dark
+    mouse2.mesh.position.set(8, 0, 0);
+    mouse2.mesh.rotation.y = -1;
+    scene.add(mouse2.mesh);
+    mice.push(mouse2);
+
+    // --- 5. ENVIRONMENT ---
+    const planeGeo = new THREE.PlaneGeometry(200, 200);
+    const planeMat = new THREE.MeshStandardMaterial({
+        color: 0x111111, roughness: 0.68, metalness: 0.04
+    });
+    const floor = new THREE.Mesh(planeGeo, planeMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    const grid = new THREE.GridHelper(200, 50, 0x262626, 0x171717);
+    grid.position.y = 0.01;
+    scene.add(grid);
+
+    // Lights
+    const ambientLight = new THREE.HemisphereLight(0xf2f2ff, 0x090909, 0.22);
+    scene.add(ambientLight);
+
+    const keyLight = new THREE.DirectionalLight(0xfff4e8, 1.7);
+    keyLight.position.set(14, 18, 11);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.width = 2048;
+    keyLight.shadow.mapSize.height = 2048;
+    keyLight.shadow.camera.near = 0.5;
+    keyLight.shadow.camera.far = 90;
+    keyLight.shadow.camera.left = -30;
+    keyLight.shadow.camera.right = 30;
+    keyLight.shadow.camera.top = 30;
+    keyLight.shadow.camera.bottom = -30;
+    keyLight.shadow.bias = -0.00035;
+    scene.add(keyLight);
+
+    const fillLight = new THREE.DirectionalLight(0xdde8ff, 0.7);
+    fillLight.position.set(-18, 10, 8);
+    scene.add(fillLight);
+
+    const backLight = new THREE.DirectionalLight(0xa7c7ff, 0.55);
+    backLight.position.set(-8, 14, -16);
+    scene.add(backLight);
+
+    const groundBounce = new THREE.PointLight(0xffdfcb, 0.35, 45);
+    groundBounce.position.set(0, 2, 0);
+    scene.add(groundBounce);
+
+    const rimLight = new THREE.SpotLight(0xa9c8ff, 0.95, 70, 0.48, 0.45, 1.8);
+    rimLight.position.set(-18, 17, -14);
+    rimLight.lookAt(0, 3, 0);
+    scene.add(rimLight);
+
+    const frontSoft = new THREE.SpotLight(0xffefe6, 0.85, 80, 0.63, 0.5, 1.5);
+    frontSoft.position.set(10, 15, 20);
+    frontSoft.lookAt(0, 4, 0);
+    scene.add(frontSoft);
+
+    const centerShadow = new THREE.Mesh(
+      new THREE.CircleGeometry(13.5, 64),
+      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.16 })
+    );
+    centerShadow.rotation.x = -Math.PI / 2;
+    centerShadow.position.y = 0.012;
+    scene.add(centerShadow);
+
+    // --- 6. RENDER LOOP ---
+    function resize() {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    let time = 0;
+    function animate() {
+      requestAnimationFrame(animate);
+      time += 0.01;
+
+      mice.forEach((mouse, i) => {
+        const angle = time * 0.5 + (i * Math.PI);
+        const rad = 12;
+        mouse.mesh.position.x = Math.sin(angle) * rad;
+        mouse.mesh.position.z = Math.cos(angle) * rad;
+        mouse.mesh.rotation.y = angle + Math.PI * 0.5;
+        mouse.update(time);
+      });
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+  </script>
+</body>
+</html>
