@@ -179,6 +179,7 @@ def test_build_agent_context_disables_web_tools_by_default(monkeypatch) -> None:
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = []
 
     class _Resolved:
@@ -210,6 +211,7 @@ def test_build_agent_context_enables_web_tools_when_requested(monkeypatch) -> No
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = []
 
     class _Resolved:
@@ -241,6 +243,7 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(tmp_path)]
 
     # Isolate PDF discovery to this tmp workspace so real local PDFs do not leak into the test.
@@ -395,6 +398,7 @@ def test_gui_open_video_accepts_tool_style_text(monkeypatch, tmp_path: Path) -> 
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(tmp_path)]
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
@@ -423,6 +427,7 @@ def test_gui_open_video_resolves_by_basename_in_roots(
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(root)]
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
@@ -448,6 +453,7 @@ def test_gui_open_video_resolves_by_basename_recursively_in_allowed_root(
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(root)]
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
@@ -465,6 +471,7 @@ def test_gui_open_pdf_downloads_url_then_queues(monkeypatch, tmp_path: Path) -> 
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(tmp_path)]
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
@@ -500,6 +507,7 @@ def test_gui_open_pdf_downloads_non_suffix_url_then_queues(
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(tmp_path)]
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
@@ -531,6 +539,7 @@ def test_gui_open_url_queues(monkeypatch, tmp_path: Path) -> None:
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(tmp_path)]
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
@@ -561,6 +570,7 @@ def test_gui_open_url_queues_for_domain_without_scheme(
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(tmp_path)]
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
@@ -582,6 +592,7 @@ def test_gui_open_url_queues_for_local_html_file(monkeypatch, tmp_path: Path) ->
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(tmp_path)]
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
@@ -606,6 +617,7 @@ def test_gui_web_run_steps_executes_sequence(monkeypatch, tmp_path: Path) -> Non
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(tmp_path)]
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
@@ -653,6 +665,7 @@ def test_resolve_video_path_uses_active_video_basename(
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(workspace)]
 
     class _Host:
@@ -681,6 +694,7 @@ def test_resolve_video_path_uses_active_video_even_if_missing_on_disk(
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(workspace)]
 
     class _Host:
@@ -778,6 +792,7 @@ def test_direct_gui_fallback_opens_video_from_prompt(
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(tmp_path)]
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
@@ -1276,6 +1291,7 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
 
     class _Cfg:
         class tools:  # noqa: N801
+            email = None
             allowed_read_roots = [str(tmp_path)]
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())

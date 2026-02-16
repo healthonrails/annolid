@@ -68,6 +68,11 @@ class LifecycleMixin:
             and self.dino_kpseg_training_manager
         ):
             self.dino_kpseg_training_manager.cleanup()
+        if hasattr(self, "ai_chat_manager") and self.ai_chat_manager:
+            try:
+                self.ai_chat_manager.cleanup()
+            except Exception:
+                pass
         try:
             dialog = getattr(self, "_training_dashboard_dialog", None)
             if dialog is not None:

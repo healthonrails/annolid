@@ -1,6 +1,9 @@
-from __future__ import annotations
-
 import asyncio
+import email
+import imaplib
+import logging
+import smtplib
+from email.message import EmailMessage
 from typing import Any, Awaitable, Callable, Optional
 
 from annolid.core.agent.bus import OutboundMessage
@@ -8,10 +11,11 @@ from annolid.core.agent.bus import OutboundMessage
 from .base import BaseChannel
 
 SendCallback = Callable[[OutboundMessage], Awaitable[None] | None]
+logger = logging.getLogger("annolid.agent.channels.email")
 
 
 class EmailChannel(BaseChannel):
-    """Dependency-light email adapter for bus integration."""
+    """Email adapter for bus integration with SMTP and IMAP support."""
 
     name = "email"
 
@@ -25,22 +29,147 @@ class EmailChannel(BaseChannel):
         super().__init__(config, bus)
         self._send_callback = send_callback
         self._stop_event = asyncio.Event()
+        self._poll_task: Optional[asyncio.Task[None]] = None
 
     async def start(self) -> None:
+        if self._running:
+            return
         self._running = True
         self._stop_event.clear()
-        await self._stop_event.wait()
+        self._poll_task = asyncio.create_task(self._poll_loop())
 
     async def stop(self) -> None:
         self._running = False
         self._stop_event.set()
+        if self._poll_task:
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+            self._poll_task = None
+
+    async def _poll_loop(self) -> None:
+        interval = self.config.get("polling_interval", 60)
+        while self._running:
+            try:
+                await self._poll_imap()
+            except Exception as exc:
+                logger.error("IMAP polling failure: %s", exc)
+
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
+                break
+            except asyncio.TimeoutError:
+                continue
+
+    async def _poll_imap(self) -> None:
+        imap_host = str(self.config.get("imap_host") or "").strip()
+        imap_port = int(self.config.get("imap_port", 993))
+        user = str(self.config.get("user") or "").strip()
+        password = str(self.config.get("password") or "").replace(" ", "").strip()
+
+        if not all([imap_host, user, password]):
+            print("IMAP not configured for background polling.")
+            return
+
+        print(f"Polling IMAP for {user}...")
+
+        def _sync_poll():
+            messages = []
+            try:
+                mail = imaplib.IMAP4_SSL(imap_host, imap_port)
+                mail.login(user, password)
+                mail.select("inbox")
+                status, response = mail.search(None, "UNSEEN")
+                if status != "OK":
+                    return []
+
+                for num in response[0].split():
+                    status, msg_data = mail.fetch(num, "(RFC822)")
+                    if status != "OK":
+                        continue
+
+                    raw_email = msg_data[0][1]
+                    msg = email.message_from_bytes(raw_email)
+
+                    sender = msg.get("From")
+                    subject = msg.get("Subject")
+                    body = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() == "text/plain":
+                                body = part.get_payload(decode=True).decode()
+                                break
+                    else:
+                        body = msg.get_payload(decode=True).decode()
+
+                    messages.append(
+                        {"sender": sender, "subject": subject, "body": body, "num": num}
+                    )
+                    # Mark as seen
+                    mail.store(num, "+FLAGS", "\\Seen")
+
+                mail.close()
+                mail.logout()
+            except Exception as e:
+                logger.error("IMAP sync poll exception: %s", e)
+            return messages
+
+        new_emails = await asyncio.to_thread(_sync_poll)
+        if new_emails:
+            print(f"Found {len(new_emails)} new email(s).")
+
+        for em in new_emails:
+            print(f"Ingesting email from {em['sender']}: {em['subject']}")
+            await self.ingest(
+                sender_email=em["sender"], subject=em["subject"], body=em["body"]
+            )
 
     async def send(self, msg: OutboundMessage) -> None:
-        if self._send_callback is None:
+        if self._send_callback:
+            ret = self._send_callback(msg)
+            if asyncio.iscoroutine(ret):
+                await ret
             return
-        ret = self._send_callback(msg)
-        if asyncio.iscoroutine(ret):
-            await ret
+
+        smtp_host = str(self.config.get("smtp_host") or "").strip()
+        smtp_port = int(self.config.get("smtp_port", 587))
+        user = str(self.config.get("user") or "").strip()
+        password = str(self.config.get("password") or "").replace(" ", "").strip()
+
+        if not all([smtp_host, user, password]):
+            logger.warning("SMTP not configured, cannot send email")
+            return
+
+        async def _async_send():
+            email_msg = EmailMessage()
+            email_msg.set_content(msg.content)
+
+            orig_subject = msg.metadata.get("subject")
+            if not orig_subject:
+                subject = "Message from Annolid"
+            elif not str(orig_subject).lower().startswith("re:"):
+                subject = f"Re: {orig_subject}"
+            else:
+                subject = str(orig_subject)
+
+            email_msg["Subject"] = subject
+            email_msg["From"] = user
+            email_msg["To"] = msg.chat_id
+
+            def _sync_send():
+                with smtplib.SMTP(smtp_host, smtp_port) as server:
+                    server.starttls()
+                    server.login(user, password)
+                    server.send_message(email_msg)
+
+            await asyncio.to_thread(_sync_send)
+
+        try:
+            await _async_send()
+        except Exception as exc:
+            logger.error("SMTP send failure: %s", exc)
 
     async def ingest(
         self,

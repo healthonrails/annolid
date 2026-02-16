@@ -35,13 +35,10 @@ class BaseChannel(ABC):
             allow_list = getattr(self.config, "allow_from", None)
         if not allow_list:
             return True
-        sender = str(sender_id)
-        if sender in allow_list:
-            return True
-        if "|" in sender:
-            for token in sender.split("|"):
-                if token and token in allow_list:
-                    return True
+        sender = str(sender_id).lower()
+        for allowed in allow_list:
+            if str(allowed).lower() in sender:
+                return True
         return False
 
     async def _handle_message(
@@ -54,6 +51,9 @@ class BaseChannel(ABC):
         metadata: Optional[dict[str, Any]] = None,
     ) -> bool:
         if not self.is_allowed(sender_id):
+            print(
+                f"Channel {self.name}: Message from {sender_id} blocked by allow_from list."
+            )
             return False
         normalized_meta = self._normalize_session_metadata(
             sender_id=sender_id,

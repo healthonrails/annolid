@@ -568,6 +568,7 @@ class StreamingChatTask(QRunnable):
             tools,
             allowed_dir=workspace,
             allowed_read_roots=allowed_read_roots,
+            email_cfg=agent_cfg.tools.email,
         )
         self._register_gui_tools(tools)
         disabled_tools = set(_GUI_ALWAYS_DISABLED_TOOLS)

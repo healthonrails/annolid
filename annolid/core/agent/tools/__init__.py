@@ -18,6 +18,7 @@ from .base import (
 from .artifacts import FileArtifactStore, content_hash
 from .detection import DetectionResult, DetectionTool
 from .embedding import EmbeddingResult, EmbeddingTool
+from .email import EmailTool
 from .function_base import FunctionTool
 from .cron import CronTool
 from .filesystem import (
@@ -103,6 +104,7 @@ __all__ = [
     "DetectionTool",
     "EmbeddingResult",
     "EmbeddingTool",
+    "EmailTool",
     "FunctionTool",
     "FunctionToolRegistry",
     "ReadFileTool",

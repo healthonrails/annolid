@@ -241,6 +241,9 @@ class AgentLoop:
             self._memory_config.enabled if use_memory is None else bool(use_memory)
         )
         self._set_tool_context(channel=channel, chat_id=chat_id)
+        print(
+            f"AgentLoop: Processing message from {chat_id} on {channel} using model {self.model}"
+        )
         await self._connect_mcp()
         try:
             messages: List[Dict[str, Any]] = []

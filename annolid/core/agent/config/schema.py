@@ -36,6 +36,53 @@ class SessionRoutingConfig:
 
 
 @dataclass
+class EmailChannelConfig:
+    enabled: bool = False
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    imap_host: str = "imap.gmail.com"
+    imap_port: int = 993
+    user: str = ""
+    password: str = ""
+    polling_interval: int = 60
+    allow_from: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "EmailChannelConfig":
+        payload = data or {}
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            smtp_host=str(
+                payload.get("smtp_host") or payload.get("smtpHost", "smtp.gmail.com")
+            ),
+            smtp_port=int(payload.get("smtp_port") or payload.get("smtpPort", 587)),
+            imap_host=str(
+                payload.get("imap_host") or payload.get("imapHost", "imap.gmail.com")
+            ),
+            imap_port=int(payload.get("imap_port") or payload.get("imapPort", 993)),
+            user=str(payload.get("user") or ""),
+            password=str(payload.get("password") or ""),
+            polling_interval=int(
+                payload.get("polling_interval") or payload.get("pollingInterval", 60)
+            ),
+            allow_from=list(payload.get("allow_from") or payload.get("allowFrom", [])),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "smtp_host": self.smtp_host,
+            "smtp_port": self.smtp_port,
+            "imap_host": self.imap_host,
+            "imap_port": self.imap_port,
+            "user": self.user,
+            "password": self.password,
+            "polling_interval": self.polling_interval,
+            "allow_from": list(self.allow_from),
+        }
+
+
+@dataclass
 class ProviderConfig:
     api_key: str = ""
     api_base: str = ""
@@ -214,6 +261,7 @@ class ToolsConfig:
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
     mcp_servers: Dict[str, MCPServerConfig] = field(default_factory=dict)
+    email: EmailChannelConfig = field(default_factory=EmailChannelConfig)
     by_provider: Dict[str, ToolPolicyConfig] = field(default_factory=dict)
 
     @classmethod
@@ -258,6 +306,7 @@ class ToolsConfig:
                 by_provider[str(key)] = ToolPolicyConfig.from_dict(
                     value if isinstance(value, dict) else None
                 )
+        email_cfg = EmailChannelConfig.from_dict(payload.get("email"))
         exec_cfg = ExecToolConfig.from_dict(payload.get("exec"))
         return cls(
             exec=exec_cfg,
@@ -267,6 +316,7 @@ class ToolsConfig:
             allow=allow,
             deny=deny,
             mcp_servers=mcp_servers,
+            email=email_cfg,
             by_provider=by_provider,
         )
 
@@ -278,6 +328,7 @@ class ToolsConfig:
             "profile": self.profile,
             "allow": list(self.allow),
             "deny": list(self.deny),
+            "email": self.email.to_dict(),
             "mcp_servers": {
                 name: cfg.to_dict() for name, cfg in self.mcp_servers.items()
             },

@@ -1,9 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import Optional
 
 from qtpy import QtCore, QtWidgets
 
+from annolid.core.agent.bus import MessageBus
+from annolid.core.agent.bus.service import AgentBusService
+from annolid.core.agent.channels.manager import ChannelManager
+from annolid.core.agent.config import load_config
+from annolid.core.agent.loop import AgentLoop
+from annolid.core.agent.tools import (
+    FunctionToolRegistry,
+    register_nanobot_style_tools,
+)
+from annolid.core.agent.utils import get_agent_workspace_path
 from annolid.gui.widgets.ai_chat_widget import AIChatWidget
 
 
@@ -15,6 +27,11 @@ class AIChatManager(QtCore.QObject):
         self.window = window
         self.ai_chat_dock: Optional[QtWidgets.QDockWidget] = None
         self.ai_chat_widget: Optional[AIChatWidget] = None
+        self._background_bus: Optional[MessageBus] = None
+        self._channel_manager: Optional[ChannelManager] = None
+        self._bus_service: Optional[AgentBusService] = None
+        self._background_thread: Optional[threading.Thread] = None
+        self._background_loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _on_dock_visibility_changed(self, visible: bool) -> None:
         if not visible:
@@ -89,3 +106,83 @@ class AIChatManager(QtCore.QObject):
             # Hide immediately and once again on the next event-loop tick.
             dock.hide()
             QtCore.QTimer.singleShot(0, dock.hide)
+
+        # Start background automation services (Email polling, etc.)
+        self._start_background_services()
+
+    def _start_background_services(self) -> None:
+        """Initialize and start background messaging services in a separate thread."""
+
+        def _run_background_loop():
+            # Create a new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._background_loop = loop
+
+            async def _async_start():
+                try:
+                    config = load_config()
+                    if not config.tools.email.enabled:
+                        return
+
+                    self._background_bus = MessageBus()
+
+                    # Setup Agent Loop for background replies
+                    tools = FunctionToolRegistry()
+                    await register_nanobot_style_tools(
+                        tools,
+                        allowed_dir=get_agent_workspace_path(),
+                        email_cfg=config.tools.email,
+                    )
+
+                    # In background mode, we use a standard loop.
+                    workspace = get_agent_workspace_path()
+                    loop_instance = AgentLoop(tools=tools, workspace=workspace)
+                    print(f"AgentLoop initialized with workspace: {workspace}")
+
+                    self._bus_service = AgentBusService.from_agent_config(
+                        bus=self._background_bus,
+                        loop=loop_instance,
+                        agent_config=config,
+                    )
+
+                    self._channel_manager = ChannelManager(
+                        bus=self._background_bus,
+                        channels_config={"email": config.tools.email.to_dict()},
+                    )
+
+                    await self._bus_service.start()
+                    await self._channel_manager.start_all()
+
+                    print(
+                        "Annolid Bot background services started (Email monitor enabled)"
+                    )
+                except Exception as exc:
+                    print(f"Failed to start background services: {exc}")
+
+            # Schedule the start coroutine
+            loop.create_task(_async_start())
+
+            # Run the loop forever until stopped
+            try:
+                loop.run_forever()
+            finally:
+                loop.close()
+                self._background_loop = None
+
+        self._background_thread = threading.Thread(
+            target=_run_background_loop, name="AnnolidBotBackground", daemon=True
+        )
+        self._background_thread.start()
+
+    def cleanup(self) -> None:
+        """Stop background services and the event loop."""
+        if self._background_loop is not None:
+            # Thread-safe way to stop the loop from another thread (main Qt thread)
+            self._background_loop.call_soon_threadsafe(self._background_loop.stop)
+
+        if self._background_thread is not None:
+            # We use daemon=True, but joining ensures it stops gracefully if possible.
+            # Don't block for too long during GUI shutdown.
+            self._background_thread.join(timeout=1.0)
+            self._background_thread = None

@@ -86,6 +86,9 @@ class AgentBusService:
         while self._running:
             try:
                 inbound = await self.bus.consume_inbound()
+                print(
+                    f"AgentBusService: New message from {inbound.sender_id} via {inbound.channel}"
+                )
                 await self._process_inbound(inbound)
             except asyncio.CancelledError:
                 break
@@ -121,15 +124,19 @@ class AgentBusService:
                 chat_id=inbound.chat_id,
                 media=list(inbound.media or []),
             )
+            outbound_meta = {
+                "iterations": result.iterations,
+                "tool_runs": len(result.tool_runs),
+                "stopped_reason": result.stopped_reason,
+            }
+            if inbound.metadata.get("subject"):
+                outbound_meta["subject"] = inbound.metadata["subject"]
+
             outbound = OutboundMessage(
                 channel=inbound.channel,
                 chat_id=inbound.chat_id,
                 content=result.content,
-                metadata={
-                    "iterations": result.iterations,
-                    "tool_runs": len(result.tool_runs),
-                    "stopped_reason": result.stopped_reason,
-                },
+                metadata=outbound_meta,
             )
         except Exception as exc:
             outbound = OutboundMessage(
@@ -140,6 +147,9 @@ class AgentBusService:
             )
         outbound = self._annotate_outbound(outbound)
         self._store_idempotency(cache_key, outbound)
+        print(
+            f"AgentBusService: Publishing reply to {outbound.chat_id} via {outbound.channel}"
+        )
         await self.bus.publish_outbound(outbound)
 
     def _resolve_session_key(self, inbound: InboundMessage) -> str:

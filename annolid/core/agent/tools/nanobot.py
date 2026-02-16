@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Sequence
 
 from .code import CodeExplainTool, CodeSearchTool
 from .mcp import connect_mcp_servers
@@ -31,7 +31,11 @@ from .memory import MemoryGetTool, MemorySearchTool, MemorySetTool
 from .messaging import MessageTool, SpawnTool
 from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
 from .shell import ExecTool
+from .email import EmailTool, ListEmailsTool, ReadEmailTool
 from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
+
+if TYPE_CHECKING:
+    from annolid.core.agent.config.schema import EmailChannelConfig
 
 
 async def register_nanobot_style_tools(
@@ -43,6 +47,7 @@ async def register_nanobot_style_tools(
     spawn_callback: Callable[[str, str | None], Awaitable[str] | str] | None = None,
     mcp_servers: dict | None = None,
     stack: Any | None = None,
+    email_cfg: EmailChannelConfig | None = None,
 ) -> None:
     """Register a Nanobot-like default tool set."""
 
@@ -127,6 +132,34 @@ async def register_nanobot_style_tools(
     registry.register(MessageTool(send_callback=send_callback))
     registry.register(SpawnTool(spawn_callback=spawn_callback))
     registry.register(CronTool(send_callback=send_callback))
+
+    if email_cfg and email_cfg.enabled:
+        registry.register(
+            EmailTool(
+                smtp_host=email_cfg.smtp_host,
+                smtp_port=email_cfg.smtp_port,
+                imap_host=email_cfg.imap_host,
+                imap_port=email_cfg.imap_port,
+                user=email_cfg.user,
+                password=email_cfg.password,
+            )
+        )
+        registry.register(
+            ListEmailsTool(
+                imap_host=email_cfg.imap_host,
+                imap_port=email_cfg.imap_port,
+                user=email_cfg.user,
+                password=email_cfg.password,
+            )
+        )
+        registry.register(
+            ReadEmailTool(
+                imap_host=email_cfg.imap_host,
+                imap_port=email_cfg.imap_port,
+                user=email_cfg.user,
+                password=email_cfg.password,
+            )
+        )
 
     if mcp_servers and stack:
         await connect_mcp_servers(mcp_servers, registry, stack)
