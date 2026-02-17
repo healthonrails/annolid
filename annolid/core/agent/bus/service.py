@@ -144,12 +144,60 @@ class AgentBusService:
                 content=f"Error: {exc}",
                 metadata={"error": True},
             )
+        normalized = str(outbound.content or "").strip()
+        if not normalized:
+            if str(inbound.channel or "").strip().lower() == "email":
+                fallback = self._build_empty_email_fallback(inbound)
+                meta = dict(outbound.metadata or {})
+                meta["empty_reply_fallback"] = True
+                outbound = OutboundMessage(
+                    channel=outbound.channel,
+                    chat_id=outbound.chat_id,
+                    content=fallback,
+                    reply_to=outbound.reply_to,
+                    media=list(outbound.media or []),
+                    metadata=meta,
+                )
+                self._logger.warning(
+                    "Generated empty email reply; substituted fallback text for %s",
+                    outbound.chat_id,
+                )
+            else:
+                self._logger.warning(
+                    "Generated empty outbound reply; skipping publish channel=%s chat=%s",
+                    outbound.channel,
+                    outbound.chat_id,
+                )
+                return
+        elif normalized != outbound.content:
+            outbound = OutboundMessage(
+                channel=outbound.channel,
+                chat_id=outbound.chat_id,
+                content=normalized,
+                reply_to=outbound.reply_to,
+                media=list(outbound.media or []),
+                metadata=dict(outbound.metadata or {}),
+            )
         outbound = self._annotate_outbound(outbound)
         self._store_idempotency(cache_key, outbound)
         self._logger.info(
             "Publishing reply to %s via %s", outbound.chat_id, outbound.channel
         )
         await self.bus.publish_outbound(outbound)
+
+    @staticmethod
+    def _build_empty_email_fallback(inbound: InboundMessage) -> str:
+        subject = str((inbound.metadata or {}).get("subject") or "").strip()
+        if subject:
+            return (
+                "I received your email"
+                f" about '{subject}', but I couldn't generate a complete reply. "
+                "Please resend with a bit more detail and I will try again."
+            )
+        return (
+            "I received your email, but I couldn't generate a complete reply. "
+            "Please resend with a bit more detail and I will try again."
+        )
 
     def _resolve_session_key(self, inbound: InboundMessage) -> str:
         return inbound.resolved_session_key(

@@ -98,6 +98,25 @@ def test_email_channel_send_mocked():
     asyncio.run(_run())
 
 
+def test_email_channel_send_skips_empty_content():
+    async def _run():
+        bus = MessageBus()
+        channel = EmailChannel({}, bus)
+
+        msg = OutboundMessage(
+            channel="email",
+            chat_id="user@example.com",
+            content="   ",
+            metadata={"subject": "Empty"},
+        )
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            await channel.send(msg)
+            mock_smtp.assert_not_called()
+
+    asyncio.run(_run())
+
+
 def test_email_channel_imap_polling_mocked():
     """Test EmailChannel IMAP polling and ingestion."""
 

@@ -96,6 +96,46 @@ def test_agent_bus_service_processes_inbound_to_outbound() -> None:
     asyncio.run(_run())
 
 
+def test_agent_bus_service_substitutes_empty_email_reply_with_fallback() -> None:
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        return {"content": "   "}
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="email",
+                    sender_id="alice@example.com",
+                    chat_id="alice@example.com",
+                    content="papers",
+                    metadata={"subject": "Papers"},
+                )
+            )
+            out = await bus.consume_outbound(timeout_s=1.0)
+            assert out.channel == "email"
+            assert out.chat_id == "alice@example.com"
+            assert bool(str(out.content or "").strip())
+            assert "Papers" in out.content
+            assert bool(out.metadata.get("empty_reply_fallback")) is True
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
 def test_agent_bus_service_idempotency_replays_cached_result() -> None:
     state = {"calls": 0}
 

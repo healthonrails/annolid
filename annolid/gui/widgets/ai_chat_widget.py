@@ -422,6 +422,17 @@ class AIChatWidget(QtWidgets.QWidget):
     def _new_startup_session_id() -> str:
         return f"gui:annolid_bot:{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
 
+    @staticmethod
+    def _default_quick_actions() -> List[tuple[str, str]]:
+        return [
+            (
+                "Start Blink Stream",
+                "open stream with model mediapipe face and classify eye blinks",
+            ),
+            ("Stop Stream", "stop realtime stream"),
+            ("Summarize Context", "Summarize what we are doing in this session."),
+        ]
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("AIChatWidget")
@@ -458,17 +469,9 @@ class AIChatWidget(QtWidgets.QWidget):
         self._typing_timer.timeout.connect(self._on_typing_timer_tick)
         self.enable_progress_stream = True
         self._bot_action_results: Dict[str, Dict[str, Any]] = {}
-        self._quick_actions: List[tuple[str, str]] = [
-            (
-                "Start Blink Stream",
-                "open stream with model mediapipe face and classify eye blinks",
-            ),
-            ("Stop Stream", "stop realtime stream"),
-            ("Save Citation", "save citation"),
-            ("Summarize Context", "Summarize what we are doing in this session."),
-            ("Review Memory", "Review long-term memory and list key facts."),
-        ]
+        self._quick_actions: List[tuple[str, str]] = self._default_quick_actions()
         self._selected_quick_action_index: Optional[int] = None
+        self._load_quick_actions_from_settings()
         self._current_progress_bubble: Optional[_ChatBubble] = None
         self._progress_lines: List[str] = []
 
@@ -878,6 +881,7 @@ class AIChatWidget(QtWidgets.QWidget):
 
         # Update the removal button state immediately
         self._set_remove_quick_action_enabled(True)
+        self._persist_quick_actions_to_settings()
 
         self._apply_quick_action(self._quick_actions[index][1])
 
@@ -902,6 +906,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self._quick_actions.append((label_text, prompt_text))
         self._selected_quick_action_index = len(self._quick_actions) - 1
         self._refresh_quick_action_buttons()
+        self._persist_quick_actions_to_settings()
 
     def _remove_selected_quick_action(self) -> None:
         index = self._selected_quick_action_index
@@ -918,6 +923,59 @@ class AIChatWidget(QtWidgets.QWidget):
         else:
             self._selected_quick_action_index = None
         self._refresh_quick_action_buttons()
+        self._persist_quick_actions_to_settings()
+
+    def _load_quick_actions_from_settings(self) -> None:
+        settings = self.llm_settings if isinstance(self.llm_settings, dict) else {}
+        ui_block = settings.get("ui")
+        if not isinstance(ui_block, dict):
+            self._quick_actions = self._default_quick_actions()
+            self._selected_quick_action_index = None
+            return
+        raw_items = ui_block.get("chat_quick_actions")
+        parsed: List[tuple[str, str]] = []
+        if isinstance(raw_items, list):
+            for item in raw_items:
+                label = ""
+                prompt = ""
+                if isinstance(item, dict):
+                    label = str(item.get("label") or "").strip()
+                    prompt = str(item.get("prompt") or "").strip()
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    label = str(item[0] or "").strip()
+                    prompt = str(item[1] or "").strip()
+                if label and prompt:
+                    parsed.append((label, prompt))
+        self._quick_actions = parsed or self._default_quick_actions()
+        raw_index = ui_block.get("chat_selected_quick_action")
+        try:
+            idx = int(raw_index) if raw_index is not None else -1
+        except (TypeError, ValueError):
+            idx = -1
+        if 0 <= idx < len(self._quick_actions):
+            self._selected_quick_action_index = idx
+        else:
+            self._selected_quick_action_index = None
+
+    def _persist_quick_actions_to_settings(self) -> None:
+        if not isinstance(self.llm_settings, dict):
+            return
+        ui_block = self.llm_settings.get("ui")
+        if not isinstance(ui_block, dict):
+            ui_block = {}
+        ui_block["chat_quick_actions"] = [
+            {"label": label, "prompt": prompt} for label, prompt in self._quick_actions
+        ]
+        ui_block["chat_selected_quick_action"] = (
+            int(self._selected_quick_action_index)
+            if self._selected_quick_action_index is not None
+            else -1
+        )
+        self.llm_settings["ui"] = ui_block
+        try:
+            save_llm_settings(self.llm_settings)
+        except Exception:
+            pass
 
     def _set_remove_quick_action_enabled(self, enabled: bool) -> None:
         button = getattr(self, "remove_quick_action_button", None)
@@ -1388,6 +1446,9 @@ class AIChatWidget(QtWidgets.QWidget):
             self.selected_provider,
             self.available_models,
         )
+        self._load_quick_actions_from_settings()
+        self._refresh_quick_action_buttons()
+        self._persist_quick_actions_to_settings()
         self._update_model_selector()
         self._persist_state()
         self._refresh_header_chips()

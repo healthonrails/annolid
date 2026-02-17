@@ -147,6 +147,10 @@ class EmailChannel(BaseChannel):
             )
 
     async def send(self, msg: OutboundMessage) -> None:
+        content = str(msg.content or "").strip()
+        if not content:
+            logger.warning("Skipping empty email reply to %s", msg.chat_id)
+            return
         if self._send_callback:
             ret = self._send_callback(msg)
             if asyncio.iscoroutine(ret):
@@ -164,7 +168,7 @@ class EmailChannel(BaseChannel):
 
         async def _async_send():
             email_msg = EmailMessage()
-            email_msg.set_content(msg.content)
+            email_msg.set_content(content)
 
             orig_subject = msg.metadata.get("subject")
             if not orig_subject:
