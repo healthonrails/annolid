@@ -1,0 +1,205 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Annolid Bot ClawHub Skills Tutorial &mdash; annolid 1.5.2 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=73275c37"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Annolid Bot WhatsApp Setup Tutorial" href="agent_whatsapp_tutorial.html" />
+    <link rel="prev" title="Annolid Bot Google Calendar Tutorial" href="agent_google_calendar_tutorial.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            annolid
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="install.html">Install Annolid</a></li>
+<li class="toctree-l1"><a class="reference internal" href="read_pdf_with_ai_voice.html">Read PDFs Aloud with AI Voice (Text-to-Speech)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="extract_frames.html">Extract Frames</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html">Track animals and Auto labeling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#output-csv-format">Output CSV format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#cutie-dino-body-part-tracker">Cutie + DINO Body-Part Tracker</a></li>
+<li class="toctree-l1"><a class="reference internal" href="video_depth_anything.html">Video Depth Anything</a></li>
+<li class="toctree-l1"><a class="reference internal" href="image_editing.html">Image Editing (Local Diffusion / GGUF)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="dino_kpseg.html">DINOv3 Keypoint Segmentation (DinoKPSEG)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="agent_tools.html">Agent Tools Developer Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="agent_provider_setup.html">Annolid Bot Provider and Model Setup Tutorial</a></li>
+<li class="toctree-l1"><a class="reference internal" href="agent_google_calendar_tutorial.html">Annolid Bot Google Calendar Tutorial</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Annolid Bot ClawHub Skills Tutorial</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#prerequisites">1. Prerequisites</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#open-annolid-bot">2. Open Annolid Bot</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#search-for-skills-natural-language">3. Search for skills (natural language)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#install-a-skill-by-slug">4. Install a skill by slug</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#restart-behavior">5. Restart behavior</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#troubleshooting">6. Troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#what-tools-are-used">7. What tools are used</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="agent_whatsapp_tutorial.html">Annolid Bot WhatsApp Setup Tutorial</a></li>
+<li class="toctree-l1"><a class="reference internal" href="llm_key_security.html">LLM API Key Security</a></li>
+<li class="toctree-l1"><a class="reference internal" href="yoloe_prompting.html">YOLOE-26 Prompting (Text / Visual / Prompt-free)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="keypoints_definitions.html">Config keypoint connection rules, events, and instances</a></li>
+<li class="toctree-l1"><a class="reference internal" href="faqs.html">FAQs</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">annolid</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Annolid Bot ClawHub Skills Tutorial</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/agent_clawhub_tutorial.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="annolid-bot-clawhub-skills-tutorial">
+<h1>Annolid Bot ClawHub Skills Tutorial<a class="headerlink" href="#annolid-bot-clawhub-skills-tutorial" title="Link to this heading"></a></h1>
+<p>This tutorial shows how to search and install agent skills from ClawHub in Annolid.</p>
+<section id="prerequisites">
+<h2>1. Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading"></a></h2>
+<p>No Node.js or npm packages are required.
+Annolid uses Python HTTP APIs to search/download skills from ClawHub.</p>
+</section>
+<section id="open-annolid-bot">
+<h2>2. Open Annolid Bot<a class="headerlink" href="#open-annolid-bot" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p>Start Annolid.</p></li>
+<li><p>Open <strong>AI &amp; Models → Annolid Bot…</strong></p></li>
+<li><p>Pick your chat provider/model as usual.</p></li>
+</ol>
+</section>
+<section id="search-for-skills-natural-language">
+<h2>3. Search for skills (natural language)<a class="headerlink" href="#search-for-skills-natural-language" title="Link to this heading"></a></h2>
+<p>In Annolid Bot, ask:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Search</span> <span class="pre">ClawHub</span> <span class="pre">skills</span> <span class="pre">for</span> <span class="pre">behavior</span> <span class="pre">analysis</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Find</span> <span class="pre">ClawHub</span> <span class="pre">skills</span> <span class="pre">for</span> <span class="pre">web</span> <span class="pre">scraping</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Find</span> <span class="pre">skills</span> <span class="pre">on</span> <span class="pre">ClawHub</span> <span class="pre">for</span> <span class="pre">PDF</span> <span class="pre">summarization</span></code></p></li>
+</ul>
+<p>Annolid Bot will call the <code class="docutils literal notranslate"><span class="pre">clawhub_search_skills</span></code> tool and return results.</p>
+</section>
+<section id="install-a-skill-by-slug">
+<h2>4. Install a skill by slug<a class="headerlink" href="#install-a-skill-by-slug" title="Link to this heading"></a></h2>
+<p>After you identify a skill slug, ask:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Install</span> <span class="pre">skill</span> <span class="pre">&lt;slug&gt;</span> <span class="pre">from</span> <span class="pre">ClawHub</span></code></p></li>
+</ul>
+<p>Example:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Install</span> <span class="pre">skill</span> <span class="pre">weather-pro</span> <span class="pre">from</span> <span class="pre">ClawHub</span></code></p></li>
+</ul>
+<p>Annolid will call <code class="docutils literal notranslate"><span class="pre">clawhub_install_skill</span></code> and install into your Annolid agent workspace <code class="docutils literal notranslate"><span class="pre">skills/</span></code> directory.</p>
+</section>
+<section id="restart-behavior">
+<h2>5. Restart behavior<a class="headerlink" href="#restart-behavior" title="Link to this heading"></a></h2>
+<p>After installing a new skill, start a new Annolid Bot session so the newly installed skill instructions are loaded into context.</p>
+</section>
+<section id="troubleshooting">
+<h2>6. Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">ClawHub</span> <span class="pre">CLI</span> <span class="pre">is</span> <span class="pre">not</span> <span class="pre">available</span></code></p>
+<ul>
+<li><p>Not applicable in current implementation (no CLI dependency).</p></li>
+<li><p>If search/install fails, check internet access and firewall/proxy settings.</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Invalid</span> <span class="pre">skill</span> <span class="pre">slug</span> <span class="pre">format</span></code></p>
+<ul>
+<li><p>Use the exact slug from search results (letters/numbers/<code class="docutils literal notranslate"><span class="pre">-</span></code>/<code class="docutils literal notranslate"><span class="pre">_</span></code>/<code class="docutils literal notranslate"><span class="pre">.</span></code>).</p></li>
+</ul>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ClawHub</span> <span class="pre">command</span> <span class="pre">timed</span> <span class="pre">out</span></code></p>
+<ul>
+<li><p>Retry and check internet connection.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="what-tools-are-used">
+<h2>7. What tools are used<a class="headerlink" href="#what-tools-are-used" title="Link to this heading"></a></h2>
+<p>This feature is powered by core agent tools:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">clawhub_search_skills(query,</span> <span class="pre">limit?)</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">clawhub_install_skill(slug)</span></code></p></li>
+</ul>
+<p>These are core tools (not GUI-only wrappers), so the feature is available in agent tool workflows beyond the UI layer.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="agent_google_calendar_tutorial.html" class="btn btn-neutral float-left" title="Annolid Bot Google Calendar Tutorial" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="agent_whatsapp_tutorial.html" class="btn btn-neutral float-right" title="Annolid Bot WhatsApp Setup Tutorial" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2021, Chen Yang.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

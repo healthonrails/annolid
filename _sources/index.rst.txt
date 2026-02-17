@@ -15,6 +15,7 @@ Welcome to annolid's documentation!
    agent_tools
    agent_provider_setup
    agent_google_calendar_tutorial
+   agent_clawhub_tutorial
    agent_whatsapp_tutorial
    llm_key_security
    yoloe_prompting
