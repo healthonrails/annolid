@@ -83,6 +83,123 @@ class EmailChannelConfig:
 
 
 @dataclass
+class WhatsAppChannelConfig:
+    enabled: bool = False
+    bridge_mode: str = "python"
+    bridge_url: str = ""
+    bridge_host: str = "127.0.0.1"
+    bridge_port: int = 3001
+    bridge_token: str = ""
+    bridge_session_dir: str = "~/.annolid/whatsapp-web-session"
+    bridge_headless: bool = False
+    access_token: str = ""
+    phone_number_id: str = ""
+    verify_token: str = ""
+    api_version: str = "v22.0"
+    api_base: str = "https://graph.facebook.com"
+    preview_url: bool = False
+    webhook_enabled: bool = False
+    webhook_host: str = "127.0.0.1"
+    webhook_port: int = 0
+    webhook_path: str = "/whatsapp/webhook"
+    ingest_outgoing_messages: bool = False
+    allow_from: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "WhatsAppChannelConfig":
+        payload = data or {}
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            bridge_mode=str(
+                payload.get("bridge_mode") or payload.get("bridgeMode") or "python"
+            ),
+            bridge_url=str(payload.get("bridge_url") or payload.get("bridgeUrl") or ""),
+            bridge_host=str(
+                payload.get("bridge_host") or payload.get("bridgeHost") or "127.0.0.1"
+            ),
+            bridge_port=int(
+                payload.get("bridge_port", payload.get("bridgePort", 3001)) or 3001
+            ),
+            bridge_token=str(
+                payload.get("bridge_token") or payload.get("bridgeToken") or ""
+            ),
+            bridge_session_dir=str(
+                payload.get("bridge_session_dir")
+                or payload.get("bridgeSessionDir")
+                or "~/.annolid/whatsapp-web-session"
+            ),
+            bridge_headless=bool(
+                payload.get("bridge_headless", payload.get("bridgeHeadless", False))
+            ),
+            access_token=str(
+                payload.get("access_token") or payload.get("accessToken") or ""
+            ),
+            phone_number_id=str(
+                payload.get("phone_number_id") or payload.get("phoneNumberId") or ""
+            ),
+            verify_token=str(
+                payload.get("verify_token") or payload.get("verifyToken") or ""
+            ),
+            api_version=str(
+                payload.get("api_version") or payload.get("apiVersion") or "v22.0"
+            ),
+            api_base=str(
+                payload.get("api_base")
+                or payload.get("apiBase")
+                or "https://graph.facebook.com"
+            ),
+            preview_url=bool(
+                payload.get("preview_url", payload.get("previewUrl", False))
+            ),
+            webhook_enabled=bool(
+                payload.get("webhook_enabled", payload.get("webhookEnabled", False))
+            ),
+            webhook_host=str(
+                payload.get("webhook_host") or payload.get("webhookHost") or "127.0.0.1"
+            ),
+            webhook_port=int(
+                payload.get("webhook_port", payload.get("webhookPort", 0)) or 0
+            ),
+            webhook_path=str(
+                payload.get("webhook_path")
+                or payload.get("webhookPath")
+                or "/whatsapp/webhook"
+            ),
+            ingest_outgoing_messages=bool(
+                payload.get(
+                    "ingest_outgoing_messages",
+                    payload.get("ingestOutgoingMessages", False),
+                )
+            ),
+            allow_from=list(payload.get("allow_from") or payload.get("allowFrom", [])),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "bridge_mode": self.bridge_mode,
+            "bridge_url": self.bridge_url,
+            "bridge_host": self.bridge_host,
+            "bridge_port": self.bridge_port,
+            "bridge_token": self.bridge_token,
+            "bridge_session_dir": self.bridge_session_dir,
+            "bridge_headless": self.bridge_headless,
+            "access_token": self.access_token,
+            "phone_number_id": self.phone_number_id,
+            "verify_token": self.verify_token,
+            "api_version": self.api_version,
+            "api_base": self.api_base,
+            "preview_url": self.preview_url,
+            "webhook_enabled": self.webhook_enabled,
+            "webhook_host": self.webhook_host,
+            "webhook_port": self.webhook_port,
+            "webhook_path": self.webhook_path,
+            "ingest_outgoing_messages": self.ingest_outgoing_messages,
+            "allow_from": list(self.allow_from),
+        }
+
+
+@dataclass
 class ProviderConfig:
     api_key: str = ""
     api_base: str = ""
@@ -262,6 +379,7 @@ class ToolsConfig:
     deny: list[str] = field(default_factory=list)
     mcp_servers: Dict[str, MCPServerConfig] = field(default_factory=dict)
     email: EmailChannelConfig = field(default_factory=EmailChannelConfig)
+    whatsapp: WhatsAppChannelConfig = field(default_factory=WhatsAppChannelConfig)
     by_provider: Dict[str, ToolPolicyConfig] = field(default_factory=dict)
 
     @classmethod
@@ -307,6 +425,7 @@ class ToolsConfig:
                     value if isinstance(value, dict) else None
                 )
         email_cfg = EmailChannelConfig.from_dict(payload.get("email"))
+        whatsapp_cfg = WhatsAppChannelConfig.from_dict(payload.get("whatsapp"))
         exec_cfg = ExecToolConfig.from_dict(payload.get("exec"))
         return cls(
             exec=exec_cfg,
@@ -317,6 +436,7 @@ class ToolsConfig:
             deny=deny,
             mcp_servers=mcp_servers,
             email=email_cfg,
+            whatsapp=whatsapp_cfg,
             by_provider=by_provider,
         )
 
@@ -329,6 +449,7 @@ class ToolsConfig:
             "allow": list(self.allow),
             "deny": list(self.deny),
             "email": self.email.to_dict(),
+            "whatsapp": self.whatsapp.to_dict(),
             "mcp_servers": {
                 name: cfg.to_dict() for name, cfg in self.mcp_servers.items()
             },

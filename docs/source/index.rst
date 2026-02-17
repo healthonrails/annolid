@@ -14,6 +14,7 @@ Welcome to annolid's documentation!
    dino_kpseg
    agent_tools
    agent_provider_setup
+   agent_whatsapp_tutorial
    llm_key_security
    yoloe_prompting
    keypoints_definitions

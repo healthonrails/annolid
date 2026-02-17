@@ -10,6 +10,9 @@ from qtpy import QtCore, QtWidgets
 from annolid.core.agent.bus import MessageBus
 from annolid.core.agent.bus.service import AgentBusService
 from annolid.core.agent.channels.manager import ChannelManager
+from annolid.core.agent.channels.whatsapp import WhatsAppChannel
+from annolid.core.agent.channels.whatsapp_python_bridge import WhatsAppPythonBridge
+from annolid.core.agent.channels.whatsapp_webhook_server import WhatsAppWebhookServer
 from annolid.core.agent.config import load_config
 from annolid.core.agent.loop import AgentLoop
 from annolid.core.agent.tools import (
@@ -33,6 +36,9 @@ class AIChatManager(QtCore.QObject):
         self._bus_service: Optional[AgentBusService] = None
         self._background_thread: Optional[threading.Thread] = None
         self._background_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._whatsapp_webhook_server: Optional[WhatsAppWebhookServer] = None
+        self._whatsapp_python_bridge: Optional[WhatsAppPythonBridge] = None
+        self._channel_start_task: Optional[asyncio.Task[None]] = None
 
     def _on_dock_visibility_changed(self, visible: bool) -> None:
         if not visible:
@@ -123,10 +129,41 @@ class AIChatManager(QtCore.QObject):
             async def _async_start():
                 try:
                     config = load_config()
-                    if not config.tools.email.enabled:
+                    logger.info(
+                        "Background services config: email_enabled=%s whatsapp_enabled=%s bridge_mode=%s webhook_enabled=%s",
+                        bool(config.tools.email.enabled),
+                        bool(config.tools.whatsapp.enabled),
+                        str(config.tools.whatsapp.bridge_mode or "python"),
+                        bool(config.tools.whatsapp.webhook_enabled),
+                    )
+                    if not (
+                        config.tools.email.enabled or config.tools.whatsapp.enabled
+                    ):
+                        logger.info("Background services disabled by config")
                         return
 
                     self._background_bus = MessageBus()
+                    whatsapp_cfg = config.tools.whatsapp.to_dict()
+                    bridge_mode = (
+                        str(config.tools.whatsapp.bridge_mode or "python")
+                        .strip()
+                        .lower()
+                    )
+                    if config.tools.whatsapp.enabled and bridge_mode == "python":
+                        bridge = WhatsAppPythonBridge(
+                            host=config.tools.whatsapp.bridge_host,
+                            port=int(config.tools.whatsapp.bridge_port),
+                            token=config.tools.whatsapp.bridge_token,
+                            session_dir=config.tools.whatsapp.bridge_session_dir,
+                            headless=bool(config.tools.whatsapp.bridge_headless),
+                        )
+                        await bridge.start()
+                        self._whatsapp_python_bridge = bridge
+                        whatsapp_cfg["bridge_url"] = bridge.bridge_url
+                        logger.info(
+                            "Embedded WhatsApp Python bridge started at %s",
+                            bridge.bridge_url,
+                        )
 
                     # Setup Agent Loop for background replies
                     tools = FunctionToolRegistry()
@@ -149,14 +186,60 @@ class AIChatManager(QtCore.QObject):
 
                     self._channel_manager = ChannelManager(
                         bus=self._background_bus,
-                        channels_config={"email": config.tools.email.to_dict()},
+                        channels_config={
+                            "email": config.tools.email.to_dict(),
+                            "whatsapp": whatsapp_cfg,
+                        },
                     )
 
                     await self._bus_service.start()
-                    await self._channel_manager.start_all()
+                    if (
+                        config.tools.whatsapp.webhook_enabled
+                        and bridge_mode != "python"
+                        and not str(whatsapp_cfg.get("bridge_url", "")).strip()
+                    ):
+                        channel = self._channel_manager.get_channel("whatsapp")
+                        if isinstance(channel, WhatsAppChannel):
+                            self._whatsapp_webhook_server = WhatsAppWebhookServer(
+                                channel=channel,
+                                host=config.tools.whatsapp.webhook_host,
+                                port=int(config.tools.whatsapp.webhook_port),
+                                webhook_path=config.tools.whatsapp.webhook_path,
+                                ingest_loop=loop,
+                            )
+                            webhook_url = self._whatsapp_webhook_server.start()
+                            logger.info(
+                                "WhatsApp webhook server enabled at %s", webhook_url
+                            )
+                            host = (
+                                str(config.tools.whatsapp.webhook_host or "")
+                                .strip()
+                                .lower()
+                            )
+                            if host in {"127.0.0.1", "localhost", "0.0.0.0"}:
+                                logger.warning(
+                                    "WhatsApp webhook server is bound to %s. Meta cannot reach localhost directly. Use a public HTTPS URL/tunnel that forwards to %s",
+                                    host or "localhost",
+                                    webhook_url,
+                                )
+                        else:
+                            logger.warning(
+                                "WhatsApp webhook requested but whatsapp channel is not initialized"
+                            )
+                    elif config.tools.whatsapp.enabled and bridge_mode != "python":
+                        logger.info(
+                            "WhatsApp webhook server not started (webhook_enabled=%s bridge_url=%s)",
+                            bool(config.tools.whatsapp.webhook_enabled),
+                            str(whatsapp_cfg.get("bridge_url", "")),
+                        )
+
+                    self._channel_start_task = asyncio.create_task(
+                        self._channel_manager.start_all()
+                    )
 
                     logger.info(
-                        "Annolid Bot background services started (Email monitor enabled)"
+                        "Annolid Bot background services started (%s)",
+                        ", ".join(self._channel_manager.enabled_channels) or "none",
                     )
                 except Exception as exc:
                     logger.exception("Failed to start background services: %s", exc)
@@ -178,6 +261,46 @@ class AIChatManager(QtCore.QObject):
 
     def cleanup(self) -> None:
         """Stop background services and the event loop."""
+        start_task = self._channel_start_task
+        self._channel_start_task = None
+        if start_task is not None:
+            start_task.cancel()
+        server = self._whatsapp_webhook_server
+        self._whatsapp_webhook_server = None
+        if server is not None:
+            try:
+                server.stop()
+            except Exception:
+                logger.exception("Failed stopping WhatsApp webhook server")
+        bridge = self._whatsapp_python_bridge
+        self._whatsapp_python_bridge = None
+        if bridge is not None and self._background_loop is not None:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    bridge.stop(), self._background_loop
+                )
+                fut.result(timeout=2.0)
+            except Exception:
+                logger.exception("Failed stopping WhatsApp Python bridge")
+        if self._channel_manager is not None and self._background_loop is not None:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._channel_manager.stop_all(), self._background_loop
+                )
+                fut.result(timeout=2.0)
+            except Exception:
+                logger.exception("Failed stopping channel manager")
+            self._channel_manager = None
+        if self._bus_service is not None and self._background_loop is not None:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._bus_service.stop(), self._background_loop
+                )
+                fut.result(timeout=2.0)
+            except Exception:
+                logger.exception("Failed stopping bus service")
+            self._bus_service = None
+
         if self._background_loop is not None:
             # Thread-safe way to stop the loop from another thread (main Qt thread)
             self._background_loop.call_soon_threadsafe(self._background_loop.stop)

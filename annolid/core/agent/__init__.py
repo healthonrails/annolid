@@ -51,6 +51,8 @@ if TYPE_CHECKING:  # pragma: no cover
         SlackChannel,
         EmailChannel,
         WhatsAppChannel,
+        WhatsAppPythonBridge,
+        WhatsAppWebhookServer,
         markdown_to_telegram_html,
     )
     from .cron import (
@@ -141,6 +143,8 @@ __all__ = [
     "SlackChannel",
     "EmailChannel",
     "WhatsAppChannel",
+    "WhatsAppPythonBridge",
+    "WhatsAppWebhookServer",
     "markdown_to_telegram_html",
     "CronService",
     "compute_next_run",
@@ -309,6 +313,8 @@ def __getattr__(name: str):  # noqa: ANN001
         "SlackChannel",
         "EmailChannel",
         "WhatsAppChannel",
+        "WhatsAppPythonBridge",
+        "WhatsAppWebhookServer",
         "markdown_to_telegram_html",
     }:
         from .channels import (
@@ -319,6 +325,8 @@ def __getattr__(name: str):  # noqa: ANN001
             SlackChannel,
             EmailChannel,
             WhatsAppChannel,
+            WhatsAppPythonBridge,
+            WhatsAppWebhookServer,
             markdown_to_telegram_html,
         )
 
@@ -330,6 +338,8 @@ def __getattr__(name: str):  # noqa: ANN001
             "SlackChannel": SlackChannel,
             "EmailChannel": EmailChannel,
             "WhatsAppChannel": WhatsAppChannel,
+            "WhatsAppPythonBridge": WhatsAppPythonBridge,
+            "WhatsAppWebhookServer": WhatsAppWebhookServer,
             "markdown_to_telegram_html": markdown_to_telegram_html,
         }[name]
 

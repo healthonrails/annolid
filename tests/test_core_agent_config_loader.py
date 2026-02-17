@@ -36,6 +36,22 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
         allow=["gui_open_video"],
         deny=["gui_set_chat_model"],
     )
+    cfg.tools.whatsapp.enabled = True
+    cfg.tools.whatsapp.bridge_mode = "python"
+    cfg.tools.whatsapp.bridge_url = "ws://127.0.0.1:3001"
+    cfg.tools.whatsapp.bridge_host = "127.0.0.1"
+    cfg.tools.whatsapp.bridge_port = 3001
+    cfg.tools.whatsapp.bridge_token = "bridge-secret"
+    cfg.tools.whatsapp.bridge_session_dir = "~/.annolid/whatsapp-web-session"
+    cfg.tools.whatsapp.bridge_headless = False
+    cfg.tools.whatsapp.phone_number_id = "123456"
+    cfg.tools.whatsapp.verify_token = "verify"
+    cfg.tools.whatsapp.preview_url = True
+    cfg.tools.whatsapp.webhook_enabled = True
+    cfg.tools.whatsapp.webhook_host = "127.0.0.1"
+    cfg.tools.whatsapp.webhook_port = 18081
+    cfg.tools.whatsapp.webhook_path = "/whatsapp/webhook"
+    cfg.tools.whatsapp.ingest_outgoing_messages = True
 
     save_config(cfg, cfg_path)
     loaded = load_config(cfg_path)
@@ -55,6 +71,22 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     assert loaded.tools.deny == ["exec"]
     assert "ollama:glm-5:cloud" in loaded.tools.by_provider
     assert loaded.tools.by_provider["ollama:glm-5:cloud"].profile == "minimal"
+    assert loaded.tools.whatsapp.enabled is True
+    assert loaded.tools.whatsapp.bridge_mode == "python"
+    assert loaded.tools.whatsapp.bridge_url == "ws://127.0.0.1:3001"
+    assert loaded.tools.whatsapp.bridge_host == "127.0.0.1"
+    assert loaded.tools.whatsapp.bridge_port == 3001
+    assert loaded.tools.whatsapp.bridge_token == "bridge-secret"
+    assert loaded.tools.whatsapp.bridge_session_dir == "~/.annolid/whatsapp-web-session"
+    assert loaded.tools.whatsapp.bridge_headless is False
+    assert loaded.tools.whatsapp.phone_number_id == "123456"
+    assert loaded.tools.whatsapp.verify_token == "verify"
+    assert loaded.tools.whatsapp.preview_url is True
+    assert loaded.tools.whatsapp.webhook_enabled is True
+    assert loaded.tools.whatsapp.webhook_host == "127.0.0.1"
+    assert loaded.tools.whatsapp.webhook_port == 18081
+    assert loaded.tools.whatsapp.webhook_path == "/whatsapp/webhook"
+    assert loaded.tools.whatsapp.ingest_outgoing_messages is True
 
 
 def test_agent_config_migrates_legacy_restrict_to_workspace(tmp_path: Path) -> None:

@@ -112,6 +112,7 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
 - Open **AI & Models → Annolid Bot…** to launch a dedicated right-side WhatsApp-style multimodal chat dock (streaming chat, local `openai/whisper-tiny` speech-to-text for Talk/Record, voice talk/read controls, and one-click canvas/window sharing).
 - In Annolid Bot, enable `Allow web` to let Annolid Bot use `web_search`/`web_fetch` tools for web browsing in that chat turn (requires `BRAVE_API_KEY` for search).
 - **Model Context Protocol (MCP)**: Extend Annolid Bot with external tools and data sources. See the [MCP Configuration and Usage Tutorial](docs/mcp.md) for details.
+- **WhatsApp Channel**: Configure Annolid Bot with default local QR bridge mode (safer, no public webhook) or optional Cloud API mode using the [WhatsApp Setup Tutorial](docs/source/agent_whatsapp_tutorial.md). For QR bridge extras: `pip install "annolid[whatsapp]"`.
 - Summarise annotated behavior events into a timebudget report (GUI: *File → Behavior Time Budget*; CLI example with 60 s bins and a project schema):
   ```bash
   python -m annolid.behavior.time_budget exported_events.csv \

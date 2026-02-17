@@ -14,6 +14,7 @@ from .schema import (
     SessionRoutingConfig,
     ToolPolicyConfig,
     ToolsConfig,
+    WhatsAppChannelConfig,
 )
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "ExecToolConfig",
     "ToolPolicyConfig",
     "ToolsConfig",
+    "WhatsAppChannelConfig",
     "get_config_path",
     "load_config",
     "save_config",
