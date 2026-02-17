@@ -822,6 +822,8 @@ class AgentLoop:
         "gui_open_video",
         "gui_open_url",
         "gui_open_in_browser",
+        "clawhub_search_skills",
+        "clawhub_install_skill",
         "gui_web_get_dom_text",
         "gui_web_click",
         "gui_web_type",

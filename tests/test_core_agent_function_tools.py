@@ -672,6 +672,8 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("cron")
     assert registry.has("download_url")
     assert registry.has("download_pdf")
+    assert registry.has("clawhub_search_skills")
+    assert registry.has("clawhub_install_skill")
 
 
 def test_register_nanobot_style_tools_skips_calendar_when_deps_missing(

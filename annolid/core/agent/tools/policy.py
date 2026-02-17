@@ -34,6 +34,8 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
         "extract_pdf_images",
         "download_url",
         "download_pdf",
+        "clawhub_search_skills",
+        "clawhub_install_skill",
         "gui_context",
         "gui_shared_image_path",
         "gui_open_video",
@@ -89,6 +91,8 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "web_fetch",
         "download_url",
         "download_pdf",
+        "clawhub_search_skills",
+        "clawhub_install_skill",
         # MCP browser tools (require Playwright MCP server configured)
         "mcp_browser_navigate",
         "mcp_browser_click",
@@ -137,6 +141,7 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "video_process_segments",
     },
     "group:pdf": {"extract_pdf_text", "open_pdf", "extract_pdf_images"},
+    "group:skills": {"clawhub_search_skills", "clawhub_install_skill"},
 }
 
 

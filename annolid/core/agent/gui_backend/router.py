@@ -16,6 +16,8 @@ async def execute_direct_gui_command(
     start_realtime_stream: Callable[..., Any],
     stop_realtime_stream: Callable[[], Any],
     list_pdfs: Callable[..., Any],
+    clawhub_search_skills: Callable[..., Any],
+    clawhub_install_skill: Callable[..., Any],
     set_chat_model: Callable[[str, str], Any],
     rename_file: Callable[..., Any],
 ) -> str:
@@ -171,6 +173,68 @@ async def execute_direct_gui_command(
                 lines.append("... (showing top results)")
             return "\n".join(lines)
         return str(payload.get("error") or "Failed to list PDF files.")
+
+    if name == "clawhub_search_skills":
+        payload = await _run(
+            clawhub_search_skills,
+            query=str(args.get("query") or ""),
+            limit=int(args.get("limit") or 5),
+        )
+        if payload.get("ok"):
+            output = str(payload.get("stdout") or "").strip()
+            if output:
+                return output
+            results = payload.get("results")
+            if isinstance(results, list) and results:
+                query_text = str(payload.get("query") or "").strip()
+                lines = [
+                    (
+                        f"ClawHub skills for '{query_text}':"
+                        if query_text
+                        else "ClawHub skills:"
+                    )
+                ]
+                for item in results:
+                    if not isinstance(item, dict):
+                        continue
+                    slug = str(item.get("slug") or "").strip()
+                    name_text = str(item.get("name") or "").strip()
+                    desc = str(item.get("description") or "").strip()
+                    label = slug or name_text or "unknown-skill"
+                    title = (
+                        f"{label} - {name_text}"
+                        if slug and name_text and slug != name_text
+                        else label
+                    )
+                    lines.append(f"- {title}")
+                    if desc:
+                        lines.append(f"  {desc}")
+                if len(lines) > 1:
+                    return "\n".join(lines)
+                return "ClawHub search completed but returned no parsable items."
+            count = payload.get("count")
+            if isinstance(count, int) and count == 0:
+                query_text = str(payload.get("query") or "").strip()
+                if query_text:
+                    return f"No ClawHub skills found for '{query_text}'."
+                return "No ClawHub skills found."
+            return "ClawHub search completed."
+        return str(payload.get("error") or "Failed to search ClawHub skills.")
+
+    if name == "clawhub_install_skill":
+        payload = await _run(
+            clawhub_install_skill,
+            slug=str(args.get("slug") or ""),
+        )
+        if payload.get("ok"):
+            slug = str(payload.get("slug") or "").strip()
+            if slug:
+                return (
+                    f"Installed skill '{slug}' from ClawHub. "
+                    "Start a new Annolid Bot session to load it."
+                )
+            return "Installed ClawHub skill. Start a new session to load it."
+        return str(payload.get("error") or "Failed to install ClawHub skill.")
 
     if name == "set_chat_model":
         payload = await _run(

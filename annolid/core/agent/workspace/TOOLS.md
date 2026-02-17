@@ -41,6 +41,8 @@ Safety notes:
 - `web_fetch(url, extractMode?, maxChars?)`
 - `download_url(url, output_path, max_bytes?, overwrite?, content_type_prefixes?)`
 - `download_pdf(url, output_path?, max_bytes?, overwrite?)`
+- `clawhub_search_skills(query, limit?)`
+- `clawhub_install_skill(slug)`
 
 ## Video
 

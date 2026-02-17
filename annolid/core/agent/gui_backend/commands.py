@@ -231,6 +231,49 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             },
         }
 
+    clawhub_install_match = re.search(
+        r"\b(?:install|add)\s+(?:the\s+)?(?:skill\s+)?(?P<slug>[a-z0-9][a-z0-9._-]{0,127})\s+"
+        r"(?:from\s+)?clawhub\b",
+        lower,
+    )
+    if clawhub_install_match:
+        return {
+            "name": "clawhub_install_skill",
+            "args": {"slug": clawhub_install_match.group("slug").strip()},
+        }
+
+    clawhub_search_match = re.search(
+        r"\b(?:search|find|discover)\b.*\bskills?\b.*\b(?:on|in|from)\s+clawhub\b",
+        lower,
+    ) or re.search(
+        r"\b(?:search|find|discover)\s+clawhub\s+(?:skills?\s+)?(?:for\s+)?(?P<q>.+)$",
+        lower,
+    )
+    if clawhub_search_match:
+        query = ""
+        if clawhub_search_match.groupdict().get("q"):
+            query = str(clawhub_search_match.group("q") or "").strip(" .")
+        else:
+            query_match = re.search(
+                r"\b(?:for|about)\s+(?P<query>.+?)\s+(?:on|in|from)\s+clawhub\b",
+                lower,
+            )
+            if query_match:
+                query = str(query_match.group("query") or "").strip(" .")
+            else:
+                trailing_query_match = re.search(
+                    r"\b(?:on|in|from)\s+clawhub\b\s+(?:for|about)\s+(?P<query>.+)$",
+                    lower,
+                )
+                if trailing_query_match:
+                    query = str(trailing_query_match.group("query") or "").strip(" .")
+        if not query:
+            query = "annolid"
+        return {
+            "name": "clawhub_search_skills",
+            "args": {"query": query, "limit": 5},
+        }
+
     stop_stream_match = re.search(
         r"\b(?:stop|end|close)\b\s+(?:realtime|real[-\s]?time|stream)\b",
         lower,

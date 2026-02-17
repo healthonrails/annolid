@@ -22,6 +22,13 @@ from .email import EmailTool
 from .function_base import FunctionTool
 from .cron import CronTool
 from .calendar import GoogleCalendarTool
+from .clawhub import (
+    ClawHubInstallSkillTool,
+    ClawHubSearchSkillsTool,
+    clawhub_install_skill,
+    clawhub_search_skills,
+    run_clawhub_command,
+)
 from .filesystem import (
     EditFileTool,
     ListDirTool,
@@ -117,6 +124,11 @@ __all__ = [
     "MemoryGetTool",
     "MemorySetTool",
     "ExecTool",
+    "ClawHubSearchSkillsTool",
+    "ClawHubInstallSkillTool",
+    "clawhub_search_skills",
+    "clawhub_install_skill",
+    "run_clawhub_command",
     "WebSearchTool",
     "WebFetchTool",
     "DownloadUrlTool",

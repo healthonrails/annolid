@@ -1280,6 +1280,24 @@ def test_parse_direct_gui_command_variants() -> None:
         == "A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf"
     )
 
+    parsed_clawhub_search = task._parse_direct_gui_command(
+        "search clawhub skills for behavior labeling"
+    )
+    assert parsed_clawhub_search["name"] == "clawhub_search_skills"
+    assert parsed_clawhub_search["args"]["query"] == "behavior labeling"
+
+    parsed_clawhub_search_trailing = task._parse_direct_gui_command(
+        "search skills on clawhub for Research Paper Writer"
+    )
+    assert parsed_clawhub_search_trailing["name"] == "clawhub_search_skills"
+    assert parsed_clawhub_search_trailing["args"]["query"] == "research paper writer"
+
+    parsed_clawhub_install = task._parse_direct_gui_command(
+        "install skill behavior-labeler from clawhub"
+    )
+    assert parsed_clawhub_install["name"] == "clawhub_install_skill"
+    assert parsed_clawhub_install["args"]["slug"] == "behavior-labeler"
+
 
 def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
@@ -1299,6 +1317,22 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
 
     task = StreamingChatTask("hi", widget=None)
     task._invoke_widget_slot = lambda *args, **kwargs: True  # type: ignore[method-assign]
+    task._tool_clawhub_search_skills = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "query": kwargs.get("query", ""),
+        "results": [
+            {
+                "slug": "behavior-labeler",
+                "name": "Behavior Labeler",
+                "description": "Label behavior segments from timelines.",
+            }
+        ],
+        **kwargs,
+    }
+    task._tool_clawhub_install_skill = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "slug": kwargs.get("slug", ""),
+    }
     task._tool_gui_rename_file = lambda **kwargs: {  # type: ignore[method-assign]
         **kwargs,
         "ok": True,
@@ -1358,6 +1392,60 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         )
     )
     assert "Renamed file:" in out_rename
+
+    out_clawhub_search = asyncio.run(
+        task._execute_direct_gui_command("search clawhub skills for segmentation")
+    )
+    assert "behavior-labeler" in out_clawhub_search
+    assert "Label behavior segments" in out_clawhub_search
+
+    out_clawhub_install = asyncio.run(
+        task._execute_direct_gui_command("install skill behavior-labeler from clawhub")
+    )
+    assert "Installed skill 'behavior-labeler' from ClawHub." in out_clawhub_install
+
+
+def test_tool_gui_clawhub_search_install_payload(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    task = StreamingChatTask("hi", widget=None)
+    progress: list[str] = []
+    task._emit_progress = lambda message: progress.append(message)  # type: ignore[method-assign]
+
+    async def _fake_search(query, *, limit=5, workspace=None):
+        return {
+            "ok": True,
+            "query": query,
+            "limit": limit,
+            "workspace": str(workspace),
+        }
+
+    async def _fake_install(slug, *, workspace=None):
+        return {
+            "ok": True,
+            "slug": slug,
+            "workspace": str(workspace),
+            "skills_dir": str(Path(str(workspace)) / "skills"),
+            "restart_hint": "Start a new Annolid Bot session to load newly installed skills.",
+        }
+
+    monkeypatch.setattr(backend, "clawhub_search_skills", _fake_search)
+    monkeypatch.setattr(backend, "clawhub_install_skill", _fake_install)
+
+    search_payload = asyncio.run(task._tool_clawhub_search_skills("behavior", limit=3))
+    assert search_payload["ok"] is True
+    assert search_payload["query"] == "behavior"
+    assert search_payload["limit"] == 3
+    assert search_payload["workspace"] == str(tmp_path)
+    assert "ClawHub search: behavior" in progress
+
+    install_payload = asyncio.run(task._tool_clawhub_install_skill("my-skill"))
+    assert install_payload["ok"] is True
+    assert install_payload["slug"] == "my-skill"
+    assert install_payload["workspace"] == str(tmp_path)
+    assert install_payload["skills_dir"] == str(tmp_path / "skills")
+    assert "restart_hint" in install_payload
 
 
 def test_tool_gui_rename_file_uses_active_pdf(monkeypatch, tmp_path: Path) -> None:

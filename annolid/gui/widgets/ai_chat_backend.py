@@ -50,6 +50,10 @@ from annolid.core.agent.tools import (
     register_annolid_gui_tools,
     register_nanobot_style_tools,
 )
+from annolid.core.agent.tools.clawhub import (
+    clawhub_install_skill,
+    clawhub_search_skills,
+)
 from annolid.core.agent.tools.pdf import DownloadPdfTool
 from annolid.core.agent.tools.filesystem import RenameFileTool
 from annolid.core.agent.tools.policy import resolve_allowed_tools
@@ -1383,6 +1387,8 @@ class StreamingChatTask(QRunnable):
             start_realtime_stream=self._tool_gui_start_realtime_stream,
             stop_realtime_stream=self._tool_gui_stop_realtime_stream,
             list_pdfs=self._tool_gui_list_pdfs,
+            clawhub_search_skills=self._tool_clawhub_search_skills,
+            clawhub_install_skill=self._tool_clawhub_install_skill,
             set_chat_model=self._tool_gui_set_chat_model,
             rename_file=self._tool_gui_rename_file,
         )
@@ -1990,6 +1996,23 @@ class StreamingChatTask(QRunnable):
             "showing": len(rel_paths),
             "truncated": truncated,
         }
+
+    async def _tool_clawhub_search_skills(
+        self, query: str, limit: int = 5
+    ) -> Dict[str, Any]:
+        self._emit_progress(f"ClawHub search: {str(query or '').strip()}")
+        return await clawhub_search_skills(
+            str(query or ""),
+            limit=int(limit or 5),
+            workspace=get_agent_workspace_path(),
+        )
+
+    async def _tool_clawhub_install_skill(self, slug: str) -> Dict[str, Any]:
+        self._emit_progress(f"Installing ClawHub skill: {str(slug or '').strip()}")
+        return await clawhub_install_skill(
+            str(slug or ""),
+            workspace=get_agent_workspace_path(),
+        )
 
     async def _tool_gui_arxiv_search(
         self, query: str, max_results: int = 1
