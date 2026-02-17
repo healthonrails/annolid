@@ -1,0 +1,188 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Citation Management Tutorial &mdash; annolid 1.5.2 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=73275c37"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            annolid
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+<li class="toctree-l1"><a class="reference internal" href="guide.html">Annolid User Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="install.html">Install Annolid</a></li>
+<li class="toctree-l1"><a class="reference internal" href="read_pdf_with_ai_voice.html">Read PDFs Aloud with AI Voice (Text-to-Speech)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="extract_frames.html">Extract Frames</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html">Track animals and Auto labeling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#output-csv-format">Output CSV format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="track_animals.html#cutie-dino-body-part-tracker">Cutie + DINO Body-Part Tracker</a></li>
+<li class="toctree-l1"><a class="reference internal" href="video_depth_anything.html">Video Depth Anything</a></li>
+<li class="toctree-l1"><a class="reference internal" href="image_editing.html">Image Editing (Local Diffusion / GGUF)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="dino_kpseg.html">DINOv3 Keypoint Segmentation (DinoKPSEG)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="agent_tools.html">Agent Tools Developer Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="agent_provider_setup.html">Annolid Bot Provider and Model Setup Tutorial</a></li>
+<li class="toctree-l1"><a class="reference internal" href="agent_google_calendar_tutorial.html">Annolid Bot Google Calendar Tutorial</a></li>
+<li class="toctree-l1"><a class="reference internal" href="agent_clawhub_tutorial.html">Annolid Bot ClawHub Skills Tutorial</a></li>
+<li class="toctree-l1"><a class="reference internal" href="agent_whatsapp_tutorial.html">Annolid Bot WhatsApp Setup Tutorial</a></li>
+<li class="toctree-l1"><a class="reference internal" href="llm_key_security.html">LLM API Key Security</a></li>
+<li class="toctree-l1"><a class="reference internal" href="yoloe_prompting.html">YOLOE-26 Prompting (Text / Visual / Prompt-free)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="keypoints_definitions.html">Config keypoint connection rules, events, and instances</a></li>
+<li class="toctree-l1"><a class="reference internal" href="faqs.html">FAQs</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">annolid</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Citation Management Tutorial</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/citations_tutorial.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="citation-management-tutorial">
+<h1>Citation Management Tutorial<a class="headerlink" href="#citation-management-tutorial" title="Link to this heading"></a></h1>
+<p>This tutorial shows how to manage <code class="docutils literal notranslate"><span class="pre">.bib</span></code> citations in Annolid from chat, GUI, and CLI.</p>
+<section id="save-citation-from-active-paper">
+<h2>1. Save Citation From Active Paper<a class="headerlink" href="#save-citation-from-active-paper" title="Link to this heading"></a></h2>
+<p>Use Annolid Bot chat input:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">save</span> <span class="pre">citation</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">save</span> <span class="pre">citation</span> <span class="pre">from</span> <span class="pre">pdf</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">save</span> <span class="pre">citation</span> <span class="pre">from</span> <span class="pre">web</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">save</span> <span class="pre">citation</span> <span class="pre">from</span> <span class="pre">pdf</span> <span class="pre">as</span> <span class="pre">mypaper2024</span> <span class="pre">to</span> <span class="pre">references.bib</span></code></p></li>
+</ul>
+<p>Behavior:</p>
+<ul class="simple">
+<li><p>Annolid extracts metadata from the open PDF/web page.</p></li>
+<li><p>It validates metadata online (Google Scholar first, then fallback providers).</p></li>
+<li><p>It writes/updates the BibTeX entry in your target <code class="docutils literal notranslate"><span class="pre">.bib</span></code> file.</p></li>
+</ul>
+</section>
+<section id="add-raw-bibtex-directly">
+<h2>2. Add Raw BibTeX Directly<a class="headerlink" href="#add-raw-bibtex-directly" title="Link to this heading"></a></h2>
+<p>You can paste full BibTeX in chat:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>add citation @article{yang2024annolid, title={Annolid: Annotate, Segment, and Track Anything You Need}, author={Yang, Chen and Cleland, Thomas A}, journal={arXiv preprint arXiv:2403.18690}, year={2024}}
+</pre></div>
+</div>
+<p>Optional target file:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>add citation @article{yang2024annolid, ...} to references.bib
+</pre></div>
+</div>
+</section>
+<section id="list-existing-citations">
+<h2>3. List Existing Citations<a class="headerlink" href="#list-existing-citations" title="Link to this heading"></a></h2>
+<p>From chat:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">list</span> <span class="pre">citations</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">list</span> <span class="pre">citations</span> <span class="pre">from</span> <span class="pre">references.bib</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">list</span> <span class="pre">citations</span> <span class="pre">from</span> <span class="pre">references.bib</span> <span class="pre">for</span> <span class="pre">annolid</span></code></p></li>
+</ul>
+</section>
+<section id="use-citation-manager-ui">
+<h2>4. Use Citation Manager UI<a class="headerlink" href="#use-citation-manager-ui" title="Link to this heading"></a></h2>
+<p>Open Annolid Bot panel and click the citation button:</p>
+<ul class="simple">
+<li><p>Browse/select <code class="docutils literal notranslate"><span class="pre">.bib</span></code> file.</p></li>
+<li><p>Save from PDF/Web/Auto.</p></li>
+<li><p>Turn on/off <code class="docutils literal notranslate"><span class="pre">Auto</span> <span class="pre">validate</span> <span class="pre">before</span> <span class="pre">save</span></code>.</p></li>
+<li><p>Use <code class="docutils literal notranslate"><span class="pre">Strict</span></code> to reject weak metadata matches.</p></li>
+<li><p>Edit rows inline and click <code class="docutils literal notranslate"><span class="pre">Save</span> <span class="pre">Row</span> <span class="pre">Edits</span></code>.</p></li>
+<li><p>Use <code class="docutils literal notranslate"><span class="pre">Source</span></code> column to store URL or local PDF path.</p></li>
+<li><p>Remove selected entries.</p></li>
+</ul>
+</section>
+<section id="cli-workflow">
+<h2>5. CLI Workflow<a class="headerlink" href="#cli-workflow" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>annolid-run<span class="w"> </span>citations-list<span class="w"> </span>--bib-file<span class="w"> </span>references.bib
+annolid-run<span class="w"> </span>citations-upsert<span class="w"> </span>--bib-file<span class="w"> </span>references.bib<span class="w"> </span>--key<span class="w"> </span>yang2024annolid<span class="w"> </span>--title<span class="w"> </span><span class="s2">&quot;Annolid: Annotate, Segment, and Track Anything You Need&quot;</span><span class="w"> </span>--author<span class="w"> </span><span class="s2">&quot;Yang, Chen and Cleland, Thomas A&quot;</span><span class="w"> </span>--year<span class="w"> </span><span class="m">2024</span>
+annolid-run<span class="w"> </span>citations-remove<span class="w"> </span>--bib-file<span class="w"> </span>references.bib<span class="w"> </span>--key<span class="w"> </span>yang2024annolid
+annolid-run<span class="w"> </span>citations-format<span class="w"> </span>--bib-file<span class="w"> </span>references.bib
+</pre></div>
+</div>
+</section>
+<section id="tips">
+<h2>6. Tips<a class="headerlink" href="#tips" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Keep citation keys stable when possible.</p></li>
+<li><p>Prefer DOI-backed entries for best metadata quality.</p></li>
+<li><p>If strict validation blocks a save, disable strict mode and retry.</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2021, Chen Yang.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
