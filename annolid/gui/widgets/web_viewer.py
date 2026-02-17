@@ -100,6 +100,7 @@ if _WEBENGINE_AVAILABLE:
             self,
             parent: Optional[QtCore.QObject] = None,
             profile: Optional[QtCore.QObject] = None,
+            open_url_callback=None,
         ) -> None:
             if profile is not None:
                 try:
@@ -108,6 +109,7 @@ if _WEBENGINE_AVAILABLE:
                     super().__init__(parent)
             else:
                 super().__init__(parent)
+            self._open_url_callback = open_url_callback
             self._console_seen: dict[str, int] = {}
             self._console_last_cleanup = time.monotonic()
             self._install_compat_scripts()
@@ -220,6 +222,41 @@ if _WEBENGINE_AVAILABLE:
                 self.scripts().insert(script)
             except Exception:
                 pass
+
+        def createWindow(  # noqa: N802 - Qt override
+            self,
+            windowType: "QtWebEngineWidgets.QWebEnginePage.WebWindowType",
+        ) -> "QtWebEngineWidgets.QWebEnginePage":
+            page = None
+            try:
+                page = _AnnolidWebEnginePage(
+                    parent=self,
+                    profile=self.profile(),
+                    open_url_callback=self._open_url_callback,
+                )
+            except Exception:
+                page = _AnnolidWebEnginePage(
+                    parent=self,
+                    open_url_callback=self._open_url_callback,
+                )
+
+            def _forward_url(url: QtCore.QUrl) -> None:
+                target = str(url.toString() if url is not None else "").strip()
+                if not target:
+                    return
+                callback = getattr(self, "_open_url_callback", None)
+                if callable(callback):
+                    try:
+                        callback(target)
+                    except Exception:
+                        pass
+                QtCore.QTimer.singleShot(0, page.deleteLater)
+
+            try:
+                page.urlChanged.connect(_forward_url)
+            except Exception:
+                pass
+            return page
 
         def _cleanup_console_seen(self) -> None:
             now = time.monotonic()
@@ -463,10 +500,19 @@ class WebViewerWidget(QtWidgets.QWidget):
             self._web_profile = _create_ephemeral_web_profile(self._web_view)
             if self._web_profile is not None:
                 self._web_view.setPage(
-                    _AnnolidWebEnginePage(self._web_view, profile=self._web_profile)
+                    _AnnolidWebEnginePage(
+                        self._web_view,
+                        profile=self._web_profile,
+                        open_url_callback=self._open_url_from_page,
+                    )
                 )
             else:
-                self._web_view.setPage(_AnnolidWebEnginePage(self._web_view))
+                self._web_view.setPage(
+                    _AnnolidWebEnginePage(
+                        self._web_view,
+                        open_url_callback=self._open_url_from_page,
+                    )
+                )
         except Exception:
             pass
         # Enable Chromium built-in PDF viewer so PDFs render inline.
@@ -486,20 +532,60 @@ class WebViewerWidget(QtWidgets.QWidget):
             pass
         root.addWidget(self._web_view, 1)
 
-        self.back_button.clicked.connect(self._web_view.back)
-        self.forward_button.clicked.connect(self._web_view.forward)
-        self.reload_button.clicked.connect(self._web_view.reload)
+        self.back_button.clicked.connect(self._go_back)
+        self.forward_button.clicked.connect(self._go_forward)
+        self.reload_button.clicked.connect(self._reload_page)
         self.url_edit.returnPressed.connect(self._on_url_entered)
         self.open_in_browser_button.clicked.connect(self.open_current_in_browser)
         self.close_button.clicked.connect(self.close_requested.emit)
         self._web_view.urlChanged.connect(self._on_url_changed)
         self._web_view.loadFinished.connect(self._on_load_finished)
+        self._web_view.loadStarted.connect(
+            lambda: QtCore.QTimer.singleShot(0, self._update_nav_buttons)
+        )
+        self._web_view.loadFinished.connect(
+            lambda _ok=False: QtCore.QTimer.singleShot(0, self._update_nav_buttons)
+        )
         self._web_view.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self._web_view.customContextMenuRequested.connect(self._show_context_menu)
 
         # Update navigation button states when URL changes (QWebEngineHistory doesn't have changed signal)
         self._web_view.urlChanged.connect(self._update_nav_buttons)
         self._setup_shortcuts()
+
+    def _open_url_from_page(self, url: str) -> None:
+        target = str(url or "").strip()
+        if not target:
+            return
+        self.load_url(target)
+
+    def _go_back(self) -> None:
+        if self._web_view is None:
+            return
+        history = self._web_view.history()
+        if history.canGoBack():
+            self._web_view.back()
+            QtCore.QTimer.singleShot(0, self._update_nav_buttons)
+            return
+        self.status_changed.emit("No previous page.")
+        self._update_nav_buttons()
+
+    def _go_forward(self) -> None:
+        if self._web_view is None:
+            return
+        history = self._web_view.history()
+        if history.canGoForward():
+            self._web_view.forward()
+            QtCore.QTimer.singleShot(0, self._update_nav_buttons)
+            return
+        self.status_changed.emit("No next page.")
+        self._update_nav_buttons()
+
+    def _reload_page(self) -> None:
+        if self._web_view is None:
+            return
+        self._web_view.reload()
+        QtCore.QTimer.singleShot(0, self._update_nav_buttons)
 
     def _setup_shortcuts(self) -> None:
         if self._web_view is None:
