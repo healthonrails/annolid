@@ -17,6 +17,9 @@ import re
 from annolid.core.agent.config import CalendarToolConfig
 from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_builtin import (
+    BibtexListEntriesTool,
+    BibtexRemoveEntryTool,
+    BibtexUpsertEntryTool,
     CodeExplainTool,
     CodeSearchTool,
     CronTool,
@@ -164,6 +167,39 @@ def test_read_file_rejects_pdf_with_actionable_message(tmp_path: Path) -> None:
     pdf_path.write_bytes(b"%PDF-1.4 fake")
     result = asyncio.run(tool.execute(path=str(pdf_path)))
     assert "extract_pdf_text" in result
+
+
+def test_bibtex_tools_list_upsert_remove(tmp_path: Path) -> None:
+    upsert = BibtexUpsertEntryTool(allowed_dir=tmp_path)
+    listing = BibtexListEntriesTool(allowed_dir=tmp_path)
+    remove = BibtexRemoveEntryTool(allowed_dir=tmp_path)
+    bib_path = tmp_path / "refs.bib"
+
+    created = asyncio.run(
+        upsert.execute(
+            path=str(bib_path),
+            key="annolid2024",
+            entry_type="article",
+            fields={
+                "title": "Annolid Toolkit",
+                "author": "Liu, Jun",
+                "year": "2024",
+            },
+        )
+    )
+    created_payload = json.loads(created)
+    assert created_payload["created"] is True
+
+    rows = asyncio.run(
+        listing.execute(path=str(bib_path), query="toolkit", field="title")
+    )
+    rows_payload = json.loads(rows)
+    assert rows_payload["returned"] == 1
+    assert rows_payload["entries"][0]["key"] == "annolid2024"
+
+    removed = asyncio.run(remove.execute(path=str(bib_path), key="annolid2024"))
+    removed_payload = json.loads(removed)
+    assert removed_payload["removed"] is True
 
 
 def test_extract_pdf_text_tool_uses_fitz_backend(tmp_path: Path, monkeypatch) -> None:
@@ -672,6 +708,9 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("cron")
     assert registry.has("download_url")
     assert registry.has("download_pdf")
+    assert registry.has("bibtex_list_entries")
+    assert registry.has("bibtex_upsert_entry")
+    assert registry.has("bibtex_remove_entry")
     assert registry.has("clawhub_search_skills")
     assert registry.has("clawhub_install_skill")
 
@@ -1069,6 +1108,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
             "start_realtime_stream", kwargs
         ),
         stop_realtime_stream_callback=lambda: _mark("stop_realtime_stream"),
+        save_citation_callback=lambda **kwargs: _mark("save_citation", kwargs),
     )
     assert registry.has("gui_context")
     assert registry.has("gui_shared_image_path")
@@ -1097,6 +1137,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_label_behavior_segments")
     assert registry.has("gui_start_realtime_stream")
     assert registry.has("gui_stop_realtime_stream")
+    assert registry.has("gui_save_citation")
     ctx = asyncio.run(registry.execute("gui_context", {}))
     ctx_payload = json.loads(ctx)
     assert ctx_payload["provider"] == "ollama"
@@ -1213,6 +1254,12 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         )
     )
     asyncio.run(registry.execute("gui_stop_realtime_stream", {}))
+    asyncio.run(
+        registry.execute(
+            "gui_save_citation",
+            {"key": "annolid2024", "bib_file": "references.bib", "source": "pdf"},
+        )
+    )
     assert calls == [
         ("open_video", "/tmp/a.mp4"),
         ("open_url", "https://example.org"),
@@ -1273,4 +1320,8 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
             },
         ),
         ("stop_realtime_stream", None),
+        (
+            "save_citation",
+            {"key": "annolid2024", "bib_file": "references.bib", "source": "pdf"},
+        ),
     ]

@@ -873,6 +873,40 @@ class GuiListPdfsTool(FunctionTool):
         return await _run_callback(self._list_pdfs_callback, **kwargs)
 
 
+class GuiSaveCitationTool(FunctionTool):
+    def __init__(self, save_citation_callback: Optional[ActionCallback] = None):
+        self._save_citation_callback = save_citation_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_save_citation"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Save a citation to a BibTeX file from the currently open PDF/web page in "
+            "Annolid."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string"},
+                "bib_file": {"type": "string"},
+                "source": {"type": "string", "enum": ["auto", "pdf", "web"]},
+                "entry_type": {"type": "string"},
+                "validate_before_save": {"type": "boolean", "default": True},
+                "strict_validation": {"type": "boolean", "default": False},
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._save_citation_callback, **kwargs)
+
+
 def register_annolid_gui_tools(
     registry: FunctionToolRegistry,
     *,
@@ -893,6 +927,7 @@ def register_annolid_gui_tools(
     pdf_find_sections_callback: Optional[ActionCallback] = None,
     arxiv_search_callback: Optional[ActionCallback] = None,
     list_pdfs_callback: Optional[ActionCallback] = None,
+    save_citation_callback: Optional[ActionCallback] = None,
     set_frame_callback: Optional[ActionCallback] = None,
     set_prompt_callback: Optional[ActionCallback] = None,
     send_prompt_callback: Optional[ActionCallback] = None,
@@ -970,3 +1005,6 @@ def register_annolid_gui_tools(
     )
     registry.register(GuiArxivSearchTool(arxiv_search_callback=arxiv_search_callback))
     registry.register(GuiListPdfsTool(list_pdfs_callback=list_pdfs_callback))
+    registry.register(
+        GuiSaveCitationTool(save_citation_callback=save_citation_callback)
+    )

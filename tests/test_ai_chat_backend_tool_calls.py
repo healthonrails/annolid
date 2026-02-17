@@ -1298,6 +1298,24 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_clawhub_install["name"] == "clawhub_install_skill"
     assert parsed_clawhub_install["args"]["slug"] == "behavior-labeler"
 
+    parsed_save_citation = task._parse_direct_gui_command(
+        "save citation from pdf as annolid2024 to refs.bib"
+    )
+    assert parsed_save_citation["name"] == "save_citation"
+    assert parsed_save_citation["args"]["source"] == "pdf"
+    assert parsed_save_citation["args"]["key"] == "annolid2024"
+    assert parsed_save_citation["args"]["bib_file"] == "refs.bib"
+    assert parsed_save_citation["args"]["validate_before_save"] is True
+    assert parsed_save_citation["args"]["strict_validation"] is False
+
+    parsed_save_citation_strict = task._parse_direct_gui_command(
+        "save citation from web to refs.bib with strict validation without validation"
+    )
+    assert parsed_save_citation_strict["name"] == "save_citation"
+    assert parsed_save_citation_strict["args"]["source"] == "web"
+    assert parsed_save_citation_strict["args"]["validate_before_save"] is False
+    assert parsed_save_citation_strict["args"]["strict_validation"] is True
+
 
 def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
@@ -1340,6 +1358,13 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         "new_path": str(
             tmp_path / "A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf"
         ),
+    }
+    task._tool_gui_save_citation = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "created": True,
+        "key": kwargs.get("key") or "annolid2024",
+        "bib_file": str(tmp_path / "citations.bib"),
+        "source": kwargs.get("source") or "auto",
     }
 
     out_pdf = asyncio.run(task._execute_direct_gui_command("open pdf"))
@@ -1403,6 +1428,167 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         task._execute_direct_gui_command("install skill behavior-labeler from clawhub")
     )
     assert "Installed skill 'behavior-labeler' from ClawHub." in out_clawhub_install
+
+    out_save_citation = asyncio.run(
+        task._execute_direct_gui_command(
+            "save citation from pdf as annolid2024 to citations.bib"
+        )
+    )
+    assert "Created citation 'annolid2024'" in out_save_citation
+
+
+def test_tool_gui_save_citation_from_active_pdf(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    task = StreamingChatTask("save citation", widget=None)
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": str(pdf_path),
+        "title": "Amazing Paper.pdf",
+    }
+    task._tool_gui_pdf_get_text = lambda max_chars=8000, pages=2: {  # type: ignore[method-assign]
+        "ok": True,
+        "text": "A. Author\nAmazing Paper\n2024\nDOI:10.1000/example",
+    }
+    task._tool_gui_web_get_state = lambda: {"ok": True, "has_page": False}  # type: ignore[method-assign]
+
+    payload = task._tool_gui_save_citation(source="pdf")
+    assert payload["ok"] is True
+    assert payload["source"] == "pdf"
+    assert payload["fields"]["doi"] == "10.1000/example"
+    assert Path(str(payload["bib_file"])).exists()
+
+
+def test_tool_gui_save_citation_strict_validation_blocks_save(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(
+        backend,
+        "validate_citation_metadata",
+        lambda fields, timeout_s=1.8: {
+            "checked": True,
+            "verified": False,
+            "provider": "crossref",
+            "score": 0.25,
+            "message": "weak match",
+            "candidate": {},
+        },
+    )
+    task = StreamingChatTask("save citation", widget=None)
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": str(pdf_path),
+        "title": "Test Paper.pdf",
+    }
+    task._tool_gui_pdf_get_text = lambda max_chars=8000, pages=2: {  # type: ignore[method-assign]
+        "ok": True,
+        "text": "Test Paper\n2024\nDOI:10.1000/example",
+    }
+    task._tool_gui_web_get_state = lambda: {"ok": True, "has_page": False}  # type: ignore[method-assign]
+    payload = task._tool_gui_save_citation(source="pdf", strict_validation=True)
+    assert payload["ok"] is False
+    assert "strict mode" in str(payload["error"]).lower()
+
+
+def test_tool_gui_save_citation_skip_validation(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    calls = {"count": 0}
+
+    def _should_not_be_called(fields, timeout_s=1.8):
+        calls["count"] += 1
+        return {
+            "checked": True,
+            "verified": True,
+            "provider": "crossref",
+            "score": 1.0,
+            "message": "ok",
+            "candidate": {},
+        }
+
+    monkeypatch.setattr(backend, "validate_citation_metadata", _should_not_be_called)
+    task = StreamingChatTask("save citation", widget=None)
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": str(pdf_path),
+        "title": "No Validate.pdf",
+    }
+    task._tool_gui_pdf_get_text = lambda max_chars=8000, pages=2: {  # type: ignore[method-assign]
+        "ok": True,
+        "text": "No Validate\n2024\nDOI:10.1000/example",
+    }
+    task._tool_gui_web_get_state = lambda: {"ok": True, "has_page": False}  # type: ignore[method-assign]
+    payload = task._tool_gui_save_citation(source="pdf", validate_before_save=False)
+    assert payload["ok"] is True
+    assert calls["count"] == 0
+
+
+def test_tool_gui_save_citation_uses_scholar_bibkey_and_fields(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(
+        backend,
+        "validate_citation_metadata",
+        lambda fields, timeout_s=1.8: {
+            "checked": True,
+            "verified": True,
+            "provider": "google_scholar",
+            "score": 0.68,
+            "message": "matched",
+            "candidate": {
+                "__bibkey__": "lovell2020zebra",
+                "title": "ZEBrA: Zebra finch Expression Brain Atlas",
+                "author": ("Lovell, Peter V and Wirthlin, Morgan and Kaser, Taylor"),
+                "journal": "Journal of Comparative Neurology",
+                "year": "2020",
+                "doi": "10.1002/cne.24879",
+                "volume": "528",
+                "number": "12",
+                "pages": "2099--2131",
+                "publisher": "Wiley Online Library",
+            },
+        },
+    )
+    task = StreamingChatTask("save citation", widget=None)
+    task._tool_gui_web_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_page": True,
+        "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8219259/",
+        "title": (
+            "ZEBrA - Zebra finch Expression Brain Atlas: a resource for "
+            "comparative molecular neuroanatomy and brain evolution studies - PMC"
+        ),
+    }
+    task._tool_gui_web_get_dom_text = lambda max_chars=9000: {  # type: ignore[method-assign]
+        "ok": True,
+        "text": "DOI:10.1002/cne.24879 published 2021",
+    }
+
+    payload = task._tool_gui_save_citation(source="web")
+    assert payload["ok"] is True
+    assert payload["key"] == "lovell2020zebra"
+    assert payload["fields"]["title"].startswith("ZEBrA:")
+    assert payload["fields"]["year"] == "2020"
+    assert payload["fields"]["volume"] == "528"
 
 
 def test_tool_gui_clawhub_search_install_payload(monkeypatch, tmp_path: Path) -> None:

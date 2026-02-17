@@ -1,4 +1,9 @@
 from .code import CodeExplainTool, CodeSearchTool
+from .citation import (
+    BibtexListEntriesTool,
+    BibtexRemoveEntryTool,
+    BibtexUpsertEntryTool,
+)
 from .common import (
     _is_probably_text_file,
     _is_within_root,
@@ -69,6 +74,9 @@ __all__ = [
     "WebFetchTool",
     "DownloadUrlTool",
     "DownloadPdfTool",
+    "BibtexListEntriesTool",
+    "BibtexUpsertEntryTool",
+    "BibtexRemoveEntryTool",
     "MessageTool",
     "SpawnTool",
     "CronTool",

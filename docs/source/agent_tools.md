@@ -62,3 +62,35 @@ To disable reuse from the CLI, run:
 ```
 annolid-run agent --no-cache ...
 ```
+
+## Citation management tools
+
+Annolid includes built-in BibTeX tooling for paper citation workflows:
+
+- CLI:
+  - `annolid-run citations-list --bib-file refs.bib [--query ...]`
+  - `annolid-run citations-upsert --bib-file refs.bib --key mykey --title ... --author ... --year ...`
+  - `annolid-run citations-remove --bib-file refs.bib --key mykey`
+  - `annolid-run citations-format --bib-file refs.bib`
+- Agent function tools:
+  - `bibtex_list_entries`
+  - `bibtex_upsert_entry`
+  - `bibtex_remove_entry`
+  - `gui_save_citation` (save from active PDF/web viewer context)
+
+Examples in Annolid Bot message input:
+
+- `save citation`
+- `save citation from pdf as annolid2024 to references.bib`
+- `save citation from web`
+- `save citation from web with strict validation`
+- `save citation from pdf without validation`
+
+Default behavior:
+
+- `save citation` first attempts Google Scholar BibTeX lookup from the active paper context, then falls back to Crossref/OpenAlex when needed, and saves the merged entry to `.bib`.
+
+GUI workflow:
+
+- In Annolid Bot input toolbar, click `📚` to open the citation manager.
+- Manage a `.bib` file, save citations from active PDF/web context, choose auto-validation or strict mode, view/edit a `Source` column (URL or PDF path), edit rows inline with year/DOI checks, and remove selected entries.

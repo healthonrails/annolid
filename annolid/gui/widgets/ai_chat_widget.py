@@ -16,6 +16,7 @@ from annolid.core.agent.session_manager import (
     AgentSessionManager,
     PersistentSessionStore,
 )
+from annolid.core.agent.utils import get_agent_workspace_path
 from annolid.gui.realtime_launch import (
     build_realtime_launch_payload,
     resolve_realtime_model_weight,
@@ -23,6 +24,7 @@ from annolid.gui.realtime_launch import (
 from annolid.gui.widgets.ai_chat_audio_controller import ChatAudioController
 from annolid.gui.widgets.ai_chat_backend import StreamingChatTask, clear_chat_session
 from annolid.gui.widgets.ai_chat_session_dialog import ChatSessionManagerDialog
+from annolid.gui.widgets.citation_manager_widget import CitationManagerDialog
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
 from annolid.gui.widgets.provider_registry import ProviderRegistry
 from annolid.gui.widgets.provider_runtime_sync import (
@@ -33,6 +35,15 @@ from annolid.utils.llm_settings import (
     load_llm_settings,
     provider_kind,
     save_llm_settings,
+)
+from annolid.utils.citations import (
+    BibEntry,
+    load_bibtex,
+    merge_validated_fields,
+    save_bibtex,
+    upsert_entry,
+    validate_basic_citation_fields,
+    validate_citation_metadata,
 )
 
 
@@ -453,6 +464,7 @@ class AIChatWidget(QtWidgets.QWidget):
                 "open stream with model mediapipe face and classify eye blinks",
             ),
             ("Stop Stream", "stop realtime stream"),
+            ("Save Citation", "save citation"),
             ("Summarize Context", "Summarize what we are doing in this session."),
             ("Review Memory", "Review long-term memory and list key facts."),
         ]
@@ -654,10 +666,12 @@ class AIChatWidget(QtWidgets.QWidget):
         self.attach_file_button = self._create_input_icon("📎", "Attach file")
         self.share_canvas_button = self._create_input_icon("🎨", "Share Canvas")
         self.share_window_button = self._create_input_icon("🪟", "Share Window")
+        self.citation_button = self._create_input_icon("📚", "Manage citations")
 
         tools_layout.addWidget(self.attach_file_button)
         tools_layout.addWidget(self.share_canvas_button)
         tools_layout.addWidget(self.share_window_button)
+        tools_layout.addWidget(self.citation_button)
         input_row.addLayout(tools_layout)
 
         # Text Input
@@ -791,6 +805,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self.send_button.clicked.connect(self.chat_with_model)
         self.share_canvas_button.clicked.connect(self._share_canvas_now)
         self.share_window_button.clicked.connect(self._share_window_now)
+        self.citation_button.clicked.connect(self._open_citation_manager)
         self.attach_file_button.clicked.connect(self._attach_file)
         self.talk_button.clicked.connect(self.toggle_recording)
         self.clear_chat_button.clicked.connect(self.clear_chat_conversation)
@@ -1531,6 +1546,216 @@ class AIChatWidget(QtWidgets.QWidget):
         payload = self._bot_action_results.get(str(action), {})
         return dict(payload or {})
 
+    def _default_citation_bib_path(self) -> Path:
+        return get_agent_workspace_path() / "citations.bib"
+
+    @staticmethod
+    def _extract_doi_for_citation(text: str) -> str:
+        raw = str(text or "")
+        if not raw:
+            return ""
+        match = re.search(
+            r"\b(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)\b",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        return str(match.group(1) or "").rstrip(").,;!?") if match else ""
+
+    @staticmethod
+    def _extract_year_for_citation(text: str) -> str:
+        years = re.findall(r"\b(19\d{2}|20\d{2})\b", str(text or ""))
+        return years[0] if years else ""
+
+    @staticmethod
+    def _normalize_citation_key_for_ui(
+        title: str, year: str, fallback: str = "paper"
+    ) -> str:
+        text = str(title or fallback or "paper").strip().lower()
+        tokens = re.findall(r"[a-z0-9]+", text)
+        stem = "_".join(tokens[:3]) if tokens else "paper"
+        yr = str(year or "").strip()
+        key = f"{stem}_{yr}" if yr else stem
+        key = re.sub(r"[^a-zA-Z0-9:_\-.]+", "_", key).strip("_")
+        return key or "paper"
+
+    def _citation_entry_from_active_pdf(self) -> Optional[BibEntry]:
+        self.bot_pdf_get_state()
+        state = self.get_bot_action_result("pdf_get_state") or dict(
+            self._bot_action_result or {}
+        )
+        if not bool(state.get("ok")) or not bool(state.get("has_pdf")):
+            return None
+        path = str(state.get("path") or "").strip()
+        title = str(state.get("title") or "").strip()
+        if title.lower().endswith(".pdf"):
+            title = title[:-4]
+        self.bot_pdf_get_text(9000, 2)
+        text_payload = self.get_bot_action_result("pdf_get_text") or dict(
+            self._bot_action_result or {}
+        )
+        text = str(text_payload.get("text") or "")
+        doi = self._extract_doi_for_citation(text)
+        year = self._extract_year_for_citation(text)
+        fields: Dict[str, str] = {
+            "title": title or Path(path).stem.replace("_", " "),
+            "note": "Saved from active Annolid PDF viewer.",
+            "source_path": path,
+        }
+        if year:
+            fields["year"] = year
+        if doi:
+            fields["doi"] = doi
+            fields["url"] = f"https://doi.org/{doi}"
+        arxiv_match = re.search(
+            r"\b(\d{4}\.\d{4,5}(?:v\d+)?)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if arxiv_match:
+            fields["archiveprefix"] = "arXiv"
+            fields["eprint"] = str(arxiv_match.group(1) or "").strip()
+        key = self._normalize_citation_key_for_ui(
+            fields["title"], fields.get("year", "")
+        )
+        return BibEntry(entry_type="article", key=key, fields=fields)
+
+    def _citation_entry_from_active_web(self) -> Optional[BibEntry]:
+        self.bot_web_get_state()
+        state = self.get_bot_action_result("web_get_state") or dict(
+            self._bot_action_result or {}
+        )
+        if not bool(state.get("ok")) or not bool(state.get("has_page")):
+            return None
+        url = str(state.get("url") or "").strip()
+        if not url:
+            return None
+        title = str(state.get("title") or "").strip()
+        self.bot_web_get_dom_text(9000)
+        text_payload = self.get_bot_action_result("web_get_dom_text") or dict(
+            self._bot_action_result or {}
+        )
+        text = str(text_payload.get("text") or "")
+        doi = self._extract_doi_for_citation(f"{url}\n{text}")
+        year = self._extract_year_for_citation(text)
+        fields: Dict[str, str] = {
+            "title": title or "Web page citation",
+            "url": url,
+            "note": "Saved from active Annolid web viewer.",
+        }
+        if year:
+            fields["year"] = year
+        if doi:
+            fields["doi"] = doi
+        arxiv_match = re.search(
+            r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5}(?:v\d+)?)",
+            url,
+            flags=re.IGNORECASE,
+        )
+        if arxiv_match:
+            fields["archiveprefix"] = "arXiv"
+            fields["eprint"] = str(arxiv_match.group(1) or "").strip()
+        key = self._normalize_citation_key_for_ui(
+            fields["title"], fields.get("year", "")
+        )
+        return BibEntry(entry_type="article", key=key, fields=fields)
+
+    def _save_citation_from_active_context(
+        self,
+        *,
+        source: str = "auto",
+        key: str = "",
+        bib_path: Optional[Path] = None,
+        validate_before_save: bool = True,
+        strict_validation: bool = False,
+    ) -> Dict[str, Any]:
+        source_norm = str(source or "auto").strip().lower()
+        if source_norm not in {"auto", "pdf", "web"}:
+            source_norm = "auto"
+        entry: Optional[BibEntry] = None
+        used_source = source_norm
+        if source_norm in {"auto", "pdf"}:
+            entry = self._citation_entry_from_active_pdf()
+            if entry:
+                used_source = "pdf"
+        if entry is None and source_norm in {"auto", "web"}:
+            entry = self._citation_entry_from_active_web()
+            if entry:
+                used_source = "web"
+        if entry is None:
+            return {
+                "ok": False,
+                "error": "No active PDF/web context found to create citation.",
+            }
+        basic_errors = validate_basic_citation_fields(
+            {
+                "__key__": str(key or "").strip(),
+                "year": str(entry.fields.get("year") or ""),
+                "doi": str(entry.fields.get("doi") or ""),
+            }
+        )
+        if basic_errors:
+            return {"ok": False, "error": " ".join(basic_errors)}
+        chosen_key = str(key or "").strip()
+        if chosen_key:
+            entry.key = re.sub(r"[^a-zA-Z0-9:_\-.]+", "_", chosen_key).strip("_")
+        validation: Dict[str, Any] = {
+            "checked": False,
+            "verified": False,
+            "provider": "",
+            "score": 0.0,
+            "message": "",
+            "candidate": {},
+        }
+        if bool(validate_before_save):
+            validation = validate_citation_metadata(entry.fields, timeout_s=1.8)
+            entry.fields = merge_validated_fields(
+                entry.fields, validation, replace_when_confident=True
+            )
+            if bool(strict_validation) and not bool(validation.get("verified")):
+                return {
+                    "ok": False,
+                    "error": (
+                        "Citation validation failed strict mode. "
+                        + str(validation.get("message") or "")
+                    ).strip(),
+                    "validation": validation,
+                }
+            if not chosen_key:
+                candidate_key = str(
+                    dict(validation.get("candidate") or {}).get("__bibkey__") or ""
+                ).strip()
+                if candidate_key:
+                    entry.key = re.sub(r"[^a-zA-Z0-9:_\-.]+", "_", candidate_key).strip(
+                        "_"
+                    )
+                else:
+                    entry.key = self._normalize_citation_key_for_ui(
+                        str(entry.fields.get("title") or "").strip(),
+                        str(entry.fields.get("year") or "").strip(),
+                    )
+        target_bib = bib_path or self._default_citation_bib_path()
+        target_bib = Path(target_bib).expanduser()
+        target_bib.parent.mkdir(parents=True, exist_ok=True)
+        entries = load_bibtex(target_bib) if target_bib.exists() else []
+        updated, created = upsert_entry(entries, entry)
+        save_bibtex(target_bib, updated, sort_keys=True)
+        return {
+            "ok": True,
+            "created": bool(created),
+            "key": entry.key,
+            "bib_file": str(target_bib),
+            "source": used_source,
+            "validation": validation,
+        }
+
+    def _open_citation_manager(self) -> None:
+        dialog = CitationManagerDialog(
+            default_bib_path_getter=self._default_citation_bib_path,
+            save_from_context=self._save_citation_from_active_context,
+            parent=self,
+        )
+        dialog.exec_()
+
     def _canvas_pixmap_ready(self) -> bool:
         host = self.host_window_widget or self.window()
         canvas = getattr(host, "canvas", None)
@@ -1892,14 +2117,14 @@ class AIChatWidget(QtWidgets.QWidget):
         manager = self._resolve_web_manager()
         if manager is None:
             payload = {"ok": False, "error": "Embedded web manager is unavailable."}
-            self._set_bot_action_result(payload)
+            self._set_bot_action_result("web_get_dom_text", payload)
             self.status_label.setText("Bot action failed: web manager unavailable.")
             return
         try:
             payload = manager.get_page_text(max_chars=int(max_chars))
         except Exception as exc:
             payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result(payload)
+        self._set_bot_action_result("web_get_dom_text", payload)
         self.status_label.setText(
             "Captured page text." if payload.get("ok") else "Bot action failed."
         )
@@ -1909,42 +2134,42 @@ class AIChatWidget(QtWidgets.QWidget):
         manager = self._resolve_web_manager()
         if manager is None:
             payload = {"ok": False, "error": "Embedded web manager is unavailable."}
-            self._set_bot_action_result(payload)
+            self._set_bot_action_result("web_get_state", payload)
             self.status_label.setText("Bot action failed: web manager unavailable.")
             return
         try:
             payload = manager.get_web_state()
         except Exception as exc:
             payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result(payload)
+        self._set_bot_action_result("web_get_state", payload)
 
     @QtCore.Slot()
     def bot_pdf_get_state(self) -> None:
         manager = self._resolve_pdf_manager()
         if manager is None:
             payload = {"ok": False, "error": "PDF manager is unavailable."}
-            self._set_bot_action_result(payload)
+            self._set_bot_action_result("pdf_get_state", payload)
             self.status_label.setText("Bot action failed: PDF manager unavailable.")
             return
         try:
             payload = manager.get_pdf_state()
         except Exception as exc:
             payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result(payload)
+        self._set_bot_action_result("pdf_get_state", payload)
 
     @QtCore.Slot(int, int)
     def bot_pdf_get_text(self, max_chars: int, pages: int) -> None:
         manager = self._resolve_pdf_manager()
         if manager is None:
             payload = {"ok": False, "error": "PDF manager is unavailable."}
-            self._set_bot_action_result(payload)
+            self._set_bot_action_result("pdf_get_text", payload)
             self.status_label.setText("Bot action failed: PDF manager unavailable.")
             return
         try:
             payload = manager.get_pdf_text(max_chars=int(max_chars), pages=int(pages))
         except Exception as exc:
             payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result(payload)
+        self._set_bot_action_result("pdf_get_text", payload)
         self.status_label.setText(
             "Captured PDF text." if payload.get("ok") else "Bot action failed."
         )

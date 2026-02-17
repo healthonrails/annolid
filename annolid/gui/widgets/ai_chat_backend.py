@@ -88,6 +88,15 @@ from annolid.utils.llm_settings import (
     provider_kind,
     resolve_agent_runtime_config,
 )
+from annolid.utils.citations import (
+    BibEntry,
+    load_bibtex,
+    merge_validated_fields,
+    save_bibtex,
+    upsert_entry,
+    validate_basic_citation_fields,
+    validate_citation_metadata,
+)
 from annolid.utils.logger import logger
 
 
@@ -1112,6 +1121,9 @@ class StreamingChatTask(QRunnable):
             list_pdfs_callback=self._wrap_tool_callback(
                 "list_pdfs", self._tool_gui_list_pdfs
             ),
+            save_citation_callback=self._wrap_tool_callback(
+                "save_citation", self._tool_gui_save_citation
+            ),
         )
 
     def _resolve_loop_llm_callable(self) -> Optional[Callable[..., Any]]:
@@ -1813,6 +1825,7 @@ class StreamingChatTask(QRunnable):
             clawhub_install_skill=self._tool_clawhub_install_skill,
             set_chat_model=self._tool_gui_set_chat_model,
             rename_file=self._tool_gui_rename_file,
+            save_citation=self._tool_gui_save_citation,
         )
 
     def _parse_direct_gui_command(self, prompt: str) -> Dict[str, Any]:
@@ -2413,6 +2426,243 @@ class StreamingChatTask(QRunnable):
             "count": len(found_files),
             "showing": len(rel_paths),
             "truncated": truncated,
+        }
+
+    @staticmethod
+    def _extract_doi(text: str) -> str:
+        raw = str(text or "")
+        if not raw:
+            return ""
+        match = re.search(
+            r"\b(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)\b",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        return str(match.group(1) or "").rstrip(").,;!?") if match else ""
+
+    @staticmethod
+    def _extract_year(text: str) -> str:
+        raw = str(text or "")
+        if not raw:
+            return ""
+        years = re.findall(r"\b(19\d{2}|20\d{2})\b", raw)
+        return years[0] if years else ""
+
+    @staticmethod
+    def _normalize_citation_key(title: str, year: str, fallback: str = "paper") -> str:
+        text = str(title or "").strip().lower()
+        if not text:
+            text = str(fallback or "paper").strip().lower()
+        tokens = re.findall(r"[a-z0-9]+", text)
+        stem = "_".join(tokens[:3]) if tokens else "paper"
+        yr = str(year or "").strip()
+        if yr:
+            return f"{stem}_{yr}"
+        return stem
+
+    def _resolve_bib_output_path(self, bib_file: str) -> Path:
+        workspace = get_agent_workspace_path()
+        target = str(bib_file or "").strip()
+        if not target:
+            return workspace / "citations.bib"
+        candidate = Path(target).expanduser()
+        if candidate.is_absolute():
+            try:
+                candidate.relative_to(workspace)
+                return candidate
+            except Exception:
+                return workspace / candidate.name
+        return workspace / candidate
+
+    def _citation_fields_from_pdf_state(self) -> Dict[str, Any]:
+        state = self._tool_gui_pdf_get_state()
+        if not isinstance(state, dict) or not bool(state.get("ok")):
+            return {}
+        if not bool(state.get("has_pdf")):
+            return {}
+        path = str(state.get("path") or "").strip()
+        if not path:
+            return {}
+        pdf_text_payload = self._tool_gui_pdf_get_text(max_chars=8000, pages=2)
+        text = (
+            str(pdf_text_payload.get("text") or "")
+            if isinstance(pdf_text_payload, dict)
+            else ""
+        )
+        title = str(state.get("title") or "").strip()
+        if title.lower().endswith(".pdf"):
+            title = title[:-4]
+        doi = self._extract_doi(text)
+        year = self._extract_year(text)
+        fields: Dict[str, Any] = {
+            "title": title or Path(path).stem.replace("_", " "),
+            "year": year,
+            "doi": doi,
+            "url": "",
+            "source_path": path,
+            "note": "Saved from active Annolid PDF viewer.",
+        }
+        if doi:
+            fields["url"] = f"https://doi.org/{doi}"
+        arxiv_match = re.search(
+            r"\b(\d{4}\.\d{4,5}(?:v\d+)?)\b",
+            str(text or ""),
+            flags=re.IGNORECASE,
+        )
+        if arxiv_match:
+            fields.setdefault("archiveprefix", "arXiv")
+            fields.setdefault("eprint", str(arxiv_match.group(1) or "").strip())
+        return {"source": "pdf", "path": path, "fields": fields}
+
+    def _citation_fields_from_web_state(self) -> Dict[str, Any]:
+        state = self._tool_gui_web_get_state()
+        if not isinstance(state, dict) or not bool(state.get("ok")):
+            return {}
+        if not bool(state.get("has_page")):
+            return {}
+        url = str(state.get("url") or "").strip()
+        if not url:
+            return {}
+        dom_payload = self._tool_gui_web_get_dom_text(max_chars=9000)
+        text = (
+            str(dom_payload.get("text") or "") if isinstance(dom_payload, dict) else ""
+        )
+        title = str(state.get("title") or "").strip()
+        doi = self._extract_doi(text or url)
+        year = self._extract_year(text)
+        fields: Dict[str, Any] = {
+            "title": title or "Web page citation",
+            "year": year,
+            "doi": doi,
+            "url": url,
+            "note": "Saved from active Annolid web viewer.",
+        }
+        arxiv_match = re.search(
+            r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5}(?:v\d+)?)",
+            url,
+            flags=re.IGNORECASE,
+        )
+        if arxiv_match:
+            fields.setdefault("archiveprefix", "arXiv")
+            fields.setdefault("eprint", str(arxiv_match.group(1) or "").strip())
+        return {"source": "web", "url": url, "fields": fields}
+
+    def _tool_gui_save_citation(
+        self,
+        *,
+        key: str = "",
+        bib_file: str = "",
+        source: str = "auto",
+        entry_type: str = "article",
+        validate_before_save: bool = True,
+        strict_validation: bool = False,
+    ) -> Dict[str, Any]:
+        source_pref = str(source or "auto").strip().lower()
+        if source_pref not in {"auto", "pdf", "web"}:
+            source_pref = "auto"
+        chosen: Dict[str, Any] = {}
+        if source_pref in {"auto", "pdf"}:
+            chosen = self._citation_fields_from_pdf_state()
+        if (not chosen) and source_pref in {"auto", "web"}:
+            chosen = self._citation_fields_from_web_state()
+        if not chosen:
+            return {
+                "ok": False,
+                "error": (
+                    "No active paper context found. Open a PDF or web page first, "
+                    "then ask to save citation."
+                ),
+            }
+
+        fields_raw = dict(chosen.get("fields") or {})
+        fields: Dict[str, str] = {}
+        for k, v in fields_raw.items():
+            name = str(k or "").strip().lower()
+            value = str(v or "").strip()
+            if name and value:
+                fields[name] = value
+        basic_errors = validate_basic_citation_fields(
+            {
+                "__key__": str(key or "").strip(),
+                "year": str(fields.get("year") or ""),
+                "doi": str(fields.get("doi") or ""),
+            }
+        )
+        if basic_errors:
+            return {"ok": False, "error": " ".join(basic_errors)}
+
+        resolved_bib = self._resolve_bib_output_path(str(bib_file or ""))
+        resolved_bib.parent.mkdir(parents=True, exist_ok=True)
+        title = str(fields.get("title") or "").strip()
+        year = str(fields.get("year") or "").strip()
+        key_override = str(key or "").strip()
+        normalized_key = key_override
+        if not normalized_key:
+            normalized_key = self._normalize_citation_key(
+                title, year, fallback=str(chosen.get("source") or "paper")
+            )
+        normalized_key = re.sub(r"[^a-zA-Z0-9:_\-.]+", "_", normalized_key).strip("_")
+        if not normalized_key:
+            normalized_key = "paper"
+
+        validation: Dict[str, Any] = {
+            "checked": False,
+            "verified": False,
+            "provider": "",
+            "score": 0.0,
+            "message": "",
+            "candidate": {},
+        }
+        if bool(validate_before_save):
+            validation = validate_citation_metadata(fields, timeout_s=1.8)
+            fields = merge_validated_fields(
+                fields, validation, replace_when_confident=True
+            )
+            if bool(strict_validation) and not bool(validation.get("verified")):
+                return {
+                    "ok": False,
+                    "error": (
+                        "Citation validation failed strict mode. "
+                        + str(validation.get("message") or "")
+                    ).strip(),
+                    "validation": validation,
+                }
+            if not key_override:
+                candidate_key = str(
+                    dict(validation.get("candidate") or {}).get("__bibkey__") or ""
+                ).strip()
+                if candidate_key:
+                    normalized_key = candidate_key
+                else:
+                    normalized_key = self._normalize_citation_key(
+                        str(fields.get("title") or "").strip(),
+                        str(fields.get("year") or "").strip(),
+                        fallback=str(chosen.get("source") or "paper"),
+                    )
+                normalized_key = re.sub(
+                    r"[^a-zA-Z0-9:_\-.]+", "_", normalized_key
+                ).strip("_")
+                if not normalized_key:
+                    normalized_key = "paper"
+
+        entries = load_bibtex(resolved_bib) if resolved_bib.exists() else []
+        updated, created = upsert_entry(
+            entries,
+            BibEntry(
+                entry_type=str(entry_type or "article").strip().lower() or "article",
+                key=normalized_key,
+                fields=fields,
+            ),
+        )
+        save_bibtex(resolved_bib, updated, sort_keys=True)
+        return {
+            "ok": True,
+            "created": bool(created),
+            "key": normalized_key,
+            "bib_file": str(resolved_bib),
+            "source": str(chosen.get("source") or source_pref),
+            "fields": fields,
+            "validation": validation,
         }
 
     async def _tool_clawhub_search_skills(

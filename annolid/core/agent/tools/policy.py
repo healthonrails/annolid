@@ -63,6 +63,7 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
         "gui_label_behavior_segments",
         "gui_start_realtime_stream",
         "gui_stop_realtime_stream",
+        "gui_save_citation",
     },
     "messaging": {"message", "spawn", "cron"},
 }
@@ -131,6 +132,7 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "gui_label_behavior_segments",
         "gui_start_realtime_stream",
         "gui_stop_realtime_stream",
+        "gui_save_citation",
     },
     "group:automation": {"cron", "spawn", "google_calendar"},
     "group:messaging": {"message"},

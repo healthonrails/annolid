@@ -406,6 +406,142 @@ def _cmd_dino_kpseg_precompute(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_citations_list(args: argparse.Namespace) -> int:
+    from annolid.utils.citations import entry_to_dict, load_bibtex, search_entries
+
+    bib_file = Path(args.bib_file).expanduser().resolve()
+    entries = load_bibtex(bib_file)
+    query = str(args.query or "").strip()
+    field = str(args.field).strip() if args.field else None
+    limit = max(1, int(args.limit))
+    rows = (
+        search_entries(entries, query, field=field, limit=limit)
+        if query
+        else list(entries[:limit])
+    )
+    payload: dict[str, object] = {
+        "bib_file": str(bib_file),
+        "total_entries": len(entries),
+        "returned": len(rows),
+    }
+    if bool(args.verbose):
+        payload["entries"] = [entry_to_dict(entry) for entry in rows]
+    else:
+        payload["entries"] = [
+            {
+                "key": entry.key,
+                "entry_type": entry.entry_type,
+                "title": entry.fields.get("title"),
+                "author": entry.fields.get("author"),
+                "year": entry.fields.get("year"),
+            }
+            for entry in rows
+        ]
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _parse_citation_fields(args: argparse.Namespace) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for raw in list(args.field or []):
+        token = str(raw or "").strip()
+        if not token or "=" not in token:
+            raise SystemExit(f"Invalid --field value {raw!r}; expected name=value.")
+        name, value = token.split("=", 1)
+        field_name = name.strip().lower()
+        if not field_name:
+            raise SystemExit(f"Invalid --field value {raw!r}; empty field name.")
+        fields[field_name] = value.strip()
+
+    for name in ("title", "author", "year", "journal", "booktitle", "doi", "url"):
+        value = getattr(args, name, None)
+        if value is not None and str(value).strip():
+            fields[name] = str(value).strip()
+    return fields
+
+
+def _cmd_citations_upsert(args: argparse.Namespace) -> int:
+    from annolid.utils.citations import BibEntry, load_bibtex, save_bibtex, upsert_entry
+
+    bib_file = Path(args.bib_file).expanduser().resolve()
+    key = str(args.key).strip()
+    if not key:
+        raise SystemExit("--key must be non-empty.")
+    entry_type = str(args.entry_type or "").strip().lower()
+    if not entry_type:
+        raise SystemExit("--entry-type must be non-empty.")
+
+    fields = _parse_citation_fields(args)
+    if not fields:
+        raise SystemExit(
+            "At least one citation field is required. Use --field name=value "
+            "or shortcuts like --title/--author/--year."
+        )
+
+    entries = load_bibtex(bib_file)
+    updated, created = upsert_entry(
+        entries, BibEntry(entry_type=entry_type, key=key, fields=fields)
+    )
+    save_bibtex(bib_file, updated, sort_keys=not bool(args.no_sort))
+
+    print(
+        json.dumps(
+            {
+                "bib_file": str(bib_file),
+                "key": key,
+                "created": bool(created),
+                "total_entries": len(updated),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _cmd_citations_remove(args: argparse.Namespace) -> int:
+    from annolid.utils.citations import load_bibtex, remove_entry, save_bibtex
+
+    bib_file = Path(args.bib_file).expanduser().resolve()
+    key = str(args.key).strip()
+    if not key:
+        raise SystemExit("--key must be non-empty.")
+    entries = load_bibtex(bib_file)
+    updated, removed = remove_entry(entries, key)
+    if removed:
+        save_bibtex(bib_file, updated, sort_keys=not bool(args.no_sort))
+    print(
+        json.dumps(
+            {
+                "bib_file": str(bib_file),
+                "key": key,
+                "removed": bool(removed),
+                "total_entries": len(updated if removed else entries),
+            },
+            indent=2,
+        )
+    )
+    return 0 if removed else 1
+
+
+def _cmd_citations_format(args: argparse.Namespace) -> int:
+    from annolid.utils.citations import load_bibtex, save_bibtex
+
+    bib_file = Path(args.bib_file).expanduser().resolve()
+    entries = load_bibtex(bib_file)
+    save_bibtex(bib_file, entries, sort_keys=not bool(args.no_sort))
+    print(
+        json.dumps(
+            {
+                "bib_file": str(bib_file),
+                "entries": len(entries),
+                "sorted": not bool(args.no_sort),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def _cmd_agent(args: argparse.Namespace) -> int:
     import time
 
@@ -815,6 +951,96 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Run lightweight validation checks for agent tool modules.",
     )
     validate_tools_p.set_defaults(_handler=_cmd_agent_validate_tools)
+
+    citations_list_p = sub.add_parser(
+        "citations-list",
+        help="List/search BibTeX entries from a .bib file.",
+    )
+    citations_list_p.add_argument(
+        "--bib-file", required=True, help="Path to a BibTeX .bib file."
+    )
+    citations_list_p.add_argument(
+        "--query",
+        default=None,
+        help="Optional case-insensitive substring query.",
+    )
+    citations_list_p.add_argument(
+        "--field",
+        default=None,
+        help="Optional field name to constrain query, e.g. title or author.",
+    )
+    citations_list_p.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Maximum number of entries returned (default: 50).",
+    )
+    citations_list_p.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Include complete entry fields in output.",
+    )
+    citations_list_p.set_defaults(_handler=_cmd_citations_list)
+
+    citations_upsert_p = sub.add_parser(
+        "citations-upsert",
+        help="Create or update a BibTeX entry by key.",
+    )
+    citations_upsert_p.add_argument(
+        "--bib-file", required=True, help="Path to a BibTeX .bib file."
+    )
+    citations_upsert_p.add_argument("--key", required=True, help="Citation key.")
+    citations_upsert_p.add_argument(
+        "--entry-type", default="article", help="BibTeX entry type (default: article)."
+    )
+    citations_upsert_p.add_argument(
+        "--field",
+        action="append",
+        default=[],
+        help="Field assignment in name=value format (repeatable).",
+    )
+    citations_upsert_p.add_argument("--title", default=None)
+    citations_upsert_p.add_argument("--author", default=None)
+    citations_upsert_p.add_argument("--year", default=None)
+    citations_upsert_p.add_argument("--journal", default=None)
+    citations_upsert_p.add_argument("--booktitle", default=None)
+    citations_upsert_p.add_argument("--doi", default=None)
+    citations_upsert_p.add_argument("--url", default=None)
+    citations_upsert_p.add_argument(
+        "--no-sort",
+        action="store_true",
+        help="Do not sort entries by key when writing output.",
+    )
+    citations_upsert_p.set_defaults(_handler=_cmd_citations_upsert)
+
+    citations_remove_p = sub.add_parser(
+        "citations-remove",
+        help="Remove a BibTeX entry by key.",
+    )
+    citations_remove_p.add_argument(
+        "--bib-file", required=True, help="Path to a BibTeX .bib file."
+    )
+    citations_remove_p.add_argument("--key", required=True, help="Citation key.")
+    citations_remove_p.add_argument(
+        "--no-sort",
+        action="store_true",
+        help="Do not sort entries by key when writing output.",
+    )
+    citations_remove_p.set_defaults(_handler=_cmd_citations_remove)
+
+    citations_format_p = sub.add_parser(
+        "citations-format",
+        help="Rewrite a BibTeX file using canonical formatting.",
+    )
+    citations_format_p.add_argument(
+        "--bib-file", required=True, help="Path to a BibTeX .bib file."
+    )
+    citations_format_p.add_argument(
+        "--no-sort",
+        action="store_true",
+        help="Preserve original order instead of sorting by key.",
+    )
+    citations_format_p.set_defaults(_handler=_cmd_citations_format)
 
     collect_p = sub.add_parser(
         "collect-labels",

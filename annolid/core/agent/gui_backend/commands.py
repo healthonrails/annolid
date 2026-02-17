@@ -120,6 +120,50 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             args["new_path"] = ""
         return {"name": "rename_file", "args": args}
 
+    save_citation_match = re.search(
+        r"\b(?:save|add|store|export)\b.*\b(?:citation|cite|bib(?:tex)?\b)\b",
+        lower,
+    )
+    if save_citation_match:
+        key_match = re.search(
+            r"\b(?:as|key)\s+([a-z0-9][a-z0-9:_\-./]{1,127})\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        bib_file_match = re.search(
+            r"\bto\s+([^\n]+?\.bib)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        source = "auto"
+        if re.search(r"\b(?:from|in)\s+(?:the\s+)?pdf\b", lower):
+            source = "pdf"
+        elif re.search(r"\b(?:from|in)\s+(?:the\s+)?web\b", lower) or re.search(
+            r"\b(?:from|in)\s+(?:the\s+)?browser\b", lower
+        ):
+            source = "web"
+        return {
+            "name": "save_citation",
+            "args": {
+                "key": (key_match.group(1).strip() if key_match else ""),
+                "bib_file": (
+                    _strip_wrapping_quotes(bib_file_match.group(1).strip())
+                    if bib_file_match
+                    else ""
+                ),
+                "source": source,
+                "validate_before_save": not bool(
+                    re.search(
+                        r"\b(?:without|skip|no)\s+(?:online\s+)?validation\b",
+                        lower,
+                    )
+                ),
+                "strict_validation": bool(
+                    re.search(r"\bstrict(?:\s+validation)?\b", lower)
+                ),
+            },
+        }
+
     workflow_match = re.search(
         r"\b(segment|track)\b\s+(?P<prompt>.+?)\s+(?:in|on)\s+(?P<path>.+)",
         text,
@@ -525,6 +569,9 @@ def prompt_may_need_tools(prompt: str) -> bool:
         "label",
         "workspace",
         "file",
+        "citation",
+        "bib",
+        "paper",
         "gui_",
         "use ",
     )

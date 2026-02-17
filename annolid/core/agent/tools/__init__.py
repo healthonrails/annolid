@@ -20,6 +20,11 @@ from .detection import DetectionResult, DetectionTool
 from .embedding import EmbeddingResult, EmbeddingTool
 from .email import EmailTool
 from .function_base import FunctionTool
+from .citation import (
+    BibtexListEntriesTool,
+    BibtexRemoveEntryTool,
+    BibtexUpsertEntryTool,
+)
 from .cron import CronTool
 from .calendar import GoogleCalendarTool
 from .clawhub import (
@@ -50,6 +55,7 @@ from .function_gui import (
     GuiOpenUrlTool,
     GuiOpenVideoTool,
     GuiRunAiTextSegmentationTool,
+    GuiSaveCitationTool,
     GuiSegmentTrackVideoTool,
     GuiSelectAnnotationModelTool,
     GuiSendPromptTool,
@@ -133,6 +139,9 @@ __all__ = [
     "WebFetchTool",
     "DownloadUrlTool",
     "DownloadPdfTool",
+    "BibtexListEntriesTool",
+    "BibtexUpsertEntryTool",
+    "BibtexRemoveEntryTool",
     "ExtractPdfTextTool",
     "OpenPdfTool",
     "ExtractPdfImagesTool",
@@ -161,6 +170,7 @@ __all__ = [
     "GuiTrackNextFramesTool",
     "GuiSetAiTextPromptTool",
     "GuiRunAiTextSegmentationTool",
+    "GuiSaveCitationTool",
     "GuiSegmentTrackVideoTool",
     "GuiLabelBehaviorSegmentsTool",
     "GuiStartRealtimeStreamTool",

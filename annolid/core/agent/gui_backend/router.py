@@ -20,6 +20,7 @@ async def execute_direct_gui_command(
     clawhub_install_skill: Callable[..., Any],
     set_chat_model: Callable[[str, str], Any],
     rename_file: Callable[..., Any],
+    save_citation: Callable[..., Any],
 ) -> str:
     if not command:
         return ""
@@ -267,6 +268,39 @@ async def execute_direct_gui_command(
                 return f"Renamed file to: {new_path}"
             return "Renamed file."
         return str(payload.get("error") or "Failed to rename file.")
+
+    if name == "save_citation":
+        payload = await _run(
+            save_citation,
+            key=str(args.get("key") or ""),
+            bib_file=str(args.get("bib_file") or ""),
+            source=str(args.get("source") or "auto"),
+            validate_before_save=bool(args.get("validate_before_save", True)),
+            strict_validation=bool(args.get("strict_validation", False)),
+        )
+        if payload.get("ok"):
+            key = str(payload.get("key") or "").strip()
+            bib_path = str(payload.get("bib_file") or "").strip()
+            source_used = str(payload.get("source") or "auto").strip()
+            action = "Created" if bool(payload.get("created")) else "Updated"
+            validation = dict(payload.get("validation") or {})
+            hint = ""
+            if bool(validation.get("checked")):
+                provider = str(validation.get("provider") or "").strip()
+                verified = bool(validation.get("verified"))
+                score = float(validation.get("score") or 0.0)
+                state = "verified" if verified else "unverified"
+                label = f"{provider} {state}" if provider else state
+                hint = f" Validation: {label} ({score:.2f})."
+            if key and bib_path:
+                return (
+                    f"{action} citation '{key}' in {bib_path} "
+                    f"(source: {source_used}).{hint}"
+                )
+            if key:
+                return f"{action} citation '{key}'.{hint}"
+            return f"Saved citation.{hint}"
+        return str(payload.get("error") or "Failed to save citation.")
 
     return ""
 

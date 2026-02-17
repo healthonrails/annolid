@@ -5,6 +5,11 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Sequence
 
 from annolid.utils.logger import logger
 
+from .citation import (
+    BibtexListEntriesTool,
+    BibtexRemoveEntryTool,
+    BibtexUpsertEntryTool,
+)
 from .code import CodeExplainTool, CodeSearchTool
 from .clawhub import ClawHubInstallSkillTool, ClawHubSearchSkillsTool
 from .mcp import connect_mcp_servers
@@ -116,6 +121,14 @@ async def register_nanobot_style_tools(
     registry.register(WebFetchTool())
     registry.register(DownloadUrlTool(allowed_dir=allowed_dir))
     registry.register(DownloadPdfTool(allowed_dir=allowed_dir))
+    registry.register(
+        BibtexListEntriesTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(BibtexUpsertEntryTool(allowed_dir=allowed_dir))
+    registry.register(BibtexRemoveEntryTool(allowed_dir=allowed_dir))
     registry.register(ClawHubSearchSkillsTool(workspace=allowed_dir))
     registry.register(ClawHubInstallSkillTool(workspace=allowed_dir))
     registry.register(
