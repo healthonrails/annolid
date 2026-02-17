@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import os
 import tempfile
+import webbrowser
 from datetime import datetime
 import json
 from pathlib import Path
@@ -44,6 +45,8 @@ class _ChatBubble(QtWidgets.QFrame):
         on_speak=None,
         on_copy=None,
         on_regenerate=None,
+        on_open_link=None,
+        on_open_link_in_browser=None,
         allow_regenerate: bool = False,
         parent=None,
     ) -> None:
@@ -54,6 +57,8 @@ class _ChatBubble(QtWidgets.QFrame):
         self._on_speak = on_speak
         self._on_copy = on_copy
         self._on_regenerate = on_regenerate
+        self._on_open_link = on_open_link
+        self._on_open_link_in_browser = on_open_link_in_browser
         self._allow_regenerate = bool(allow_regenerate)
         self._raw_text = str(text or "")
         # self._preferred_text_width = 600 # Removed for full width
@@ -91,7 +96,8 @@ class _ChatBubble(QtWidgets.QFrame):
         self.message_view.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.message_view.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         self.message_view.setAutoFillBackground(False)
-        self.message_view.setOpenExternalLinks(True)
+        self.message_view.setOpenExternalLinks(False)
+        self.message_view.setOpenLinks(False)
         self.message_view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.message_view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.message_view.setSizeAdjustPolicy(
@@ -99,6 +105,11 @@ class _ChatBubble(QtWidgets.QFrame):
         )
         self.message_view.setTextInteractionFlags(
             QtCore.Qt.TextSelectableByMouse | QtCore.Qt.LinksAccessibleByMouse
+        )
+        self.message_view.anchorClicked.connect(self._handle_anchor_clicked)
+        self.message_view.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.message_view.customContextMenuRequested.connect(
+            self._show_message_context_menu
         )
 
         self.message_doc = QtGui.QTextDocument(self.message_view)
@@ -322,6 +333,69 @@ class _ChatBubble(QtWidgets.QFrame):
     def _regenerate(self) -> None:
         if callable(self._on_regenerate):
             self._on_regenerate(self.text())
+
+    def _handle_anchor_clicked(self, url: QtCore.QUrl) -> None:
+        target = str(url.toString() if isinstance(url, QtCore.QUrl) else url).strip()
+        if not target:
+            return
+        if callable(self._on_open_link):
+            self._on_open_link(target)
+
+    def _show_message_context_menu(self, position: QtCore.QPoint) -> None:
+        menu = self.message_view.createStandardContextMenu()
+        link = str(self.message_view.anchorAt(position) or "").strip()
+        if link:
+            menu.addSeparator()
+
+            open_viewer_action = menu.addAction("Open Link in Annolid Web Viewer")
+            open_viewer_action.triggered.connect(
+                lambda _checked=False, value=link: self._open_link_in_viewer(value)
+            )
+
+            open_browser_action = menu.addAction("Open Link in Default Browser")
+            open_browser_action.triggered.connect(
+                lambda _checked=False, value=link: self._open_link_in_browser(
+                    value, "default"
+                )
+            )
+
+            open_tab_action = menu.addAction("Open Link in Default Browser (New Tab)")
+            open_tab_action.triggered.connect(
+                lambda _checked=False, value=link: self._open_link_in_browser(
+                    value, "new_tab"
+                )
+            )
+
+            open_window_action = menu.addAction(
+                "Open Link in Default Browser (New Window)"
+            )
+            open_window_action.triggered.connect(
+                lambda _checked=False, value=link: self._open_link_in_browser(
+                    value, "new_window"
+                )
+            )
+
+            copy_link_action = menu.addAction("Copy Link Address")
+            copy_link_action.triggered.connect(
+                lambda _checked=False,
+                value=link: QtGui.QGuiApplication.clipboard().setText(value)
+            )
+
+        menu.exec_(self.message_view.viewport().mapToGlobal(position))
+
+    def _open_link_in_viewer(self, url: str) -> None:
+        target = str(url or "").strip()
+        if not target:
+            return
+        if callable(self._on_open_link):
+            self._on_open_link(target)
+
+    def _open_link_in_browser(self, url: str, mode: str) -> None:
+        target = str(url or "").strip()
+        if not target:
+            return
+        if callable(self._on_open_link_in_browser):
+            self._on_open_link_in_browser(target, str(mode or "default"))
 
     # Simplified drag resizing - removed for now to clean up, unless strictly needed.
     # It was a bit complex and rarely used feature in chat widgets.
@@ -1123,6 +1197,8 @@ class AIChatWidget(QtWidgets.QWidget):
             on_speak=self.speak_text_async,
             on_copy=self._copy_message_text,
             on_regenerate=self._regenerate_from_bubble,
+            on_open_link=self._open_chat_link_default,
+            on_open_link_in_browser=self._open_chat_link_in_browser,
             allow_regenerate=allow_regenerate,
             parent=self.chat_container,
         )
@@ -1668,6 +1744,84 @@ class AIChatWidget(QtWidgets.QWidget):
         host = self.host_window_widget or self.window()
         return getattr(host, "pdf_manager", None)
 
+    def _normalize_url_for_open(self, url: str) -> Optional[QtCore.QUrl]:
+        value = str(url or "").strip()
+        if not value:
+            return None
+        parsed = QtCore.QUrl(value)
+        if parsed.isValid() and parsed.scheme().lower() in {"http", "https", "file"}:
+            return parsed
+        local_path = Path(value).expanduser()
+        if local_path.exists() and local_path.is_file():
+            return QtCore.QUrl.fromLocalFile(str(local_path))
+        if "://" not in value:
+            fallback = QtCore.QUrl(f"https://{value}")
+            if fallback.isValid() and fallback.scheme().lower() in {"http", "https"}:
+                return fallback
+        return None
+
+    def _open_url_in_web_viewer(self, parsed: QtCore.QUrl) -> bool:
+        normalized = str(parsed.toString() or "").strip()
+        if not normalized:
+            return False
+        host = self.host_window_widget or self.window()
+        show_web = getattr(host, "show_web_in_viewer", None)
+        if callable(show_web) and bool(show_web(normalized)):
+            return True
+        manager = self._resolve_web_manager()
+        if manager is not None and hasattr(manager, "show_url_in_viewer"):
+            try:
+                return bool(manager.show_url_in_viewer(normalized))
+            except Exception:
+                return False
+        return False
+
+    def _open_chat_link_default(self, url: str) -> None:
+        parsed = self._normalize_url_for_open(url)
+        if parsed is None:
+            self.status_label.setText("Invalid URL.")
+            return
+        normalized = str(parsed.toString() or "").strip()
+        if self._open_url_in_web_viewer(parsed):
+            self.status_label.setText(
+                f"Opened URL in embedded web viewer: {normalized}"
+            )
+            return
+        if QtGui.QDesktopServices.openUrl(parsed):
+            self.status_label.setText(f"Opened URL in browser: {normalized}")
+            return
+        self.status_label.setText("Could not open URL.")
+
+    def _open_chat_link_in_browser(self, url: str, mode: str = "default") -> None:
+        parsed = self._normalize_url_for_open(url)
+        if parsed is None:
+            self.status_label.setText("Invalid URL.")
+            return
+        normalized = str(parsed.toString() or "").strip()
+        request = str(mode or "default").strip().lower()
+        opened = False
+        if request == "new_tab":
+            opened = bool(webbrowser.open(normalized, new=2, autoraise=True))
+        elif request == "new_window":
+            opened = bool(webbrowser.open(normalized, new=1, autoraise=True))
+        else:
+            opened = QtGui.QDesktopServices.openUrl(parsed)
+        if not opened:
+            opened = QtGui.QDesktopServices.openUrl(parsed)
+        if opened:
+            if request == "new_tab":
+                self.status_label.setText(
+                    f"Requested opening in browser new tab: {normalized}"
+                )
+            elif request == "new_window":
+                self.status_label.setText(
+                    f"Requested opening in browser new window: {normalized}"
+                )
+            else:
+                self.status_label.setText(f"Opened URL in browser: {normalized}")
+            return
+        self.status_label.setText("Could not open URL in browser.")
+
     @QtCore.Slot(str)
     def bot_open_pdf(self, pdf_path: str = "") -> None:
         host = self.host_window_widget or self.window()
@@ -1696,26 +1850,12 @@ class AIChatWidget(QtWidgets.QWidget):
 
     @QtCore.Slot(str)
     def bot_open_url(self, url: str) -> None:
-        target_url = str(url or "").strip()
-        if not target_url:
-            self.status_label.setText("Bot action failed: empty URL.")
+        parsed = self._normalize_url_for_open(url)
+        if parsed is None:
+            self.status_label.setText("Bot action failed: invalid URL or file path.")
             return
-        parsed = QtCore.QUrl(target_url)
-        if parsed.isValid() and parsed.scheme().lower() in {"http", "https", "file"}:
-            normalized = parsed.toString()
-        else:
-            local_path = Path(target_url).expanduser()
-            if local_path.exists() and local_path.is_file():
-                normalized = QtCore.QUrl.fromLocalFile(str(local_path)).toString()
-                parsed = QtCore.QUrl(normalized)
-            else:
-                self.status_label.setText(
-                    "Bot action failed: invalid URL or file path."
-                )
-                return
-        host = self.host_window_widget or self.window()
-        show_web = getattr(host, "show_web_in_viewer", None)
-        if callable(show_web) and bool(show_web(normalized)):
+        normalized = str(parsed.toString() or "").strip()
+        if self._open_url_in_web_viewer(parsed):
             self.status_label.setText(f"Opened URL in canvas: {normalized}")
             return
         opened = QtGui.QDesktopServices.openUrl(parsed)
@@ -1726,14 +1866,11 @@ class AIChatWidget(QtWidgets.QWidget):
 
     @QtCore.Slot(str)
     def bot_open_in_browser(self, url: str) -> None:
-        target_url = str(url or "").strip()
-        if not target_url:
-            self.status_label.setText("Bot action failed: empty URL.")
-            return
-        parsed = QtCore.QUrl(target_url)
-        if not parsed.isValid() or parsed.scheme().lower() not in {"http", "https"}:
+        parsed = self._normalize_url_for_open(url)
+        if parsed is None:
             self.status_label.setText("Bot action failed: invalid URL.")
             return
+        target_url = str(parsed.toString() or "").strip()
         opened = QtGui.QDesktopServices.openUrl(parsed)
         if opened:
             self.status_label.setText(f"Opened URL in browser: {target_url}")

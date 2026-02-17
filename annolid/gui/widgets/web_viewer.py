@@ -255,6 +255,9 @@ class WebViewerWidget(QtWidgets.QWidget):
 
     status_changed = QtCore.Signal(str)
     close_requested = QtCore.Signal()
+    _ZOOM_MIN = 0.25
+    _ZOOM_MAX = 5.0
+    _ZOOM_STEP = 0.1
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -269,6 +272,7 @@ class WebViewerWidget(QtWidgets.QWidget):
         self._js_running = False
         self._last_scrape_time = 0.0
         self._pdf_prompted_urls: set = set()
+        self._shortcuts: list[QtWidgets.QShortcut] = []
         self._build_ui()
 
     @property
@@ -447,6 +451,47 @@ class WebViewerWidget(QtWidgets.QWidget):
 
         # Update navigation button states when URL changes (QWebEngineHistory doesn't have changed signal)
         self._web_view.urlChanged.connect(self._update_nav_buttons)
+        self._setup_shortcuts()
+
+    def _setup_shortcuts(self) -> None:
+        if self._web_view is None:
+            return
+
+        def _add_shortcut(sequence: QtGui.QKeySequence, callback) -> None:
+            shortcut = QtWidgets.QShortcut(sequence, self)
+            shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(callback)
+            self._shortcuts.append(shortcut)
+
+        # Common browser zoom shortcuts. QKeySequence handles Cmd on macOS.
+        _add_shortcut(QtGui.QKeySequence.ZoomIn, self._zoom_in)
+        _add_shortcut(QtGui.QKeySequence.ZoomOut, self._zoom_out)
+        _add_shortcut(QtGui.QKeySequence("Ctrl+="), self._zoom_in)
+        _add_shortcut(QtGui.QKeySequence("Meta+="), self._zoom_in)
+        _add_shortcut(QtGui.QKeySequence("Ctrl+0"), self._reset_zoom)
+        _add_shortcut(QtGui.QKeySequence("Meta+0"), self._reset_zoom)
+
+    def _adjust_zoom(self, delta: float) -> None:
+        if self._web_view is None:
+            return
+        current = float(self._web_view.zoomFactor())
+        next_zoom = max(self._ZOOM_MIN, min(self._ZOOM_MAX, current + delta))
+        if abs(next_zoom - current) < 1e-9:
+            return
+        self._web_view.setZoomFactor(next_zoom)
+        self.status_changed.emit(f"Zoom: {int(round(next_zoom * 100))}%")
+
+    def _zoom_in(self) -> None:
+        self._adjust_zoom(self._ZOOM_STEP)
+
+    def _zoom_out(self) -> None:
+        self._adjust_zoom(-self._ZOOM_STEP)
+
+    def _reset_zoom(self) -> None:
+        if self._web_view is None:
+            return
+        self._web_view.setZoomFactor(1.0)
+        self.status_changed.emit("Zoom: 100%")
 
     def _normalize_url(self, url: str) -> QtCore.QUrl:
         value = str(url or "").strip()
