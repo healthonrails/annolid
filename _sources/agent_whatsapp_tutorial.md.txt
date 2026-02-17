@@ -27,6 +27,7 @@ Configure `~/.annolid/agent/config.json`:
   "tools": {
     "whatsapp": {
       "enabled": true,
+      "autoStart": true,
       "bridgeMode": "python",
       "bridgeHost": "127.0.0.1",
       "bridgePort": 3001,
@@ -46,6 +47,7 @@ Notes:
 - Use full E.164 numbers in `allowFrom` (country code + number, no `+`).
 - Keep `bridgeHeadless=false` so QR can be scanned.
 - `ingestOutgoingMessages` defaults to `false` to prevent self-reply loops.
+- Set `autoStart=false` if you want to keep WhatsApp config but not start bridge/webhook/channel at app launch.
 
 ## 2. QR flow
 
