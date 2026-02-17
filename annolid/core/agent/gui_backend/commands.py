@@ -120,6 +120,60 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             args["new_path"] = ""
         return {"name": "rename_file", "args": args}
 
+    add_bibtex_match = re.search(
+        r"\b(?:add|save|store)\s+citation\b.*@[a-zA-Z]+\s*[\{\(]",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if add_bibtex_match:
+        bib_file_match = re.search(
+            r"\bto\s+([^\n]+?\.bib)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return {
+            "name": "add_citation_raw",
+            "args": {
+                "bibtex": text,
+                "bib_file": (
+                    _strip_wrapping_quotes(bib_file_match.group(1).strip())
+                    if bib_file_match
+                    else ""
+                ),
+            },
+        }
+
+    list_citation_match = re.search(
+        r"\b(?:list|show|display)\b.*\b(?:citations?|bib(?:tex)?\s+entries?)\b",
+        lower,
+    )
+    if list_citation_match:
+        bib_file_match = re.search(
+            r"\bfrom\s+([^\n]+?\.bib)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        query_match = re.search(
+            r"\b(?:for|matching|about)\s+([^\n]+)$",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return {
+            "name": "list_citations",
+            "args": {
+                "bib_file": (
+                    _strip_wrapping_quotes(bib_file_match.group(1).strip())
+                    if bib_file_match
+                    else ""
+                ),
+                "query": (
+                    _strip_wrapping_quotes(query_match.group(1).strip())
+                    if query_match
+                    else ""
+                ),
+            },
+        }
+
     save_citation_match = re.search(
         r"\b(?:save|add|store|export)\b.*\b(?:citation|cite|bib(?:tex)?\b)\b",
         lower,

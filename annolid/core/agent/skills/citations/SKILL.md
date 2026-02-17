@@ -24,3 +24,5 @@ User-friendly command examples in chat input:
 1. `save citation`
 2. `save citation from pdf as annolid2024 to references.bib`
 3. `save citation from web`
+4. `add citation @article{yang2024annolid, title={Annolid: Annotate, Segment, and Track Anything You Need}, author={Yang, Chen and Cleland, Thomas A}, journal={arXiv preprint arXiv:2403.18690}, year={2024}}`
+5. `list citations from references.bib for annolid`

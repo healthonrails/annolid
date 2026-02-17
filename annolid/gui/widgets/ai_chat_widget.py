@@ -833,6 +833,11 @@ class AIChatWidget(QtWidgets.QWidget):
             item = self.quick_actions_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                if widget in (
+                    getattr(self, "add_quick_action_button", None),
+                    getattr(self, "remove_quick_action_button", None),
+                ):
+                    continue
                 widget.deleteLater()
         self.quick_action_buttons = []
         if self._selected_quick_action_index is not None and (
@@ -855,7 +860,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self.quick_actions_layout.addStretch(1)
         self.quick_actions_layout.addWidget(self.add_quick_action_button)
         self.quick_actions_layout.addWidget(self.remove_quick_action_button)
-        self.remove_quick_action_button.setEnabled(
+        self._set_remove_quick_action_enabled(
             self._selected_quick_action_index is not None
         )
 
@@ -872,7 +877,7 @@ class AIChatWidget(QtWidgets.QWidget):
             btn.setChecked(idx == index)
 
         # Update the removal button state immediately
-        self.remove_quick_action_button.setEnabled(True)
+        self._set_remove_quick_action_enabled(True)
 
         self._apply_quick_action(self._quick_actions[index][1])
 
@@ -913,6 +918,16 @@ class AIChatWidget(QtWidgets.QWidget):
         else:
             self._selected_quick_action_index = None
         self._refresh_quick_action_buttons()
+
+    def _set_remove_quick_action_enabled(self, enabled: bool) -> None:
+        button = getattr(self, "remove_quick_action_button", None)
+        if button is None:
+            return
+        try:
+            button.setEnabled(bool(enabled))
+        except RuntimeError:
+            # Dialog/widget can be shutting down while queued callbacks still arrive.
+            return
 
     @staticmethod
     def _set_button_icon(

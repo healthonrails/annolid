@@ -90,9 +90,12 @@ from annolid.utils.llm_settings import (
 )
 from annolid.utils.citations import (
     BibEntry,
+    entry_to_dict,
     load_bibtex,
     merge_validated_fields,
+    parse_bibtex,
     save_bibtex,
+    search_entries,
     upsert_entry,
     validate_basic_citation_fields,
     validate_citation_metadata,
@@ -1825,6 +1828,8 @@ class StreamingChatTask(QRunnable):
             clawhub_install_skill=self._tool_clawhub_install_skill,
             set_chat_model=self._tool_gui_set_chat_model,
             rename_file=self._tool_gui_rename_file,
+            list_citations=self._tool_gui_list_citations,
+            add_citation_raw=self._tool_gui_add_citation_raw,
             save_citation=self._tool_gui_save_citation,
         )
 
@@ -2663,6 +2668,63 @@ class StreamingChatTask(QRunnable):
             "source": str(chosen.get("source") or source_pref),
             "fields": fields,
             "validation": validation,
+        }
+
+    def _tool_gui_add_citation_raw(
+        self,
+        *,
+        bibtex: str = "",
+        bib_file: str = "",
+    ) -> Dict[str, Any]:
+        raw = str(bibtex or "").strip()
+        if not raw:
+            return {"ok": False, "error": "No BibTeX entry provided."}
+        entries_in = parse_bibtex(raw)
+        if not entries_in:
+            return {"ok": False, "error": "Could not parse a valid BibTeX entry."}
+        new_entry = entries_in[0]
+        if not new_entry.key.strip():
+            return {"ok": False, "error": "BibTeX entry key is required."}
+        resolved_bib = self._resolve_bib_output_path(str(bib_file or ""))
+        resolved_bib.parent.mkdir(parents=True, exist_ok=True)
+        existing = load_bibtex(resolved_bib) if resolved_bib.exists() else []
+        updated, created = upsert_entry(existing, new_entry)
+        save_bibtex(resolved_bib, updated, sort_keys=True)
+        return {
+            "ok": True,
+            "created": bool(created),
+            "key": new_entry.key,
+            "bib_file": str(resolved_bib),
+            "entry_type": new_entry.entry_type,
+        }
+
+    def _tool_gui_list_citations(
+        self,
+        *,
+        bib_file: str = "",
+        query: str = "",
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        resolved_bib = self._resolve_bib_output_path(str(bib_file or ""))
+        if not resolved_bib.exists():
+            return {
+                "ok": True,
+                "count": 0,
+                "entries": [],
+                "bib_file": str(resolved_bib),
+            }
+        entries = load_bibtex(resolved_bib)
+        q = str(query or "").strip()
+        if q:
+            entries = search_entries(entries, q, limit=max(1, int(limit or 20)))
+        total = len(entries)
+        capped = entries[: max(1, int(limit or 20))]
+        return {
+            "ok": True,
+            "count": total,
+            "entries": [entry_to_dict(e) for e in capped],
+            "bib_file": str(resolved_bib),
+            "query": q,
         }
 
     async def _tool_clawhub_search_skills(

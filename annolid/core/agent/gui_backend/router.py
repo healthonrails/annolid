@@ -20,6 +20,8 @@ async def execute_direct_gui_command(
     clawhub_install_skill: Callable[..., Any],
     set_chat_model: Callable[[str, str], Any],
     rename_file: Callable[..., Any],
+    list_citations: Callable[..., Any],
+    add_citation_raw: Callable[..., Any],
     save_citation: Callable[..., Any],
 ) -> str:
     if not command:
@@ -301,6 +303,49 @@ async def execute_direct_gui_command(
                 return f"{action} citation '{key}'.{hint}"
             return f"Saved citation.{hint}"
         return str(payload.get("error") or "Failed to save citation.")
+
+    if name == "list_citations":
+        payload = await _run(
+            list_citations,
+            bib_file=str(args.get("bib_file") or ""),
+            query=str(args.get("query") or ""),
+        )
+        if payload.get("ok"):
+            items = list(payload.get("entries") or [])
+            if not items:
+                return "No citations found."
+            count = int(payload.get("count") or len(items))
+            lines = [f"Found {count} citation(s):"]
+            for entry in items[:20]:
+                if not isinstance(entry, dict):
+                    continue
+                key = str(entry.get("key") or "").strip()
+                title = str(entry.get("title") or "").strip()
+                year = str(entry.get("year") or "").strip()
+                label = key or "(no-key)"
+                detail = f"{title} ({year})" if title and year else (title or year)
+                lines.append(f"- {label}: {detail}".rstrip(": "))
+            if count > len(items):
+                lines.append("... (showing top results)")
+            return "\n".join(lines)
+        return str(payload.get("error") or "Failed to list citations.")
+
+    if name == "add_citation_raw":
+        payload = await _run(
+            add_citation_raw,
+            bibtex=str(args.get("bibtex") or ""),
+            bib_file=str(args.get("bib_file") or ""),
+        )
+        if payload.get("ok"):
+            key = str(payload.get("key") or "").strip()
+            bib_path = str(payload.get("bib_file") or "").strip()
+            action = "Created" if bool(payload.get("created")) else "Updated"
+            if key and bib_path:
+                return f"{action} citation '{key}' in {bib_path} from provided BibTeX."
+            if key:
+                return f"{action} citation '{key}' from provided BibTeX."
+            return "Saved citation from provided BibTeX."
+        return str(payload.get("error") or "Failed to add citation from BibTeX.")
 
     return ""
 

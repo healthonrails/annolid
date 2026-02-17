@@ -81,8 +81,11 @@ Annolid includes built-in BibTeX tooling for paper citation workflows:
 Examples in Annolid Bot message input:
 
 - `save citation`
+- `list citations`
+- `list citations from references.bib for annolid`
 - `save citation from pdf as annolid2024 to references.bib`
 - `save citation from web`
+- `add citation @article{yang2024annolid, title={Annolid: Annotate, Segment, and Track Anything You Need}, author={Yang, Chen and Cleland, Thomas A}, journal={arXiv preprint arXiv:2403.18690}, year={2024}}`
 - `save citation from web with strict validation`
 - `save citation from pdf without validation`
 
@@ -94,3 +97,5 @@ GUI workflow:
 
 - In Annolid Bot input toolbar, click `📚` to open the citation manager.
 - Manage a `.bib` file, save citations from active PDF/web context, choose auto-validation or strict mode, view/edit a `Source` column (URL or PDF path), edit rows inline with year/DOI checks, and remove selected entries.
+
+See also: `docs/source/citations_tutorial.md` for a full user tutorial.

@@ -1316,6 +1316,20 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_save_citation_strict["args"]["validate_before_save"] is False
     assert parsed_save_citation_strict["args"]["strict_validation"] is True
 
+    parsed_add_citation_raw = task._parse_direct_gui_command(
+        "add citation @article{yang2024annolid,title={Annolid},author={Yang, Chen and Cleland, Thomas A},year={2024}} to refs.bib"
+    )
+    assert parsed_add_citation_raw["name"] == "add_citation_raw"
+    assert "@article{yang2024annolid" in parsed_add_citation_raw["args"]["bibtex"]
+    assert parsed_add_citation_raw["args"]["bib_file"] == "refs.bib"
+
+    parsed_list_citations = task._parse_direct_gui_command(
+        "list citations from refs.bib for annolid"
+    )
+    assert parsed_list_citations["name"] == "list_citations"
+    assert parsed_list_citations["args"]["bib_file"] == "refs.bib"
+    assert parsed_list_citations["args"]["query"] == "annolid"
+
 
 def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
@@ -1365,6 +1379,24 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         "key": kwargs.get("key") or "annolid2024",
         "bib_file": str(tmp_path / "citations.bib"),
         "source": kwargs.get("source") or "auto",
+    }
+    task._tool_gui_add_citation_raw = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "created": True,
+        "key": "yang2024annolid",
+        "bib_file": str(tmp_path / "citations.bib"),
+    }
+    task._tool_gui_list_citations = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "count": 1,
+        "entries": [
+            {
+                "key": "yang2024annolid",
+                "title": "Annolid: Annotate, Segment, and Track Anything You Need",
+                "year": "2024",
+            }
+        ],
+        "bib_file": str(tmp_path / "citations.bib"),
     }
 
     out_pdf = asyncio.run(task._execute_direct_gui_command("open pdf"))
@@ -1436,6 +1468,19 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
     )
     assert "Created citation 'annolid2024'" in out_save_citation
 
+    out_add_citation_raw = asyncio.run(
+        task._execute_direct_gui_command(
+            "add citation @article{yang2024annolid,title={Annolid},author={Yang, Chen and Cleland, Thomas A},year={2024}} to citations.bib"
+        )
+    )
+    assert "Created citation 'yang2024annolid'" in out_add_citation_raw
+
+    out_list_citations = asyncio.run(
+        task._execute_direct_gui_command("list citations from citations.bib")
+    )
+    assert "Found 1 citation(s):" in out_list_citations
+    assert "yang2024annolid" in out_list_citations
+
 
 def test_tool_gui_save_citation_from_active_pdf(monkeypatch, tmp_path: Path) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
@@ -1462,6 +1507,51 @@ def test_tool_gui_save_citation_from_active_pdf(monkeypatch, tmp_path: Path) -> 
     assert payload["source"] == "pdf"
     assert payload["fields"]["doi"] == "10.1000/example"
     assert Path(str(payload["bib_file"])).exists()
+
+
+def test_tool_gui_add_citation_raw_upserts_entry(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+    from annolid.utils.citations import load_bibtex
+
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    task = StreamingChatTask("add citation", widget=None)
+    payload = task._tool_gui_add_citation_raw(
+        bibtex=(
+            "@article{yang2024annolid,"
+            "title={Annolid: Annotate, Segment, and Track Anything You Need},"
+            "author={Yang, Chen and Cleland, Thomas A},"
+            "journal={arXiv preprint arXiv:2403.18690},"
+            "year={2024}}"
+        ),
+        bib_file="refs.bib",
+    )
+    assert payload["ok"] is True
+    assert payload["key"] == "yang2024annolid"
+    saved = load_bibtex(tmp_path / "refs.bib")
+    assert len(saved) == 1
+    assert saved[0].fields["author"] == "Yang, Chen and Cleland, Thomas A"
+
+
+def test_tool_gui_list_citations_returns_entries(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    task = StreamingChatTask("list citations", widget=None)
+    refs = tmp_path / "refs.bib"
+    refs.write_text(
+        (
+            "@article{yang2024annolid,\n"
+            "  title={Annolid: Annotate, Segment, and Track Anything You Need},\n"
+            "  author={Yang, Chen and Cleland, Thomas A},\n"
+            "  year={2024},\n"
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+    payload = task._tool_gui_list_citations(bib_file="refs.bib", query="annolid")
+    assert payload["ok"] is True
+    assert payload["count"] == 1
+    assert payload["entries"][0]["key"] == "yang2024annolid"
 
 
 def test_tool_gui_save_citation_strict_validation_blocks_save(
