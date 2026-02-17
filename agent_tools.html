@@ -57,6 +57,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#how-to-add-a-tool">How to add a tool</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#artifact-layout">Artifact layout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#caching-semantics">Caching semantics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#citation-management-tools">Citation management tools</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="agent_provider_setup.html">Annolid Bot Provider and Model Setup Tutorial</a></li>
@@ -164,6 +165,45 @@ the service returns cached results without re-running the agent.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">annolid</span><span class="o">-</span><span class="n">run</span> <span class="n">agent</span> <span class="o">--</span><span class="n">no</span><span class="o">-</span><span class="n">cache</span> <span class="o">...</span>
 </pre></div>
 </div>
+</section>
+<section id="citation-management-tools">
+<h2>Citation management tools<a class="headerlink" href="#citation-management-tools" title="Link to this heading"></a></h2>
+<p>Annolid includes built-in BibTeX tooling for paper citation workflows:</p>
+<ul class="simple">
+<li><p>CLI:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">citations-list</span> <span class="pre">--bib-file</span> <span class="pre">refs.bib</span> <span class="pre">[--query</span> <span class="pre">...]</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">citations-upsert</span> <span class="pre">--bib-file</span> <span class="pre">refs.bib</span> <span class="pre">--key</span> <span class="pre">mykey</span> <span class="pre">--title</span> <span class="pre">...</span> <span class="pre">--author</span> <span class="pre">...</span> <span class="pre">--year</span> <span class="pre">...</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">citations-remove</span> <span class="pre">--bib-file</span> <span class="pre">refs.bib</span> <span class="pre">--key</span> <span class="pre">mykey</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">citations-format</span> <span class="pre">--bib-file</span> <span class="pre">refs.bib</span></code></p></li>
+</ul>
+</li>
+<li><p>Agent function tools:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">bibtex_list_entries</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">bibtex_upsert_entry</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">bibtex_remove_entry</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">gui_save_citation</span></code> (save from active PDF/web viewer context)</p></li>
+</ul>
+</li>
+</ul>
+<p>Examples in Annolid Bot message input:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">save</span> <span class="pre">citation</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">save</span> <span class="pre">citation</span> <span class="pre">from</span> <span class="pre">pdf</span> <span class="pre">as</span> <span class="pre">annolid2024</span> <span class="pre">to</span> <span class="pre">references.bib</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">save</span> <span class="pre">citation</span> <span class="pre">from</span> <span class="pre">web</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">save</span> <span class="pre">citation</span> <span class="pre">from</span> <span class="pre">web</span> <span class="pre">with</span> <span class="pre">strict</span> <span class="pre">validation</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">save</span> <span class="pre">citation</span> <span class="pre">from</span> <span class="pre">pdf</span> <span class="pre">without</span> <span class="pre">validation</span></code></p></li>
+</ul>
+<p>Default behavior:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">save</span> <span class="pre">citation</span></code> first attempts Google Scholar BibTeX lookup from the active paper context, then falls back to Crossref/OpenAlex when needed, and saves the merged entry to <code class="docutils literal notranslate"><span class="pre">.bib</span></code>.</p></li>
+</ul>
+<p>GUI workflow:</p>
+<ul class="simple">
+<li><p>In Annolid Bot input toolbar, click <code class="docutils literal notranslate"><span class="pre">📚</span></code> to open the citation manager.</p></li>
+<li><p>Manage a <code class="docutils literal notranslate"><span class="pre">.bib</span></code> file, save citations from active PDF/web context, choose auto-validation or strict mode, view/edit a <code class="docutils literal notranslate"><span class="pre">Source</span></code> column (URL or PDF path), edit rows inline with year/DOI checks, and remove selected entries.</p></li>
+</ul>
 </section>
 </section>
 
