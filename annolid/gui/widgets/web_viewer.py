@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
+import mimetypes
 import re
+import tempfile
 import time
+import urllib.parse
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
-from annolid.gui.widgets.bot_explain import explain_selection_with_annolid_bot
+from annolid.gui.widgets.bot_explain import (
+    explain_image_with_annolid_bot,
+    explain_selection_with_annolid_bot,
+)
 from annolid.gui.widgets.dictionary_lookup import DictionaryLookupTask
 from annolid.utils.logger import logger
 
@@ -87,8 +96,18 @@ if _WEBENGINE_AVAILABLE:
     class _AnnolidWebEnginePage(QtWebEngineWidgets.QWebEnginePage):
         """Embedded browser page with compatibility helpers and noise filtering."""
 
-        def __init__(self, parent: Optional[QtCore.QObject] = None) -> None:
-            super().__init__(parent)
+        def __init__(
+            self,
+            parent: Optional[QtCore.QObject] = None,
+            profile: Optional[QtCore.QObject] = None,
+        ) -> None:
+            if profile is not None:
+                try:
+                    super().__init__(profile, parent)
+                except Exception:
+                    super().__init__(parent)
+            else:
+                super().__init__(parent)
             self._console_seen: dict[str, int] = {}
             self._console_last_cleanup = time.monotonic()
             self._install_compat_scripts()
@@ -250,6 +269,28 @@ if _WEBENGINE_AVAILABLE:
                 pass
 
 
+def _create_ephemeral_web_profile(
+    parent: Optional[QtCore.QObject],
+) -> Optional[QtCore.QObject]:
+    if not _WEBENGINE_AVAILABLE:
+        return None
+    try:
+        profile = QtWebEngineWidgets.QWebEngineProfile(parent)
+        cookie_policy = getattr(
+            QtWebEngineWidgets.QWebEngineProfile, "NoPersistentCookies", None
+        )
+        if cookie_policy is not None:
+            profile.setPersistentCookiesPolicy(cookie_policy)
+        cache_kind = getattr(
+            QtWebEngineWidgets.QWebEngineProfile, "MemoryHttpCache", None
+        )
+        if cache_kind is not None:
+            profile.setHttpCacheType(cache_kind)
+        return profile
+    except Exception:
+        return None
+
+
 class WebViewerWidget(QtWidgets.QWidget):
     """Simple embedded browser for opening web pages inside the shared canvas stack."""
 
@@ -273,6 +314,7 @@ class WebViewerWidget(QtWidgets.QWidget):
         self._last_scrape_time = 0.0
         self._pdf_prompted_urls: set = set()
         self._shortcuts: list[QtWidgets.QShortcut] = []
+        self._web_profile = None
         self._build_ui()
 
     @property
@@ -418,7 +460,13 @@ class WebViewerWidget(QtWidgets.QWidget):
 
         self._web_view = QtWebEngineWidgets.QWebEngineView(self)
         try:
-            self._web_view.setPage(_AnnolidWebEnginePage(self._web_view))
+            self._web_profile = _create_ephemeral_web_profile(self._web_view)
+            if self._web_profile is not None:
+                self._web_view.setPage(
+                    _AnnolidWebEnginePage(self._web_view, profile=self._web_profile)
+                )
+            else:
+                self._web_view.setPage(_AnnolidWebEnginePage(self._web_view))
         except Exception:
             pass
         # Enable Chromium built-in PDF viewer so PDFs render inline.
@@ -834,9 +882,16 @@ class WebViewerWidget(QtWidgets.QWidget):
         global_pos = self._web_view.mapToGlobal(position)
 
         def show_menu(selection: object) -> None:
-            selected_text = (str(selection) if selection is not None else "").strip()
+            payload = selection if isinstance(selection, dict) else {}
+            selected_text = (
+                str(payload.get("selectedText") or "") if payload else ""
+            ).strip()
             if not selected_text:
                 selected_text = str(self._web_view.selectedText() or "").strip()
+            image_src = str(payload.get("imageSrc") or "").strip() if payload else ""
+            image_data_url = (
+                str(payload.get("imageDataUrl") or "").strip() if payload else ""
+            )
             menu = page.createStandardContextMenu()
             menu.insertSeparator(menu.actions()[0] if menu.actions() else None)
 
@@ -860,6 +915,20 @@ class WebViewerWidget(QtWidgets.QWidget):
                 menu.actions()[0] if menu.actions() else None, explain_action
             )
 
+            describe_image_action = QtWidgets.QAction(
+                "Describe image with Annolid Bot", self
+            )
+            describe_image_action.setEnabled(bool(image_src or image_data_url))
+            describe_image_action.triggered.connect(
+                lambda: self._request_bot_image_description(
+                    image_src=image_src,
+                    image_data_url=image_data_url,
+                )
+            )
+            menu.insertAction(
+                menu.actions()[0] if menu.actions() else None, describe_image_action
+            )
+
             speak_action = QtWidgets.QAction("Speak selection", self)
             speak_action.setEnabled(bool(selected_text) and not self._speaking)
             speak_action.triggered.connect(
@@ -880,11 +949,41 @@ class WebViewerWidget(QtWidgets.QWidget):
 
         try:
             page.runJavaScript(
-                """(() => {
+                f"""(() => {{
+  const x = {int(position.x())};
+  const y = {int(position.y())};
   const sel = window.getSelection ? window.getSelection() : null;
-  if (!sel || sel.isCollapsed) return '';
-  return sel.toString();
-})()""",
+  const selectedText = (!sel || sel.isCollapsed) ? '' : String(sel.toString() || '');
+  let imageSrc = '';
+  let imageDataUrl = '';
+  try {{
+    let el = document.elementFromPoint(x, y);
+    if (el) {{
+      if (el.tagName !== 'IMG' && typeof el.closest === 'function') {{
+        el = el.closest('img');
+      }}
+      if (el && el.tagName === 'IMG') {{
+        const img = el;
+        imageSrc = String(img.currentSrc || img.src || '').trim();
+        try {{
+          const w = Number(img.naturalWidth || img.width || 0);
+          const h = Number(img.naturalHeight || img.height || 0);
+          if (w > 0 && h > 0) {{
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {{
+              ctx.drawImage(img, 0, 0, w, h);
+              imageDataUrl = String(canvas.toDataURL('image/png') || '');
+            }}
+          }}
+        }} catch (e) {{}}
+      }}
+    }}
+  }} catch (e) {{}}
+  return {{ selectedText, imageSrc, imageDataUrl }};
+}})()""",
                 show_menu,
             )
         except Exception:
@@ -1010,6 +1109,129 @@ class WebViewerWidget(QtWidgets.QWidget):
         )
         if message:
             self.status_changed.emit(message if ok else f"Explain failed: {message}")
+
+    @staticmethod
+    def _decode_data_url(data_url: str) -> tuple[bytes, str]:
+        value = str(data_url or "").strip()
+        if not value.startswith("data:"):
+            return b"", ""
+        match = re.match(r"^data:([^;,]+)?(?:;charset=[^;,]+)?(;base64)?,", value)
+        if not match:
+            return b"", ""
+        mime = str(match.group(1) or "application/octet-stream").strip().lower()
+        is_base64 = bool(match.group(2))
+        body = value[match.end() :]
+        try:
+            if is_base64:
+                return base64.b64decode(body, validate=False), mime
+            return urllib.parse.unquote_to_bytes(body), mime
+        except (ValueError, binascii.Error):
+            return b"", ""
+
+    @staticmethod
+    def _mime_to_suffix(mime: str) -> str:
+        value = str(mime or "").strip().lower()
+        if value in {"image/jpg", "image/jpeg"}:
+            return ".jpg"
+        if value == "image/png":
+            return ".png"
+        if value == "image/webp":
+            return ".webp"
+        if value == "image/gif":
+            return ".gif"
+        guessed = mimetypes.guess_extension(value or "")
+        return guessed if guessed else ".png"
+
+    def _save_image_from_context(
+        self, *, image_src: str, image_data_url: str
+    ) -> tuple[str, str]:
+        if image_data_url:
+            raw, mime = self._decode_data_url(image_data_url)
+            if raw:
+                fd, path = tempfile.mkstemp(
+                    prefix="annolid_web_image_",
+                    suffix=self._mime_to_suffix(mime),
+                )
+                try:
+                    os.close(fd)
+                    with open(path, "wb") as f:
+                        f.write(raw)
+                    return path, ""
+                except Exception as exc:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                    return "", f"Failed to save selected image: {exc}"
+
+        src = str(image_src or "").strip()
+        if not src:
+            return "", "No image found at the clicked location."
+        if src.startswith("data:"):
+            raw, mime = self._decode_data_url(src)
+            if not raw:
+                return "", "Failed to decode selected image data."
+            fd, path = tempfile.mkstemp(
+                prefix="annolid_web_image_",
+                suffix=self._mime_to_suffix(mime),
+            )
+            try:
+                os.close(fd)
+                with open(path, "wb") as f:
+                    f.write(raw)
+                return path, ""
+            except Exception as exc:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                return "", f"Failed to save selected image: {exc}"
+
+        try:
+            req = urllib.request.Request(
+                src,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+                },
+            )
+            with urllib.request.urlopen(req, timeout=30) as response:
+                content_type = str(response.headers.get("content-type") or "").split(
+                    ";", 1
+                )[0]
+                raw = response.read()
+            if not raw:
+                return "", "Selected image URL returned no data."
+            fd, path = tempfile.mkstemp(
+                prefix="annolid_web_image_",
+                suffix=self._mime_to_suffix(content_type),
+            )
+            os.close(fd)
+            with open(path, "wb") as f:
+                f.write(raw)
+            return path, ""
+        except Exception as exc:
+            return "", f"Failed to fetch selected image: {exc}"
+
+    def _request_bot_image_description(
+        self, *, image_src: str = "", image_data_url: str = ""
+    ) -> None:
+        image_path, error = self._save_image_from_context(
+            image_src=image_src,
+            image_data_url=image_data_url,
+        )
+        if error:
+            self.status_changed.emit(f"Describe image failed: {error}")
+            return
+        ok, message = explain_image_with_annolid_bot(
+            self,
+            image_path,
+            source_hint=str(self._current_url or "").strip(),
+            image_url=str(image_src or "").strip(),
+        )
+        if message:
+            self.status_changed.emit(
+                message if ok else f"Describe image failed: {message}"
+            )
 
     def _speak_selected_text(self, text: str) -> None:
         cleaned = " ".join(str(text or "").strip().split())

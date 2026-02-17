@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import importlib
+import mimetypes
 import os
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -108,14 +110,22 @@ def run_openai_compat_chat(
     provider = OpenAICompatProvider(resolved=resolved)
 
     user_prompt = str(prompt or "")
-    if image_path and os.path.exists(image_path):
-        user_prompt += (
-            f"\n\n[Note: Image context available at {image_path}. "
-            "Use this visual context in your response.]"
-        )
-
     messages = load_history_messages()
-    messages.append({"role": "user", "content": user_prompt})
+    user_content: Any = user_prompt
+    if image_path and os.path.exists(image_path):
+        mime, _ = mimetypes.guess_type(image_path)
+        mime = str(mime or "").strip().lower()
+        if mime.startswith("image/"):
+            with open(image_path, "rb") as f:
+                raw = base64.b64encode(f.read()).decode("utf-8")
+            user_content = [
+                {"type": "text", "text": user_prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{raw}"},
+                },
+            ]
+    messages.append({"role": "user", "content": user_content})
 
     async def _chat_once() -> str:
         model_lower = (model or "").lower()

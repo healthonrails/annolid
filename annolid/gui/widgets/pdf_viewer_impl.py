@@ -112,7 +112,10 @@ if _WEBENGINE_AVAILABLE:
                     QtCore.QTimer.singleShot(0, self.deleteLater)
                     return False
 
-            return _ExternalBrowserPage(self)
+            try:
+                return _ExternalBrowserPage(parent_page.profile(), self)
+            except Exception:
+                return _ExternalBrowserPage(self)
 
         def javaScriptConsoleMessage(  # noqa: N802 - Qt override
             self,
@@ -126,6 +129,28 @@ if _WEBENGINE_AVAILABLE:
                 logger.info(f"QtWebEngine js: {message} ({sourceID}:{lineNumber})")
             except Exception:
                 pass
+
+
+def _create_ephemeral_web_profile(
+    parent: Optional[QtCore.QObject],
+) -> Optional[QtCore.QObject]:
+    if not _WEBENGINE_AVAILABLE:
+        return None
+    try:
+        profile = QtWebEngineWidgets.QWebEngineProfile(parent)
+        cookie_policy = getattr(
+            QtWebEngineWidgets.QWebEngineProfile, "NoPersistentCookies", None
+        )
+        if cookie_policy is not None:
+            profile.setPersistentCookiesPolicy(cookie_policy)
+        cache_kind = getattr(
+            QtWebEngineWidgets.QWebEngineProfile, "MemoryHttpCache", None
+        )
+        if cache_kind is not None:
+            profile.setHttpCacheType(cache_kind)
+        return profile
+    except Exception:
+        return None
 
 
 # NOTE: The PDF.js HTTP server and the Qt WebChannel bridge are implemented in
@@ -157,6 +182,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._rotation = 0
         self._thread_pool = QtCore.QThreadPool(self)
         self._web_view = None
+        self._web_profile = None
         self._web_container = None
         self._web_loading_path: Optional[Path] = None
         self._web_pdf_capable = False
@@ -261,7 +287,13 @@ class PdfViewerWidget(QtWidgets.QWidget):
         if _WEBENGINE_AVAILABLE:
             self._web_view = QtWebEngineWidgets.QWebEngineView(self)
             try:
-                self._web_view.setPage(_AnnolidWebEnginePage(self._web_view))
+                self._web_profile = _create_ephemeral_web_profile(self._web_view)
+                if self._web_profile is not None:
+                    self._web_view.setPage(
+                        _AnnolidWebEnginePage(self._web_profile, self._web_view)
+                    )
+                else:
+                    self._web_view.setPage(_AnnolidWebEnginePage(self._web_view))
             except Exception:
                 pass
             if _WEBCHANNEL_AVAILABLE:

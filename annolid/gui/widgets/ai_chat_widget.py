@@ -437,6 +437,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self._session_store = PersistentSessionStore(self._session_manager)
         self._max_prompt_chars = 4000
         self._last_user_prompt: str = ""
+        self._next_chat_mode: str = "default"
         self._typing_tick = 0
         self._typing_timer = QtCore.QTimer(self)
         self._typing_timer.setInterval(350)
@@ -2639,6 +2640,21 @@ class AIChatWidget(QtWidgets.QWidget):
         self.image_path = image_path
         self._update_shared_image_label(image_path)
 
+    def set_next_chat_mode(self, mode: str) -> None:
+        value = str(mode or "default").strip().lower()
+        self._next_chat_mode = value or "default"
+
+    def _consume_next_chat_mode(self) -> str:
+        value = str(getattr(self, "_next_chat_mode", "default") or "default").strip()
+        self._next_chat_mode = "default"
+        return value.lower() or "default"
+
+    def register_managed_temp_image(self, image_path: str) -> None:
+        """Track externally-created temp images for later cleanup."""
+        path = str(image_path or "").strip()
+        if path and path not in self._snapshot_paths:
+            self._snapshot_paths.append(path)
+
     def _cleanup_snapshots(self) -> None:
         stale = list(self._snapshot_paths)
         self._snapshot_paths.clear()
@@ -2728,6 +2744,7 @@ class AIChatWidget(QtWidgets.QWidget):
             return
 
         self._last_user_prompt = raw_prompt
+        chat_mode = self._consume_next_chat_mode()
         chat_image_path = self._prepare_chat_image()
         self._add_bubble("You", raw_prompt, is_user=True)
         assistant_name = self._assistant_display_name()
@@ -2754,6 +2771,7 @@ class AIChatWidget(QtWidgets.QWidget):
             session_id=self.session_id,
             show_tool_trace=self.tool_trace_checkbox.isChecked(),
             enable_web_tools=self.allow_web_tools_checkbox.isChecked(),
+            chat_mode=chat_mode,
         )
         self.thread_pool.start(task)
 

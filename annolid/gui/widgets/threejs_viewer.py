@@ -31,7 +31,10 @@ if _WEBENGINE_AVAILABLE:
         def createWindow(
             self, windowType: QtWebEngineWidgets.QWebEnginePage.WebWindowType
         ) -> QtWebEngineWidgets.QWebEnginePage:
-            page = _ThreeJsWebEnginePage(self)
+            try:
+                page = _ThreeJsWebEnginePage(self.profile(), self)
+            except Exception:
+                page = _ThreeJsWebEnginePage(self)
 
             def handle_url_changed(url: QtCore.QUrl) -> None:
                 if url.isValid() and not url.isEmpty():
@@ -45,6 +48,28 @@ if _WEBENGINE_AVAILABLE:
             return page
 
 
+def _create_ephemeral_web_profile(
+    parent: Optional[QtCore.QObject],
+) -> Optional[QtCore.QObject]:
+    if not _WEBENGINE_AVAILABLE:
+        return None
+    try:
+        profile = QtWebEngineWidgets.QWebEngineProfile(parent)
+        cookie_policy = getattr(
+            QtWebEngineWidgets.QWebEngineProfile, "NoPersistentCookies", None
+        )
+        if cookie_policy is not None:
+            profile.setPersistentCookiesPolicy(cookie_policy)
+        cache_kind = getattr(
+            QtWebEngineWidgets.QWebEngineProfile, "MemoryHttpCache", None
+        )
+        if cache_kind is not None:
+            profile.setHttpCacheType(cache_kind)
+        return profile
+    except Exception:
+        return None
+
+
 class ThreeJsViewerWidget(QtWidgets.QWidget):
     """Embedded Three.js viewer for mesh and point-cloud files."""
 
@@ -53,6 +78,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
         self._web_view = None
+        self._web_profile = None
         self._current_path: Optional[Path] = None
         self._build_ui()
 
@@ -71,7 +97,13 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
 
         self._web_view = QtWebEngineWidgets.QWebEngineView(self)
         try:
-            self._web_view.setPage(_ThreeJsWebEnginePage(self._web_view))
+            self._web_profile = _create_ephemeral_web_profile(self._web_view)
+            if self._web_profile is not None:
+                self._web_view.setPage(
+                    _ThreeJsWebEnginePage(self._web_profile, self._web_view)
+                )
+            else:
+                self._web_view.setPage(_ThreeJsWebEnginePage(self._web_view))
         except Exception:
             pass
         try:

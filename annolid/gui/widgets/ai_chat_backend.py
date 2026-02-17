@@ -208,6 +208,7 @@ class StreamingChatTask(QRunnable):
         session_store: Optional[PersistentSessionStore] = None,
         show_tool_trace: bool = False,
         enable_web_tools: bool = True,
+        chat_mode: str = "default",
     ):
         super().__init__()
         self.prompt = prompt
@@ -220,6 +221,7 @@ class StreamingChatTask(QRunnable):
         self.session_store = session_store or _get_session_store()
         self.show_tool_trace = bool(show_tool_trace)
         self.enable_web_tools = bool(enable_web_tools)
+        self.chat_mode = str(chat_mode or "default").strip().lower() or "default"
         self.workspace = get_agent_workspace_path()
         self.workspace_memory = AgentMemoryStore(self.workspace)
         runtime_cfg = resolve_agent_runtime_config(profile="playground")
@@ -254,6 +256,16 @@ class StreamingChatTask(QRunnable):
             )
             return
         try:
+            if self.chat_mode == "vision_describe" and self._has_image_context():
+                self._emit_progress("Starting fast image description mode")
+                self._run_fast_image_describe()
+                logger.info(
+                    "annolid-bot turn stop session=%s provider=%s model=%s status=ok_fast_mode",
+                    self.session_id,
+                    self.provider,
+                    self.model,
+                )
+                return
             self._emit_progress("Starting agent loop")
             self._run_agent_loop()
             logger.info(
@@ -337,6 +349,55 @@ class StreamingChatTask(QRunnable):
                 f"Error in chat interaction: {original_error}; fallback failed: {fallback_exc}",
                 is_error=True,
             )
+
+    def _has_image_context(self) -> bool:
+        path = str(self.image_path or "").strip()
+        return bool(path and os.path.exists(path))
+
+    def _run_fast_image_describe(self) -> None:
+        """Handle image-description requests with one provider call and no tool loop."""
+        kind = provider_kind(self.settings, self.provider)
+        self._emit_progress(f"Fast mode provider call ({kind})")
+        if kind == "ollama":
+            run_ollama_streaming_chat(
+                prompt=self.prompt,
+                image_path=self.image_path,
+                model=self.model,
+                settings=self.settings,
+                load_history_messages=lambda: [],
+                emit_chunk=self._emit_chunk,
+                emit_final=lambda message, is_error: self._emit_final(
+                    message, is_error=is_error
+                ),
+                persist_turn=lambda user_text, assistant_text: self._persist_turn(
+                    user_text, assistant_text
+                ),
+            )
+            return
+        if kind == "openai_compat":
+            user_prompt, text = run_openai_compat_chat(
+                prompt=self.prompt,
+                image_path=self.image_path,
+                model=self.model,
+                provider_name=self.provider,
+                settings=self.settings,
+                load_history_messages=lambda: [],
+            )
+            self._persist_turn(user_prompt, text)
+            self._emit_final(text, is_error=False)
+            return
+        if kind == "gemini":
+            user_prompt, text = run_gemini_chat(
+                prompt=self.prompt,
+                image_path=self.image_path,
+                model=self.model,
+                provider_name=self.provider,
+                settings=self.settings,
+            )
+            self._persist_turn(user_prompt, text)
+            self._emit_final(text, is_error=False)
+            return
+        raise ValueError(f"Unsupported provider '{self.provider}' in fast mode.")
 
     def _provider_dependency_error(self) -> Optional[str]:
         kind = provider_kind(self.settings, self.provider)
