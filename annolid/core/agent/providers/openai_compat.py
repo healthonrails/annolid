@@ -157,6 +157,7 @@ class OpenAICompatProvider(LLMProvider):
         model: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: Optional[float] = 0.7,
+        timeout_seconds: Optional[float] = None,
     ) -> LLMResponse:
         client = self._ensure_client()
         try:
@@ -167,6 +168,8 @@ class OpenAICompatProvider(LLMProvider):
             }
             if temperature is not None:
                 payload["temperature"] = float(temperature)
+            if timeout_seconds is not None:
+                payload["timeout"] = float(timeout_seconds)
             if tools:
                 payload["tools"] = list(tools)
                 payload["tool_choice"] = "auto"

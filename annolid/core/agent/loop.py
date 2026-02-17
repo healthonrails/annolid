@@ -4,6 +4,7 @@ from contextlib import AsyncExitStack
 import json
 from annolid.utils.logger import logger
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -236,6 +237,12 @@ class AgentLoop:
         media: Optional[List[str]] = None,
         skill_names: Optional[List[str]] = None,
     ) -> AgentLoopResult:
+        run_started = time.perf_counter()
+        llm_total_ms = 0.0
+        tool_exec_total_ms = 0.0
+        tool_call_count = 0
+        message_build_ms = 0.0
+        mcp_connect_ms = 0.0
         memory_enabled = (
             self._memory_config.enabled if use_memory is None else bool(use_memory)
         )
@@ -246,8 +253,11 @@ class AgentLoop:
             channel,
             self.model,
         )
+        connect_started = time.perf_counter()
         await self._connect_mcp()
+        mcp_connect_ms = (time.perf_counter() - connect_started) * 1000.0
         try:
+            build_started = time.perf_counter()
             messages: List[Dict[str, Any]] = []
             user_message_text = str(user_message)
             self._persist_long_term_memory_note_from_user_text(user_message_text)
@@ -293,6 +303,7 @@ class AgentLoop:
                 messages.append({"role": "user", "content": user_payload})
             else:
                 messages.append({"role": "user", "content": user_message_text})
+            message_build_ms = (time.perf_counter() - build_started) * 1000.0
 
             tool_runs: List[AgentToolRun] = []
             final_content = ""
@@ -316,14 +327,25 @@ class AgentLoop:
                     user_message_text=user_message_text,
                     messages=messages,
                 )
+                llm_started = time.perf_counter()
                 response = await self._llm_callable(
                     messages,
                     tool_definitions,
                     self.model,
                 )
+                llm_elapsed_ms = (time.perf_counter() - llm_started) * 1000.0
+                llm_total_ms += llm_elapsed_ms
                 assistant_text = str(response.get("content") or "")
                 tool_calls = self._sanitize_tool_calls(
                     self._extract_tool_calls(response)
+                )
+                self._logger.info(
+                    "annolid-bot profile iteration session=%s model=%s iteration=%d llm_ms=%.1f tool_calls=%d",
+                    session_id,
+                    self.model,
+                    iteration,
+                    llm_elapsed_ms,
+                    len(tool_calls),
                 )
 
                 if tool_calls:
@@ -358,7 +380,20 @@ class AgentLoop:
                         name = str(call.get("name") or "")
                         raw_args = call.get("arguments")
                         args = self._normalize_args(raw_args)
+                        tool_started = time.perf_counter()
                         result = await self._tools.execute(name, args)
+                        tool_elapsed_ms = (time.perf_counter() - tool_started) * 1000.0
+                        tool_exec_total_ms += tool_elapsed_ms
+                        tool_call_count += 1
+                        if tool_elapsed_ms >= 500.0:
+                            self._logger.info(
+                                "annolid-bot profile tool session=%s model=%s iteration=%d tool=%s elapsed_ms=%.1f",
+                                session_id,
+                                self.model,
+                                iteration,
+                                name,
+                                tool_elapsed_ms,
+                            )
                         tool_runs.append(
                             AgentToolRun(
                                 call_id=call_id,
@@ -424,14 +459,49 @@ class AgentLoop:
                     ],
                     max_messages=self._history_persist_limit(),
                 )
-            return AgentLoopResult(
+            result = AgentLoopResult(
                 content=final_content,
                 messages=messages,
                 iterations=last_iteration or self._max_iterations,
                 tool_runs=tuple(tool_runs),
                 stopped_reason=stopped_reason,
             )
+            return result
         finally:
+            total_ms = (time.perf_counter() - run_started) * 1000.0
+            known_ms = (
+                mcp_connect_ms + message_build_ms + llm_total_ms + tool_exec_total_ms
+            )
+            other_ms = max(0.0, total_ms - known_ms)
+            buckets = {
+                "llm": llm_total_ms,
+                "tool_exec": tool_exec_total_ms,
+                "mcp_connect": mcp_connect_ms,
+                "message_build": message_build_ms,
+                "other": other_ms,
+            }
+            bottleneck_name, bottleneck_ms = max(
+                buckets.items(), key=lambda item: item[1]
+            )
+            self._logger.info(
+                "annolid-bot profile summary session=%s model=%s total_ms=%.1f mcp_connect_ms=%.1f message_build_ms=%.1f llm_total_ms=%.1f tool_exec_total_ms=%.1f tool_calls=%d",
+                session_id,
+                self.model,
+                total_ms,
+                mcp_connect_ms,
+                message_build_ms,
+                llm_total_ms,
+                tool_exec_total_ms,
+                tool_call_count,
+            )
+            self._logger.info(
+                "annolid-bot profile bottleneck session=%s model=%s bottleneck=%s bottleneck_ms=%.1f other_ms=%.1f",
+                session_id,
+                self.model,
+                bottleneck_name,
+                bottleneck_ms,
+                other_ms,
+            )
             await self._disconnect_mcp()
 
     async def _connect_mcp(self) -> None:

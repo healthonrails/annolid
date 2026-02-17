@@ -25,6 +25,9 @@ from annolid.gui.widgets.ai_chat_backend import StreamingChatTask, clear_chat_se
 from annolid.gui.widgets.ai_chat_session_dialog import ChatSessionManagerDialog
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
 from annolid.gui.widgets.provider_registry import ProviderRegistry
+from annolid.gui.widgets.provider_runtime_sync import (
+    refresh_runtime_llm_settings as refresh_runtime_provider_settings,
+)
 from annolid.utils.llm_settings import (
     has_provider_api_key,
     load_llm_settings,
@@ -573,6 +576,12 @@ class AIChatWidget(QtWidgets.QWidget):
                 self.provider_selector.addItem(label, userData=key)
         finally:
             self.provider_selector.blockSignals(False)
+
+    def _refresh_runtime_llm_settings(self) -> None:
+        """Reload LLM settings so provider/model changes apply on the next turn."""
+        refresh_runtime_provider_settings(
+            self, after_refresh=self._refresh_header_chips
+        )
 
     def _create_header_button(self, theme_icon, tooltip, style_icon):
         btn = QtWidgets.QToolButton(self)
@@ -2737,6 +2746,7 @@ class AIChatWidget(QtWidgets.QWidget):
     def chat_with_model(self) -> None:
         if self.is_streaming_chat:
             return
+        self._refresh_runtime_llm_settings()
         raw_prompt = self.prompt_text_edit.toPlainText().strip()
         if not raw_prompt:
             return

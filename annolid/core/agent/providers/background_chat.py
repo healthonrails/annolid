@@ -9,6 +9,7 @@ import os
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from annolid.utils.llm_settings import LLMConfig
+from annolid.utils.llm_settings import provider_definitions, provider_kind
 
 from .openai_compat import OpenAICompatProvider, resolve_openai_compat
 
@@ -33,6 +34,55 @@ def dependency_error_for_kind(kind: str) -> Optional[str]:
                 "`.venv/bin/pip install google-generativeai`."
             )
     return None
+
+
+def _inject_openai_compat_env_defaults(
+    *, settings: Dict[str, Any], provider_name: str, params: Dict[str, Any]
+) -> Dict[str, Any]:
+    out = dict(params or {})
+    provider_key = str(provider_name or "").strip().lower()
+    p_kind = provider_kind(settings, provider_key)
+    if p_kind != "openai_compat":
+        return out
+    defs = provider_definitions(settings)
+    spec = defs.get(provider_key, {})
+    env_keys = spec.get("env_keys", [])
+    if isinstance(env_keys, str):
+        env_keys = [env_keys]
+    if not isinstance(env_keys, list):
+        env_keys = []
+
+    if not str(out.get("api_key") or "").strip():
+        for env_name in env_keys:
+            value = str(os.getenv(str(env_name).strip()) or "").strip()
+            if value:
+                out["api_key"] = value
+                break
+
+    # Fallbacks for aliases/custom providers that may not define env_keys.
+    if not str(out.get("api_key") or "").strip():
+        for env_name in (
+            "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "NVIDIA_API_KEY",
+            "MOONSHOT_API_KEY",
+        ):
+            value = str(os.getenv(env_name) or "").strip()
+            if value:
+                out["api_key"] = value
+                break
+
+    if not str(out.get("base_url") or "").strip():
+        env_base = str(spec.get("base_url_env") or "").strip()
+        if env_base:
+            value = str(os.getenv(env_base) or "").strip()
+            if value:
+                out["base_url"] = value
+    if not str(out.get("base_url") or "").strip():
+        default_base = str(spec.get("base_url_default") or "").strip()
+        if default_base:
+            out["base_url"] = default_base
+    return out
 
 
 def run_ollama_streaming_chat(
@@ -98,9 +148,16 @@ def run_openai_compat_chat(
     provider_name: str,
     settings: Dict[str, Any],
     load_history_messages: Callable[[], List[Dict[str, Any]]],
+    max_tokens: int = 4096,
+    timeout_s: Optional[float] = None,
 ) -> Tuple[str, str]:
     provider_key = str(provider_name or "openai").strip().lower()
     provider_block = dict(settings.get(provider_key, {}) or {})
+    provider_block = _inject_openai_compat_env_defaults(
+        settings=settings,
+        provider_name=provider_key,
+        params=provider_block,
+    )
     cfg = LLMConfig(
         provider=provider_key,
         model=model,
@@ -130,14 +187,26 @@ def run_openai_compat_chat(
     async def _chat_once() -> str:
         model_lower = (model or "").lower()
         temperature = 0.7 if "gpt-5" not in model_lower else None
-        resp = await provider.chat(
+        coro = provider.chat(
             messages=messages,
             model=model,
+            max_tokens=int(max_tokens),
             temperature=temperature,
+            timeout_seconds=timeout_s,
         )
+        if timeout_s is not None and float(timeout_s) > 0:
+            resp = await asyncio.wait_for(coro, timeout=float(timeout_s))
+        else:
+            resp = await coro
         return str(resp.content or "")
 
-    text = asyncio.run(_chat_once())
+    try:
+        text = asyncio.run(_chat_once())
+    except asyncio.TimeoutError as exc:
+        limit = float(timeout_s) if timeout_s is not None else 0.0
+        raise TimeoutError(
+            f"Provider request timed out after {limit:.0f}s for {provider_key}:{model}."
+        ) from exc
     return user_prompt, text
 
 

@@ -111,6 +111,8 @@ def _build_default_settings() -> Dict[str, Any]:
             "max_tool_iterations": 12,
             "max_history_messages": 24,
             "memory_window": 50,
+            "fast_mode_timeout_seconds": 60,
+            "fallback_retry_timeout_seconds": 20,
         },
         "profiles": {
             "caption": {"provider": "ollama"},

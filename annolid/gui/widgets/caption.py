@@ -20,6 +20,9 @@ from typing import Any, Dict, List, Tuple, Optional, Sequence
 
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
 from annolid.gui.widgets.provider_registry import ProviderRegistry
+from annolid.gui.widgets.provider_runtime_sync import (
+    refresh_runtime_llm_settings as refresh_runtime_provider_settings,
+)
 from annolid.gui.widgets.rich_text_renderer import RichTextRenderer
 from annolid.gui.widgets.ai_chat_backend import StreamingChatTask
 from annolid.utils.llm_settings import (
@@ -240,6 +243,10 @@ class CaptionWidget(QtWidgets.QWidget):
                 self.provider_selector.addItem(label, userData=key)
         finally:
             self.provider_selector.blockSignals(False)
+
+    def _refresh_runtime_llm_settings(self) -> None:
+        """Reload LLM settings so provider/model updates apply on next send."""
+        refresh_runtime_provider_settings(self)
 
     def _build_model_controls(self) -> QHBoxLayout:
         layout = QHBoxLayout()
@@ -509,6 +516,7 @@ class CaptionWidget(QtWidgets.QWidget):
 
     def chat_with_model(self):
         """Initiates a chat with the selected model and displays chat history."""
+        self._refresh_runtime_llm_settings()
         raw_prompt = self.prompt_text_edit.text()
         if not raw_prompt:
             print("No input provided for chat.")

@@ -142,6 +142,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------------ #
     def _build_ollama_tab(self) -> None:
         widget = QtWidgets.QWidget()
+        self._ollama_tab_widget = widget
         layout = QtWidgets.QFormLayout(widget)
         spec = self._provider_specs.get("ollama", {})
         ollama_cfg = dict(self._settings.get("ollama", {}) or {})
@@ -658,6 +659,34 @@ class LLMSettingsDialog(QtWidgets.QDialog):
                 out.append(text)
         return out
 
+    def _get_models_with_selected_first(
+        self, models_list: QtWidgets.QListWidget
+    ) -> List[str]:
+        models = self._get_models_from_list(models_list)
+        if not models:
+            return models
+        selected = models_list.selectedItems()
+        if not selected:
+            current = models_list.currentItem()
+            selected = [current] if current is not None else []
+        if not selected:
+            return models
+        selected_text = str(selected[0].text() or "").strip()
+        if not selected_text or selected_text not in models:
+            return models
+        return [selected_text] + [m for m in models if m != selected_text]
+
+    def _provider_for_current_tab(self) -> Optional[str]:
+        current_tab = self._tabs.currentWidget()
+        if current_tab is None:
+            return None
+        if current_tab is getattr(self, "_ollama_tab_widget", None):
+            return "ollama"
+        for provider, payload in self._provider_widgets.items():
+            if payload.get("tab_widget") is current_tab:
+                return str(provider or "").strip().lower() or None
+        return None
+
     def _add_model_from_input(
         self, models_list: QtWidgets.QListWidget, model_input: QtWidgets.QLineEdit
     ) -> None:
@@ -775,7 +804,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         )
         updated["ollama"] = {
             "host": self.ollama_host_edit.text().strip() or ollama_default_host,
-            "preferred_models": self._get_models_from_list(
+            "preferred_models": self._get_models_with_selected_first(
                 self.ollama_models_list["list"]
             ),
         }
@@ -809,8 +838,8 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             if isinstance(model_editor, dict):
                 model_list = model_editor.get("list")
                 if isinstance(model_list, QtWidgets.QListWidget):
-                    provider_payload["preferred_models"] = self._get_models_from_list(
-                        model_list
+                    provider_payload["preferred_models"] = (
+                        self._get_models_with_selected_first(model_list)
                     )
 
             base_url_edit = provider_state.get("base_url_edit")
@@ -864,6 +893,23 @@ class LLMSettingsDialog(QtWidgets.QDialog):
                 ),
             }
         updated["provider_definitions"] = provider_defs_out
+        active_provider = self._provider_for_current_tab()
+        if active_provider and active_provider in provider_defs_out:
+            updated["provider"] = active_provider
+            models_for_provider: List[str] = []
+            if active_provider == "ollama":
+                models_for_provider = list(
+                    updated.get("ollama", {}).get("preferred_models", []) or []
+                )
+            else:
+                models_for_provider = list(
+                    updated.get(active_provider, {}).get("preferred_models", []) or []
+                )
+            if models_for_provider:
+                updated.setdefault("last_models", {})
+                updated["last_models"][active_provider] = str(
+                    models_for_provider[0]
+                ).strip()
 
         self._tts_settings = {
             "engine": self.tts_engine_combo.currentData() or "auto",

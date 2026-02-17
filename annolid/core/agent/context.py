@@ -5,10 +5,12 @@ import mimetypes
 import platform
 from datetime import datetime
 from pathlib import Path
+import time
 from typing import Any, List, Mapping, Optional, Sequence
 
 from .memory import AgentMemoryStore
 from .skills import AgentSkillsLoader
+from annolid.utils.logger import logger
 
 
 class AgentContextBuilder:
@@ -22,29 +24,37 @@ class AgentContextBuilder:
         self.skills = AgentSkillsLoader(self.workspace)
 
     def build_system_prompt(self, skill_names: Optional[List[str]] = None) -> str:
+        started = time.perf_counter()
         parts: List[str] = []
         parts.append(self._get_identity())
 
+        t0 = time.perf_counter()
         bootstrap = self._load_bootstrap_files()
+        t1 = time.perf_counter()
         if bootstrap:
             parts.append(bootstrap)
 
         memory_context = self.memory.get_memory_context()
+        t2 = time.perf_counter()
         if memory_context:
             parts.append(f"# Memory\n\n{memory_context}")
 
         always_skills = self.skills.get_always_skills()
+        t3 = time.perf_counter()
         if always_skills:
             always_content = self.skills.load_skills_for_context(always_skills)
             if always_content:
                 parts.append(f"# Active Skills\n\n{always_content}")
+        t4 = time.perf_counter()
 
         if skill_names:
             selected = self.skills.load_skills_for_context(skill_names)
             if selected:
                 parts.append(f"# Requested Skills\n\n{selected}")
+        t5 = time.perf_counter()
 
         skills_summary = self.skills.build_skills_summary()
+        t6 = time.perf_counter()
         if skills_summary:
             parts.append(
                 "# Skills\n\n"
@@ -52,7 +62,20 @@ class AgentContextBuilder:
                 "`SKILL.md` file via `read_file`.\n\n"
                 f"{skills_summary}"
             )
-        return "\n\n---\n\n".join(parts)
+        result = "\n\n---\n\n".join(parts)
+        logger.info(
+            "annolid-bot profile system_prompt workspace=%s bootstrap_ms=%.1f memory_ms=%.1f always_skill_scan_ms=%.1f always_skill_load_ms=%.1f requested_skill_load_ms=%.1f skills_summary_ms=%.1f total_ms=%.1f chars=%d",
+            str(self.workspace),
+            (t1 - t0) * 1000.0,
+            (t2 - t1) * 1000.0,
+            (t3 - t2) * 1000.0,
+            (t4 - t3) * 1000.0,
+            (t5 - t4) * 1000.0,
+            (t6 - t5) * 1000.0,
+            (t6 - started) * 1000.0,
+            len(result),
+        )
+        return result
 
     def build_messages(
         self,

@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 import re
 import logging
+import time
+from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
 import urllib.request
@@ -171,6 +173,10 @@ _PDF_CONTEXT_HINTS = (
 _OLLAMA_TOOL_SUPPORT_CACHE = _PROVIDER_OLLAMA_TOOL_SUPPORT_CACHE
 _OLLAMA_FORCE_PLAIN_CACHE = _PROVIDER_OLLAMA_FORCE_PLAIN_CACHE
 _OLLAMA_PLAIN_MODE_COOLDOWN_TURNS = _PROVIDER_OLLAMA_PLAIN_MODE_COOLDOWN_TURNS
+_PROMPT_FILE_CACHE_LOCK = Lock()
+_PROMPT_FILE_CACHE: Dict[Tuple[str, int], Tuple[int, int, str]] = {}
+_SKILL_DIR_CACHE_LOCK = Lock()
+_SKILL_DIR_CACHE: Dict[str, Tuple[int, List[str]]] = {}
 
 
 def _get_session_store() -> PersistentSessionStore:
@@ -178,6 +184,57 @@ def _get_session_store() -> PersistentSessionStore:
     if _SESSION_STORE is None:
         _SESSION_STORE = PersistentSessionStore(AgentSessionManager())
     return _SESSION_STORE
+
+
+def _read_text_limited_cached(path: Path, max_chars: int) -> str:
+    key = (str(path), int(max_chars))
+    try:
+        stat = path.stat()
+    except Exception:
+        return ""
+    stamp = int(getattr(stat, "st_mtime_ns", 0))
+    size = int(getattr(stat, "st_size", -1))
+    with _PROMPT_FILE_CACHE_LOCK:
+        cached = _PROMPT_FILE_CACHE.get(key)
+    if cached is not None:
+        cached_stamp, cached_size, cached_text = cached
+        if cached_stamp == stamp and cached_size == size:
+            return cached_text
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    value = str(text or "").strip()
+    if len(value) > max_chars:
+        value = value[:max_chars].rstrip() + "\n...[truncated]"
+    with _PROMPT_FILE_CACHE_LOCK:
+        _PROMPT_FILE_CACHE[key] = (stamp, size, value)
+    return value
+
+
+def _list_workspace_skill_names_cached(skills_dir: Path) -> List[str]:
+    key = str(skills_dir)
+    try:
+        stamp = int(getattr(skills_dir.stat(), "st_mtime_ns", 0))
+    except Exception:
+        return []
+    with _SKILL_DIR_CACHE_LOCK:
+        cached = _SKILL_DIR_CACHE.get(key)
+    if cached is not None:
+        cached_stamp, cached_names = cached
+        if cached_stamp == stamp:
+            return list(cached_names)
+    try:
+        names = sorted(
+            p.name
+            for p in skills_dir.iterdir()
+            if p.is_dir() and (p / "SKILL.md").exists()
+        )
+    except Exception:
+        return []
+    with _SKILL_DIR_CACHE_LOCK:
+        _SKILL_DIR_CACHE[key] = (stamp, list(names))
+    return names
 
 
 def clear_chat_session(session_id: str) -> None:
@@ -256,9 +313,31 @@ class StreamingChatTask(QRunnable):
             )
             return
         try:
-            if self.chat_mode == "vision_describe" and self._has_image_context():
-                self._emit_progress("Starting fast image description mode")
-                self._run_fast_image_describe()
+            if self._should_run_fast_mode():
+                self._emit_progress(f"Starting fast mode ({self.chat_mode})")
+                try:
+                    self._run_fast_mode()
+                except Exception as fast_exc:
+                    if self._is_provider_config_error(fast_exc):
+                        logger.warning(
+                            "annolid-bot fast mode unavailable due provider config; falling back to agent loop session=%s provider=%s model=%s error=%s",
+                            self.session_id,
+                            self.provider,
+                            self.model,
+                            fast_exc,
+                        )
+                        self._emit_progress(
+                            "Fast mode unavailable, using standard path"
+                        )
+                        self._run_agent_loop()
+                        logger.info(
+                            "annolid-bot turn stop session=%s provider=%s model=%s status=ok_fast_fallback",
+                            self.session_id,
+                            self.provider,
+                            self.model,
+                        )
+                        return
+                    raise
                 logger.info(
                     "annolid-bot turn stop session=%s provider=%s model=%s status=ok_fast_mode",
                     self.session_id,
@@ -275,6 +354,23 @@ class StreamingChatTask(QRunnable):
                 self.model,
             )
         except Exception as exc:
+            if self._is_provider_config_error(exc):
+                message = self._format_provider_config_error(str(exc))
+                logger.warning(
+                    "annolid-bot provider config error session=%s provider=%s model=%s error=%s",
+                    self.session_id,
+                    self.provider,
+                    self.model,
+                    exc,
+                )
+                self._emit_final(message, is_error=True)
+                logger.info(
+                    "annolid-bot turn stop session=%s provider=%s model=%s status=config_error",
+                    self.session_id,
+                    self.provider,
+                    self.model,
+                )
+                return
             if isinstance(exc, ImportError):
                 message = self._format_dependency_error(str(exc))
                 logger.warning(
@@ -307,6 +403,24 @@ class StreamingChatTask(QRunnable):
             # Keep backward-compatible fallback behavior if agent loop setup fails.
             self._emit_progress("Agent loop failed, trying provider fallback")
             kind = provider_kind(self.settings, self.provider)
+            if kind == "openai_compat" and self._is_provider_timeout_error(
+                original_error
+            ):
+                self._emit_progress(
+                    "Provider timeout detected; running one quick retry"
+                )
+                self._run_openai(
+                    provider_name=self.provider,
+                    timeout_s=self._fallback_retry_timeout_seconds(),
+                    max_tokens=512,
+                )
+                logger.info(
+                    "annolid-bot turn stop session=%s provider=%s model=%s status=fallback_timeout_retry_ok",
+                    self.session_id,
+                    self.provider,
+                    self.model,
+                )
+                return
             if kind == "ollama":
                 self._run_ollama()
             elif kind == "openai_compat":
@@ -322,6 +436,23 @@ class StreamingChatTask(QRunnable):
                 self.model,
             )
         except Exception as fallback_exc:
+            if self._is_provider_config_error(fallback_exc):
+                message = self._format_provider_config_error(str(fallback_exc))
+                logger.warning(
+                    "annolid-bot fallback provider config error session=%s provider=%s model=%s error=%s",
+                    self.session_id,
+                    self.provider,
+                    self.model,
+                    fallback_exc,
+                )
+                self._emit_final(message, is_error=True)
+                logger.info(
+                    "annolid-bot turn stop session=%s provider=%s model=%s status=config_error",
+                    self.session_id,
+                    self.provider,
+                    self.model,
+                )
+                return
             if isinstance(fallback_exc, ImportError):
                 message = self._format_dependency_error(str(fallback_exc))
                 logger.warning(
@@ -350,21 +481,74 @@ class StreamingChatTask(QRunnable):
                 is_error=True,
             )
 
+    @staticmethod
+    def _is_provider_config_error(exc: Exception | str) -> bool:
+        text = str(exc or "").strip().lower()
+        if not text:
+            return False
+        return any(
+            marker in text
+            for marker in (
+                "requires api key",
+                "api key is missing",
+                "missing api key",
+                "invalid api key",
+                "unsupported provider/model for agent loop",
+            )
+        )
+
+    def _format_provider_config_error(self, raw_error: str) -> str:
+        message = str(raw_error or "").strip()
+        if self._is_provider_config_error(message):
+            return (
+                f"Provider configuration error for '{self.provider}'. {message} "
+                "Open AI Model Settings and configure the provider API key/base URL."
+            )
+        return message or "Provider configuration is invalid."
+
+    @staticmethod
+    def _is_provider_timeout_error(exc: Exception | str) -> bool:
+        text = str(exc or "").strip().lower()
+        if not text:
+            return False
+        return (
+            "timed out" in text
+            or "timeout" in text
+            or "gateway timeout" in text
+            or "504" in text
+        )
+
     def _has_image_context(self) -> bool:
         path = str(self.image_path or "").strip()
         return bool(path and os.path.exists(path))
 
-    def _run_fast_image_describe(self) -> None:
-        """Handle image-description requests with one provider call and no tool loop."""
+    def _should_run_fast_mode(self) -> bool:
+        if self.chat_mode == "vision_describe":
+            return self._has_image_context()
+        return False
+
+    def _run_fast_mode(self) -> None:
+        if self.chat_mode == "vision_describe":
+            self._run_fast_provider_chat(include_image=True, include_history=False)
+            return
+        raise ValueError(f"Unsupported fast mode '{self.chat_mode}'.")
+
+    def _run_fast_provider_chat(
+        self, *, include_image: bool, include_history: bool
+    ) -> None:
+        """Handle one-shot fast chat requests without the agent/tool loop."""
+        image_path = self.image_path if include_image else ""
+        load_history = self._load_history_messages if include_history else (lambda: [])
+        timeout_s = self._fast_mode_timeout_seconds()
         kind = provider_kind(self.settings, self.provider)
         self._emit_progress(f"Fast mode provider call ({kind})")
         if kind == "ollama":
             run_ollama_streaming_chat(
                 prompt=self.prompt,
-                image_path=self.image_path,
+                image_path=image_path,
                 model=self.model,
                 settings=self.settings,
-                load_history_messages=lambda: [],
+                load_history_messages=load_history,
                 emit_chunk=self._emit_chunk,
                 emit_final=lambda message, is_error: self._emit_final(
                     message, is_error=is_error
@@ -377,11 +561,13 @@ class StreamingChatTask(QRunnable):
         if kind == "openai_compat":
             user_prompt, text = run_openai_compat_chat(
                 prompt=self.prompt,
-                image_path=self.image_path,
+                image_path=image_path,
                 model=self.model,
                 provider_name=self.provider,
                 settings=self.settings,
-                load_history_messages=lambda: [],
+                load_history_messages=load_history,
+                max_tokens=320 if include_image else 640,
+                timeout_s=timeout_s,
             )
             self._persist_turn(user_prompt, text)
             self._emit_final(text, is_error=False)
@@ -389,7 +575,7 @@ class StreamingChatTask(QRunnable):
         if kind == "gemini":
             user_prompt, text = run_gemini_chat(
                 prompt=self.prompt,
-                image_path=self.image_path,
+                image_path=image_path,
                 model=self.model,
                 provider_name=self.provider,
                 settings=self.settings,
@@ -398,6 +584,30 @@ class StreamingChatTask(QRunnable):
             self._emit_final(text, is_error=False)
             return
         raise ValueError(f"Unsupported provider '{self.provider}' in fast mode.")
+
+    def _fast_mode_timeout_seconds(self) -> float:
+        agent_cfg = self.settings.get("agent", {})
+        raw = 60.0
+        if isinstance(agent_cfg, dict):
+            raw = agent_cfg.get("fast_mode_timeout_seconds", raw)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 60.0
+        # Keep a sane range to avoid accidental extreme values.
+        return max(10.0, min(300.0, value))
+
+    def _fallback_retry_timeout_seconds(self) -> float:
+        agent_cfg = self.settings.get("agent", {})
+        raw = 20.0
+        if isinstance(agent_cfg, dict):
+            raw = agent_cfg.get("fallback_retry_timeout_seconds", raw)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 20.0
+        # Keep retry short so total wall time doesn't balloon after a timeout.
+        return max(5.0, min(60.0, value))
 
     def _provider_dependency_error(self) -> Optional[str]:
         kind = provider_kind(self.settings, self.provider)
@@ -526,7 +736,10 @@ class StreamingChatTask(QRunnable):
         if await self._try_execute_direct_gui_command():
             return True
 
-        context = await self._build_agent_execution_context()
+        prompt_needs_tools = self._prompt_may_need_tools(self.prompt)
+        context = await self._build_agent_execution_context(
+            include_tools=prompt_needs_tools
+        )
 
         if self.provider == "ollama":
             remaining_plain_turns = int(ollama_plain_mode_remaining(self.model) or 0)
@@ -561,6 +774,18 @@ class StreamingChatTask(QRunnable):
                     remaining_plain_turns,
                 )
 
+        configured_mcp_servers = self.settings.get("tools", {}).get("mcp_servers", {})
+        if prompt_needs_tools and len(context.tools) > 0:
+            mcp_servers = configured_mcp_servers
+        else:
+            mcp_servers = {}
+            if configured_mcp_servers:
+                logger.info(
+                    "annolid-bot skipping mcp connect for no-tool-intent prompt session=%s model=%s",
+                    self.session_id,
+                    self.model,
+                )
+
         loop = AgentLoop(
             tools=context.tools,
             llm_callable=self._resolve_loop_llm_callable(),
@@ -570,7 +795,7 @@ class StreamingChatTask(QRunnable):
             memory_store=self.session_store,
             workspace=str(context.workspace),
             allowed_read_roots=context.allowed_read_roots,
-            mcp_servers=self.settings.get("tools", {}).get("mcp_servers", {}),
+            mcp_servers=mcp_servers,
         )
         media: Optional[List[str]] = None
         if self.image_path and os.path.exists(self.image_path):
@@ -621,40 +846,60 @@ class StreamingChatTask(QRunnable):
         self._emit_final(direct_command_text, is_error=False)
         return True
 
-    async def _build_agent_execution_context(self) -> _AgentExecutionContext:
+    async def _build_agent_execution_context(
+        self, *, include_tools: bool = True
+    ) -> _AgentExecutionContext:
         self._emit_progress("Loading tools and context")
+        profile_t0 = time.perf_counter()
         workspace = get_agent_workspace_path()
+        t_after_workspace = time.perf_counter()
         agent_cfg = load_config()
+        t_after_config = time.perf_counter()
         allowed_read_roots = list(
             getattr(agent_cfg.tools, "allowed_read_roots", []) or []
         )
         tools = FunctionToolRegistry()
-        calendar_cfg = getattr(agent_cfg.tools, "calendar", None)
-        await register_nanobot_style_tools(
-            tools,
-            allowed_dir=workspace,
-            allowed_read_roots=allowed_read_roots,
-            email_cfg=agent_cfg.tools.email,
-            calendar_cfg=calendar_cfg,
-        )
-        self._register_gui_tools(tools)
-        disabled_tools = set(_GUI_ALWAYS_DISABLED_TOOLS)
-        if not self.enable_web_tools:
-            disabled_tools.update(_GUI_WEB_TOOLS)
-        for tool_name in disabled_tools:
-            tools.unregister(tool_name)
-        resolved_policy = resolve_allowed_tools(
-            all_tool_names=tools.tool_names,
-            tools_cfg=agent_cfg.tools,
-            provider=self.provider,
-            model=self.model,
-        )
-        for tool_name in list(tools.tool_names):
-            if tool_name not in resolved_policy.allowed_tools:
+        t_before_register = time.perf_counter()
+        if include_tools:
+            calendar_cfg = getattr(agent_cfg.tools, "calendar", None)
+            await register_nanobot_style_tools(
+                tools,
+                allowed_dir=workspace,
+                allowed_read_roots=allowed_read_roots,
+                email_cfg=agent_cfg.tools.email,
+                calendar_cfg=calendar_cfg,
+            )
+            self._register_gui_tools(tools)
+        t_after_register = time.perf_counter()
+        t_before_policy = time.perf_counter()
+        if include_tools:
+            disabled_tools = set(_GUI_ALWAYS_DISABLED_TOOLS)
+            if not self.enable_web_tools:
+                disabled_tools.update(_GUI_WEB_TOOLS)
+            for tool_name in disabled_tools:
                 tools.unregister(tool_name)
+            resolved_policy = resolve_allowed_tools(
+                all_tool_names=tools.tool_names,
+                tools_cfg=agent_cfg.tools,
+                provider=self.provider,
+                model=self.model,
+            )
+            for tool_name in list(tools.tool_names):
+                if tool_name not in resolved_policy.allowed_tools:
+                    tools.unregister(tool_name)
+            policy_profile = resolved_policy.profile
+            policy_source = resolved_policy.source
+        else:
+            policy_profile = "none"
+            policy_source = "tool_intent_skip"
+        t_after_policy = time.perf_counter()
         system_prompt = self._build_compact_system_prompt(
-            workspace, allowed_read_roots=allowed_read_roots
+            workspace,
+            allowed_read_roots=allowed_read_roots,
+            allow_web_tools=bool(include_tools and self.enable_web_tools),
+            include_workspace_docs=bool(include_tools),
         )
+        t_after_prompt = time.perf_counter()
         self._emit_progress("Prepared system prompt")
         logger.info(
             "annolid-bot agent config session=%s model=%s tools=%d read_roots=%d profile=%s policy_source=%s prompt_chars=%d",
@@ -662,9 +907,37 @@ class StreamingChatTask(QRunnable):
             self.model,
             len(tools),
             len(allowed_read_roots),
-            resolved_policy.profile,
-            resolved_policy.source,
+            policy_profile,
+            policy_source,
             len(system_prompt),
+        )
+        logger.info(
+            "annolid-bot profile context session=%s model=%s workspace_ms=%.1f config_ms=%.1f register_tools_ms=%.1f policy_ms=%.1f prompt_ms=%.1f total_ms=%.1f",
+            self.session_id,
+            self.model,
+            (t_after_workspace - profile_t0) * 1000.0,
+            (t_after_config - t_after_workspace) * 1000.0,
+            (t_after_register - t_before_register) * 1000.0,
+            (t_after_policy - t_before_policy) * 1000.0,
+            (t_after_prompt - t_after_policy) * 1000.0,
+            (t_after_prompt - profile_t0) * 1000.0,
+        )
+        context_buckets = {
+            "workspace": (t_after_workspace - profile_t0) * 1000.0,
+            "config": (t_after_config - t_after_workspace) * 1000.0,
+            "register_tools": (t_after_register - t_before_register) * 1000.0,
+            "policy": (t_after_policy - t_before_policy) * 1000.0,
+            "prompt_build": (t_after_prompt - t_after_policy) * 1000.0,
+        }
+        context_bottleneck_name, context_bottleneck_ms = max(
+            context_buckets.items(), key=lambda item: item[1]
+        )
+        logger.info(
+            "annolid-bot profile context-bottleneck session=%s model=%s bottleneck=%s bottleneck_ms=%.1f",
+            self.session_id,
+            self.model,
+            context_bottleneck_name,
+            context_bottleneck_ms,
         )
         return _AgentExecutionContext(
             workspace=workspace,
@@ -2402,21 +2675,18 @@ class StreamingChatTask(QRunnable):
             import_module=importlib.import_module,
         )
 
-    @staticmethod
-    def _read_text_limited(path: Path, max_chars: int) -> str:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except Exception:
-            return ""
-        value = str(text or "").strip()
-        if len(value) <= max_chars:
-            return value
-        return value[:max_chars].rstrip() + "\n...[truncated]"
-
     def _build_compact_system_prompt(
-        self, workspace: Path, *, allowed_read_roots: Optional[List[str]] = None
+        self,
+        workspace: Path,
+        *,
+        allowed_read_roots: Optional[List[str]] = None,
+        allow_web_tools: Optional[bool] = None,
+        include_workspace_docs: bool = True,
     ) -> str:
         short_prompt = len(str(self.prompt or "").strip()) <= 80
+        web_tools_enabled = (
+            self.enable_web_tools if allow_web_tools is None else bool(allow_web_tools)
+        )
         local_now = datetime.now().astimezone()
         tz_name = local_now.tzname() or "local"
         tz_offset = local_now.strftime("%z")
@@ -2432,7 +2702,7 @@ class StreamingChatTask(QRunnable):
             f"phrases (today/tomorrow/next week): {now_iso} ({tz_name}, UTC{pretty_offset}). "
             "Do not ask the user for today's date unless they explicitly ask for a different timezone/date reference."
         )
-        if self.enable_web_tools:
+        if web_tools_enabled:
             parts.append(
                 "Web tools are enabled (`web_search`, `web_fetch`). "
                 "When a user asks about a URL or web page, use web tools to retrieve "
@@ -2462,31 +2732,32 @@ class StreamingChatTask(QRunnable):
             parts.append(
                 "# Allowed Read Roots\n" + "\n".join(f"- {root}" for root in roots[:20])
             )
-        agents_limit = 900 if short_prompt else 1600
-        memory_limit = 500 if short_prompt else 900
-        agents_md = self._read_text_limited(workspace / "AGENTS.md", agents_limit)
+        if include_workspace_docs:
+            agents_limit = 900 if short_prompt else 1600
+            memory_limit = 500 if short_prompt else 900
+        else:
+            agents_limit = 320 if short_prompt else 640
+            memory_limit = 180 if short_prompt else 320
+        agents_md = _read_text_limited_cached(workspace / "AGENTS.md", agents_limit)
         if agents_md:
             parts.append(f"# Workspace Instructions\n{agents_md}")
-        memory_md = self._read_text_limited(
+        memory_md = _read_text_limited_cached(
             workspace / "memory" / "MEMORY.md", memory_limit
         )
         if memory_md:
             parts.append(f"# Long-term Memory\n{memory_md}")
-        skills_dir = workspace / "skills"
-        if skills_dir.exists():
-            names = sorted(
-                p.name
-                for p in skills_dir.iterdir()
-                if p.is_dir() and (p / "SKILL.md").exists()
-            )
-            if names:
-                preview = ", ".join(names[:15])
-                if len(names) > 15:
-                    preview += ", ..."
-                parts.append(
-                    "Available skills exist in workspace. Use `read_file` to inspect a "
-                    f"skill before using it. Skills: {preview}"
-                )
+        if include_workspace_docs:
+            skills_dir = workspace / "skills"
+            if skills_dir.exists():
+                names = _list_workspace_skill_names_cached(skills_dir)
+                if names:
+                    preview = ", ".join(names[:15])
+                    if len(names) > 15:
+                        preview += ", ..."
+                    parts.append(
+                        "Available skills exist in workspace. Use `read_file` to inspect a "
+                        f"skill before using it. Skills: {preview}"
+                    )
         return "\n\n".join(parts)
 
     @staticmethod
@@ -2668,7 +2939,13 @@ class StreamingChatTask(QRunnable):
             ),
         )
 
-    def _run_openai(self, provider_name: str = "openai") -> None:
+    def _run_openai(
+        self,
+        provider_name: str = "openai",
+        *,
+        timeout_s: Optional[float] = None,
+        max_tokens: int = 4096,
+    ) -> None:
         user_prompt, text = run_openai_compat_chat(
             prompt=self.prompt,
             image_path=self.image_path,
@@ -2676,6 +2953,8 @@ class StreamingChatTask(QRunnable):
             provider_name=provider_name,
             settings=self.settings,
             load_history_messages=self._load_history_messages,
+            timeout_s=timeout_s,
+            max_tokens=max_tokens,
         )
         self._persist_turn(user_prompt, text)
         self._emit_final(text, is_error=False)
