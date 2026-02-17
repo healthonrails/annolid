@@ -13,6 +13,18 @@ from annolid.core.agent.config import (
 )
 
 
+def test_agent_config_load_creates_default_template(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.json"
+    loaded = load_config(cfg_path)
+    assert cfg_path.exists()
+    assert loaded.tools.calendar.enabled is False
+    payload = json.loads(cfg_path.read_text(encoding="utf-8"))
+    tools = payload.get("tools") or {}
+    calendar = tools.get("calendar") or {}
+    assert "enabled" in calendar
+    assert "provider" in calendar
+
+
 def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     cfg_path = tmp_path / "config.json"
     cfg = AgentConfig()
@@ -53,6 +65,13 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     cfg.tools.whatsapp.webhook_port = 18081
     cfg.tools.whatsapp.webhook_path = "/whatsapp/webhook"
     cfg.tools.whatsapp.ingest_outgoing_messages = True
+    cfg.tools.calendar.enabled = True
+    cfg.tools.calendar.provider = "google"
+    cfg.tools.calendar.credentials_file = "~/calendar_credentials.json"
+    cfg.tools.calendar.token_file = "~/calendar_token.json"
+    cfg.tools.calendar.calendar_id = "primary"
+    cfg.tools.calendar.timezone = "America/Los_Angeles"
+    cfg.tools.calendar.default_event_duration_minutes = 45
 
     save_config(cfg, cfg_path)
     loaded = load_config(cfg_path)
@@ -89,6 +108,13 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     assert loaded.tools.whatsapp.webhook_port == 18081
     assert loaded.tools.whatsapp.webhook_path == "/whatsapp/webhook"
     assert loaded.tools.whatsapp.ingest_outgoing_messages is True
+    assert loaded.tools.calendar.enabled is True
+    assert loaded.tools.calendar.provider == "google"
+    assert loaded.tools.calendar.credentials_file == "~/calendar_credentials.json"
+    assert loaded.tools.calendar.token_file == "~/calendar_token.json"
+    assert loaded.tools.calendar.calendar_id == "primary"
+    assert loaded.tools.calendar.timezone == "America/Los_Angeles"
+    assert loaded.tools.calendar.default_event_duration_minutes == 45
 
 
 def test_agent_config_migrates_legacy_restrict_to_workspace(tmp_path: Path) -> None:

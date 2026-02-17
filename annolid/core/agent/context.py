@@ -80,6 +80,11 @@ class AgentContextBuilder:
         local_now = datetime.now().astimezone()
         tz_name = local_now.tzname() or "local"
         now = local_now.strftime("%Y-%m-%d %H:%M (%A)")
+        tz_offset = local_now.strftime("%z")
+        pretty_offset = (
+            f"{tz_offset[:3]}:{tz_offset[3:]}" if len(tz_offset) == 5 else tz_offset
+        )
+        now_iso = local_now.isoformat(timespec="seconds")
         workspace_path = str(self.workspace.expanduser().resolve())
         system = platform.system()
         runtime = (
@@ -90,6 +95,8 @@ class AgentContextBuilder:
             "# Annolid Agent\n\n"
             "You are an Annolid assistant with tool access for annotation workflows.\n\n"
             f"## Current Time\n{now} ({tz_name})\n\n"
+            "Use the following local datetime as source of truth for relative date "
+            f"phrases (today/tomorrow): {now_iso} (UTC{pretty_offset}).\n\n"
             f"## Runtime\n{runtime}\n\n"
             f"## Workspace\n{workspace_path}\n"
         )

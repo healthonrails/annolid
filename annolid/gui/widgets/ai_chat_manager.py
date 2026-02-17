@@ -170,10 +170,12 @@ class AIChatManager(QtCore.QObject):
 
                     # Setup Agent Loop for background replies
                     tools = FunctionToolRegistry()
+                    calendar_cfg = getattr(config.tools, "calendar", None)
                     await register_nanobot_style_tools(
                         tools,
                         allowed_dir=get_agent_workspace_path(),
                         email_cfg=config.tools.email,
+                        calendar_cfg=calendar_cfg,
                     )
 
                     # In background mode, we use a standard loop.

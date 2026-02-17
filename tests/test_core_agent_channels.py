@@ -9,6 +9,7 @@ import pytest
 from annolid.core.agent.bus import MessageBus, OutboundMessage
 from annolid.core.agent.channels import (
     ChannelManager,
+    EmailChannel,
     SlackChannel,
     TelegramChannel,
     WhatsAppChannel,
@@ -129,6 +130,27 @@ def test_channel_ingest_preserves_explicit_dm_hints() -> None:
         assert inbound.metadata.get("channel_key") == "C999"
         assert inbound.metadata.get("channel_id") == "D111"
         assert inbound.metadata.get("account_id") == "workspace-1"
+
+    asyncio.run(_run())
+
+
+def test_email_channel_allowlist_matches_from_header_address() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = EmailChannel({"allow_from": ["googlecloud@google.com"]}, bus)
+        ok = await channel.ingest(
+            sender_email="Google Cloud <googlecloud@google.com>",
+            subject="Welcome",
+            body="Hello",
+        )
+        assert ok is True
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert inbound.sender_id == "googlecloud@google.com"
+        assert inbound.chat_id == "googlecloud@google.com"
+        assert inbound.metadata.get("sender_email") == "googlecloud@google.com"
+        assert (
+            inbound.metadata.get("raw_from") == "Google Cloud <googlecloud@google.com>"
+        )
 
     asyncio.run(_run())
 

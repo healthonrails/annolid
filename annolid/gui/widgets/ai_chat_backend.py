@@ -564,11 +564,13 @@ class StreamingChatTask(QRunnable):
             getattr(agent_cfg.tools, "allowed_read_roots", []) or []
         )
         tools = FunctionToolRegistry()
+        calendar_cfg = getattr(agent_cfg.tools, "calendar", None)
         await register_nanobot_style_tools(
             tools,
             allowed_dir=workspace,
             allowed_read_roots=allowed_read_roots,
             email_cfg=agent_cfg.tools.email,
+            calendar_cfg=calendar_cfg,
         )
         self._register_gui_tools(tools)
         disabled_tools = set(_GUI_ALWAYS_DISABLED_TOOLS)
@@ -2331,9 +2333,21 @@ class StreamingChatTask(QRunnable):
         self, workspace: Path, *, allowed_read_roots: Optional[List[str]] = None
     ) -> str:
         short_prompt = len(str(self.prompt or "").strip()) <= 80
+        local_now = datetime.now().astimezone()
+        tz_name = local_now.tzname() or "local"
+        tz_offset = local_now.strftime("%z")
+        pretty_offset = (
+            f"{tz_offset[:3]}:{tz_offset[3:]}" if len(tz_offset) == 5 else tz_offset
+        )
+        now_iso = local_now.isoformat(timespec="seconds")
         parts: List[str] = [
             "You are Annolid Bot. Be concise, practical, and return plain text answers."
         ]
+        parts.append(
+            "Use this local datetime as the source of truth for relative time "
+            f"phrases (today/tomorrow/next week): {now_iso} ({tz_name}, UTC{pretty_offset}). "
+            "Do not ask the user for today's date unless they explicitly ask for a different timezone/date reference."
+        )
         if self.enable_web_tools:
             parts.append(
                 "Web tools are enabled (`web_search`, `web_fetch`). "

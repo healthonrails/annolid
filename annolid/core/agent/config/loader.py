@@ -63,7 +63,13 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
         Path(config_path).expanduser() if config_path is not None else get_config_path()
     )
     if not path.exists():
-        return AgentConfig()
+        cfg = AgentConfig()
+        try:
+            save_config(cfg, path)
+        except OSError:
+            # Keep startup resilient even when config path is not writable.
+            pass
+        return cfg
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):

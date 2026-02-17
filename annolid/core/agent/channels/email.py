@@ -2,6 +2,7 @@ import asyncio
 import email
 import imaplib
 import smtplib
+from email.utils import parseaddr
 from email.message import EmailMessage
 from typing import Any, Awaitable, Callable, Optional
 
@@ -178,13 +179,23 @@ class EmailChannel(BaseChannel):
         body: str,
         metadata: Optional[dict[str, Any]] = None,
     ) -> bool:
-        content = f"Email received.\nFrom: {sender_email}\nSubject: {subject}\n\n{body}"
+        raw_from = str(sender_email or "").strip()
+        normalized_sender = self._normalize_sender_email(raw_from)
+        content = f"Email received.\nFrom: {raw_from}\nSubject: {subject}\n\n{body}"
         merged = dict(metadata or {})
         merged.setdefault("subject", subject)
-        merged.setdefault("sender_email", sender_email)
+        merged.setdefault("sender_email", normalized_sender)
+        merged.setdefault("raw_from", raw_from)
         return await self._handle_message(
-            sender_id=sender_email,
-            chat_id=sender_email,
+            sender_id=normalized_sender,
+            chat_id=normalized_sender,
             content=content,
             metadata=merged,
         )
+
+    def _normalize_sender_email(self, raw_from: str) -> str:
+        _, addr = parseaddr(str(raw_from or ""))
+        normalized = str(addr or "").strip().lower()
+        if normalized:
+            return normalized
+        return str(raw_from or "").strip().lower()

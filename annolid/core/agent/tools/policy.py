@@ -28,6 +28,7 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
         "video_sample_frames",
         "video_segment",
         "video_process_segments",
+        "google_calendar",
         "extract_pdf_text",
         "open_pdf",
         "extract_pdf_images",
@@ -127,7 +128,7 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "gui_start_realtime_stream",
         "gui_stop_realtime_stream",
     },
-    "group:automation": {"cron", "spawn"},
+    "group:automation": {"cron", "spawn", "google_calendar"},
     "group:messaging": {"message"},
     "group:video": {
         "video_info",

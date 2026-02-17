@@ -167,3 +167,40 @@ def test_policy_group_fs_includes_rename_file() -> None:
         "rename_file",
         "list_dir",
     }
+
+
+def test_policy_coding_profile_includes_google_calendar() -> None:
+    cfg = ToolsConfig(profile="coding")
+    all_tools = [
+        "read_file",
+        "exec",
+        "google_calendar",
+        "gui_context",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="openrouter",
+        model="gpt-5-mini",
+    )
+    assert "google_calendar" in resolved.allowed_tools
+
+
+def test_policy_group_automation_includes_google_calendar() -> None:
+    cfg = ToolsConfig(
+        profile="minimal",
+        allow=["group:automation"],
+    )
+    all_tools = [
+        "cron",
+        "spawn",
+        "google_calendar",
+        "exec",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="ollama",
+        model="qwen3",
+    )
+    assert resolved.allowed_tools == {"cron", "spawn", "google_calendar"}

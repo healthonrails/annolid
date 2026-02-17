@@ -203,6 +203,57 @@ class WhatsAppChannelConfig:
 
 
 @dataclass
+class CalendarToolConfig:
+    enabled: bool = False
+    provider: str = "google"
+    credentials_file: str = "~/.annolid/agent/google_calendar_credentials.json"
+    token_file: str = "~/.annolid/agent/google_calendar_token.json"
+    calendar_id: str = "primary"
+    timezone: str = ""
+    default_event_duration_minutes: int = 30
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "CalendarToolConfig":
+        payload = data or {}
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            provider=str(payload.get("provider", "google") or "google"),
+            credentials_file=str(
+                payload.get("credentials_file")
+                or payload.get("credentialsFile")
+                or "~/.annolid/agent/google_calendar_credentials.json"
+            ),
+            token_file=str(
+                payload.get("token_file")
+                or payload.get("tokenFile")
+                or "~/.annolid/agent/google_calendar_token.json"
+            ),
+            calendar_id=str(
+                payload.get("calendar_id") or payload.get("calendarId") or "primary"
+            ),
+            timezone=str(payload.get("timezone", "") or ""),
+            default_event_duration_minutes=int(
+                payload.get(
+                    "default_event_duration_minutes",
+                    payload.get("defaultEventDurationMinutes", 30),
+                )
+                or 30
+            ),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "provider": self.provider,
+            "credentials_file": self.credentials_file,
+            "token_file": self.token_file,
+            "calendar_id": self.calendar_id,
+            "timezone": self.timezone,
+            "default_event_duration_minutes": self.default_event_duration_minutes,
+        }
+
+
+@dataclass
 class ProviderConfig:
     api_key: str = ""
     api_base: str = ""
@@ -383,6 +434,7 @@ class ToolsConfig:
     mcp_servers: Dict[str, MCPServerConfig] = field(default_factory=dict)
     email: EmailChannelConfig = field(default_factory=EmailChannelConfig)
     whatsapp: WhatsAppChannelConfig = field(default_factory=WhatsAppChannelConfig)
+    calendar: CalendarToolConfig = field(default_factory=CalendarToolConfig)
     by_provider: Dict[str, ToolPolicyConfig] = field(default_factory=dict)
 
     @classmethod
@@ -429,6 +481,7 @@ class ToolsConfig:
                 )
         email_cfg = EmailChannelConfig.from_dict(payload.get("email"))
         whatsapp_cfg = WhatsAppChannelConfig.from_dict(payload.get("whatsapp"))
+        calendar_cfg = CalendarToolConfig.from_dict(payload.get("calendar"))
         exec_cfg = ExecToolConfig.from_dict(payload.get("exec"))
         return cls(
             exec=exec_cfg,
@@ -440,6 +493,7 @@ class ToolsConfig:
             mcp_servers=mcp_servers,
             email=email_cfg,
             whatsapp=whatsapp_cfg,
+            calendar=calendar_cfg,
             by_provider=by_provider,
         )
 
@@ -453,6 +507,7 @@ class ToolsConfig:
             "deny": list(self.deny),
             "email": self.email.to_dict(),
             "whatsapp": self.whatsapp.to_dict(),
+            "calendar": self.calendar.to_dict(),
             "mcp_servers": {
                 name: cfg.to_dict() for name, cfg in self.mcp_servers.items()
             },

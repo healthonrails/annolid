@@ -21,6 +21,7 @@ from .embedding import EmbeddingResult, EmbeddingTool
 from .email import EmailTool
 from .function_base import FunctionTool
 from .cron import CronTool
+from .calendar import GoogleCalendarTool
 from .filesystem import (
     EditFileTool,
     ListDirTool,
@@ -156,6 +157,7 @@ __all__ = [
     "MessageTool",
     "SpawnTool",
     "CronTool",
+    "GoogleCalendarTool",
     "register_nanobot_style_tools",
     "register_annolid_gui_tools",
     "FileArtifactStore",

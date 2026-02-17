@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 import re
 
+from annolid.core.agent.config import CalendarToolConfig
 from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_builtin import (
     CodeExplainTool,
@@ -671,6 +672,24 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("cron")
     assert registry.has("download_url")
     assert registry.has("download_pdf")
+
+
+def test_register_nanobot_style_tools_skips_calendar_when_deps_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = FunctionToolRegistry()
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.nanobot.GoogleCalendarTool.is_available",
+        lambda: False,
+    )
+    asyncio.run(
+        register_nanobot_style_tools(
+            registry,
+            allowed_dir=tmp_path,
+            calendar_cfg=CalendarToolConfig(enabled=True, provider="google"),
+        )
+    )
+    assert registry.has("google_calendar") is False
 
 
 def test_mcp_tool_wrapper_sanitizes_name_and_schema() -> None:
