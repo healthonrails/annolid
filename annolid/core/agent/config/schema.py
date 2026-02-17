@@ -44,7 +44,7 @@ class EmailChannelConfig:
     imap_port: int = 993
     user: str = ""
     password: str = ""
-    polling_interval: int = 60
+    polling_interval: int = 300
     allow_from: list[str] = field(default_factory=list)
 
     @classmethod
@@ -63,7 +63,7 @@ class EmailChannelConfig:
             user=str(payload.get("user") or ""),
             password=str(payload.get("password") or ""),
             polling_interval=int(
-                payload.get("polling_interval") or payload.get("pollingInterval", 60)
+                payload.get("polling_interval") or payload.get("pollingInterval", 300)
             ),
             allow_from=list(payload.get("allow_from") or payload.get("allowFrom", [])),
         )

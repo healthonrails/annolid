@@ -1,6 +1,7 @@
 import asyncio
 import email
 import imaplib
+import os
 import smtplib
 from email.utils import parseaddr
 from email.message import EmailMessage
@@ -50,8 +51,12 @@ class EmailChannel(BaseChannel):
             self._poll_task = None
 
     async def _poll_loop(self) -> None:
-        interval = self.config.get("polling_interval", 60)
+        last_interval: Optional[int] = None
         while self._running:
+            interval = self._resolve_poll_interval_seconds()
+            if last_interval != interval:
+                logger.info("Email IMAP poll interval set to %ss", interval)
+                last_interval = interval
             try:
                 await self._poll_imap()
             except Exception as exc:
@@ -62,6 +67,21 @@ class EmailChannel(BaseChannel):
                 break
             except asyncio.TimeoutError:
                 continue
+
+    def _resolve_poll_interval_seconds(self) -> int:
+        raw_cfg = self.config.get("polling_interval", 300)
+        env_raw = (
+            os.getenv("ANNOLID_EMAIL_POLL_INTERVAL_SECONDS")
+            or os.getenv("NANOBOT_EMAIL_POLL_INTERVAL_SECONDS")
+            or ""
+        ).strip()
+        raw = env_raw if env_raw else raw_cfg
+        try:
+            seconds = int(raw)
+        except (TypeError, ValueError):
+            seconds = 300
+        # Keep a sane lower bound to avoid hammering IMAP servers.
+        return max(10, seconds)
 
     async def _poll_imap(self) -> None:
         imap_host = str(self.config.get("imap_host") or "").strip()

@@ -113,6 +113,12 @@ def _build_default_settings() -> Dict[str, Any]:
             "memory_window": 50,
             "fast_mode_timeout_seconds": 60,
             "fallback_retry_timeout_seconds": 20,
+            "loop_llm_timeout_seconds": 60,
+            "loop_llm_timeout_seconds_no_tools": 40,
+            "ollama_tool_timeout_seconds": 45,
+            "ollama_plain_timeout_seconds": 25,
+            "ollama_plain_recovery_timeout_seconds": 12,
+            "ollama_plain_recovery_nudge_timeout_seconds": 8,
         },
         "profiles": {
             "caption": {"provider": "ollama"},

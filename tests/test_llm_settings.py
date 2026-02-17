@@ -72,6 +72,21 @@ def test_resolve_agent_runtime_config_prefers_profile_overrides(
     assert global_cfg.memory_window == 80
 
 
+def test_default_settings_include_agent_runtime_timeout_keys() -> None:
+    from annolid.utils import llm_settings as mod
+
+    settings = mod.default_settings()
+    agent = dict(settings.get("agent") or {})
+    assert agent.get("fast_mode_timeout_seconds") == 60
+    assert agent.get("fallback_retry_timeout_seconds") == 20
+    assert agent.get("loop_llm_timeout_seconds") == 60
+    assert agent.get("loop_llm_timeout_seconds_no_tools") == 40
+    assert agent.get("ollama_tool_timeout_seconds") == 45
+    assert agent.get("ollama_plain_timeout_seconds") == 25
+    assert agent.get("ollama_plain_recovery_timeout_seconds") == 12
+    assert agent.get("ollama_plain_recovery_nudge_timeout_seconds") == 8
+
+
 def test_save_llm_settings_scrubs_nested_secrets(tmp_path: Path, monkeypatch) -> None:
     from annolid.utils import llm_settings as mod
 

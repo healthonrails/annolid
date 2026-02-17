@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 import importlib
@@ -597,6 +598,67 @@ class StreamingChatTask(QRunnable):
         # Keep a sane range to avoid accidental extreme values.
         return max(10.0, min(300.0, value))
 
+    def _agent_loop_llm_timeout_seconds(self, *, prompt_needs_tools: bool) -> float:
+        agent_cfg = self.settings.get("agent", {})
+        key = (
+            "loop_llm_timeout_seconds"
+            if prompt_needs_tools
+            else "loop_llm_timeout_seconds_no_tools"
+        )
+        default = 60.0 if prompt_needs_tools else 40.0
+        raw = default
+        if isinstance(agent_cfg, dict):
+            raw = agent_cfg.get(key, agent_cfg.get("loop_llm_timeout_seconds", default))
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = default
+        return max(5.0, min(300.0, value))
+
+    def _ollama_agent_tool_timeout_seconds(self) -> float:
+        agent_cfg = self.settings.get("agent", {})
+        raw = 45.0
+        if isinstance(agent_cfg, dict):
+            raw = agent_cfg.get("ollama_tool_timeout_seconds", raw)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 45.0
+        return max(5.0, min(180.0, value))
+
+    def _ollama_agent_plain_timeout_seconds(self) -> float:
+        agent_cfg = self.settings.get("agent", {})
+        raw = 25.0
+        if isinstance(agent_cfg, dict):
+            raw = agent_cfg.get("ollama_plain_timeout_seconds", raw)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 25.0
+        return max(5.0, min(180.0, value))
+
+    def _ollama_plain_recovery_timeout_seconds(self) -> float:
+        agent_cfg = self.settings.get("agent", {})
+        raw = 12.0
+        if isinstance(agent_cfg, dict):
+            raw = agent_cfg.get("ollama_plain_recovery_timeout_seconds", raw)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 12.0
+        return max(3.0, min(90.0, value))
+
+    def _ollama_plain_recovery_nudge_timeout_seconds(self) -> float:
+        agent_cfg = self.settings.get("agent", {})
+        raw = 8.0
+        if isinstance(agent_cfg, dict):
+            raw = agent_cfg.get("ollama_plain_recovery_nudge_timeout_seconds", raw)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 8.0
+        return max(2.0, min(90.0, value))
+
     def _fallback_retry_timeout_seconds(self) -> float:
         agent_cfg = self.settings.get("agent", {})
         raw = 20.0
@@ -786,6 +848,17 @@ class StreamingChatTask(QRunnable):
                     self.model,
                 )
 
+        logger.info(
+            "annolid-bot runtime timeouts session=%s model=%s loop_llm_s=%.1f ollama_tool_s=%.1f ollama_plain_s=%.1f recover_s=%.1f recover_nudge_s=%.1f",
+            self.session_id,
+            self.model,
+            self._agent_loop_llm_timeout_seconds(prompt_needs_tools=prompt_needs_tools),
+            self._ollama_agent_tool_timeout_seconds(),
+            self._ollama_agent_plain_timeout_seconds(),
+            self._ollama_plain_recovery_timeout_seconds(),
+            self._ollama_plain_recovery_nudge_timeout_seconds(),
+        )
+
         loop = AgentLoop(
             tools=context.tools,
             llm_callable=self._resolve_loop_llm_callable(),
@@ -796,6 +869,9 @@ class StreamingChatTask(QRunnable):
             workspace=str(context.workspace),
             allowed_read_roots=context.allowed_read_roots,
             mcp_servers=mcp_servers,
+            llm_timeout_seconds=self._agent_loop_llm_timeout_seconds(
+                prompt_needs_tools=prompt_needs_tools
+            ),
         )
         media: Optional[List[str]] = None
         if self.image_path and os.path.exists(self.image_path):
@@ -810,7 +886,11 @@ class StreamingChatTask(QRunnable):
             system_prompt=context.system_prompt,
         )
         self._emit_progress("Received model response")
-        text, used_recovery, used_direct_gui_fallback = self._finalize_agent_text(
+        (
+            text,
+            used_recovery,
+            used_direct_gui_fallback,
+        ) = await self._finalize_agent_text_async(
             result,
             tools=context.tools,
         )
@@ -1045,13 +1125,22 @@ class StreamingChatTask(QRunnable):
         *,
         tools: Optional[FunctionToolRegistry] = None,
     ) -> Tuple[str, bool, bool]:
+        # Backward-compatible sync entrypoint used by tests and legacy callers.
+        return self._run_async(self._finalize_agent_text_async(result, tools=tools))
+
+    async def _finalize_agent_text_async(
+        self,
+        result: Any,
+        *,
+        tools: Optional[FunctionToolRegistry] = None,
+    ) -> Tuple[str, bool, bool]:
         text = str(getattr(result, "content", "") or "").strip()
         tool_run_count = len(getattr(result, "tool_runs", ()) or ())
         used_recovery = False
         used_direct_gui_fallback = False
         direct_gui_text = ""
         if self.provider == "ollama" and tool_run_count == 0:
-            direct_gui_text = self._maybe_run_direct_gui_tool_from_prompt(self.prompt)
+            direct_gui_text = await self._execute_direct_gui_command(self.prompt)
             used_direct_gui_fallback = bool(direct_gui_text)
             if used_direct_gui_fallback:
                 logger.info(
@@ -1074,13 +1163,15 @@ class StreamingChatTask(QRunnable):
                 if open_page_fallback:
                     text = open_page_fallback
                 else:
-                    browser_fallback = self._try_browser_search_fallback(
+                    browser_fallback = await self._try_browser_search_fallback(
                         self.prompt, tools
                     )
                     if browser_fallback:
                         text = browser_fallback
                     else:
-                        web_fallback = self._try_web_fetch_fallback(self.prompt, tools)
+                        web_fallback = await self._try_web_fetch_fallback(
+                            self.prompt, tools
+                        )
                         if web_fallback:
                             text = web_fallback
         if self._looks_like_local_access_refusal(
@@ -1649,11 +1740,10 @@ class StreamingChatTask(QRunnable):
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(awaitable)
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(awaitable)
-        finally:
-            loop.close()
+        # A loop is already running in this thread. Run the awaitable in a
+        # dedicated worker thread to avoid nested-loop RuntimeError.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(asyncio.run, awaitable).result()
 
     @staticmethod
     def _extract_path_candidates(raw: str) -> List[str]:
@@ -1699,8 +1789,6 @@ class StreamingChatTask(QRunnable):
         )
 
     def _maybe_run_direct_gui_tool_from_prompt(self, prompt: str) -> str:
-        # This method is called from _finalize_agent_text, which is not async.
-        # So we need to run the async _execute_direct_gui_command synchronously.
         return self._run_async(self._execute_direct_gui_command(prompt))
 
     async def _execute_direct_gui_command(self, prompt: str) -> str:
@@ -1821,7 +1909,7 @@ class StreamingChatTask(QRunnable):
                 break
         return " ".join(picked).strip()
 
-    def _try_web_fetch_fallback(
+    async def _try_web_fetch_fallback(
         self,
         prompt: str,
         tools: Optional[FunctionToolRegistry],
@@ -1837,11 +1925,9 @@ class StreamingChatTask(QRunnable):
         target_url = urls[0]
         try:
             self._emit_progress("Retrying with web_fetch")
-            payload_raw = self._run_async(
-                registry.execute(
-                    "web_fetch",
-                    {"url": target_url, "extractMode": "text", "maxChars": 12000},
-                )
+            payload_raw = await registry.execute(
+                "web_fetch",
+                {"url": target_url, "extractMode": "text", "maxChars": 12000},
             )
         except Exception:
             return ""
@@ -1887,7 +1973,7 @@ class StreamingChatTask(QRunnable):
                 return text_value
         return ""
 
-    def _try_browser_search_fallback(
+    async def _try_browser_search_fallback(
         self,
         prompt: str,
         tools: Optional[FunctionToolRegistry],
@@ -1913,11 +1999,9 @@ class StreamingChatTask(QRunnable):
         ]
         try:
             self._emit_progress("Retrying with browser search workflow")
-            payload_raw = self._run_async(
-                registry.execute(
-                    "gui_web_run_steps",
-                    {"steps": steps, "stop_on_error": True, "max_steps": 12},
-                )
+            payload_raw = await registry.execute(
+                "gui_web_run_steps",
+                {"steps": steps, "stop_on_error": True, "max_steps": 12},
             )
         except Exception:
             return ""
@@ -2673,6 +2757,8 @@ class StreamingChatTask(QRunnable):
             settings=self.settings,
             logger=logger,
             import_module=importlib.import_module,
+            first_timeout_s=self._ollama_plain_recovery_timeout_seconds(),
+            nudge_timeout_s=self._ollama_plain_recovery_nudge_timeout_seconds(),
         )
 
     def _build_compact_system_prompt(
@@ -2893,6 +2979,8 @@ class StreamingChatTask(QRunnable):
             prompt_may_need_tools=self._prompt_may_need_tools,
             logger=logger,
             import_module=importlib.import_module,
+            tool_request_timeout_s=self._ollama_agent_tool_timeout_seconds(),
+            plain_request_timeout_s=self._ollama_agent_plain_timeout_seconds(),
         )
 
     @classmethod

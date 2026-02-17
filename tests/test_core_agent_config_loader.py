@@ -21,8 +21,10 @@ def test_agent_config_load_creates_default_template(tmp_path: Path) -> None:
     payload = json.loads(cfg_path.read_text(encoding="utf-8"))
     tools = payload.get("tools") or {}
     calendar = tools.get("calendar") or {}
+    email = tools.get("email") or {}
     assert "enabled" in calendar
     assert "provider" in calendar
+    assert email.get("polling_interval", email.get("pollingInterval")) == 300
 
 
 def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:

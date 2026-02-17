@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import AsyncExitStack
 import json
 from annolid.utils.logger import logger
@@ -168,6 +169,7 @@ class AgentLoop:
         subagent_manager: Optional["SubagentManager"] = None,
         mcp_servers: Optional[Dict[str, Any]] = None,
         interleave_post_tool_guidance: bool = True,
+        llm_timeout_seconds: Optional[float] = None,
     ) -> None:
         self._tools = tools
         runtime_cfg = resolve_agent_runtime_config(profile=profile)
@@ -192,6 +194,11 @@ class AgentLoop:
         self._mcp_stack: Optional[AsyncExitStack] = None
         self._mcp_connected = False
         self._interleave_post_tool_guidance = bool(interleave_post_tool_guidance)
+        self._llm_timeout_seconds = (
+            float(llm_timeout_seconds)
+            if llm_timeout_seconds is not None and float(llm_timeout_seconds) > 0
+            else None
+        )
         self._provider_impl: Optional[Any] = None
 
         self._provider = provider
@@ -328,11 +335,17 @@ class AgentLoop:
                     messages=messages,
                 )
                 llm_started = time.perf_counter()
-                response = await self._llm_callable(
+                llm_call = self._llm_callable(
                     messages,
                     tool_definitions,
                     self.model,
                 )
+                if self._llm_timeout_seconds is not None:
+                    response = await asyncio.wait_for(
+                        llm_call, timeout=self._llm_timeout_seconds
+                    )
+                else:
+                    response = await llm_call
                 llm_elapsed_ms = (time.perf_counter() - llm_started) * 1000.0
                 llm_total_ms += llm_elapsed_ms
                 assistant_text = str(response.get("content") or "")
@@ -847,6 +860,7 @@ class AgentLoop:
                     workspace=self._workspace,
                     allowed_read_roots=self._allowed_read_roots,
                     mcp_servers=self._mcp_servers,
+                    llm_timeout_seconds=self._llm_timeout_seconds,
                 )
 
             return _create()

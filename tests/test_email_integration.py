@@ -9,6 +9,34 @@ from annolid.core.agent.channels.email import EmailChannel
 from annolid.core.agent.tools.email import EmailTool
 
 
+def test_email_channel_poll_interval_resolution_uses_config_and_env(monkeypatch):
+    bus = MessageBus()
+    channel = EmailChannel({"polling_interval": 300}, bus)
+
+    monkeypatch.delenv("ANNOLID_EMAIL_POLL_INTERVAL_SECONDS", raising=False)
+    monkeypatch.delenv("NANOBOT_EMAIL_POLL_INTERVAL_SECONDS", raising=False)
+    assert channel._resolve_poll_interval_seconds() == 300
+
+    monkeypatch.setenv("ANNOLID_EMAIL_POLL_INTERVAL_SECONDS", "45")
+    assert channel._resolve_poll_interval_seconds() == 45
+
+    monkeypatch.delenv("ANNOLID_EMAIL_POLL_INTERVAL_SECONDS", raising=False)
+    monkeypatch.setenv("NANOBOT_EMAIL_POLL_INTERVAL_SECONDS", "75")
+    assert channel._resolve_poll_interval_seconds() == 75
+
+
+def test_email_channel_poll_interval_resolution_clamps_invalid_values(monkeypatch):
+    bus = MessageBus()
+    channel = EmailChannel({"polling_interval": "bad-value"}, bus)
+
+    monkeypatch.delenv("ANNOLID_EMAIL_POLL_INTERVAL_SECONDS", raising=False)
+    monkeypatch.delenv("NANOBOT_EMAIL_POLL_INTERVAL_SECONDS", raising=False)
+    assert channel._resolve_poll_interval_seconds() == 300
+
+    monkeypatch.setenv("ANNOLID_EMAIL_POLL_INTERVAL_SECONDS", "1")
+    assert channel._resolve_poll_interval_seconds() == 10
+
+
 def test_email_tool_send_mocked():
     """Test EmailTool using mocked smtplib."""
 

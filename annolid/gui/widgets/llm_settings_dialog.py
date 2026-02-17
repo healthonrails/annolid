@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from qtpy import QtCore, QtWidgets
 
+from annolid.core.agent.config import load_config, save_config
 from annolid.utils.llm_settings import (
     default_settings,
     global_env_path,
@@ -43,6 +44,10 @@ class LLMSettingsDialog(QtWidgets.QDialog):
 
         self._settings = default_settings() if settings is None else settings
         self._settings = {**default_settings(), **self._settings}
+        try:
+            self._agent_config = load_config()
+        except Exception:
+            self._agent_config = None
         self._tts_settings = load_tts_settings()
         self._tts_defaults = default_tts_settings()
         self._provider_specs: Dict[str, Dict[str, Any]] = dict(
@@ -128,6 +133,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             if str(spec.get("kind") or "").strip().lower() == "ollama":
                 continue
             self._build_provider_tab(provider)
+        self._build_agent_runtime_tab()
         self._build_tts_tab()
 
         button_box = QtWidgets.QDialogButtonBox(
@@ -375,6 +381,127 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         layout.addRow("Speed:", self.tts_speed_spin)
 
         self._tabs.addTab(widget, "Text-to-Speech")
+
+    def _build_agent_runtime_tab(self) -> None:
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QFormLayout(widget)
+
+        agent_cfg = dict(self._settings.get("agent") or {})
+
+        note = QtWidgets.QLabel(
+            "Agent runtime timeout controls (seconds). Lower values fail faster."
+        )
+        note.setWordWrap(True)
+        layout.addRow(note)
+
+        def _make_spin(
+            value: float,
+            *,
+            minimum: float = 2.0,
+            maximum: float = 300.0,
+            step: float = 1.0,
+            decimals: int = 0,
+        ) -> QtWidgets.QDoubleSpinBox:
+            spin = QtWidgets.QDoubleSpinBox(widget)
+            spin.setRange(minimum, maximum)
+            spin.setSingleStep(step)
+            spin.setDecimals(decimals)
+            spin.setValue(float(value))
+            return spin
+
+        self.fast_mode_timeout_spin = _make_spin(
+            agent_cfg.get("fast_mode_timeout_seconds", 60),
+            minimum=10.0,
+            maximum=300.0,
+        )
+        layout.addRow("Fast mode timeout:", self.fast_mode_timeout_spin)
+
+        self.fallback_retry_timeout_spin = _make_spin(
+            agent_cfg.get("fallback_retry_timeout_seconds", 20),
+            minimum=5.0,
+            maximum=60.0,
+        )
+        layout.addRow("Fallback retry timeout:", self.fallback_retry_timeout_spin)
+
+        self.loop_llm_timeout_spin = _make_spin(
+            agent_cfg.get("loop_llm_timeout_seconds", 60),
+            minimum=5.0,
+            maximum=300.0,
+        )
+        layout.addRow("Agent loop LLM timeout:", self.loop_llm_timeout_spin)
+
+        self.loop_llm_timeout_no_tools_spin = _make_spin(
+            agent_cfg.get("loop_llm_timeout_seconds_no_tools", 40),
+            minimum=5.0,
+            maximum=300.0,
+        )
+        layout.addRow(
+            "Agent loop timeout (no tools):",
+            self.loop_llm_timeout_no_tools_spin,
+        )
+
+        self.ollama_tool_timeout_spin = _make_spin(
+            agent_cfg.get("ollama_tool_timeout_seconds", 45),
+            minimum=5.0,
+            maximum=180.0,
+        )
+        layout.addRow("Ollama tool request timeout:", self.ollama_tool_timeout_spin)
+
+        self.ollama_plain_timeout_spin = _make_spin(
+            agent_cfg.get("ollama_plain_timeout_seconds", 25),
+            minimum=5.0,
+            maximum=180.0,
+        )
+        layout.addRow("Ollama plain request timeout:", self.ollama_plain_timeout_spin)
+
+        self.ollama_plain_recovery_timeout_spin = _make_spin(
+            agent_cfg.get("ollama_plain_recovery_timeout_seconds", 12),
+            minimum=3.0,
+            maximum=90.0,
+        )
+        layout.addRow(
+            "Ollama recovery timeout:",
+            self.ollama_plain_recovery_timeout_spin,
+        )
+
+        self.ollama_plain_recovery_nudge_timeout_spin = _make_spin(
+            agent_cfg.get("ollama_plain_recovery_nudge_timeout_seconds", 8),
+            minimum=2.0,
+            maximum=90.0,
+        )
+        layout.addRow(
+            "Ollama recovery nudge timeout:",
+            self.ollama_plain_recovery_nudge_timeout_spin,
+        )
+
+        email_note = QtWidgets.QLabel(
+            "Email polling interval controls background IMAP checks."
+        )
+        email_note.setWordWrap(True)
+        email_note.setStyleSheet("color: #6b7280;")
+        layout.addRow(email_note)
+
+        current_poll = 300
+        try:
+            if self._agent_config is not None:
+                current_poll = int(self._agent_config.tools.email.polling_interval)
+        except Exception:
+            current_poll = 300
+        self.email_poll_interval_spin = QtWidgets.QSpinBox(widget)
+        self.email_poll_interval_spin.setRange(10, 3600)
+        self.email_poll_interval_spin.setSingleStep(10)
+        self.email_poll_interval_spin.setValue(max(10, current_poll))
+        self.email_poll_interval_spin.setSuffix(" s")
+        layout.addRow("Email IMAP poll interval:", self.email_poll_interval_spin)
+
+        env_note = QtWidgets.QLabel(
+            "Also exported to ANNOLID_EMAIL_POLL_INTERVAL_SECONDS for runtime override."
+        )
+        env_note.setWordWrap(True)
+        env_note.setStyleSheet("color: #6b7280;")
+        layout.addRow(env_note)
+
+        self._tabs.addTab(widget, "Agent Runtime")
 
     @QtCore.Slot()
     def _browse_chatterbox_voice_prompt(self) -> None:
@@ -910,6 +1037,47 @@ class LLMSettingsDialog(QtWidgets.QDialog):
                 updated["last_models"][active_provider] = str(
                     models_for_provider[0]
                 ).strip()
+
+        agent_block = dict(updated.get("agent") or {})
+        agent_block["fast_mode_timeout_seconds"] = float(
+            self.fast_mode_timeout_spin.value()
+        )
+        agent_block["fallback_retry_timeout_seconds"] = float(
+            self.fallback_retry_timeout_spin.value()
+        )
+        agent_block["loop_llm_timeout_seconds"] = float(
+            self.loop_llm_timeout_spin.value()
+        )
+        agent_block["loop_llm_timeout_seconds_no_tools"] = float(
+            self.loop_llm_timeout_no_tools_spin.value()
+        )
+        agent_block["ollama_tool_timeout_seconds"] = float(
+            self.ollama_tool_timeout_spin.value()
+        )
+        agent_block["ollama_plain_timeout_seconds"] = float(
+            self.ollama_plain_timeout_spin.value()
+        )
+        agent_block["ollama_plain_recovery_timeout_seconds"] = float(
+            self.ollama_plain_recovery_timeout_spin.value()
+        )
+        agent_block["ollama_plain_recovery_nudge_timeout_seconds"] = float(
+            self.ollama_plain_recovery_nudge_timeout_spin.value()
+        )
+        updated["agent"] = agent_block
+        if self._agent_config is not None:
+            try:
+                poll_seconds = int(self.email_poll_interval_spin.value())
+                self._agent_config.tools.email.polling_interval = max(10, poll_seconds)
+                save_config(self._agent_config)
+                os.environ["ANNOLID_EMAIL_POLL_INTERVAL_SECONDS"] = str(
+                    self._agent_config.tools.email.polling_interval
+                )
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Could not persist email poll interval",
+                    f"Failed to update agent config with email polling interval.\n\n{exc}",
+                )
 
         self._tts_settings = {
             "engine": self.tts_engine_combo.currentData() or "auto",

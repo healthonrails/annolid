@@ -275,6 +275,8 @@ def recover_with_plain_ollama_reply(
     settings: Dict[str, Any],
     logger: Any,
     import_module: Optional[Callable[[str], Any]] = None,
+    first_timeout_s: float = 12.0,
+    nudge_timeout_s: float = 8.0,
 ) -> str:
     host = str(settings.get("ollama", {}).get("host") or "").strip()
     import_fn = import_module or importlib.import_module
@@ -325,8 +327,12 @@ def recover_with_plain_ollama_reply(
                 os.environ.pop("OLLAMA_HOST", None)
 
     try:
+        first_timeout = max(2.0, float(first_timeout_s))
+        nudge_timeout = max(2.0, float(nudge_timeout_s))
         with ThreadPoolExecutor(max_workers=1) as executor:
-            text_stream = executor.submit(_run_stream_once, False).result(timeout=35)
+            text_stream = executor.submit(_run_stream_once, False).result(
+                timeout=first_timeout
+            )
         logger.info(
             "annolid-bot plain ollama stream recovery model=%s content_chars=%d",
             model,
@@ -336,7 +342,7 @@ def recover_with_plain_ollama_reply(
             return text_stream
         with ThreadPoolExecutor(max_workers=1) as executor:
             text_stream_nudge = executor.submit(_run_stream_once, True).result(
-                timeout=35
+                timeout=nudge_timeout
             )
         logger.info(
             "annolid-bot plain ollama stream-nudge recovery model=%s content_chars=%d",
@@ -369,6 +375,8 @@ def build_ollama_llm_callable(
     prompt_may_need_tools: Callable[[str], bool],
     logger: Any,
     import_module: Optional[Callable[[str], Any]] = None,
+    tool_request_timeout_s: float = 45.0,
+    plain_request_timeout_s: float = 25.0,
 ) -> Callable[
     [List[Dict[str, Any]], List[Dict[str, Any]], str], Awaitable[Dict[str, Any]]
 ]:
@@ -395,6 +403,8 @@ def build_ollama_llm_callable(
         tools: List[Dict[str, Any]],
         model_id: str,
     ) -> Dict[str, Any]:
+        tool_timeout = max(5.0, float(tool_request_timeout_s))
+        plain_timeout = max(5.0, float(plain_request_timeout_s))
         prepared = normalize_messages(messages)
         supports_tools = _OLLAMA_TOOL_SUPPORT_CACHE.get(model_id, True)
         if tools and not supports_tools and prompt_may_need_tools(prompt):
@@ -462,7 +472,8 @@ def build_ollama_llm_callable(
 
         try:
             response = await asyncio.wait_for(
-                asyncio.to_thread(_invoke_chat_stream, effective_tools), 60
+                asyncio.to_thread(_invoke_chat_stream, effective_tools),
+                tool_timeout if effective_tools is not None else plain_timeout,
             )
         except Exception as exc:
             msg = str(exc)
@@ -474,7 +485,7 @@ def build_ollama_llm_callable(
                 )
                 _OLLAMA_TOOL_SUPPORT_CACHE[model_id] = False
                 response = await asyncio.wait_for(
-                    asyncio.to_thread(_invoke_chat_stream, None), 60
+                    asyncio.to_thread(_invoke_chat_stream, None), plain_timeout
                 )
             else:
                 raise
@@ -499,7 +510,7 @@ def build_ollama_llm_callable(
                 )
                 _OLLAMA_TOOL_SUPPORT_CACHE[model_id] = False
                 response2 = await asyncio.wait_for(
-                    asyncio.to_thread(_invoke_chat_stream, None), 60
+                    asyncio.to_thread(_invoke_chat_stream, None), plain_timeout
                 )
                 msg2 = dict(response2.get("message") or {})
                 tool_calls2 = _coerce_tool_calls(msg2.get("tool_calls"))
