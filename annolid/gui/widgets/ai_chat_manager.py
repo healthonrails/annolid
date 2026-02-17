@@ -129,27 +129,30 @@ class AIChatManager(QtCore.QObject):
             async def _async_start():
                 try:
                     config = load_config()
+                    whatsapp_enabled = bool(config.tools.whatsapp.enabled)
+                    whatsapp_auto_start = bool(config.tools.whatsapp.auto_start)
+                    whatsapp_start_runtime = whatsapp_enabled and whatsapp_auto_start
                     logger.info(
-                        "Background services config: email_enabled=%s whatsapp_enabled=%s bridge_mode=%s webhook_enabled=%s",
+                        "Background services config: email_enabled=%s whatsapp_enabled=%s whatsapp_auto_start=%s bridge_mode=%s webhook_enabled=%s",
                         bool(config.tools.email.enabled),
-                        bool(config.tools.whatsapp.enabled),
+                        whatsapp_enabled,
+                        whatsapp_auto_start,
                         str(config.tools.whatsapp.bridge_mode or "python"),
                         bool(config.tools.whatsapp.webhook_enabled),
                     )
-                    if not (
-                        config.tools.email.enabled or config.tools.whatsapp.enabled
-                    ):
+                    if not (config.tools.email.enabled or whatsapp_start_runtime):
                         logger.info("Background services disabled by config")
                         return
 
                     self._background_bus = MessageBus()
                     whatsapp_cfg = config.tools.whatsapp.to_dict()
+                    whatsapp_cfg["enabled"] = bool(whatsapp_start_runtime)
                     bridge_mode = (
                         str(config.tools.whatsapp.bridge_mode or "python")
                         .strip()
                         .lower()
                     )
-                    if config.tools.whatsapp.enabled and bridge_mode == "python":
+                    if whatsapp_start_runtime and bridge_mode == "python":
                         bridge = WhatsAppPythonBridge(
                             host=config.tools.whatsapp.bridge_host,
                             port=int(config.tools.whatsapp.bridge_port),
@@ -195,6 +198,7 @@ class AIChatManager(QtCore.QObject):
                     await self._bus_service.start()
                     if (
                         config.tools.whatsapp.webhook_enabled
+                        and whatsapp_start_runtime
                         and bridge_mode != "python"
                         and not str(whatsapp_cfg.get("bridge_url", "")).strip()
                     ):
@@ -226,11 +230,15 @@ class AIChatManager(QtCore.QObject):
                             logger.warning(
                                 "WhatsApp webhook requested but whatsapp channel is not initialized"
                             )
-                    elif config.tools.whatsapp.enabled and bridge_mode != "python":
+                    elif whatsapp_start_runtime and bridge_mode != "python":
                         logger.info(
                             "WhatsApp webhook server not started (webhook_enabled=%s bridge_url=%s)",
                             bool(config.tools.whatsapp.webhook_enabled),
                             str(whatsapp_cfg.get("bridge_url", "")),
+                        )
+                    elif whatsapp_enabled and not whatsapp_auto_start:
+                        logger.info(
+                            "WhatsApp is configured but auto_start=false; skipping WhatsApp startup"
                         )
 
                     self._channel_start_task = asyncio.create_task(

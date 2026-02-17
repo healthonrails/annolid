@@ -37,6 +37,7 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
         deny=["gui_set_chat_model"],
     )
     cfg.tools.whatsapp.enabled = True
+    cfg.tools.whatsapp.auto_start = False
     cfg.tools.whatsapp.bridge_mode = "python"
     cfg.tools.whatsapp.bridge_url = "ws://127.0.0.1:3001"
     cfg.tools.whatsapp.bridge_host = "127.0.0.1"
@@ -72,6 +73,7 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     assert "ollama:glm-5:cloud" in loaded.tools.by_provider
     assert loaded.tools.by_provider["ollama:glm-5:cloud"].profile == "minimal"
     assert loaded.tools.whatsapp.enabled is True
+    assert loaded.tools.whatsapp.auto_start is False
     assert loaded.tools.whatsapp.bridge_mode == "python"
     assert loaded.tools.whatsapp.bridge_url == "ws://127.0.0.1:3001"
     assert loaded.tools.whatsapp.bridge_host == "127.0.0.1"

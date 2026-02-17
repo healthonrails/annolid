@@ -85,6 +85,7 @@ class EmailChannelConfig:
 @dataclass
 class WhatsAppChannelConfig:
     enabled: bool = False
+    auto_start: bool = True
     bridge_mode: str = "python"
     bridge_url: str = ""
     bridge_host: str = "127.0.0.1"
@@ -110,6 +111,7 @@ class WhatsAppChannelConfig:
         payload = data or {}
         return cls(
             enabled=bool(payload.get("enabled", False)),
+            auto_start=bool(payload.get("auto_start", payload.get("autoStart", True))),
             bridge_mode=str(
                 payload.get("bridge_mode") or payload.get("bridgeMode") or "python"
             ),
@@ -177,6 +179,7 @@ class WhatsAppChannelConfig:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "enabled": self.enabled,
+            "auto_start": self.auto_start,
             "bridge_mode": self.bridge_mode,
             "bridge_url": self.bridge_url,
             "bridge_host": self.bridge_host,
