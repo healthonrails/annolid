@@ -58,7 +58,7 @@ def test_plain_mode_fallback_persists_turn(tmp_path: Path, monkeypatch) -> None:
         AgentSessionManager(sessions_dir=tmp_path / "sessions")
     )
     task = StreamingChatTask(
-        prompt="weather?",
+        prompt="hello",
         widget=None,
         provider="ollama",
         model="m",
@@ -67,6 +67,8 @@ def test_plain_mode_fallback_persists_turn(tmp_path: Path, monkeypatch) -> None:
     )
     monkeypatch.setattr(task, "_emit_final", lambda message, is_error: None)
     monkeypatch.setattr(task, "_recover_with_plain_ollama_reply", lambda: "sunny")
+    # Keep this test independent from evolving prompt/tool-intent heuristics.
+    monkeypatch.setattr(task, "_prompt_may_need_tools", lambda _prompt: False)
     ai_chat_backend._OLLAMA_FORCE_PLAIN_CACHE["m"] = True
     try:
         task._run_agent_loop()
@@ -76,7 +78,7 @@ def test_plain_mode_fallback_persists_turn(tmp_path: Path, monkeypatch) -> None:
     history = task._load_history_messages()
     assert len(history) == 2
     assert history[0]["role"] == "user"
-    assert history[0]["content"] == "weather?"
+    assert history[0]["content"] == "hello"
     assert history[1]["role"] == "assistant"
     assert history[1]["content"] == "sunny"
 

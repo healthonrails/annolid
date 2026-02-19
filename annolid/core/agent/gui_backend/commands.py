@@ -628,5 +628,15 @@ def prompt_may_need_tools(prompt: str) -> bool:
         "paper",
         "gui_",
         "use ",
+        "weather",
+        "forecast",
+        "temperature",
+        "news",
+        "price",
+        "stock",
+        "latest",
+        "current",
+        "live",
+        "today",
     )
     return any(token in text for token in hints)

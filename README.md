@@ -113,6 +113,7 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
 - In Annolid Bot, enable `Allow web` to let Annolid Bot use `web_search`/`web_fetch` tools for web browsing in that chat turn (requires `BRAVE_API_KEY` for search).
 - To show or hide intermediate tool/planning updates while Annolid Bot is thinking, open Annolid Bot settings and toggle `Agent Runtime → Enable intermediate progress stream`.
 - To cap slow tool calls in the agent loop, tune `Agent Runtime → Agent tool timeout` (seconds).
+- To force browser-first web handling, keep `Agent Runtime → Prefer MCP browser for web tasks` enabled.
 - **ClawHub Skills**: Search and install agent skills from ClawHub directly in Annolid Bot. See the [ClawHub Skills Tutorial](docs/source/agent_clawhub_tutorial.md).
 - **Model Context Protocol (MCP)**: Extend Annolid Bot with external tools and data sources. See the [MCP Configuration and Usage Tutorial](docs/mcp.md) for details.
 - **WhatsApp Channel**: Configure Annolid Bot with default local QR bridge mode (safer, no public webhook) or optional Cloud API mode using the [WhatsApp Setup Tutorial](docs/source/agent_whatsapp_tutorial.md). For QR bridge extras: `pip install "annolid[whatsapp]"`.

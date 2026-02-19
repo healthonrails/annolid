@@ -234,7 +234,7 @@ class MediaPipeEngine:
         self.model_identifier = model_identifier.lower()
         self.model_path = self._ensure_model_exists()
 
-        base_options = self.python.BaseOptions(model_asset_path=str(self.model_path))
+        base_options = self._build_base_options()
 
         if "hands" in self.model_identifier:
             options = self.vision.HandLandmarkerOptions(
@@ -270,6 +270,23 @@ class MediaPipeEngine:
             self.names = {0: "person"}
             self.landmark_names = [f"pose_{i}" for i in range(33)]
             self.type = "pose"
+
+    def _build_base_options(self):
+        """Build BaseOptions and prefer CPU delegate for headless compatibility."""
+        kwargs = {"model_asset_path": str(self.model_path)}
+        try:
+            delegate_enum = getattr(self.python.BaseOptions, "Delegate", None)
+            cpu_delegate = (
+                getattr(delegate_enum, "CPU", None)
+                if delegate_enum is not None
+                else None
+            )
+            if cpu_delegate is not None:
+                kwargs["delegate"] = cpu_delegate
+        except Exception:
+            # Fall back to default options if delegate enum is unavailable.
+            pass
+        return self.python.BaseOptions(**kwargs)
 
     @staticmethod
     def is_installed() -> bool:

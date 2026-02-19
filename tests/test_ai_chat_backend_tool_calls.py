@@ -369,6 +369,63 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
     ]
 
 
+def test_gui_label_behavior_segments_with_widget_result(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    video_file = tmp_path / "mouse.mp4"
+    video_file.write_bytes(b"fake")
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    class _Widget:
+        host_window_widget = None
+
+        def get_bot_action_result(self, action_name: str):
+            assert action_name == "label_behavior_segments"
+            return {
+                "ok": True,
+                "mode": "timeline",
+                "labeled_segments": 7,
+                "evaluated_segments": 10,
+                "skipped_segments": 3,
+                "labels_used": ["groom", "eat"],
+                "timestamps_csv": str(tmp_path / "segments.csv"),
+                "timestamps_rows": 7,
+            }
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=_Widget())
+    calls: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+
+    payload = task._tool_gui_label_behavior_segments(
+        path=str(video_file),
+        behavior_labels=["groom", "eat"],
+        segment_mode="timeline",
+        segment_frames=60,
+        max_segments=100,
+    )
+    assert payload["ok"] is True
+    assert payload["mode"] == "timeline"
+    assert payload["labeled_segments"] == 7
+    assert payload["timestamps_rows"] == 7
+    assert calls == ["bot_label_behavior_segments"]
+
+
+def test_gui_label_behavior_segments_invalid_mode() -> None:
+    task = StreamingChatTask("hi", widget=None)
+    payload = task._tool_gui_label_behavior_segments(segment_mode="bad")
+    assert payload["ok"] is False
+    assert "segment_mode" in payload["error"]
+
+
 def test_invoke_widget_slot_none_result_counts_as_success(monkeypatch) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
 
@@ -718,6 +775,10 @@ def test_prompt_may_need_tools_heuristic() -> None:
         StreamingChatTask._prompt_may_need_tools("segment mouse with text prompt")
         is True
     )
+    assert (
+        StreamingChatTask._prompt_may_need_tools("what is the weather today?") is True
+    )
+    assert StreamingChatTask._prompt_may_need_tools("latest ai news") is True
     assert StreamingChatTask._prompt_may_need_tools("hello there") is False
 
 
@@ -731,9 +792,22 @@ def test_prompt_may_need_mcp_heuristic() -> None:
     assert StreamingChatTask._prompt_may_need_mcp("use playwright to inspect page") is (
         True
     )
+    assert StreamingChatTask._prompt_may_need_mcp("what is the weather today?") is True
     assert StreamingChatTask._prompt_may_need_mcp("summarize local annotations") is (
         False
     )
+
+
+def test_browser_first_for_web_setting_default_and_override() -> None:
+    task_default = StreamingChatTask("weather", widget=None, settings={})
+    assert task_default._browser_first_for_web() is True
+
+    task_disabled = StreamingChatTask(
+        "weather",
+        widget=None,
+        settings={"agent": {"browser_first_for_web": False}},
+    )
+    assert task_disabled._browser_first_for_web() is False
 
 
 def test_parse_direct_segment_track_video_command() -> None:
@@ -844,6 +918,12 @@ def test_web_access_refusal_heuristic() -> None:
     assert (
         StreamingChatTask._looks_like_web_access_refusal(
             "I cannot directly fetch URLs. To summarize that page, share the content."
+        )
+        is True
+    )
+    assert (
+        StreamingChatTask._looks_like_web_access_refusal(
+            "I apologize, but I don't have web search or web browsing capabilities available with my current tools."
         )
         is True
     )
@@ -973,6 +1053,56 @@ def test_finalize_agent_text_uses_browser_search_fallback_on_knowledge_gap() -> 
     assert used_direct_gui_fallback is False
     assert "Web lookup via embedded browser" in text
     assert "malaria prevention and treatment" in text
+
+
+def test_finalize_agent_text_uses_browser_search_fallback_without_web_tools() -> None:
+    class _DummyRegistry:
+        def has(self, name: str) -> bool:
+            return name == "gui_web_run_steps"
+
+        async def execute(self, name: str, params: dict) -> str:
+            assert name == "gui_web_run_steps"
+            steps = params.get("steps", [])
+            assert isinstance(steps, list) and steps
+            assert steps[0]["action"] == "open_url"
+            assert (
+                steps[0]["url"] == "https://html.duckduckgo.com/html/?q=latest+AI+news"
+            )
+            return json.dumps(
+                {
+                    "ok": True,
+                    "results": [
+                        {
+                            "action": "get_text",
+                            "result": {
+                                "ok": True,
+                                "text": "Top AI headlines today: model releases, policy updates, and hardware news.",
+                            },
+                        }
+                    ],
+                }
+            )
+
+    class _Result:
+        content = (
+            "I apologize, but I don't have web search or web browsing capabilities "
+            "available with my current tools."
+        )
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "latest AI news",
+        widget=None,
+        enable_web_tools=False,
+    )
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=_DummyRegistry(),  # type: ignore[arg-type]
+    )
+    assert used_recovery is False
+    assert used_direct_gui_fallback is False
+    assert "Web lookup via embedded browser" in text
+    assert "Top AI headlines today" in text
 
 
 def test_finalize_agent_text_uses_browser_search_fallback_when_web_api_unconfigured() -> (

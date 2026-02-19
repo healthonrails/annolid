@@ -112,6 +112,7 @@ def _build_default_settings() -> Dict[str, Any]:
             "max_history_messages": 24,
             "memory_window": 50,
             "enable_progress_stream": True,
+            "browser_first_for_web": True,
             "fast_mode_timeout_seconds": 60,
             "fallback_retry_timeout_seconds": 20,
             "loop_llm_timeout_seconds": 60,

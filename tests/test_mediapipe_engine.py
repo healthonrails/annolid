@@ -7,9 +7,19 @@ from annolid.realtime.mediapipe_engine import MediaPipeEngine, MediaPipeResult
 HAS_MEDIAPIPE = importlib.util.find_spec("mediapipe") is not None
 
 
+def _safe_engine(model_id: str) -> MediaPipeEngine:
+    try:
+        return MediaPipeEngine(model_id)
+    except RuntimeError as exc:
+        text = str(exc)
+        if "kGpuService" in text or "NSOpenGLPixelFormat" in text:
+            pytest.skip("mediapipe runtime unavailable (GPU/GL context not available)")
+        raise
+
+
 @pytest.mark.skipif(not HAS_MEDIAPIPE, reason="mediapipe not installed")
 def test_mediapipe_pose_engine():
-    engine = MediaPipeEngine("mediapipe_pose")
+    engine = _safe_engine("mediapipe_pose")
     # Create a black frame
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     results = engine(frame)
@@ -25,7 +35,7 @@ def test_mediapipe_pose_engine():
 
 @pytest.mark.skipif(not HAS_MEDIAPIPE, reason="mediapipe not installed")
 def test_mediapipe_hands_engine():
-    engine = MediaPipeEngine("mediapipe_hands")
+    engine = _safe_engine("mediapipe_hands")
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     results = engine(frame)
 
@@ -38,7 +48,7 @@ def test_mediapipe_hands_engine():
 
 @pytest.mark.skipif(not HAS_MEDIAPIPE, reason="mediapipe not installed")
 def test_mediapipe_face_engine():
-    engine = MediaPipeEngine("mediapipe_face")
+    engine = _safe_engine("mediapipe_face")
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     results = engine(frame)
 

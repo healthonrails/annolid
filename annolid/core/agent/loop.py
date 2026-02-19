@@ -173,6 +173,7 @@ class AgentLoop:
         interleave_post_tool_guidance: bool = True,
         llm_timeout_seconds: Optional[float] = None,
         tool_timeout_seconds: Optional[float] = None,
+        browser_first_for_web: bool = True,
     ) -> None:
         self._tools = tools
         runtime_cfg = resolve_agent_runtime_config(profile=profile)
@@ -207,6 +208,7 @@ class AgentLoop:
             if tool_timeout_seconds is not None and float(tool_timeout_seconds) > 0
             else None
         )
+        self._browser_first_for_web = bool(browser_first_for_web)
         self._provider_impl: Optional[Any] = None
 
         self._provider = provider
@@ -953,6 +955,24 @@ class AgentLoop:
         "your",
     }
     _DEFAULT_TOOL_SELECTION_MAX = 6
+    _WEB_INTENT_TOKENS = frozenset(
+        {
+            "search",
+            "web",
+            "website",
+            "url",
+            "weather",
+            "forecast",
+            "temperature",
+            "news",
+            "price",
+            "stock",
+            "latest",
+            "current",
+            "live",
+            "today",
+        }
+    )
     _DEFAULT_TOOL_PRIORITY = (
         "gui_start_realtime_stream",
         "gui_stop_realtime_stream",
@@ -991,7 +1011,8 @@ class AgentLoop:
     _POST_TOOL_SYSTEM_GUIDANCE = (
         "Use the tool results to decide the next best action. "
         "Either call another tool with concrete arguments or provide a concise "
-        "final answer. Do not reveal private chain-of-thought."
+        "final answer. For live web requests, prefer `gui_web_run_steps` before "
+        "claiming browsing limits. Do not reveal private chain-of-thought."
     )
 
     @classmethod
@@ -1136,8 +1157,14 @@ class AgentLoop:
 
         scored: List[tuple[int, Dict[str, Any]]] = []
         entries = list(tool_index) or self._compile_tool_index(tools)
+        web_intent = bool(self._WEB_INTENT_TOKENS.intersection(query_tokens))
         for entry in entries:
             score = self._score_tool_schema(entry, query_tokens)
+            if self._browser_first_for_web and web_intent:
+                if "browser" in entry.name or "browser" in entry.desc:
+                    score += 12
+                if "mcp_" in entry.name and "browser" in entry.name:
+                    score += 8
             if score > 0:
                 scored.append((score, entry.schema))
         if not scored:

@@ -402,6 +402,14 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         )
         layout.addRow(self.enable_progress_stream_checkbox)
 
+        self.browser_first_for_web_checkbox = QtWidgets.QCheckBox(
+            "Prefer MCP browser for web tasks", widget
+        )
+        self.browser_first_for_web_checkbox.setChecked(
+            bool(agent_cfg.get("browser_first_for_web", True))
+        )
+        layout.addRow(self.browser_first_for_web_checkbox)
+
         def _make_spin(
             value: float,
             *,
@@ -1083,6 +1091,9 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         )
         agent_block["enable_progress_stream"] = bool(
             self.enable_progress_stream_checkbox.isChecked()
+        )
+        agent_block["browser_first_for_web"] = bool(
+            self.browser_first_for_web_checkbox.isChecked()
         )
         updated["agent"] = agent_block
         if self._agent_config is not None:
