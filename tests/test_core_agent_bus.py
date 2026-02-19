@@ -16,7 +16,29 @@ from annolid.core.agent.bus import (
 )
 from annolid.core.agent.config import AgentConfig, SessionRoutingConfig
 from annolid.core.agent.loop import AgentLoop
+from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_registry import FunctionToolRegistry
+
+
+class _EchoTool(FunctionTool):
+    @property
+    def name(self) -> str:
+        return "echo"
+
+    @property
+    def description(self) -> str:
+        return "Echo tool."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return f"tool:{kwargs.get('text', '')}"
 
 
 def test_message_bus_publish_consume_and_dispatch() -> None:
@@ -90,6 +112,60 @@ def test_agent_bus_service_processes_inbound_to_outbound() -> None:
             assert out.metadata.get("iterations") == 1
             assert int(out.metadata.get("seq") or 0) >= 1
             assert int(out.metadata.get("state_version") or 0) >= 1
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_agent_bus_service_streams_intermediate_progress() -> None:
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "Inspecting local files",
+                "tool_calls": [
+                    {"id": "c1", "name": "echo", "arguments": {"text": "hello"}}
+                ],
+            }
+        return {"content": "done"}
+
+    async def _run() -> None:
+        bus = MessageBus()
+        registry = FunctionToolRegistry()
+        registry.register(_EchoTool())
+        loop = AgentLoop(
+            tools=registry,
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="telegram",
+                    sender_id="alice",
+                    chat_id="chat-1",
+                    content="ping",
+                )
+            )
+            progress = await bus.consume_outbound(timeout_s=1.0)
+            final = await bus.consume_outbound(timeout_s=1.0)
+
+            assert progress.content == "Inspecting local files"
+            assert bool(progress.metadata.get("intermediate")) is True
+            assert bool(progress.metadata.get("progress")) is True
+            assert final.content == "done"
+            assert bool(final.metadata.get("intermediate")) is False
+            assert final.metadata.get("iterations") == 2
         finally:
             await svc.stop()
 

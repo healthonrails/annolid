@@ -162,3 +162,62 @@ def test_persist_turn_can_skip_session_history_write(
     assert task._load_history_messages() == []
     today_file = workspace / "memory" / f"{date.today().strftime('%Y-%m-%d')}.md"
     assert today_file.exists()
+
+
+def test_fallback_timeout_retry_uses_at_least_loop_timeout() -> None:
+    task = StreamingChatTask(
+        prompt="hello there",
+        widget=None,
+        provider="nvidia",
+        model="moonshotai/kimi-k2.5",
+        settings={
+            "agent": {
+                "fallback_retry_timeout_seconds": 20,
+                "loop_llm_timeout_seconds": 60,
+                "loop_llm_timeout_seconds_no_tools": 40,
+            }
+        },
+    )
+    assert task._fallback_timeout_retry_seconds() == 40
+
+
+def test_run_provider_fallback_timeout_is_graceful(monkeypatch) -> None:
+    task = StreamingChatTask(
+        prompt="hello there",
+        widget=None,
+        provider="nvidia",
+        model="moonshotai/kimi-k2.5",
+    )
+    emitted = {"message": "", "is_error": False}
+    called = {"exception_logged": False}
+
+    monkeypatch.setattr(
+        task,
+        "_run_openai",
+        lambda provider_name, timeout_s, max_tokens: (_ for _ in ()).throw(
+            TimeoutError(
+                "Provider request timed out after 20s for nvidia:moonshotai/kimi-k2.5."
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        task,
+        "_emit_final",
+        lambda message, is_error: emitted.update(
+            {"message": str(message), "is_error": bool(is_error)}
+        ),
+    )
+    monkeypatch.setattr(
+        ai_chat_backend.logger,
+        "exception",
+        lambda *args, **kwargs: called.update({"exception_logged": True}),
+    )
+
+    task._run_provider_fallback(
+        TimeoutError(
+            "LLM timed out after 40.0s (iteration=1, model=moonshotai/kimi-k2.5)"
+        )
+    )
+    assert emitted["is_error"] is True
+    assert "timed out" in emitted["message"].lower()
+    assert called["exception_logged"] is False

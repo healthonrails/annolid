@@ -721,6 +721,21 @@ def test_prompt_may_need_tools_heuristic() -> None:
     assert StreamingChatTask._prompt_may_need_tools("hello there") is False
 
 
+def test_prompt_may_need_mcp_heuristic() -> None:
+    assert (
+        StreamingChatTask._prompt_may_need_mcp(
+            "open https://example.com and click the login button"
+        )
+        is True
+    )
+    assert StreamingChatTask._prompt_may_need_mcp("use playwright to inspect page") is (
+        True
+    )
+    assert StreamingChatTask._prompt_may_need_mcp("summarize local annotations") is (
+        False
+    )
+
+
 def test_parse_direct_segment_track_video_command() -> None:
     task = StreamingChatTask("track mouse in /tmp/mouse.mp4", widget=None)
     cmd = task._parse_direct_gui_command(

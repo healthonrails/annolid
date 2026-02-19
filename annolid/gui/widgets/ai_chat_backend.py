@@ -419,12 +419,13 @@ class StreamingChatTask(QRunnable):
             if kind == "openai_compat" and self._is_provider_timeout_error(
                 original_error
             ):
+                retry_timeout_s = self._fallback_timeout_retry_seconds()
                 self._emit_progress(
-                    "Provider timeout detected; running one quick retry"
+                    "Provider timeout detected; running one bounded retry"
                 )
                 self._run_openai(
                     provider_name=self.provider,
-                    timeout_s=self._fallback_retry_timeout_seconds(),
+                    timeout_s=retry_timeout_s,
                     max_tokens=512,
                 )
                 logger.info(
@@ -478,6 +479,27 @@ class StreamingChatTask(QRunnable):
                 self._emit_final(message, is_error=True)
                 logger.info(
                     "annolid-bot turn stop session=%s provider=%s model=%s status=dependency_missing",
+                    self.session_id,
+                    self.provider,
+                    self.model,
+                )
+                return
+            if self._is_provider_timeout_error(fallback_exc):
+                message = (
+                    f"Provider request timed out for '{self.provider}:{self.model}'. "
+                    "Try again, use a smaller prompt, reduce tool usage, or increase "
+                    "timeouts in Settings → Agent Runtime."
+                )
+                logger.warning(
+                    "annolid-bot fallback timed out session=%s provider=%s model=%s error=%s",
+                    self.session_id,
+                    self.provider,
+                    self.model,
+                    fallback_exc,
+                )
+                self._emit_final(message, is_error=True)
+                logger.info(
+                    "annolid-bot turn stop session=%s provider=%s model=%s status=timeout",
                     self.session_id,
                     self.provider,
                     self.model,
@@ -638,6 +660,19 @@ class StreamingChatTask(QRunnable):
             value = 45.0
         return max(5.0, min(180.0, value))
 
+    def _agent_loop_tool_timeout_seconds(self) -> float:
+        agent_cfg = self.settings.get("agent", {})
+        if self.provider == "ollama":
+            return self._ollama_agent_tool_timeout_seconds()
+        raw = 20.0
+        if isinstance(agent_cfg, dict):
+            raw = agent_cfg.get("loop_tool_timeout_seconds", raw)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 20.0
+        return max(3.0, min(120.0, value))
+
     def _ollama_agent_plain_timeout_seconds(self) -> float:
         agent_cfg = self.settings.get("agent", {})
         raw = 25.0
@@ -682,6 +717,15 @@ class StreamingChatTask(QRunnable):
             value = 20.0
         # Keep retry short so total wall time doesn't balloon after a timeout.
         return max(5.0, min(60.0, value))
+
+    def _fallback_timeout_retry_seconds(self) -> float:
+        """Retry timeout after loop timeout; never shorter than current loop limit."""
+        prompt_needs_tools = self._prompt_may_need_tools(self.prompt)
+        base = self._agent_loop_llm_timeout_seconds(
+            prompt_needs_tools=prompt_needs_tools
+        )
+        retry = self._fallback_retry_timeout_seconds()
+        return max(retry, base)
 
     def _provider_dependency_error(self) -> Optional[str]:
         kind = provider_kind(self.settings, self.provider)
@@ -849,22 +893,24 @@ class StreamingChatTask(QRunnable):
                 )
 
         configured_mcp_servers = self.settings.get("tools", {}).get("mcp_servers", {})
-        if prompt_needs_tools and len(context.tools) > 0:
+        mcp_needed = prompt_needs_tools and self._prompt_may_need_mcp(self.prompt)
+        if mcp_needed and len(context.tools) > 0:
             mcp_servers = configured_mcp_servers
         else:
             mcp_servers = {}
             if configured_mcp_servers:
                 logger.info(
-                    "annolid-bot skipping mcp connect for no-tool-intent prompt session=%s model=%s",
+                    "annolid-bot skipping mcp connect for no-mcp-intent prompt session=%s model=%s",
                     self.session_id,
                     self.model,
                 )
 
         logger.info(
-            "annolid-bot runtime timeouts session=%s model=%s loop_llm_s=%.1f ollama_tool_s=%.1f ollama_plain_s=%.1f recover_s=%.1f recover_nudge_s=%.1f",
+            "annolid-bot runtime timeouts session=%s model=%s loop_llm_s=%.1f loop_tool_s=%.1f ollama_tool_s=%.1f ollama_plain_s=%.1f recover_s=%.1f recover_nudge_s=%.1f",
             self.session_id,
             self.model,
             self._agent_loop_llm_timeout_seconds(prompt_needs_tools=prompt_needs_tools),
+            self._agent_loop_tool_timeout_seconds(),
             self._ollama_agent_tool_timeout_seconds(),
             self._ollama_agent_plain_timeout_seconds(),
             self._ollama_plain_recovery_timeout_seconds(),
@@ -884,6 +930,7 @@ class StreamingChatTask(QRunnable):
             llm_timeout_seconds=self._agent_loop_llm_timeout_seconds(
                 prompt_needs_tools=prompt_needs_tools
             ),
+            tool_timeout_seconds=self._agent_loop_tool_timeout_seconds(),
         )
         media: Optional[List[str]] = None
         if self.image_path and os.path.exists(self.image_path):
@@ -896,6 +943,7 @@ class StreamingChatTask(QRunnable):
             chat_id="annolid_bot",
             media=media,
             system_prompt=context.system_prompt,
+            on_progress=self._emit_progress,
         )
         self._emit_progress("Received model response")
         (
@@ -3322,6 +3370,28 @@ class StreamingChatTask(QRunnable):
     @staticmethod
     def _prompt_may_need_tools(prompt: str) -> bool:
         return prompt_may_need_tools(prompt)
+
+    @staticmethod
+    def _prompt_may_need_mcp(prompt: str) -> bool:
+        text = str(prompt or "").lower()
+        if not text:
+            return False
+        hints = (
+            "http://",
+            "https://",
+            "www.",
+            "browser",
+            "navigate",
+            "open website",
+            "web page",
+            "playwright",
+            "mcp",
+            "dom",
+            "click",
+            "scroll",
+            "form",
+        )
+        return any(token in text for token in hints)
 
     def _run_ollama(self) -> None:
         run_ollama_streaming_chat(

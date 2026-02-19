@@ -83,6 +83,25 @@ class _MathLikeTool(FunctionTool):
         return f"calc:{kwargs.get('expression', '')}"
 
 
+class _SlowTool(FunctionTool):
+    @property
+    def name(self) -> str:
+        return "slow_tool"
+
+    @property
+    def description(self) -> str:
+        return "Slow tool."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs: Any) -> str:
+        del kwargs
+        await asyncio.sleep(0.05)
+        return "slow-done"
+
+
 def test_agent_loop_runs_tool_then_finishes() -> None:
     registry = FunctionToolRegistry()
     registry.register(_EchoTool())
@@ -111,6 +130,150 @@ def test_agent_loop_runs_tool_then_finishes() -> None:
     assert result.iterations == 2
     assert len(result.tool_runs) == 1
     assert result.tool_runs[0].result == "tool:hello"
+
+
+def test_agent_loop_emits_intermediate_progress_for_tool_calls() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_EchoTool())
+    state = {"n": 0}
+    progress_updates: list[str] = []
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "<think>internal</think>Need a tool call.",
+                "tool_calls": [
+                    {"id": "c1", "name": "echo", "arguments": {"text": "hello"}}
+                ],
+            }
+        return {"content": "done"}
+
+    async def _on_progress(text: str) -> None:
+        progress_updates.append(text)
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    result = asyncio.run(loop.run("hi", on_progress=_on_progress))
+    assert result.content == "done"
+    assert progress_updates == ["Need a tool call."]
+
+
+def test_agent_loop_progress_uses_tool_hint_when_content_empty() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_EchoTool())
+    state = {"n": 0}
+    progress_updates: list[str] = []
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "echo", "arguments": {"text": "hello"}}
+                ],
+            }
+        return {"content": "done"}
+
+    async def _on_progress(text: str) -> None:
+        progress_updates.append(text)
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    _ = asyncio.run(loop.run("hi", on_progress=_on_progress))
+    assert progress_updates == ['echo("hello")']
+
+
+def test_agent_loop_progress_accepts_sync_callback() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_EchoTool())
+    state = {"n": 0}
+    progress_updates: list[str] = []
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "echo", "arguments": {"text": "hello"}}
+                ],
+            }
+        return {"content": "done"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    _ = asyncio.run(loop.run("hi", on_progress=progress_updates.append))
+    assert progress_updates == ['echo("hello")']
+
+
+def test_agent_loop_timeout_raises_explicit_message() -> None:
+    registry = FunctionToolRegistry()
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        await asyncio.sleep(0.05)
+        return {"content": "late"}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        llm_timeout_seconds=0.01,
+    )
+    try:
+        _ = asyncio.run(loop.run("hi"))
+        assert False, "Expected timeout"
+    except TimeoutError as exc:
+        assert "LLM timed out after" in str(exc)
+
+
+def test_agent_loop_tool_timeout_returns_error_result() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_SlowTool())
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [{"id": "c1", "name": "slow_tool", "arguments": {}}],
+            }
+        return {"content": "done"}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        tool_timeout_seconds=0.01,
+    )
+    result = asyncio.run(loop.run("start"))
+    assert result.content == "done"
+    assert len(result.tool_runs) == 1
+    assert "timed out after" in result.tool_runs[0].result
 
 
 def test_agent_loop_handles_string_tool_arguments() -> None:

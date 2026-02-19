@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AsyncExitStack
+import inspect
 import json
 from annolid.utils.logger import logger
 import re
@@ -39,6 +40,7 @@ LLMCallable = Callable[
     [Sequence[Mapping[str, Any]], Sequence[Mapping[str, Any]], str],
     Awaitable[Mapping[str, Any]],
 ]
+ProgressCallback = Callable[[str], Any]
 
 
 @dataclass(frozen=True)
@@ -170,6 +172,7 @@ class AgentLoop:
         mcp_servers: Optional[Dict[str, Any]] = None,
         interleave_post_tool_guidance: bool = True,
         llm_timeout_seconds: Optional[float] = None,
+        tool_timeout_seconds: Optional[float] = None,
     ) -> None:
         self._tools = tools
         runtime_cfg = resolve_agent_runtime_config(profile=profile)
@@ -197,6 +200,11 @@ class AgentLoop:
         self._llm_timeout_seconds = (
             float(llm_timeout_seconds)
             if llm_timeout_seconds is not None and float(llm_timeout_seconds) > 0
+            else None
+        )
+        self._tool_timeout_seconds = (
+            float(tool_timeout_seconds)
+            if tool_timeout_seconds is not None and float(tool_timeout_seconds) > 0
             else None
         )
         self._provider_impl: Optional[Any] = None
@@ -243,6 +251,7 @@ class AgentLoop:
         chat_id: Optional[str] = None,
         media: Optional[List[str]] = None,
         skill_names: Optional[List[str]] = None,
+        on_progress: Optional[ProgressCallback] = None,
     ) -> AgentLoopResult:
         run_started = time.perf_counter()
         llm_total_ms = 0.0
@@ -335,17 +344,29 @@ class AgentLoop:
                     messages=messages,
                 )
                 llm_started = time.perf_counter()
-                llm_call = self._llm_callable(
-                    messages,
-                    tool_definitions,
-                    self.model,
-                )
-                if self._llm_timeout_seconds is not None:
-                    response = await asyncio.wait_for(
-                        llm_call, timeout=self._llm_timeout_seconds
+                llm_call = self._llm_callable(messages, tool_definitions, self.model)
+                try:
+                    if self._llm_timeout_seconds is not None:
+                        response = await asyncio.wait_for(
+                            llm_call, timeout=self._llm_timeout_seconds
+                        )
+                    else:
+                        response = await llm_call
+                except asyncio.TimeoutError as exc:
+                    llm_elapsed_ms = (time.perf_counter() - llm_started) * 1000.0
+                    llm_total_ms += llm_elapsed_ms
+                    self._logger.warning(
+                        "annolid-bot profile iteration timeout session=%s model=%s iteration=%d llm_ms=%.1f timeout_s=%.1f",
+                        session_id,
+                        self.model,
+                        iteration,
+                        llm_elapsed_ms,
+                        float(self._llm_timeout_seconds or 0.0),
                     )
-                else:
-                    response = await llm_call
+                    raise TimeoutError(
+                        f"LLM timed out after {float(self._llm_timeout_seconds or 0.0):.1f}s "
+                        f"(iteration={iteration}, model={self.model})"
+                    ) from exc
                 llm_elapsed_ms = (time.perf_counter() - llm_started) * 1000.0
                 llm_total_ms += llm_elapsed_ms
                 assistant_text = str(response.get("content") or "")
@@ -362,6 +383,20 @@ class AgentLoop:
                 )
 
                 if tool_calls:
+                    if on_progress is not None:
+                        progress_text = self._strip_think(
+                            assistant_text
+                        ) or self._tool_hint(tool_calls)
+                        if progress_text:
+                            try:
+                                await self._dispatch_progress(
+                                    on_progress, progress_text
+                                )
+                            except Exception as exc:
+                                self._logger.warning(
+                                    "on_progress callback failed: %s",
+                                    exc,
+                                )
                     tool_cycle_signature = tuple(
                         f"{call.get('name', '')}:{json.dumps(call.get('arguments', {}), ensure_ascii=False, sort_keys=True)}"
                         for call in tool_calls
@@ -394,7 +429,27 @@ class AgentLoop:
                         raw_args = call.get("arguments")
                         args = self._normalize_args(raw_args)
                         tool_started = time.perf_counter()
-                        result = await self._tools.execute(name, args)
+                        try:
+                            if self._tool_timeout_seconds is not None:
+                                result = await asyncio.wait_for(
+                                    self._tools.execute(name, args),
+                                    timeout=self._tool_timeout_seconds,
+                                )
+                            else:
+                                result = await self._tools.execute(name, args)
+                        except asyncio.TimeoutError:
+                            result = (
+                                f"Error: Tool '{name}' timed out after "
+                                f"{float(self._tool_timeout_seconds or 0.0):.1f}s"
+                            )
+                            self._logger.warning(
+                                "annolid-bot tool timeout session=%s model=%s iteration=%d tool=%s timeout_s=%.1f",
+                                session_id,
+                                self.model,
+                                iteration,
+                                name,
+                                float(self._tool_timeout_seconds or 0.0),
+                            )
                         tool_elapsed_ms = (time.perf_counter() - tool_started) * 1000.0
                         tool_exec_total_ms += tool_elapsed_ms
                         tool_call_count += 1
@@ -1226,6 +1281,46 @@ class AgentLoop:
                 "arguments": args_json,
             },
         }
+
+    @staticmethod
+    def _strip_think(text: str | None) -> str:
+        """Remove <think>...</think> sections from model content."""
+        raw = str(text or "")
+        if not raw:
+            return ""
+        return re.sub(r"<think>[\s\S]*?</think>", "", raw).strip()
+
+    @staticmethod
+    def _tool_hint(tool_calls: Sequence[Mapping[str, Any]]) -> str:
+        """Compact string describing one or more tool calls."""
+
+        def _format_call(call: Mapping[str, Any]) -> str:
+            name = str(call.get("name") or "").strip() or "tool"
+            args = call.get("arguments")
+            first_value: Any = None
+            if isinstance(args, Mapping) and args:
+                try:
+                    first_value = next(iter(args.values()))
+                except Exception:
+                    first_value = None
+            if isinstance(first_value, str):
+                preview = first_value[:40]
+                if len(first_value) > 40:
+                    preview = f"{preview}..."
+                return f'{name}("{preview}")'
+            return name
+
+        return ", ".join(_format_call(call) for call in tool_calls if call)
+
+    @staticmethod
+    async def _dispatch_progress(
+        callback: ProgressCallback,
+        content: str,
+    ) -> None:
+        """Dispatch progress update to sync or async callback."""
+        outcome = callback(content)
+        if inspect.isawaitable(outcome):
+            await outcome
 
     @staticmethod
     def _normalize_args(raw_args: Any) -> Dict[str, Any]:

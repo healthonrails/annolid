@@ -467,7 +467,11 @@ class AIChatWidget(QtWidgets.QWidget):
         self._typing_timer = QtCore.QTimer(self)
         self._typing_timer.setInterval(350)
         self._typing_timer.timeout.connect(self._on_typing_timer_tick)
-        self.enable_progress_stream = True
+        self.enable_progress_stream = self._resolve_enable_progress_stream(
+            self.llm_settings
+        )
+        self._latest_progress_text: str = ""
+        self._has_streamed_response_chunk = False
         self._bot_action_results: Dict[str, Dict[str, Any]] = {}
         self._quick_actions: List[tuple[str, str]] = self._default_quick_actions()
         self._selected_quick_action_index: Optional[int] = None
@@ -595,8 +599,21 @@ class AIChatWidget(QtWidgets.QWidget):
     def _refresh_runtime_llm_settings(self) -> None:
         """Reload LLM settings so provider/model changes apply on the next turn."""
         refresh_runtime_provider_settings(
-            self, after_refresh=self._refresh_header_chips
+            self, after_refresh=self._after_runtime_settings_refresh
         )
+
+    def _after_runtime_settings_refresh(self) -> None:
+        self.enable_progress_stream = self._resolve_enable_progress_stream(
+            self.llm_settings
+        )
+        self._refresh_header_chips()
+
+    @staticmethod
+    def _resolve_enable_progress_stream(settings: Dict[str, Any]) -> bool:
+        agent_cfg = settings.get("agent")
+        if not isinstance(agent_cfg, dict):
+            return True
+        return bool(agent_cfg.get("enable_progress_stream", True))
 
     def _create_header_button(self, theme_icon, tooltip, style_icon):
         btn = QtWidgets.QToolButton(self)
@@ -1044,9 +1061,24 @@ class AIChatWidget(QtWidgets.QWidget):
         if not self.is_streaming_chat:
             self._stop_typing_indicator()
             return
-        dots = "." * ((self._typing_tick % 3) + 1)
         self._typing_tick += 1
-        self.status_label.setText(f"{self._assistant_display_name()} • Thinking{dots}")
+        self._render_progress_in_bubble()
+
+    def _render_progress_in_bubble(self) -> None:
+        if not self.is_streaming_chat:
+            return
+        if self._current_response_bubble is None:
+            return
+        if self._has_streamed_response_chunk:
+            return
+        dots = "." * ((self._typing_tick % 3) + 1)
+        lines: List[str] = [f"Thinking{dots}"]
+        if self.enable_progress_stream and self._progress_lines:
+            for line in self._progress_lines[-3:]:
+                lines.append(f"- {line}")
+        self._current_response_bubble.set_text("\n".join(lines))
+        QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
+        QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
         if (
@@ -1428,6 +1460,9 @@ class AIChatWidget(QtWidgets.QWidget):
         settings = dialog.get_settings()
         settings.setdefault("last_models", self.llm_settings.get("last_models", {}))
         self.llm_settings = settings
+        self.enable_progress_stream = self._resolve_enable_progress_stream(
+            self.llm_settings
+        )
         self._providers = ProviderRegistry(self.llm_settings, save_llm_settings)
         self._populate_provider_selector()
         new_provider = self.llm_settings.get("provider", self.selected_provider)
@@ -3055,14 +3090,17 @@ class AIChatWidget(QtWidgets.QWidget):
             return
 
         self._last_user_prompt = raw_prompt
+        self._latest_progress_text = ""
+        self._has_streamed_response_chunk = False
+        self._progress_lines = []
         chat_mode = self._consume_next_chat_mode()
         chat_image_path = self._prepare_chat_image()
         self._add_bubble("You", raw_prompt, is_user=True)
         assistant_name = self._assistant_display_name()
-        self.status_label.setText(f"{assistant_name} • Thinking")
+        self.status_label.setText("")
         self._current_response_bubble = self._add_bubble(
             assistant_name,
-            "",
+            "Thinking.",
             is_user=False,
             allow_regenerate=True,
         )
@@ -3090,6 +3128,9 @@ class AIChatWidget(QtWidgets.QWidget):
     def stream_chat_chunk(self, chunk: str) -> None:
         if self._current_response_bubble is None:
             return
+        if not self._has_streamed_response_chunk:
+            self._has_streamed_response_chunk = True
+            self._current_response_bubble.set_text("")
         self._current_response_bubble.append_text(chunk)
         QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
@@ -3099,9 +3140,10 @@ class AIChatWidget(QtWidgets.QWidget):
         line = str(update or "").strip()
         if not line:
             return
-        # Show progress updates in status label after "Thinking..."
-        assistant_name = self._assistant_display_name()
-        self.status_label.setText(f"{assistant_name} • Thinking... {line}")
+        self._latest_progress_text = line
+        if not self._progress_lines or self._progress_lines[-1] != line:
+            self._progress_lines.append(line)
+        self._render_progress_in_bubble()
 
     @QtCore.Slot(str, bool)
     def update_chat_response(self, message: str, is_error: bool) -> None:
@@ -3114,8 +3156,13 @@ class AIChatWidget(QtWidgets.QWidget):
             self._current_response_bubble = bubble
 
         if is_error:
-            current = self._current_response_bubble.text()
-            self._current_response_bubble.set_text((current + "\n" + message).strip())
+            if self._has_streamed_response_chunk:
+                current = self._current_response_bubble.text()
+                self._current_response_bubble.set_text(
+                    (current + "\n" + message).strip()
+                )
+            else:
+                self._current_response_bubble.set_text(message or "Error")
             self.status_label.setText("Error")
         elif message:
             self._current_response_bubble.set_text(message)
@@ -3125,6 +3172,8 @@ class AIChatWidget(QtWidgets.QWidget):
 
         self.is_streaming_chat = False
         self._stop_typing_indicator()
+        self._latest_progress_text = ""
+        self._has_streamed_response_chunk = False
         self._on_prompt_text_changed()
         self._current_response_bubble = None
         self._current_progress_bubble = None

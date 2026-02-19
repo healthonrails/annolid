@@ -116,12 +116,26 @@ class AgentBusService:
                 await self.bus.publish_outbound(replay)
                 return
         try:
+            last_progress: str = ""
+
+            async def _on_progress(content: str) -> None:
+                nonlocal last_progress
+                text = str(content or "").strip()
+                if not text or text == last_progress:
+                    return
+                last_progress = text
+                await self._publish_intermediate_progress(
+                    inbound=inbound,
+                    content=text,
+                )
+
             result = await self.loop.run(
                 inbound.content,
                 session_id=session_key,
                 channel=inbound.channel,
                 chat_id=inbound.chat_id,
                 media=list(inbound.media or []),
+                on_progress=_on_progress,
             )
             outbound_meta = {
                 "iterations": result.iterations,
@@ -182,6 +196,28 @@ class AgentBusService:
         self._store_idempotency(cache_key, outbound)
         self._logger.info(
             "Publishing reply to %s via %s", outbound.chat_id, outbound.channel
+        )
+        await self.bus.publish_outbound(outbound)
+
+    async def _publish_intermediate_progress(
+        self,
+        *,
+        inbound: InboundMessage,
+        content: str,
+    ) -> None:
+        progress_meta = {
+            "intermediate": True,
+            "progress": True,
+        }
+        if inbound.metadata.get("subject"):
+            progress_meta["subject"] = inbound.metadata["subject"]
+        outbound = self._annotate_outbound(
+            OutboundMessage(
+                channel=inbound.channel,
+                chat_id=inbound.chat_id,
+                content=str(content),
+                metadata=progress_meta,
+            )
         )
         await self.bus.publish_outbound(outbound)
 

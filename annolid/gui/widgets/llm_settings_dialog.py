@@ -394,6 +394,14 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         note.setWordWrap(True)
         layout.addRow(note)
 
+        self.enable_progress_stream_checkbox = QtWidgets.QCheckBox(
+            "Enable intermediate progress stream", widget
+        )
+        self.enable_progress_stream_checkbox.setChecked(
+            bool(agent_cfg.get("enable_progress_stream", True))
+        )
+        layout.addRow(self.enable_progress_stream_checkbox)
+
         def _make_spin(
             value: float,
             *,
@@ -439,6 +447,13 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             "Agent loop timeout (no tools):",
             self.loop_llm_timeout_no_tools_spin,
         )
+
+        self.loop_tool_timeout_spin = _make_spin(
+            agent_cfg.get("loop_tool_timeout_seconds", 20),
+            minimum=3.0,
+            maximum=120.0,
+        )
+        layout.addRow("Agent tool timeout:", self.loop_tool_timeout_spin)
 
         self.ollama_tool_timeout_spin = _make_spin(
             agent_cfg.get("ollama_tool_timeout_seconds", 45),
@@ -1051,6 +1066,9 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         agent_block["loop_llm_timeout_seconds_no_tools"] = float(
             self.loop_llm_timeout_no_tools_spin.value()
         )
+        agent_block["loop_tool_timeout_seconds"] = float(
+            self.loop_tool_timeout_spin.value()
+        )
         agent_block["ollama_tool_timeout_seconds"] = float(
             self.ollama_tool_timeout_spin.value()
         )
@@ -1062,6 +1080,9 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         )
         agent_block["ollama_plain_recovery_nudge_timeout_seconds"] = float(
             self.ollama_plain_recovery_nudge_timeout_spin.value()
+        )
+        agent_block["enable_progress_stream"] = bool(
+            self.enable_progress_stream_checkbox.isChecked()
         )
         updated["agent"] = agent_block
         if self._agent_config is not None:
