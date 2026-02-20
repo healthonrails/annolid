@@ -73,6 +73,11 @@ class CitationManagerDialog(QtWidgets.QDialog):
         self.table.horizontalHeader().setSectionResizeMode(
             1, QtWidgets.QHeaderView.ResizeToContents
         )
+        self.table.setAcceptDrops(True)
+        self.table.viewport().setAcceptDrops(True)
+        self.table.dragEnterEvent = self._drag_enter_event
+        self.table.dragMoveEvent = self._drag_move_event
+        self.table.dropEvent = self._drop_event
         root.addWidget(self.table, 1)
 
         controls = QtWidgets.QHBoxLayout()
@@ -95,6 +100,8 @@ class CitationManagerDialog(QtWidgets.QDialog):
         from_web_btn.clicked.connect(lambda: self._save_from_active_context("web"))
         auto_btn = QtWidgets.QPushButton("Save Auto", self)
         auto_btn.clicked.connect(lambda: self._save_from_active_context("auto"))
+        validate_all_btn = QtWidgets.QPushButton("Validate All", self)
+        validate_all_btn.clicked.connect(self._validate_all_rows)
         remove_btn = QtWidgets.QPushButton("Remove Selected", self)
         remove_btn.clicked.connect(self._remove_selected)
         controls.addWidget(self.key_edit, 1)
@@ -105,6 +112,7 @@ class CitationManagerDialog(QtWidgets.QDialog):
         controls.addWidget(from_pdf_btn)
         controls.addWidget(from_web_btn)
         controls.addWidget(auto_btn)
+        controls.addWidget(validate_all_btn)
         controls.addWidget(remove_btn)
         root.addLayout(controls)
 
@@ -396,3 +404,96 @@ class CitationManagerDialog(QtWidgets.QDialog):
             )
         else:
             self.duplicate_warning_label.setText("")
+
+    def _validate_all_rows(self) -> None:
+        self.status_label.setText("Validating all rows... this may take a moment.")
+        QtWidgets.QApplication.processEvents()
+        path = self._resolved_bib_path()
+        entries = load_bibtex(path)
+        updated_any = False
+        for entry in entries:
+            validation = validate_citation_metadata(entry.fields, timeout_s=2.0)
+            if validation.get("verified"):
+                new_fields = merge_validated_fields(
+                    entry.fields, validation, replace_when_confident=True
+                )
+                if new_fields != entry.fields:
+                    entry.fields = new_fields
+                    updated_any = True
+        if updated_any:
+            save_bibtex(path, entries, sort_keys=True)
+            self._refresh_table()
+            self.status_label.setText("Batch validation completed and updated entries.")
+        else:
+            self.status_label.setText("Batch validation finished (no changes needed).")
+
+    def _drag_enter_event(self, event: QtGui.QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.isLocalFile() and url.toLocalFile().lower().endswith(".pdf"):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def _drag_move_event(self, event: QtGui.QDragMoveEvent) -> None:
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.isLocalFile() and url.toLocalFile().lower().endswith(".pdf"):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def _drop_event(self, event: QtGui.QDropEvent) -> None:
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+
+        path = self._resolved_bib_path()
+        entries = load_bibtex(path)
+        added_count = 0
+
+        for url in urls:
+            if url.isLocalFile() and url.toLocalFile().lower().endswith(".pdf"):
+                local_path = url.toLocalFile()
+                file_name = Path(local_path).stem
+                # Clean up filename dashes/underscores for search
+                title_query = file_name.replace("_", " ").replace("-", " ")
+
+                self.status_label.setText(
+                    f"Resolving citation for: {title_query[:30]}..."
+                )
+                QtWidgets.QApplication.processEvents()
+
+                fields = {"title": title_query, "file": local_path}
+                validation = validate_citation_metadata(fields, timeout_s=2.5)
+
+                if validation.get("candidate"):
+                    fields = merge_validated_fields(
+                        fields, validation, replace_when_confident=True
+                    )
+
+                import re
+
+                candidate_key = str(fields.get("__bibkey__") or "").strip()
+                if not candidate_key:
+                    candidate_key = re.sub(
+                        r"[^a-zA-Z0-9:_\-.]+", "_", title_query
+                    ).strip("_")[:15]
+
+                if not candidate_key:
+                    candidate_key = f"pdf_ref_{added_count}"
+
+                entry_type = "article"
+
+                entries, _ = upsert_entry(
+                    entries,
+                    BibEntry(entry_type=entry_type, key=candidate_key, fields=fields),
+                )
+                added_count += 1
+
+        if added_count > 0:
+            save_bibtex(path, entries, sort_keys=True)
+            self._refresh_table()
+            self.status_label.setText(
+                f"Resolved and added {added_count} citation(s) from PDF(s)."
+            )

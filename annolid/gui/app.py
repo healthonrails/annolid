@@ -14,6 +14,19 @@ if os.name == "nt":  # noqa
 import sys
 from pathlib import Path
 
+# Apply macOS QtWebEngine patch before importing modules that may import
+# QtWebEngine at module-load time (for example PDF/Web viewer managers).
+if sys.platform == "darwin":
+    try:
+        from annolid.utils.macos_fixes import apply_macos_webengine_sandbox_patch
+
+        apply_macos_webengine_sandbox_patch()
+    except Exception as exc:
+        print(
+            f"Warning: Failed to initialize macOS QtWebEngine fix: {exc.__class__.__name__}: {exc}",
+            file=sys.stderr,
+        )
+
 from qtpy import QtCore
 from qtpy.QtCore import Qt, Signal
 from qtpy import QtWidgets
@@ -568,6 +581,7 @@ def main(argv=None, *, config=None):
     # OpenCV may reset Qt plugin env vars during import; sanitize again right
     # before QApplication is constructed so Qt does not resolve cv2 plugins.
     sanitize_qt_plugin_env(os.environ)
+
     qt_args = sys.argv if argv is None else [sys.argv[0], *argv]
     app = create_qapp(qt_args)
 

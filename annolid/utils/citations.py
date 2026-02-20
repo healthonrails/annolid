@@ -355,13 +355,19 @@ def _score_candidate(
     )
 
 
-def _http_json(url: str, *, timeout_s: float) -> dict[str, object]:
+def _http_json(
+    url: str, *, timeout_s: float, email: str | None = None
+) -> dict[str, object]:
+    headers = {
+        "User-Agent": "annolid-citation-validator/1.0 (https://github.com/annolid)",
+        "Accept": "application/json",
+    }
+    if email:
+        headers["User-Agent"] = f"annolid-citation-validator/1.0 (mailto:{email})"
+
     req = urllib.request.Request(
         url=url,
-        headers={
-            "User-Agent": "annolid-citation-validator/1.0 (https://github.com/annolid)",
-            "Accept": "application/json",
-        },
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=max(0.5, float(timeout_s))) as response:
         payload = response.read()
@@ -474,6 +480,7 @@ def _crossref_lookup_doi(doi: str, *, timeout_s: float) -> dict[str, object]:
         data = _http_json(
             f"https://api.crossref.org/works/{quote(doi, safe='')}",
             timeout_s=timeout_s,
+            email="support@annolid.com",
         )
         message = dict(data.get("message") or {})
         candidate = _crossref_message_to_candidate(message)
@@ -489,6 +496,7 @@ def _crossref_search_title(
         data = _http_json(
             f"https://api.crossref.org/works?query.bibliographic={quote(title)}&rows=5",
             timeout_s=timeout_s,
+            email="support@annolid.com",
         )
         message = dict(data.get("message") or {})
         items = list(message.get("items") or [])
