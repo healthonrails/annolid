@@ -1043,6 +1043,240 @@ def test_download_pdf_tool_renames_non_generic_when_title_differs(
     assert not (tmp_path / "downloads" / "2026.01.20.700446v2.full.pdf").exists()
 
 
+def test_download_pdf_tool_retries_pmc_with_download_query(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class _ForbiddenResponse:
+        status_code = 403
+        headers = {"content-type": "text/html; charset=utf-8"}
+        url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC8219259/pdf/nihms-1556781.pdf"
+
+        def raise_for_status(self) -> None:
+            raise RuntimeError("403 Forbidden")
+
+        async def aiter_bytes(self):
+            yield b""
+
+    class _PdfResponse:
+        status_code = 200
+        headers = {"content-type": "application/pdf"}
+        url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC8219259/pdf/nihms-1556781.pdf?download=1"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield b"%PDF-1.4 fake"
+
+    class _FakeStreamContext:
+        def __init__(self, response):
+            self._response = response
+
+        async def __aenter__(self):
+            return self._response
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def stream(self, method, url, headers=None):
+            del method, headers
+            if str(url).endswith("?download=1"):
+                return _FakeStreamContext(_PdfResponse())
+            return _FakeStreamContext(_ForbiddenResponse())
+
+    fake_httpx = types.SimpleNamespace(AsyncClient=_FakeClient)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    tool = DownloadPdfTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(
+            url="https://pmc.ncbi.nlm.nih.gov/articles/PMC8219259/pdf/nihms-1556781.pdf"
+        )
+    )
+    payload = json.loads(result)
+    assert payload["is_pdf"] is True
+    assert Path(str(payload["output_path"])).exists()
+
+
+def test_download_pdf_tool_uses_pmc_oa_metadata_after_pmc_403(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class _ForbiddenResponse:
+        status_code = 403
+        headers = {"content-type": "text/html; charset=utf-8"}
+        url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC8219259/pdf/nihms-1556781.pdf"
+
+        def raise_for_status(self) -> None:
+            raise RuntimeError("403 Forbidden")
+
+        async def aiter_bytes(self):
+            yield b""
+
+    class _OaPdfResponse:
+        status_code = 200
+        headers = {"content-type": "application/pdf"}
+        url = (
+            "https://ftp.ncbi.nlm.nih.gov/pub/pmc/articles/PMC8219259/nihms-1556781.pdf"
+        )
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield b"%PDF-1.4 fake"
+
+    class _OaXmlResponse:
+        status_code = 200
+        text = (
+            "<?xml version='1.0' encoding='UTF-8'?>"
+            "<OA><records><record id='PMC8219259'>"
+            "<link format='pdf' href='ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/articles/PMC8219259/nihms-1556781.pdf'/>"
+            "</record></records></OA>"
+        )
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _FakeStreamContext:
+        def __init__(self, response):
+            self._response = response
+
+        async def __aenter__(self):
+            return self._response
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        async def get(self, url, headers=None):
+            del headers
+            if "oa.fcgi?id=PMC8219259" in str(url):
+                return _OaXmlResponse()
+            raise RuntimeError("unexpected metadata URL")
+
+        def stream(self, method, url, headers=None):
+            del method, headers
+            text = str(url)
+            if text.startswith("https://ftp.ncbi.nlm.nih.gov/"):
+                return _FakeStreamContext(_OaPdfResponse())
+            return _FakeStreamContext(_ForbiddenResponse())
+
+    fake_httpx = types.SimpleNamespace(AsyncClient=_FakeClient)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    tool = DownloadPdfTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(
+            url="https://pmc.ncbi.nlm.nih.gov/articles/PMC8219259/pdf/nihms-1556781.pdf"
+        )
+    )
+    payload = json.loads(result)
+    assert payload["is_pdf"] is True
+    assert payload["finalUrl"].startswith("https://ftp.ncbi.nlm.nih.gov/")
+
+
+def test_download_pdf_tool_prefers_pmc_oa_before_direct_pdf_urls(
+    tmp_path: Path, monkeypatch
+) -> None:
+    attempts: list[str] = []
+
+    class _OaPdfResponse:
+        status_code = 200
+        headers = {"content-type": "application/pdf"}
+        url = (
+            "https://ftp.ncbi.nlm.nih.gov/pub/pmc/articles/PMC8219259/nihms-1556781.pdf"
+        )
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield b"%PDF-1.4 fake"
+
+    class _OaXmlResponse:
+        status_code = 200
+        text = (
+            "<?xml version='1.0' encoding='UTF-8'?>"
+            "<OA><records><record id='PMC8219259'>"
+            "<link format='pdf' href='ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/articles/PMC8219259/nihms-1556781.pdf'/>"
+            "</record></records></OA>"
+        )
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _FakeStreamContext:
+        def __init__(self, response):
+            self._response = response
+
+        async def __aenter__(self):
+            return self._response
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        async def get(self, url, headers=None):
+            del headers
+            if "oa.fcgi?id=PMC8219259" in str(url):
+                return _OaXmlResponse()
+            raise RuntimeError("unexpected metadata URL")
+
+        def stream(self, method, url, headers=None):
+            del method, headers
+            attempts.append(str(url))
+            if str(url).startswith("https://ftp.ncbi.nlm.nih.gov/"):
+                return _FakeStreamContext(_OaPdfResponse())
+            raise RuntimeError("direct PMC URL should not be attempted first")
+
+    fake_httpx = types.SimpleNamespace(AsyncClient=_FakeClient)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    tool = DownloadPdfTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(
+            url="https://pmc.ncbi.nlm.nih.gov/articles/PMC8219259/pdf/nihms-1556781.pdf"
+        )
+    )
+    payload = json.loads(result)
+    assert payload["is_pdf"] is True
+    assert attempts and attempts[0].startswith("https://ftp.ncbi.nlm.nih.gov/")
+
+
 def test_register_annolid_gui_tools_and_context_payload() -> None:
     calls: list[tuple[str, object]] = []
 

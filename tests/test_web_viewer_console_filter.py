@@ -89,3 +89,60 @@ def test_is_pdf_url_generic_pdf_path_not_flagged() -> None:
     _is_pdf = WebViewerWidget._is_pdf_url
     assert _is_pdf(None, "https://example.com/pdf/something") is False
     assert _is_pdf(None, "https://example.com/viewer/pdf/12345") is False
+
+
+def test_is_saveable_pdf_url_includes_arxiv_inline_pdf() -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    _is_saveable = WebViewerWidget._is_saveable_pdf_url
+    assert _is_saveable(None, "https://arxiv.org/pdf/2512.21586") is True
+    assert _is_saveable(None, "https://example.com/file.pdf") is True
+    assert _is_saveable(None, "https://example.com/viewer/pdf/12345") is False
+
+
+def test_resolve_pdf_download_url_for_arxiv_abs() -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    resolve = WebViewerWidget._resolve_pdf_download_url
+    assert (
+        resolve("https://arxiv.org/abs/2602.17594")
+        == "https://arxiv.org/pdf/2602.17594.pdf"
+    )
+
+
+def test_resolve_pdf_download_url_for_arxiv_pdf_without_extension() -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    resolve = WebViewerWidget._resolve_pdf_download_url
+    assert (
+        resolve("https://arxiv.org/pdf/2602.17594")
+        == "https://arxiv.org/pdf/2602.17594.pdf"
+    )
+
+
+def test_resolve_pdf_download_url_non_arxiv_unchanged() -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    resolve = WebViewerWidget._resolve_pdf_download_url
+    url = "https://example.com/paper.pdf?download=1"
+    assert resolve(url) == url
+
+
+def test_pmc_pdf_url_is_saveable() -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    _is_saveable = WebViewerWidget._is_saveable_pdf_url
+    url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC8219259/pdf/nihms-1556781.pdf"
+    assert _is_saveable(None, url) is True
+
+
+def test_save_pdf_task_adds_pmc_download_fallback() -> None:
+    from annolid.gui.widgets.web_viewer import _SavePdfTask
+
+    url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC8219259/pdf/nihms-1556781.pdf"
+    candidates = _SavePdfTask._candidate_download_urls(url)
+    assert candidates[0].startswith(
+        "https://europepmc.org/backend/ptpmcrender.fcgi?accid=PMC8219259"
+    )
+    assert candidates[1] == url
+    assert candidates[2].endswith("nihms-1556781.pdf?download=1")

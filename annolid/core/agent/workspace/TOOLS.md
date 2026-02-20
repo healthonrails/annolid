@@ -39,7 +39,7 @@ Safety notes:
 
 - `web_search(query, count?)`
 - `web_fetch(url, extractMode?, maxChars?)`
-- `download_url(url, output_path, max_bytes?, overwrite?, content_type_prefixes?)`
+- `download_url(url, output_path, max_bytes?, overwrite?, content_type_prefixes?, request_headers?)`
 - `download_pdf(url, output_path?, max_bytes?, overwrite?)`
 - `clawhub_search_skills(query, limit?)`
 - `clawhub_install_skill(slug)`

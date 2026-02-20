@@ -182,6 +182,10 @@ class DownloadUrlTool(FunctionTool):
                     "type": "array",
                     "items": {"type": "string"},
                 },
+                "request_headers": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                },
             },
             "required": ["url", "output_path"],
         }
@@ -193,6 +197,7 @@ class DownloadUrlTool(FunctionTool):
         max_bytes: int | None = None,
         overwrite: bool = False,
         content_type_prefixes: list[str] | None = None,
+        request_headers: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> str:
         del kwargs
@@ -223,6 +228,17 @@ class DownloadUrlTool(FunctionTool):
             for item in (content_type_prefixes or [])
             if str(item).strip()
         ]
+        headers: dict[str, str] = {
+            "User-Agent": self.USER_AGENT,
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        if isinstance(request_headers, dict):
+            for key, value in request_headers.items():
+                name = str(key or "").strip()
+                val = str(value or "").strip()
+                if name and val:
+                    headers[name] = val
 
         try:
             import httpx
@@ -239,7 +255,7 @@ class DownloadUrlTool(FunctionTool):
                 async with client.stream(
                     "GET",
                     url,
-                    headers={"User-Agent": self.USER_AGENT},
+                    headers=headers,
                 ) as response:
                     response.raise_for_status()
                     status_code = int(response.status_code)

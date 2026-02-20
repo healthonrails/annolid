@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Sequence
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 from .common import _normalize, _resolve_read_path, _resolve_write_path
 from .function_base import FunctionTool
@@ -361,6 +363,125 @@ class DownloadPdfTool(FunctionTool):
             cleaned = cleaned[: int(max_len)].rstrip(" ._-")
         return cleaned.replace(" ", "_")
 
+    @staticmethod
+    def _extract_pmcid(url: str) -> str:
+        text = str(url or "").strip()
+        match = re.search(r"\b(PMC\d+)\b", text, flags=re.IGNORECASE)
+        if not match:
+            return ""
+        return str(match.group(1) or "").upper()
+
+    @staticmethod
+    def _normalize_http_url(url: str) -> str:
+        text = str(url or "").strip()
+        if not text:
+            return ""
+        if text.startswith("ftp://ftp.ncbi.nlm.nih.gov/"):
+            return (
+                "https://ftp.ncbi.nlm.nih.gov/"
+                + text[len("ftp://ftp.ncbi.nlm.nih.gov/") :]
+            )
+        if text.startswith("//"):
+            return f"https:{text}"
+        return text
+
+    async def _fetch_pmc_oa_pdf_urls(self, pmcid: str) -> list[str]:
+        identifier = str(pmcid or "").strip().upper()
+        if not identifier.startswith("PMC"):
+            return []
+        endpoint = f"https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi?id={identifier}"
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                max_redirects=5,
+                timeout=20.0,
+            ) as client:
+                response = await client.get(
+                    endpoint,
+                    headers={
+                        "User-Agent": DownloadUrlTool.USER_AGENT,
+                        "Accept": "application/xml,text/xml,*/*;q=0.8",
+                    },
+                )
+                response.raise_for_status()
+                body = str(response.text or "").strip()
+        except Exception:
+            return []
+
+        if not body:
+            return []
+        try:
+            root = ET.fromstring(body)
+        except Exception:
+            return []
+
+        candidates: list[str] = []
+        for link in root.findall(".//link"):
+            fmt = str(link.attrib.get("format") or "").strip().lower()
+            href = str(link.attrib.get("href") or "").strip()
+            if fmt != "pdf" or not href:
+                continue
+            normalized = self._normalize_http_url(href)
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+        return candidates
+
+    @staticmethod
+    def _candidate_pdf_urls(url: str) -> list[str]:
+        primary = str(url or "").strip()
+        if not primary:
+            return []
+        candidates = [primary]
+        parsed = urlparse(primary)
+        host = str(parsed.netloc or "").lower()
+        path = str(parsed.path or "")
+
+        if "pmc.ncbi.nlm.nih.gov" in host and "/pdf/" in path.lower():
+            pmcid = DownloadPdfTool._extract_pmcid(primary)
+            if pmcid:
+                epmc_url = f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmcid}&blobtype=pdf"
+                if epmc_url not in candidates:
+                    candidates.insert(0, epmc_url)
+
+            query_items = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            if "download" not in {str(k).lower() for k in query_items.keys()}:
+                query_items["download"] = "1"
+                fallback = urlunparse(
+                    parsed._replace(query=urlencode(query_items, doseq=True))
+                )
+                if fallback not in candidates:
+                    candidates.append(fallback)
+
+        if "arxiv.org" in host:
+            abs_match = re.search(
+                r"^/abs/(\d{4}\.\d{4,5}(?:v\d+)?)$",
+                path,
+                flags=re.IGNORECASE,
+            )
+            if abs_match:
+                arxiv_id = str(abs_match.group(1) or "").strip()
+                pdf_url = urlunparse(
+                    parsed._replace(path=f"/pdf/{arxiv_id}.pdf", query="", fragment="")
+                )
+                if pdf_url not in candidates:
+                    candidates.append(pdf_url)
+
+            pdf_match = re.search(
+                r"^/pdf/(\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?$",
+                path,
+                flags=re.IGNORECASE,
+            )
+            if pdf_match:
+                arxiv_id = str(pdf_match.group(1) or "").strip()
+                normalized = urlunparse(
+                    parsed._replace(path=f"/pdf/{arxiv_id}.pdf", query="", fragment="")
+                )
+                if normalized not in candidates:
+                    candidates.append(normalized)
+        return candidates
+
     def _extract_pdf_title(self, pdf_path: Path) -> str | None:
         try:
             import fitz  # type: ignore
@@ -423,13 +544,72 @@ class DownloadPdfTool(FunctionTool):
         del kwargs
         user_provided_output = output_path is not None
         destination = str(output_path or self._default_output_path(url))
-        result = await self._downloader.execute(
-            url=url,
-            output_path=destination,
-            max_bytes=max_bytes or self._max_bytes,
-            overwrite=overwrite,
-            content_type_prefixes=["application/pdf"],
-        )
+        last_error_payload: dict[str, Any] | None = None
+        result = ""
+        pmcid = self._extract_pmcid(url)
+        source_url = str(url or "").strip()
+        lower_source = source_url.lower()
+        candidates = self._candidate_pdf_urls(url) or [source_url]
+        # Prefer canonical OA-hosted PDF links first for PMC URLs to avoid
+        # predictable 403s on direct article PDF endpoints.
+        if pmcid and "pmc.ncbi.nlm.nih.gov" in lower_source:
+            oa_first = await self._fetch_pmc_oa_pdf_urls(pmcid)
+            if oa_first:
+                ordered: list[str] = []
+                for item in oa_first + candidates:
+                    value = str(item or "").strip()
+                    if value and value not in ordered:
+                        ordered.append(value)
+                candidates = ordered
+        oa_resolved = False
+        idx = 0
+        while idx < len(candidates):
+            candidate_url = str(candidates[idx] or "").strip()
+            idx += 1
+            if not candidate_url:
+                continue
+            result = await self._downloader.execute(
+                url=candidate_url,
+                output_path=destination,
+                max_bytes=max_bytes or self._max_bytes,
+                overwrite=overwrite,
+                content_type_prefixes=["application/pdf"],
+                request_headers={
+                    "Accept": "application/pdf,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": str(url or "").strip(),
+                },
+            )
+            try:
+                payload_try = json.loads(result)
+            except Exception:
+                return result
+            if not isinstance(payload_try, dict):
+                return result
+            if not payload_try.get("error"):
+                payload_try["requested_url"] = str(url or "").strip()
+                result = json.dumps(payload_try)
+                break
+            last_error_payload = payload_try
+            if (
+                str(payload_try.get("error", ""))
+                .strip()
+                .startswith("Destination file exists")
+            ):
+                break
+            if (
+                idx >= len(candidates)
+                and not oa_resolved
+                and pmcid
+                and "pmc.ncbi.nlm.nih.gov" in lower_source
+            ):
+                oa_resolved = True
+                oa_urls = await self._fetch_pmc_oa_pdf_urls(pmcid)
+                for oa_url in oa_urls:
+                    if oa_url not in candidates:
+                        candidates.append(oa_url)
+        if not result and last_error_payload is not None:
+            result = json.dumps(last_error_payload)
         try:
             payload = json.loads(result)
         except Exception:
