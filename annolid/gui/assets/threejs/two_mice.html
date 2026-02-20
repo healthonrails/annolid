@@ -136,6 +136,7 @@
   <script type="module">
     import * as THREE from 'https://esm.sh/three@0.151.3';
     import { OrbitControls } from 'https://esm.sh/three@0.151.3/examples/jsm/controls/OrbitControls.js';
+    import { RoomEnvironment } from 'https://esm.sh/three@0.151.3/examples/jsm/environments/RoomEnvironment.js';
     import GUI from 'https://esm.sh/lil-gui@0.18.2';
 
     import { AnnolidShaders } from './annolid_shaders.js';
@@ -164,16 +165,12 @@
     controls.target.set(0, 1.5, 0);
     controls.maxPolarAngle = Math.PI / 2 - 0.02;
 
-    // IBL environment
+    // IBL environment (True HDR Studio Lighting)
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     pmremGenerator.compileEquirectangularShader();
-    const envScene = new THREE.Scene();
-    envScene.background = new THREE.Color(0x000000);
-    const bp1 = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), new THREE.MeshBasicMaterial({ color: 0xffffff }));
-    bp1.position.set(15, 20, 15); bp1.lookAt(0, 0, 0); envScene.add(bp1);
-    const bp2 = new THREE.Mesh(new THREE.PlaneGeometry(30, 15), new THREE.MeshBasicMaterial({ color: 0xddeeff }));
-    bp2.position.set(-20, 10, -15); bp2.lookAt(0, 0, 0); envScene.add(bp2);
-    scene.environment = pmremGenerator.fromScene(envScene).texture;
+    const roomEnvironment = new RoomEnvironment();
+    scene.environment = pmremGenerator.fromScene(roomEnvironment).texture;
+    roomEnvironment.dispose();
 
     // ═══════════════════════════════════════════════════════════════
     // 2. PROPORTIONS SYSTEM (ratio-driven placement)
@@ -233,11 +230,11 @@
     // 4. PBR MATERIALS
     // ═══════════════════════════════════════════════════════════════
     const fleshMatBase = new THREE.MeshPhysicalMaterial({
-      roughness: 0.6, transmission: 0.15, thickness: 1.5,
-      attenuationDistance: 1.0, clearcoat: 0.05,
-      sheen: 0.5, sheenColor: new THREE.Color(0xffcccc),
+      roughness: 0.55, transmission: 0.15, thickness: 1.5,
+      attenuationDistance: 1.0, clearcoat: 0.1, clearcoatRoughness: 0.2,
+      sheen: 1.0, sheenColor: new THREE.Color(0xffeebb),
     });
-    const clawMat = new THREE.MeshStandardMaterial({ color: 0xd7cdc2, roughness: 0.55, metalness: 0.08 });
+    const clawMat = new THREE.MeshPhysicalMaterial({ color: 0xd7cdc2, roughness: 0.2, metalness: 0.1, clearcoat: 1.0, clearcoatRoughness: 0.1 });
     // Two-layer eye
     const eyeMat = new THREE.MeshPhysicalMaterial({
       color: 0x020202, roughness: 0.0, metalness: 0.05,
@@ -1351,7 +1348,10 @@
     // 11. SCENE ASSEMBLY
     // ═══════════════════════════════════════════════════════════════
     const floorGeo = new THREE.PlaneGeometry(200, 200);
-    const floorMat = new THREE.MeshStandardMaterial({ color: 0xd8d8d8, roughness: 0.65, metalness: 0.0 });
+    const floorMat = new THREE.MeshPhysicalMaterial({
+      color: 0x111620, roughness: 0.15, metalness: 0.6,
+      clearcoat: 1.0, clearcoatRoughness: 0.1
+    });
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
     scene.add(floor);

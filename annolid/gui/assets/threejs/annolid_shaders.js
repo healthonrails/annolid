@@ -220,33 +220,88 @@ const POST_VERTEX_GLSL = /* glsl */ `
 
 const POST_FRAGMENT_GLSL = /* glsl */ `
   uniform sampler2D tDiffuse;
+  uniform sampler2D tDepth;
   uniform float uTime;
   uniform float uVigIntensity;
   uniform float uVigSoftness;
   uniform float uGrainStrength;
   uniform float uSaturation;
   uniform float uBrightness;
+
+  uniform float uCameraNear;
+  uniform float uCameraFar;
+  uniform float uFocusDistance;
+  uniform float uAperture;
+  uniform vec2 uResolution;
+
   varying vec2 vUv;
 
+  #include <packing>
+
+  float getLinearDepth(vec2 uv) {
+    float fragCoordZ = texture2D(tDepth, uv).x;
+    float viewZ = perspectiveDepthToViewZ(fragCoordZ, uCameraNear, uCameraFar);
+    return viewZToOrthographicDepth(viewZ, uCameraNear, uCameraFar);
+  }
+
   void main() {
-    // ── Chromatic Aberration ──
+    float d = getLinearDepth(vUv);
+
+    // CoC (Circle of Confusion)
+    float coc = abs(d - uFocusDistance) * uAperture;
+    coc = clamp(coc, 0.0, 1.0);
+
     vec2 dir = vUv - 0.5;
     float dist = length(dir);
-    vec2 offset = dir * (dist * 0.008); // Intensity scales with distance from center
+    vec2 offset = dir * (dist * 0.008); // Chromatic Aberration
 
+    vec3 colorSum = vec3(0.0);
+    float weightSum = 0.0;
+
+    // Center sample with CA
     float r = texture2D(tDiffuse, vUv - offset).r;
     float g = texture2D(tDiffuse, vUv).g;
     float b = texture2D(tDiffuse, vUv + offset).b;
-    vec4 color = vec4(r, g, b, 1.0);
+    colorSum += vec3(r, g, b);
+    weightSum += 1.0;
+
+    // DoF Blur Taps (only if CoC is meaningful)
+    if (coc > 0.01) {
+      vec2 texel = 1.0 / uResolution;
+      float radius = coc * max(10.0, min(uResolution.x, uResolution.y) * 0.02); // dynamically scale based on res
+      vec2 tRad = texel * radius;
+
+      const float TWO_PI = 6.28318530718;
+      for (float i = 0.0; i < 8.0; i++) {
+        float angle = i * (TWO_PI / 8.0);
+        vec2 suv = vUv + vec2(cos(angle), sin(angle)) * tRad;
+
+        float sd = getLinearDepth(suv);
+        // If the sample is in front of the center pixel, only bleed if it's very out of focus.
+        float w = 1.0;
+        if (sd < d) {
+          float sampleCoc = abs(sd - uFocusDistance) * uAperture;
+          w = clamp(sampleCoc * 10.0, 0.0, 1.0);
+        }
+
+        // Also apply CA to the blur taps so blur has color fringes
+        float sr = texture2D(tDiffuse, suv - offset).r;
+        float sg = texture2D(tDiffuse, suv).g;
+        float sb = texture2D(tDiffuse, suv + offset).b;
+
+        colorSum += vec3(sr, sg, sb) * w;
+        weightSum += w;
+      }
+    }
+
+    vec4 color = vec4(colorSum / weightSum, 1.0);
 
     // ── Vignette ──
     float vig = 1.0 - smoothstep(0.3, 0.3 + uVigSoftness, dist) * uVigIntensity;
     color.rgb *= vig;
 
     // ── Film Grain ──
-    float grain = fract(
-      sin(dot(vUv * (uTime * 100.0 + 1.0), vec2(12.9898, 78.233))) * 43758.5453
-    );
+    float grain = fract(sin(dot(vUv * (uTime * 100.0 + 1.0), vec2(12.9898, 78.233))) * 43758.5453);
     color.rgb += (grain - 0.5) * uGrainStrength;
 
     // ── Saturation adjustment ──
@@ -526,15 +581,23 @@ export class AnnolidShaders {
             size.y * renderer.getPixelRatio(),
             { format: THREE.RGBAFormat, type: THREE.UnsignedByteType }
         );
+        renderTarget.depthTexture = new THREE.DepthTexture(size.x * renderer.getPixelRatio(), size.y * renderer.getPixelRatio());
+        renderTarget.depthTexture.type = THREE.UnsignedIntType;
 
         const postUniforms = {
             tDiffuse: { value: renderTarget.texture },
+            tDepth: { value: renderTarget.depthTexture },
             uTime: { value: 0.0 },
             uVigIntensity: { value: vigI },
             uVigSoftness: { value: vigS },
             uGrainStrength: { value: grainS },
             uSaturation: { value: sat },
             uBrightness: { value: bright },
+            uCameraNear: { value: 0.1 },
+            uCameraFar: { value: 50.0 },
+            uFocusDistance: { value: 0.05 },
+            uAperture: { value: 5.0 }, // Non-zero triggers DoF
+            uResolution: { value: new THREE.Vector2(size.x * renderer.getPixelRatio(), size.y * renderer.getPixelRatio()) }
         };
 
         const postMaterial = new THREE.ShaderMaterial({
@@ -569,6 +632,10 @@ export class AnnolidShaders {
                     return;
                 }
                 postUniforms.uTime.value = time;
+                postUniforms.uCameraNear.value = camera.near;
+                postUniforms.uCameraFar.value = camera.far;
+                // Focus distance logic based on camera position, or static
+
                 // Render scene to offscreen target
                 renderer.setRenderTarget(renderTarget);
                 renderer.render(scene, camera);
@@ -582,6 +649,7 @@ export class AnnolidShaders {
                 const sz = renderer.getSize(new THREE.Vector2());
                 const pr = renderer.getPixelRatio();
                 renderTarget.setSize(sz.x * pr, sz.y * pr);
+                postUniforms.uResolution.value.set(sz.x * pr, sz.y * pr);
             },
 
             /** Cleanup */
