@@ -41,14 +41,14 @@ class AgentSkillsLoader:
             if managed_skills_dir is not None
             else MANAGED_SKILLS_DIR
         )
-        self._snapshot: Optional[List[Dict[str, str]]] = None
+        self._snapshot: Optional[List[Dict[str, Any]]] = None
         self._config_dict_cache: Optional[Dict[str, Any]] = None
 
     def refresh_snapshot(self) -> None:
         self._snapshot = self._build_skill_snapshot()
         self._config_dict_cache = None
 
-    def list_skills(self, filter_unavailable: bool = True) -> List[Dict[str, str]]:
+    def list_skills(self, filter_unavailable: bool = True) -> List[Dict[str, Any]]:
         if self._snapshot is None:
             self.refresh_snapshot()
         skills = list(self._snapshot or [])
@@ -56,7 +56,9 @@ class AgentSkillsLoader:
             return [
                 s
                 for s in skills
-                if self._check_requirements(self._get_skill_meta_by_path(s["path"]))
+                if self._check_requirements(
+                    s.get("parsed_meta", self._get_skill_meta_by_path(s["path"]))
+                )
             ]
         return skills
 
@@ -76,7 +78,9 @@ class AgentSkillsLoader:
             skill = indexed.get(name)
             if not skill:
                 continue
-            skill_meta = self._get_skill_meta_by_path(skill["path"])
+            skill_meta = skill.get(
+                "parsed_meta", self._get_skill_meta_by_path(skill["path"])
+            )
             if bool(skill_meta.get("disable_model_invocation")):
                 continue
             content = Path(skill["path"]).read_text(encoding="utf-8")
@@ -97,9 +101,9 @@ class AgentSkillsLoader:
         lines = ["<skills>"]
         for s in all_skills:
             name = esc(s["name"])
-            desc = esc(self._get_skill_description(s["path"]))
+            desc = esc(s.get("description", self._get_skill_description(s["path"])))
             path = s["path"]
-            skill_meta = self._get_skill_meta_by_path(s["path"])
+            skill_meta = s.get("parsed_meta", self._get_skill_meta_by_path(s["path"]))
             if bool(skill_meta.get("disable_model_invocation")):
                 continue
             available = self._check_requirements(skill_meta)
@@ -120,7 +124,7 @@ class AgentSkillsLoader:
     def get_always_skills(self) -> List[str]:
         out: List[str] = []
         for s in self.list_skills(filter_unavailable=True):
-            skill_meta = self._get_skill_meta_by_path(s["path"])
+            skill_meta = s.get("parsed_meta", self._get_skill_meta_by_path(s["path"]))
             if bool(skill_meta.get("disable_model_invocation")):
                 continue
             if skill_meta.get("always"):
@@ -131,7 +135,7 @@ class AgentSkillsLoader:
         for skill in self.list_skills(filter_unavailable=False):
             if skill.get("name") != name:
                 continue
-            return self._get_frontmatter(skill["path"])
+            return skill.get("raw_meta", self._get_frontmatter(skill["path"]))
         return None
 
     def _get_skill_description(self, path: str) -> str:
@@ -281,8 +285,8 @@ class AgentSkillsLoader:
                     missing.append(f"CONFIG: {key_path}")
         return ", ".join(missing)
 
-    def _build_skill_snapshot(self) -> List[Dict[str, str]]:
-        by_name: Dict[str, Dict[str, str]] = {}
+    def _build_skill_snapshot(self) -> List[Dict[str, Any]]:
+        by_name: Dict[str, Dict[str, Any]] = {}
         for source, root in self._iter_skill_roots_by_precedence():
             if not root.exists():
                 continue
@@ -295,10 +299,63 @@ class AgentSkillsLoader:
                 name = skill_dir.name
                 if name in by_name:
                     continue
+
+                path_str = str(skill_file)
+                meta = self._get_frontmatter(path_str) or {}
+                fallback_desc = name
+                description = str(meta.get("description") or fallback_desc)
+
+                metadata = self._parse_agent_metadata(meta.get("metadata", {}))
+                parsed_meta: Dict[str, Any] = dict(metadata)
+                for key in (
+                    "always",
+                    "os",
+                    "requires",
+                    "user-invocable",
+                    "user_invocable",
+                    "disable-model-invocation",
+                    "disable_model_invocation",
+                    "command-dispatch",
+                    "command_dispatch",
+                    "command-tool",
+                    "command_tool",
+                    "command-arg-mode",
+                    "command_arg_mode",
+                ):
+                    if key in meta:
+                        parsed_meta[key] = meta[key]
+                parsed_meta["user_invocable"] = bool(
+                    parsed_meta.get(
+                        "user_invocable", parsed_meta.get("user-invocable", True)
+                    )
+                )
+                parsed_meta["disable_model_invocation"] = bool(
+                    parsed_meta.get(
+                        "disable_model_invocation",
+                        parsed_meta.get("disable-model-invocation", False),
+                    )
+                )
+                parsed_meta["command_dispatch"] = str(
+                    parsed_meta.get(
+                        "command_dispatch", parsed_meta.get("command-dispatch", "")
+                    )
+                ).strip()
+                parsed_meta["command_tool"] = str(
+                    parsed_meta.get("command_tool", parsed_meta.get("command-tool", ""))
+                ).strip()
+                parsed_meta["command_arg_mode"] = str(
+                    parsed_meta.get(
+                        "command_arg_mode", parsed_meta.get("command-arg-mode", "")
+                    )
+                ).strip()
+
                 by_name[name] = {
                     "name": name,
-                    "path": str(skill_file),
+                    "path": path_str,
                     "source": source,
+                    "description": description,
+                    "parsed_meta": parsed_meta,
+                    "raw_meta": meta,
                 }
         return [by_name[k] for k in sorted(by_name.keys())]
 

@@ -108,7 +108,7 @@ def _build_default_settings() -> Dict[str, Any]:
         "last_models": {},
         "agent": {
             "temperature": 0.7,
-            "max_tool_iterations": 12,
+            "max_tool_iterations": 24,
             "max_history_messages": 24,
             "memory_window": 50,
             "enable_progress_stream": True,
@@ -175,7 +175,7 @@ class AgentRuntimeConfig:
     """Resolved defaults used by the Annolid tool-calling agent loop."""
 
     temperature: float = 0.7
-    max_tool_iterations: int = 12
+    max_tool_iterations: int = 24
     max_history_messages: int = 24
     memory_window: int = 50
 
@@ -758,10 +758,10 @@ def resolve_agent_runtime_config(profile: Optional[str] = None) -> AgentRuntimeC
         profile_cfg.get(
             "max_tool_iterations",
             profile_cfg.get(
-                "max_iterations", agent_defaults.get("max_tool_iterations", 12)
+                "max_iterations", agent_defaults.get("max_tool_iterations", 24)
             ),
         ),
-        12,
+        24,
         1,
     )
     max_history_messages = _as_int(

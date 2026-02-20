@@ -52,7 +52,24 @@ class MCPToolWrapper(FunctionTool):
                 parts.append(str(block))
 
         if parts:
-            return "\n".join(parts).strip()
+            text_payload = "\n".join(parts).strip()
+            # If the payload looks like massive HTML, strip it to save tokens
+            if len(text_payload) > 20000 and (
+                "<html" in text_payload.lower() or "<body" in text_payload.lower()
+            ):
+                from .common import _normalize, _strip_tags
+
+                text_payload = _normalize(_strip_tags(text_payload))
+
+            # Cap extremely long outputs
+            if len(text_payload) > 50000:
+                text_payload = (
+                    text_payload[:50000]
+                    + "\n\n[WARNING: MCP tool response was truncated because it exceeded 50,000 characters. "
+                    "Please refine your query to return more specific data (e.g., using document.body.innerText "
+                    "rather than full HTML elements) to avoid context limit errors.]"
+                )
+            return text_payload
 
         structured = getattr(result, "structuredContent", None)
         if structured is not None:

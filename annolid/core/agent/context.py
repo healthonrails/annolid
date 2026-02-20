@@ -22,6 +22,7 @@ class AgentContextBuilder:
         self.workspace = Path(workspace)
         self.memory = AgentMemoryStore(self.workspace)
         self.skills = AgentSkillsLoader(self.workspace)
+        self._bootstrap_cache: Optional[str] = None
 
     def build_system_prompt(self, skill_names: Optional[List[str]] = None) -> str:
         started = time.perf_counter()
@@ -125,6 +126,8 @@ class AgentContextBuilder:
         )
 
     def _load_bootstrap_files(self) -> str:
+        if self._bootstrap_cache is not None:
+            return self._bootstrap_cache
         parts: List[str] = []
         for filename in self.BOOTSTRAP_FILES:
             p = self.workspace / filename
@@ -132,7 +135,8 @@ class AgentContextBuilder:
                 continue
             content = p.read_text(encoding="utf-8")
             parts.append(f"## {filename}\n\n{content}")
-        return "\n\n".join(parts)
+        self._bootstrap_cache = "\n\n".join(parts)
+        return self._bootstrap_cache
 
     def _build_user_content(
         self, text: str, media: Optional[List[str]]

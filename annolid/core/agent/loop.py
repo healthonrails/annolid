@@ -276,62 +276,26 @@ class AgentLoop:
         mcp_connect_ms = (time.perf_counter() - connect_started) * 1000.0
         try:
             build_started = time.perf_counter()
-            messages: List[Dict[str, Any]] = []
             user_message_text = str(user_message)
-            self._persist_long_term_memory_note_from_user_text(user_message_text)
-            memory_history: List[Dict[str, Any]] = []
-            memory_facts: Dict[str, str] = {}
-            if memory_enabled:
-                memory_history = self._memory_store.get_history(session_id)
-                memory_facts = self._memory_store.get_facts(session_id)
-                if len(memory_history) > max(2, int(self._memory_config.memory_window)):
-                    memory_history = await self._consolidate_memory(
-                        session_id=session_id,
-                        history=memory_history,
-                    )
-
-            if system_prompt:
-                messages.append({"role": "system", "content": str(system_prompt)})
-            elif self._context_builder is not None:
-                contextual = self._context_builder.build_system_prompt(
-                    skill_names=skill_names
-                )
-                if channel and chat_id:
-                    contextual += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
-                messages.append({"role": "system", "content": contextual})
-            if (
-                memory_enabled
-                and memory_facts
-                and self._memory_config.include_facts_in_system_prompt
-            ):
-                messages.append(
-                    {
-                        "role": "system",
-                        "content": self._format_memory_facts(memory_facts),
-                    }
-                )
-            if memory_enabled and memory_history:
-                messages.extend(memory_history)
-            if history:
-                messages.extend([dict(m) for m in history])
-            if self._context_builder is not None and media:
-                user_payload = self._context_builder.build_user_content(
-                    user_message_text, media
-                )
-                messages.append({"role": "user", "content": user_payload})
-            else:
-                messages.append({"role": "user", "content": user_message_text})
+            messages = await self._build_initial_messages(
+                user_message_text=user_message_text,
+                session_id=session_id,
+                system_prompt=system_prompt,
+                memory_enabled=memory_enabled,
+                channel=channel,
+                chat_id=chat_id,
+                media=media,
+                skill_names=skill_names,
+                history=history,
+            )
             message_build_ms = (time.perf_counter() - build_started) * 1000.0
 
             tool_runs: List[AgentToolRun] = []
             final_content = ""
             stopped_reason = "done"
-            all_tool_definitions = self._tools.get_definitions()
-            tool_signature = self._tool_signature(all_tool_definitions)
-            tool_index = self._get_cached_tool_index(
-                all_tool_definitions, tool_signature
+            all_tool_definitions, tool_signature, tool_index, default_tools = (
+                self._prepare_tool_selection()
             )
-            default_tools = self._get_cached_default_tools(tool_index, tool_signature)
             repeated_tool_cycles = 0
             last_tool_cycle_signature: Optional[tuple[str, ...]] = None
             last_iteration = 0
@@ -345,32 +309,14 @@ class AgentLoop:
                     user_message_text=user_message_text,
                     messages=messages,
                 )
-                llm_started = time.perf_counter()
-                llm_call = self._llm_callable(messages, tool_definitions, self.model)
-                try:
-                    if self._llm_timeout_seconds is not None:
-                        response = await asyncio.wait_for(
-                            llm_call, timeout=self._llm_timeout_seconds
-                        )
-                    else:
-                        response = await llm_call
-                except asyncio.TimeoutError as exc:
-                    llm_elapsed_ms = (time.perf_counter() - llm_started) * 1000.0
-                    llm_total_ms += llm_elapsed_ms
-                    self._logger.warning(
-                        "annolid-bot profile iteration timeout session=%s model=%s iteration=%d llm_ms=%.1f timeout_s=%.1f",
-                        session_id,
-                        self.model,
-                        iteration,
-                        llm_elapsed_ms,
-                        float(self._llm_timeout_seconds or 0.0),
-                    )
-                    raise TimeoutError(
-                        f"LLM timed out after {float(self._llm_timeout_seconds or 0.0):.1f}s "
-                        f"(iteration={iteration}, model={self.model})"
-                    ) from exc
-                llm_elapsed_ms = (time.perf_counter() - llm_started) * 1000.0
+                response, llm_elapsed_ms = await self._execute_llm_cycle(
+                    session_id=session_id,
+                    iteration=iteration,
+                    messages=messages,
+                    tool_definitions=tool_definitions,
+                )
                 llm_total_ms += llm_elapsed_ms
+
                 assistant_text = str(response.get("content") or "")
                 tool_calls = self._sanitize_tool_calls(
                     self._extract_tool_calls(response)
@@ -425,62 +371,16 @@ class AgentLoop:
                             ],
                         }
                     )
-                    for call in tool_calls:
-                        call_id = str(call.get("id") or "")
-                        name = str(call.get("name") or "")
-                        raw_args = call.get("arguments")
-                        args = self._normalize_args(raw_args)
-                        tool_started = time.perf_counter()
-                        try:
-                            if self._tool_timeout_seconds is not None:
-                                result = await asyncio.wait_for(
-                                    self._tools.execute(name, args),
-                                    timeout=self._tool_timeout_seconds,
-                                )
-                            else:
-                                result = await self._tools.execute(name, args)
-                        except asyncio.TimeoutError:
-                            result = (
-                                f"Error: Tool '{name}' timed out after "
-                                f"{float(self._tool_timeout_seconds or 0.0):.1f}s"
-                            )
-                            self._logger.warning(
-                                "annolid-bot tool timeout session=%s model=%s iteration=%d tool=%s timeout_s=%.1f",
-                                session_id,
-                                self.model,
-                                iteration,
-                                name,
-                                float(self._tool_timeout_seconds or 0.0),
-                            )
-                        tool_elapsed_ms = (time.perf_counter() - tool_started) * 1000.0
-                        tool_exec_total_ms += tool_elapsed_ms
-                        tool_call_count += 1
-                        if tool_elapsed_ms >= 500.0:
-                            self._logger.info(
-                                "annolid-bot profile tool session=%s model=%s iteration=%d tool=%s elapsed_ms=%.1f",
-                                session_id,
-                                self.model,
-                                iteration,
-                                name,
-                                tool_elapsed_ms,
-                            )
-                        tool_runs.append(
-                            AgentToolRun(
-                                call_id=call_id,
-                                name=name,
-                                arguments=dict(args),
-                                result=str(result),
-                            )
-                        )
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": call_id,
-                                "name": name,
-                                "content": str(result),
-                            }
-                        )
-                    self._append_post_tool_guidance(messages)
+
+                    cycle_exec_ms, cycle_call_count = await self._execute_tool_cycle(
+                        session_id=session_id,
+                        iteration=iteration,
+                        tool_calls=tool_calls,
+                        messages=messages,
+                        tool_runs=tool_runs,
+                    )
+                    tool_exec_total_ms += cycle_exec_ms
+                    tool_call_count += cycle_call_count
                     continue
 
                 repeated_tool_cycles = 0
@@ -512,9 +412,17 @@ class AgentLoop:
             if stopped_reason == "done":
                 stopped_reason = "max_iterations"
                 if not final_content:
-                    final_content = (
-                        "Reached max iterations before producing a final response."
-                    )
+                    if tool_runs:
+                        tool_names = ", ".join([r.name for r in tool_runs])
+                        final_content = (
+                            f"Execution stopped after reaching the maximum number of iterations ({iteration}). "
+                            f"The following tools were used during this process: [{tool_names}]. "
+                            "Please refine your request or provide further guidance."
+                        )
+                    else:
+                        final_content = (
+                            "Reached max iterations before producing a final response."
+                        )
             if memory_enabled:
                 tools_used = self._extract_tools_used(tool_runs)
                 self._memory_store.append_history(
@@ -592,6 +500,184 @@ class AgentLoop:
             self._mcp_stack = None
             raise
         self._mcp_connected = True
+
+    async def _execute_llm_cycle(
+        self,
+        *,
+        session_id: str,
+        iteration: int,
+        messages: Sequence[Mapping[str, Any]],
+        tool_definitions: Sequence[Mapping[str, Any]],
+    ) -> tuple[Dict[str, Any], float]:
+        llm_started = time.perf_counter()
+        llm_call = self._llm_callable(messages, tool_definitions, self.model)
+        try:
+            if self._llm_timeout_seconds is not None:
+                response = await asyncio.wait_for(
+                    llm_call, timeout=self._llm_timeout_seconds
+                )
+            else:
+                response = await llm_call
+        except asyncio.TimeoutError as exc:
+            llm_elapsed_ms = (time.perf_counter() - llm_started) * 1000.0
+            self._logger.warning(
+                "annolid-bot profile iteration timeout session=%s model=%s iteration=%d llm_ms=%.1f timeout_s=%.1f",
+                session_id,
+                self.model,
+                iteration,
+                llm_elapsed_ms,
+                float(self._llm_timeout_seconds or 0.0),
+            )
+            raise TimeoutError(
+                f"LLM timed out after {float(self._llm_timeout_seconds or 0.0):.1f}s "
+                f"(iteration={iteration}, model={self.model})"
+            ) from exc
+        llm_elapsed_ms = (time.perf_counter() - llm_started) * 1000.0
+        return dict(response), llm_elapsed_ms
+
+    async def _execute_tool_cycle(
+        self,
+        *,
+        session_id: str,
+        iteration: int,
+        tool_calls: Sequence[Mapping[str, Any]],
+        messages: List[Dict[str, Any]],
+        tool_runs: List[AgentToolRun],
+    ) -> tuple[float, int]:
+        cycle_exec_ms = 0.0
+        cycle_call_count = 0
+        for call in tool_calls:
+            call_id = str(call.get("id") or "")
+            name = str(call.get("name") or "")
+            raw_args = call.get("arguments")
+            args = self._normalize_args(raw_args)
+            tool_started = time.perf_counter()
+            try:
+                if self._tool_timeout_seconds is not None:
+                    result = await asyncio.wait_for(
+                        self._tools.execute(name, args),
+                        timeout=self._tool_timeout_seconds,
+                    )
+                else:
+                    result = await self._tools.execute(name, args)
+            except asyncio.TimeoutError:
+                result = (
+                    f"Error: Tool '{name}' timed out after "
+                    f"{float(self._tool_timeout_seconds or 0.0):.1f}s"
+                )
+                self._logger.warning(
+                    "annolid-bot tool timeout session=%s model=%s iteration=%d tool=%s timeout_s=%.1f",
+                    session_id,
+                    self.model,
+                    iteration,
+                    name,
+                    float(self._tool_timeout_seconds or 0.0),
+                )
+            tool_elapsed_ms = (time.perf_counter() - tool_started) * 1000.0
+            cycle_exec_ms += tool_elapsed_ms
+            cycle_call_count += 1
+            if tool_elapsed_ms >= 500.0:
+                self._logger.info(
+                    "annolid-bot profile tool session=%s model=%s iteration=%d tool=%s elapsed_ms=%.1f",
+                    session_id,
+                    self.model,
+                    iteration,
+                    name,
+                    tool_elapsed_ms,
+                )
+            tool_runs.append(
+                AgentToolRun(
+                    call_id=call_id,
+                    name=name,
+                    arguments=dict(args),
+                    result=str(result),
+                )
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": name,
+                    "content": str(result),
+                }
+            )
+        self._append_post_tool_guidance(messages)
+        return cycle_exec_ms, cycle_call_count
+
+    async def _build_initial_messages(
+        self,
+        *,
+        user_message_text: str,
+        session_id: str,
+        system_prompt: Optional[str],
+        memory_enabled: bool,
+        channel: Optional[str],
+        chat_id: Optional[str],
+        media: Optional[List[str]],
+        skill_names: Optional[List[str]],
+        history: Optional[Sequence[Mapping[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        messages: List[Dict[str, Any]] = []
+        self._persist_long_term_memory_note_from_user_text(user_message_text)
+        memory_history: List[Dict[str, Any]] = []
+        memory_facts: Dict[str, str] = {}
+        if memory_enabled:
+            memory_history = self._memory_store.get_history(session_id)
+            memory_facts = self._memory_store.get_facts(session_id)
+            if len(memory_history) > max(2, int(self._memory_config.memory_window)):
+                memory_history = await self._consolidate_memory(
+                    session_id=session_id,
+                    history=memory_history,
+                )
+
+        if system_prompt:
+            messages.append({"role": "system", "content": str(system_prompt)})
+        elif self._context_builder is not None:
+            contextual = self._context_builder.build_system_prompt(
+                skill_names=skill_names
+            )
+            if channel and chat_id:
+                contextual += (
+                    f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+                )
+            messages.append({"role": "system", "content": contextual})
+        if (
+            memory_enabled
+            and memory_facts
+            and self._memory_config.include_facts_in_system_prompt
+        ):
+            messages.append(
+                {
+                    "role": "system",
+                    "content": self._format_memory_facts(memory_facts),
+                }
+            )
+        if memory_enabled and memory_history:
+            messages.extend(memory_history)
+        if history:
+            messages.extend([dict(m) for m in history])
+        if self._context_builder is not None and media:
+            user_payload = self._context_builder.build_user_content(
+                user_message_text, media
+            )
+            messages.append({"role": "user", "content": user_payload})
+        else:
+            messages.append({"role": "user", "content": user_message_text})
+        return messages
+
+    def _prepare_tool_selection(
+        self,
+    ) -> tuple[
+        List[Dict[str, Any]],
+        tuple[tuple[str, str], ...],
+        List[_ToolSchemaIndex],
+        List[Dict[str, Any]],
+    ]:
+        all_tool_definitions = self._tools.get_definitions()
+        tool_signature = self._tool_signature(all_tool_definitions)
+        tool_index = self._get_cached_tool_index(all_tool_definitions, tool_signature)
+        default_tools = self._get_cached_default_tools(tool_index, tool_signature)
+        return all_tool_definitions, tool_signature, tool_index, default_tools
 
     async def _disconnect_mcp(self) -> None:
         if self._mcp_stack is None:
@@ -1014,10 +1100,11 @@ class AgentLoop:
         "final answer. For live web requests, prefer `gui_web_run_steps` before "
         "claiming browsing limits. Do not reveal private chain-of-thought."
     )
+    _TOKENIZE_RE = re.compile(r"[a-zA-Z0-9_]+")
 
     @classmethod
     def _tokenize_text(cls, text: str) -> List[str]:
-        raw = re.findall(r"[a-zA-Z0-9_]+", str(text or "").lower())
+        raw = cls._TOKENIZE_RE.findall(str(text or "").lower())
         return [t for t in raw if len(t) > 1 and t not in cls._TOOL_SELECTOR_STOPWORDS]
 
     @classmethod
