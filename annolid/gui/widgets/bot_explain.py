@@ -118,3 +118,33 @@ def explain_image_with_annolid_bot(
     except Exception as exc:
         return False, f"Failed to send image to Annolid Bot: {exc}"
     return True, "Sent selected image to Annolid Bot for description."
+
+
+def save_pdf_with_annolid_bot(
+    owner: QtWidgets.QWidget,
+    pdf_url: str,
+) -> Tuple[bool, str]:
+    url = str(pdf_url or "").strip()
+    if not url:
+        return False, "No PDF URL provided."
+
+    widget, err = _resolve_chat_widget(owner)
+    if widget is None:
+        return False, err or "Unable to open Annolid Bot."
+    if bool(getattr(widget, "is_streaming_chat", False)):
+        return False, "Annolid Bot is currently responding. Please try again."
+    
+    prompt_input = getattr(widget, "prompt_text_edit", None)
+    send_chat = getattr(widget, "chat_with_model", None)
+    if prompt_input is None or not callable(send_chat):
+        return False, "Annolid Bot input is unavailable."
+
+    prompt = f"Please download and save the following PDF to my library, and then open it in the PDF viewer: {url}"
+
+    try:
+        prompt_input.setPlainText(prompt)
+        prompt_input.setFocus()
+        send_chat()
+    except Exception as exc:
+        return False, f"Failed to send request to Annolid Bot: {exc}"
+    return True, "Requested Annolid Bot to save the PDF."

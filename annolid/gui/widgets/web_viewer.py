@@ -361,6 +361,12 @@ class WebViewerWidget(QtWidgets.QWidget):
         if self._web_view is not None:
             self.back_button.setEnabled(self._web_view.history().canGoBack())
             self.forward_button.setEnabled(self._web_view.history().canGoForward())
+            
+        url = self._current_url
+        is_pdf = self._is_pdf_url(url) if url else False
+        if hasattr(self, "save_pdf_button"):
+            self.save_pdf_button.setVisible(is_pdf)
+
 
     def _build_ui(self) -> None:
         root = QtWidgets.QVBoxLayout(self)
@@ -468,6 +474,14 @@ class WebViewerWidget(QtWidgets.QWidget):
         self.open_in_browser_button.setStyleSheet(nav_button_style)
         toolbar_layout.addWidget(self.open_in_browser_button)
 
+        # Save PDF button
+        self.save_pdf_button = QtWidgets.QToolButton(toolbar)
+        self.save_pdf_button.setToolTip("Use Annolid Bot to save this PDF and open in PDF Viewer")
+        self._apply_nav_icon(self.save_pdf_button, "document-save", "📥")
+        self.save_pdf_button.setStyleSheet(nav_button_style)
+        self.save_pdf_button.setVisible(False)
+        toolbar_layout.addWidget(self.save_pdf_button)
+
         # Close button to close the web viewer tab
         self.close_button = QtWidgets.QToolButton(toolbar)
         self.close_button.setToolTip("Close this tab")
@@ -519,6 +533,7 @@ class WebViewerWidget(QtWidgets.QWidget):
         self.reload_button.clicked.connect(self._reload_page)
         self.url_edit.returnPressed.connect(self._on_url_entered)
         self.open_in_browser_button.clicked.connect(self.open_current_in_browser)
+        self.save_pdf_button.clicked.connect(self._on_save_pdf_clicked)
         self.close_button.clicked.connect(self.close_requested.emit)
         self._web_view.urlChanged.connect(self._on_url_changed)
         self._web_view.loadFinished.connect(self._on_load_finished)
@@ -643,6 +658,15 @@ class WebViewerWidget(QtWidgets.QWidget):
             return
         QtGui.QDesktopServices.openUrl(parsed)
         self.status_changed.emit(f"Opened in system browser: {parsed.toString()}")
+
+    def _on_save_pdf_clicked(self) -> None:
+        target = str(self.url_edit.text() or "").strip() or self._current_url
+        if not target:
+            return
+        from annolid.gui.widgets.bot_explain import save_pdf_with_annolid_bot
+
+        ok, msg = save_pdf_with_annolid_bot(self, target)
+        self.status_changed.emit(msg)
 
     def clear(self) -> None:
         if self._web_view is None:
