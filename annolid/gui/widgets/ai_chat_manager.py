@@ -8,12 +8,14 @@ from typing import Optional
 from qtpy import QtCore, QtWidgets
 
 from annolid.core.agent.bus import MessageBus
+from annolid.core.agent.bus.events import InboundMessage
 from annolid.core.agent.bus.service import AgentBusService
 from annolid.core.agent.channels.manager import ChannelManager
 from annolid.core.agent.channels.whatsapp import WhatsAppChannel
 from annolid.core.agent.channels.whatsapp_python_bridge import WhatsAppPythonBridge
 from annolid.core.agent.channels.whatsapp_webhook_server import WhatsAppWebhookServer
 from annolid.core.agent.config import load_config
+from annolid.core.agent.cron import CronJob, CronService
 from annolid.core.agent.loop import AgentLoop
 from annolid.core.agent.tools import (
     FunctionToolRegistry,
@@ -39,6 +41,7 @@ class AIChatManager(QtCore.QObject):
         self._whatsapp_webhook_server: Optional[WhatsAppWebhookServer] = None
         self._whatsapp_python_bridge: Optional[WhatsAppPythonBridge] = None
         self._channel_start_task: Optional[asyncio.Task[None]] = None
+        self._cron_service: Optional[CronService] = None
 
     def _on_dock_visibility_changed(self, visible: bool) -> None:
         if not visible:
@@ -197,7 +200,31 @@ class AIChatManager(QtCore.QObject):
                         },
                     )
 
+                    async def _on_cron_job(job: CronJob) -> Optional[str]:
+                        if not self._background_bus:
+                            return "Error: background bus unavailable"
+                        channel = str(job.payload.channel or "cli")
+                        chat_id = str(job.payload.to or "direct")
+                        msg = str(job.payload.message or "").strip()
+                        if msg:
+                            await self._background_bus.publish_inbound(
+                                InboundMessage(
+                                    channel=channel,
+                                    chat_id=chat_id,
+                                    content=msg,
+                                )
+                            )
+                        return "Inbound generated"
+
+                    cron_store_path = workspace / "cron" / "jobs.json"
+                    self._cron_service = CronService(
+                        store_path=cron_store_path,
+                        on_job=_on_cron_job,
+                        logger=logger,
+                    )
+
                     await self._bus_service.start()
+                    await self._cron_service.start()
                     if (
                         config.tools.whatsapp.webhook_enabled
                         and whatsapp_start_runtime
@@ -301,6 +328,15 @@ class AIChatManager(QtCore.QObject):
             except Exception:
                 logger.exception("Failed stopping channel manager")
             self._channel_manager = None
+        if self._cron_service is not None and self._background_loop is not None:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._cron_service.stop(), self._background_loop
+                )
+                fut.result(timeout=2.0)
+            except Exception:
+                logger.exception("Failed stopping cron service")
+            self._cron_service = None
         if self._bus_service is not None and self._background_loop is not None:
             try:
                 fut = asyncio.run_coroutine_threadsafe(

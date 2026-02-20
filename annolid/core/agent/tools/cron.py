@@ -65,8 +65,9 @@ class CronTool(FunctionTool):
     @property
     def description(self) -> str:
         return (
-            "Schedule reminders and recurring tasks. Actions: "
-            "add, list, remove, enable, disable, run, status."
+            "Schedule commands, agent workflows (like sending emails), or recurring tasks. "
+            "When triggered, the configured `message` string is executed as a background prompt. "
+            "Actions: add, list, remove, enable, disable, run, status."
         )
 
     @property

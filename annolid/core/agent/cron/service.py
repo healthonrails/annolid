@@ -54,15 +54,18 @@ class CronService:
         self._timer_task: Optional[asyncio.Task[Any]] = None
         self._logger = logger or logging.getLogger("annolid.agent.cron")
         self._persistence_error: Optional[str] = None
+        self._last_store_mtime: float = 0.0
 
-    def _load_store(self) -> CronStore:
-        if self._store is not None:
+    def _load_store(self, force: bool = False) -> CronStore:
+        if self._store is not None and not force:
             return self._store
         if not self.store_path.exists():
             self._store = CronStore()
             return self._store
         try:
+            mtime = self.store_path.stat().st_mtime
             payload = json.loads(self.store_path.read_text(encoding="utf-8"))
+            self._last_store_mtime = mtime
         except Exception:
             self._store = CronStore()
             return self._store
@@ -145,6 +148,10 @@ class CronService:
             self.store_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            try:
+                self._last_store_mtime = self.store_path.stat().st_mtime
+            except OSError:
+                pass
             self._persistence_error = None
         except OSError as exc:
             self._persistence_error = str(exc)
@@ -183,10 +190,25 @@ class CronService:
         wake = self._next_wake_ms()
         if wake is None:
             return
-        delay = max(0.0, (wake - _now_ms()) / 1000.0)
+        # Cap sleep so we can poll for ad-hoc mtime changes
+        delay = min(60.0, max(0.0, (wake - _now_ms()) / 1000.0))
 
         async def _tick() -> None:
-            await asyncio.sleep(delay)
+            slept = 0.0
+            while slept < delay and self._running:
+                await asyncio.sleep(1.0)
+                slept += 1.0
+                try:
+                    if self.store_path.exists():
+                        current_mtime = self.store_path.stat().st_mtime
+                        if current_mtime > self._last_store_mtime:
+                            # Externally modified (e.g., via GUI/CLI Tool)
+                            self._store = None
+                            self._recompute_next_runs()
+                            break
+                except OSError:
+                    pass
+
             if self._running:
                 await self.on_timer()
 

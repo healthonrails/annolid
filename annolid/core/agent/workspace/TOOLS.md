@@ -92,4 +92,4 @@ Safety notes:
 - `cron` actions:
   - `add`, `list`, `remove`, `enable`, `disable`, `run`, `status`
 
-Use cron for periodic reminders and routine checks.
+Use cron to schedule full agent workflows, automated web routines, or recurring actions (e.g. sending emails, checking updates).

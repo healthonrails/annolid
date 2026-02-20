@@ -17,10 +17,13 @@ def should_apply_web_refusal_fallback(
 def apply_pdf_response_fallback(
     text: str,
     *,
+    tool_run_count: int,
     looks_like_local_access_refusal: Callable[[str], bool],
     looks_like_open_pdf_suggestion: Callable[[str], bool],
     try_open_pdf_content_fallback: Callable[[], str],
 ) -> str:
+    if tool_run_count > 0:
+        return text
     if not (
         looks_like_local_access_refusal(text) or looks_like_open_pdf_suggestion(text)
     ):
@@ -94,6 +97,7 @@ async def apply_web_response_fallbacks(
     text: str,
     prompt: str,
     tools: Optional[Any],
+    tool_run_count: int,
     enable_web_tools: bool,
     looks_like_open_url_suggestion: Callable[[str], bool],
     should_apply_web_refusal_fallback_cb: Callable[[str], bool],
@@ -102,6 +106,8 @@ async def apply_web_response_fallbacks(
     try_web_fetch_fallback: Callable[[str, Optional[Any]], Any],
 ) -> str:
     result = text
+    if tool_run_count > 0:
+        return result
     if enable_web_tools and looks_like_open_url_suggestion(result):
         open_page_fallback = try_open_page_content_fallback()
         if open_page_fallback:

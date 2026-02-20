@@ -250,7 +250,7 @@ QMetaObject = QtCore.QMetaObject
 
 
 _SESSION_STORE: Optional[PersistentSessionStore] = None
-_GUI_ALWAYS_DISABLED_TOOLS = {"cron", "spawn", "message"}
+_GUI_ALWAYS_DISABLED_TOOLS = {"spawn", "message"}
 _GUI_WEB_TOOLS = {"web_search", "web_fetch"}
 # Backward-compat aliases retained for tests/internal callers that reference
 # backend module globals directly.
@@ -993,8 +993,10 @@ class StreamingChatTask(QRunnable):
             used_direct_gui_fallback,
             direct_gui_text,
         ) = await self._apply_direct_gui_fallback(text, tool_run_count=tool_run_count)
-        text = await self._apply_web_response_fallbacks(text, tools=tools)
-        text = self._apply_pdf_response_fallback(text)
+        text = await self._apply_web_response_fallbacks(
+            text, tools=tools, tool_run_count=tool_run_count
+        )
+        text = self._apply_pdf_response_fallback(text, tool_run_count=tool_run_count)
         text, used_recovery = self._apply_empty_ollama_recovery(
             text,
             used_direct_gui_fallback=used_direct_gui_fallback,
@@ -1030,11 +1032,13 @@ class StreamingChatTask(QRunnable):
         text: str,
         *,
         tools: Optional[FunctionToolRegistry],
+        tool_run_count: int,
     ) -> str:
         return await gui_apply_web_response_fallbacks(
             text=text,
             prompt=self.prompt,
             tools=tools,
+            tool_run_count=tool_run_count,
             enable_web_tools=self.enable_web_tools,
             looks_like_open_url_suggestion=self._looks_like_open_url_suggestion,
             should_apply_web_refusal_fallback_cb=self._should_apply_web_refusal_fallback,
@@ -1050,9 +1054,10 @@ class StreamingChatTask(QRunnable):
             looks_like_knowledge_gap_response=self._looks_like_knowledge_gap_response,
         )
 
-    def _apply_pdf_response_fallback(self, text: str) -> str:
+    def _apply_pdf_response_fallback(self, text: str, *, tool_run_count: int) -> str:
         return gui_apply_pdf_response_fallback(
             text,
+            tool_run_count=tool_run_count,
             looks_like_local_access_refusal=self._looks_like_local_access_refusal,
             looks_like_open_pdf_suggestion=self._looks_like_open_pdf_suggestion,
             try_open_pdf_content_fallback=self._try_open_pdf_content_fallback,

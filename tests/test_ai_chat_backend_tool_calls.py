@@ -201,7 +201,7 @@ def test_build_agent_context_disables_web_tools_by_default(monkeypatch) -> None:
     tool_names = set(context.tools.tool_names)
     assert "web_search" not in tool_names
     assert "web_fetch" not in tool_names
-    assert "cron" not in tool_names
+    assert "cron" in tool_names
     assert "spawn" not in tool_names
     assert "message" not in tool_names
 
@@ -233,7 +233,7 @@ def test_build_agent_context_enables_web_tools_when_requested(monkeypatch) -> No
     tool_names = set(context.tools.tool_names)
     assert "web_search" in tool_names
     assert "web_fetch" in tool_names
-    assert "cron" not in tool_names
+    assert "cron" in tool_names
     assert "spawn" not in tool_names
     assert "message" not in tool_names
 

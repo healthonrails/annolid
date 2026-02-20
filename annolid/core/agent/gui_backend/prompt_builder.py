@@ -52,6 +52,12 @@ def build_compact_system_prompt(
         "Do not ask the user for today's date unless they explicitly ask for a different timezone/date reference."
     )
     parts.append(
+        "CRITICAL INSTRUCTION ON AUTOMATION: You DO have native capabilities for both email and scheduling. "
+        "If a user asks you to schedule an email, you MUST use the `cron` tool (action='add') and set its `message` "
+        "to a prompt instructing yourself to send the email (e.g. 'Send an email to user@example...'). "
+        "Do NOT claim you lack an email scheduling tool, and do NOT offer to create shell scripts or calendar exports."
+    )
+    parts.append(
         "If `gui_web_run_steps` is available and the request needs live web facts "
         "(weather/news/prices/current events), run browser steps first and summarize "
         "the retrieved page text with source URLs. "
