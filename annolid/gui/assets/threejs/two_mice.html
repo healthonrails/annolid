@@ -138,6 +138,8 @@
     import { OrbitControls } from 'https://esm.sh/three@0.151.3/examples/jsm/controls/OrbitControls.js';
     import GUI from 'https://esm.sh/lil-gui@0.18.2';
 
+    import { AnnolidShaders } from './annolid_shaders.js';
+
     // ═══════════════════════════════════════════════════════════════
     // 1. CORE RENDERER SETUP
     // ═══════════════════════════════════════════════════════════════
@@ -816,6 +818,31 @@
         const skinHSL = {}; this.fleshMat.color.getHSL(skinHSL);
         this.fleshMat.attenuationColor.setHSL(skinHSL.h, skinHSL.s, skinHSL.l * 0.5);
 
+        // ═══ APPLY GLSL SHADERS ═══
+        if (params.enableSSS !== false) {
+          annolidShaders.applySSSShader(this.fleshMat, {
+            scatterColor: [skinHSL.h > 0 ? 0.85 : 0.5, 0.3, 0.25],
+            thickness: params.sssThickness ?? 0.45,
+            distortion: 0.2,
+            wrap: params.sssWrap ?? 0.5,
+            backlight: params.sssBacklight ?? 0.6
+          });
+        }
+        if (params.enableContactAO !== false) {
+          annolidShaders.applyContactAO(this.fleshMat, {
+            groundY: 0.0,
+            radius: params.aoRadius ?? 1.5,
+            intensity: params.aoIntensity ?? 0.35,
+            color: [0.02, 0.01, 0.0]
+          });
+        }
+        if (params.enableMicroDetail !== false) {
+          annolidShaders.applyMicroDetail(this.fleshMat, {
+            scale: params.microScale ?? 40.0,
+            strength: params.microStrength ?? 0.06
+          });
+        }
+
         // --- RIG HIERARCHY ---
         this.rig = new THREE.Group();
         this.mesh.add(this.rig);
@@ -1387,6 +1414,13 @@
       coord: document.getElementById('hud-coord')
     };
 
+    // ═══ Initialize shader engine ═══
+    const annolidShaders = new AnnolidShaders(THREE);
+    const postFX = annolidShaders.createPostProcessing(renderer, {
+      vigIntensity: 0.3, vigSoftness: 0.45, grainStrength: 0.02,
+      saturation: 1.05, brightness: 1.0
+    });
+
     const guiParams = {
       furColor: '#ffffff', skinColor: '#ffd0c8',
       chonkiness: 1.0, earSize: 0.85, furDensity: 0.85,
@@ -1419,6 +1453,11 @@
       propTailSag: PROP.tailSag,
       // Fur
       furGuardRatio: 0.5, furLength: 1.0, furClumpiness: 0.3,
+      // Shader controls
+      enableSSS: true, sssThickness: 0.45, sssWrap: 0.5, sssBacklight: 0.6,
+      enableContactAO: true, aoRadius: 1.5, aoIntensity: 0.35,
+      enableMicroDetail: true, microScale: 40.0, microStrength: 0.06,
+      enablePostFX: false, postVignette: 0.3, postGrain: 0.02, postSaturation: 1.05,
     };
 
     function getStrainProfile(presetName) {
@@ -1559,17 +1598,52 @@
         renderer.toneMappingExposure = 1.5;
         keyLight.shadow.mapSize.width = 4096; keyLight.shadow.mapSize.height = 4096;
         keyLight.shadow.map?.dispose(); keyLight.shadow.map = null;
+        guiParams.enablePostFX = true; postFX.enabled = true;
       } else {
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
         renderer.toneMappingExposure = 1.4;
         keyLight.shadow.mapSize.width = 2048; keyLight.shadow.mapSize.height = 2048;
         keyLight.shadow.map?.dispose(); keyLight.shadow.map = null;
+        guiParams.enablePostFX = false; postFX.enabled = false;
       }
+      gui.controllersRecursive().forEach(c => c.updateDisplay());
     });
     qualityFolder.add(guiParams, 'enableAO').name('Contact Shadows').onChange(v => {
       mice.forEach(m => { if (m.contactShadow) m.contactShadow.visible = v; });
     });
     qualityFolder.close();
+
+    // Shaders
+    const shaderFolder = gui.addFolder('Shaders');
+    shaderFolder.add(guiParams, 'enableSSS').name('Subsurface Scatter').onChange(() => {
+      alert('Shader changes require respawning subjects.');
+    });
+    shaderFolder.add(guiParams, 'sssThickness', 0.0, 1.0, 0.05).name('SSS Thickness');
+    shaderFolder.add(guiParams, 'sssWrap', 0.0, 1.0, 0.05).name('SSS Wrap');
+    shaderFolder.add(guiParams, 'sssBacklight', 0.0, 1.5, 0.05).name('SSS Backlight');
+    shaderFolder.add(guiParams, 'enableContactAO').name('Contact AO').onChange(() => {
+      alert('Shader changes require respawning subjects.');
+    });
+    shaderFolder.add(guiParams, 'aoRadius', 0.5, 5.0, 0.1).name('AO Radius');
+    shaderFolder.add(guiParams, 'aoIntensity', 0.0, 1.0, 0.05).name('AO Intensity');
+    shaderFolder.add(guiParams, 'enableMicroDetail').name('Micro Detail').onChange(() => {
+      alert('Shader changes require respawning subjects.');
+    });
+    shaderFolder.add(guiParams, 'microScale', 5.0, 200.0, 5.0).name('Detail Scale');
+    shaderFolder.add(guiParams, 'microStrength', 0.0, 0.3, 0.01).name('Detail Strength');
+    shaderFolder.add(guiParams, 'enablePostFX').name('Post-Processing').onChange(v => {
+      postFX.enabled = v;
+    });
+    shaderFolder.add(guiParams, 'postVignette', 0.0, 1.0, 0.05).name('Vignette').onChange(v => {
+      postFX.uniforms.uVigIntensity.value = v;
+    });
+    shaderFolder.add(guiParams, 'postGrain', 0.0, 0.1, 0.005).name('Film Grain').onChange(v => {
+      postFX.uniforms.uGrainStrength.value = v;
+    });
+    shaderFolder.add(guiParams, 'postSaturation', 0.5, 1.5, 0.05).name('Saturation').onChange(v => {
+      postFX.uniforms.uSaturation.value = v;
+    });
+    shaderFolder.close();
 
     // Physics
     const physicsFolder = gui.addFolder('Physics Controls');
@@ -1620,6 +1694,7 @@
       camera.aspect = innerWidth / innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(innerWidth, innerHeight);
+      postFX.resize();
     });
     window.dispatchEvent(new Event('resize'));
 
@@ -1634,7 +1709,8 @@
         m.update(accumulatedTime, mice, i === 0 ? hudElements : null, dt);
       });
       controls.update();
-      renderer.render(scene, camera);
+      // Render via post-processing pipeline (passes through if disabled)
+      postFX.render(scene, camera, accumulatedTime);
     }
     animate();
   </script>
