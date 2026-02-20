@@ -71,6 +71,7 @@ def _ensure_threejs_http_server() -> str:
                     if name not in {
                         "annolid_threejs_viewer.js",
                         "annolid_threejs_viewer.css",
+                        "annolid_shaders.js",
                         "points_3d.html",
                         "two_mice.html",
                         "parser.worker.js",
