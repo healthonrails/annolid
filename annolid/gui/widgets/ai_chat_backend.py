@@ -1883,6 +1883,7 @@ class StreamingChatTask(QRunnable):
                 workspace=workspace,
                 prompt=self.prompt,
                 enable_web_tools=self.enable_web_tools,
+                enable_ollama_fallback=getattr(self, "enable_ollama_fallback", False),
                 allowed_read_roots=allowed_read_roots,
                 allow_web_tools=allow_web_tools,
                 include_workspace_docs=include_workspace_docs,

@@ -318,6 +318,13 @@ class AgentLoop:
                 llm_total_ms += llm_elapsed_ms
 
                 assistant_text = str(response.get("content") or "")
+                reasoning = str(response.get("reasoning_content") or "").strip()
+                if reasoning and not assistant_text.startswith("<think>"):
+                    assistant_text = (
+                        f"<think>\n{reasoning}\n</think>\n\n{assistant_text}".strip()
+                    )
+                    response["content"] = assistant_text
+
                 tool_calls = self._sanitize_tool_calls(
                     self._extract_tool_calls(response)
                 )

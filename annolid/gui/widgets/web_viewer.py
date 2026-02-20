@@ -990,12 +990,84 @@ class WebViewerWidget(QtWidgets.QWidget):
         script = f"""
 (() => {{
   try {{
-    const text = String((document && document.body && document.body.innerText) || "");
+    const interactiveTags = new Set(["A", "BUTTON", "INPUT", "TEXTAREA", "SELECT"]);
+    const isInteractive = (el) => {{
+      const tag = el.tagName;
+      if (interactiveTags.has(tag)) return true;
+      const role = el.getAttribute("role");
+      if (role === "button" || role === "link" || role === "menuitem") return true;
+      if (el.onclick != null || el.getAttribute("tabindex") != null) return true;
+      return false;
+    }};
+
+    let nextId = 1;
+    let parts = [];
+
+    const isVisible = (el) => {{
+      if (el.offsetWidth === 0 || el.offsetHeight === 0) return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+      return true;
+    }};
+
+    const traverse = (node) => {{
+      if (node.nodeType === Node.TEXT_NODE) {{
+        let val = node.textContent.replace(/\\s+/g, " ").trim();
+        if (val) parts.push(val + " ");
+        return;
+      }}
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (!isVisible(node)) return;
+
+      const tag = node.tagName;
+      if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT" || tag === "SVG") return;
+
+      let interactive = isInteractive(node);
+      let idx = 0;
+      if (interactive) {{
+          idx = nextId++;
+          node.setAttribute("annolid-idx", idx);
+
+          let roleDesc = tag.toLowerCase();
+          if (tag === "INPUT" || tag === "BUTTON") {{
+              const type = node.getAttribute("type");
+              if (type) roleDesc += ` type=${{type}}`;
+          }}
+          parts.push(`\\n[${{idx}}: ${{roleDesc}}] `);
+      }}
+
+      const blockTags = new Set(["DIV", "P", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "TR", "ARTICLE", "SECTION", "NAV", "HEADER", "FOOTER"]);
+      if (blockTags.has(tag)) {{
+          parts.push("\\n");
+      }}
+
+      for (let child of node.childNodes) {{
+        traverse(child);
+      }}
+
+      if (interactive) {{
+          if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {{
+              const val = node.value || "";
+              const ph = node.getAttribute("placeholder") || "";
+              if (val) parts.push(` (value: "${{val}}")`);
+              else if (ph) parts.push(` (placeholder: "${{ph}}")`);
+          }}
+          parts.push("\\n");
+      }} else if (blockTags.has(tag)) {{
+          parts.push("\\n");
+      }}
+    }};
+
+    if (document.body) traverse(document.body);
+
+    let rawText = parts.join("").replace(/\\n{{3,}}/g, "\\n\\n").trim();
+
     const title = String((document && document.title) || "");
     const href = String((window && window.location && window.location.href) || "");
-    const truncated = text.length > {limit + 1000};
-    const part = truncated ? text.slice(0, {limit}) : text;
-    return {{ ok: true, text: part, title, url: href, length: text.length, truncated }};
+    const truncated = rawText.length > {limit + 1000};
+    const part = truncated ? rawText.slice(0, {limit}) : rawText;
+
+    return {{ ok: true, text: part, title, url: href, length: rawText.length, truncated }};
   }} catch (e) {{
     return {{ ok: false, error: String(e) }};
   }}
@@ -1026,7 +1098,10 @@ class WebViewerWidget(QtWidgets.QWidget):
         selector_js = json.dumps(value)
         script = f"""
 (() => {{
-  const selector = {selector_js};
+  let selector = {selector_js};
+  if (/^\\d+$/.test(selector)) {{
+    selector = `[annolid-idx="${{selector}}"]`;
+  }}
   const el = document.querySelector(selector);
   if (!el) return {{ ok: false, error: "Element not found", selector }};
   try {{ el.scrollIntoView({{ behavior: "instant", block: "center" }}); }} catch (e) {{}}
@@ -1055,7 +1130,10 @@ class WebViewerWidget(QtWidgets.QWidget):
         submit_js = "true" if bool(submit) else "false"
         script = f"""
 (() => {{
-  const selector = {selector_js};
+  let selector = {selector_js};
+  if (/^\\d+$/.test(selector)) {{
+    selector = `[annolid-idx="${{selector}}"]`;
+  }}
   const value = {text_js};
   const submit = {submit_js};
   const el = document.querySelector(selector);

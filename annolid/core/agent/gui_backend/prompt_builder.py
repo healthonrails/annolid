@@ -11,6 +11,7 @@ class PromptBuildInputs:
     workspace: Path
     prompt: str
     enable_web_tools: bool
+    enable_ollama_fallback: bool
     allowed_read_roots: Optional[List[str]] = None
     allow_web_tools: Optional[bool] = None
     include_workspace_docs: bool = True
@@ -53,13 +54,16 @@ def build_compact_system_prompt(
     parts.append(
         "If `gui_web_run_steps` is available and the request needs live web facts "
         "(weather/news/prices/current events), run browser steps first and summarize "
-        "the retrieved page text with source URLs. Do not claim missing browsing capability."
+        "the retrieved page text with source URLs. "
+        "PRIORITIZE `gui_web_run_steps` over generic MCP browser evaluation or "
+        "raw Javascript execution tools if you only need text extraction, as "
+        "it returns optimized, readable DOM content rather than raw HTML limits."
     )
     if web_tools_enabled:
         parts.append(
             "Web tools are enabled (`web_search`, `web_fetch`). "
-            "When a user asks about a URL or web page, use web tools to retrieve "
-            "content before answering. Do not claim you cannot browse."
+            "When a user asks about a URL or web page, ALWAYS use `web_search` or `web_fetch` FIRST. "
+            "Do not claim you cannot browse."
         )
         parts.append(
             "Do not assume the currently open embedded page is relevant. "
@@ -77,6 +81,15 @@ def build_compact_system_prompt(
     )
     if live_pdf_context:
         parts.append(live_pdf_context)
+
+    parts.append(
+        "Tools starting with `mcp_` are dynamically injected through an external MCP Server. "
+        "CRITICAL INSTRUCTION: You MUST use native Annolid tools (`web_search`, `web_fetch`, `gui_web_run_steps`) FIRST for all web tasks. "
+        "Only use MCP browser tools as a SECONDARY BACKUP if the native tools fail or are insufficient for the task. "
+        "Because MCP tools can return massive, unchecked strings or DOM trees, their output is forcefully "
+        "truncated at 50,000 characters. If querying an MCP browser (e.g. Playwright), always run evaluation scripts "
+        "that map `.textContent` of exactly the nodes you need instead of returning full HTML structures."
+    )
 
     roots = [
         str(r).strip() for r in (inputs.allowed_read_roots or []) if str(r).strip()

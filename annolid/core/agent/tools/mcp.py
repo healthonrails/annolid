@@ -57,9 +57,15 @@ class MCPToolWrapper(FunctionTool):
             if len(text_payload) > 20000 and (
                 "<html" in text_payload.lower() or "<body" in text_payload.lower()
             ):
-                from .common import _normalize, _strip_tags
+                try:
+                    from bs4 import BeautifulSoup
 
-                text_payload = _normalize(_strip_tags(text_payload))
+                    soup = BeautifulSoup(text_payload, "html.parser")
+                    text_payload = soup.get_text(separator="\n", strip=True)
+                except ImportError:
+                    from .common import _normalize, _strip_tags
+
+                    text_payload = _normalize(_strip_tags(text_payload))
 
             # Cap extremely long outputs
             if len(text_payload) > 50000:
@@ -71,10 +77,36 @@ class MCPToolWrapper(FunctionTool):
                 )
             return text_payload
 
+        def _truncate_json(data: Any, max_len: int = 50) -> Any:
+            if isinstance(data, list):
+                if len(data) > max_len:
+                    return [_truncate_json(x, max_len) for x in data[:max_len]] + [
+                        f"... ({len(data) - max_len} more items truncated)"
+                    ]
+                return [_truncate_json(x, max_len) for x in data]
+            elif isinstance(data, dict):
+                return {k: _truncate_json(v, max_len) for k, v in data.items()}
+            return data
+
         structured = getattr(result, "structuredContent", None)
+        if hasattr(result, "content") and not parts and not structured:
+            # Some MCP servers pass JSON evaluation data in a non-text block, try grabbing raw dictionary from content if possible
+            try:
+                for block in getattr(result, "content", []) or []:
+                    if hasattr(block, "model_dump"):
+                        structured = block.model_dump()
+                        break
+            except Exception:
+                pass
+
         if structured is not None:
             try:
-                return json.dumps(structured, ensure_ascii=False)
+                struct_data = _truncate_json(structured, max_len=50)
+                struct_text = json.dumps(struct_data, ensure_ascii=False, indent=2)
+                if len(struct_text) > 40000:
+                    struct_data = _truncate_json(structured, max_len=15)
+                    struct_text = json.dumps(struct_data, ensure_ascii=False, indent=2)
+                return struct_text
             except Exception:
                 return str(structured)
 

@@ -92,7 +92,13 @@ def _is_probably_text_file(path: Path, *, probe_bytes: int = 2048) -> bool:
 def _strip_tags(text: str) -> str:
     text = re.sub(r"<script[\s\S]*?</script>", "", text, flags=re.I)
     text = re.sub(r"<style[\s\S]*?</style>", "", text, flags=re.I)
-    text = re.sub(r"<[^>]+>", "", text)
+    try:
+        from bs4 import BeautifulSoup
+
+        soup = BeautifulSoup(text, "html.parser")
+        text = soup.get_text(separator="\n", strip=True)
+    except ImportError:
+        text = re.sub(r"<[^>]+>", "", text)
     return html.unescape(text).strip()
 
 
