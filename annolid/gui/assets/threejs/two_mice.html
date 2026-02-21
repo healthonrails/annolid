@@ -83,26 +83,6 @@
       text-shadow: 0 0 8px rgba(255, 51, 102, 0.6);
     }
 
-    .scanner {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 2px;
-      background: rgba(0, 240, 255, 0.1);
-      animation: scan 4s linear infinite;
-      pointer-events: none;
-    }
-
-    @keyframes scan {
-      0% {
-        top: 0%
-      }
-
-      100% {
-        top: 100%
-      }
-    }
 
     .lil-gui {
       --background-color: rgba(0, 15, 30, 0.9);
@@ -123,7 +103,6 @@
 <body>
   <canvas id="c"></canvas>
   <div class="overlay"></div>
-  <div class="scanner"></div>
   <div class="hud">
     <h1>PRIMARY SUBJECT TELEMETRY</h1>
     <div class="data-row"><span class="label">SUBJECT COUNT</span><span class="val" id="hud-count">0</span></div>
@@ -156,7 +135,7 @@
     const scene = new THREE.Scene();
     scene.fog = new THREE.FogExp2(0x0a0c10, 0.012);
 
-    const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.1, 500);
+    const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.03, 500);
     camera.position.set(0, 20, 50);
 
     const controls = new OrbitControls(camera, canvas);
@@ -178,13 +157,13 @@
     function defaultProportions() {
       return {
         bodyLength: 2.9, bodyGirthX: 1.55, bodyGirthY: 1.5,
-        ribcageDepth: 1.0, waistTaper: 0.65, haunchWidth: 1.2, shoulderWidth: 0.85,
+        ribcageDepth: 1.0, waistTaper: 0.65, haunchWidth: 0.95, shoulderWidth: 0.85,
         neckLength: 0.8, neckGirth: 0.55,
         headSize: 1.0, snoutLength: 1.4, snoutWidth: 1.15, cheekFullness: 0.4,
         earSize: 0.85, earSetBack: -0.35, earYaw: 0.75, earThickness: 0.06,
         eyeSize: 0.16, eyeSpacing: 0.50, eyeProtrusion: 1.15, eyeYaw: 0.5,
-        foreLimbLength: 0.8, hindLimbLength: 1.0,
-        forePawSize: 1.0, hindPawSize: 1.0,
+        foreLimbLength: 1.0, hindLimbLength: 0.78,
+        forePawSize: 1.0, hindPawSize: 0.88,
         tailLength: 1.0, tailThickness: 1.0, tailTaper: 0.88, tailSag: 0.02,
       };
     }
@@ -471,7 +450,7 @@
       const chain = new THREE.Group();
       const fl = PROP.foreLimbLength;
       // Scapula/shoulder anchor — place at shoulder width, slightly below spine
-      chain.position.set(sign * 0.55 * PROP.shoulderWidth / 0.85, 0.1, PROP.bodyLength * 0.60);
+      chain.position.set(sign * 0.66 * PROP.shoulderWidth / 0.85, -0.08, PROP.bodyLength * 0.64);
 
       // Upper arm (humerus) — substantial visible segment
       const upperArm = new THREE.Group();
@@ -492,9 +471,16 @@
       // Forearm (radius/ulna) — attached at elbow
       const forearm = new THREE.Group();
       const faLen = 0.45 * fl;
-      forearm.position.set(0, -uaLen - 0.05, 0.04);
+      forearm.position.set(0, -uaLen - 0.015, 0.055);
+      // Soft-tissue bridge to avoid segmented look between upper arm and forearm.
+      const elbowBridge = new THREE.Mesh(new THREE.CapsuleGeometry(0.125, 0.09, 10, 10), fleshMat);
+      elbowBridge.position.set(0, -uaLen * 0.92, 0.03);
+      elbowBridge.rotation.x = 0.15;
+      elbowBridge.castShadow = true;
+      upperArm.add(elbowBridge);
       // Elbow joint
       const elbowJoint = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 10), fleshMat);
+      elbowJoint.scale.set(1.08, 0.95, 1.0);
       elbowJoint.castShadow = true;
       forearm.add(elbowJoint);
       const forearmMesh = new THREE.Mesh(
@@ -507,15 +493,21 @@
 
       // Wrist joint
       const wrist = new THREE.Group();
-      wrist.position.set(0, -faLen - 0.02, 0.03);
+      wrist.position.set(0, -faLen - 0.02, 0.05);
       const wristJoint = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 8), fleshMat);
+      wristJoint.scale.set(1.1, 0.95, 1.05);
       wristJoint.castShadow = true;
       wrist.add(wristJoint);
+      const wristCuff = new THREE.Mesh(new THREE.CapsuleGeometry(0.09, 0.08, 8, 8), fleshMat);
+      wristCuff.position.set(0, -0.03, 0.02);
+      wristCuff.rotation.x = 0.18;
+      wristCuff.castShadow = true;
+      wrist.add(wristCuff);
       forearm.add(wrist);
 
       // Paw — sits at bottom of wrist
       const paw = createPaw(fleshMat, true, strain);
-      paw.position.set(0, -0.08, 0.06);
+      paw.position.set(0, -0.12, 0.05);
       paw.scale.set(1.2, 1.2, 1.2);
       wrist.add(paw);
 
@@ -553,20 +545,52 @@
       const chain = new THREE.Group();
       const hl = PROP.hindLimbLength;
       // Hip anchor — at widest haunch point
-      chain.position.set(sign * 0.60 * PROP.haunchWidth / 1.2, 0.05, -PROP.bodyLength * 0.45);
+      chain.position.set(sign * 0.50 * PROP.haunchWidth / 1.2, 0.14, -PROP.bodyLength * 0.40);
 
       // Hip joint (visible mass)
-      const hipJoint = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 12), fleshMat);
-      hipJoint.scale.set(1.0, 0.85, 1.1);
+      const hipJoint = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 12), fleshMat);
+      hipJoint.scale.set(0.86, 0.72, 0.88);
       hipJoint.castShadow = true;
       chain.add(hipJoint);
+      // Soft blend into lower back to avoid a hard hip seam.
+      const hipBlend = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.24, 10, 10), fleshMat);
+      hipBlend.position.set(0, 0.10, -0.06);
+      hipBlend.rotation.x = 0.45;
+      hipBlend.scale.set(1.05, 0.85, 1.2);
+      hipBlend.castShadow = true;
+      chain.add(hipBlend);
+      // Extra local fur on hip blend to hide seam against back.
+      const hipFurCount = Math.floor(3800 * density);
+      if (hipFurCount > 0) {
+        const hfGeo = new THREE.ConeGeometry(0.006, 0.09, 3);
+        hfGeo.translate(0, 0.045, 0);
+        const hfMat = new THREE.MeshPhysicalMaterial({
+          color: new THREE.Color(furColor), roughness: 0.78, transparent: true, opacity: 0.84
+        });
+        const hfInst = new THREE.InstancedMesh(hfGeo, hfMat, hipFurCount);
+        const hDummy = new THREE.Object3D();
+        const hNrm = new THREE.Vector3();
+        for (let i = 0; i < hipFurCount; i++) {
+          const theta = Math.random() * Math.PI * 2;
+          const y = (Math.random() - 0.5) * 1.6;
+          hNrm.set(Math.cos(theta) * 0.95, y * 0.45, Math.sin(theta) * 1.1).normalize();
+          hDummy.position.set(hNrm.x * 0.16, hNrm.y * 0.18, hNrm.z * 0.17);
+          hDummy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), hNrm);
+          const s = 0.72 + Math.random() * 0.55;
+          hDummy.scale.set(s, s, s);
+          hDummy.updateMatrix();
+          hfInst.setMatrixAt(i, hDummy.matrix);
+        }
+        hipBlend.add(hfInst);
+      }
 
       // Thigh (femur) — enlarged deformed sphere
       const thigh = new THREE.Mesh(thighGeo, fleshMat);
-      thigh.scale.set(1.3, 1.1 * hl, 1.3);
+      thigh.position.set(0, -0.06, 0.02);
+      thigh.scale.set(0.94, 0.86 * hl, 0.98);
       thigh.castShadow = true;
       chain.add(thigh);
-      thigh.add(generateFurLayer(deformThigh, Math.floor(6000 * density), furColor, 0.15, false));
+      thigh.add(generateFurLayer(deformThigh, Math.floor(8200 * density), furColor, 0.15, false));
 
       // Shank (tibia/fibula) — substantial capsule
       const shank = new THREE.Group();
@@ -574,13 +598,13 @@
       thigh.add(shank);
 
       // Knee joint (visible bump)
-      const kneeJoint = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 10), fleshMat);
+      const kneeJoint = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 10), fleshMat);
       kneeJoint.position.set(0, 0.05, 0);
       kneeJoint.castShadow = true;
       shank.add(kneeJoint);
 
       const shankLen = 0.55 * hl;
-      const shankMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, shankLen, 8, 8), fleshMat);
+      const shankMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.10, shankLen, 8, 8), fleshMat);
       shankMesh.rotation.x = -0.05;
       shankMesh.position.set(0, -shankLen * 0.5, 0.05);
       shankMesh.castShadow = true;
@@ -591,7 +615,7 @@
       ankle.position.set(0, -shankLen - 0.05, 0.12);
       shank.add(ankle);
 
-      const ankleJoint = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 10), fleshMat);
+      const ankleJoint = new THREE.Mesh(new THREE.SphereGeometry(0.10, 10, 10), fleshMat);
       ankleJoint.castShadow = true;
       ankle.add(ankleJoint);
 
@@ -613,7 +637,7 @@
       // Hindpaw — planted on ground
       const paw = createPaw(fleshMat, false, strain);
       paw.position.set(0, -0.16, 0.24);
-      paw.scale.set(1.3, 1.3, 1.3);
+      paw.scale.set(1.15, 1.15, 1.15);
       ankle.add(paw);
 
       chain._thigh = thigh;
@@ -728,11 +752,12 @@
       grad.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = grad; ctx.fillRect(0, 0, 64, 64);
       const tex = new THREE.CanvasTexture(c);
-      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false });
       const geo = new THREE.PlaneGeometry(5, 4);
       const mesh = new THREE.Mesh(geo, mat);
       mesh.rotation.x = -Math.PI / 2;
       mesh.position.y = 0.02;
+      mesh.renderOrder = 5;
       return mesh;
     }
 
@@ -776,7 +801,17 @@
         this.wallFollowDir = Math.random() > 0.5 ? 1 : -1;
         this.lastPos = new THREE.Vector2(0, 0);
         this.stuckTimer = 0;
+        this.lowSpeedTimer = 0;
         this.tailSegLen = 0.22;
+        this.rearAmount = 0;
+        this.rearVel = 0;
+        this.rearCooldown = 0;
+        this.prevVelocity = new THREE.Vector2(0, 0);
+        this.prevHeadingAngle = Math.atan2(this.heading.x, this.heading.y);
+        this.yawAngle = this.prevHeadingAngle;
+        this.yawVel = 0;
+        this.bodyDyn = { y: 1.3, vy: 0, pitch: 0, pitchV: 0, roll: 0, rollV: 0 };
+        this.tailDyn = { sway: 0, swayV: 0, lift: 0, liftV: 0 };
 
         const furColor = params.furColor;
         const skinColor = params.skinColor;
@@ -818,7 +853,7 @@
         // ═══ APPLY GLSL SHADERS ═══
         if (params.enableSSS !== false) {
           annolidShaders.applySSSShader(this.fleshMat, {
-            scatterColor: [skinHSL.h > 0 ? 0.85 : 0.5, 0.3, 0.25],
+            scatterColor: [this.fleshMat.color.r * 0.9, this.fleshMat.color.g * 0.9, this.fleshMat.color.b * 0.9],
             thickness: params.sssThickness ?? 0.45,
             distortion: 0.2,
             wrap: params.sssWrap ?? 0.5,
@@ -884,9 +919,9 @@
         // BELLY BRIDGE
         const bellyGeo = new THREE.CapsuleGeometry(0.4, 1.2, 8, 8);
         const bellyMesh = new THREE.Mesh(bellyGeo, this.fleshMat);
-        bellyMesh.position.set(0, -0.35, PROP.bodyLength * 0.62);
+        bellyMesh.position.set(0, -0.47, PROP.bodyLength * 0.58);
         bellyMesh.rotation.x = Math.PI / 2;
-        bellyMesh.scale.set(1.1, 1.0, 0.7);
+        bellyMesh.scale.set(0.86, 0.70, 0.48);
         this.rig.add(bellyMesh);
 
         // HEAD
@@ -916,12 +951,25 @@
         const nR = new THREE.Mesh(new THREE.SphereGeometry(0.025, 8, 8), nostrilMat);
         nR.position.set(-0.045, -0.01, 0.11); this.snoutTip.add(nR);
 
-        // MOUTH
-        const mouthMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
-        this.mouth = new THREE.Mesh(new THREE.CapsuleGeometry(0.035, 0.07, 8, 8), mouthMat);
+        // MOUTH + INCISORS
+        const mouthMat = new THREE.MeshBasicMaterial({ color: 0x0d0d0d });
+        this.mouth = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 0.09, 10, 10), mouthMat);
         this.mouth.rotation.z = Math.PI / 2;
-        this.mouth.position.set(0, -0.28, PROP.snoutLength * 0.99);
+        this.mouth.position.set(0, -0.27, PROP.snoutLength * 1.02);
         this.head.add(this.mouth);
+
+        const toothMat = new THREE.MeshPhysicalMaterial({
+          color: 0xf5e9cf, roughness: 0.35, metalness: 0.0, clearcoat: 0.35, clearcoatRoughness: 0.2
+        });
+        const addIncisor = (xSign) => {
+          const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.07, 0.022), toothMat);
+          tooth.position.set(0.02 * xSign, -0.235, PROP.snoutLength * 1.06);
+          tooth.rotation.x = -0.22;
+          tooth.castShadow = true;
+          this.head.add(tooth);
+        };
+        addIncisor(-1);
+        addIncisor(1);
 
         // WHISKERS
         const wColor = skinHSL.l > 0.5 ? 0xaaaaaa : 0x444444;
@@ -1120,11 +1168,18 @@
         if (!guiParams.isPaused) {
           const dxS = px - this.lastPos.x, dzS = pz - this.lastPos.y;
           this.stuckTimer += dt;
-          if (this.stuckTimer > 0.8) {
-            if (Math.sqrt(dxS * dxS + dzS * dzS) < 0.5) {
-              const ka = Math.random() * Math.PI * 2;
-              this.force.x += Math.cos(ka) * 20.0;
-              this.force.y += Math.sin(ka) * 20.0;
+          if (this.stuckTimer > 1.0) {
+            if (Math.sqrt(dxS * dxS + dzS * dzS) < 0.35) {
+              const escape = new THREE.Vector2(
+                nearest.tangentX * this.wallFollowDir + nearest.normalX * 0.7,
+                nearest.tangentZ * this.wallFollowDir + nearest.normalZ * 0.7
+              );
+              if (escape.lengthSq() < 1e-6) escape.set(Math.cos(t), Math.sin(t));
+              escape.normalize();
+              const escapeForce = 30.0 + (wallDist < 1.5 ? 20.0 : 0.0);
+              this.force.x += escape.x * escapeForce;
+              this.force.y += escape.y * escapeForce;
+              this.yawVel *= 0.5;
               this.wallFollowDir *= -1;
             }
             this.lastPos.set(px, pz); this.stuckTimer = 0;
@@ -1155,10 +1210,47 @@
           }
         }
 
-        // Drag
-        const dragC = this.guiParams.dragCoeff;
+        const preSpeed = this.velocity.length();
+
+        // Cruise assist: keep mice from decaying to full stop after startup.
+        if (!guiParams.isPaused) {
+          const cruiseTarget = Math.max(this.guiParams.maxSpeed * 0.30, 1.8);
+          if (preSpeed < cruiseTarget) {
+            const deficit = (cruiseTarget - preSpeed) / Math.max(cruiseTarget, 1e-3);
+            const cruiseDir = this.heading.lengthSq() > 1e-6
+              ? this.heading.clone().normalize()
+              : new THREE.Vector2(Math.cos(t), Math.sin(t)).normalize();
+            const cruiseBoost = (this.guiParams.wanderForce * 5.0 + 10.0) * deficit;
+            this.force.x += cruiseDir.x * cruiseBoost;
+            this.force.y += cruiseDir.y * cruiseBoost;
+          }
+        }
+
+        // Drag (lighter at very low speed so movement does not stall).
+        const dragC = this.guiParams.dragCoeff * (preSpeed < 1.0 ? 0.45 : 1.0);
         this.force.x -= this.velocity.x * dragC;
         this.force.y -= this.velocity.y * dragC;
+
+        // Low-speed rescue: inject motion if the mouse lingers too long.
+        if (!guiParams.isPaused) {
+          if (preSpeed < 0.8) this.lowSpeedTimer += dt;
+          else this.lowSpeedTimer = Math.max(0, this.lowSpeedTimer - dt * 0.5);
+          if (this.lowSpeedTimer > 1.0) {
+            const rescueDir = new THREE.Vector2(
+              nearest.tangentX * this.wallFollowDir + nearest.normalX * 0.6,
+              nearest.tangentZ * this.wallFollowDir + nearest.normalZ * 0.6
+            );
+            if (rescueDir.lengthSq() < 1e-6) {
+              if (this.heading.lengthSq() > 1e-6) rescueDir.copy(this.heading);
+              else rescueDir.set(Math.cos(t), Math.sin(t));
+            }
+            rescueDir.normalize();
+            const kickMag = 32.0;
+            this.force.x += rescueDir.x * kickMag;
+            this.force.y += rescueDir.y * kickMag;
+            this.lowSpeedTimer = 0;
+          }
+        }
 
         // Integration
         if (!guiParams.isPaused) {
@@ -1173,24 +1265,81 @@
           this.locomotionTime += cS * dt;
         }
 
-        // Hard boundary clamp
+        // Hard boundary clamp with tangent turn selection (avoid wall-sticking).
         let hitWall = false;
-        const HM = 0.5;
-        if (this.mesh.position.x > ENCLOSURE_HALF_X - HM) { this.mesh.position.x = ENCLOSURE_HALF_X - HM; this.velocity.x = -Math.abs(this.velocity.x) * 0.3; hitWall = true; }
-        if (this.mesh.position.x < -ENCLOSURE_HALF_X + HM) { this.mesh.position.x = -ENCLOSURE_HALF_X + HM; this.velocity.x = Math.abs(this.velocity.x) * 0.3; hitWall = true; }
-        if (this.mesh.position.z > ENCLOSURE_HALF_Z - HM) { this.mesh.position.z = ENCLOSURE_HALF_Z - HM; this.velocity.y = -Math.abs(this.velocity.y) * 0.3; hitWall = true; }
-        if (this.mesh.position.z < -ENCLOSURE_HALF_Z + HM) { this.mesh.position.z = -ENCLOSURE_HALF_Z + HM; this.velocity.y = Math.abs(this.velocity.y) * 0.3; hitWall = true; }
-        if (hitWall && Math.random() < 0.5) this.wallFollowDir *= -1;
+        let hitXWall = false;
+        let hitZWall = false;
+        // Keep full body+head away from walls (not just the body center point).
+        const HM = Math.max(3.8, 3.2 * this.guiParams.bodyLength + 0.9 * this.guiParams.snoutLength);
+        if (this.mesh.position.x > ENCLOSURE_HALF_X - HM) { this.mesh.position.x = ENCLOSURE_HALF_X - HM; this.velocity.x = -Math.abs(this.velocity.x) * 0.25; hitWall = true; hitXWall = true; }
+        if (this.mesh.position.x < -ENCLOSURE_HALF_X + HM) { this.mesh.position.x = -ENCLOSURE_HALF_X + HM; this.velocity.x = Math.abs(this.velocity.x) * 0.25; hitWall = true; hitXWall = true; }
+        if (this.mesh.position.z > ENCLOSURE_HALF_Z - HM) { this.mesh.position.z = ENCLOSURE_HALF_Z - HM; this.velocity.y = -Math.abs(this.velocity.y) * 0.25; hitWall = true; hitZWall = true; }
+        if (this.mesh.position.z < -ENCLOSURE_HALF_Z + HM) { this.mesh.position.z = -ENCLOSURE_HALF_Z + HM; this.velocity.y = Math.abs(this.velocity.y) * 0.25; hitWall = true; hitZWall = true; }
+        if (hitWall) {
+          const minTurnSpeed = Math.max(this.guiParams.maxSpeed * 0.45, 2.2);
+          const clearPosX = ENCLOSURE_HALF_X - this.mesh.position.x;
+          const clearNegX = ENCLOSURE_HALF_X + this.mesh.position.x;
+          const clearPosZ = ENCLOSURE_HALF_Z - this.mesh.position.z;
+          const clearNegZ = ENCLOSURE_HALF_Z + this.mesh.position.z;
+          if (hitXWall && !hitZWall) {
+            const turnSignZ = clearPosZ >= clearNegZ ? 1 : -1;
+            this.velocity.y = turnSignZ * Math.max(Math.abs(this.velocity.y), minTurnSpeed);
+            this.wallFollowDir = turnSignZ;
+          } else if (hitZWall && !hitXWall) {
+            const turnSignX = clearPosX >= clearNegX ? 1 : -1;
+            this.velocity.x = turnSignX * Math.max(Math.abs(this.velocity.x), minTurnSpeed);
+            this.wallFollowDir = turnSignX;
+          } else {
+            // Corner: choose axis with more free space.
+            if (Math.max(clearPosX, clearNegX) >= Math.max(clearPosZ, clearNegZ)) {
+              const turnSignX = clearPosX >= clearNegX ? 1 : -1;
+              this.velocity.x = turnSignX * minTurnSpeed;
+            } else {
+              const turnSignZ = clearPosZ >= clearNegZ ? 1 : -1;
+              this.velocity.y = turnSignZ * minTurnSpeed;
+            }
+            this.wallFollowDir *= -1;
+          }
+          // Heading will reorient through angular inertia below.
+        }
+        if (!guiParams.isPaused) {
+          this.rearCooldown = Math.max(0, this.rearCooldown - dt);
+          const impactNorm = Math.min(this.velocity.length() / Math.max(this.guiParams.maxSpeed, 1e-3), 1.0);
+          if (hitWall && impactNorm > 0.14 && this.rearCooldown <= 0) {
+            this.rearVel += 2.0 + impactNorm * 1.8;
+            this.rearCooldown = 0.7;
+          }
+          // Damped spring so rearing rises quickly and settles smoothly.
+          this.rearVel += (-18.0 * this.rearAmount - 7.5 * this.rearVel) * dt;
+          this.rearAmount = THREE.MathUtils.clamp(this.rearAmount + this.rearVel * dt, 0, 1);
+          if (this.rearAmount < 1e-3 && this.rearVel < 1e-3) {
+            this.rearAmount = 0;
+            this.rearVel = 0;
+          }
+        }
 
         // Heading
         const speed = this.velocity.length();
         let isMoving = speed > 0.3;
-        if (isMoving) {
-          const dH = new THREE.Vector2(this.velocity.x, this.velocity.y).normalize();
-          this.heading.lerp(dH, isColliding ? 0.15 : 0.08);
-          if (this.heading.lengthSq() > 1e-6) this.heading.normalize();
+        if (!guiParams.isPaused) {
+          let targetYaw = this.yawAngle;
+          if (isMoving) {
+            targetYaw = Math.atan2(this.velocity.x, this.velocity.y);
+          } else if (this.force.lengthSq() > 1e-6) {
+            targetYaw = Math.atan2(this.force.x, this.force.y);
+          }
+          let yawErr = targetYaw - this.yawAngle;
+          if (yawErr > Math.PI) yawErr -= Math.PI * 2;
+          if (yawErr < -Math.PI) yawErr += Math.PI * 2;
+          const yawK = isColliding ? 18.0 : 12.0;
+          const yawD = 7.0;
+          this.yawVel += (yawK * yawErr - yawD * this.yawVel) * dt;
+          const maxYawRate = isColliding ? 2.8 : 2.2;
+          this.yawVel = THREE.MathUtils.clamp(this.yawVel, -maxYawRate, maxYawRate);
+          this.yawAngle += this.yawVel * dt;
         }
-        this.mesh.rotation.y = Math.atan2(this.heading.x, this.heading.y);
+        this.heading.set(Math.sin(this.yawAngle), Math.cos(this.yawAngle));
+        this.mesh.rotation.y = this.yawAngle;
 
         if (hudRef) {
           hudRef.state.innerText = isMoving ? "SCURRYING // AVOIDANCE" : "ALERT // SNIFFING";
@@ -1200,11 +1349,61 @@
           hudRef.coord.innerText = `${this.mesh.position.x.toFixed(2)}, ${this.mesh.position.z.toFixed(2)}`;
         }
 
-        // Body bounce
+        // Body + tail dynamics (gravity + inertia)
         const speedNorm = Math.min(speed / this.maxSpeed, 1.0);
-        const bounceFreq = 4.0 + speedNorm * 6.0;
-        const bounceAmp = speedNorm * 0.12;
-        this.rig.position.y = 1.3 + Math.abs(Math.sin(this.locomotionTime * bounceFreq)) * bounceAmp;
+        const invDt = 1.0 / Math.max(dt, 1e-4);
+        const accelX = (this.velocity.x - this.prevVelocity.x) * invDt;
+        const accelZ = (this.velocity.y - this.prevVelocity.y) * invDt;
+        const forwardAccel = accelX * this.heading.x + accelZ * this.heading.y;
+        const lateralAccel = accelX * (-this.heading.y) + accelZ * this.heading.x;
+        const headingAngle = Math.atan2(this.heading.x, this.heading.y);
+        let headingDelta = headingAngle - this.prevHeadingAngle;
+        if (headingDelta > Math.PI) headingDelta -= Math.PI * 2;
+        if (headingDelta < -Math.PI) headingDelta += Math.PI * 2;
+        const turnRate = headingDelta * invDt;
+        this.prevHeadingAngle = headingAngle;
+
+        if (!guiParams.isPaused) {
+          // Vertical body suspension with gravity.
+          const targetBodyY = 1.26 + speedNorm * 0.10;
+          const bodyK = 24.0, bodyD = 8.0, gravity = 3.4;
+          this.bodyDyn.vy += (bodyK * (targetBodyY - this.bodyDyn.y) - bodyD * this.bodyDyn.vy - gravity) * dt;
+          this.bodyDyn.y += this.bodyDyn.vy * dt;
+          if (this.bodyDyn.y < 1.12) {
+            this.bodyDyn.y = 1.12;
+            this.bodyDyn.vy = Math.max(0, this.bodyDyn.vy) * 0.2;
+          }
+
+          // Pitch/roll inertia from accel and turning.
+          const targetPitch = THREE.MathUtils.clamp(-forwardAccel * 0.015 + speedNorm * 0.02, -0.16, 0.16);
+          const targetRoll = THREE.MathUtils.clamp(-lateralAccel * 0.02 - turnRate * 0.01, -0.20, 0.20);
+          const angK = 18.0, angD = 6.5;
+          this.bodyDyn.pitchV += (angK * (targetPitch - this.bodyDyn.pitch) - angD * this.bodyDyn.pitchV) * dt;
+          this.bodyDyn.rollV += (angK * (targetRoll - this.bodyDyn.roll) - angD * this.bodyDyn.rollV) * dt;
+          this.bodyDyn.pitch += this.bodyDyn.pitchV * dt;
+          this.bodyDyn.roll += this.bodyDyn.rollV * dt;
+
+          // Tail inertial follow-through.
+          const targetTailSway = THREE.MathUtils.clamp(-turnRate * 0.06 - lateralAccel * 0.01, -0.9, 0.9);
+          const targetTailLift = THREE.MathUtils.clamp(-0.05 - forwardAccel * 0.004 + speedNorm * 0.03, -0.18, 0.08);
+          const tailK = 14.0, tailD = 4.8;
+          this.tailDyn.swayV += (tailK * (targetTailSway - this.tailDyn.sway) - tailD * this.tailDyn.swayV) * dt;
+          this.tailDyn.liftV += (tailK * (targetTailLift - this.tailDyn.lift) - tailD * this.tailDyn.liftV) * dt;
+          this.tailDyn.sway += this.tailDyn.swayV * dt;
+          this.tailDyn.lift += this.tailDyn.liftV * dt;
+          if (speed < 0.45 && this.lowSpeedTimer > 0.6) {
+            // Calm tiny oscillations while nearly stationary.
+            const calm = Math.exp(-8.0 * dt);
+            this.tailDyn.sway *= calm;
+            this.tailDyn.lift *= calm;
+            this.tailDyn.swayV *= calm;
+            this.tailDyn.liftV *= calm;
+          }
+        }
+
+        this.rig.position.y = this.bodyDyn.y;
+        this.rig.rotation.x = this.bodyDyn.pitch;
+        this.rig.rotation.z = this.bodyDyn.roll;
 
         // Contact shadow follows mouse on ground
         this.contactShadow.position.set(0, -this.rig.position.y + 0.02, 0);
@@ -1239,43 +1438,73 @@
           if (this.hindL._ankle) this.hindL._ankle.rotation.x = 0;
           if (this.hindR._ankle) this.hindR._ankle.rotation.x = 0;
 
-          // Grooming posture for forelimbs
-          this.armL.rotation.x = -1.2; this.armR.rotation.x = -1.2;
-          this.armL.rotation.z = -0.2; this.armR.rotation.z = 0.2;
-          if (this.armL._forearm) this.armL._forearm.rotation.x = 0.6;
-          if (this.armR._forearm) this.armR._forearm.rotation.x = 0.6;
-          if (this.armL._wrist) this.armL._wrist.rotation.x = 0.3;
-          if (this.armR._wrist) this.armR._wrist.rotation.x = 0.3;
+          // Neutral planted stance: keep forepaws on the floor at idle.
+          this.armL.rotation.x = -0.12; this.armR.rotation.x = -0.12;
+          this.armL.rotation.z = -0.03; this.armR.rotation.z = 0.03;
+          if (this.armL._forearm) this.armL._forearm.rotation.x = 0.18;
+          if (this.armR._forearm) this.armR._forearm.rotation.x = 0.18;
+          if (this.armL._wrist) this.armL._wrist.rotation.x = 0.04;
+          if (this.armR._wrist) this.armR._wrist.rotation.x = 0.04;
+        }
+
+        const rear = this.rearAmount;
+        if (rear > 0) {
+          // Rearing posture near walls: raise front body and forelimbs.
+          this.rig.position.y += rear * 0.85;
+          this.rig.rotation.x -= rear * 0.40;
+          this.armL.rotation.x = THREE.MathUtils.lerp(this.armL.rotation.x, -1.18, rear);
+          this.armR.rotation.x = THREE.MathUtils.lerp(this.armR.rotation.x, -1.18, rear);
+          this.armL.rotation.z = THREE.MathUtils.lerp(this.armL.rotation.z, -0.16, rear);
+          this.armR.rotation.z = THREE.MathUtils.lerp(this.armR.rotation.z, 0.16, rear);
+          if (this.armL._forearm) this.armL._forearm.rotation.x = THREE.MathUtils.lerp(this.armL._forearm.rotation.x, 0.85, rear);
+          if (this.armR._forearm) this.armR._forearm.rotation.x = THREE.MathUtils.lerp(this.armR._forearm.rotation.x, 0.85, rear);
+          if (this.armL._wrist) this.armL._wrist.rotation.x = THREE.MathUtils.lerp(this.armL._wrist.rotation.x, 0.45, rear);
+          if (this.armR._wrist) this.armR._wrist.rotation.x = THREE.MathUtils.lerp(this.armR._wrist.rotation.x, 0.45, rear);
+          this.hindL.rotation.x = THREE.MathUtils.lerp(this.hindL.rotation.x, 0.35, rear);
+          this.hindR.rotation.x = THREE.MathUtils.lerp(this.hindR.rotation.x, 0.35, rear);
+          this.contactShadow.position.set(0, -this.rig.position.y + 0.02, 0);
         }
 
         // Head animation
+        const calmIdle = !isMoving && speed < 0.45 && this.lowSpeedTimer > 0.6;
         if (!isMoving) {
-          this.headGroup.rotation.y = Math.sin(time * 6.0) * 0.3 * this.motion.headIdleYawMul;
-          this.headGroup.rotation.x = Math.sin(time * 9.0) * 0.15 * this.motion.headIdlePitchMul;
-          this.snoutTip.position.y = -0.15 + Math.sin(time * 40.0) * 0.02 * this.motion.sniffAmpMul;
-          this.padL.rotation.y = Math.sin(time * 40.0) * 0.1 * this.motion.sniffAmpMul + 0.1;
-          this.padR.rotation.y = -Math.sin(time * 40.0) * 0.1 * this.motion.sniffAmpMul - 0.1;
+          if (calmIdle) {
+            this.headGroup.rotation.y *= 0.85;
+            this.headGroup.rotation.x *= 0.85;
+            this.snoutTip.position.y = -0.15;
+            this.padL.rotation.y = 0.1;
+            this.padR.rotation.y = -0.1;
+          } else {
+            this.headGroup.rotation.y = Math.sin(time * 6.0) * 0.3 * this.motion.headIdleYawMul;
+            this.headGroup.rotation.x = Math.sin(time * 9.0) * 0.15 * this.motion.headIdlePitchMul;
+            this.snoutTip.position.y = -0.15 + Math.sin(time * 40.0) * 0.02 * this.motion.sniffAmpMul;
+            this.padL.rotation.y = Math.sin(time * 40.0) * 0.1 * this.motion.sniffAmpMul + 0.1;
+            this.padR.rotation.y = -Math.sin(time * 40.0) * 0.1 * this.motion.sniffAmpMul - 0.1;
+          }
         } else {
           const turnAmount = this.velocity.x * this.heading.y - this.velocity.y * this.heading.x;
           this.headGroup.rotation.set(Math.sin(time * 2) * 0.08, turnAmount * 0.08, 0);
           this.snoutTip.position.y = -0.15;
           this.padL.rotation.y = -0.3; this.padR.rotation.y = 0.3;
         }
+        if (rear > 0) this.headGroup.rotation.x += rear * 0.32;
 
         // ═══ TAIL ═══
         let tailBase = new THREE.Vector3(0, -0.2, -PROP.bodyLength * 0.93);
+        this.rig.updateMatrix();
         tailBase.applyMatrix4(this.rig.matrix);
         let tailCurve = [];
         const tailLenMul = this.guiParams.tailLength;
         const segLen = this.tailSegLen * tailLenMul;
-        const lateralVel = this.velocity.x * this.heading.y - this.velocity.y * this.heading.x;
         for (let i = 0; i <= this.tailCount; i++) {
           const p = i / this.tailCount;
-          const waveDamp = Math.sin(p * Math.PI) * 0.8 + 0.2;
-          let waveX = Math.sin(time * 3.5 * this.motion.tailWaveFreqMul - i * 0.2) * (i * 0.035 * this.motion.tailWaveAmpMul) * waveDamp;
-          waveX += lateralVel * p * p * 0.15;
-          let waveY = -i * PROP.tailSag * p;
-          if (!isMoving) waveX += Math.sin(i * 0.12 + time * 1.5) * 0.2 * waveDamp;
+          const lag = p * p;
+          const transmit = Math.pow(p, 1.35);
+          const midCurve = p * (1.0 - p);
+          const bodyForceX = (this.bodyDyn.roll * 0.34 + lateralAccel * 0.010 - turnRate * 0.018) * transmit;
+          const bodyForceY = (this.bodyDyn.pitch * 0.38 - forwardAccel * 0.008) * transmit;
+          const waveX = this.tailDyn.sway * lag + bodyForceX + midCurve * 0.18 * Math.sign(this.tailDyn.sway || bodyForceX || 1);
+          let waveY = -i * PROP.tailSag * p + this.tailDyn.lift * lag + bodyForceY + midCurve * 0.08;
           waveY = Math.max(waveY, -1.3);
           tailCurve.push(new THREE.Vector3(waveX, waveY, -i * segLen));
         }
@@ -1321,6 +1550,7 @@
         this.head.scale.setScalar(this.guiParams.headSize);
         this.snoutTip.scale.set(1.1, 0.8, this.guiParams.snoutLength);
         this.fleshMat.color.set(this.guiParams.skinColor);
+        this.prevVelocity.copy(this.velocity);
 
         this.mesh.updateMatrixWorld(true);
 
@@ -1350,27 +1580,40 @@
     const floorGeo = new THREE.PlaneGeometry(200, 200);
     const floorMat = new THREE.MeshPhysicalMaterial({
       color: 0x111620, roughness: 0.15, metalness: 0.6,
-      clearcoat: 1.0, clearcoatRoughness: 0.1
+      clearcoat: 1.0, clearcoatRoughness: 0.1,
+      polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
     });
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
     scene.add(floor);
 
     const enclosureMat = new THREE.MeshPhysicalMaterial({
-      color: 0xb9d7ea, transparent: true, opacity: 0.13, roughness: 0.08, metalness: 0.0, transmission: 0.78, thickness: 0.3
+      color: 0xb9d7ea, transparent: true, opacity: 0.13, roughness: 0.2, metalness: 0.0, transmission: 0.0, thickness: 0.0,
+      side: THREE.BackSide, depthWrite: false
     });
     const enclosureBox = new THREE.Mesh(new THREE.BoxGeometry(ENCLOSURE_W, ENCLOSURE_H, ENCLOSURE_D), enclosureMat);
     enclosureBox.position.set(0, ENCLOSURE_H * 0.5, 0); enclosureBox.receiveShadow = true;
+    enclosureBox.renderOrder = 10;
     scene.add(enclosureBox);
 
     const enclosureEdges = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.BoxGeometry(ENCLOSURE_W, ENCLOSURE_H, ENCLOSURE_D)),
       new THREE.LineBasicMaterial({ color: 0x58c8ff, transparent: true, opacity: 0.45 })
     );
+    enclosureEdges.material.depthTest = false;
+    enclosureEdges.renderOrder = 25;
     enclosureEdges.position.copy(enclosureBox.position); scene.add(enclosureEdges);
 
     const grid = new THREE.GridHelper(100, 50, 0x00f0ff, 0x112233);
-    grid.position.y = 0.01; grid.material.transparent = true; grid.material.opacity = 0.2;
+    grid.position.y = 0.05;
+    const gridMats = Array.isArray(grid.material) ? grid.material : [grid.material];
+    for (const gm of gridMats) {
+      gm.transparent = true;
+      gm.opacity = 0.12;
+      gm.depthWrite = false;
+      gm.depthTest = false;
+    }
+    grid.renderOrder = 20;
     scene.add(grid);
 
     // ═══════════════════════════════════════════════════════════════
@@ -1422,17 +1665,17 @@
     });
 
     const guiParams = {
-      furColor: '#ffffff', skinColor: '#ffd0c8',
-      chonkiness: 1.0, earSize: 0.85, furDensity: 0.85,
+      furColor: '#ffffff', skinColor: '#d8d8d3',
+      chonkiness: 1.128, earSize: 0.78, furDensity: 0.85,
       showTrackingKeypoints: true, wireframeMode: false, isPaused: false,
       addSubject: () => spawnMouse(), clearSubjects: () => clearMice(),
       presets: 'BALB/c (White)',
       // Body part controls
-      tailLength: 1.0, tailThickness: 1.0,
+      tailLength: 0.5, tailThickness: 1.0,
       headSize: 1.0, snoutLength: 1.0,
-      bodyLength: 1.0, legLength: 1.0, legThickness: 1.0,
+      bodyLength: 1.0, legLength: 1.18, legThickness: 1.0,
       // Physics
-      maxSpeed: 15.0, dragCoeff: 1.8, wanderForce: 10.0, wallAttraction: 3.5,
+      maxSpeed: 9.0, dragCoeff: 1.5, wanderForce: 10.0, wallAttraction: 3.2,
       // Quality
       qualityMode: 'Realtime', furDetailLevel: 'Med',
       enableVignette: false, enableGrain: false, enableAO: true,
@@ -1496,13 +1739,21 @@
 
     function applyStrainPreset(name) {
       guiParams.presets = name;
-      if (name === 'BALB/c (White)') { guiParams.furColor = '#ffffff'; guiParams.skinColor = '#ffd0c8'; guiParams.furDensity = 0.5; guiParams.earSize = 0.8; }
-      if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#18161a'; guiParams.skinColor = '#ebb4b8'; guiParams.furDensity = 0.65; guiParams.earSize = 0.95; }
+      if (name === 'BALB/c (White)') { guiParams.furColor = '#ffffff'; guiParams.skinColor = '#d8d8d3'; guiParams.furDensity = 0.62; guiParams.earSize = 0.78; }
+      if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#111015'; guiParams.skinColor = '#3a3438'; guiParams.furDensity = 0.72; guiParams.earSize = 0.9; }
       if (name === 'CBA (Brown)') { guiParams.furColor = '#6a4b3a'; guiParams.skinColor = '#d0a090'; guiParams.furDensity = 0.55; guiParams.earSize = 0.8; }
       if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.95; }
     }
 
     const gui = new GUI({ title: 'GENETICS LAB (GUI)' });
+    const respawnNoticeState = new Map();
+
+    function notifyRespawnRequired(key, value, message) {
+      const token = `${key}:${JSON.stringify(value)}`;
+      if (respawnNoticeState.get(key) === token) return;
+      respawnNoticeState.set(key, token);
+      alert(message);
+    }
 
     gui.add(guiParams, 'presets', ['BALB/c (White)', 'C57BL/6 (Black)', 'CBA (Brown)', 'Nude/Hairless']).name('Strains').onChange(v => {
       applyStrainPreset(v);
@@ -1530,8 +1781,12 @@
     traitFolder.addColor(guiParams, 'skinColor').name('Skin Pigment');
     traitFolder.add(guiParams, 'chonkiness', 0.5, 2.0).name('Fatness / Mass');
     traitFolder.add(guiParams, 'earSize', 0.5, 2.0).name('Ear Magnitude');
-    traitFolder.add(guiParams, 'furDensity', 0.0, 1.0).name('Fur Density').onChange(() => {
-      alert("Fur density changes require respawning subjects to take effect.");
+    traitFolder.add(guiParams, 'furDensity', 0.0, 1.0).name('Fur Density').onFinishChange(v => {
+      notifyRespawnRequired(
+        'furDensity',
+        Number(v).toFixed(3),
+        "Fur density changes require respawning subjects to take effect."
+      );
     });
 
     // Simulation Controls
@@ -1574,8 +1829,12 @@
 
     // Fur controls
     const furFolder = gui.addFolder('Fur');
-    furFolder.add(guiParams, 'furDetailLevel', ['High', 'Med', 'Low', 'Off']).name('Fur Detail').onChange(() => {
-      alert("Fur detail changes require respawning subjects to take effect.");
+    furFolder.add(guiParams, 'furDetailLevel', ['High', 'Med', 'Low', 'Off']).name('Fur Detail').onFinishChange(v => {
+      notifyRespawnRequired(
+        'furDetailLevel',
+        String(v || ''),
+        "Fur detail changes require respawning subjects to take effect."
+      );
     });
     furFolder.add(guiParams, 'furGuardRatio', 0.0, 1.0, 0.05).name('Guard Hair Ratio');
     furFolder.add(guiParams, 'furLength', 0.3, 2.0, 0.05).name('Fur Length');
@@ -1615,19 +1874,31 @@
 
     // Shaders
     const shaderFolder = gui.addFolder('Shaders');
-    shaderFolder.add(guiParams, 'enableSSS').name('Subsurface Scatter').onChange(() => {
-      alert('Shader changes require respawning subjects.');
+    shaderFolder.add(guiParams, 'enableSSS').name('Subsurface Scatter').onFinishChange(v => {
+      notifyRespawnRequired(
+        'enableSSS',
+        Boolean(v),
+        'Shader changes require respawning subjects.'
+      );
     });
     shaderFolder.add(guiParams, 'sssThickness', 0.0, 1.0, 0.05).name('SSS Thickness');
     shaderFolder.add(guiParams, 'sssWrap', 0.0, 1.0, 0.05).name('SSS Wrap');
     shaderFolder.add(guiParams, 'sssBacklight', 0.0, 1.5, 0.05).name('SSS Backlight');
-    shaderFolder.add(guiParams, 'enableContactAO').name('Contact AO').onChange(() => {
-      alert('Shader changes require respawning subjects.');
+    shaderFolder.add(guiParams, 'enableContactAO').name('Contact AO').onFinishChange(v => {
+      notifyRespawnRequired(
+        'enableContactAO',
+        Boolean(v),
+        'Shader changes require respawning subjects.'
+      );
     });
     shaderFolder.add(guiParams, 'aoRadius', 0.5, 5.0, 0.1).name('AO Radius');
     shaderFolder.add(guiParams, 'aoIntensity', 0.0, 1.0, 0.05).name('AO Intensity');
-    shaderFolder.add(guiParams, 'enableMicroDetail').name('Micro Detail').onChange(() => {
-      alert('Shader changes require respawning subjects.');
+    shaderFolder.add(guiParams, 'enableMicroDetail').name('Micro Detail').onFinishChange(v => {
+      notifyRespawnRequired(
+        'enableMicroDetail',
+        Boolean(v),
+        'Shader changes require respawning subjects.'
+      );
     });
     shaderFolder.add(guiParams, 'microScale', 5.0, 200.0, 5.0).name('Detail Scale');
     shaderFolder.add(guiParams, 'microStrength', 0.0, 0.3, 0.01).name('Detail Strength');
@@ -1647,7 +1918,7 @@
 
     // Physics
     const physicsFolder = gui.addFolder('Physics Controls');
-    physicsFolder.add(guiParams, 'maxSpeed', 1.0, 15.0, 0.5).name('Max Speed');
+    physicsFolder.add(guiParams, 'maxSpeed', 1.0, 20.0, 0.5).name('Max Speed');
     physicsFolder.add(guiParams, 'dragCoeff', 0.5, 10.0, 0.5).name('Drag / Friction');
     physicsFolder.add(guiParams, 'wanderForce', 0.5, 10.0, 0.5).name('Wander Force');
     physicsFolder.add(guiParams, 'wallAttraction', 0.0, 5.0, 0.25).name('Wall Attraction');
@@ -1658,12 +1929,27 @@
     function spawnMouse() {
       const m = new ExpertMouse(guiParams);
       const wall = Math.floor(Math.random() * 4);
-      const wo = 2.0;
+      const wo = 4.6;
+      let inX = 0, inZ = 0;
       switch (wall) {
-        case 0: m.mesh.position.x = ENCLOSURE_HALF_X - wo; m.mesh.position.z = (Math.random() - 0.5) * ENCLOSURE_HALF_Z * 1.5; break;
-        case 1: m.mesh.position.x = -ENCLOSURE_HALF_X + wo; m.mesh.position.z = (Math.random() - 0.5) * ENCLOSURE_HALF_Z * 1.5; break;
-        case 2: m.mesh.position.x = (Math.random() - 0.5) * ENCLOSURE_HALF_X * 1.5; m.mesh.position.z = ENCLOSURE_HALF_Z - wo; break;
-        case 3: m.mesh.position.x = (Math.random() - 0.5) * ENCLOSURE_HALF_X * 1.5; m.mesh.position.z = -ENCLOSURE_HALF_Z + wo; break;
+        case 0: m.mesh.position.x = ENCLOSURE_HALF_X - wo; m.mesh.position.z = (Math.random() - 0.5) * ENCLOSURE_HALF_Z * 1.5; inX = -1; break;
+        case 1: m.mesh.position.x = -ENCLOSURE_HALF_X + wo; m.mesh.position.z = (Math.random() - 0.5) * ENCLOSURE_HALF_Z * 1.5; inX = 1; break;
+        case 2: m.mesh.position.x = (Math.random() - 0.5) * ENCLOSURE_HALF_X * 1.5; m.mesh.position.z = ENCLOSURE_HALF_Z - wo; inZ = -1; break;
+        case 3: m.mesh.position.x = (Math.random() - 0.5) * ENCLOSURE_HALF_X * 1.5; m.mesh.position.z = -ENCLOSURE_HALF_Z + wo; inZ = 1; break;
+      }
+      const dir = new THREE.Vector2(inX, inZ);
+      const tangentialKick = (Math.random() - 0.5) * 0.9;
+      if (Math.abs(inX) > 0) dir.y += tangentialKick;
+      else dir.x += tangentialKick;
+      if (dir.lengthSq() < 1e-6) dir.set((Math.random() - 0.5), (Math.random() - 0.5));
+      dir.normalize();
+      const launchSpeed = guiParams.maxSpeed * (0.50 + Math.random() * 0.18);
+      m.velocity.set(dir.x * launchSpeed, dir.y * launchSpeed);
+      m.heading.copy(dir);
+      m.prevVelocity.copy(m.velocity);
+      if (m.tailDyn) {
+        m.tailDyn.sway = (Math.random() - 0.5) * 0.25;
+        m.tailDyn.lift = -0.04 + Math.random() * 0.03;
       }
       scene.add(m.mesh);
       mice.push(m);
