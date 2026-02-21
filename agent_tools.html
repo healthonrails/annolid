@@ -58,6 +58,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#artifact-layout">Artifact layout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#caching-semantics">Caching semantics</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#citation-management-tools">Citation management tools</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#three-js-bot-tools">Three.js bot tools</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="agent_provider_setup.html">Annolid Bot Provider and Model Setup Tutorial</a></li>
@@ -197,6 +198,10 @@ the service returns cached results without re-running the agent.</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">add</span> <span class="pre">citation</span> <span class="pre">&#64;article{yang2024annolid,</span> <span class="pre">title={Annolid:</span> <span class="pre">Annotate,</span> <span class="pre">Segment,</span> <span class="pre">and</span> <span class="pre">Track</span> <span class="pre">Anything</span> <span class="pre">You</span> <span class="pre">Need},</span> <span class="pre">author={Yang,</span> <span class="pre">Chen</span> <span class="pre">and</span> <span class="pre">Cleland,</span> <span class="pre">Thomas</span> <span class="pre">A},</span> <span class="pre">journal={arXiv</span> <span class="pre">preprint</span> <span class="pre">arXiv:2403.18690},</span> <span class="pre">year={2024}}</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">save</span> <span class="pre">citation</span> <span class="pre">from</span> <span class="pre">web</span> <span class="pre">with</span> <span class="pre">strict</span> <span class="pre">validation</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">save</span> <span class="pre">citation</span> <span class="pre">from</span> <span class="pre">pdf</span> <span class="pre">without</span> <span class="pre">validation</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">open</span> <span class="pre">threejs</span> <span class="pre">example</span> <span class="pre">two</span> <span class="pre">mice</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">open</span> <span class="pre">threejs</span> <span class="pre">example</span> <span class="pre">brain</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">open</span> <span class="pre">threejs</span> <span class="pre">html</span> <span class="pre">/tmp/annolid_threejs_examples/two_mice.html</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">open</span> <span class="pre">threejs</span> <span class="pre">https://example.org/viewer.html</span></code></p></li>
 </ul>
 <p>Default behavior:</p>
 <ul class="simple">
@@ -208,6 +213,28 @@ the service returns cached results without re-running the agent.</p>
 <li><p>Manage a <code class="docutils literal notranslate"><span class="pre">.bib</span></code> file, save citations from active PDF/web context, choose auto-validation or strict mode, view/edit a <code class="docutils literal notranslate"><span class="pre">Source</span></code> column (URL or PDF path), edit rows inline with year/DOI checks, and remove selected entries.</p></li>
 </ul>
 <p>See also: <code class="docutils literal notranslate"><span class="pre">docs/source/citations_tutorial.md</span></code> for a full user tutorial.</p>
+</section>
+<section id="three-js-bot-tools">
+<h2>Three.js bot tools<a class="headerlink" href="#three-js-bot-tools" title="Link to this heading"></a></h2>
+<p>Annolid Bot supports direct Three.js viewer control in GUI sessions.</p>
+<ul class="simple">
+<li><p>Function tools:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">gui_open_threejs(path_or_url)</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">gui_open_threejs_example(example_id)</span></code></p></li>
+</ul>
+</li>
+<li><p>Built-in example IDs:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">two_mice_html</span></code> (default)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">brain_viewer_html</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">helix_points_csv</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">wave_surface_obj</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">sphere_points_ply</span></code></p></li>
+</ul>
+</li>
+</ul>
+<p>The bot recognizes natural-language commands such as <code class="docutils literal notranslate"><span class="pre">open</span> <span class="pre">threejs</span> <span class="pre">example</span> <span class="pre">...</span></code>.</p>
 </section>
 </section>
 
