@@ -23,6 +23,9 @@ async def execute_direct_gui_command(
     list_citations: Callable[..., Any],
     add_citation_raw: Callable[..., Any],
     save_citation: Callable[..., Any],
+    list_dir: Callable[..., Any],
+    read_file: Callable[..., Any],
+    exec_command: Callable[..., Any],
 ) -> str:
     if not command:
         return ""
@@ -338,15 +341,57 @@ async def execute_direct_gui_command(
         )
         if payload.get("ok"):
             key = str(payload.get("key") or "").strip()
+            keys = [
+                str(k).strip()
+                for k in list(payload.get("keys") or [])
+                if str(k).strip()
+            ]
             bib_path = str(payload.get("bib_file") or "").strip()
+            created_count = int(payload.get("created_count") or 0)
+            updated_count = int(payload.get("updated_count") or 0)
             action = "Created" if bool(payload.get("created")) else "Updated"
+            if keys and len(keys) > 1:
+                if bib_path:
+                    return (
+                        f"Saved {len(keys)} citations in {bib_path} from provided BibTeX "
+                        f"({created_count} created, {updated_count} updated)."
+                    )
+                return (
+                    f"Saved {len(keys)} citations from provided BibTeX "
+                    f"({created_count} created, {updated_count} updated)."
+                )
             if key and bib_path:
                 return f"{action} citation '{key}' in {bib_path} from provided BibTeX."
             if key:
                 return f"{action} citation '{key}' from provided BibTeX."
             return "Saved citation from provided BibTeX."
         return str(payload.get("error") or "Failed to add citation from BibTeX.")
+        return str(payload.get("error") or "Failed to add citation from BibTeX.")
 
-    return ""
+    if name == "list_dir":
+        payload = await _run(list_dir, str(args.get("path") or ""))
+        if payload.get("ok"):
+            res = str(payload.get("result") or "").strip()
+            return f"Directory contents:\n{res}" if res else "Directory is empty."
+        return str(payload.get("error") or "Failed to list directory.")
+
+    if name == "read_file":
+        payload = await _run(read_file, str(args.get("path") or ""))
+        if payload.get("ok"):
+            res = str(payload.get("result") or "").strip()
+            # Truncating directly in the router (though the tool might already do it)
+            if len(res) > 2000:
+                res = res[:2000] + "\n...[truncated]"
+            return f"File contents:\n{res}" if res else "File is empty."
+        return str(payload.get("error") or "Failed to read file.")
+
+    if name == "exec_command":
+        payload = await _run(exec_command, str(args.get("command") or ""))
+        if payload.get("ok"):
+            res = str(payload.get("result") or "").strip()
+            return (
+                f"Command output:\n{res}" if res else "Command executed with no output."
+            )
+        return str(payload.get("error") or "Failed to execute command.")
 
     return ""

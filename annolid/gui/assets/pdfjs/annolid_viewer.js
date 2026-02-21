@@ -2342,6 +2342,7 @@
       let renderChain = Promise.resolve();
       let zoomBusy = false;
       let pendingZoom = null;
+      let renderFailureCounts = {};
       const total = pdf.numPages || 1;
       window.__annolidTotalPages = total;
       // Load persisted user state (disk via Qt bridge, plus localStorage).
@@ -4136,6 +4137,64 @@
         return false;
       }
 
+      async function _annolidTryRenderNextPage(epoch, maxRetries) {
+        const pageNum = Math.max(1, parseInt(nextPage, 10) || 1);
+        const ok = await _annolidRenderPageSafely(pageNum, epoch, maxRetries);
+        if (ok) {
+          try { delete renderFailureCounts[pageNum]; } catch (e) { }
+          nextPage += 1;
+          return true;
+        }
+        const prev = parseInt(renderFailureCounts[pageNum] || 0, 10) || 0;
+        const failures = prev + 1;
+        renderFailureCounts[pageNum] = failures;
+        // Keep retrying transient failures; only emit a placeholder after repeated
+        // failures for the same page so first-open page holes are not created.
+        if (failures >= 3) {
+          try {
+            if (epoch === renderEpoch) {
+              _annolidInsertPageErrorPlaceholder(pageNum, {
+                message: `render retry limit reached (${failures})`,
+              });
+            }
+          } catch (e) { }
+          nextPage += 1;
+          return true;
+        }
+        try {
+          console.warn("Annolid renderPage deferred for retry", { pageNum, failures });
+        } catch (e) { }
+        return false;
+      }
+
+      function _annolidInsertPageErrorPlaceholder(pageNum, err) {
+        if (!container) return;
+        const n = Math.max(1, parseInt(pageNum, 10) || 1);
+        if (container.querySelector(`.page[data-page-number="${n}"]`)) return;
+        const pageDiv = document.createElement("div");
+        pageDiv.className = "page annolid-page-error";
+        pageDiv.setAttribute("data-page-number", String(n));
+        pageDiv.style.minHeight = "220px";
+        pageDiv.style.display = "flex";
+        pageDiv.style.alignItems = "center";
+        pageDiv.style.justifyContent = "center";
+        pageDiv.style.padding = "20px";
+        const msg = document.createElement("div");
+        msg.style.maxWidth = "720px";
+        msg.style.color = "#b71c1c";
+        msg.style.background = "rgba(255, 235, 238, 0.92)";
+        msg.style.border = "1px solid rgba(183, 28, 28, 0.25)";
+        msg.style.borderRadius = "8px";
+        msg.style.padding = "12px 14px";
+        msg.style.fontSize = "14px";
+        msg.style.lineHeight = "1.35";
+        const detail =
+          (err && (err.message || err.name)) ? ` (${String(err.message || err.name)})` : "";
+        msg.textContent = `Page ${n} failed to render${detail}.`;
+        pageDiv.appendChild(msg);
+        container.appendChild(pageDiv);
+      }
+
       function _annolidNormalizeRefText(text) {
         return _annolidNormalizeText(String(text || "")).toLowerCase();
       }
@@ -4426,9 +4485,16 @@
       async function _annolidEnsureRenderedThrough(pageNum) {
         const target = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
         return _annolidQueueRender(async (epoch) => {
+          let stalls = 0;
           while (nextPage <= target && nextPage <= total) {
-            await _annolidRenderPageSafely(nextPage, epoch, 2);
-            nextPage += 1;
+            const progressed = await _annolidTryRenderNextPage(epoch, 2);
+            if (!progressed) {
+              stalls += 1;
+              if (stalls >= 3) break;
+              await new Promise(r => setTimeout(r, 150 * stalls));
+              continue;
+            }
+            stalls = 0;
             await new Promise(r => setTimeout(r, 0));
           }
         });
@@ -4456,6 +4522,7 @@
         window.__annolidParagraphOffsets = {};
         window.__annolidParagraphTotal = 0;
         window.__annolidParagraphs = [];
+        renderFailureCounts = {};
         const pages = window.__annolidPages || {};
         Object.keys(pages).forEach((key) => {
           const state = pages[key];
@@ -4698,6 +4765,7 @@
           window.__annolidParagraphOffsets = {};
           window.__annolidParagraphTotal = 0;
           window.__annolidParagraphs = [];
+          renderFailureCounts = {};
 
           _annolidUpdateNavState();
           await _annolidEnsureRenderedThrough(anchor.pageNum);
@@ -5198,8 +5266,8 @@
         return _annolidQueueRender(async (epoch) => {
           let count = 0;
           while (nextPage <= total && count < maxCount) {
-            await _annolidRenderPageSafely(nextPage, epoch, 2);
-            nextPage += 1;
+            const progressed = await _annolidTryRenderNextPage(epoch, 2);
+            if (!progressed) break;
             count += 1;
             await new Promise(r => setTimeout(r, 0));
           }

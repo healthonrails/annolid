@@ -57,6 +57,25 @@ def _looks_like_path(value: str) -> bool:
     return False
 
 
+def _extract_bibtex_payload(text: str) -> str:
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+    code_blocks = re.findall(
+        r"```(?:\s*(?:bibtex|bib|tex))?\s*([\s\S]*?)```",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    entry_re = re.compile(r"@[a-zA-Z][a-zA-Z0-9_-]*\s*[\{\(]")
+    candidates = [blk.strip() for blk in code_blocks if entry_re.search(blk or "")]
+    if candidates:
+        return "\n\n".join(candidates).strip()
+    marker = entry_re.search(raw)
+    if marker:
+        return raw[marker.start() :].strip()
+    return raw.strip()
+
+
 def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
     text = str(prompt or "").strip()
     if not text:
@@ -121,20 +140,20 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         return {"name": "rename_file", "args": args}
 
     add_bibtex_match = re.search(
-        r"\b(?:add|save|store)\s+citation\b.*@[a-zA-Z]+\s*[\{\(]",
+        r"\b(?:add|save|store|insert|append|import)\b[\s\S]*@[a-zA-Z][a-zA-Z0-9_-]*\s*[\{\(]",
         text,
         flags=re.IGNORECASE | re.DOTALL,
     )
     if add_bibtex_match:
         bib_file_match = re.search(
-            r"\bto\s+([^\n]+?\.bib)\b",
+            r"\b(?:to|into|in)\s+([^\n]+?\.bib)\b",
             text,
             flags=re.IGNORECASE,
         )
         return {
             "name": "add_citation_raw",
             "args": {
-                "bibtex": text,
+                "bibtex": _extract_bibtex_payload(text),
                 "bib_file": (
                     _strip_wrapping_quotes(bib_file_match.group(1).strip())
                     if bib_file_match
@@ -606,6 +625,42 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         flags=re.IGNORECASE,
     ):
         return {"name": "open_url", "args": {"url": text}}
+    list_dir_match = re.match(
+        r"\s*(?:list\s+directory|ls|dir)\s+(?P<path>[^\n]+?)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if list_dir_match:
+        return {
+            "name": "list_dir",
+            "args": {
+                "path": _strip_wrapping_quotes(list_dir_match.group("path").strip())
+            },
+        }
+
+    read_file_match = re.match(
+        r"\s*(?:read\s+file|cat)\s+(?P<path>[^\n]+?)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if read_file_match:
+        return {
+            "name": "read_file",
+            "args": {
+                "path": _strip_wrapping_quotes(read_file_match.group("path").strip())
+            },
+        }
+
+    exec_match = re.match(
+        r"\s*(?:run\s+command|exec|!)\s*(?P<cmd>.+?)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if exec_match:
+        return {
+            "name": "exec_command",
+            "args": {"command": exec_match.group("cmd").strip()},
+        }
 
     return {}
 
@@ -624,8 +679,13 @@ def prompt_may_need_tools(prompt: str) -> bool:
     hints = (
         "tool",
         "search",
-        "read",
         "list",
+        "ls",
+        "dir",
+        "cat",
+        "exec",
+        "command",
+        "pwd",
         "open",
         "download",
         "fetch",

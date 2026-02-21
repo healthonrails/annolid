@@ -1474,6 +1474,17 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_add_citation_raw["name"] == "add_citation_raw"
     assert "@article{yang2024annolid" in parsed_add_citation_raw["args"]["bibtex"]
     assert parsed_add_citation_raw["args"]["bib_file"] == "refs.bib"
+    assert "add citation" not in parsed_add_citation_raw["args"]["bibtex"].lower()
+
+    parsed_add_citation_fenced = task._parse_direct_gui_command(
+        "please add this bibtex into refs.bib:\n```bibtex\n@article{annolidref,title={PartSAM}}\n```"
+    )
+    assert parsed_add_citation_fenced["name"] == "add_citation_raw"
+    assert (
+        parsed_add_citation_fenced["args"]["bibtex"].strip()
+        == "@article{annolidref,title={PartSAM}}"
+    )
+    assert parsed_add_citation_fenced["args"]["bib_file"] == "refs.bib"
 
     parsed_list_citations = task._parse_direct_gui_command(
         "list citations from refs.bib for annolid"
@@ -1481,6 +1492,26 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_list_citations["name"] == "list_citations"
     assert parsed_list_citations["args"]["bib_file"] == "refs.bib"
     assert parsed_list_citations["args"]["query"] == "annolid"
+
+    parsed_list_dir = task._parse_direct_gui_command("ls /tmp/foo")
+    assert parsed_list_dir["name"] == "list_dir"
+    assert parsed_list_dir["args"]["path"] == "/tmp/foo"
+
+    parsed_read_file = task._parse_direct_gui_command("cat data.txt")
+    assert parsed_read_file["name"] == "read_file"
+    assert parsed_read_file["args"]["path"] == "data.txt"
+
+    parsed_read_file_quote = task._parse_direct_gui_command("read file 'some file.txt'")
+    assert parsed_read_file_quote["name"] == "read_file"
+    assert parsed_read_file_quote["args"]["path"] == "some file.txt"
+
+    parsed_exec = task._parse_direct_gui_command("run command pwd")
+    assert parsed_exec["name"] == "exec_command"
+    assert parsed_exec["args"]["command"] == "pwd"
+
+    parsed_exec_bang = task._parse_direct_gui_command("!echo hello")
+    assert parsed_exec_bang["name"] == "exec_command"
+    assert parsed_exec_bang["args"]["command"] == "echo hello"
 
 
 def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) -> None:

@@ -1377,6 +1377,9 @@ class StreamingChatTask(QRunnable):
                 "list_citations": self._tool_gui_list_citations,
                 "add_citation_raw": self._tool_gui_add_citation_raw,
                 "save_citation": self._tool_gui_save_citation,
+                "list_dir": self._tool_gui_list_dir,
+                "read_file": self._tool_gui_read_file,
+                "exec_command": self._tool_gui_exec_command,
             },
         )
 
@@ -1823,6 +1826,36 @@ class StreamingChatTask(QRunnable):
         return gui_stop_realtime_stream_tool(
             invoke_stop=lambda: self._invoke_widget_slot("bot_stop_realtime_stream")
         )
+
+    async def _tool_gui_list_dir(self, path: str) -> Dict[str, Any]:
+        from annolid.core.agent.tools.filesystem import ListDirTool
+
+        workspace = get_agent_workspace_path()
+        tool = ListDirTool(allowed_read_roots=[str(workspace)])
+        res = await tool.execute(path=path)
+        if res.startswith("Error:"):
+            return {"ok": False, "error": res}
+        return {"ok": True, "result": res}
+
+    async def _tool_gui_read_file(self, path: str) -> Dict[str, Any]:
+        from annolid.core.agent.tools.filesystem import ReadFileTool
+
+        workspace = get_agent_workspace_path()
+        tool = ReadFileTool(allowed_read_roots=[str(workspace)])
+        res = await tool.execute(path=path)
+        if res.startswith("Error:"):
+            return {"ok": False, "error": res}
+        return {"ok": True, "result": res}
+
+    async def _tool_gui_exec_command(self, command: str) -> Dict[str, Any]:
+        from annolid.core.agent.tools.shell import ExecTool
+
+        workspace = get_agent_workspace_path()
+        tool = ExecTool(working_dir=str(workspace))
+        res = await tool.execute(command=command)
+        if res.startswith("Error:") and "timed out" not in res:
+            return {"ok": False, "error": res}
+        return {"ok": True, "result": res}
 
     def _tool_gui_rename_file(
         self,

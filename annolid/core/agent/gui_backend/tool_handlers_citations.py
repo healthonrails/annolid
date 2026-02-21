@@ -4,6 +4,28 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict
 
+_BIBTEX_ENTRY_RE = re.compile(r"@[a-zA-Z][a-zA-Z0-9_-]*\s*[\{\(]")
+
+
+def _extract_bibtex_text(raw: str) -> str:
+    text = str(raw or "")
+    if not text.strip():
+        return ""
+    code_blocks = re.findall(
+        r"```(?:\s*(?:bibtex|bib|tex))?\s*([\s\S]*?)```",
+        text,
+        flags=re.IGNORECASE,
+    )
+    candidates = [
+        blk.strip() for blk in code_blocks if _BIBTEX_ENTRY_RE.search(blk or "")
+    ]
+    if candidates:
+        return "\n\n".join(candidates).strip()
+    marker = _BIBTEX_ENTRY_RE.search(text)
+    if marker:
+        return text[marker.start() :].strip()
+    return text.strip()
+
 
 def extract_doi(text: str) -> str:
     raw = str(text or "")
@@ -278,21 +300,39 @@ def add_citation_raw_tool(
         return {"ok": False, "error": "No BibTeX entry provided."}
     entries_in = parse_bibtex(raw)
     if not entries_in:
+        extracted = _extract_bibtex_text(raw)
+        entries_in = parse_bibtex(extracted) if extracted else []
+    if not entries_in:
         return {"ok": False, "error": "Could not parse a valid BibTeX entry."}
-    new_entry = entries_in[0]
-    if not new_entry.key.strip():
+    entries_valid = [e for e in entries_in if str(getattr(e, "key", "") or "").strip()]
+    if not entries_valid:
         return {"ok": False, "error": "BibTeX entry key is required."}
     resolved_bib = resolve_bib_path(str(bib_file or ""))
     resolved_bib.parent.mkdir(parents=True, exist_ok=True)
     existing = load_bibtex(resolved_bib) if resolved_bib.exists() else []
-    updated, created = upsert_entry(existing, new_entry)
-    save_bibtex(resolved_bib, updated, sort_keys=True)
+    created_count = 0
+    updated_count = 0
+    keys: list[str] = []
+    for entry in entries_valid:
+        existing, created = upsert_entry(existing, entry)
+        keys.append(str(entry.key))
+        if created:
+            created_count += 1
+        else:
+            updated_count += 1
+    save_bibtex(resolved_bib, existing, sort_keys=True)
+    single_key = keys[0] if len(keys) == 1 else ""
+    single_entry = entries_valid[0] if len(entries_valid) == 1 else None
     return {
         "ok": True,
-        "created": bool(created),
-        "key": new_entry.key,
+        "created": bool(created_count > 0 and updated_count == 0),
+        "key": single_key,
+        "keys": keys,
+        "created_count": int(created_count),
+        "updated_count": int(updated_count),
         "bib_file": str(resolved_bib),
-        "entry_type": new_entry.entry_type,
+        "entry_type": str(getattr(single_entry, "entry_type", "") or ""),
+        "entry_count": len(keys),
     }
 
 
