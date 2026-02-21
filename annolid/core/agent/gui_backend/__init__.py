@@ -102,6 +102,10 @@ from .tool_handlers_citations import (
 )
 from .tool_handlers_filesystem import rename_file_tool
 from .tool_handlers_realtime import (
+    check_stream_source_tool,
+    get_realtime_status_tool,
+    list_realtime_logs_tool,
+    list_realtime_models_tool,
     start_realtime_stream_tool,
     stop_realtime_stream_tool,
 )
@@ -253,6 +257,10 @@ __all__ = [
     "list_citations_tool",
     "start_realtime_stream_tool",
     "stop_realtime_stream_tool",
+    "get_realtime_status_tool",
+    "list_realtime_models_tool",
+    "list_realtime_logs_tool",
+    "check_stream_source_tool",
     "rename_file_tool",
     "emit_chunk",
     "emit_progress",

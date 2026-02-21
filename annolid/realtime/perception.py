@@ -29,6 +29,7 @@ from enum import Enum, auto
 from functools import partial
 from itertools import accumulate
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 import cv2
 import numpy as np
@@ -625,6 +626,17 @@ class CameraSource:
 
     def _build_camera_open_failure_message(self) -> str:
         source = str(self.config.camera_index or "").strip() or "0"
+        if source.lower().startswith("rtp://"):
+            return (
+                f"Failed to open RTP stream source: {source}. "
+                "Dynamic RTP payloads (e.g., type 96) require an SDP description. "
+                "Use an RTSP URL when available, or provide an SDP-backed stream."
+            )
+        if self._is_network_stream_source(source):
+            return (
+                f"Failed to open stream source: {source}. "
+                "For RTSP try transport=tcp, and verify OpenCV was built with FFmpeg/GStreamer."
+            )
         if source.isdigit() and sys.platform == "darwin":
             return (
                 "Failed to open camera. On macOS, camera permission must be granted to "
@@ -634,21 +646,80 @@ class CameraSource:
             )
         return f"Failed to open camera source: {source}"
 
+    @staticmethod
+    def _is_network_stream_source(source: object) -> bool:
+        value = str(source or "").strip().lower()
+        return value.startswith(
+            ("rtsp://", "rtsps://", "rtp://", "udp://", "srt://", "tcp://")
+        )
+
+    def _open_capture(self, candidate: object) -> Optional[cv2.VideoCapture]:
+        is_network = self._is_network_stream_source(candidate)
+        backends: List[int] = []
+        if is_network:
+            for attr in ("CAP_FFMPEG", "CAP_GSTREAMER", "CAP_ANY"):
+                backend = getattr(cv2, attr, None)
+                if isinstance(backend, int) and backend not in backends:
+                    backends.append(backend)
+        else:
+            backend = getattr(cv2, "CAP_ANY", None)
+            if isinstance(backend, int):
+                backends = [backend]
+            else:
+                backends = []
+
+        def _open_with_backend(backend: Optional[int]) -> Optional[cv2.VideoCapture]:
+            cap_obj: Optional[cv2.VideoCapture] = None
+            open_timeout = int(getattr(self.config, "stream_open_timeout_ms", 5000))
+            read_timeout = int(getattr(self.config, "stream_read_timeout_ms", 5000))
+            params: List[int] = []
+            if is_network:
+                open_prop = getattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC", None)
+                read_prop = getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None)
+                if isinstance(open_prop, int):
+                    params.extend([open_prop, max(1000, open_timeout)])
+                if isinstance(read_prop, int):
+                    params.extend([read_prop, max(1000, read_timeout)])
+            try:
+                if backend is not None and params:
+                    cap_obj = cv2.VideoCapture(candidate, backend, params)
+                elif backend is not None:
+                    cap_obj = cv2.VideoCapture(candidate, backend)
+                else:
+                    cap_obj = cv2.VideoCapture(candidate)
+            except Exception:
+                try:
+                    if backend is not None:
+                        cap_obj = cv2.VideoCapture(candidate, backend)
+                    else:
+                        cap_obj = cv2.VideoCapture(candidate)
+                except Exception:
+                    cap_obj = None
+
+            if cap_obj is None or not cap_obj.isOpened():
+                if cap_obj is not None:
+                    cap_obj.release()
+                return None
+
+            try:
+                cap_obj.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.frame_width)
+                cap_obj.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.frame_height)
+                cap_obj.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+            return cap_obj
+
+        if backends:
+            for backend in backends:
+                cap = _open_with_backend(backend)
+                if cap is not None:
+                    return cap
+            return None
+        return _open_with_backend(None)
+
     def _init_camera(self) -> Optional[cv2.VideoCapture]:
         """Initialize camera in thread."""
         try:
-
-            def _open_capture(candidate):
-                cap_obj = cv2.VideoCapture(candidate)
-                if cap_obj.isOpened():
-                    cap_obj.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.frame_width)
-                    cap_obj.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.frame_height)
-                    # Reduce buffer for lower latency
-                    cap_obj.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    return cap_obj
-                cap_obj.release()
-                return None
-
             candidates = self._build_camera_candidates()
 
             seen: set[str] = set()
@@ -657,7 +728,7 @@ class CameraSource:
                 if key in seen:
                     continue
                 seen.add(key)
-                cap = _open_capture(candidate)
+                cap = self._open_capture(candidate)
                 if cap is not None:
                     return cap
             return None
@@ -685,12 +756,47 @@ class CameraSource:
             if idx != 0:
                 candidates.append(0)
             candidates.extend([1, 2])
+        elif self._is_network_stream_source(raw_source):
+            # Preserve explicit stream source and avoid local fallback unless user requested it.
+            candidates.append(raw_source)
+        elif raw_source.lower().startswith(("http://", "https://")):
+            candidates.extend(self._expand_http_stream_candidates(raw_source))
         else:
             # Explicit path/URL/custom identifier first.
             candidates.append(self.config.camera_index)
             # Then local camera fallbacks.
             candidates.extend([0, 1, 2])
 
+        return candidates
+
+    @staticmethod
+    def _expand_http_stream_candidates(source: str) -> list[str]:
+        value = str(source or "").strip()
+        if not value:
+            return []
+        candidates: list[str] = [value]
+        try:
+            parts = urlsplit(value)
+            path = (parts.path or "").lower()
+            query = parse_qs(parts.query or "", keep_blank_values=True)
+        except Exception:
+            return candidates
+
+        if path.endswith("/img/main.cgi") and (
+            query.get("next_file", [""])[0].lower() == "main.htm" or not parts.query
+        ):
+            # Common camera control-page URL variants; add likely MJPEG/CGI stream paths.
+            for stream_path in (
+                "/img/video.mjpeg",
+                "/img/mjpeg.cgi",
+                "/mjpeg",
+                "/video.mjpg",
+            ):
+                stream_url = urlunsplit(
+                    (parts.scheme, parts.netloc, stream_path, "", "")
+                )
+                if stream_url not in candidates:
+                    candidates.append(stream_url)
         return candidates
 
     async def get_frame(self) -> Optional[Tuple[np.ndarray, Dict[str, Any]]]:
@@ -749,11 +855,79 @@ class HybridVideoSource:
         self.local = CameraSource(config, recording_manager)
         self.state = SourceState.DISCONNECTED
         self.last_remote_attempt = 0.0
+        self._remote_retry_cooldown = max(
+            1.0, float(getattr(self.config, "remote_retry_cooldown", 10.0))
+        )
+        self._remote_retry_max_cooldown = max(
+            self._remote_retry_cooldown,
+            float(getattr(self.config, "remote_retry_max_cooldown", 60.0)),
+        )
+        self._local_no_frame_tolerance = max(
+            1, int(getattr(self.config, "local_no_frame_tolerance", 12))
+        )
+        self._local_reconnect_cooldown = max(
+            0.5, float(getattr(self.config, "local_reconnect_cooldown", 2.0))
+        )
+        self._consecutive_local_misses = 0
+        self._next_local_reconnect_time = 0.0
+        self._prefer_local_only = self._is_explicit_local_source(config.camera_index)
         self._state_lock = asyncio.Lock()
+
+    @staticmethod
+    def _is_network_stream_source(source: object) -> bool:
+        value = str(source or "").strip().lower()
+        return value.startswith(
+            ("rtsp://", "rtsps://", "rtp://", "udp://", "srt://", "tcp://")
+        )
+
+    @staticmethod
+    def _is_explicit_local_source(source: object) -> bool:
+        value = str(source or "").strip()
+        lower = value.lower()
+        if not value or lower in {"default", "camera", "webcam", "cam", "cam0"}:
+            return False
+        if value.isdigit():
+            return False
+        if lower.startswith(
+            (
+                "http://",
+                "https://",
+                "rtsp://",
+                "rtsps://",
+                "rtp://",
+                "udp://",
+                "srt://",
+                "tcp://",
+            )
+        ):
+            return True
+        try:
+            return (
+                Path(value).expanduser().suffix != ""
+                or Path(value).expanduser().exists()
+            )
+        except Exception:
+            return True
 
     async def connect(self):
         """Initialize connection with fallback strategy."""
         async with self._state_lock:
+            if self._prefer_local_only:
+                self.state = SourceState.TRYING_LOCAL
+                if await self.local.connect():
+                    self.state = SourceState.USING_LOCAL
+                    logger.info("Connected to explicit local source")
+                    return
+                self.state = SourceState.DISCONNECTED
+                detail_text = (
+                    f"local={self.local.last_error}" if self.local.last_error else ""
+                )
+                if detail_text:
+                    raise RuntimeError(
+                        f"Failed to connect to any video source ({detail_text})"
+                    )
+                raise RuntimeError("Failed to connect to any video source")
+
             # Try remote first
             self.state = SourceState.TRYING_REMOTE
             if await self.remote.connect():
@@ -769,7 +943,11 @@ class HybridVideoSource:
                 return
 
             # Last-resort hard fallback: force camera index 0 and retry once.
-            if str(self.config.camera_index).strip() != "0":
+            if str(
+                self.config.camera_index
+            ).strip() != "0" and not self._is_network_stream_source(
+                self.config.camera_index
+            ):
                 logger.warning(
                     "Local source '%s' unavailable; retrying with fallback camera 0.",
                     self.config.camera_index,
@@ -822,18 +1000,29 @@ class HybridVideoSource:
         if self.state == SourceState.USING_LOCAL:
             result = await self.local.get_frame()
             if result:
+                self._consecutive_local_misses = 0
                 # Periodically try to reconnect to remote
                 await self._try_remote_reconnect()
                 return result
             else:
+                self._consecutive_local_misses += 1
+                if self._consecutive_local_misses < self._local_no_frame_tolerance:
+                    return None
                 logger.warning(
-                    "Local source returned no frame, resetting connection state"
+                    "Local source returned no frame %d times; resetting connection state",
+                    self._consecutive_local_misses,
                 )
+                self._consecutive_local_misses = 0
+                await self.local.disconnect()
                 async with self._state_lock:
                     self.state = SourceState.DISCONNECTED
 
         # Handle disconnected state
         if self.state in (SourceState.TRYING_LOCAL, SourceState.DISCONNECTED):
+            now = time.time()
+            if now < self._next_local_reconnect_time:
+                return None
+            self._next_local_reconnect_time = now + self._local_reconnect_cooldown
             async with self._state_lock:
                 if self.state == SourceState.TRYING_LOCAL:
                     if await self.local.connect():
@@ -848,15 +1037,25 @@ class HybridVideoSource:
 
     async def _try_remote_reconnect(self):
         """Periodically attempt remote reconnection."""
+        if self._prefer_local_only:
+            return
         current_time = time.time()
-        if current_time - self.last_remote_attempt > self.config.remote_retry_cooldown:
+        if current_time - self.last_remote_attempt > self._remote_retry_cooldown:
             self.last_remote_attempt = current_time
             logger.info("Attempting remote reconnection...")
 
             if await self.remote.connect():
                 logger.info("Successfully reconnected to remote source")
+                self._remote_retry_cooldown = max(
+                    1.0, float(getattr(self.config, "remote_retry_cooldown", 10.0))
+                )
                 async with self._state_lock:
                     self.state = SourceState.USING_REMOTE
+            else:
+                self._remote_retry_cooldown = min(
+                    self._remote_retry_max_cooldown,
+                    self._remote_retry_cooldown * 2.0,
+                )
 
     async def cleanup(self):
         """Clean up all resources."""

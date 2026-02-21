@@ -448,10 +448,69 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
     if stop_stream_match:
         return {"name": "stop_realtime_stream", "args": {}}
 
-    if re.search(r"\b(?:realtime|real[-\s]?time|stream)\b", lower):
-        start_stream_hint = re.search(
-            r"\b(?:start|open|run|launch|begin)\b", lower
-        ) or ("mediapipe" in lower)
+    check_stream_health_match = re.search(
+        r"\b(?:check|test|probe|verify)\b.*\b(?:camera|stream(?:ing)?|rtsp|rtp)\b.*\b(?:health|status|connect(?:ion|ivity)?)\b",
+        lower,
+    )
+    if check_stream_health_match:
+        camera_source = ""
+        stream_match = re.search(
+            r"\b(?:rtsp|rtsps|rtp|udp|srt|tcp)://[^\s\"'<>]+",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if stream_match:
+            camera_source = _strip_trailing_punctuation(stream_match.group(0))
+        cam_match = re.search(r"\bcamera\s+(\d+)\b", lower)
+        if cam_match:
+            camera_source = cam_match.group(1)
+        elif "webcam" in lower:
+            camera_source = "0"
+        rtsp_transport = "auto"
+        if "rtsp" in lower or "rtsps" in lower:
+            if re.search(
+                r"\b(?:rtsp(?:\s+over)?\s+tcp|tcp\s+rtsp|using\s+tcp)\b", lower
+            ):
+                rtsp_transport = "tcp"
+            elif re.search(
+                r"\b(?:rtsp(?:\s+over)?\s+udp|udp\s+rtsp|using\s+udp)\b", lower
+            ):
+                rtsp_transport = "udp"
+        return {
+            "name": "check_stream_source",
+            "args": {
+                "camera_source": camera_source,
+                "rtsp_transport": rtsp_transport,
+                "timeout_sec": 3.0,
+                "probe_frames": 3,
+            },
+        }
+
+    if re.search(r"\b(?:realtime|real[-\s]?time)\s+(?:status|state)\b", lower):
+        return {"name": "get_realtime_status", "args": {}}
+
+    if re.search(
+        r"\b(?:list|show|get)\b.*\b(?:realtime|real[-\s]?time)\b.*\bmodels?\b", lower
+    ) or (
+        re.search(r"\b(?:realtime|real[-\s]?time)\s+models?\b", lower)
+        and not re.search(r"\b(?:start|open|run|launch|begin)\b", lower)
+    ):
+        return {"name": "list_realtime_models", "args": {}}
+
+    if re.search(
+        r"\b(?:list|show|get)\b.*\b(?:realtime|real[-\s]?time)\b.*\blogs?\b", lower
+    ) or (
+        re.search(r"\b(?:realtime|real[-\s]?time)\s+logs?\b", lower)
+        and not re.search(r"\b(?:start|open|run|launch|begin)\b", lower)
+    ):
+        return {"name": "list_realtime_logs", "args": {}}
+
+    if re.search(r"\b(?:realtime|real[-\s]?time|stream(?:ing)?)\b", lower):
+        start_stream_hint = (
+            re.search(r"\b(?:start|open|run|launch|begin|check|test|detect)\b", lower)
+            or ("mediapipe" in lower)
+            or ("yolo11" in lower)
+        )
         if start_stream_hint:
             model_name = ""
             if "mediapipe face" in lower or "face landmark" in lower:
@@ -460,7 +519,20 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                 model_name = "mediapipe_hands"
             elif "mediapipe pose" in lower:
                 model_name = "mediapipe_pose"
+            elif "yolo11x" in lower:
+                model_name = "yolo11x"
+            elif "yolo11n" in lower:
+                model_name = "yolo11n"
+            elif "yolo11" in lower:
+                model_name = "yolo11n"
             camera_source = ""
+            stream_match = re.search(
+                r"\b(?:rtsp|rtsps|rtp|udp|srt|tcp)://[^\s\"'<>]+",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if stream_match:
+                camera_source = _strip_trailing_punctuation(stream_match.group(0))
             cam_match = re.search(
                 r"\bcamera\s+(\d+)\b",
                 lower,
@@ -472,6 +544,16 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             viewer_type = (
                 "pyqt" if ("pyqt" in lower or "canvas" in lower) else "threejs"
             )
+            rtsp_transport = "auto"
+            if "rtsp" in lower or "rtsps" in lower:
+                if re.search(
+                    r"\b(?:rtsp(?:\s+over)?\s+tcp|tcp\s+rtsp|using\s+tcp)\b", lower
+                ):
+                    rtsp_transport = "tcp"
+                elif re.search(
+                    r"\b(?:rtsp(?:\s+over)?\s+udp|udp\s+rtsp|using\s+udp)\b", lower
+                ):
+                    rtsp_transport = "udp"
             classify_eye_blinks = bool(
                 ("blink" in lower or "eye blink" in lower)
                 and model_name == "mediapipe_face"
@@ -482,6 +564,7 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                     "camera_source": camera_source,
                     "model_name": model_name,
                     "viewer_type": viewer_type,
+                    "rtsp_transport": rtsp_transport,
                     "classify_eye_blinks": classify_eye_blinks,
                 },
             }

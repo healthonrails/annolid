@@ -1,5 +1,46 @@
 import asyncio
+import ipaddress
+from urllib.parse import urlsplit, urlunsplit
 from typing import Any, Callable, Dict
+
+
+def _safe_source_for_display(source: str) -> str:
+    text = str(source or "").strip()
+    if not text or text.isdigit() or "://" not in text:
+        return text
+    try:
+        parts = urlsplit(text)
+    except Exception:
+        return text
+    host = str(parts.hostname or "").strip()
+    if not host:
+        return text
+    redact = host.lower() == "localhost"
+    if not redact:
+        try:
+            ip_obj = ipaddress.ip_address(host)
+            redact = bool(
+                ip_obj.is_private
+                or ip_obj.is_loopback
+                or ip_obj.is_link_local
+                or ip_obj.is_multicast
+            )
+        except Exception:
+            redact = False
+    safe_netloc = parts.netloc
+    if "@" in safe_netloc:
+        safe_netloc = safe_netloc.split("@", 1)[1]
+    if not redact:
+        return urlunsplit(
+            (parts.scheme, safe_netloc, parts.path, parts.query, parts.fragment)
+        )
+    port = f":{parts.port}" if parts.port else ""
+    replacement = f"<private-host>{port}"
+    if parts.scheme.lower() in {"rtp", "udp"}:
+        replacement = f"@<private-host>{port}"
+    return urlunsplit(
+        (parts.scheme, replacement, parts.path, parts.query, parts.fragment)
+    )
 
 
 async def execute_direct_gui_command(
@@ -17,6 +58,10 @@ async def execute_direct_gui_command(
     label_behavior_segments: Callable[..., Any],
     start_realtime_stream: Callable[..., Any],
     stop_realtime_stream: Callable[[], Any],
+    get_realtime_status: Callable[[], Any],
+    list_realtime_models: Callable[[], Any],
+    list_realtime_logs: Callable[[], Any],
+    check_stream_source: Callable[..., Any],
     list_pdfs: Callable[..., Any],
     clawhub_search_skills: Callable[..., Any],
     clawhub_install_skill: Callable[..., Any],
@@ -168,6 +213,7 @@ async def execute_direct_gui_command(
             target_behaviors=args.get("target_behaviors"),
             confidence_threshold=args.get("confidence_threshold"),
             viewer_type=str(args.get("viewer_type") or ""),
+            rtsp_transport=str(args.get("rtsp_transport") or ""),
             classify_eye_blinks=bool(args.get("classify_eye_blinks", False)),
             blink_ear_threshold=args.get("blink_ear_threshold"),
             blink_min_consecutive_frames=args.get("blink_min_consecutive_frames"),
@@ -186,6 +232,81 @@ async def execute_direct_gui_command(
         if payload.get("ok"):
             return "Stopped realtime stream."
         return str(payload.get("error") or "Failed to stop realtime stream.")
+
+    if name == "get_realtime_status":
+        payload = await _run(get_realtime_status)
+        if payload.get("ok"):
+            running = bool(payload.get("running", False))
+            model_name = str(payload.get("model_name") or "").strip()
+            camera_source = _safe_source_for_display(
+                str(payload.get("camera_source") or "").strip()
+            )
+            viewer_type = str(payload.get("viewer_type") or "").strip()
+            state = "running" if running else "stopped"
+            parts = [f"Realtime status: {state}."]
+            if model_name:
+                parts.append(f"Model: {model_name}.")
+            if camera_source:
+                parts.append(f"Source: {camera_source}.")
+            if viewer_type:
+                parts.append(f"Viewer: {viewer_type}.")
+            return " ".join(parts)
+        return str(payload.get("error") or "Failed to get realtime status.")
+
+    if name == "list_realtime_models":
+        payload = await _run(list_realtime_models)
+        if payload.get("ok"):
+            models = payload.get("models", [])
+            if not isinstance(models, list) or not models:
+                return "No realtime models found."
+            lines = [f"Available realtime models ({len(models)}):"]
+            for item in models:
+                if not isinstance(item, dict):
+                    continue
+                display_name = str(item.get("display_name") or "").strip()
+                weight = str(item.get("weight_file") or "").strip()
+                if display_name and weight:
+                    lines.append(f"- {display_name} ({weight})")
+                elif display_name:
+                    lines.append(f"- {display_name}")
+                elif weight:
+                    lines.append(f"- {weight}")
+            return "\n".join(lines)
+        return str(payload.get("error") or "Failed to list realtime models.")
+
+    if name == "list_realtime_logs":
+        payload = await _run(list_realtime_logs)
+        if payload.get("ok"):
+            detections = str(payload.get("detections_log_path") or "").strip()
+            bot_events = str(payload.get("bot_event_log_path") or "").strip()
+            if not detections and not bot_events:
+                return "No realtime log files are currently available."
+            lines = ["Realtime log files:"]
+            if detections:
+                lines.append(f"- detections: {detections}")
+            if bot_events:
+                lines.append(f"- bot-events: {bot_events}")
+            return "\n".join(lines)
+        return str(payload.get("error") or "Failed to list realtime logs.")
+
+    if name == "check_stream_source":
+        payload = await _run(
+            check_stream_source,
+            camera_source=str(args.get("camera_source") or ""),
+            rtsp_transport=str(args.get("rtsp_transport") or "auto"),
+            timeout_sec=float(args.get("timeout_sec") or 3.0),
+            probe_frames=int(args.get("probe_frames") or 3),
+        )
+        if payload.get("ok"):
+            source = str(payload.get("camera_source") or "").strip()
+            source = _safe_source_for_display(source)
+            size = ""
+            width = int(payload.get("frame_width") or 0)
+            height = int(payload.get("frame_height") or 0)
+            if width > 0 and height > 0:
+                size = f" {width}x{height}"
+            return f"Stream probe succeeded for {source or 'source'}.{size}".strip()
+        return str(payload.get("error") or "Stream probe failed.")
 
     if name == "list_pdfs":
         payload = await _run(list_pdfs, query=args.get("query"))

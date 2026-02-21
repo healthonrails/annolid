@@ -73,7 +73,9 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         source_form = QtWidgets.QFormLayout(source_group)
 
         self.camera_edit = QtWidgets.QLineEdit()
-        self.camera_edit.setPlaceholderText(self.tr("e.g. 0, rtsp://, filename"))
+        self.camera_edit.setPlaceholderText(
+            self.tr("e.g. 0, rtsp://host/stream, rtp://@host:port, filename")
+        )
         browse_camera_btn = QtWidgets.QPushButton(self.tr("Browse…"))
         browse_camera_btn.clicked.connect(self._browse_camera_source)
 
@@ -97,8 +99,13 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.targets_edit.setPlaceholderText(
             self.tr("Comma separated behaviours (leave blank for all)")
         )
+        self.rtsp_transport_combo = QtWidgets.QComboBox()
+        self.rtsp_transport_combo.addItem(self.tr("Auto"), "auto")
+        self.rtsp_transport_combo.addItem(self.tr("TCP"), "tcp")
+        self.rtsp_transport_combo.addItem(self.tr("UDP"), "udp")
 
         source_form.addRow(self.tr("Camera / Stream"), camera_layout)
+        source_form.addRow(self.tr("RTSP Transport"), self.rtsp_transport_combo)
         source_form.addRow(self.tr("Remote Server"), self.server_edit)
         source_form.addRow(self.tr("Remote Port"), self.port_spin)
         source_form.addRow(self.tr("Publisher Bind"), self.publisher_edit)
@@ -168,6 +175,23 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.viewer_combo = QtWidgets.QComboBox()
         self.viewer_combo.addItem(self.tr("PyQt Canvas"), "pyqt")
         self.viewer_combo.addItem(self.tr("Three.js Viewer"), "threejs")
+        self.bot_report_check = QtWidgets.QCheckBox(
+            self.tr("Send detection digests to Annolid Bot")
+        )
+        self.bot_report_interval_spin = QtWidgets.QSpinBox()
+        self.bot_report_interval_spin.setRange(1, 3600)
+        self.bot_report_interval_spin.setSuffix(" s")
+        self.bot_report_watch_labels_edit = QtWidgets.QLineEdit()
+        self.bot_report_watch_labels_edit.setPlaceholderText(
+            self.tr("person, animal (blank = any detection)")
+        )
+        self.bot_email_report_check = QtWidgets.QCheckBox(
+            self.tr("Ask bot to email report")
+        )
+        self.bot_email_to_edit = QtWidgets.QLineEdit()
+        self.bot_email_to_edit.setPlaceholderText(self.tr("recipient@example.com"))
+        self.bot_report_check.toggled.connect(self._on_bot_report_toggled)
+        self.bot_email_report_check.toggled.connect(self._on_bot_report_toggled)
 
         output_layout.addWidget(self.publish_frames_check, 0, 0, 1, 3)
         output_layout.addWidget(self.publish_annotated_check, 1, 0, 1, 3)
@@ -183,10 +207,22 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         )
         output_layout.addWidget(self.blink_min_frames_spin, 5, 1, 1, 2)
         output_layout.addWidget(self.log_check, 6, 0, 1, 3)
-        output_layout.addWidget(self.log_path_edit, 6, 0, 1, 2)
-        output_layout.addWidget(browse_log_btn, 6, 2)
-        output_layout.addWidget(QtWidgets.QLabel(self.tr("Preferred Viewer")), 7, 0)
-        output_layout.addWidget(self.viewer_combo, 7, 1, 1, 2)
+        output_layout.addWidget(self.log_path_edit, 7, 0, 1, 2)
+        output_layout.addWidget(browse_log_btn, 7, 2)
+        output_layout.addWidget(QtWidgets.QLabel(self.tr("Preferred Viewer")), 8, 0)
+        output_layout.addWidget(self.viewer_combo, 8, 1, 1, 2)
+        output_layout.addWidget(self.bot_report_check, 9, 0, 1, 3)
+        output_layout.addWidget(
+            QtWidgets.QLabel(self.tr("Bot Report Interval")), 10, 0, 1, 1
+        )
+        output_layout.addWidget(self.bot_report_interval_spin, 10, 1, 1, 2)
+        output_layout.addWidget(
+            QtWidgets.QLabel(self.tr("Bot Watch Labels")), 11, 0, 1, 1
+        )
+        output_layout.addWidget(self.bot_report_watch_labels_edit, 11, 1, 1, 2)
+        output_layout.addWidget(self.bot_email_report_check, 12, 0, 1, 3)
+        output_layout.addWidget(QtWidgets.QLabel(self.tr("Email Recipient")), 13, 0)
+        output_layout.addWidget(self.bot_email_to_edit, 13, 1, 1, 2)
         main_layout.addWidget(output_group)
 
         # --- Buttons / Status ------------------------------------------------
@@ -241,6 +277,12 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.subscriber_edit.setText(
             str(defaults.get("subscriber_address", "tcp://127.0.0.1:5555"))
         )
+        rtsp_transport = str(defaults.get("rtsp_transport", "auto") or "auto").lower()
+        rtsp_transport_index = self.rtsp_transport_combo.findData(rtsp_transport)
+        if rtsp_transport_index < 0:
+            rtsp_transport_index = self.rtsp_transport_combo.findData("auto")
+        if rtsp_transport_index >= 0:
+            self.rtsp_transport_combo.setCurrentIndex(rtsp_transport_index)
 
         targets = defaults.get("targets")
         if isinstance(targets, list):
@@ -283,6 +325,20 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.classify_eye_blinks.setChecked(
             bool(defaults.get("classify_eye_blinks", False))
         )
+        self.bot_report_check.setChecked(
+            bool(defaults.get("bot_report_enabled", False))
+        )
+        self.bot_report_interval_spin.setValue(
+            int(defaults.get("bot_report_interval_sec", 5))
+        )
+        watch_labels = defaults.get("bot_watch_labels", "")
+        if isinstance(watch_labels, list):
+            watch_labels = ", ".join(map(str, watch_labels))
+        self.bot_report_watch_labels_edit.setText(str(watch_labels or ""))
+        self.bot_email_report_check.setChecked(
+            bool(defaults.get("bot_email_report", False))
+        )
+        self.bot_email_to_edit.setText(str(defaults.get("bot_email_to", "") or ""))
         self.blink_ear_threshold_spin.setValue(
             float(defaults.get("blink_ear_threshold", 0.21))
         )
@@ -293,6 +349,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         if log_path:
             self.log_path_edit.setText(str(log_path))
         self._on_publish_frames_toggled(self.publish_frames_check.isChecked())
+        self._on_bot_report_toggled(self.bot_report_check.isChecked())
         self._update_blink_controls()
 
     # UI slots
@@ -362,6 +419,14 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         if not checked:
             self.publish_annotated_check.setChecked(False)
 
+    def _on_bot_report_toggled(self, checked: bool):
+        enabled = self.bot_report_check.isChecked()
+        self.bot_report_interval_spin.setEnabled(enabled)
+        self.bot_report_watch_labels_edit.setEnabled(enabled)
+        self.bot_email_report_check.setEnabled(enabled)
+        email_enabled = enabled and self.bot_email_report_check.isChecked()
+        self.bot_email_to_edit.setEnabled(email_enabled)
+
     # ------------------------------------------------------------------
     # State exposed to parent
     # ------------------------------------------------------------------
@@ -423,4 +488,10 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             max_fps=float(self.max_fps_spin.value()),
             publish_frames=self.publish_frames_check.isChecked(),
             publish_annotated_frames=self.publish_annotated_check.isChecked(),
+            rtsp_transport=str(self.rtsp_transport_combo.currentData() or "auto"),
+            bot_report_enabled=self.bot_report_check.isChecked(),
+            bot_report_interval_sec=float(self.bot_report_interval_spin.value()),
+            bot_watch_labels=self.bot_report_watch_labels_edit.text().strip(),
+            bot_email_report=self.bot_email_report_check.isChecked(),
+            bot_email_to=self.bot_email_to_edit.text().strip(),
         )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import ipaddress
 import os
 import tempfile
 import webbrowser
@@ -9,6 +10,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import QThreadPool
 
@@ -21,6 +23,7 @@ from annolid.gui.realtime_launch import (
     build_realtime_launch_payload,
     resolve_realtime_model_weight,
 )
+from annolid.gui.models_registry import MODEL_REGISTRY
 from annolid.gui.widgets.ai_chat_audio_controller import ChatAudioController
 from annolid.gui.widgets.ai_chat_backend import StreamingChatTask, clear_chat_session
 from annolid.gui.widgets.ai_chat_session_dialog import ChatSessionManagerDialog
@@ -45,6 +48,45 @@ from annolid.utils.citations import (
     validate_basic_citation_fields,
     validate_citation_metadata,
 )
+
+
+def _safe_stream_source_for_bot(source: str) -> str:
+    text = str(source or "").strip()
+    if not text or text.isdigit() or "://" not in text:
+        return text
+    try:
+        parts = urlsplit(text)
+    except Exception:
+        return text
+    host = str(parts.hostname or "").strip()
+    if not host:
+        return text
+    redact = host.lower() == "localhost"
+    if not redact:
+        try:
+            ip_obj = ipaddress.ip_address(host)
+            redact = bool(
+                ip_obj.is_private
+                or ip_obj.is_loopback
+                or ip_obj.is_link_local
+                or ip_obj.is_multicast
+            )
+        except Exception:
+            redact = False
+    safe_netloc = parts.netloc
+    if "@" in safe_netloc:
+        safe_netloc = safe_netloc.split("@", 1)[1]
+    if not redact:
+        return urlunsplit(
+            (parts.scheme, safe_netloc, parts.path, parts.query, parts.fragment)
+        )
+    port = f":{parts.port}" if parts.port else ""
+    replacement = f"<private-host>{port}"
+    if parts.scheme.lower() in {"rtp", "udp"}:
+        replacement = f"@<private-host>{port}"
+    return urlunsplit(
+        (parts.scheme, replacement, parts.path, parts.query, parts.fragment)
+    )
 
 
 class _ChatBubble(QtWidgets.QFrame):
@@ -2970,7 +3012,18 @@ class AIChatWidget(QtWidgets.QWidget):
             )
             self.status_label.setText(f"Bot action failed: {exc}")
 
-    @QtCore.Slot(str, str, str, float, str, bool, float, int)
+    @QtCore.Slot(
+        str,
+        str,
+        str,
+        float,
+        str,
+        str,
+        bool,
+        float,
+        int,
+        str,
+    )
     def bot_start_realtime_stream(
         self,
         camera_source: str = "",
@@ -2978,9 +3031,11 @@ class AIChatWidget(QtWidgets.QWidget):
         target_behaviors_csv: str = "",
         confidence_threshold: float = -1.0,
         viewer_type: str = "threejs",
+        rtsp_transport: str = "auto",
         classify_eye_blinks: bool = False,
         blink_ear_threshold: float = -1.0,
         blink_min_consecutive_frames: int = -1,
+        start_options_json: str = "",
     ) -> None:
         self._set_bot_action_result(
             "start_realtime_stream",
@@ -3003,6 +3058,66 @@ class AIChatWidget(QtWidgets.QWidget):
             )
             return
         try:
+            start_options: Dict[str, Any] = {}
+            if start_options_json:
+                try:
+                    raw_options = str(start_options_json or "").strip()
+                    if len(raw_options) > 4096:
+                        raise ValueError("start options payload too large")
+                    parsed_options = json.loads(raw_options)
+                    if isinstance(parsed_options, dict):
+                        start_options = dict(parsed_options)
+                except Exception:
+                    start_options = {}
+
+            def _as_bool(value: Any, default: bool = False) -> bool:
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, str):
+                    text = value.strip().lower()
+                    if text in {"1", "true", "yes", "on"}:
+                        return True
+                    if text in {"0", "false", "no", "off"}:
+                        return False
+                return bool(default)
+
+            def _as_float(
+                value: Any,
+                default: float,
+                low: float | None = None,
+                high: float | None = None,
+            ) -> float:
+                try:
+                    parsed = float(value)
+                except Exception:
+                    parsed = float(default)
+                if low is not None:
+                    parsed = max(float(low), parsed)
+                if high is not None:
+                    parsed = min(float(high), parsed)
+                return parsed
+
+            safe_bot_report_enabled = _as_bool(
+                start_options.get("bot_report_enabled", False), False
+            )
+            safe_bot_report_interval_sec = _as_float(
+                start_options.get("bot_report_interval_sec", 5.0),
+                5.0,
+                1.0,
+                3600.0,
+            )
+            safe_bot_watch_labels_csv = str(
+                start_options.get("bot_watch_labels_csv", "") or ""
+            ).strip()
+            if len(safe_bot_watch_labels_csv) > 512:
+                safe_bot_watch_labels_csv = safe_bot_watch_labels_csv[:512]
+            safe_bot_email_report = _as_bool(
+                start_options.get("bot_email_report", False), False
+            )
+            safe_bot_email_to = str(start_options.get("bot_email_to", "") or "").strip()
+            if len(safe_bot_email_to) > 256:
+                safe_bot_email_to = safe_bot_email_to[:256]
+
             realtime_config, extras = build_realtime_launch_payload(
                 camera_source=resolved_camera_source,
                 model_name=model_name,
@@ -3014,6 +3129,12 @@ class AIChatWidget(QtWidgets.QWidget):
                 classify_eye_blinks=bool(classify_eye_blinks),
                 blink_ear_threshold=blink_ear_threshold,
                 blink_min_consecutive_frames=blink_min_consecutive_frames,
+                rtsp_transport=rtsp_transport,
+                bot_report_enabled=safe_bot_report_enabled,
+                bot_report_interval_sec=safe_bot_report_interval_sec,
+                bot_watch_labels=safe_bot_watch_labels_csv,
+                bot_email_report=safe_bot_email_report,
+                bot_email_to=safe_bot_email_to,
                 suppress_control_dock=True,
             )
             model_weight = resolve_realtime_model_weight(model_name)
@@ -3033,9 +3154,17 @@ class AIChatWidget(QtWidgets.QWidget):
                 {
                     "ok": True,
                     "model_name": model_weight,
-                    "camera_source": str(camera_value),
+                    "camera_source": _safe_stream_source_for_bot(str(camera_value)),
                     "viewer_type": str(extras["viewer_type"]),
+                    "rtsp_transport": str(rtsp_transport or "auto"),
                     "classify_eye_blinks": bool(classify_eye_blinks),
+                    "bot_report_enabled": bool(extras.get("bot_report_enabled", False)),
+                    "bot_report_interval_sec": float(
+                        extras.get("bot_report_interval_sec", 5.0)
+                    ),
+                    "bot_watch_labels": list(extras.get("bot_watch_labels", [])),
+                    "bot_email_report": bool(extras.get("bot_email_report", False)),
+                    "bot_email_to": str(extras.get("bot_email_to", "")),
                 },
             )
             self.status_label.setText(
@@ -3047,6 +3176,85 @@ class AIChatWidget(QtWidgets.QWidget):
                 {"ok": False, "error": str(exc)},
             )
             self.status_label.setText(f"Bot action failed: {exc}")
+
+    @QtCore.Slot()
+    def bot_get_realtime_status(self) -> None:
+        host = self.host_window_widget or self.window()
+        manager = getattr(host, "realtime_manager", None)
+        if manager is None:
+            self._set_bot_action_result(
+                "get_realtime_status",
+                {"ok": False, "error": "Realtime manager is unavailable."},
+            )
+            return
+        payload = {
+            "ok": True,
+            "running": bool(getattr(manager, "realtime_running", False)),
+            "camera_source": _safe_stream_source_for_bot(
+                str(getattr(manager, "_last_realtime_camera_source", "") or "")
+            ),
+            "model_name": str(getattr(manager, "_last_realtime_model_name", "") or ""),
+            "viewer_type": str(
+                getattr(manager, "_last_realtime_viewer_type", "") or ""
+            ),
+            "rtsp_transport": str(
+                getattr(manager, "_last_realtime_rtsp_transport", "") or "auto"
+            ),
+            "subscriber_address": _safe_stream_source_for_bot(
+                str(getattr(manager, "_realtime_connect_address", "") or "")
+            ),
+            "detections_log_path": str(getattr(manager, "realtime_log_path", "") or ""),
+            "bot_event_log_path": str(
+                getattr(manager, "_bot_event_log_path", "") or ""
+            ),
+            "status_text": str(
+                getattr(manager.realtime_control_widget, "status_label", None).text()
+                if getattr(manager, "realtime_control_widget", None) is not None
+                and getattr(manager.realtime_control_widget, "status_label", None)
+                is not None
+                else ""
+            ),
+        }
+        self._set_bot_action_result("get_realtime_status", payload)
+
+    @QtCore.Slot()
+    def bot_list_realtime_models(self) -> None:
+        models: list[dict[str, str]] = []
+        for item in MODEL_REGISTRY:
+            models.append(
+                {
+                    "id": str(item.id),
+                    "display_name": str(item.display_name),
+                    "weight_file": str(item.weight_file),
+                    "description": str(item.description),
+                }
+            )
+        self._set_bot_action_result(
+            "list_realtime_models",
+            {"ok": True, "count": len(models), "models": models},
+        )
+
+    @QtCore.Slot()
+    def bot_list_realtime_logs(self) -> None:
+        host = self.host_window_widget or self.window()
+        manager = getattr(host, "realtime_manager", None)
+        if manager is None:
+            self._set_bot_action_result(
+                "list_realtime_logs",
+                {"ok": False, "error": "Realtime manager is unavailable."},
+            )
+            return
+        detections = str(getattr(manager, "realtime_log_path", "") or "")
+        bot_events = str(getattr(manager, "_bot_event_log_path", "") or "")
+        self._set_bot_action_result(
+            "list_realtime_logs",
+            {
+                "ok": True,
+                "detections_log_path": detections,
+                "bot_event_log_path": bot_events,
+                "available": bool(detections or bot_events),
+            },
+        )
 
     @QtCore.Slot()
     def bot_stop_realtime_stream(self) -> None:

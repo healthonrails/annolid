@@ -23,6 +23,9 @@ class Config:
     visualize: bool = False
     remote_connect_timeout: float = 2.0
     remote_retry_cooldown: float = 10.0
+    remote_retry_max_cooldown: float = 60.0
+    local_no_frame_tolerance: int = 12
+    local_reconnect_cooldown: float = 2.0
     pause_on_recording_stop: bool = True
     recording_state_timeout: float = 30.0
     publish_frames: bool = True

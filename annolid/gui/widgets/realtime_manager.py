@@ -3,8 +3,11 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import socket
+import tempfile
 import time
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -15,6 +18,7 @@ from pycocotools import mask as maskUtils  # type: ignore
 from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.gui.widgets import RealtimeControlWidget
+from annolid.gui.widgets.bot_explain import _resolve_chat_widget
 from annolid.gui.workers import PerceptionProcessWorker, RealtimeSubscriberWorker
 from annolid.gui.shape import Shape, MaskShape
 from annolid.utils.logger import logger
@@ -45,6 +49,20 @@ class RealtimeManager(QtCore.QObject):
             "blink_count": 0,
             "eyes_closed": False,
         }
+        self._last_realtime_model_name = ""
+        self._last_realtime_camera_source = ""
+        self._last_realtime_viewer_type = ""
+        self._last_realtime_rtsp_transport = "auto"
+        self._bot_report_enabled = False
+        self._bot_report_interval_sec = 5.0
+        self._bot_watch_labels: set[str] = set()
+        self._bot_email_report = False
+        self._bot_email_to = ""
+        self._bot_last_report_ts = 0.0
+        self._bot_last_attempt_ts = 0.0
+        self._bot_last_busy_log_ts = 0.0
+        self._bot_event_log_fp = None
+        self._bot_event_log_path = None
 
         # Dock + control widget
         self.realtime_control_dock = QtWidgets.QDockWidget(
@@ -179,6 +197,12 @@ class RealtimeManager(QtCore.QObject):
         self._realtime_connect_address = extras.get(
             "subscriber_address", "tcp://127.0.0.1:5555"
         )
+        self._last_realtime_model_name = str(realtime_config.model_base_name or "")
+        self._last_realtime_camera_source = str(realtime_config.camera_index or "")
+        self._last_realtime_viewer_type = str(extras.get("viewer_type", ""))
+        self._last_realtime_rtsp_transport = str(
+            extras.get("rtsp_transport", "auto") or "auto"
+        )
 
         self.realtime_running = True
         self._realtime_shapes = []
@@ -199,6 +223,40 @@ class RealtimeManager(QtCore.QObject):
             "blink_count": 0,
             "eyes_closed": False,
         }
+        self._bot_report_enabled = bool(extras.get("bot_report_enabled", False))
+        try:
+            self._bot_report_interval_sec = max(
+                1.0, float(extras.get("bot_report_interval_sec", 5.0))
+            )
+        except Exception:
+            self._bot_report_interval_sec = 5.0
+        self._bot_watch_labels = self._normalize_bot_watch_labels(
+            extras.get("bot_watch_labels", [])
+        )
+        self._bot_email_report = bool(extras.get("bot_email_report", False))
+        self._bot_email_to = str(extras.get("bot_email_to", "") or "").strip()
+        self._bot_last_report_ts = 0.0
+        self._bot_last_attempt_ts = 0.0
+        self._bot_last_busy_log_ts = 0.0
+
+        if self._bot_report_enabled:
+            if self._bot_email_report and not self._bot_email_to:
+                logger.warning(
+                    "Realtime bot email reporting is enabled but no recipient is set."
+                )
+            labels_text = (
+                ", ".join(sorted(self._bot_watch_labels))
+                if self._bot_watch_labels
+                else "(any detection)"
+            )
+            logger.info(
+                "Realtime bot reporting enabled: interval=%ss labels=%s email=%s recipient=%s",
+                int(self._bot_report_interval_sec),
+                labels_text,
+                "on" if self._bot_email_report else "off",
+                self._bot_email_to or "(none)",
+            )
+            self._open_bot_event_log()
 
         status_message = (
             self.window.tr("Realtime inference starting with %s")
@@ -399,6 +457,217 @@ class RealtimeManager(QtCore.QObject):
             logger.debug("Failed to decode realtime mask: %s", exc, exc_info=True)
 
         return None
+
+    @staticmethod
+    def _normalize_bot_watch_labels(watch_labels: Any) -> set[str]:
+        source = watch_labels
+        normalized: set[str] = set()
+        if isinstance(source, str):
+            values = [p.strip() for p in source.split(",") if p.strip()]
+        elif isinstance(source, list):
+            values = [str(v).strip() for v in source if str(v).strip()]
+        else:
+            values = []
+        for value in values:
+            normalized.add(value.lower())
+        return normalized
+
+    @staticmethod
+    def _detection_label(detection: Dict[str, Any]) -> str:
+        return str(detection.get("behavior", "") or "").strip()
+
+    def _filter_bot_report_detections(
+        self, detections: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        if not detections:
+            return []
+        if not self._bot_watch_labels:
+            return list(detections)
+        matched: List[Dict[str, Any]] = []
+        for detection in detections:
+            label = self._detection_label(detection).lower()
+            if not label:
+                continue
+            if label in self._bot_watch_labels or any(
+                label.startswith(f"{watched}_") for watched in self._bot_watch_labels
+            ):
+                matched.append(detection)
+        return matched
+
+    def _should_send_bot_report(
+        self, now_ts: float, detections: List[Dict[str, Any]]
+    ) -> bool:
+        if not self._bot_report_enabled:
+            return False
+        if not detections:
+            return False
+        if now_ts - self._bot_last_report_ts < self._bot_report_interval_sec:
+            return False
+        if now_ts - self._bot_last_attempt_ts < 1.0:
+            return False
+        return True
+
+    def _save_bot_report_frame(self, qimage, frame_index: object) -> Optional[str]:
+        if qimage is None:
+            return None
+        try:
+            suffix = f"_frame{frame_index}" if frame_index is not None else ""
+            fd, temp_path = tempfile.mkstemp(
+                prefix=f"annolid_bot_realtime{suffix}_", suffix=".jpg"
+            )
+            Path(temp_path).unlink(missing_ok=True)
+            try:
+                if fd >= 0:
+                    os.close(fd)
+            except Exception:
+                pass
+            if qimage.save(temp_path, "JPG", 85):
+                return temp_path
+        except Exception as exc:
+            logger.debug("Failed to save bot report frame: %s", exc, exc_info=True)
+        return None
+
+    def _send_detection_report_to_bot(
+        self,
+        metadata: Dict[str, Any],
+        detections: List[Dict[str, Any]],
+        image_path: Optional[str],
+    ) -> bool:
+        widget, err = _resolve_chat_widget(self.window)
+        if widget is None:
+            logger.debug("Unable to resolve Annolid Bot widget: %s", err)
+            self._write_bot_event_log(
+                "bot_unavailable",
+                {
+                    "error": err,
+                    "matched_detections": len(detections),
+                    "frame_index": metadata.get("frame_index"),
+                },
+            )
+            return False
+        if bool(getattr(widget, "is_streaming_chat", False)):
+            now_ts = time.time()
+            if now_ts - self._bot_last_busy_log_ts >= 10.0:
+                logger.info(
+                    "Annolid Bot is busy; deferring realtime report (matched=%d).",
+                    len(detections),
+                )
+                self._bot_last_busy_log_ts = now_ts
+            self._write_bot_event_log(
+                "bot_busy",
+                {
+                    "matched_detections": len(detections),
+                    "frame_index": metadata.get("frame_index"),
+                },
+            )
+            return False
+
+        prompt_input = getattr(widget, "prompt_text_edit", None)
+        send_chat = getattr(widget, "chat_with_model", None)
+        set_image_path = getattr(widget, "set_image_path", None)
+        register_temp_image = getattr(widget, "register_managed_temp_image", None)
+        set_chat_mode = getattr(widget, "set_next_chat_mode", None)
+        if prompt_input is None or not callable(send_chat):
+            self._write_bot_event_log(
+                "bot_input_unavailable",
+                {"frame_index": metadata.get("frame_index")},
+            )
+            return False
+
+        labels = [self._detection_label(d).lower() or "unknown" for d in detections]
+        counts = Counter(labels)
+        summary_items = [f"{label}: {count}" for label, count in counts.most_common(8)]
+        frame_index = metadata.get("frame_index")
+        frame_ts = metadata.get("timestamp") or time.time()
+        prompt = (
+            "Realtime detection digest.\n"
+            f"Frame: {frame_index if frame_index is not None else '?'}\n"
+            f"Timestamp: {frame_ts}\n"
+            f"Matched detections: {len(detections)}\n"
+            f"Labels: {', '.join(summary_items) if summary_items else 'none'}\n\n"
+            "Please analyze recent activity and write a concise report with notable events,"
+            " possible behavior interpretation, and recommended follow-up checks.\n"
+            "If tool calls are available, you may use them."
+        )
+        if self._bot_email_report:
+            to_hint = self._bot_email_to or "configured recipient"
+            prompt += (
+                f"\nAfter analysis, call the `email` tool to send the report to {to_hint}."
+                "\nUse subject: Realtime detection report."
+                "\nIn your chat reply, confirm whether email tool call succeeded."
+            )
+
+        try:
+            if image_path and callable(set_image_path):
+                set_image_path(image_path)
+                if callable(register_temp_image):
+                    register_temp_image(image_path)
+                # Keep default mode so agent tooling (e.g. email) remains available.
+                if callable(set_chat_mode):
+                    set_chat_mode("default")
+            prompt_input.setPlainText(prompt)
+            prompt_input.setFocus()
+            send_chat()
+            self._write_bot_event_log(
+                "report_sent_to_bot",
+                {
+                    "frame_index": frame_index,
+                    "matched_detections": len(detections),
+                    "labels": dict(counts),
+                    "image_attached": bool(image_path),
+                    "email_requested": bool(self._bot_email_report),
+                    "email_to": self._bot_email_to,
+                },
+            )
+            return True
+        except Exception as exc:
+            logger.debug(
+                "Failed to send realtime report to bot: %s", exc, exc_info=True
+            )
+            self._write_bot_event_log(
+                "send_exception",
+                {
+                    "error": str(exc),
+                    "frame_index": frame_index,
+                    "matched_detections": len(detections),
+                },
+            )
+            return False
+
+    def _open_bot_event_log(self) -> None:
+        if self._bot_event_log_fp is not None:
+            return
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = (
+                Path.home()
+                / "annolid_realtime_logs"
+                / f"realtime_bot_events_{timestamp}.ndjson"
+            ).resolve()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._bot_event_log_fp = open(path, "a", encoding="utf-8")
+            self._bot_event_log_path = path
+            logger.info("Realtime bot event logging to %s", path)
+        except Exception as exc:
+            logger.warning("Failed to open realtime bot event log: %s", exc)
+            self._bot_event_log_fp = None
+            self._bot_event_log_path = None
+
+    def _write_bot_event_log(self, event: str, payload: Dict[str, Any]) -> None:
+        fp = self._bot_event_log_fp
+        if fp is None:
+            return
+        try:
+            entry = {
+                "timestamp": time.time(),
+                "event": str(event or "").strip(),
+                "payload": payload or {},
+            }
+            json.dump(entry, fp)
+            fp.write("\n")
+            fp.flush()
+        except Exception:
+            pass
 
     def _convert_detections_to_shapes(
         self, detections: List[dict], width: int, height: int
@@ -632,6 +901,9 @@ class RealtimeManager(QtCore.QObject):
             return
 
         effective_detections = self._apply_behavior_classification(detections)
+        matched_bot_detections = self._filter_bot_report_detections(
+            effective_detections
+        )
         shapes = []
         if qimage is not None:
             pixmap = QtGui.QPixmap.fromImage(qimage)
@@ -693,6 +965,23 @@ class RealtimeManager(QtCore.QObject):
             % (frame_index if frame_index is not None else "?", detection_count)
         )
 
+        now_ts = time.time()
+        if self._should_send_bot_report(now_ts, matched_bot_detections):
+            self._bot_last_attempt_ts = now_ts
+            image_path = self._save_bot_report_frame(qimage, frame_index)
+            sent = self._send_detection_report_to_bot(
+                metadata if isinstance(metadata, dict) else {},
+                matched_bot_detections,
+                image_path,
+            )
+            if sent:
+                self._bot_last_report_ts = now_ts
+                logger.info(
+                    "Realtime report sent to Annolid Bot (frame=%s matched=%d).",
+                    frame_index if frame_index is not None else "?",
+                    len(matched_bot_detections),
+                )
+
     @QtCore.Slot(dict)
     def _on_realtime_status(self, status):
         if not isinstance(status, dict):
@@ -735,6 +1024,19 @@ class RealtimeManager(QtCore.QObject):
         self.realtime_running = False
         self.realtime_perception_worker = None
         self._classify_eye_blinks = False
+        self._bot_report_enabled = False
+        self._bot_watch_labels = set()
+        self._bot_email_report = False
+        self._bot_email_to = ""
+        self._bot_last_report_ts = 0.0
+        self._bot_last_attempt_ts = 0.0
+        self._bot_last_busy_log_ts = 0.0
+        if self._bot_event_log_fp:
+            with contextlib.suppress(Exception):
+                self._bot_event_log_fp.flush()
+                self._bot_event_log_fp.close()
+            self._bot_event_log_fp = None
+            self._bot_event_log_path = None
         self.realtime_control_widget.set_running(False)
         if hasattr(self.window.canvas, "setRealtimeShapes"):
             self.window.canvas.setRealtimeShapes([])

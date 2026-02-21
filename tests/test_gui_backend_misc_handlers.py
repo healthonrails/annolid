@@ -4,6 +4,10 @@ from pathlib import Path
 
 from annolid.core.agent.gui_backend.tool_handlers_filesystem import rename_file_tool
 from annolid.core.agent.gui_backend.tool_handlers_realtime import (
+    check_stream_source_tool,
+    get_realtime_status_tool,
+    list_realtime_logs_tool,
+    list_realtime_models_tool,
     start_realtime_stream_tool,
     stop_realtime_stream_tool,
 )
@@ -29,6 +33,109 @@ def test_start_realtime_stream_tool_rejects_bad_threshold() -> None:
 def test_stop_realtime_stream_tool_success() -> None:
     payload = stop_realtime_stream_tool(invoke_stop=lambda: True)
     assert payload == {"ok": True, "queued": True}
+
+
+def test_start_realtime_stream_tool_normalizes_rtsp_transport() -> None:
+    captured: dict[str, object] = {}
+
+    payload = start_realtime_stream_tool(
+        camera_source="rtsp://10.0.0.2:554/stream1",
+        model_name="model",
+        target_behaviors=[],
+        confidence_threshold=0.4,
+        viewer_type="threejs",
+        rtsp_transport="TCP",
+        classify_eye_blinks=False,
+        blink_ear_threshold=None,
+        blink_min_consecutive_frames=None,
+        invoke_start=lambda *args: bool(captured.setdefault("args", args) or True),
+        get_action_result=lambda _name: {},
+    )
+    assert payload["ok"] is True
+    assert payload["rtsp_transport"] == "tcp"
+    assert isinstance(captured.get("args"), tuple)
+    assert len(captured["args"]) == 10
+    assert captured["args"][5] == "tcp"
+
+
+def test_realtime_status_and_inventory_tools_proxy_widget_payloads() -> None:
+    status = get_realtime_status_tool(
+        invoke_widget_json_slot=lambda *_a, **_k: {
+            "ok": True,
+            "running": True,
+            "camera_source": "rtsp://cam/stream",
+        }
+    )
+    assert status["ok"] is True
+    assert status["running"] is True
+
+    models = list_realtime_models_tool(
+        invoke_widget_json_slot=lambda *_a, **_k: {
+            "ok": True,
+            "count": 2,
+            "models": [{"id": "yolo11n"}, {"id": "mediapipe_face"}],
+        }
+    )
+    assert models["count"] == 2
+
+    logs = list_realtime_logs_tool(
+        invoke_widget_json_slot=lambda *_a, **_k: {
+            "ok": True,
+            "detections_log_path": "/tmp/a.ndjson",
+            "bot_event_log_path": "/tmp/b.ndjson",
+        }
+    )
+    assert str(logs["detections_log_path"]).endswith(".ndjson")
+
+
+def test_check_stream_source_tool_normalizes_probe_args() -> None:
+    seen: dict[str, object] = {}
+
+    payload = check_stream_source_tool(
+        camera_source="rtsp://10.0.0.2:554/stream1",
+        rtsp_transport="TCP",
+        timeout_sec=99.0,
+        probe_frames=0,
+        invoke_check=lambda source, transport, timeout_sec, probe_frames: (
+            seen.update(
+                {
+                    "source": source,
+                    "transport": transport,
+                    "timeout_sec": timeout_sec,
+                    "probe_frames": probe_frames,
+                }
+            )
+            or {"ok": True}
+        ),
+    )
+    assert payload["ok"] is True
+    assert seen["source"] == "rtsp://10.0.0.2:554/stream1"
+    assert seen["transport"] == "tcp"
+    assert float(seen["timeout_sec"]) == 30.0
+    assert int(seen["probe_frames"]) == 1
+
+
+def test_check_stream_source_tool_rejects_unsafe_source_shapes() -> None:
+    payload_local_path = check_stream_source_tool(
+        camera_source="../../etc/passwd",
+        invoke_check=lambda *_args: {"ok": True},
+    )
+    assert payload_local_path["ok"] is False
+    assert "camera index or a stream URL" in str(payload_local_path.get("error", ""))
+
+    payload_bad_scheme = check_stream_source_tool(
+        camera_source="javascript://alert(1)",
+        invoke_check=lambda *_args: {"ok": True},
+    )
+    assert payload_bad_scheme["ok"] is False
+    assert "Unsupported stream URL scheme" in str(payload_bad_scheme.get("error", ""))
+
+    payload_long = check_stream_source_tool(
+        camera_source="r" * 3000,
+        invoke_check=lambda *_args: {"ok": True},
+    )
+    assert payload_long["ok"] is False
+    assert "too long" in str(payload_long.get("error", ""))
 
 
 def test_rename_file_tool_requires_source_or_active() -> None:

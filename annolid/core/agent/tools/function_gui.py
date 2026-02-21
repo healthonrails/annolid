@@ -25,7 +25,11 @@ from .function_gui_pdf import (
 )
 from .function_gui_registry import register_annolid_gui_tools
 from .function_gui_video import (
+    GuiCheckStreamSourceTool,
+    GuiGetRealtimeStatusTool,
     GuiLabelBehaviorSegmentsTool,
+    GuiListRealtimeLogsTool,
+    GuiListRealtimeModelsTool,
     GuiOpenVideoTool,
     GuiRunAiTextSegmentationTool,
     GuiSegmentTrackVideoTool,
@@ -87,5 +91,9 @@ __all__ = [
     "GuiLabelBehaviorSegmentsTool",
     "GuiStartRealtimeStreamTool",
     "GuiStopRealtimeStreamTool",
+    "GuiGetRealtimeStatusTool",
+    "GuiListRealtimeModelsTool",
+    "GuiListRealtimeLogsTool",
+    "GuiCheckStreamSourceTool",
     "register_annolid_gui_tools",
 ]

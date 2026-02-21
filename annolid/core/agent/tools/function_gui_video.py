@@ -221,7 +221,7 @@ class GuiStartRealtimeStreamTool(FunctionTool):
     def description(self) -> str:
         return (
             "Start realtime inference stream in Annolid and optionally enable "
-            "MediaPipe face blink classification."
+            "MediaPipe face blink classification, bot reporting, and RTSP transport."
         )
 
     @property
@@ -241,6 +241,7 @@ class GuiStartRealtimeStreamTool(FunctionTool):
                     "maximum": 1.0,
                 },
                 "viewer_type": {"type": "string", "enum": ["pyqt", "threejs"]},
+                "rtsp_transport": {"type": "string", "enum": ["auto", "tcp", "udp"]},
                 "classify_eye_blinks": {"type": "boolean"},
                 "blink_ear_threshold": {
                     "type": "number",
@@ -252,6 +253,20 @@ class GuiStartRealtimeStreamTool(FunctionTool):
                     "minimum": 1,
                     "maximum": 30,
                 },
+                "bot_report_enabled": {"type": "boolean"},
+                "bot_report_interval_sec": {
+                    "type": "number",
+                    "minimum": 1.0,
+                    "maximum": 3600.0,
+                },
+                "bot_watch_labels": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "array", "items": {"type": "string"}},
+                    ]
+                },
+                "bot_email_report": {"type": "boolean"},
+                "bot_email_to": {"type": "string"},
             },
             "required": [],
         }
@@ -279,3 +294,98 @@ class GuiStopRealtimeStreamTool(FunctionTool):
     async def execute(self, **kwargs: Any) -> str:
         del kwargs
         return await _run_callback(self._stop_realtime_stream_callback)
+
+
+class GuiGetRealtimeStatusTool(FunctionTool):
+    def __init__(self, get_realtime_status_callback: Optional[ActionCallback] = None):
+        self._get_realtime_status_callback = get_realtime_status_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_get_realtime_status"
+
+    @property
+    def description(self) -> str:
+        return "Get realtime stream status, source, model, and active viewer details."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs: Any) -> str:
+        del kwargs
+        return await _run_callback(self._get_realtime_status_callback)
+
+
+class GuiListRealtimeModelsTool(FunctionTool):
+    def __init__(self, list_realtime_models_callback: Optional[ActionCallback] = None):
+        self._list_realtime_models_callback = list_realtime_models_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_list_realtime_models"
+
+    @property
+    def description(self) -> str:
+        return "List available realtime model presets and their weight identifiers."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs: Any) -> str:
+        del kwargs
+        return await _run_callback(self._list_realtime_models_callback)
+
+
+class GuiListRealtimeLogsTool(FunctionTool):
+    def __init__(self, list_realtime_logs_callback: Optional[ActionCallback] = None):
+        self._list_realtime_logs_callback = list_realtime_logs_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_list_realtime_logs"
+
+    @property
+    def description(self) -> str:
+        return "List current realtime detection and bot-event log file paths."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs: Any) -> str:
+        del kwargs
+        return await _run_callback(self._list_realtime_logs_callback)
+
+
+class GuiCheckStreamSourceTool(FunctionTool):
+    def __init__(self, check_stream_source_callback: Optional[ActionCallback] = None):
+        self._check_stream_source_callback = check_stream_source_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_check_stream_source"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Probe a camera/video stream source for connectivity and frame availability "
+            "before starting realtime inference."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "camera_source": {"type": "string"},
+                "rtsp_transport": {"type": "string", "enum": ["auto", "tcp", "udp"]},
+                "timeout_sec": {"type": "number", "minimum": 0.5, "maximum": 30.0},
+                "probe_frames": {"type": "integer", "minimum": 1, "maximum": 60},
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._check_stream_source_callback, **kwargs)

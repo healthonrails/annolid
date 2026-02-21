@@ -71,7 +71,11 @@ from .function_gui_threejs import (
     GuiOpenThreeJsTool,
 )
 from .function_gui_video import (
+    GuiCheckStreamSourceTool,
+    GuiGetRealtimeStatusTool,
     GuiLabelBehaviorSegmentsTool,
+    GuiListRealtimeLogsTool,
+    GuiListRealtimeModelsTool,
     GuiOpenVideoTool,
     GuiRunAiTextSegmentationTool,
     GuiSegmentTrackVideoTool,
@@ -197,6 +201,10 @@ __all__ = [
     "GuiLabelBehaviorSegmentsTool",
     "GuiStartRealtimeStreamTool",
     "GuiStopRealtimeStreamTool",
+    "GuiGetRealtimeStatusTool",
+    "GuiListRealtimeModelsTool",
+    "GuiListRealtimeLogsTool",
+    "GuiCheckStreamSourceTool",
     "GuiSharedImagePathTool",
     "MessageTool",
     "SpawnTool",

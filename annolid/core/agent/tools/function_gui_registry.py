@@ -29,6 +29,10 @@ from .function_gui_threejs import (
     GuiOpenThreeJsTool,
 )
 from .function_gui_video import (
+    GuiCheckStreamSourceTool,
+    GuiGetRealtimeStatusTool,
+    GuiListRealtimeLogsTool,
+    GuiListRealtimeModelsTool,
     GuiOpenVideoTool,
     GuiSetFrameTool,
     GuiTrackNextFramesTool,
@@ -84,6 +88,10 @@ def register_annolid_gui_tools(
     label_behavior_segments_callback: Optional[ActionCallback] = None,
     start_realtime_stream_callback: Optional[ActionCallback] = None,
     stop_realtime_stream_callback: Optional[ActionCallback] = None,
+    get_realtime_status_callback: Optional[ActionCallback] = None,
+    list_realtime_models_callback: Optional[ActionCallback] = None,
+    list_realtime_logs_callback: Optional[ActionCallback] = None,
+    check_stream_source_callback: Optional[ActionCallback] = None,
 ) -> None:
     """Register GUI-only tools for Annolid Bot sessions."""
     registry.register(GuiContextTool(context_callback=context_callback))
@@ -156,5 +164,23 @@ def register_annolid_gui_tools(
     registry.register(
         GuiStopRealtimeStreamTool(
             stop_realtime_stream_callback=stop_realtime_stream_callback
+        )
+    )
+    registry.register(
+        GuiGetRealtimeStatusTool(
+            get_realtime_status_callback=get_realtime_status_callback
+        )
+    )
+    registry.register(
+        GuiListRealtimeModelsTool(
+            list_realtime_models_callback=list_realtime_models_callback
+        )
+    )
+    registry.register(
+        GuiListRealtimeLogsTool(list_realtime_logs_callback=list_realtime_logs_callback)
+    )
+    registry.register(
+        GuiCheckStreamSourceTool(
+            check_stream_source_callback=check_stream_source_callback
         )
     )

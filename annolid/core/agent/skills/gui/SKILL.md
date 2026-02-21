@@ -46,6 +46,8 @@ Best practices:
 - `gui_set_ai_text_prompt`, `gui_run_ai_text_segmentation`
 - `gui_segment_track_video`, `gui_label_behavior_segments`
 - `gui_start_realtime_stream`, `gui_stop_realtime_stream`
+- `gui_get_realtime_status`, `gui_list_realtime_models`, `gui_list_realtime_logs`
+- `gui_check_stream_source`
 
 Best practices:
 1. Open video and set frame explicitly before segmentation/tracking.

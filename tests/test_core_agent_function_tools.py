@@ -1346,6 +1346,9 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
             "start_realtime_stream", kwargs
         ),
         stop_realtime_stream_callback=lambda: _mark("stop_realtime_stream"),
+        get_realtime_status_callback=lambda: _mark("get_realtime_status"),
+        list_realtime_models_callback=lambda: _mark("list_realtime_models"),
+        list_realtime_logs_callback=lambda: _mark("list_realtime_logs"),
         save_citation_callback=lambda **kwargs: _mark("save_citation", kwargs),
     )
     assert registry.has("gui_context")
@@ -1377,6 +1380,9 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_label_behavior_segments")
     assert registry.has("gui_start_realtime_stream")
     assert registry.has("gui_stop_realtime_stream")
+    assert registry.has("gui_get_realtime_status")
+    assert registry.has("gui_list_realtime_models")
+    assert registry.has("gui_list_realtime_logs")
     assert registry.has("gui_save_citation")
     ctx = asyncio.run(registry.execute("gui_context", {}))
     ctx_payload = json.loads(ctx)
@@ -1508,6 +1514,9 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         )
     )
     asyncio.run(registry.execute("gui_stop_realtime_stream", {}))
+    asyncio.run(registry.execute("gui_get_realtime_status", {}))
+    asyncio.run(registry.execute("gui_list_realtime_models", {}))
+    asyncio.run(registry.execute("gui_list_realtime_logs", {}))
     asyncio.run(
         registry.execute(
             "gui_save_citation",
@@ -1576,6 +1585,9 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
             },
         ),
         ("stop_realtime_stream", None),
+        ("get_realtime_status", None),
+        ("list_realtime_models", None),
+        ("list_realtime_logs", None),
         (
             "save_citation",
             {"key": "annolid2024", "bib_file": "references.bib", "source": "pdf"},

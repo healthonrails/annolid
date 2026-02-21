@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 import importlib
@@ -155,6 +156,10 @@ from annolid.core.agent.gui_backend.tool_handlers_filesystem import (
     rename_file_tool as gui_rename_file_tool,
 )
 from annolid.core.agent.gui_backend.tool_handlers_realtime import (
+    check_stream_source_tool as gui_check_stream_source_tool,
+    get_realtime_status_tool as gui_get_realtime_status_tool,
+    list_realtime_logs_tool as gui_list_realtime_logs_tool,
+    list_realtime_models_tool as gui_list_realtime_models_tool,
     start_realtime_stream_tool as gui_start_realtime_stream_tool,
     stop_realtime_stream_tool as gui_stop_realtime_stream_tool,
 )
@@ -230,6 +235,7 @@ from annolid.core.agent.gui_backend.prompt_builder import (
     PromptBuildInputs,
     build_compact_system_prompt as build_gui_compact_system_prompt,
 )
+from annolid.gui.realtime_launch import build_realtime_launch_payload
 from annolid.utils.llm_settings import resolve_agent_runtime_config
 from annolid.utils.citations import (
     BibEntry,
@@ -962,6 +968,10 @@ class StreamingChatTask(QRunnable):
                 "label_behavior_segments": self._tool_gui_label_behavior_segments,
                 "start_realtime_stream": self._tool_gui_start_realtime_stream,
                 "stop_realtime_stream": self._tool_gui_stop_realtime_stream,
+                "get_realtime_status": self._tool_gui_get_realtime_status,
+                "list_realtime_models": self._tool_gui_list_realtime_models,
+                "list_realtime_logs": self._tool_gui_list_realtime_logs,
+                "check_stream_source": self._tool_gui_check_stream_source,
                 "arxiv_search": self._tool_gui_arxiv_search,
                 "list_pdfs": self._tool_gui_list_pdfs,
                 "save_citation": self._tool_gui_save_citation,
@@ -1393,6 +1403,10 @@ class StreamingChatTask(QRunnable):
                 "label_behavior_segments": self._tool_gui_label_behavior_segments,
                 "start_realtime_stream": self._tool_gui_start_realtime_stream,
                 "stop_realtime_stream": self._tool_gui_stop_realtime_stream,
+                "get_realtime_status": self._tool_gui_get_realtime_status,
+                "list_realtime_models": self._tool_gui_list_realtime_models,
+                "list_realtime_logs": self._tool_gui_list_realtime_logs,
+                "check_stream_source": self._tool_gui_check_stream_source,
                 "list_pdfs": self._tool_gui_list_pdfs,
                 "clawhub_search_skills": self._tool_clawhub_search_skills,
                 "clawhub_install_skill": self._tool_clawhub_install_skill,
@@ -1812,9 +1826,15 @@ class StreamingChatTask(QRunnable):
         target_behaviors: Any = None,
         confidence_threshold: Optional[float] = None,
         viewer_type: str = "threejs",
+        rtsp_transport: str = "auto",
         classify_eye_blinks: bool = False,
         blink_ear_threshold: Optional[float] = None,
         blink_min_consecutive_frames: Optional[int] = None,
+        bot_report_enabled: bool = False,
+        bot_report_interval_sec: Optional[float] = None,
+        bot_watch_labels: Any = None,
+        bot_email_report: bool = False,
+        bot_email_to: str = "",
     ) -> Dict[str, Any]:
         return gui_start_realtime_stream_tool(
             camera_source=camera_source,
@@ -1822,26 +1842,36 @@ class StreamingChatTask(QRunnable):
             target_behaviors=target_behaviors,
             confidence_threshold=confidence_threshold,
             viewer_type=viewer_type,
+            rtsp_transport=rtsp_transport,
             classify_eye_blinks=classify_eye_blinks,
             blink_ear_threshold=blink_ear_threshold,
             blink_min_consecutive_frames=blink_min_consecutive_frames,
+            bot_report_enabled=bot_report_enabled,
+            bot_report_interval_sec=bot_report_interval_sec,
+            bot_watch_labels=bot_watch_labels,
+            bot_email_report=bot_email_report,
+            bot_email_to=bot_email_to,
             invoke_start=lambda camera_text,
             model_text,
             targets,
             threshold,
             viewer,
+            rtsp_transport_value,
             classify,
             ear_threshold,
-            min_blink_frames: self._invoke_widget_slot(
+            min_blink_frames,
+            start_options_json: self._invoke_widget_slot(
                 "bot_start_realtime_stream",
                 QtCore.Q_ARG(str, camera_text),
                 QtCore.Q_ARG(str, model_text),
                 QtCore.Q_ARG(str, targets),
                 QtCore.Q_ARG(float, threshold),
                 QtCore.Q_ARG(str, viewer),
+                QtCore.Q_ARG(str, rtsp_transport_value),
                 QtCore.Q_ARG(bool, classify),
                 QtCore.Q_ARG(float, ear_threshold),
                 QtCore.Q_ARG(int, min_blink_frames),
+                QtCore.Q_ARG(str, start_options_json),
             ),
             get_action_result=self._get_widget_action_result,
         )
@@ -1850,6 +1880,128 @@ class StreamingChatTask(QRunnable):
         return gui_stop_realtime_stream_tool(
             invoke_stop=lambda: self._invoke_widget_slot("bot_stop_realtime_stream")
         )
+
+    def _tool_gui_get_realtime_status(self) -> Dict[str, Any]:
+        return gui_get_realtime_status_tool(
+            invoke_widget_json_slot=self._invoke_widget_json_slot
+        )
+
+    def _tool_gui_list_realtime_models(self) -> Dict[str, Any]:
+        return gui_list_realtime_models_tool(
+            invoke_widget_json_slot=self._invoke_widget_json_slot
+        )
+
+    def _tool_gui_list_realtime_logs(self) -> Dict[str, Any]:
+        return gui_list_realtime_logs_tool(
+            invoke_widget_json_slot=self._invoke_widget_json_slot
+        )
+
+    def _tool_gui_check_stream_source(
+        self,
+        *,
+        camera_source: str = "",
+        rtsp_transport: str = "auto",
+        timeout_sec: float = 3.0,
+        probe_frames: int = 3,
+    ) -> Dict[str, Any]:
+        return gui_check_stream_source_tool(
+            camera_source=camera_source,
+            rtsp_transport=rtsp_transport,
+            timeout_sec=timeout_sec,
+            probe_frames=probe_frames,
+            invoke_check=self._check_stream_source_local,
+        )
+
+    def _check_stream_source_local(
+        self,
+        camera_source: str,
+        rtsp_transport: str,
+        timeout_sec: float,
+        probe_frames: int,
+    ) -> Dict[str, Any]:
+        try:
+            import cv2
+        except Exception as exc:
+            return {"ok": False, "error": f"OpenCV is unavailable: {exc}"}
+
+        try:
+            config, _extras = build_realtime_launch_payload(
+                camera_source=str(camera_source or "").strip(),
+                model_name="yolo11n",
+                rtsp_transport=str(rtsp_transport or "auto"),
+            )
+            source = config.camera_index
+        except Exception as exc:
+            return {"ok": False, "error": f"Failed to normalize camera source: {exc}"}
+
+        cap = None
+        try:
+            cap = cv2.VideoCapture()
+            with contextlib.suppress(Exception):
+                open_timeout_key = getattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC", None)
+                if open_timeout_key is not None:
+                    cap.set(open_timeout_key, float(timeout_sec) * 1000.0)
+            with contextlib.suppress(Exception):
+                read_timeout_key = getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None)
+                if read_timeout_key is not None:
+                    cap.set(read_timeout_key, float(timeout_sec) * 1000.0)
+
+            opened = bool(cap.open(source))
+            if not opened:
+                return {
+                    "ok": False,
+                    "error": f"Failed to open stream source: {source}",
+                    "camera_source": str(source),
+                    "rtsp_transport": str(rtsp_transport or "auto"),
+                }
+
+            got_frame = False
+            frame_shape = None
+            attempts = max(1, int(probe_frames))
+            t0 = time.perf_counter()
+            while attempts > 0 and (time.perf_counter() - t0) <= float(timeout_sec):
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    got_frame = True
+                    try:
+                        frame_shape = tuple(int(v) for v in frame.shape[:2])
+                    except Exception:
+                        frame_shape = None
+                    break
+                attempts -= 1
+                time.sleep(0.05)
+
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            return {
+                "ok": bool(got_frame),
+                "camera_source": str(source),
+                "rtsp_transport": str(rtsp_transport or "auto"),
+                "opened": True,
+                "got_frame": bool(got_frame),
+                "frame_height": int(frame_shape[0]) if frame_shape else height,
+                "frame_width": int(frame_shape[1]) if frame_shape else width,
+                "fps": fps,
+                "timeout_sec": float(timeout_sec),
+                "probe_frames": int(probe_frames),
+                "error": (
+                    ""
+                    if got_frame
+                    else "Stream opened but no frame received within timeout."
+                ),
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "camera_source": str(source),
+                "rtsp_transport": str(rtsp_transport or "auto"),
+                "error": f"Stream probe failed: {exc}",
+            }
+        finally:
+            if cap is not None:
+                with contextlib.suppress(Exception):
+                    cap.release()
 
     async def _tool_gui_list_dir(self, path: str) -> Dict[str, Any]:
         from annolid.core.agent.tools.filesystem import ListDirTool

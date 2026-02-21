@@ -1417,7 +1417,51 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_stream["name"] == "start_realtime_stream"
     assert parsed_stream["args"]["model_name"] == "mediapipe_face"
     assert parsed_stream["args"]["viewer_type"] == "threejs"
+    assert parsed_stream["args"]["rtsp_transport"] == "auto"
     assert parsed_stream["args"]["classify_eye_blinks"] is True
+
+    parsed_stream_rtsp_tcp = task._parse_direct_gui_command(
+        "start realtime stream rtsp://10.0.0.2:554/stream1 using tcp"
+    )
+    assert parsed_stream_rtsp_tcp["name"] == "start_realtime_stream"
+    assert (
+        parsed_stream_rtsp_tcp["args"]["camera_source"] == "rtsp://10.0.0.2:554/stream1"
+    )
+    assert parsed_stream_rtsp_tcp["args"]["rtsp_transport"] == "tcp"
+
+    parsed_stream_rtsp_udp = task._parse_direct_gui_command(
+        "start realtime stream rtsp over udp on rtsp://10.0.0.2/live"
+    )
+    assert parsed_stream_rtsp_udp["name"] == "start_realtime_stream"
+    assert parsed_stream_rtsp_udp["args"]["rtsp_transport"] == "udp"
+
+    parsed_check_stream_yolo = task._parse_direct_gui_command(
+        "check streaming camera and detect with yolo11n model"
+    )
+    assert parsed_check_stream_yolo["name"] == "start_realtime_stream"
+    assert parsed_check_stream_yolo["args"]["model_name"] == "yolo11n"
+    assert parsed_check_stream_yolo["args"]["viewer_type"] == "threejs"
+
+    parsed_check_rtsp_yolo = task._parse_direct_gui_command(
+        "check realtime stream rtsp://10.0.0.2:554/stream1 and detect with yolo11x"
+    )
+    assert parsed_check_rtsp_yolo["name"] == "start_realtime_stream"
+    assert parsed_check_rtsp_yolo["args"]["model_name"] == "yolo11x"
+    assert (
+        parsed_check_rtsp_yolo["args"]["camera_source"] == "rtsp://10.0.0.2:554/stream1"
+    )
+
+    parsed_check_camera_health = task._parse_direct_gui_command(
+        "check camera 0 stream health"
+    )
+    assert parsed_check_camera_health["name"] == "check_stream_source"
+    assert parsed_check_camera_health["args"]["camera_source"] == "0"
+
+    parsed_check_rtsp_health = task._parse_direct_gui_command(
+        "probe rtsp://10.0.0.2:554/stream1 connectivity using tcp"
+    )
+    assert parsed_check_rtsp_health["name"] == "check_stream_source"
+    assert parsed_check_rtsp_health["args"]["rtsp_transport"] == "tcp"
 
     parsed_stop_stream = task._parse_direct_gui_command("stop realtime stream")
     assert parsed_stop_stream["name"] == "stop_realtime_stream"
@@ -1656,6 +1700,13 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         )
     )
     assert "Started realtime stream with model mediapipe_face." == out_stream
+
+    out_check_yolo = asyncio.run(
+        task._execute_direct_gui_command(
+            "check streaming camera and detect with yolo11n model"
+        )
+    )
+    assert "Started realtime stream with model yolo11n." == out_check_yolo
 
     out_stop_stream = asyncio.run(
         task._execute_direct_gui_command("stop realtime stream")
