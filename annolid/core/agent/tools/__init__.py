@@ -66,6 +66,10 @@ from .function_gui_web import (
     GuiWebScrollTool,
     GuiWebTypeTool,
 )
+from .function_gui_threejs import (
+    GuiOpenThreeJsExampleTool,
+    GuiOpenThreeJsTool,
+)
 from .function_gui_video import (
     GuiLabelBehaviorSegmentsTool,
     GuiOpenVideoTool,
@@ -165,6 +169,8 @@ __all__ = [
     "GuiContextTool",
     "GuiOpenUrlTool",
     "GuiOpenInBrowserTool",
+    "GuiOpenThreeJsTool",
+    "GuiOpenThreeJsExampleTool",
     "GuiWebGetDomTextTool",
     "GuiWebClickTool",
     "GuiWebTypeTool",

@@ -9,6 +9,8 @@ _WRAPPED_GUI_TOOL_SPECS: Tuple[Tuple[str, str], ...] = (
     ("open_video_callback", "open_video"),
     ("open_url_callback", "open_url"),
     ("open_in_browser_callback", "open_in_browser"),
+    ("open_threejs_callback", "open_threejs"),
+    ("open_threejs_example_callback", "open_threejs_example"),
     ("web_get_dom_text_callback", "web_get_dom_text"),
     ("web_click_callback", "web_click"),
     ("web_type_callback", "web_type"),

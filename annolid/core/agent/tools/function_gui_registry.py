@@ -24,6 +24,10 @@ from .function_gui_web import (
     GuiWebFindFormsTool,
     GuiWebRunStepsTool,
 )
+from .function_gui_threejs import (
+    GuiOpenThreeJsExampleTool,
+    GuiOpenThreeJsTool,
+)
 from .function_gui_video import (
     GuiOpenVideoTool,
     GuiSetFrameTool,
@@ -53,6 +57,8 @@ def register_annolid_gui_tools(
     open_video_callback: Optional[ActionCallback] = None,
     open_url_callback: Optional[ActionCallback] = None,
     open_in_browser_callback: Optional[ActionCallback] = None,
+    open_threejs_callback: Optional[ActionCallback] = None,
+    open_threejs_example_callback: Optional[ActionCallback] = None,
     web_get_dom_text_callback: Optional[ActionCallback] = None,
     web_click_callback: Optional[ActionCallback] = None,
     web_type_callback: Optional[ActionCallback] = None,
@@ -86,6 +92,12 @@ def register_annolid_gui_tools(
     registry.register(GuiOpenUrlTool(open_url_callback=open_url_callback))
     registry.register(
         GuiOpenInBrowserTool(open_in_browser_callback=open_in_browser_callback)
+    )
+    registry.register(GuiOpenThreeJsTool(open_threejs_callback=open_threejs_callback))
+    registry.register(
+        GuiOpenThreeJsExampleTool(
+            open_threejs_example_callback=open_threejs_example_callback
+        )
     )
     registry.register(
         GuiWebGetDomTextTool(web_get_dom_text_callback=web_get_dom_text_callback)

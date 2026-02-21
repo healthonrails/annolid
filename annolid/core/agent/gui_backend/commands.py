@@ -28,6 +28,21 @@ _ACTIVE_FILE_HINTS = {
     "current document",
 }
 
+_THREEJS_EXAMPLE_ALIASES = {
+    "helix": "helix_points_csv",
+    "helix_points_csv": "helix_points_csv",
+    "wave": "wave_surface_obj",
+    "wave_surface": "wave_surface_obj",
+    "wave_surface_obj": "wave_surface_obj",
+    "sphere": "sphere_points_ply",
+    "sphere_points_ply": "sphere_points_ply",
+    "brain": "brain_viewer_html",
+    "brain_viewer": "brain_viewer_html",
+    "brain_viewer_html": "brain_viewer_html",
+    "two_mice": "two_mice_html",
+    "two_mice_html": "two_mice_html",
+}
+
 
 def _strip_wrapping_quotes(text: str) -> str:
     value = str(text or "").strip()
@@ -74,6 +89,26 @@ def _extract_bibtex_payload(text: str) -> str:
     if marker:
         return raw[marker.start() :].strip()
     return raw.strip()
+
+
+def _normalize_threejs_example_id(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    normalized = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
+    if normalized in _THREEJS_EXAMPLE_ALIASES:
+        return _THREEJS_EXAMPLE_ALIASES[normalized]
+    if "two" in raw and "mice" in raw:
+        return "two_mice_html"
+    if "brain" in raw:
+        return "brain_viewer_html"
+    if "helix" in raw:
+        return "helix_points_csv"
+    if "wave" in raw:
+        return "wave_surface_obj"
+    if "sphere" in raw:
+        return "sphere_points_ply"
+    return ""
 
 
 def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
@@ -472,6 +507,46 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             "args": {"frame_index": int(frame_match.group(1))},
         }
 
+    threejs_example_match = re.match(
+        r"\s*(?:open|load|show)\s+(?:the\s+)?(?:threejs|three\.js|3d)"
+        r"(?:\s+viewer)?\s+(?:an?\s+)?(?:examples?)\b"
+        r"(?:\s+(?:called|named))?(?:\s+(?P<example>[^\n]+?))?\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if threejs_example_match:
+        example_raw = _strip_wrapping_quotes(
+            _strip_trailing_punctuation(threejs_example_match.group("example") or "")
+        )
+        example_id = _normalize_threejs_example_id(example_raw) or "two_mice_html"
+        return {
+            "name": "open_threejs_example",
+            "args": {"example_id": example_id},
+        }
+
+    open_threejs_match = re.match(
+        r"\s*(?:open|load|show)\s+(?:the\s+)?(?:threejs|three\.js|3d)"
+        r"(?:\s+viewer)?(?:\s+(?P<target>[^\n]+?))?\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if open_threejs_match:
+        target_raw = _strip_wrapping_quotes(
+            _strip_trailing_punctuation(open_threejs_match.group("target") or "")
+        )
+        target_raw = re.sub(
+            r"^(?:html?|url|file|page)\s+",
+            "",
+            target_raw,
+            flags=re.IGNORECASE,
+        ).strip()
+        if not target_raw:
+            return {
+                "name": "open_threejs_example",
+                "args": {"example_id": "two_mice_html"},
+            }
+        return {"name": "open_threejs", "args": {"path_or_url": target_raw}}
+
     browser_http_match = re.match(
         r"\s*(?:open|load|show)\s+(?:this\s+)?(?P<url>https?://[^\s<>\"]+)\s+"
         r"(?:in\s+(?:the\s+)?)?browser\s*$",
@@ -687,6 +762,9 @@ def prompt_may_need_tools(prompt: str) -> bool:
         "command",
         "pwd",
         "open",
+        "threejs",
+        "three.js",
+        "3d",
         "download",
         "fetch",
         "extract",

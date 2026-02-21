@@ -1,6 +1,8 @@
-// Use esm.sh so addon modules resolve their internal "three" dependency
-// without requiring browser import maps.
+// Use bundled esm.sh endpoints so addon modules do not emit bare "three"
+// specifiers (Qt WebEngine may not resolve them without import maps).
 const THREE_ESM_BASE = "https://esm.sh/three@0.160.0";
+const THREE_ESM_BUNDLE = `${THREE_ESM_BASE}?bundle`;
+const THREE_ESM_EXAMPLES_BASE = `${THREE_ESM_BASE}/examples/jsm`;
 
 async function boot() {
   const statusEl = document.getElementById("annolidThreeStatus");
@@ -22,24 +24,24 @@ async function boot() {
   }
 
   try {
-    const THREE = await import(`${THREE_ESM_BASE}`);
+    const THREE = await import(`${THREE_ESM_BUNDLE}`);
     const { OrbitControls } = await import(
-      `${THREE_ESM_BASE}/examples/jsm/controls/OrbitControls.js`
+      `${THREE_ESM_EXAMPLES_BASE}/controls/OrbitControls.js?bundle`
     );
     const { STLLoader } = await import(
-      `${THREE_ESM_BASE}/examples/jsm/loaders/STLLoader.js`
+      `${THREE_ESM_EXAMPLES_BASE}/loaders/STLLoader.js?bundle`
     );
     const { PLYLoader } = await import(
-      `${THREE_ESM_BASE}/examples/jsm/loaders/PLYLoader.js`
+      `${THREE_ESM_EXAMPLES_BASE}/loaders/PLYLoader.js?bundle`
     );
     const { OBJLoader } = await import(
-      `${THREE_ESM_BASE}/examples/jsm/loaders/OBJLoader.js`
+      `${THREE_ESM_EXAMPLES_BASE}/loaders/OBJLoader.js?bundle`
     );
     const { MTLLoader } = await import(
-      `${THREE_ESM_BASE}/examples/jsm/loaders/MTLLoader.js`
+      `${THREE_ESM_EXAMPLES_BASE}/loaders/MTLLoader.js?bundle`
     );
     const { GLTFLoader } = await import(
-      `${THREE_ESM_BASE}/examples/jsm/loaders/GLTFLoader.js`
+      `${THREE_ESM_EXAMPLES_BASE}/loaders/GLTFLoader.js?bundle`
     );
 
     const renderer = new THREE.WebGLRenderer({

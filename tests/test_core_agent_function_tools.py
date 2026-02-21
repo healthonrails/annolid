@@ -1292,6 +1292,10 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         open_video_callback=lambda path: _mark("open_video", path),
         open_url_callback=lambda url: _mark("open_url", url),
         open_in_browser_callback=lambda url: _mark("open_in_browser", url),
+        open_threejs_callback=lambda path_or_url: _mark("open_threejs", path_or_url),
+        open_threejs_example_callback=lambda example_id="": _mark(
+            "open_threejs_example", example_id
+        ),
         web_get_dom_text_callback=lambda max_chars=8000: _mark(
             "web_get_dom_text", max_chars
         ),
@@ -1349,6 +1353,8 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_open_video")
     assert registry.has("gui_open_url")
     assert registry.has("gui_open_in_browser")
+    assert registry.has("gui_open_threejs")
+    assert registry.has("gui_open_threejs_example")
     assert registry.has("gui_web_get_dom_text")
     assert registry.has("gui_web_click")
     assert registry.has("gui_web_type")
@@ -1388,6 +1394,20 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         registry.execute("gui_open_in_browser", {"url": "https://example.org"})
     )
     assert json.loads(open_in_browser)["ok"] is True
+    open_threejs = asyncio.run(
+        registry.execute(
+            "gui_open_threejs",
+            {"path_or_url": "/tmp/annolid_threejs_examples/two_mice.html"},
+        )
+    )
+    assert json.loads(open_threejs)["ok"] is True
+    open_threejs_example = asyncio.run(
+        registry.execute(
+            "gui_open_threejs_example",
+            {"example_id": "two_mice_html"},
+        )
+    )
+    assert json.loads(open_threejs_example)["ok"] is True
     web_get_dom_text = asyncio.run(
         registry.execute("gui_web_get_dom_text", {"max_chars": 1200})
     )
@@ -1498,6 +1518,8 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         ("open_video", "/tmp/a.mp4"),
         ("open_url", "https://example.org"),
         ("open_in_browser", "https://example.org"),
+        ("open_threejs", "/tmp/annolid_threejs_examples/two_mice.html"),
+        ("open_threejs_example", "two_mice_html"),
         ("web_get_dom_text", 1200),
         ("web_click", "button.submit"),
         (

@@ -24,10 +24,53 @@ from annolid.gui.widgets.threejs_viewer_server import (
 from annolid.gui.threejs_support import supports_threejs_canvas
 from annolid.utils.logger import logger
 
+_THREEJS_IMPORTMAP = json.dumps(
+    {
+        "imports": {
+            "three": "https://esm.sh/three@0.160.0?bundle",
+            "three/": "https://esm.sh/three@0.160.0/",
+        }
+    }
+)
+
 
 if _WEBENGINE_AVAILABLE:
 
     class _ThreeJsWebEnginePage(QtWebEngineWidgets.QWebEnginePage):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self._install_threejs_importmap_injector()
+
+        def _install_threejs_importmap_injector(self) -> None:
+            """Inject an import map so external HTML can resolve bare `three` imports."""
+            try:
+                script = QtWebEngineWidgets.QWebEngineScript()
+                script.setName("annolid_threejs_importmap")
+                script.setSourceCode(
+                    f"""
+(() => {{
+  try {{
+    const hasImportMap = !!document.querySelector('script[type="importmap"]');
+    if (hasImportMap) return;
+    const script = document.createElement('script');
+    script.type = 'importmap';
+    script.textContent = {json.dumps(_THREEJS_IMPORTMAP)};
+    const head = document.head || document.documentElement;
+    if (!head) return;
+    head.insertBefore(script, head.firstChild);
+  }} catch (e) {{}}
+}})();
+                    """.strip()
+                )
+                script.setInjectionPoint(
+                    QtWebEngineWidgets.QWebEngineScript.DocumentCreation
+                )
+                script.setWorldId(QtWebEngineWidgets.QWebEngineScript.MainWorld)
+                script.setRunsOnSubFrames(True)
+                self.scripts().insert(script)
+            except Exception:
+                pass
+
         def createWindow(
             self, windowType: QtWebEngineWidgets.QWebEnginePage.WebWindowType
         ) -> QtWebEngineWidgets.QWebEnginePage:
@@ -146,6 +189,9 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
 <head>
   <meta charset="utf-8" />
   <link rel="stylesheet" href="threejs/annolid_threejs_viewer.css" />
+  <script type="importmap">
+    {_THREEJS_IMPORTMAP}
+  </script>
   <script>
     window.__annolidThreeTitle = "Real-time";
     window.__annolidThreeModelUrl = "";
@@ -293,6 +339,9 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
 <head>
   <meta charset="utf-8" />
   <link rel="stylesheet" href="threejs/annolid_threejs_viewer.css" />
+  <script type="importmap">
+    {_THREEJS_IMPORTMAP}
+  </script>
   <script>
     window.__annolidThreeTitle = "{title}";
     window.__annolidThreeModelUrl = "{model_url}";

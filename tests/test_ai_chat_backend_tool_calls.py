@@ -1513,6 +1513,27 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_exec_bang["name"] == "exec_command"
     assert parsed_exec_bang["args"]["command"] == "echo hello"
 
+    parsed_threejs_example = task._parse_direct_gui_command(
+        "open threejs example two mice"
+    )
+    assert parsed_threejs_example["name"] == "open_threejs_example"
+    assert parsed_threejs_example["args"]["example_id"] == "two_mice_html"
+
+    parsed_threejs_example_brain = task._parse_direct_gui_command(
+        "open threejs example brain"
+    )
+    assert parsed_threejs_example_brain["name"] == "open_threejs_example"
+    assert parsed_threejs_example_brain["args"]["example_id"] == "brain_viewer_html"
+
+    parsed_threejs_html = task._parse_direct_gui_command(
+        "open threejs html /tmp/annolid_threejs_examples/two_mice.html"
+    )
+    assert parsed_threejs_html["name"] == "open_threejs"
+    assert (
+        parsed_threejs_html["args"]["path_or_url"]
+        == "/tmp/annolid_threejs_examples/two_mice.html"
+    )
+
 
 def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
@@ -1599,6 +1620,21 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         task._execute_direct_gui_command("open google.com in browser")
     )
     assert "Opened URL in browser: https://google.com" == out_url_browser
+
+    out_threejs_example = asyncio.run(
+        task._execute_direct_gui_command("open threejs example two mice")
+    )
+    assert "Opened Three.js example: two_mice_html" == out_threejs_example
+
+    out_threejs_html = asyncio.run(
+        task._execute_direct_gui_command(
+            "open threejs html /tmp/annolid_threejs_examples/two_mice.html"
+        )
+    )
+    assert (
+        "Opened Three.js view: /tmp/annolid_threejs_examples/two_mice.html"
+        == out_threejs_html
+    )
 
     out_video = asyncio.run(task._execute_direct_gui_command("open video mouse.mp4"))
     assert "Opened video in Annolid:" in out_video

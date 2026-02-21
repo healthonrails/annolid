@@ -15,6 +15,7 @@ def test_policy_profile_and_group_allow_deny() -> None:
         "gui_shared_image_path",
         "gui_open_video",
         "gui_open_pdf",
+        "gui_open_threejs",
         "gui_set_chat_model",
         "web_search",
         "exec",
@@ -28,6 +29,7 @@ def test_policy_profile_and_group_allow_deny() -> None:
     assert "gui_context" in resolved.allowed_tools
     assert "gui_open_video" in resolved.allowed_tools
     assert "gui_open_pdf" in resolved.allowed_tools
+    assert "gui_open_threejs" in resolved.allowed_tools
     assert "web_search" in resolved.allowed_tools
     assert "gui_set_chat_model" not in resolved.allowed_tools
     assert "exec" not in resolved.allowed_tools

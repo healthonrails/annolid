@@ -88,6 +88,10 @@ Examples in Annolid Bot message input:
 - `add citation @article{yang2024annolid, title={Annolid: Annotate, Segment, and Track Anything You Need}, author={Yang, Chen and Cleland, Thomas A}, journal={arXiv preprint arXiv:2403.18690}, year={2024}}`
 - `save citation from web with strict validation`
 - `save citation from pdf without validation`
+- `open threejs example two mice`
+- `open threejs example brain`
+- `open threejs html /tmp/annolid_threejs_examples/two_mice.html`
+- `open threejs https://example.org/viewer.html`
 
 Default behavior:
 
@@ -99,3 +103,19 @@ GUI workflow:
 - Manage a `.bib` file, save citations from active PDF/web context, choose auto-validation or strict mode, view/edit a `Source` column (URL or PDF path), edit rows inline with year/DOI checks, and remove selected entries.
 
 See also: `docs/source/citations_tutorial.md` for a full user tutorial.
+
+## Three.js bot tools
+
+Annolid Bot supports direct Three.js viewer control in GUI sessions.
+
+- Function tools:
+  - `gui_open_threejs(path_or_url)`
+  - `gui_open_threejs_example(example_id)`
+- Built-in example IDs:
+  - `two_mice_html` (default)
+  - `brain_viewer_html`
+  - `helix_points_csv`
+  - `wave_surface_obj`
+  - `sphere_points_ply`
+
+The bot recognizes natural-language commands such as `open threejs example ...`.

@@ -45,6 +45,10 @@ from .function_gui_web import (
     GuiWebScrollTool,
     GuiWebTypeTool,
 )
+from .function_gui_threejs import (
+    GuiOpenThreeJsExampleTool,
+    GuiOpenThreeJsTool,
+)
 
 __all__ = [
     "ActionCallback",
@@ -56,6 +60,8 @@ __all__ = [
     "GuiOpenVideoTool",
     "GuiOpenUrlTool",
     "GuiOpenInBrowserTool",
+    "GuiOpenThreeJsTool",
+    "GuiOpenThreeJsExampleTool",
     "GuiWebGetDomTextTool",
     "GuiWebClickTool",
     "GuiWebTypeTool",

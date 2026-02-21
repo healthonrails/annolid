@@ -657,6 +657,22 @@ class MenuController:
             enabled=True,
             checked=False,
         )
+        w.toggle_web_view_action = self._action_factory(
+            w.tr("Web View"),
+            self._toggle_web_view,
+            tip=w.tr("Show or hide the current web view"),
+            checkable=True,
+            enabled=True,
+            checked=False,
+        )
+        w.toggle_threejs_view_action = self._action_factory(
+            w.tr("3D View"),
+            self._toggle_threejs_view,
+            tip=w.tr("Show or hide the current 3D view"),
+            checkable=True,
+            enabled=True,
+            checked=False,
+        )
         w.threejs_example_helix_action = self._action_factory(
             w.tr("Helix Point Cloud"),
             lambda: w.open_threejs_example("helix_points_csv"),
@@ -934,9 +950,12 @@ class MenuController:
         # ============================================================
         # VIEW MENU - Display toggles and 3D visualization
         # ============================================================
+        w.menus.view.aboutToShow.connect(self._update_view_menu_states)
         view_sections = [
             (self._docks_menu.menuAction(),),
             (
+                w.toggle_web_view_action,
+                w.toggle_threejs_view_action,
                 actions["toggle_pose_edges"],
                 actions["toggle_pose_bbox_display"],
                 actions["toggle_agent_mode"],
@@ -1226,6 +1245,116 @@ class MenuController:
             return viewer_stack.currentWidget() is pdf_widget
         except Exception:
             return False
+
+    def _update_view_menu_states(self) -> None:
+        self._sync_view_toggle_actions()
+
+    def _set_checked_safely(self, action_name: str, checked: bool) -> None:
+        action = getattr(self._window, action_name, None)
+        if not isinstance(action, QtWidgets.QAction):
+            return
+        action.blockSignals(True)
+        try:
+            action.setChecked(bool(checked))
+        except Exception:
+            return
+        finally:
+            action.blockSignals(False)
+
+    def _sync_view_toggle_actions(self) -> None:
+        try:
+            self._set_checked_safely(
+                "toggle_pdf_view_action", self._is_pdf_view_active()
+            )
+            self._set_checked_safely(
+                "toggle_web_view_action", self._is_web_view_active()
+            )
+            self._set_checked_safely(
+                "toggle_threejs_view_action", self._is_threejs_view_active()
+            )
+        except Exception:
+            return
+
+    def _show_annolid_bot_dock(self) -> None:
+        try:
+            open_bot = getattr(self._window, "open_annolid_bot_dock", None)
+            if callable(open_bot):
+                open_bot()
+        except Exception:
+            return
+
+    def _is_web_view_active(self) -> bool:
+        """Return True when the web viewer is the current central view."""
+        try:
+            viewer_stack = getattr(self._window, "_viewer_stack", None)
+            web_manager = getattr(self._window, "web_manager", None)
+            if viewer_stack is None or web_manager is None:
+                return False
+            web_widget = web_manager.viewer_widget()
+            if web_widget is None:
+                return False
+            return viewer_stack.currentWidget() is web_widget
+        except Exception:
+            return False
+
+    def _toggle_web_view(self, checked: bool) -> None:
+        """Show/hide web view without closing the loaded web session."""
+        web_manager = getattr(self._window, "web_manager", None)
+        if web_manager is None:
+            self._set_checked_safely("toggle_web_view_action", False)
+            return
+        web_widget = web_manager.viewer_widget()
+        if checked:
+            if web_widget is None:
+                try:
+                    web_widget = web_manager.ensure_web_viewer()
+                except Exception:
+                    self._set_checked_safely("toggle_web_view_action", False)
+                    return
+            self._window._set_active_view("web")
+            self._show_annolid_bot_dock()
+        elif self._is_web_view_active():
+            self._window._set_active_view("canvas")
+        self._sync_view_toggle_actions()
+
+    def _is_threejs_view_active(self) -> bool:
+        """Return True when the Three.js viewer is the current central view."""
+        try:
+            viewer_stack = getattr(self._window, "_viewer_stack", None)
+            threejs_manager = getattr(self._window, "threejs_manager", None)
+            if viewer_stack is None or threejs_manager is None:
+                return False
+            threejs_widget = threejs_manager.viewer_widget()
+            if threejs_widget is None:
+                return False
+            return viewer_stack.currentWidget() is threejs_widget
+        except Exception:
+            return False
+
+    def _toggle_threejs_view(self, checked: bool) -> None:
+        """Show/hide Three.js view without closing the loaded 3D session."""
+        threejs_manager = getattr(self._window, "threejs_manager", None)
+        if threejs_manager is None:
+            self._set_checked_safely("toggle_threejs_view_action", False)
+            return
+        threejs_widget = threejs_manager.viewer_widget()
+        if checked:
+            if threejs_widget is None:
+                try:
+                    open_example = getattr(self._window, "open_threejs_example", None)
+                    if callable(open_example):
+                        open_example("two_mice_html")
+                    threejs_widget = threejs_manager.viewer_widget()
+                    if threejs_widget is None:
+                        threejs_widget = threejs_manager.ensure_threejs_viewer()
+                except Exception:
+                    self._set_checked_safely("toggle_threejs_view_action", False)
+                    return
+            self._window._set_active_view("threejs")
+            self._show_annolid_bot_dock()
+        elif self._is_threejs_view_active():
+            self._window._set_active_view("canvas")
+        self._sync_view_toggle_actions()
 
     def _toggle_pdf_view(self, checked: bool) -> None:
         """Show/hide PDF view without closing the loaded PDF session."""

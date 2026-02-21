@@ -8,6 +8,8 @@ async def execute_direct_gui_command(
     open_video: Callable[[str], Any],
     open_url: Callable[[str], Any],
     open_in_browser: Callable[[str], Any],
+    open_threejs: Callable[[str], Any],
+    open_threejs_example: Callable[[str], Any],
     open_pdf: Callable[[str], Any],
     set_frame: Callable[[int], Any],
     track_next_frames: Callable[[int], Any],
@@ -62,6 +64,24 @@ async def execute_direct_gui_command(
                 return f"Opened URL in browser: {resolved}"
             return "Opened URL in browser."
         return str(payload.get("error") or "Failed to open URL in browser.")
+
+    if name == "open_threejs":
+        payload = await _run(open_threejs, str(args.get("path_or_url") or ""))
+        if payload.get("ok"):
+            target = str(payload.get("target") or "").strip()
+            if target:
+                return f"Opened Three.js view: {target}"
+            return "Opened Three.js view."
+        return str(payload.get("error") or "Failed to open Three.js view.")
+
+    if name == "open_threejs_example":
+        payload = await _run(open_threejs_example, str(args.get("example_id") or ""))
+        if payload.get("ok"):
+            example_id = str(payload.get("example_id") or "").strip()
+            if example_id:
+                return f"Opened Three.js example: {example_id}"
+            return "Opened Three.js example."
+        return str(payload.get("error") or "Failed to open Three.js example.")
 
     if name == "open_pdf":
         payload = await _run(open_pdf, str(args.get("path") or ""))

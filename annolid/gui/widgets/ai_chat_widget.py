@@ -2223,6 +2223,101 @@ class AIChatWidget(QtWidgets.QWidget):
             return
         self.status_label.setText("Bot action failed: could not open URL.")
 
+    @staticmethod
+    def _normalize_threejs_example_input(example: str) -> str:
+        raw = str(example or "").strip().lower()
+        if not raw:
+            return "two_mice_html"
+        mapping = {
+            "helix": "helix_points_csv",
+            "helix_points_csv": "helix_points_csv",
+            "wave": "wave_surface_obj",
+            "wave_surface_obj": "wave_surface_obj",
+            "sphere": "sphere_points_ply",
+            "sphere_points_ply": "sphere_points_ply",
+            "brain": "brain_viewer_html",
+            "brain_viewer_html": "brain_viewer_html",
+            "two_mice": "two_mice_html",
+            "two_mice_html": "two_mice_html",
+        }
+        normalized = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
+        if normalized in mapping:
+            return mapping[normalized]
+        if "two" in raw and "mice" in raw:
+            return "two_mice_html"
+        if "brain" in raw:
+            return "brain_viewer_html"
+        if "helix" in raw:
+            return "helix_points_csv"
+        if "wave" in raw:
+            return "wave_surface_obj"
+        if "sphere" in raw:
+            return "sphere_points_ply"
+        return "two_mice_html"
+
+    @QtCore.Slot(str)
+    def bot_open_threejs_example(self, example_id: str = "") -> None:
+        host = self.host_window_widget or self.window()
+        open_example = getattr(host, "open_threejs_example", None)
+        if not callable(open_example):
+            self.status_label.setText(
+                "Bot action failed: Three.js examples unavailable."
+            )
+            return
+        resolved = self._normalize_threejs_example_input(example_id)
+        try:
+            open_example(resolved)
+            self.status_label.setText(f"Opened Three.js example: {resolved}")
+        except Exception as exc:
+            self.status_label.setText(f"Bot action failed: {exc}")
+
+    @QtCore.Slot(str)
+    def bot_open_threejs(self, path_or_url: str) -> None:
+        target = str(path_or_url or "").strip()
+        if not target:
+            self.status_label.setText("Bot action failed: provide a 3D path or URL.")
+            return
+        host = self.host_window_widget or self.window()
+        manager = getattr(host, "threejs_manager", None)
+        if manager is None:
+            self.status_label.setText(
+                "Bot action failed: Three.js viewer is unavailable."
+            )
+            return
+
+        local_path = Path(target).expanduser()
+        try:
+            if local_path.exists() and local_path.is_file():
+                suffix = local_path.suffix.lower()
+                if suffix in {".html", ".htm", ".xhtml"}:
+                    url = QtCore.QUrl.fromLocalFile(str(local_path)).toString()
+                    if bool(manager.show_url_in_viewer(url)):
+                        self.status_label.setText(
+                            f"Opened Three.js URL: {local_path.name}"
+                        )
+                        return
+                elif bool(manager.show_model_in_viewer(local_path)):
+                    self.status_label.setText(
+                        f"Opened Three.js model: {local_path.name}"
+                    )
+                    return
+        except Exception:
+            pass
+
+        parsed = self._normalize_url_for_open(target)
+        if parsed is not None:
+            normalized = str(parsed.toString() or "").strip()
+            scheme = str(parsed.scheme() or "").lower()
+            if normalized and scheme in {"http", "https", "file"}:
+                try:
+                    if bool(manager.show_url_in_viewer(normalized)):
+                        self.status_label.setText(f"Opened Three.js URL: {normalized}")
+                        return
+                except Exception:
+                    pass
+
+        self.status_label.setText("Bot action failed: could not open Three.js content.")
+
     @QtCore.Slot(int)
     def bot_web_get_dom_text(self, max_chars: int) -> None:
         manager = self._resolve_web_manager()

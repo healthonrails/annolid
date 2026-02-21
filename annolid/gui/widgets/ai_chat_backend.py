@@ -938,6 +938,8 @@ class StreamingChatTask(QRunnable):
                 "open_video": self._tool_gui_open_video,
                 "open_url": self._tool_gui_open_url,
                 "open_in_browser": self._tool_gui_open_in_browser,
+                "open_threejs": self._tool_gui_open_threejs,
+                "open_threejs_example": self._tool_gui_open_threejs_example,
                 "web_get_dom_text": self._tool_gui_web_get_dom_text,
                 "web_click": self._tool_gui_web_click,
                 "web_type": self._tool_gui_web_type,
@@ -1173,6 +1175,26 @@ class StreamingChatTask(QRunnable):
             ),
         )
 
+    def _tool_gui_open_threejs(self, path_or_url: str) -> Dict[str, Any]:
+        target = str(path_or_url or "").strip()
+        if not target:
+            return {
+                "ok": False,
+                "error": "Provide a local path or URL to open in Three.js.",
+            }
+        if not self._invoke_widget_slot("bot_open_threejs", QtCore.Q_ARG(str, target)):
+            return {"ok": False, "error": "Failed to queue Three.js open action"}
+        return {"ok": True, "queued": True, "target": target}
+
+    def _tool_gui_open_threejs_example(self, example_id: str = "") -> Dict[str, Any]:
+        resolved = str(example_id or "").strip() or "two_mice_html"
+        if not self._invoke_widget_slot(
+            "bot_open_threejs_example",
+            QtCore.Q_ARG(str, resolved),
+        ):
+            return {"ok": False, "error": "Failed to queue Three.js example action"}
+        return {"ok": True, "queued": True, "example_id": resolved}
+
     def _tool_gui_web_get_dom_text(self, max_chars: int = 8000) -> Dict[str, Any]:
         return gui_web_get_dom_text(
             invoke_widget_json_slot=self._invoke_widget_json_slot,
@@ -1362,6 +1384,8 @@ class StreamingChatTask(QRunnable):
                 "open_video": self._tool_gui_open_video,
                 "open_url": self._tool_gui_open_url,
                 "open_in_browser": self._tool_gui_open_in_browser,
+                "open_threejs": self._tool_gui_open_threejs,
+                "open_threejs_example": self._tool_gui_open_threejs_example,
                 "open_pdf": self._tool_gui_open_pdf,
                 "set_frame": self._tool_gui_set_frame,
                 "track_next_frames": self._tool_gui_track_next_frames,
