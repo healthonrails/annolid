@@ -295,6 +295,20 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
     )
     if label_match:
         path_text = label_match.group("path").strip()
+        labels: list[str] = []
+        with_labels_match = re.search(
+            r"^(?P<path>.+?)\s+\bwith\s+labels?\b\s+(?P<labels>.+)$",
+            path_text,
+            flags=re.IGNORECASE,
+        )
+        if with_labels_match:
+            path_text = with_labels_match.group("path").strip()
+            labels_text = with_labels_match.group("labels").strip()
+            labels = [
+                p.strip().strip("\"'`").strip(" .")
+                for p in re.split(r",|;|\band\b", labels_text, flags=re.IGNORECASE)
+                if p.strip().strip("\"'`").strip(" .")
+            ]
         if path_text.lower().startswith("video "):
             path_text = path_text[6:].strip()
         if re.search(
@@ -308,6 +322,7 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                 "name": "label_behavior_segments",
                 "args": {
                     "path": path_text,
+                    "behavior_labels": labels if labels else None,
                     "segment_mode": mode,
                     "overwrite_existing": overwrite,
                 },

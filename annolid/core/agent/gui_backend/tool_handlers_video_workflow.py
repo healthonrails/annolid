@@ -4,6 +4,21 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 
+def _video_total_frames(path: Path) -> int:
+    try:
+        import cv2  # type: ignore
+
+        cap = cv2.VideoCapture(str(path))
+        if not cap.isOpened():
+            return 0
+        try:
+            return max(0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0))
+        finally:
+            cap.release()
+    except Exception:
+        return 0
+
+
 def segment_track_video_tool(
     *,
     path: str,
@@ -130,6 +145,17 @@ def label_behavior_segments_tool(
         return {"ok": False, "error": "segment_mode must be 'timeline' or 'uniform'"}
     frames = max(1, int(segment_frames))
     max_seg = max(1, int(max_segments))
+    if mode_norm == "uniform" and resolved_path is not None:
+        total_frames = _video_total_frames(Path(resolved_path))
+        if total_frames > 1:
+            # For short clips, avoid collapsing to a single uniform segment
+            # when defaults (segment_frames=60) exceed video length.
+            if frames >= total_frames:
+                desired_segments = 4 if total_frames >= 16 else 2
+                frames = max(1, int(total_frames // desired_segments))
+            # Recover from accidental one-segment requests on longer videos.
+            if max_seg == 1 and total_frames > frames:
+                max_seg = max(2, int((total_frames + frames - 1) // frames))
 
     ok = invoke_label_behavior(
         str(resolved_path) if resolved_path else "",

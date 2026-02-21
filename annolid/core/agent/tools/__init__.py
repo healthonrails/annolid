@@ -47,34 +47,45 @@ from .nanobot import register_nanobot_style_tools
 from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
 from .shell import ExecTool
 from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
-from .function_gui import (
+from .function_gui_core import (
     GuiContextTool,
-    GuiLabelBehaviorSegmentsTool,
-    GuiOpenInBrowserTool,
-    GuiOpenPdfTool,
-    GuiOpenUrlTool,
-    GuiOpenVideoTool,
-    GuiRunAiTextSegmentationTool,
     GuiSaveCitationTool,
-    GuiSegmentTrackVideoTool,
     GuiSelectAnnotationModelTool,
     GuiSendPromptTool,
-    GuiStartRealtimeStreamTool,
-    GuiStopRealtimeStreamTool,
-    GuiSetAiTextPromptTool,
     GuiSetChatModelTool,
-    GuiSetFrameTool,
     GuiSetPromptTool,
     GuiSharedImagePathTool,
-    GuiTrackNextFramesTool,
+)
+from .function_gui_web import (
+    GuiOpenInBrowserTool,
+    GuiOpenUrlTool,
     GuiWebClickTool,
     GuiWebFindFormsTool,
     GuiWebGetDomTextTool,
     GuiWebRunStepsTool,
     GuiWebScrollTool,
     GuiWebTypeTool,
-    register_annolid_gui_tools,
 )
+from .function_gui_video import (
+    GuiLabelBehaviorSegmentsTool,
+    GuiOpenVideoTool,
+    GuiRunAiTextSegmentationTool,
+    GuiSegmentTrackVideoTool,
+    GuiSetAiTextPromptTool,
+    GuiSetFrameTool,
+    GuiStartRealtimeStreamTool,
+    GuiStopRealtimeStreamTool,
+    GuiTrackNextFramesTool,
+)
+from .function_gui_pdf import GuiOpenPdfTool
+from .function_gui_pdf import (
+    GuiArxivSearchTool,
+    GuiListPdfsTool,
+    GuiPdfFindSectionsTool,
+    GuiPdfGetStateTool,
+    GuiPdfGetTextTool,
+)
+from .function_gui_registry import register_annolid_gui_tools
 from .function_video import (
     VideoInfoTool,
     VideoProcessSegmentsTool,
@@ -161,6 +172,11 @@ __all__ = [
     "GuiWebFindFormsTool",
     "GuiWebRunStepsTool",
     "GuiOpenPdfTool",
+    "GuiPdfGetStateTool",
+    "GuiPdfGetTextTool",
+    "GuiPdfFindSectionsTool",
+    "GuiArxivSearchTool",
+    "GuiListPdfsTool",
     "GuiOpenVideoTool",
     "GuiSetFrameTool",
     "GuiSetPromptTool",

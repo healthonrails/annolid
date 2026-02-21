@@ -1399,6 +1399,13 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_behavior["args"]["path"] == "mouse.mp4"
     assert parsed_behavior["args"]["behavior_labels"] == ["walking", "rearing"]
 
+    parsed_label_in = task._parse_direct_gui_command(
+        "label behavior in mouse.mp4 with labels rearing, walking"
+    )
+    assert parsed_label_in["name"] == "label_behavior_segments"
+    assert parsed_label_in["args"]["path"] == "mouse.mp4"
+    assert parsed_label_in["args"]["behavior_labels"] == ["rearing", "walking"]
+
     parsed_non_open = task._parse_direct_gui_command(
         "segment mouse.mp4 with labels walking"
     )
