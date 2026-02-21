@@ -46,3 +46,40 @@ def test_rename_file_tool_requires_source_or_active() -> None:
     )
     assert payload["ok"] is False
     assert "No source file provided" in str(payload.get("error", ""))
+
+
+def test_rename_file_tool_resolves_relative_source_with_workspace(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path
+    source = workspace / "downloads" / "2509.21965v2.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-1.4 test")
+    seen: dict[str, str] = {}
+
+    payload = rename_file_tool(
+        source_path="downloads/2509.21965v2.pdf",
+        new_name="paper-title.pdf",
+        new_path="",
+        use_active_file=False,
+        overwrite=False,
+        get_pdf_state=lambda: {},
+        get_active_video_path=lambda: "",
+        workspace=workspace,
+        run_rename=lambda current, target_name, target_path, overwrite_flag: (
+            seen.update(
+                {
+                    "current": current,
+                    "target_name": target_name,
+                    "target_path": target_path,
+                    "overwrite": str(bool(overwrite_flag)),
+                }
+            )
+            or f"Successfully renamed {current} -> {Path(current).with_name(target_name)}"
+        ),
+        reopen_pdf=lambda _path: False,
+    )
+
+    assert payload["ok"] is True
+    assert seen["current"] == str(source)
+    assert seen["target_name"] == "paper-title.pdf"

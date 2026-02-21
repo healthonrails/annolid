@@ -17,6 +17,12 @@ def rename_file_tool(
     run_rename: Callable[[str, str, str, bool], str],
     reopen_pdf: Callable[[Path], bool],
 ) -> Dict[str, Any]:
+    def _resolve_user_path(path_text: str) -> Path:
+        candidate = Path(path_text).expanduser()
+        if not candidate.is_absolute():
+            candidate = (workspace / candidate).expanduser()
+        return candidate
+
     source_text = str(source_path or "").strip()
     target_name = str(new_name or "").strip()
     target_path = str(new_path or "").strip()
@@ -25,7 +31,7 @@ def rename_file_tool(
 
     current_path: Path | None = None
     if source_text:
-        current_path = Path(source_text).expanduser()
+        current_path = _resolve_user_path(source_text)
     elif bool(use_active_file):
         pdf_state = get_pdf_state()
         if isinstance(pdf_state, dict) and bool(pdf_state.get("ok")):
@@ -67,7 +73,7 @@ def rename_file_tool(
         }
 
     if target_path:
-        resolved_new_path = Path(target_path).expanduser()
+        resolved_new_path = _resolve_user_path(target_path)
     else:
         resolved_new_path = current_path.with_name(target_name)
     reopened = False
