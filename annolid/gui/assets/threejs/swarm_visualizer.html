@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>3D Swarm Visualizer</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #0b0f19;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #infoPanel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            padding: 15px;
+            background: rgba(15, 20, 35, 0.85);
+            border: 1px solid rgba(100, 150, 255, 0.3);
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(8px);
+            pointer-events: none;
+            z-index: 10;
+        }
+        h1 {
+            margin: 0 0 10px 0;
+            font-size: 1.2rem;
+            color: #88bbff;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+        .stats {
+            font-size: 0.9rem;
+            color: #aaccff;
+            margin-bottom: 5px;
+        }
+        #canvasContainer {
+            width: 100vw;
+            height: 100vh;
+        }
+        .label {
+            color: white;
+            font-family: monospace;
+            padding: 4px 8px;
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid #444;
+            border-radius: 4px;
+            pointer-events: none;
+            font-size: 14px;
+            white-space: pre-wrap;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="infoPanel">
+        <h1>Swarm Command Center</h1>
+        <div class="stats" id="activeAgents">Active Agents: 0</div>
+        <div class="stats" id="swarmStatus">Status: Awaiting Tasks</div>
+    </div>
+
+    <div id="canvasContainer"></div>
+
+    <!-- Import Map for Three.js so we can run standalone -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+        const container = document.getElementById('canvasContainer');
+
+        // Scene Setup
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x0b0f19, 0.05);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 8, 15);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        const labelRenderer = new CSS2DRenderer();
+        labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        labelRenderer.domElement.style.position = 'absolute';
+        labelRenderer.domElement.style.top = '0px';
+        labelRenderer.domElement.style.pointerEvents = 'none';
+        container.appendChild(labelRenderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.maxPolarAngle = Math.PI / 2 + 0.1;
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0x88bbff, 1.5);
+        dirLight.position.set(5, 10, 7);
+        scene.add(dirLight);
+
+        const gridHelper = new THREE.GridHelper(30, 30, 0x4466aa, 0x223355);
+        gridHelper.material.opacity = 0.3;
+        gridHelper.material.transparent = true;
+        scene.add(gridHelper);
+
+        // Agents Data Configuration
+        const agentData = [
+            { id: "planner", role: "Planner", color: 0x33ff66, pos: new THREE.Vector3(-4, 0, -2) },
+            { id: "researcher", role: "Researcher", color: 0x3399ff, pos: new THREE.Vector3(0, 0, -4) },
+            { id: "coder", role: "Coder", color: 0xff3366, pos: new THREE.Vector3(4, 0, -2) },
+            { id: "reviewer", role: "Reviewer", color: 0xffcc00, pos: new THREE.Vector3(0, 0, 2) }
+        ];
+
+        const agents = new Map();
+        const connections = [];
+
+        // Materials
+        const nodeGeometry = new THREE.SphereGeometry(0.8, 32, 32);
+        const ringGeometry = new THREE.RingGeometry(1.2, 1.3, 32);
+
+        // Core Hub
+        const hubGeo = new THREE.OctahedronGeometry(1.5, 0);
+        const hubMat = new THREE.MeshPhysicalMaterial({
+            color: 0xaaaaaa,
+            metalness: 0.9,
+            roughness: 0.1,
+            emissive: 0x222222,
+            transmission: 0.5,
+            transparent: true
+        });
+        const hub = new THREE.Mesh(hubGeo, hubMat);
+        hub.position.set(0, 2, 0);
+        scene.add(hub);
+
+        // Core light
+        const hubLight = new THREE.PointLight(0xffffff, 2, 10);
+        hub.add(hubLight);
+
+        // Initialize Agents
+        agentData.forEach(data => {
+            const group = new THREE.Group();
+            group.position.copy(data.pos);
+            group.position.y = 1.5;
+
+            // Core sphere
+            const mat = new THREE.MeshStandardMaterial({
+                color: data.color,
+                emissive: data.color,
+                emissiveIntensity: 0.2,
+                roughness: 0.2,
+                metalness: 0.8
+            });
+            const mesh = new THREE.Mesh(nodeGeometry, mat);
+            group.add(mesh);
+
+            // Orbiting ring
+            const ringMat = new THREE.MeshBasicMaterial({
+                color: data.color,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.6
+            });
+            const ring = new THREE.Mesh(ringGeometry, ringMat);
+            ring.rotation.x = Math.PI / 2;
+            group.add(ring);
+
+            // Light
+            const ptLight = new THREE.PointLight(data.color, 1, 5);
+            group.add(ptLight);
+
+            // Label
+            const div = document.createElement('div');
+            div.className = 'label';
+            div.innerHTML = `<strong>${data.role}</strong><br/><span style="color:#aaa;font-size:10px;">Idle</span>`;
+            div.style.borderColor = '#' + mat.color.getHexString();
+            const label = new CSS2DObject(div);
+            label.position.set(0, 1.8, 0);
+            group.add(label);
+
+            scene.add(group);
+
+            // Connection line to hub
+            const lineMat = new THREE.LineBasicMaterial({
+                color: data.color,
+                transparent: true,
+                opacity: 0.2
+            });
+            const pts = [group.position, hub.position];
+            const lineGeo = new THREE.BufferGeometry().setFromPoints(pts);
+            const line = new THREE.Line(lineGeo, lineMat);
+            scene.add(line);
+
+            agents.set(data.id, {
+                group, mesh, ring, labelDiv: div, baseColor: mat.color.clone(),
+                state: 'idle', // idle, active, processing
+                targetIntensity: 0.2,
+                currentIntensity: 0.2,
+                line: line
+            });
+        });
+
+        // Floating particles
+        const particleCount = 100;
+        const pGeo = new THREE.BufferGeometry();
+        const pPos = new Float32Array(particleCount * 3);
+        const pVels = [];
+        for(let i = 0; i < particleCount; i++) {
+            pPos[i*3] = (Math.random() - 0.5) * 20;
+            pPos[i*3+1] = Math.random() * 8;
+            pPos[i*3+2] = (Math.random() - 0.5) * 20;
+            pVels.push({
+                y: Math.random() * 0.02 + 0.01,
+                x: (Math.random() - 0.5) * 0.01
+            });
+        }
+        pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+        const pMat = new THREE.PointsMaterial({
+            color: 0x88ccff, size: 0.1, transparent: true, opacity: 0.6
+        });
+        const particles = new THREE.Points(pGeo, pMat);
+        scene.add(particles);
+
+        // Simulation Loop
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            controls.update();
+
+            // Hub animation
+            hub.rotation.y += delta * 0.5;
+            hub.rotation.x += delta * 0.2;
+            hub.position.y = 2 + Math.sin(time) * 0.2;
+
+            // Particles animation
+            const positions = particles.geometry.attributes.position.array;
+            for(let i = 0; i < particleCount; i++) {
+                positions[i*3+1] += pVels[i].y;
+                positions[i*3] += pVels[i].x;
+                if(positions[i*3+1] > 10) {
+                    positions[i*3+1] = 0;
+                }
+            }
+            particles.geometry.attributes.position.needsUpdate = true;
+
+            // Agents Animation
+            agents.forEach((agent, id) => {
+                // Bobbing
+                const offset = [...agents.keys()].indexOf(id);
+                agent.group.position.y = 1.5 + Math.sin(time * 2 + offset) * 0.1;
+
+                // Ring rotation
+                agent.ring.rotation.z += delta * (agent.state === 'active' ? 2 : 0.5);
+                agent.ring.rotation.x = Math.PI/2 + Math.sin(time + offset) * 0.2;
+
+                // Pulsing emission
+                if (agent.state === 'active') {
+                    agent.targetIntensity = 0.8 + Math.sin(time * 8) * 0.4;
+                    agent.line.material.opacity = 0.8;
+                } else if (agent.state === 'processing') {
+                    agent.targetIntensity = 0.5 + Math.sin(time * 4) * 0.2;
+                    agent.line.material.opacity = 0.4;
+                } else {
+                    agent.targetIntensity = 0.2;
+                    agent.line.material.opacity = 0.1;
+                }
+
+                agent.currentIntensity += (agent.targetIntensity - agent.currentIntensity) * delta * 5;
+                agent.mesh.material.emissiveIntensity = agent.currentIntensity;
+
+                // Update Line positions
+                const positions = agent.line.geometry.attributes.position.array;
+                positions[0] = agent.group.position.x;
+                positions[1] = agent.group.position.y;
+                positions[2] = agent.group.position.z;
+                positions[3] = hub.position.x;
+                positions[4] = hub.position.y;
+                positions[5] = hub.position.z;
+                agent.line.geometry.attributes.position.needsUpdate = true;
+            });
+
+            renderer.render(scene, camera);
+            labelRenderer.render(scene, camera);
+        }
+
+        animate();
+
+        // Responsive
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Demo Simulation (Simulates Annolid Swarm activity)
+        function simulateSwarm() {
+            const roles = [...agents.keys()];
+
+            setInterval(() => {
+                // Reset all to idle occasionally
+                if (Math.random() < 0.2) {
+                    agents.forEach(a => {
+                        a.state = 'idle';
+                        a.labelDiv.innerHTML = `<strong>${a.labelDiv.innerText.split('\\n')[0]}</strong><br/><span style="color:#aaa;font-size:10px;">Idle</span>`;
+                    });
+                    document.getElementById('swarmStatus').innerText = "Status: Awaiting Tasks";
+                    document.getElementById('activeAgents').innerText = "Active Agents: 0";
+                    return;
+                }
+
+                // Pick a random agent to activate
+                const activeId = roles[Math.floor(Math.random() * roles.length)];
+                const agent = agents.get(activeId);
+
+                agent.state = 'active';
+                const tasks = ["Analyzing Context", "Executing Tool", "Generating Code", "Reviewing Output"];
+                const task = tasks[Math.floor(Math.random() * tasks.length)];
+
+                agent.labelDiv.innerHTML = `<strong>${agent.labelDiv.innerText.split('\\n')[0]}</strong><br/><span style="color:#fff;font-size:11px;font-weight:bold;">${task}</span>`;
+
+                document.getElementById('swarmStatus').innerText = `Status: ${task}...`;
+
+                // Set others to processing or idle
+                let activeCount = 1;
+                roles.forEach(id => {
+                    if (id !== activeId) {
+                        if (Math.random() < 0.3) {
+                            agents.get(id).state = 'processing';
+                            agents.get(id).labelDiv.innerHTML = `<strong>${agents.get(id).labelDiv.innerText.split('\\n')[0]}</strong><br/><span style="color:#ddd;font-size:10px;">Evaluating</span>`;
+                            activeCount++;
+                        } else {
+                            agents.get(id).state = 'idle';
+                            agents.get(id).labelDiv.innerHTML = `<strong>${agents.get(id).labelDiv.innerText.split('\\n')[0]}</strong><br/><span style="color:#aaa;font-size:10px;">Idle</span>`;
+                        }
+                    }
+                });
+
+                document.getElementById('activeAgents').innerText = `Active Agents: ${activeCount}`;
+
+            }, 3000);
+        }
+
+        // Start Demo
+        setTimeout(simulateSwarm, 2000);
+
+    </script>
+</body>
+</html>

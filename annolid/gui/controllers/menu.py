@@ -698,12 +698,18 @@ class MenuController:
             lambda: w.open_threejs_example("two_mice_html"),
             tip=w.tr("Open an animated importmap-based Three.js point cloud"),
         )
+        w.threejs_example_swarm_visualizer_action = self._action_factory(
+            w.tr("3D Swarm Visualizer"),
+            lambda: w.open_threejs_example("swarm_visualizer_html"),
+            tip=w.tr("Open the interactive 3D Swarm Command Center visualization"),
+        )
         w.threejs_examples_menu = QtWidgets.QMenu(w.tr("3D Examples"), w)
         w.threejs_examples_menu.addAction(w.threejs_example_helix_action)
         w.threejs_examples_menu.addAction(w.threejs_example_wave_action)
         w.threejs_examples_menu.addAction(w.threejs_example_sphere_action)
         w.threejs_examples_menu.addAction(w.threejs_example_brain_viewer_action)
         w.threejs_examples_menu.addAction(w.threejs_example_two_mice_action)
+        w.threejs_examples_menu.addAction(w.threejs_example_swarm_visualizer_action)
 
         # ------------------------------------------------------------------
         # Pose/keypoint annotation helpers (visible vs occluded)
