@@ -251,9 +251,21 @@ the service returns cached results without re-running the agent.</p>
 <li><p>Stream snapshot:</p>
 <ul>
 <li><p>GUI sessions: use <code class="docutils literal notranslate"><span class="pre">gui_check_stream_source</span></code> with <code class="docutils literal notranslate"><span class="pre">save_snapshot=true</span></code>.</p></li>
+<li><p>This GUI tool now runs a full camera mission pipeline:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">probe</span> <span class="pre">-&gt;</span> <span class="pre">capture</span> <span class="pre">-&gt;</span> <span class="pre">annotate</span> <span class="pre">-&gt;</span> <span class="pre">notify/email</span></code></p></li>
+<li><p>returns explicit <code class="docutils literal notranslate"><span class="pre">camera_mission.steps</span></code> and <code class="docutils literal notranslate"><span class="pre">delivery</span></code> status objects.</p></li>
+</ul>
+</li>
 <li><p>Non-GUI channels (for example email/IM): use <code class="docutils literal notranslate"><span class="pre">camera_snapshot</span></code>.</p></li>
 <li><p>Snapshot files are saved under <code class="docutils literal notranslate"><span class="pre">.annolid/workspace/camera_snapshots/</span></code>.</p></li>
 <li><p>Outlook Safe Links camera URLs are automatically unwrapped to the original stream URL.</p></li>
+<li><p>Source fallback policy is intent-aware:</p>
+<ul>
+<li><p>eye-blink intent defaults to camera <code class="docutils literal notranslate"><span class="pre">0</span></code></p></li>
+<li><p>network camera intent prefers remembered network streams.</p></li>
+</ul>
+</li>
 </ul>
 </li>
 <li><p>Email with attachments:</p>
@@ -272,6 +284,11 @@ the service returns cached results without re-running the agent.</p>
 <p>Example bot intent:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">check</span> <span class="pre">wireless</span> <span class="pre">camera,</span> <span class="pre">save</span> <span class="pre">a</span> <span class="pre">snapshot,</span> <span class="pre">and</span> <span class="pre">email</span> <span class="pre">it</span> <span class="pre">to</span> <span class="pre">user&#64;example.com</span></code></p></li>
+</ul>
+<p>Realtime email/report spam control:</p>
+<ul class="simple">
+<li><p>Realtime bot report interval controls report cadence.</p></li>
+<li><p>Email requests use an additional minimum interval (<code class="docutils literal notranslate"><span class="pre">bot_email_min_interval_sec</span></code>, default <code class="docutils literal notranslate"><span class="pre">60s</span></code>) to avoid repeated email requests.</p></li>
 </ul>
 </section>
 <section id="security-and-policy-hardening-phase-2">
