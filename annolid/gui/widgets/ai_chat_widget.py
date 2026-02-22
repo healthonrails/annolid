@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import csv
 import ipaddress
+from collections import OrderedDict
 import os
 import tempfile
 import time
@@ -34,6 +35,10 @@ from annolid.gui.widgets.ai_chat_backend import (
     clear_chat_session,
 )
 from annolid.core.agent.gui_backend.session_io import decode_outbound_chat_event
+from annolid.core.agent.gui_backend.turn_state import (
+    ERROR_TYPE_CANCELLED,
+    TURN_STATUS_CANCELLED,
+)
 from annolid.gui.widgets.ai_chat_session_dialog import ChatSessionManagerDialog
 from annolid.gui.widgets.citation_manager_widget import CitationManagerDialog
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
@@ -555,6 +560,8 @@ class AIChatWidget(QtWidgets.QWidget):
         self._last_final_message_text: str = ""
         self._last_final_message_is_error: bool = False
         self._last_final_message_ts: float = 0.0
+        self._seen_event_keys: "OrderedDict[str, float]" = OrderedDict()
+        self._seen_event_key_limit = 512
 
         self._build_ui()
         self._apply_theme_styles()
@@ -3576,13 +3583,28 @@ class AIChatWidget(QtWidgets.QWidget):
         event = decode_outbound_chat_event(payload_text)
         if event is None:
             return
+        dedupe_key = str(getattr(event, "idempotency_key", "") or "").strip()
+        if dedupe_key:
+            if dedupe_key in self._seen_event_keys:
+                return
+            self._seen_event_keys[dedupe_key] = time.monotonic()
+            self._seen_event_keys.move_to_end(dedupe_key)
+            while len(self._seen_event_keys) > int(self._seen_event_key_limit):
+                self._seen_event_keys.popitem(last=False)
         if event.kind == "chunk":
             self.stream_chat_chunk(event.text)
             return
         if event.kind == "progress":
             self.stream_chat_progress(event.text)
             return
-        self.update_chat_response(event.text, bool(event.is_error))
+        error_type = str(getattr(event, "error_type", "") or "").strip().lower()
+        turn_status = str(getattr(event, "turn_status", "") or "").strip().lower()
+        self.update_chat_response(
+            event.text,
+            bool(event.is_error),
+            error_type=error_type,
+            turn_status=turn_status,
+        )
 
     @QtCore.Slot(str)
     def stream_chat_chunk(self, chunk: str) -> None:
@@ -3606,7 +3628,14 @@ class AIChatWidget(QtWidgets.QWidget):
         self._render_progress_in_bubble()
 
     @QtCore.Slot(str, bool)
-    def update_chat_response(self, message: str, is_error: bool) -> None:
+    def update_chat_response(
+        self,
+        message: str,
+        is_error: bool,
+        *,
+        error_type: str = "",
+        turn_status: str = "",
+    ) -> None:
         text = str(message or "")
         now = time.monotonic()
         if (
@@ -3633,10 +3662,19 @@ class AIChatWidget(QtWidgets.QWidget):
                 self._current_response_bubble.set_text((current + "\n" + text).strip())
             else:
                 self._current_response_bubble.set_text(text or "Error")
-            self.status_label.setText("Error")
+            if str(error_type or "").strip():
+                self.status_label.setText(f"Error ({str(error_type).strip()})")
+            else:
+                self.status_label.setText("Error")
         elif text:
             self._current_response_bubble.set_text(text)
-            self.status_label.setText("Done")
+            status = str(turn_status or "").strip().lower()
+            if status == TURN_STATUS_CANCELLED:
+                self.status_label.setText("Cancelled")
+            elif status:
+                self.status_label.setText(status.capitalize())
+            else:
+                self.status_label.setText("Done")
         else:
             self.status_label.setText("Done")
 
@@ -3672,7 +3710,12 @@ class AIChatWidget(QtWidgets.QWidget):
         self.status_label.setText("Stopping...")
         if self._current_response_bubble is not None:
             self._current_response_bubble.set_stop_visible(False)
-        self.update_chat_response("Stopped by user.", False)
+        self.update_chat_response(
+            "Stopped by user.",
+            False,
+            error_type=ERROR_TYPE_CANCELLED,
+            turn_status=TURN_STATUS_CANCELLED,
+        )
 
     def _last_assistant_text(self) -> str:
         # Find last non-user bubble text.

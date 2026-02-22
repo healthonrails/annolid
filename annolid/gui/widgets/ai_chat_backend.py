@@ -239,6 +239,17 @@ from annolid.core.agent.gui_backend.prompt_builder import (
     PromptBuildInputs,
     build_compact_system_prompt as build_gui_compact_system_prompt,
 )
+from annolid.core.agent.gui_backend.turn_state import (
+    ERROR_TYPE_CANCELLED,
+    ERROR_TYPE_POLICY,
+    ERROR_TYPE_USER,
+    TURN_STATUS_CANCELLING,
+    TURN_STATUS_CANCELLED,
+    TURN_STATUS_COMPLETED,
+    TURN_STATUS_FAILED,
+    TURN_STATUS_QUEUED,
+    TURN_STATUS_RUNNING,
+)
 from annolid.gui.realtime_launch import build_realtime_launch_payload
 from annolid.utils.llm_settings import resolve_agent_runtime_config
 from annolid.utils.citations import (
@@ -446,8 +457,26 @@ class StreamingChatTask(QRunnable):
         self._last_progress_update: str = ""
         self._cancel_event = Event()
         self._cancelled_notice_emitted = False
+        self.turn_id = self._build_turn_id(inbound=inbound)
+        self._turn_status = TURN_STATUS_QUEUED
+
+    def _build_turn_id(self, *, inbound: Optional[Any] = None) -> str:
+        if isinstance(inbound, BusInboundMessage):
+            meta = dict(inbound.metadata or {})
+            existing = str(
+                meta.get("turn_id") or meta.get("idempotency_key") or ""
+            ).strip()
+            if existing:
+                return existing
+        return f"{self.session_id}:{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+
+    def _set_turn_status(self, status: str) -> None:
+        value = str(status or "").strip().lower()
+        if value:
+            self._turn_status = value
 
     def request_cancel(self) -> None:
+        self._set_turn_status(TURN_STATUS_CANCELLING)
         self._cancel_event.set()
 
     def _is_cancel_requested(self) -> bool:
@@ -461,11 +490,15 @@ class StreamingChatTask(QRunnable):
         if self._cancelled_notice_emitted:
             return
         self._cancelled_notice_emitted = True
+        self._set_turn_status(TURN_STATUS_CANCELLED)
         gui_emit_final(
             widget=self.widget,
             message="Stopped by user.",
             is_error=False,
             emit_progress_cb=lambda _update: None,
+            turn_id=self.turn_id,
+            turn_status=self._turn_status,
+            error_type=ERROR_TYPE_CANCELLED,
         )
 
     def run(self) -> None:
@@ -477,6 +510,7 @@ class StreamingChatTask(QRunnable):
             self.model,
             len(str(self.prompt or "")),
         )
+        self._set_turn_status(TURN_STATUS_RUNNING)
         try:
             self._raise_if_cancelled()
         except _TaskCancelledError:
@@ -498,7 +532,8 @@ class StreamingChatTask(QRunnable):
                 self.model,
                 dep_error,
             )
-            self._emit_final(dep_error, is_error=True)
+            self._set_turn_status(TURN_STATUS_FAILED)
+            self._emit_final(dep_error, is_error=True, error_type=ERROR_TYPE_USER)
             logger.info(
                 "annolid-bot turn stop session=%s provider=%s model=%s status=dependency_missing",
                 self.session_id,
@@ -545,6 +580,7 @@ class StreamingChatTask(QRunnable):
             self._emit_progress("Starting agent loop")
             self._run_agent_loop()
             self._raise_if_cancelled()
+            self._set_turn_status(TURN_STATUS_COMPLETED)
             logger.info(
                 "annolid-bot turn stop session=%s provider=%s model=%s status=ok",
                 self.session_id,
@@ -570,7 +606,8 @@ class StreamingChatTask(QRunnable):
                     self.model,
                     exc,
                 )
-                self._emit_final(message, is_error=True)
+                self._set_turn_status(TURN_STATUS_FAILED)
+                self._emit_final(message, is_error=True, error_type=ERROR_TYPE_POLICY)
                 logger.info(
                     "annolid-bot turn stop session=%s provider=%s model=%s status=config_error",
                     self.session_id,
@@ -587,7 +624,8 @@ class StreamingChatTask(QRunnable):
                     self.model,
                     exc,
                 )
-                self._emit_final(message, is_error=True)
+                self._set_turn_status(TURN_STATUS_FAILED)
+                self._emit_final(message, is_error=True, error_type=ERROR_TYPE_USER)
                 logger.info(
                     "annolid-bot turn stop session=%s provider=%s model=%s status=dependency_missing",
                     self.session_id,
@@ -732,7 +770,7 @@ class StreamingChatTask(QRunnable):
     def _emit_chunk(self, chunk: str) -> None:
         if self._is_cancel_requested():
             return
-        gui_emit_chunk(widget=self.widget, chunk=chunk)
+        gui_emit_chunk(widget=self.widget, chunk=chunk, turn_id=self.turn_id)
 
     def _emit_progress(self, update: str) -> None:
         if self._is_cancel_requested():
@@ -741,19 +779,38 @@ class StreamingChatTask(QRunnable):
             widget=self.widget,
             update=update,
             last_progress_update=self._last_progress_update,
+            turn_id=self.turn_id,
+            turn_status=self._turn_status,
         )
 
-    def _emit_final(self, message: str, *, is_error: bool) -> None:
+    def _emit_final(
+        self,
+        message: str,
+        *,
+        is_error: bool,
+        error_type: str = "",
+    ) -> None:
         if (
             self._is_cancel_requested()
             and str(message or "").strip() != "Stopped by user."
         ):
             return
+        if self._turn_status not in {
+            TURN_STATUS_COMPLETED,
+            TURN_STATUS_FAILED,
+            TURN_STATUS_CANCELLED,
+        }:
+            self._set_turn_status(
+                TURN_STATUS_FAILED if is_error else TURN_STATUS_COMPLETED
+            )
         gui_emit_final(
             widget=self.widget,
             message=message,
             is_error=is_error,
             emit_progress_cb=self._emit_progress,
+            turn_id=self.turn_id,
+            turn_status=self._turn_status,
+            error_type=str(error_type or "").strip().lower(),
         )
 
     def _load_history_messages(self) -> List[Dict[str, Any]]:

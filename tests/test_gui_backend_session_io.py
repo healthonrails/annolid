@@ -11,6 +11,10 @@ def test_outbound_chat_event_roundtrip() -> None:
         kind="final",
         text="done",
         is_error=False,
+        turn_id="turn-1",
+        turn_status="completed",
+        error_type="none",
+        event_id="evt-1",
     )
     payload = session_io.encode_outbound_chat_event(event)
     decoded = session_io.decode_outbound_chat_event(payload)
@@ -19,6 +23,11 @@ def test_outbound_chat_event_roundtrip() -> None:
     assert decoded.kind == "final"
     assert decoded.text == "done"
     assert decoded.is_error is False
+    assert decoded.turn_id == "turn-1"
+    assert decoded.turn_status == "completed"
+    assert decoded.error_type == "none"
+    assert decoded.event_id == "evt-1"
+    assert bool(decoded.idempotency_key)
 
 
 def test_emit_chunk_prefers_unified_consumer(monkeypatch) -> None:

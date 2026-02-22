@@ -4,10 +4,19 @@ import asyncio
 from annolid.utils.logger import logger
 from collections import OrderedDict
 from contextlib import suppress
+import hashlib
 import re
+import time
 from typing import Any, Optional
 
 from ..loop import AgentLoop
+from ..gui_backend.turn_state import (
+    ERROR_TYPE_INTERNAL,
+    ERROR_TYPE_NONE,
+    TURN_STATUS_COMPLETED,
+    TURN_STATUS_FAILED,
+    TURN_STATUS_RUNNING,
+)
 from .events import InboundMessage, OutboundMessage
 from .queue import MessageBus
 
@@ -31,6 +40,7 @@ class AgentBusService:
         self._default_dm_scope = str(default_dm_scope or "").strip() or "main"
         self._default_main_session_key = str(default_main_session_key or "").strip()
         self._idempotency_cache: OrderedDict[str, OutboundMessage] = OrderedDict()
+        self._outbound_dedupe_cache: OrderedDict[str, float] = OrderedDict()
         self._outbound_seq = 0
         self._state_version = 0
         self._running = False
@@ -142,6 +152,8 @@ class AgentBusService:
                 "iterations": result.iterations,
                 "tool_runs": len(result.tool_runs),
                 "stopped_reason": result.stopped_reason,
+                "turn_status": TURN_STATUS_COMPLETED,
+                "error_type": ERROR_TYPE_NONE,
             }
             if inbound.metadata.get("subject"):
                 outbound_meta["subject"] = inbound.metadata["subject"]
@@ -157,7 +169,11 @@ class AgentBusService:
                 channel=inbound.channel,
                 chat_id=inbound.chat_id,
                 content=f"Error: {exc}",
-                metadata={"error": True},
+                metadata={
+                    "error": True,
+                    "error_type": ERROR_TYPE_INTERNAL,
+                    "turn_status": TURN_STATUS_FAILED,
+                },
             )
         normalized = self._sanitize_outbound_content(outbound.content)
         if not normalized:
@@ -194,6 +210,13 @@ class AgentBusService:
                 metadata=dict(outbound.metadata or {}),
             )
         outbound = self._annotate_outbound(outbound)
+        if self._is_duplicate_outbound(outbound):
+            self._logger.warning(
+                "Skipping duplicate outbound message channel=%s chat=%s",
+                outbound.channel,
+                outbound.chat_id,
+            )
+            return
         self._store_idempotency(cache_key, outbound)
         self._logger.info(
             "Publishing reply to %s via %s", outbound.chat_id, outbound.channel
@@ -209,6 +232,8 @@ class AgentBusService:
         progress_meta = {
             "intermediate": True,
             "progress": True,
+            "turn_status": TURN_STATUS_RUNNING,
+            "error_type": ERROR_TYPE_NONE,
         }
         if inbound.metadata.get("subject"):
             progress_meta["subject"] = inbound.metadata["subject"]
@@ -284,3 +309,28 @@ class AgentBusService:
             media=list(outbound.media or []),
             metadata=meta,
         )
+
+    def _is_duplicate_outbound(self, outbound: OutboundMessage) -> bool:
+        meta = dict(outbound.metadata or {})
+        if bool(meta.get("idempotency_replay")):
+            return False
+        digest_src = "|".join(
+            [
+                str(outbound.channel or ""),
+                str(outbound.chat_id or ""),
+                str(outbound.content or ""),
+                str(bool(meta.get("intermediate", False))),
+                str(meta.get("turn_status") or ""),
+                str(meta.get("error_type") or ""),
+            ]
+        )
+        key = hashlib.sha1(digest_src.encode("utf-8")).hexdigest()
+        now = time.monotonic()
+        stamp = self._outbound_dedupe_cache.get(key)
+        self._outbound_dedupe_cache[key] = now
+        self._outbound_dedupe_cache.move_to_end(key)
+        while len(self._outbound_dedupe_cache) > self._max_idempotency_cache:
+            self._outbound_dedupe_cache.popitem(last=False)
+        if stamp is None:
+            return False
+        return (now - float(stamp)) <= 1.0

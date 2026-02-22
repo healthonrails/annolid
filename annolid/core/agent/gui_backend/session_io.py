@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from qtpy import QtCore
 from qtpy.QtCore import QMetaObject
+from .turn_state import (
+    ERROR_TYPE_INTERNAL,
+    ERROR_TYPE_NONE,
+    TURN_STATUS_COMPLETED,
+    TURN_STATUS_FAILED,
+    TURN_STATUS_QUEUED,
+    TURN_STATUS_RUNNING,
+    normalize_error_type,
+    normalize_turn_status,
+)
 
 
 @dataclass(frozen=True)
@@ -15,14 +26,44 @@ class OutboundChatEvent:
     kind: str
     text: str = ""
     is_error: bool = False
+    turn_id: str = ""
+    turn_status: str = ""
+    error_type: str = ""
+    event_id: str = ""
+    idempotency_key: str = ""
 
 
 def encode_outbound_chat_event(event: OutboundChatEvent) -> str:
+    direction = str(event.direction or "").strip().lower() or "outbound"
+    kind = str(event.kind or "").strip().lower()
+    turn_id = str(event.turn_id or "").strip()
+    event_id = str(event.event_id or "").strip()
+    idempotency_key = str(event.idempotency_key or "").strip()
+    if not idempotency_key:
+        digest_src = "|".join(
+            [
+                direction,
+                kind,
+                turn_id,
+                str(bool(event.is_error)),
+                str(event.text or ""),
+            ]
+        )
+        idempotency_key = hashlib.sha1(digest_src.encode("utf-8")).hexdigest()
     payload = {
-        "direction": str(event.direction or "").strip().lower() or "outbound",
-        "kind": str(event.kind or "").strip().lower(),
+        "direction": direction,
+        "kind": kind,
         "text": str(event.text or ""),
         "is_error": bool(event.is_error),
+        "turn_id": turn_id,
+        "turn_status": normalize_turn_status(
+            str(event.turn_status or "").strip().lower(), default=TURN_STATUS_QUEUED
+        ),
+        "error_type": normalize_error_type(
+            str(event.error_type or "").strip().lower(), default=ERROR_TYPE_NONE
+        ),
+        "event_id": event_id,
+        "idempotency_key": idempotency_key,
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -46,6 +87,17 @@ def decode_outbound_chat_event(payload_text: str) -> Optional[OutboundChatEvent]
         kind=kind,
         text=str(payload.get("text") or ""),
         is_error=bool(payload.get("is_error", False)),
+        turn_id=str(payload.get("turn_id") or "").strip(),
+        turn_status=normalize_turn_status(
+            str(payload.get("turn_status") or "").strip().lower(),
+            default=TURN_STATUS_QUEUED,
+        ),
+        error_type=normalize_error_type(
+            str(payload.get("error_type") or "").strip().lower(),
+            default=ERROR_TYPE_NONE,
+        ),
+        event_id=str(payload.get("event_id") or "").strip(),
+        idempotency_key=str(payload.get("idempotency_key") or "").strip(),
     )
 
 
@@ -99,10 +151,16 @@ def _emit_outbound_chat_event(widget: Any, event: OutboundChatEvent) -> None:
         )
 
 
-def emit_chunk(*, widget: Any, chunk: str) -> None:
+def emit_chunk(*, widget: Any, chunk: str, turn_id: str = "") -> None:
     _emit_outbound_chat_event(
         widget,
-        OutboundChatEvent(direction="outbound", kind="chunk", text=str(chunk or "")),
+        OutboundChatEvent(
+            direction="outbound",
+            kind="chunk",
+            text=str(chunk or ""),
+            turn_id=str(turn_id or "").strip(),
+            turn_status=TURN_STATUS_RUNNING,
+        ),
     )
 
 
@@ -111,6 +169,8 @@ def emit_progress(
     widget: Any,
     update: str,
     last_progress_update: Optional[str],
+    turn_id: str = "",
+    turn_status: str = TURN_STATUS_RUNNING,
 ) -> Optional[str]:
     if not bool(getattr(widget, "enable_progress_stream", False)):
         return last_progress_update
@@ -119,7 +179,15 @@ def emit_progress(
         return last_progress_update
     _emit_outbound_chat_event(
         widget,
-        OutboundChatEvent(direction="outbound", kind="progress", text=text),
+        OutboundChatEvent(
+            direction="outbound",
+            kind="progress",
+            text=text,
+            turn_id=str(turn_id or "").strip(),
+            turn_status=normalize_turn_status(
+                str(turn_status or "").strip().lower(), default=TURN_STATUS_RUNNING
+            ),
+        ),
     )
     return text
 
@@ -130,11 +198,22 @@ def emit_final(
     message: str,
     is_error: bool,
     emit_progress_cb,
+    turn_id: str = "",
+    turn_status: str = "",
+    error_type: str = "",
 ) -> None:
     if is_error:
         emit_progress_cb("Response failed")
     else:
         emit_progress_cb("Response ready")
+    status_text = normalize_turn_status(
+        str(turn_status or "").strip().lower(),
+        default=TURN_STATUS_FAILED if is_error else TURN_STATUS_COMPLETED,
+    )
+    normalized_error_type = normalize_error_type(
+        str(error_type or "").strip().lower(),
+        default=ERROR_TYPE_INTERNAL if is_error else ERROR_TYPE_NONE,
+    )
     _emit_outbound_chat_event(
         widget,
         OutboundChatEvent(
@@ -142,6 +221,9 @@ def emit_final(
             kind="final",
             text=str(message or ""),
             is_error=bool(is_error),
+            turn_id=str(turn_id or "").strip(),
+            turn_status=status_text,
+            error_type=normalized_error_type,
         ),
     )
 

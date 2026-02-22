@@ -104,7 +104,7 @@ def test_run_reports_dependency_missing_without_fallback(monkeypatch) -> None:
     monkeypatch.setattr(
         task,
         "_emit_final",
-        lambda message, is_error: emitted.update(
+        lambda message, is_error, **_kwargs: emitted.update(
             {"message": str(message), "is_error": bool(is_error)}
         ),
     )
