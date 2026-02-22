@@ -58,9 +58,14 @@ class RealtimeManager(QtCore.QObject):
         self._bot_watch_labels: set[str] = set()
         self._bot_email_report = False
         self._bot_email_to = ""
+        self._bot_email_min_interval_sec = 60.0
         self._bot_last_report_ts = 0.0
+        self._bot_last_email_request_ts = 0.0
         self._bot_last_attempt_ts = 0.0
         self._bot_last_busy_log_ts = 0.0
+        self._bot_report_signature = ""
+        self._bot_report_signature_ts = 0.0
+        self._bot_report_dedup_window_sec = 20.0
         self._bot_event_log_fp = None
         self._bot_event_log_path = None
 
@@ -235,9 +240,19 @@ class RealtimeManager(QtCore.QObject):
         )
         self._bot_email_report = bool(extras.get("bot_email_report", False))
         self._bot_email_to = str(extras.get("bot_email_to", "") or "").strip()
+        try:
+            self._bot_email_min_interval_sec = max(
+                10.0,
+                float(extras.get("bot_email_min_interval_sec", 60.0) or 60.0),
+            )
+        except Exception:
+            self._bot_email_min_interval_sec = 60.0
         self._bot_last_report_ts = 0.0
+        self._bot_last_email_request_ts = 0.0
         self._bot_last_attempt_ts = 0.0
         self._bot_last_busy_log_ts = 0.0
+        self._bot_report_signature = ""
+        self._bot_report_signature_ts = 0.0
 
         if self._bot_report_enabled:
             if self._bot_email_report and not self._bot_email_to:
@@ -250,11 +265,12 @@ class RealtimeManager(QtCore.QObject):
                 else "(any detection)"
             )
             logger.info(
-                "Realtime bot reporting enabled: interval=%ss labels=%s email=%s recipient=%s",
+                "Realtime bot reporting enabled: interval=%ss labels=%s email=%s recipient=%s email_min_interval=%ss",
                 int(self._bot_report_interval_sec),
                 labels_text,
                 "on" if self._bot_email_report else "off",
                 self._bot_email_to or "(none)",
+                int(self._bot_email_min_interval_sec),
             )
             self._open_bot_event_log()
 
@@ -494,6 +510,14 @@ class RealtimeManager(QtCore.QObject):
                 matched.append(detection)
         return matched
 
+    def _build_detection_signature(self, detections: List[Dict[str, Any]]) -> str:
+        if not detections:
+            return ""
+        labels = [self._detection_label(d).lower() or "unknown" for d in detections]
+        counts = Counter(labels)
+        pairs = [f"{label}:{count}" for label, count in sorted(counts.items())]
+        return "|".join(pairs)
+
     def _should_send_bot_report(
         self, now_ts: float, detections: List[Dict[str, Any]]
     ) -> bool:
@@ -504,6 +528,14 @@ class RealtimeManager(QtCore.QObject):
         if now_ts - self._bot_last_report_ts < self._bot_report_interval_sec:
             return False
         if now_ts - self._bot_last_attempt_ts < 1.0:
+            return False
+        signature = self._build_detection_signature(detections)
+        if (
+            signature
+            and signature == self._bot_report_signature
+            and now_ts - self._bot_report_signature_ts
+            < self._bot_report_dedup_window_sec
+        ):
             return False
         return True
 
@@ -532,6 +564,8 @@ class RealtimeManager(QtCore.QObject):
         metadata: Dict[str, Any],
         detections: List[Dict[str, Any]],
         image_path: Optional[str],
+        *,
+        request_email: bool,
     ) -> bool:
         widget, err = _resolve_chat_widget(self.window)
         if widget is None:
@@ -589,7 +623,7 @@ class RealtimeManager(QtCore.QObject):
             " possible behavior interpretation, and recommended follow-up checks.\n"
             "If tool calls are available, you may use them."
         )
-        if self._bot_email_report:
+        if request_email:
             to_hint = self._bot_email_to or "configured recipient"
             prompt += (
                 f"\nAfter analysis, call the `email` tool to send the report to {to_hint}."
@@ -615,7 +649,7 @@ class RealtimeManager(QtCore.QObject):
                     "matched_detections": len(detections),
                     "labels": dict(counts),
                     "image_attached": bool(image_path),
-                    "email_requested": bool(self._bot_email_report),
+                    "email_requested": bool(request_email),
                     "email_to": self._bot_email_to,
                 },
             )
@@ -969,13 +1003,24 @@ class RealtimeManager(QtCore.QObject):
         if self._should_send_bot_report(now_ts, matched_bot_detections):
             self._bot_last_attempt_ts = now_ts
             image_path = self._save_bot_report_frame(qimage, frame_index)
+            request_email = bool(self._bot_email_report) and (
+                now_ts - self._bot_last_email_request_ts
+                >= self._bot_email_min_interval_sec
+            )
             sent = self._send_detection_report_to_bot(
                 metadata if isinstance(metadata, dict) else {},
                 matched_bot_detections,
                 image_path,
+                request_email=request_email,
             )
             if sent:
                 self._bot_last_report_ts = now_ts
+                self._bot_report_signature = self._build_detection_signature(
+                    matched_bot_detections
+                )
+                self._bot_report_signature_ts = now_ts
+                if request_email:
+                    self._bot_last_email_request_ts = now_ts
                 logger.info(
                     "Realtime report sent to Annolid Bot (frame=%s matched=%d).",
                     frame_index if frame_index is not None else "?",
@@ -1028,9 +1073,13 @@ class RealtimeManager(QtCore.QObject):
         self._bot_watch_labels = set()
         self._bot_email_report = False
         self._bot_email_to = ""
+        self._bot_email_min_interval_sec = 60.0
         self._bot_last_report_ts = 0.0
+        self._bot_last_email_request_ts = 0.0
         self._bot_last_attempt_ts = 0.0
         self._bot_last_busy_log_ts = 0.0
+        self._bot_report_signature = ""
+        self._bot_report_signature_ts = 0.0
         if self._bot_event_log_fp:
             with contextlib.suppress(Exception):
                 self._bot_event_log_fp.flush()

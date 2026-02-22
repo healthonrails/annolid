@@ -165,6 +165,7 @@ def build_realtime_launch_payload(
     bot_watch_labels: object = "",
     bot_email_report: bool = False,
     bot_email_to: str = "",
+    bot_email_min_interval_sec: float = 60.0,
 ) -> Tuple[RealtimeConfig, dict]:
     model_weight = resolve_realtime_model_weight(model_name)
     camera_value = parse_camera_source(camera_source)
@@ -212,6 +213,15 @@ def build_realtime_launch_payload(
         )
     except Exception:
         bot_report_interval = 5.0
+    try:
+        bot_email_min_interval = max(
+            10.0,
+            float(bot_email_min_interval_sec)
+            if bot_email_min_interval_sec is not None
+            else 60.0,
+        )
+    except Exception:
+        bot_email_min_interval = 60.0
 
     extras: dict = {
         "subscriber_address": str(subscriber_address or "tcp://127.0.0.1:5555"),
@@ -228,6 +238,7 @@ def build_realtime_launch_payload(
         "bot_watch_labels": parse_label_csv(bot_watch_labels),
         "bot_email_report": bool(bot_email_report),
         "bot_email_to": str(bot_email_to or "").strip(),
+        "bot_email_min_interval_sec": bot_email_min_interval,
     }
     if blink_ear_threshold is not None:
         try:

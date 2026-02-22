@@ -126,9 +126,15 @@ Annolid Bot can capture a snapshot from a camera stream and send it by email.
 
 - Stream snapshot:
   - GUI sessions: use `gui_check_stream_source` with `save_snapshot=true`.
+  - This GUI tool now runs a full camera mission pipeline:
+    - `probe -> capture -> annotate -> notify/email`
+    - returns explicit `camera_mission.steps` and `delivery` status objects.
   - Non-GUI channels (for example email/IM): use `camera_snapshot`.
   - Snapshot files are saved under `.annolid/workspace/camera_snapshots/`.
   - Outlook Safe Links camera URLs are automatically unwrapped to the original stream URL.
+  - Source fallback policy is intent-aware:
+    - eye-blink intent defaults to camera `0`
+    - network camera intent prefers remembered network streams.
 - Email with attachments:
   - Use the `email` tool with:
     - `to`
@@ -139,6 +145,11 @@ Annolid Bot can capture a snapshot from a camera stream and send it by email.
 Example bot intent:
 
 - `check wireless camera, save a snapshot, and email it to user@example.com`
+
+Realtime email/report spam control:
+
+- Realtime bot report interval controls report cadence.
+- Email requests use an additional minimum interval (`bot_email_min_interval_sec`, default `60s`) to avoid repeated email requests.
 
 ## Security and policy hardening (Phase 2)
 

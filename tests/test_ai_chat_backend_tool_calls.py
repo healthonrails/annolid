@@ -627,6 +627,10 @@ def test_check_stream_source_snapshot_opens_image_on_canvas(monkeypatch) -> None
     assert payload["snapshot_path"] == snapshot_path
     assert payload["snapshot_opened_on_canvas"] is True
     assert payload["email_sent"] is True
+    assert payload["delivery_consistent"] is True
+    assert payload["camera_mission"]["steps"]["probe"]["ok"] is True
+    assert payload["camera_mission"]["steps"]["capture"]["ok"] is True
+    assert payload["camera_mission"]["steps"]["notify"]["ok"] is True
     assert calls == ["bot_open_image"]
 
 
@@ -664,6 +668,8 @@ def test_check_stream_source_skips_email_when_snapshot_missing(monkeypatch) -> N
     assert payload["ok"] is True
     assert payload["email_requested"] is True
     assert payload["email_sent"] is False
+    assert payload["camera_mission"]["steps"]["capture"]["ok"] is False
+    assert payload["camera_mission"]["steps"]["notify"]["ok"] is False
     assert "snapshot was not created" in str(payload.get("email_result") or "").lower()
 
 
@@ -701,9 +707,30 @@ def test_check_stream_source_skips_email_when_probe_fails(monkeypatch) -> None:
     assert payload["ok"] is False
     assert payload["email_requested"] is True
     assert payload["email_sent"] is False
+    assert payload["camera_mission"]["steps"]["probe"]["ok"] is False
     assert (
         "stream probe did not succeed" in str(payload.get("email_result") or "").lower()
     )
+
+
+def test_resolve_camera_source_by_intent_prefers_network(monkeypatch) -> None:
+    task = StreamingChatTask("hi", widget=None)
+    captured: dict[str, object] = {}
+
+    def _fake_resolve(camera_source: str, *, prefer_network: bool = True) -> str:
+        captured["camera_source"] = camera_source
+        captured["prefer_network"] = prefer_network
+        return "http://198.51.100.21/img/video.mjpeg" if prefer_network else "0"
+
+    task._resolve_preferred_camera_source = _fake_resolve  # type: ignore[method-assign]
+    network_source = task._resolve_camera_source_by_intent("", intent="network")
+    local_source = task._resolve_camera_source_by_intent("", intent="local")
+    blink_source = task._resolve_camera_source_by_intent("", intent="blink")
+
+    assert network_source == "http://198.51.100.21/img/video.mjpeg"
+    assert local_source == "0"
+    assert blink_source == "0"
+    assert captured["camera_source"] == ""
 
 
 def test_gui_label_behavior_segments_invalid_mode() -> None:

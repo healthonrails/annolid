@@ -54,6 +54,10 @@ from annolid.core.agent.tools.pdf import DownloadPdfTool
 from annolid.core.agent.tools.filesystem import RenameFileTool
 from annolid.core.agent.tools.email import EmailTool
 from annolid.core.agent.tools.automation_scheduler import AutomationSchedulerTool
+from annolid.core.agent.tools.camera import (
+    _annotate_snapshot_frame,
+    build_camera_mission_status,
+)
 from annolid.core.agent.utils import get_agent_workspace_path
 from annolid.core.agent.gui_backend.commands import (
     looks_like_local_access_refusal,
@@ -2126,17 +2130,25 @@ class StreamingChatTask(QRunnable):
         bot_email_to: str = "",
     ) -> Dict[str, Any]:
         explicit_camera_source = str(camera_source or "").strip()
-        # Eye blink demos should default to the local webcam unless a source is explicit.
-        if not explicit_camera_source and (
-            bool(classify_eye_blinks)
-            or str(model_name or "").strip().lower() == "mediapipe_face"
-        ):
-            resolved_camera_source = "0"
-        else:
-            resolved_camera_source = self._resolve_preferred_camera_source(
-                camera_source,
-                prefer_network=True,
+        prompt_text = str(self.prompt or "")
+        if bool(classify_eye_blinks) or str(model_name or "").strip().lower() in {
+            "mediapipe_face",
+            "face_landmarks",
+        }:
+            source_intent = "blink"
+        elif self._is_network_camera_source(explicit_camera_source) or (
+            self._looks_like_network_camera_intent(prompt_text)
+            and not re.search(
+                r"\b(?:camera\s*0|webcam|built-?in)\b", prompt_text.lower()
             )
+        ):
+            source_intent = "network"
+        else:
+            source_intent = "local"
+        resolved_camera_source = self._resolve_camera_source_by_intent(
+            camera_source,
+            intent=source_intent,
+        )
         return gui_start_realtime_stream_tool(
             camera_source=resolved_camera_source,
             model_name=model_name,
@@ -2209,9 +2221,18 @@ class StreamingChatTask(QRunnable):
         email_subject: str = "",
         email_content: str = "",
     ) -> Dict[str, Any]:
-        resolved_camera_source = self._resolve_preferred_camera_source(
+        prompt_text = str(self.prompt or "")
+        source_intent = (
+            "network"
+            if (
+                self._is_network_camera_source(camera_source)
+                or self._looks_like_network_camera_intent(prompt_text)
+            )
+            else "local"
+        )
+        resolved_camera_source = self._resolve_camera_source_by_intent(
             camera_source,
-            prefer_network=True,
+            intent=source_intent,
         )
         payload = gui_check_stream_source_tool(
             camera_source=resolved_camera_source,
@@ -2256,6 +2277,22 @@ class StreamingChatTask(QRunnable):
                 )
                 payload["email_sent"] = bool(email_result.get("ok"))
                 payload["email_result"] = str(email_result.get("result") or "")
+        mission_status = build_camera_mission_status(
+            probe_ok=bool(payload.get("ok")),
+            snapshot_path=snapshot_path,
+            snapshot_rendered=bool(payload.get("snapshot_opened_on_canvas", False)),
+            email_requested=bool(payload.get("email_requested", False)),
+            email_sent=bool(payload.get("email_sent", False)),
+            email_result=str(payload.get("email_result") or ""),
+            camera_source=str(payload.get("camera_source") or resolved_camera_source),
+            error=str(payload.get("error") or ""),
+            annotated_snapshot=bool(payload.get("annotated_snapshot", False)),
+        )
+        payload["camera_mission"] = mission_status
+        payload["delivery"] = mission_status.get("delivery", {})
+        payload["delivery_consistent"] = bool(
+            payload["delivery"].get("delivery_consistent", False)
+        )
         return payload
 
     async def _tool_gui_automation_schedule(
@@ -2327,6 +2364,38 @@ class StreamingChatTask(QRunnable):
         if text.startswith(("~", "/", "./", "../")):
             return False
         return bool(re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", text))
+
+    @staticmethod
+    def _looks_like_network_camera_intent(text: str) -> bool:
+        content = str(text or "").lower()
+        if not content:
+            return False
+        return bool(
+            re.search(
+                r"\b(?:wireless|network|ip\s+camera|rtsp|rtsps|rtp|mjpeg|stream|http://|https://)\b",
+                content,
+            )
+        )
+
+    def _resolve_camera_source_by_intent(
+        self, camera_source: str, *, intent: str
+    ) -> str:
+        explicit = str(camera_source or "").strip()
+        if explicit:
+            return explicit
+        normalized_intent = str(intent or "").strip().lower()
+        if normalized_intent == "blink":
+            return "0"
+        prefer_network = normalized_intent == "network"
+        resolved = self._resolve_preferred_camera_source(
+            camera_source,
+            prefer_network=prefer_network,
+        )
+        if resolved:
+            return resolved
+        if normalized_intent in {"blink", "local"}:
+            return "0"
+        return ""
 
     @staticmethod
     def _extract_camera_source_from_memory_text(text: str) -> str:
@@ -2541,6 +2610,7 @@ class StreamingChatTask(QRunnable):
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
             fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
             snapshot_path = ""
+            annotated_snapshot = False
             if bool(got_frame) and bool(save_snapshot):
                 try:
                     workspace = get_agent_workspace_path()
@@ -2548,10 +2618,15 @@ class StreamingChatTask(QRunnable):
                     snapshots_dir.mkdir(parents=True, exist_ok=True)
                     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     snapshot_file = snapshots_dir / f"camera_probe_{stamp}.jpg"
+                    if frame is not None:
+                        annotated_snapshot = _annotate_snapshot_frame(
+                            frame, str(source)
+                        )
                     if frame is not None and cv2.imwrite(str(snapshot_file), frame):
                         snapshot_path = str(snapshot_file)
                 except Exception:
                     snapshot_path = ""
+                    annotated_snapshot = False
             return {
                 "ok": bool(got_frame),
                 "camera_source": str(source),
@@ -2565,6 +2640,7 @@ class StreamingChatTask(QRunnable):
                 "probe_frames": int(probe_frames),
                 "save_snapshot": bool(save_snapshot),
                 "snapshot_path": snapshot_path,
+                "annotated_snapshot": bool(annotated_snapshot and snapshot_path),
                 "error": (
                     ""
                     if got_frame

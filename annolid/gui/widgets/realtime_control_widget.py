@@ -190,6 +190,9 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         )
         self.bot_email_to_edit = QtWidgets.QLineEdit()
         self.bot_email_to_edit.setPlaceholderText(self.tr("recipient@example.com"))
+        self.bot_email_min_interval_spin = QtWidgets.QSpinBox()
+        self.bot_email_min_interval_spin.setRange(10, 86400)
+        self.bot_email_min_interval_spin.setSuffix(" s")
         self.bot_report_check.toggled.connect(self._on_bot_report_toggled)
         self.bot_email_report_check.toggled.connect(self._on_bot_report_toggled)
 
@@ -223,6 +226,8 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         output_layout.addWidget(self.bot_email_report_check, 12, 0, 1, 3)
         output_layout.addWidget(QtWidgets.QLabel(self.tr("Email Recipient")), 13, 0)
         output_layout.addWidget(self.bot_email_to_edit, 13, 1, 1, 2)
+        output_layout.addWidget(QtWidgets.QLabel(self.tr("Email Min Interval")), 14, 0)
+        output_layout.addWidget(self.bot_email_min_interval_spin, 14, 1, 1, 2)
         main_layout.addWidget(output_group)
 
         # --- Buttons / Status ------------------------------------------------
@@ -339,6 +344,9 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             bool(defaults.get("bot_email_report", False))
         )
         self.bot_email_to_edit.setText(str(defaults.get("bot_email_to", "") or ""))
+        self.bot_email_min_interval_spin.setValue(
+            int(defaults.get("bot_email_min_interval_sec", 60))
+        )
         self.blink_ear_threshold_spin.setValue(
             float(defaults.get("blink_ear_threshold", 0.21))
         )
@@ -426,6 +434,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.bot_email_report_check.setEnabled(enabled)
         email_enabled = enabled and self.bot_email_report_check.isChecked()
         self.bot_email_to_edit.setEnabled(email_enabled)
+        self.bot_email_min_interval_spin.setEnabled(email_enabled)
 
     # ------------------------------------------------------------------
     # State exposed to parent
@@ -494,4 +503,5 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             bot_watch_labels=self.bot_report_watch_labels_edit.text().strip(),
             bot_email_report=self.bot_email_report_check.isChecked(),
             bot_email_to=self.bot_email_to_edit.text().strip(),
+            bot_email_min_interval_sec=float(self.bot_email_min_interval_spin.value()),
         )

@@ -54,9 +54,11 @@ def test_build_realtime_launch_payload_includes_bot_report_extras() -> None:
         bot_watch_labels="person,animal,Person",
         bot_email_report=True,
         bot_email_to="lab@example.com",
+        bot_email_min_interval_sec=45,
     )
     assert extras["bot_report_enabled"] is True
     assert extras["bot_report_interval_sec"] == 5.0
     assert extras["bot_watch_labels"] == ["person", "animal"]
     assert extras["bot_email_report"] is True
     assert extras["bot_email_to"] == "lab@example.com"
+    assert extras["bot_email_min_interval_sec"] == 45.0
