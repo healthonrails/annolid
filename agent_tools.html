@@ -60,6 +60,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#citation-management-tools">Citation management tools</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#three-js-bot-tools">Three.js bot tools</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#realtime-camera-snapshot-email">Realtime camera snapshot + email</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#security-and-policy-hardening-phase-2">Security and policy hardening (Phase 2)</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="agent_provider_setup.html">Annolid Bot Provider and Model Setup Tutorial</a></li>
@@ -265,6 +266,59 @@ the service returns cached results without re-running the agent.</p>
 <p>Example bot intent:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">check</span> <span class="pre">wireless</span> <span class="pre">camera,</span> <span class="pre">save</span> <span class="pre">a</span> <span class="pre">snapshot,</span> <span class="pre">and</span> <span class="pre">email</span> <span class="pre">it</span> <span class="pre">to</span> <span class="pre">user&#64;example.com</span></code></p></li>
+</ul>
+</section>
+<section id="security-and-policy-hardening-phase-2">
+<h2>Security and policy hardening (Phase 2)<a class="headerlink" href="#security-and-policy-hardening-phase-2" title="Link to this heading"></a></h2>
+<p>Adds stricter defaults for tool access and data handling:</p>
+<ul class="simple">
+<li><p>Capability-oriented tool profiles:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">gui</span></code>, <code class="docutils literal notranslate"><span class="pre">email</span></code>, <code class="docutils literal notranslate"><span class="pre">realtime</span></code>, <code class="docutils literal notranslate"><span class="pre">filesystem</span></code></p></li>
+<li><p>explicit capability expressions are supported, for example:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">capability:gui,email</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">capability:gui+realtime</span></code></p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p>Snapshot path hardening:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">camera_snapshot</span></code> writes only under workspace <code class="docutils literal notranslate"><span class="pre">camera_snapshots/</span></code>.</p></li>
+<li><p>symlink escape paths are rejected.</p></li>
+</ul>
+</li>
+<li><p>Redaction-at-source:</p>
+<ul>
+<li><p>private/local stream endpoints are redacted in outbound content.</p></li>
+<li><p>sensitive metadata keys (for example <code class="docutils literal notranslate"><span class="pre">peer_id</span></code>, <code class="docutils literal notranslate"><span class="pre">account_id</span></code>) are redacted before publish.</p></li>
+</ul>
+</li>
+<li><p>Runtime high-risk guard:</p>
+<ul>
+<li><p>deny-by-default blocks risky multi-tool chains unless explicit intent is provided.</p></li>
+<li><p>config toggle: <code class="docutils literal notranslate"><span class="pre">agents.defaults.strict_runtime_tool_guard</span></code> (default <code class="docutils literal notranslate"><span class="pre">true</span></code>).</p></li>
+</ul>
+</li>
+</ul>
+<p>Example config:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;agents&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;defaults&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;strict_runtime_tool_guard&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Explicit high-risk intent markers supported by policy/runtime guards:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">intent:high-risk</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">intent:high_risk</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">allow:high-risk</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">allow_high_risk</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">unsafe:high-risk</span></code></p></li>
 </ul>
 </section>
 </section>
