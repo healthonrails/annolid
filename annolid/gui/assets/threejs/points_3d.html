@@ -6700,9 +6700,12 @@
             // --- Add a global flag for debug logging to avoid flooding the console ---
             let hasLoggedDebugState = false;
             let lastLogTime = 0;
+            let isShuttingDown = false;
+            let mainAnimationFrameId = null;
 
             function animate() {
-                requestAnimationFrame(animate);
+                if (isShuttingDown) return;
+                mainAnimationFrameId = requestAnimationFrame(animate);
                 const delta = mainClock.getDelta(); // Time since last frame in seconds
                 const nowMs = performance.now();    // Current time in milliseconds
                 const elapsedTime = mainClock.getElapsedTime();
@@ -6792,6 +6795,28 @@
 
 
             animate();
+
+            function shutdownViewer() {
+                if (isShuttingDown) return;
+                isShuttingDown = true;
+                if (mainAnimationFrameId != null) {
+                    cancelAnimationFrame(mainAnimationFrameId);
+                    mainAnimationFrameId = null;
+                }
+                if (flyAnimationId != null) {
+                    cancelAnimationFrame(flyAnimationId);
+                    flyAnimationId = null;
+                }
+                if (continuousSpikeTimer != null) {
+                    clearInterval(continuousSpikeTimer);
+                    continuousSpikeTimer = null;
+                }
+                if (mouseMoveTimeout) clearTimeout(mouseMoveTimeout);
+                if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+                controls.enabled = false;
+            }
+            window.addEventListener("beforeunload", shutdownViewer, { once: true });
+            window.addEventListener("pagehide", shutdownViewer, { once: true });
 
             window.addEventListener("resize", () => {
                 camera.aspect = window.innerWidth / window.innerHeight;

@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="utf-8">
     <title>3D Swarm Visualizer</title>
@@ -11,6 +12,7 @@
             color: #ffffff;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
+
         #infoPanel {
             position: absolute;
             top: 20px;
@@ -24,6 +26,7 @@
             pointer-events: none;
             z-index: 10;
         }
+
         h1 {
             margin: 0 0 10px 0;
             font-size: 1.2rem;
@@ -31,15 +34,18 @@
             text-transform: uppercase;
             letter-spacing: 2px;
         }
+
         .stats {
             font-size: 0.9rem;
             color: #aaccff;
             margin-bottom: 5px;
         }
+
         #canvasContainer {
             width: 100vw;
             height: 100vh;
         }
+
         .label {
             color: white;
             font-family: monospace;
@@ -54,6 +60,7 @@
         }
     </style>
 </head>
+
 <body>
     <div id="infoPanel">
         <h1>Swarm Command Center</h1>
@@ -63,41 +70,48 @@
 
     <div id="canvasContainer"></div>
 
-    <!-- Import Map for Three.js so we can run standalone -->
-    <script type="importmap">
-    {
-        "imports": {
-            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-        }
-    }
-    </script>
-
     <script type="module">
-        import * as THREE from 'three';
-        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-        import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+        import {
+            THREE,
+            OrbitControls,
+        } from './annolid_threejs_runtime.js';
+        import { CSS2DRenderer, CSS2DObject } from './annolid_threejs_css2d.js';
 
         const container = document.getElementById('canvasContainer');
+        const uiActiveAgents = document.getElementById('activeAgents');
+        const uiSwarmStatus = document.getElementById('swarmStatus');
+
+        function getViewportSize() {
+            const width = container.clientWidth || window.innerWidth;
+            const height = container.clientHeight || window.innerHeight;
+            return { width: Math.max(width, 1), height: Math.max(height, 1) };
+        }
 
         // Scene Setup
         const scene = new THREE.Scene();
         scene.fog = new THREE.FogExp2(0x0b0f19, 0.05);
 
-        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const initialViewport = getViewportSize();
+        const camera = new THREE.PerspectiveCamera(45, initialViewport.width / initialViewport.height, 0.1, 1000);
         camera.position.set(0, 8, 15);
 
-        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-        renderer.setPixelRatio(window.devicePixelRatio);
-        renderer.setSize(window.innerWidth, window.innerHeight);
+        const renderer = new THREE.WebGLRenderer({
+            antialias: true,
+            alpha: false,
+            powerPreference: "high-performance",
+        });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer.setSize(initialViewport.width, initialViewport.height);
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
         renderer.toneMappingExposure = 1.2;
+        renderer.setClearColor(0x0b0f19, 1);
         container.appendChild(renderer.domElement);
 
         const labelRenderer = new CSS2DRenderer();
-        labelRenderer.setSize(window.innerWidth, window.innerHeight);
+        labelRenderer.setSize(initialViewport.width, initialViewport.height);
         labelRenderer.domElement.style.position = 'absolute';
         labelRenderer.domElement.style.top = '0px';
+        labelRenderer.domElement.style.left = '0px';
         labelRenderer.domElement.style.pointerEvents = 'none';
         container.appendChild(labelRenderer.domElement);
 
@@ -128,7 +142,8 @@
         ];
 
         const agents = new Map();
-        const connections = [];
+        const agentIds = [];
+        const agentOffsets = new Map();
 
         // Materials
         const nodeGeometry = new THREE.SphereGeometry(0.8, 32, 32);
@@ -207,23 +222,29 @@
             scene.add(line);
 
             agents.set(data.id, {
-                group, mesh, ring, labelDiv: div, baseColor: mat.color.clone(),
+                group, mesh, ring, labelDiv: div, role: data.role, baseColor: mat.color.clone(),
                 state: 'idle', // idle, active, processing
                 targetIntensity: 0.2,
                 currentIntensity: 0.2,
                 line: line
             });
+            agentIds.push(data.id);
+            agentOffsets.set(data.id, agentIds.length - 1);
         });
+
+        function setAgentLabelStatus(agent, stateText, style) {
+            agent.labelDiv.innerHTML = `<strong>${agent.role}</strong><br/><span style="${style}">${stateText}</span>`;
+        }
 
         // Floating particles
         const particleCount = 100;
         const pGeo = new THREE.BufferGeometry();
         const pPos = new Float32Array(particleCount * 3);
         const pVels = [];
-        for(let i = 0; i < particleCount; i++) {
-            pPos[i*3] = (Math.random() - 0.5) * 20;
-            pPos[i*3+1] = Math.random() * 8;
-            pPos[i*3+2] = (Math.random() - 0.5) * 20;
+        for (let i = 0; i < particleCount; i++) {
+            pPos[i * 3] = (Math.random() - 0.5) * 20;
+            pPos[i * 3 + 1] = Math.random() * 8;
+            pPos[i * 3 + 2] = (Math.random() - 0.5) * 20;
             pVels.push({
                 y: Math.random() * 0.02 + 0.01,
                 x: (Math.random() - 0.5) * 0.01
@@ -238,9 +259,11 @@
 
         // Simulation Loop
         const clock = new THREE.Clock();
+        let animationFrameId = 0;
+        let swarmIntervalId = 0;
 
         function animate() {
-            requestAnimationFrame(animate);
+            animationFrameId = requestAnimationFrame(animate);
             const delta = clock.getDelta();
             const time = clock.getElapsedTime();
 
@@ -253,11 +276,13 @@
 
             // Particles animation
             const positions = particles.geometry.attributes.position.array;
-            for(let i = 0; i < particleCount; i++) {
-                positions[i*3+1] += pVels[i].y;
-                positions[i*3] += pVels[i].x;
-                if(positions[i*3+1] > 10) {
-                    positions[i*3+1] = 0;
+            for (let i = 0; i < particleCount; i++) {
+                positions[i * 3 + 1] += pVels[i].y;
+                positions[i * 3] += pVels[i].x;
+                if (positions[i * 3 + 1] > 10) {
+                    positions[i * 3 + 1] = 0;
+                    positions[i * 3] = (Math.random() - 0.5) * 20;
+                    positions[i * 3 + 2] = (Math.random() - 0.5) * 20;
                 }
             }
             particles.geometry.attributes.position.needsUpdate = true;
@@ -265,12 +290,12 @@
             // Agents Animation
             agents.forEach((agent, id) => {
                 // Bobbing
-                const offset = [...agents.keys()].indexOf(id);
+                const offset = agentOffsets.get(id) || 0;
                 agent.group.position.y = 1.5 + Math.sin(time * 2 + offset) * 0.1;
 
                 // Ring rotation
                 agent.ring.rotation.z += delta * (agent.state === 'active' ? 2 : 0.5);
-                agent.ring.rotation.x = Math.PI/2 + Math.sin(time + offset) * 0.2;
+                agent.ring.rotation.x = Math.PI / 2 + Math.sin(time + offset) * 0.2;
 
                 // Pulsing emission
                 if (agent.state === 'active') {
@@ -288,14 +313,10 @@
                 agent.mesh.material.emissiveIntensity = agent.currentIntensity;
 
                 // Update Line positions
-                const positions = agent.line.geometry.attributes.position.array;
-                positions[0] = agent.group.position.x;
-                positions[1] = agent.group.position.y;
-                positions[2] = agent.group.position.z;
-                positions[3] = hub.position.x;
-                positions[4] = hub.position.y;
-                positions[5] = hub.position.z;
-                agent.line.geometry.attributes.position.needsUpdate = true;
+                const linePositions = agent.line.geometry.attributes.position;
+                linePositions.setXYZ(0, agent.group.position.x, agent.group.position.y, agent.group.position.z);
+                linePositions.setXYZ(1, hub.position.x, hub.position.y, hub.position.z);
+                linePositions.needsUpdate = true;
             });
 
             renderer.render(scene, camera);
@@ -305,64 +326,86 @@
         animate();
 
         // Responsive
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
+        function onResize() {
+            const { width, height } = getViewportSize();
+            camera.aspect = width / height;
             camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            labelRenderer.setSize(window.innerWidth, window.innerHeight);
-        });
+            renderer.setSize(width, height);
+            labelRenderer.setSize(width, height);
+        }
+        window.addEventListener('resize', onResize);
 
-        // Demo Simulation (Simulates Annolid Swarm activity)
-        function simulateSwarm() {
-            const roles = [...agents.keys()];
+        // Fetch live Swarm status from the Annolid 3D Server
+        async function fetchSwarmStatus() {
+            try {
+                const response = await fetch('/swarm/status');
+                if (!response.ok) return;
+                const state = await response.json();
 
-            setInterval(() => {
-                // Reset all to idle occasionally
-                if (Math.random() < 0.2) {
-                    agents.forEach(a => {
-                        a.state = 'idle';
-                        a.labelDiv.innerHTML = `<strong>${a.labelDiv.innerText.split('\\n')[0]}</strong><br/><span style="color:#aaa;font-size:10px;">Idle</span>`;
-                    });
-                    document.getElementById('swarmStatus').innerText = "Status: Awaiting Tasks";
-                    document.getElementById('activeAgents').innerText = "Active Agents: 0";
-                    return;
-                }
+                let activeCount = 0;
+                let swarmTaskText = "Awaiting Tasks";
 
-                // Pick a random agent to activate
-                const activeId = roles[Math.floor(Math.random() * roles.length)];
-                const agent = agents.get(activeId);
+                agents.forEach((agent, id) => {
+                    const nodeState = state[id];
+                    if (nodeState) {
+                        agent.state = nodeState.status;
+                        const taskText = nodeState.task;
 
-                agent.state = 'active';
-                const tasks = ["Analyzing Context", "Executing Tool", "Generating Code", "Reviewing Output"];
-                const task = tasks[Math.floor(Math.random() * tasks.length)];
-
-                agent.labelDiv.innerHTML = `<strong>${agent.labelDiv.innerText.split('\\n')[0]}</strong><br/><span style="color:#fff;font-size:11px;font-weight:bold;">${task}</span>`;
-
-                document.getElementById('swarmStatus').innerText = `Status: ${task}...`;
-
-                // Set others to processing or idle
-                let activeCount = 1;
-                roles.forEach(id => {
-                    if (id !== activeId) {
-                        if (Math.random() < 0.3) {
-                            agents.get(id).state = 'processing';
-                            agents.get(id).labelDiv.innerHTML = `<strong>${agents.get(id).labelDiv.innerText.split('\\n')[0]}</strong><br/><span style="color:#ddd;font-size:10px;">Evaluating</span>`;
+                        if (nodeState.status === 'active') {
+                            setAgentLabelStatus(agent, taskText, 'color:#fff;font-size:11px;font-weight:bold;');
+                            swarmTaskText = taskText;
+                            activeCount++;
+                        } else if (nodeState.status === 'processing') {
+                            setAgentLabelStatus(agent, 'Processing', 'color:#ddd;font-size:10px;');
                             activeCount++;
                         } else {
-                            agents.get(id).state = 'idle';
-                            agents.get(id).labelDiv.innerHTML = `<strong>${agents.get(id).labelDiv.innerText.split('\\n')[0]}</strong><br/><span style="color:#aaa;font-size:10px;">Idle</span>`;
+                            setAgentLabelStatus(agent, 'Idle', 'color:#aaa;font-size:10px;');
                         }
                     }
                 });
 
-                document.getElementById('activeAgents').innerText = `Active Agents: ${activeCount}`;
-
-            }, 3000);
+                uiSwarmStatus.innerText = `Status: ${activeCount > 0 ? swarmTaskText + '...' : 'Awaiting Tasks'}`;
+                uiActiveAgents.innerText = `Active Agents: ${activeCount}`;
+            } catch (err) {
+                // Silently ignore fetch errors (e.g., if server goes down)
+            }
         }
 
-        // Start Demo
-        setTimeout(simulateSwarm, 2000);
+        // Poll every 1 second
+        swarmIntervalId = setInterval(fetchSwarmStatus, 1000);
+
+        function disposeScene() {
+            window.removeEventListener('resize', onResize);
+            if (swarmIntervalId) {
+                clearInterval(swarmIntervalId);
+                swarmIntervalId = 0;
+            }
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = 0;
+            }
+            controls.enabled = false;
+            controls.dispose();
+            particles.geometry.dispose();
+            particles.material.dispose();
+            nodeGeometry.dispose();
+            ringGeometry.dispose();
+            hubGeo.dispose();
+            hubMat.dispose();
+            agents.forEach((agent) => {
+                agent.mesh.material?.dispose?.();
+                agent.ring.material?.dispose?.();
+                agent.line.geometry?.dispose?.();
+                agent.line.material?.dispose?.();
+            });
+            // Avoid hard renderer/DOM teardown on Qt WebEngine unload. It can trigger
+            // shared-image mailbox errors in Chromium's compositor during navigation.
+            // Page destruction will reclaim these objects.
+        }
+
+        window.addEventListener('beforeunload', disposeScene);
 
     </script>
 </body>
+
 </html>

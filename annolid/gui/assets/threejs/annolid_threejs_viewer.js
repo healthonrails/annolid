@@ -1,9 +1,3 @@
-// Use bundled esm.sh endpoints so addon modules do not emit bare "three"
-// specifiers (Qt WebEngine may not resolve them without import maps).
-const THREE_ESM_BASE = "https://esm.sh/three@0.160.0";
-const THREE_ESM_BUNDLE = `${THREE_ESM_BASE}?bundle`;
-const THREE_ESM_EXAMPLES_BASE = `${THREE_ESM_BASE}/examples/jsm`;
-
 async function boot() {
   const statusEl = document.getElementById("annolidThreeStatus");
   const canvas = document.getElementById("annolidThreeCanvas");
@@ -24,24 +18,24 @@ async function boot() {
   }
 
   try {
-    const THREE = await import(`${THREE_ESM_BUNDLE}`);
+    const THREE = await import("https://esm.sh/three@0.182.0");
     const { OrbitControls } = await import(
-      `${THREE_ESM_EXAMPLES_BASE}/controls/OrbitControls.js?bundle`
+      "https://esm.sh/three@0.182.0/examples/jsm/controls/OrbitControls.js"
     );
     const { STLLoader } = await import(
-      `${THREE_ESM_EXAMPLES_BASE}/loaders/STLLoader.js?bundle`
+      "https://esm.sh/three@0.182.0/examples/jsm/loaders/STLLoader.js"
     );
     const { PLYLoader } = await import(
-      `${THREE_ESM_EXAMPLES_BASE}/loaders/PLYLoader.js?bundle`
+      "https://esm.sh/three@0.182.0/examples/jsm/loaders/PLYLoader.js"
     );
     const { OBJLoader } = await import(
-      `${THREE_ESM_EXAMPLES_BASE}/loaders/OBJLoader.js?bundle`
+      "https://esm.sh/three@0.182.0/examples/jsm/loaders/OBJLoader.js"
     );
     const { MTLLoader } = await import(
-      `${THREE_ESM_EXAMPLES_BASE}/loaders/MTLLoader.js?bundle`
+      "https://esm.sh/three@0.182.0/examples/jsm/loaders/MTLLoader.js"
     );
     const { GLTFLoader } = await import(
-      `${THREE_ESM_EXAMPLES_BASE}/loaders/GLTFLoader.js?bundle`
+      "https://esm.sh/three@0.182.0/examples/jsm/loaders/GLTFLoader.js"
     );
 
     const renderer = new THREE.WebGLRenderer({
@@ -50,7 +44,15 @@ async function boot() {
       alpha: false,
     });
     renderer.setPixelRatio(Math.min(Math.max(1, window.devicePixelRatio || 1), 2));
-    renderer.setSize(canvas.clientWidth || 800, canvas.clientHeight || 600, false);
+    const getCanvasSize = () => {
+      const w = Math.max(1, canvas.clientWidth || window.innerWidth || 800);
+      const h = Math.max(1, canvas.clientHeight || window.innerHeight || 600);
+      return { w, h };
+    };
+    {
+      const { w, h } = getCanvasSize();
+      renderer.setSize(w, h, false);
+    }
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     const scene = new THREE.Scene();
@@ -58,7 +60,7 @@ async function boot() {
 
     const camera = new THREE.PerspectiveCamera(
       50,
-      window.innerWidth / Math.max(1, window.innerHeight),
+      getCanvasSize().w / Math.max(1, getCanvasSize().h),
       0.01,
       10000
     );
@@ -648,6 +650,21 @@ async function boot() {
       group.clear();
     };
 
+    const overlaySphereGeometry = new THREE.SphereGeometry(0.05, 8, 8);
+    const handSphereGeometry = new THREE.SphereGeometry(0.04, 8, 8);
+    const materialCache = new Map();
+    const getCachedBasicMaterial = (hex, opacity = 1.0) => {
+      const key = `${hex}:${opacity}`;
+      if (materialCache.has(key)) return materialCache.get(key);
+      const mat = new THREE.MeshBasicMaterial({
+        color: hex,
+        transparent: opacity < 1.0,
+        opacity
+      });
+      materialCache.set(key, mat);
+      return mat;
+    };
+
     window.updateRealtimeData = (base64Frame, detections, frameWidthArg = 0, frameHeightArg = 0) => {
       if (!realtimeEnabled) return;
       const overlayZ = (videoPlane && Number.isFinite(videoPlane.position.z))
@@ -693,15 +710,14 @@ async function boot() {
       clearGroupAndDispose(irisGroup);
       clearGroupAndDispose(handGroup);
 
-      if (detections && detections.length > 0) {
+      if (Array.isArray(detections) && detections.length > 0) {
         detections.forEach((det, detIdx) => {
           // Prefer normalized keypoints because scene mapping assumes [0..1].
           const kps = det.keypoints || det.keypoints_pixels;
           if (!kps) return;
 
           const color = new THREE.Color().setHSL((detIdx * 0.1) % 1, 0.8, 0.5);
-          const sphereGeo = new THREE.SphereGeometry(0.05, 8, 8);
-          const sphereMat = new THREE.MeshBasicMaterial({ color });
+          const sphereMat = getCachedBasicMaterial(color.getHex(), 1.0);
 
           const points = [];
           const aspect = videoPlane.scale.x / videoPlane.scale.y;
@@ -732,7 +748,7 @@ async function boot() {
             const y = -(ny - 0.5) * 10;
             projected[kpIdx] = { x, y };
 
-            const kpMesh = new THREE.Mesh(sphereGeo, sphereMat);
+            const kpMesh = new THREE.Mesh(overlaySphereGeometry, sphereMat);
             kpMesh.position.set(x, y, overlayZ); // Slightly in front of video plane
             poseKeypoints.add(kpMesh);
             points.push(new THREE.Vector3(x, y, overlayZ));
@@ -828,8 +844,7 @@ async function boot() {
               const isPinching = hand.is_pinching;
 
               // Draw hand landmarks
-              const geo = new THREE.SphereGeometry(0.04, 8, 8);
-              const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7 });
+              const mat = getCachedBasicMaterial(color, 0.7);
 
               hand.landmarks.forEach((kp, idx) => {
                 // Only draw tips for less clutter
@@ -837,7 +852,7 @@ async function boot() {
 
                 const x = (kp[0] - 0.5) * (aspect * 10);
                 const y = -(kp[1] - 0.5) * 10;
-                const mesh = new THREE.Mesh(geo, mat);
+                const mesh = new THREE.Mesh(handSphereGeometry, mat);
                 mesh.position.set(x, y, overlayZ + 0.01);
                 handGroup.add(mesh);
 
@@ -971,8 +986,7 @@ async function boot() {
     };
 
     const onResize = () => {
-      const w = Math.max(1, window.innerWidth);
-      const h = Math.max(1, window.innerHeight);
+      const { w, h } = getCanvasSize();
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h, false);
@@ -983,12 +997,46 @@ async function boot() {
     };
     window.addEventListener("resize", onResize, { passive: true });
 
+    let animationFrameId = 0;
     const tick = () => {
       controls.update();
       renderer.render(scene, camera);
-      window.requestAnimationFrame(tick);
+      animationFrameId = window.requestAnimationFrame(tick);
     };
     tick();
+
+    const disposeViewer = () => {
+      window.removeEventListener("resize", onResize);
+      if (animationFrameId) {
+        window.cancelAnimationFrame(animationFrameId);
+      }
+      controls.enabled = false;
+      controls.dispose();
+      clearGroupAndDispose(poseKeypoints);
+      clearGroupAndDispose(poseSkeleton);
+      clearGroupAndDispose(behaviorLabels);
+      clearGroupAndDispose(irisGroup);
+      clearGroupAndDispose(handGroup);
+      clearGroupAndDispose(root);
+      if (overlaySphereGeometry) overlaySphereGeometry.dispose();
+      if (handSphereGeometry) handSphereGeometry.dispose();
+      materialCache.forEach((mat) => {
+        if (mat && typeof mat.dispose === "function") mat.dispose();
+      });
+      materialCache.clear();
+      if (videoTexture) videoTexture.dispose();
+      if (videoPlane && videoPlane.geometry) videoPlane.geometry.dispose();
+      if (videoPlane && videoPlane.material) {
+        if (videoPlane.material.map && typeof videoPlane.material.map.dispose === "function") {
+          videoPlane.material.map.dispose();
+        }
+        if (typeof videoPlane.material.dispose === "function") videoPlane.material.dispose();
+      }
+      // Avoid hard renderer disposal on Qt WebEngine unload. Aggressive context
+      // teardown during page switch can produce Chromium shared-image mailbox errors.
+      // Let page teardown release renderer resources.
+    };
+    window.addEventListener("beforeunload", disposeViewer, { once: true });
   } catch (err) {
     const msg = String(err || "Failed to initialize Three.js viewer");
     console.error(err);

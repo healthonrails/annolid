@@ -3,11 +3,13 @@ from __future__ import annotations
 import mimetypes
 import shutil
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote, urlparse
+import json
 
 from annolid.utils.logger import logger
 
@@ -17,6 +19,86 @@ _THREEJS_HTTP_THREAD: Optional[threading.Thread] = None
 _THREEJS_HTTP_LOCK = threading.Lock()
 _THREEJS_HTTP_TOKENS: dict[str, Path] = {}
 _THREEJS_HTTP_ASSET_CACHE: dict[str, tuple[int, bytes]] = {}
+_THREEJS_HTTP_TOKEN_CREATED_AT: dict[str, float] = {}
+_THREEJS_HTTP_MAX_TOKENS = 512
+_THREEJS_HTTP_TOKEN_TTL_SECONDS = 6 * 60 * 60
+_THREEJS_ALLOWED_ASSETS = {
+    "annolid_threejs_viewer.js",
+    "annolid_threejs_viewer.css",
+    "annolid_threejs_runtime.js",
+    "annolid_threejs_css2d.js",
+    "annolid_shaders.js",
+    "points_3d.html",
+    "two_mice.html",
+    "swarm_visualizer.html",
+    "parser.worker.js",
+}
+
+# Global Swarm State for 3D Visualizer
+_SWARM_STATE: dict[str, dict[str, str]] = {
+    "planner": {"status": "idle", "task": "Awaiting Tasks"},
+    "researcher": {"status": "idle", "task": "Idle"},
+    "coder": {"status": "idle", "task": "Idle"},
+    "reviewer": {"status": "idle", "task": "Idle"},
+}
+_SWARM_STATE_LOCK = threading.Lock()
+
+
+def update_swarm_node(node_id: str, status: str, task: str) -> None:
+    """Update the status and current task of a specific swarm agent node."""
+    with _SWARM_STATE_LOCK:
+        if node_id in _SWARM_STATE:
+            _SWARM_STATE[node_id] = {"status": status, "task": task}
+
+
+def get_swarm_state() -> dict[str, dict[str, str]]:
+    """Get a copy of the current swarm state."""
+    with _SWARM_STATE_LOCK:
+        return {k: dict(v) for k, v in _SWARM_STATE.items()}
+
+
+_THREEJS_ALLOWED_MODEL_SUFFIXES = {
+    ".stl",
+    ".obj",
+    ".mtl",
+    ".ply",
+    ".glb",
+    ".gltf",
+    ".bin",
+    ".csv",
+    ".xyz",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".bmp",
+    ".gif",
+    ".webp",
+    ".tga",
+    ".ktx2",
+    ".dds",
+}
+
+
+def _prune_threejs_http_tokens(*, now_ts: float | None = None) -> None:
+    now = float(now_ts if now_ts is not None else time.time())
+    expired = [
+        token
+        for token, created_at in _THREEJS_HTTP_TOKEN_CREATED_AT.items()
+        if (now - float(created_at)) > _THREEJS_HTTP_TOKEN_TTL_SECONDS
+    ]
+    for token in expired:
+        _THREEJS_HTTP_TOKEN_CREATED_AT.pop(token, None)
+        _THREEJS_HTTP_TOKENS.pop(token, None)
+    if len(_THREEJS_HTTP_TOKENS) <= _THREEJS_HTTP_MAX_TOKENS:
+        return
+    oldest = sorted(
+        _THREEJS_HTTP_TOKEN_CREATED_AT.items(),
+        key=lambda kv: float(kv[1]),
+    )
+    to_remove = len(_THREEJS_HTTP_TOKENS) - _THREEJS_HTTP_MAX_TOKENS
+    for token, _created_at in oldest[:to_remove]:
+        _THREEJS_HTTP_TOKEN_CREATED_AT.pop(token, None)
+        _THREEJS_HTTP_TOKENS.pop(token, None)
 
 
 def _threejs_asset_path(filename: str) -> Optional[Path]:
@@ -67,19 +149,24 @@ def _ensure_threejs_http_server() -> str:
                     self.send_error(400)
                     return
 
+                if path == "/swarm/status":
+                    payload = json.dumps(get_swarm_state()).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    if send_body:
+                        self.wfile.write(payload)
+                    return
+
                 if path.startswith("/threejs/"):
                     name = unquote(path[len("/threejs/") :]).strip().lstrip("/")
                     if "\0" in name:
                         self.send_error(400)
                         return
-                    if name not in {
-                        "annolid_threejs_viewer.js",
-                        "annolid_threejs_viewer.css",
-                        "annolid_shaders.js",
-                        "points_3d.html",
-                        "two_mice.html",
-                        "parser.worker.js",
-                    }:
+                    if name not in _THREEJS_ALLOWED_ASSETS:
                         self.send_error(404)
                         return
                     try:
@@ -129,7 +216,9 @@ def _ensure_threejs_http_server() -> str:
                 token = parts[0]
 
                 # Get the base model file path
-                base_file_path = _THREEJS_HTTP_TOKENS.get(token)
+                with _THREEJS_HTTP_LOCK:
+                    _prune_threejs_http_tokens()
+                    base_file_path = _THREEJS_HTTP_TOKENS.get(token)
                 if base_file_path is None:
                     logger.warning(f"Token not found: {token}")
                     self.send_error(404)
@@ -162,6 +251,13 @@ def _ensure_threejs_http_server() -> str:
                         )
                         self.send_error(403)
                         return
+
+                if file_path.name.startswith("."):
+                    self.send_error(403)
+                    return
+                if file_path.suffix.lower() not in _THREEJS_ALLOWED_MODEL_SUFFIXES:
+                    self.send_error(403)
+                    return
 
                 if not file_path.exists() or not file_path.is_file():
                     self.send_error(404)
@@ -221,7 +317,10 @@ def _ensure_threejs_http_server() -> str:
 def _register_threejs_http_model(path: Path) -> str:
     base = _ensure_threejs_http_server()
     token = uuid.uuid4().hex
-    _THREEJS_HTTP_TOKENS[token] = path
+    with _THREEJS_HTTP_LOCK:
+        _prune_threejs_http_tokens()
+        _THREEJS_HTTP_TOKENS[token] = path
+        _THREEJS_HTTP_TOKEN_CREATED_AT[token] = time.time()
     return f"{base}/model/{token}/{path.name}"
 
 

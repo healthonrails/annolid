@@ -27,8 +27,8 @@ from annolid.utils.logger import logger
 _THREEJS_IMPORTMAP = json.dumps(
     {
         "imports": {
-            "three": "https://esm.sh/three@0.160.0?bundle",
-            "three/": "https://esm.sh/three@0.160.0/",
+            "three": "https://esm.sh/three@0.182.0",
+            "three/": "https://esm.sh/three@0.182.0/",
         }
     }
 )

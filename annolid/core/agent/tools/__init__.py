@@ -44,7 +44,8 @@ from .filesystem import (
     WriteFileTool,
 )
 from .memory import MemoryGetTool, MemorySetTool, MemorySearchTool
-from .messaging import MessageTool, SpawnTool
+from .messaging import MessageTool, SpawnTool, ListTasksTool, CancelTaskTool
+from .swarm_tool import SwarmTool
 from .nanobot import register_nanobot_style_tools
 from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
 from .shell import ExecTool
@@ -212,6 +213,9 @@ __all__ = [
     "GuiSharedImagePathTool",
     "MessageTool",
     "SpawnTool",
+    "ListTasksTool",
+    "CancelTaskTool",
+    "SwarmTool",
     "CronTool",
     "AutomationSchedulerTool",
     "CameraSnapshotTool",

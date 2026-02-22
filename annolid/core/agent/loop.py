@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
+from annolid.gui.widgets.threejs_viewer_server import update_swarm_node
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -33,10 +34,13 @@ from .providers import LiteLLMProvider, OpenAICompatProvider, resolve_openai_com
 from .tools import FunctionToolRegistry
 from .tools.function_builtin import (
     AutomationSchedulerTool,
+    CancelTaskTool,
     CronTool,
+    ListTasksTool,
     MessageTool,
     SpawnTool,
 )
+from annolid.core.agent.tools.swarm_tool import SwarmTool
 
 if TYPE_CHECKING:  # pragma: no cover
     from .subagent import SubagentManager
@@ -414,6 +418,16 @@ class AgentLoop:
                                     "on_progress callback failed: %s",
                                     exc,
                                 )
+                    tools_str = ", ".join(
+                        str(tc.get("name") or "") for tc in tool_calls
+                    )
+                    try:
+                        update_swarm_node(
+                            "planner", "active", f"Executing: {tools_str}"
+                        )
+                    except Exception:
+                        pass
+
                     tool_cycle_signature = tuple(
                         f"{call.get('name', '')}:{json.dumps(call.get('arguments', {}), ensure_ascii=False, sort_keys=True)}"
                         for call in tool_calls
@@ -450,6 +464,12 @@ class AgentLoop:
                         executed_tools=executed_tools,
                         explicit_high_risk_intent=explicit_high_risk_intent,
                     )
+
+                    try:
+                        update_swarm_node("planner", "idle", "Awaiting Tasks")
+                    except Exception:
+                        pass
+
                     tool_exec_total_ms += cycle_exec_ms
                     tool_call_count += cycle_call_count
                     continue
@@ -1528,13 +1548,34 @@ class AgentLoop:
 
     def _wire_tools(self) -> None:
         self._set_tool_context(channel="cli", chat_id="direct")
-        if self._subagent_manager is None and isinstance(
-            self._tools.get("spawn"), SpawnTool
+        if self._subagent_manager is None and (
+            isinstance(self._tools.get("spawn"), SpawnTool)
+            or isinstance(self._tools.get("list_tasks"), ListTasksTool)
+            or isinstance(self._tools.get("cancel_task"), CancelTaskTool)
         ):
             self._subagent_manager = self._create_default_subagent_manager()
+
         spawn_tool = self._tools.get("spawn")
         if isinstance(spawn_tool, SpawnTool) and self._subagent_manager is not None:
             spawn_tool.set_spawn_callback(self._subagent_manager.spawn)
+
+        list_tasks_tool = self._tools.get("list_tasks")
+        if (
+            isinstance(list_tasks_tool, ListTasksTool)
+            and self._subagent_manager is not None
+        ):
+            list_tasks_tool._list_tasks_callback = self._subagent_manager.list_tasks
+
+        cancel_task_tool = self._tools.get("cancel_task")
+        if (
+            isinstance(cancel_task_tool, CancelTaskTool)
+            and self._subagent_manager is not None
+        ):
+            cancel_task_tool._cancel_callback = self._subagent_manager.cancel
+
+        swarm_tool = self._tools.get("run_swarm")
+        if isinstance(swarm_tool, SwarmTool):
+            swarm_tool.set_swarm_callback(self._create_swarm_manager_and_run)
 
     def _set_tool_context(
         self,
@@ -1589,6 +1630,48 @@ class AgentLoop:
 
         workspace_path = Path(self._workspace) if self._workspace else None
         return SubagentManager(loop_factory=_loop_factory, workspace=workspace_path)
+
+    async def _create_swarm_manager_and_run(self, task: str, max_turns: int = 5) -> str:
+        try:
+            from .swarm import SwarmAgent, SwarmManager
+        except Exception as e:
+            return f"Cannot initialize swarm: {e}"
+
+        def _loop_factory() -> "AgentLoop":
+            # For brevity in the swarm, limit iterations heavily per turn
+            return AgentLoop(
+                tools=self._tools,
+                llm_callable=self._llm_callable,
+                model=self.model,
+                max_iterations=min(self._max_iterations, 3),
+                workspace=self._workspace,
+                allowed_read_roots=self._allowed_read_roots,
+                mcp_servers=self._mcp_servers,
+                llm_timeout_seconds=self._llm_timeout_seconds,
+                strict_runtime_tool_guard=self._strict_runtime_tool_guard,
+            )
+
+        manager = SwarmManager()
+
+        planner_prompt = "You are the Planner. Break down the task into steps. Read files if needed. Guide the others."
+        researcher_prompt = "You are the Researcher. Find facts, patterns, and relevant files using list_dir and read_file."
+        coder_prompt = "You are the Implementer. Write and edit code to fulfill the task using your tools."
+        reviewer_prompt = "You are the Reviewer. Check the work so far. If complete, say 'TASK COMPLETE'."
+
+        manager.register_agent(
+            SwarmAgent("Planner", "Planner", planner_prompt, _loop_factory)
+        )
+        manager.register_agent(
+            SwarmAgent("Researcher", "Researcher", researcher_prompt, _loop_factory)
+        )
+        manager.register_agent(
+            SwarmAgent("Implementer", "Coder", coder_prompt, _loop_factory)
+        )
+        manager.register_agent(
+            SwarmAgent("Reviewer", "Reviewer", reviewer_prompt, _loop_factory)
+        )
+
+        return await manager.run_swarm(task, max_turns=max_turns)
 
     _TOOL_SELECTOR_STOPWORDS = {
         "a",

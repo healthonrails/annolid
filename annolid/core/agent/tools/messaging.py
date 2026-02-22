@@ -116,4 +116,91 @@ class SpawnTool(FunctionTool):
         return str(ret)
 
 
-__all__ = ["MessageTool", "SpawnTool"]
+class ListTasksTool(FunctionTool):
+    def __init__(
+        self,
+        list_tasks_callback: Callable[[], dict[str, Any]] | None = None,
+    ):
+        self._list_tasks_callback = list_tasks_callback
+
+    @property
+    def name(self) -> str:
+        return "list_tasks"
+
+    @property
+    def description(self) -> str:
+        return "List all background subagent tasks and their current statuses."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {},
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        del kwargs
+        if self._list_tasks_callback is None:
+            return "Error: list_tasks callback not configured"
+        try:
+            tasks = self._list_tasks_callback()
+        except Exception as exc:
+            return f"Error listing tasks: {exc}"
+        if not tasks:
+            return "No background tasks currently tracked."
+        lines = []
+        for tid, meta in tasks.items():
+            status = getattr(meta, "status", "unknown").upper()
+            label = getattr(meta, "label", "Unnamed Task")
+            lines.append(f"- [{status}] ID: {tid} | Label: {label}")
+        return "\n".join(lines)
+
+
+class CancelTaskTool(FunctionTool):
+    def __init__(
+        self,
+        cancel_callback: Callable[[str], bool] | None = None,
+    ):
+        self._cancel_callback = cancel_callback
+
+    @property
+    def name(self) -> str:
+        return "cancel_task"
+
+    @property
+    def description(self) -> str:
+        return "Cancel/terminate a running background subagent task by its ID."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The ID of the task to cancel (obtained from list_tasks)",
+                },
+            },
+            "required": ["task_id"],
+        }
+
+    async def execute(self, task_id: str, **kwargs: Any) -> str:
+        del kwargs
+        if self._cancel_callback is None:
+            return "Error: cancel callback not configured"
+
+        task_id = str(task_id).strip()
+        if not task_id:
+            return "Error: task_id cannot be empty"
+
+        try:
+            success = self._cancel_callback(task_id)
+        except Exception as exc:
+            return f"Error cancelling task {task_id}: {exc}"
+
+        if success:
+            return f"Successfully initiated cancellation for task {task_id}."
+        return f"Could not cancel task {task_id} (not found or not running)."
+
+
+__all__ = ["MessageTool", "SpawnTool", "ListTasksTool", "CancelTaskTool"]

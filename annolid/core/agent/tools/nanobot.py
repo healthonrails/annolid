@@ -36,7 +36,7 @@ from .git import (
     GitStatusTool,
 )
 from .memory import MemoryGetTool, MemorySearchTool, MemorySetTool
-from .messaging import MessageTool, SpawnTool
+from .messaging import MessageTool, SpawnTool, ListTasksTool, CancelTaskTool
 from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
 from .sandboxed_shell import SandboxedExecTool
 from .email import EmailTool, ListEmailsTool, ReadEmailTool
@@ -44,6 +44,7 @@ from .calendar import GoogleCalendarTool
 from .camera import CameraSnapshotTool
 from .automation_scheduler import AutomationSchedulerTool
 from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
+from .swarm_tool import SwarmTool
 
 if TYPE_CHECKING:
     from annolid.core.agent.config.schema import CalendarToolConfig, EmailChannelConfig
@@ -62,6 +63,7 @@ async def register_nanobot_style_tools(
     email_cfg: EmailChannelConfig | None = None,
     calendar_cfg: CalendarToolConfig | None = None,
     task_scheduler: "TaskScheduler | None" = None,
+    ignored_tools: Sequence[str] = (),
 ) -> None:
     """Register a Nanobot-like default tool set."""
 
@@ -155,8 +157,16 @@ async def register_nanobot_style_tools(
     )
     registry.register(CameraSnapshotTool(allowed_dir=allowed_dir))
     registry.register(AutomationSchedulerTool(scheduler=task_scheduler))
-    registry.register(MessageTool(send_callback=send_callback))
-    registry.register(SpawnTool(spawn_callback=spawn_callback))
+    if "message" not in ignored_tools:
+        registry.register(MessageTool(send_callback=send_callback))
+    if "spawn" not in ignored_tools:
+        registry.register(SpawnTool(spawn_callback=spawn_callback))
+    if "list_tasks" not in ignored_tools:
+        registry.register(ListTasksTool())
+    if "cancel_task" not in ignored_tools:
+        registry.register(CancelTaskTool())
+    if "run_swarm" not in ignored_tools:
+        registry.register(SwarmTool())
     registry.register(CronTool(send_callback=send_callback))
 
     if email_cfg and email_cfg.enabled:
