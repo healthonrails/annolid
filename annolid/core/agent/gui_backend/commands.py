@@ -136,6 +136,15 @@ def _parse_interval_seconds(
     return value
 
 
+def _extract_tutorial_level(text: str) -> str:
+    lower = str(text or "").lower()
+    if re.search(r"\b(?:beginner|basic|intro|introduction)\b", lower):
+        return "beginner"
+    if re.search(r"\b(?:advanced|expert|deep\s*dive)\b", lower):
+        return "advanced"
+    return "intermediate"
+
+
 def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
     text = str(prompt or "").strip()
     if not text:
@@ -154,6 +163,38 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             "args": {
                 "provider": model_match.group(1).strip().lower(),
                 "model": model_match.group(2).strip().strip("."),
+            },
+        }
+
+    tutorial_match = re.search(
+        r"\b(?:create|generate|make|write|build)\b[\s\S]*?\b(?:on[-\s]?demand\s+)?"
+        r"(?:tutorial|guide|walkthrough|how[-\s]?to)\b(?:\s+(?:for|on|about))?\s*(?P<topic>.+)?$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    annolid_howto_match = re.search(
+        r"\bhow\s+(?:do|can)\s+(?:i|we)\s+use\s+annolid\b(?:\s+(?:for|to))?\s*(?P<topic>.+)?$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    tutorial_source = tutorial_match or annolid_howto_match
+    if tutorial_source:
+        raw_topic = str((tutorial_source.groupdict().get("topic") or "")).strip(" .")
+        topic = _strip_wrapping_quotes(_strip_trailing_punctuation(raw_topic))
+        if not topic:
+            topic = "getting started"
+        return {
+            "name": "generate_annolid_tutorial",
+            "args": {
+                "topic": topic,
+                "level": _extract_tutorial_level(text),
+                "save_to_file": bool(
+                    re.search(r"\b(?:save|export|write)\b", lower)
+                    and re.search(r"\b(?:file|markdown|md)\b", lower)
+                ),
+                "include_code_refs": bool(
+                    re.search(r"\b(?:code|api|implementation|source)\b", lower)
+                ),
             },
         }
 

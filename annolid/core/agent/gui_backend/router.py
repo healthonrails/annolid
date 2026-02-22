@@ -70,6 +70,7 @@ async def execute_direct_gui_command(
     list_citations: Callable[..., Any],
     add_citation_raw: Callable[..., Any],
     save_citation: Callable[..., Any],
+    generate_annolid_tutorial: Callable[..., Any],
     automation_schedule: Callable[..., Any],
     list_dir: Callable[..., Any],
     read_file: Callable[..., Any],
@@ -527,7 +528,39 @@ async def execute_direct_gui_command(
                 return f"{action} citation '{key}' from provided BibTeX."
             return "Saved citation from provided BibTeX."
         return str(payload.get("error") or "Failed to add citation from BibTeX.")
-        return str(payload.get("error") or "Failed to add citation from BibTeX.")
+
+    if name == "generate_annolid_tutorial":
+        payload = await _run(
+            generate_annolid_tutorial,
+            topic=str(args.get("topic") or ""),
+            level=str(args.get("level") or "intermediate"),
+            save_to_file=bool(args.get("save_to_file", False)),
+            include_code_refs=bool(args.get("include_code_refs", True)),
+            open_in_web_viewer=bool(args.get("open_in_web_viewer", True)),
+        )
+        if payload.get("ok"):
+            tutorial_text = str(payload.get("tutorial") or "").strip()
+            output_path = str(payload.get("output_path") or "").strip()
+            generated_with_model = bool(payload.get("generated_with_model", False))
+            model_error = str(payload.get("model_error") or "").strip()
+            if output_path:
+                note = ""
+                if bool(payload.get("opened_in_web_viewer")):
+                    note = " Opened in web viewer."
+                else:
+                    open_error = str(payload.get("open_viewer_error") or "").strip()
+                    if open_error:
+                        note = f" Could not open in web viewer: {open_error}"
+                if not generated_with_model and model_error:
+                    note += f" Tutorial fallback used: {model_error}"
+                return (
+                    f"Tutorial created and saved: {output_path}.{note}\n\n"
+                    f"{tutorial_text}"
+                )
+            if not generated_with_model and model_error:
+                return f"{tutorial_text}\n\n(Fallback used: {model_error})".strip()
+            return tutorial_text or "Generated Annolid tutorial."
+        return str(payload.get("error") or "Failed to generate Annolid tutorial.")
 
     if name == "automation_schedule":
         payload = await _run(

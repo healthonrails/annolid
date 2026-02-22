@@ -8,6 +8,7 @@ from .function_gui_base import (
 )
 from .function_gui_core import (
     GuiContextTool,
+    GuiGenerateAnnolidTutorialTool,
     GuiSaveCitationTool,
     GuiSelectAnnotationModelTool,
     GuiSendPromptTool,
@@ -79,6 +80,7 @@ __all__ = [
     "GuiArxivSearchTool",
     "GuiListPdfsTool",
     "GuiSaveCitationTool",
+    "GuiGenerateAnnolidTutorialTool",
     "GuiSetFrameTool",
     "GuiSetPromptTool",
     "GuiSendPromptTool",

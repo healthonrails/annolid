@@ -60,6 +60,7 @@ _CAPABILITY_GUI: Set[str] = {
     "gui_segment_track_video",
     "gui_label_behavior_segments",
     "gui_save_citation",
+    "gui_generate_annolid_tutorial",
 }
 
 
@@ -187,6 +188,7 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "gui_list_realtime_logs",
         "gui_check_stream_source",
         "gui_save_citation",
+        "gui_generate_annolid_tutorial",
     },
     "group:automation": {
         "cron",

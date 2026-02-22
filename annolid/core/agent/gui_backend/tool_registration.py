@@ -40,6 +40,7 @@ _WRAPPED_GUI_TOOL_SPECS: Tuple[Tuple[str, str], ...] = (
     ("arxiv_search_callback", "arxiv_search"),
     ("list_pdfs_callback", "list_pdfs"),
     ("save_citation_callback", "save_citation"),
+    ("generate_annolid_tutorial_callback", "generate_annolid_tutorial"),
 )
 
 

@@ -18,6 +18,26 @@ class PromptBuildInputs:
     now: Optional[datetime] = None
 
 
+def _annolid_docs_index_preview(limit: int = 12) -> str:
+    try:
+        root = Path(__file__).resolve().parents[4]
+    except Exception:
+        return ""
+    docs_dir = root / "docs" / "source"
+    entries: list[str] = []
+    for path in [root / "README.md", root / "RELEASING.md"]:
+        if path.exists():
+            entries.append(str(path.relative_to(root)))
+    if docs_dir.exists():
+        for md in sorted(docs_dir.glob("*.md")):
+            entries.append(str(md.relative_to(root)))
+    if not entries:
+        return ""
+    sliced = entries[:limit]
+    suffix = "\n- ..." if len(entries) > limit else ""
+    return "\n".join(f"- {item}" for item in sliced) + suffix
+
+
 def build_compact_system_prompt(
     *,
     inputs: PromptBuildInputs,
@@ -65,6 +85,15 @@ def build_compact_system_prompt(
     parts.append(
         "When the user asks to check a camera and email a snapshot in one step, prefer `gui_check_stream_source` "
         "with `save_snapshot=true` and `email_to=<recipient>` so the GUI flow can probe, save, and send together."
+    )
+    parts.append(
+        "For Annolid usage, code, or docs questions: treat the local repository/docs as source-of-truth. "
+        "Use `list_dir`/`read_file` to inspect relevant files before answering implementation details. "
+        "When explaining code, cite concrete file paths and summarize behavior, inputs, outputs, and caveats."
+    )
+    parts.append(
+        "When users ask for how-to guidance or tutorials, produce structured on-demand tutorials with: "
+        "goal, prerequisites, step-by-step workflow, verification checklist, and troubleshooting tips."
     )
     parts.append(
         "Direct command aliases are supported for automation scheduling. "
@@ -157,5 +186,8 @@ def build_compact_system_prompt(
                     "Available skills exist in workspace. Use `read_file` to inspect a "
                     f"skill before using it. Skills: {preview}"
                 )
+        docs_preview = _annolid_docs_index_preview()
+        if docs_preview:
+            parts.append("# Annolid Docs Index\n" + docs_preview)
 
     return "\n\n".join(parts)

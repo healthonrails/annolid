@@ -120,6 +120,18 @@ Annolid Bot supports direct Three.js viewer control in GUI sessions.
 
 The bot recognizes natural-language commands such as `open threejs example ...`.
 
+## Annolid code/docs Q&A and tutorials
+
+Annolid Bot is optimized to answer Annolid-specific questions from local docs and code context.
+
+- It can explain modules, workflows, and settings with file-path references.
+- It can generate on-demand tutorials for requested topics and levels using the active chat model, grounded by Annolid docs/code evidence.
+- When a tutorial is saved to Markdown, Annolid Bot auto-opens the generated `.md` in the embedded web viewer.
+- Direct command examples:
+  - `create on demand tutorial for realtime camera setup in annolid`
+  - `create beginner tutorial for behavior analysis and save to markdown file`
+  - `how do i use annolid for behavior analysis`
+
 ## Realtime camera snapshot + email
 
 Annolid Bot can capture a snapshot from a camera stream and send it by email.

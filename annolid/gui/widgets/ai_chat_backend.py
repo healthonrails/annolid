@@ -232,6 +232,12 @@ from annolid.core.agent.gui_backend.response_finalize import (
     ensure_non_empty_final_text as gui_ensure_non_empty_final_text,
     should_apply_web_refusal_fallback as gui_should_apply_web_refusal_fallback,
 )
+from annolid.core.agent.gui_backend.tutorials import (
+    build_tutorial_fallback_markdown,
+    build_tutorial_model_prompts,
+    collect_tutorial_evidence,
+    select_annolid_reference_paths,
+)
 from annolid.core.agent.gui_backend.telemetry import (
     log_agent_result as gui_log_agent_result,
     log_runtime_timeouts as gui_log_runtime_timeouts,
@@ -270,6 +276,7 @@ from annolid.utils.citations import (
     validate_citation_metadata,
 )
 from annolid.utils.logger import logger
+from annolid.utils.llm_settings import provider_kind
 
 # Backward-compat alias used by tests that monkeypatch invokeMethod.
 QMetaObject = QtCore.QMetaObject
@@ -1175,6 +1182,7 @@ class StreamingChatTask(QRunnable):
                 "arxiv_search": self._tool_gui_arxiv_search,
                 "list_pdfs": self._tool_gui_list_pdfs,
                 "save_citation": self._tool_gui_save_citation,
+                "generate_annolid_tutorial": self._tool_gui_generate_annolid_tutorial,
             },
         )
 
@@ -1711,6 +1719,7 @@ class StreamingChatTask(QRunnable):
             "list_citations": self._tool_gui_list_citations,
             "add_citation_raw": self._tool_gui_add_citation_raw,
             "save_citation": self._tool_gui_save_citation,
+            "generate_annolid_tutorial": self._tool_gui_generate_annolid_tutorial,
             "automation_schedule": self._tool_gui_automation_schedule,
             "list_dir": self._tool_gui_list_dir,
             "read_file": self._tool_gui_read_file,
@@ -2337,6 +2346,168 @@ class StreamingChatTask(QRunnable):
         if str(result or "").startswith("Error:"):
             return {"ok": False, "error": str(result)}
         return {"ok": True, "result": str(result)}
+
+    @staticmethod
+    def _annolid_project_root() -> Path:
+        return Path(__file__).resolve().parents[3]
+
+    def _select_annolid_reference_paths(
+        self,
+        *,
+        topic: str,
+        include_code_refs: bool,
+    ) -> list[str]:
+        return select_annolid_reference_paths(
+            root=self._annolid_project_root(),
+            topic=topic,
+            include_code_refs=include_code_refs,
+        )
+
+    async def _generate_tutorial_with_model(
+        self,
+        *,
+        topic: str,
+        level: str,
+        evidence_rows: list[tuple[str, list[str]]],
+        references: list[str],
+    ) -> str:
+        dep_error = self._provider_dependency_error()
+        if dep_error:
+            raise RuntimeError(dep_error)
+        system_prompt, user_prompt = build_tutorial_model_prompts(
+            topic=topic,
+            level=level,
+            evidence_rows=evidence_rows,
+            references=references,
+        )
+        kind = provider_kind(self.settings, self.provider)
+        if kind == "ollama":
+            llm_callable = self._build_ollama_llm_callable()
+            response = await llm_callable(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                [],
+                self.model,
+            )
+            text = str((response or {}).get("content") or "").strip()
+            if text:
+                return text
+            raise RuntimeError("Model returned empty tutorial content.")
+
+        if kind == "openai_compat":
+            _user_prompt, text = await asyncio.to_thread(
+                gui_run_openai_chat,
+                prompt=f"{system_prompt}\n\n{user_prompt}",
+                image_path="",
+                model=self.model,
+                provider_name=self.provider,
+                settings=self.settings,
+                load_history_messages=lambda: [],
+                timeout_s=self._agent_loop_llm_timeout_seconds(
+                    prompt_needs_tools=False
+                ),
+                max_tokens=2400,
+            )
+            text = str(text or "").strip()
+            if text:
+                return text
+            raise RuntimeError("Model returned empty tutorial content.")
+
+        if kind == "gemini":
+            _user_prompt, text = await asyncio.to_thread(
+                gui_run_gemini_provider_chat,
+                prompt=f"{system_prompt}\n\n{user_prompt}",
+                image_path="",
+                model=self.model,
+                provider_name=self.provider,
+                settings=self.settings,
+            )
+            text = str(text or "").strip()
+            if text:
+                return text
+            raise RuntimeError("Model returned empty tutorial content.")
+
+        raise RuntimeError(
+            f"Unsupported provider '{self.provider}' for tutorial generation."
+        )
+
+    async def _tool_gui_generate_annolid_tutorial(
+        self,
+        *,
+        topic: str = "",
+        level: str = "intermediate",
+        save_to_file: bool = False,
+        include_code_refs: bool = True,
+        open_in_web_viewer: bool = True,
+    ) -> Dict[str, Any]:
+        chosen_topic = str(topic or "").strip() or "getting started"
+        chosen_level = str(level or "intermediate").strip().lower()
+        if chosen_level not in {"beginner", "intermediate", "advanced"}:
+            chosen_level = "intermediate"
+
+        refs = self._select_annolid_reference_paths(
+            topic=chosen_topic,
+            include_code_refs=bool(include_code_refs),
+        )
+        evidence_rows, grounded_refs = collect_tutorial_evidence(
+            root=self._annolid_project_root().resolve(),
+            topic=chosen_topic,
+            refs=refs,
+        )
+        final_refs = grounded_refs or refs
+        generated_with_model = False
+        model_error = ""
+        try:
+            tutorial = await self._generate_tutorial_with_model(
+                topic=chosen_topic,
+                level=chosen_level,
+                evidence_rows=evidence_rows,
+                references=final_refs,
+            )
+            generated_with_model = True
+        except Exception as exc:
+            model_error = str(exc or "").strip()
+            tutorial = build_tutorial_fallback_markdown(
+                topic=chosen_topic,
+                level=chosen_level,
+                evidence_rows=evidence_rows,
+                references=final_refs,
+            )
+
+        output_path = ""
+        opened_in_web_viewer = False
+        open_viewer_error = ""
+        if bool(save_to_file):
+            safe_topic = re.sub(r"[^a-zA-Z0-9]+", "_", chosen_topic).strip("_").lower()
+            if not safe_topic:
+                safe_topic = "annolid"
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            workspace = get_agent_workspace_path()
+            out_dir = workspace / "tutorials"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_file = out_dir / f"annolid_tutorial_{safe_topic}_{stamp}.md"
+            out_file.write_text(tutorial + "\n", encoding="utf-8")
+            output_path = str(out_file)
+            if bool(open_in_web_viewer):
+                open_payload = await self._tool_gui_open_url(output_path)
+                opened_in_web_viewer = bool(open_payload.get("ok"))
+                if not opened_in_web_viewer:
+                    open_viewer_error = str(open_payload.get("error") or "").strip()
+
+        return {
+            "ok": True,
+            "topic": chosen_topic,
+            "level": chosen_level,
+            "references": final_refs,
+            "tutorial": tutorial,
+            "output_path": output_path,
+            "opened_in_web_viewer": opened_in_web_viewer,
+            "open_viewer_error": open_viewer_error,
+            "generated_with_model": generated_with_model,
+            "model_error": model_error,
+        }
 
     @staticmethod
     def _normalize_email_recipient(value: str) -> str:

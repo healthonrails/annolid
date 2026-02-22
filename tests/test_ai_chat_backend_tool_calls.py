@@ -1939,6 +1939,96 @@ def test_parse_direct_gui_command_variants() -> None:
         == "/tmp/annolid_threejs_examples/two_mice.html"
     )
 
+    parsed_tutorial = task._parse_direct_gui_command(
+        "create on demand tutorial for realtime camera setup in annolid"
+    )
+    assert parsed_tutorial["name"] == "generate_annolid_tutorial"
+    assert "realtime camera setup" in parsed_tutorial["args"]["topic"].lower()
+
+    parsed_howto = task._parse_direct_gui_command(
+        "how do i use annolid for behavior analysis"
+    )
+    assert parsed_howto["name"] == "generate_annolid_tutorial"
+    assert "behavior analysis" in parsed_howto["args"]["topic"].lower()
+
+
+def test_gui_generate_tutorial_saves_and_opens_markdown_in_web_viewer(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    (tmp_path / "README.md").write_text(
+        "# Annolid\n\n## Realtime Camera Setup\nUse Annolid realtime mode.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs" / "source").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "docs" / "source" / "agent_tools.md").write_text(
+        "# Agent Tools\n\n## Realtime\nConfigure stream source and model.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "annolid" / "gui" / "widgets").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "annolid" / "gui" / "realtime_launch.py").write_text(
+        "def launch_realtime_stream():\n    pass\n",
+        encoding="utf-8",
+    )
+    (
+        tmp_path / "annolid" / "gui" / "widgets" / "realtime_control_widget.py"
+    ).write_text(
+        "class RealtimeControlWidget:\n"
+        "    def configure_realtime_source(self):\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "annolid" / "gui" / "widgets" / "realtime_manager.py").write_text(
+        "def start_realtime_stream():\n    pass\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=None)
+    task._annolid_project_root = lambda: tmp_path  # type: ignore[method-assign]
+    opened: dict[str, str] = {}
+    writer_called: dict[str, bool] = {"value": False}
+
+    async def _fake_open_url(path_or_url: str) -> dict[str, object]:
+        opened["value"] = str(path_or_url)
+        return {"ok": True, "url": str(path_or_url)}
+
+    async def _fake_model_writer(**kwargs) -> str:
+        writer_called["value"] = True
+        return (
+            "# Annolid Tutorial: Realtime Camera Setup\n\n"
+            "## Repository Evidence\n"
+            "### `annolid/gui/widgets/realtime_control_widget.py`\n"
+            "- symbol: configure_realtime_source\n"
+        )
+
+    task._tool_gui_open_url = _fake_open_url  # type: ignore[method-assign]
+    task._generate_tutorial_with_model = _fake_model_writer  # type: ignore[method-assign]
+
+    payload = asyncio.run(
+        task._tool_gui_generate_annolid_tutorial(
+            topic="realtime camera setup",
+            level="beginner",
+            save_to_file=True,
+            include_code_refs=True,
+        )
+    )
+
+    output_path = str(payload.get("output_path") or "")
+    assert payload["ok"] is True
+    assert output_path.endswith(".md")
+    assert Path(output_path).exists()
+    assert opened.get("value") == output_path
+    assert payload.get("opened_in_web_viewer") is True
+    assert payload.get("generated_with_model") is True
+    assert writer_called["value"] is True
+    tutorial = str(payload.get("tutorial") or "")
+    assert "## Repository Evidence" in tutorial
+    assert "symbol: configure_realtime_source" in tutorial
+    assert "## Goal" not in tutorial
+
 
 def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
@@ -2026,6 +2116,14 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
                 )
             )
         ),
+    }
+    task._tool_gui_generate_annolid_tutorial = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "tutorial": (
+            f"# Annolid Tutorial: {kwargs.get('topic', 'getting started')}\n"
+            "\n## Steps\n1. Open Annolid."
+        ),
+        "output_path": "",
     }
 
     out_pdf = asyncio.run(task._execute_direct_gui_command("open pdf"))
@@ -2159,6 +2257,14 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         task._execute_direct_gui_command("remove automation task task_abc123")
     )
     assert "Removed task task_abc123" == out_schedule_remove
+
+    out_tutorial = asyncio.run(
+        task._execute_direct_gui_command(
+            "create on demand tutorial for realtime camera setup in annolid"
+        )
+    )
+    assert "Annolid Tutorial" in out_tutorial
+    assert "realtime camera setup" in out_tutorial.lower()
 
 
 def test_direct_camera_email_to_me_uses_default_recipient(

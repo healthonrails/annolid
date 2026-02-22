@@ -211,3 +211,41 @@ class GuiSaveCitationTool(FunctionTool):
 
     async def execute(self, **kwargs: Any) -> str:
         return await _run_callback(self._save_citation_callback, **kwargs)
+
+
+class GuiGenerateAnnolidTutorialTool(FunctionTool):
+    def __init__(
+        self, generate_tutorial_callback: Optional[ActionCallback] = None
+    ) -> None:
+        self._generate_tutorial_callback = generate_tutorial_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_generate_annolid_tutorial"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Generate an Annolid tutorial from local code/docs, optionally save it, "
+            "and return a structured response."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "minLength": 1},
+                "level": {
+                    "type": "string",
+                    "enum": ["beginner", "intermediate", "advanced"],
+                },
+                "save_to_file": {"type": "boolean", "default": False},
+                "include_code_refs": {"type": "boolean", "default": True},
+                "open_in_web_viewer": {"type": "boolean", "default": True},
+            },
+            "required": ["topic"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._generate_tutorial_callback, **kwargs)

@@ -1352,6 +1352,9 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         list_realtime_models_callback=lambda: _mark("list_realtime_models"),
         list_realtime_logs_callback=lambda: _mark("list_realtime_logs"),
         save_citation_callback=lambda **kwargs: _mark("save_citation", kwargs),
+        generate_annolid_tutorial_callback=lambda **kwargs: _mark(
+            "generate_annolid_tutorial", kwargs
+        ),
     )
     assert registry.has("gui_context")
     assert registry.has("gui_shared_image_path")
@@ -1386,6 +1389,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_list_realtime_models")
     assert registry.has("gui_list_realtime_logs")
     assert registry.has("gui_save_citation")
+    assert registry.has("gui_generate_annolid_tutorial")
     ctx = asyncio.run(registry.execute("gui_context", {}))
     ctx_payload = json.loads(ctx)
     assert ctx_payload["provider"] == "ollama"
@@ -1525,6 +1529,17 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
             {"key": "annolid2024", "bib_file": "references.bib", "source": "pdf"},
         )
     )
+    asyncio.run(
+        registry.execute(
+            "gui_generate_annolid_tutorial",
+            {
+                "topic": "Realtime camera workflow",
+                "level": "beginner",
+                "save_to_file": True,
+                "include_code_refs": True,
+            },
+        )
+    )
     assert calls == [
         ("open_video", "/tmp/a.mp4"),
         ("open_url", "https://example.org"),
@@ -1593,5 +1608,14 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         (
             "save_citation",
             {"key": "annolid2024", "bib_file": "references.bib", "source": "pdf"},
+        ),
+        (
+            "generate_annolid_tutorial",
+            {
+                "topic": "Realtime camera workflow",
+                "level": "beginner",
+                "save_to_file": True,
+                "include_code_refs": True,
+            },
         ),
     ]
