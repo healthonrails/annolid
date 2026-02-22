@@ -61,6 +61,12 @@
 <li class="toctree-l2"><a class="reference internal" href="#three-js-bot-tools">Three.js bot tools</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#realtime-camera-snapshot-email">Realtime camera snapshot + email</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#security-and-policy-hardening-phase-2">Security and policy hardening (Phase 2)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#session-memory-and-replay">Session memory and replay</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#deterministic-consolidation-and-telemetry">Deterministic consolidation and telemetry</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#memory-mutation-audit-trail">Memory mutation audit trail</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#safe-replay-for-debugging">Safe replay for debugging</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="agent_provider_setup.html">Annolid Bot Provider and Model Setup Tutorial</a></li>
@@ -320,6 +326,78 @@ the service returns cached results without re-running the agent.</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">allow_high_risk</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">unsafe:high-risk</span></code></p></li>
 </ul>
+</section>
+<section id="session-memory-and-replay">
+<h2>Session memory and replay<a class="headerlink" href="#session-memory-and-replay" title="Link to this heading"></a></h2>
+<p>Annolid agent sessions now keep separated memory layers and replayable event logs.</p>
+<ul class="simple">
+<li><p>Working memory:</p>
+<ul>
+<li><p>short-horizon session summary derived from recent user/assistant turns.</p></li>
+<li><p>stored in session metadata as <code class="docutils literal notranslate"><span class="pre">working_memory</span></code>.</p></li>
+<li><p>bounded by a character quota in <code class="docutils literal notranslate"><span class="pre">PersistentSessionStore</span></code>.</p></li>
+</ul>
+</li>
+<li><p>Long-term memory:</p>
+<ul>
+<li><p>stable facts/notes derived from session facts and consolidation updates.</p></li>
+<li><p>stored in session metadata as <code class="docutils literal notranslate"><span class="pre">long_term_memory</span></code>.</p></li>
+<li><p>bounded by a character quota in <code class="docutils literal notranslate"><span class="pre">PersistentSessionStore</span></code>.</p></li>
+</ul>
+</li>
+</ul>
+<section id="deterministic-consolidation-and-telemetry">
+<h3>Deterministic consolidation and telemetry<a class="headerlink" href="#deterministic-consolidation-and-telemetry" title="Link to this heading"></a></h3>
+<p>Memory consolidation now uses deterministic triggers based on:</p>
+<ul class="simple">
+<li><p>session turn counter (<code class="docutils literal notranslate"><span class="pre">turn_counter</span></code>)</p></li>
+<li><p>next scheduled consolidation turn (<code class="docutils literal notranslate"><span class="pre">next_consolidation_turn</span></code>)</p></li>
+<li><p>history length relative to memory window</p></li>
+</ul>
+<p>Telemetry is persisted in session metadata as <code class="docutils literal notranslate"><span class="pre">memory_telemetry</span></code> with entries like:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">timestamp</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">outcome</span></code> (for example <code class="docutils literal notranslate"><span class="pre">llm_consolidated</span></code>, <code class="docutils literal notranslate"><span class="pre">skipped_short_transcript</span></code>, <code class="docutils literal notranslate"><span class="pre">not_due</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">history_len</span></code>, <code class="docutils literal notranslate"><span class="pre">archive_len</span></code>, <code class="docutils literal notranslate"><span class="pre">keep_len</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">elapsed_ms</span></code></p></li>
+</ul>
+</section>
+<section id="memory-mutation-audit-trail">
+<h3>Memory mutation audit trail<a class="headerlink" href="#memory-mutation-audit-trail" title="Link to this heading"></a></h3>
+<p>Session metadata contains <code class="docutils literal notranslate"><span class="pre">memory_audit_trail</span></code> entries for memory changes, including:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">timestamp</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">scope</span></code> (<code class="docutils literal notranslate"><span class="pre">facts</span></code>, <code class="docutils literal notranslate"><span class="pre">working_memory</span></code>, <code class="docutils literal notranslate"><span class="pre">long_term_memory</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mutation</span></code> (for example <code class="docutils literal notranslate"><span class="pre">set_fact</span></code>, <code class="docutils literal notranslate"><span class="pre">set_working_memory</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">reason</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">turn_id</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">before_chars</span></code> / <code class="docutils literal notranslate"><span class="pre">after_chars</span></code></p></li>
+</ul>
+</section>
+<section id="safe-replay-for-debugging">
+<h3>Safe replay for debugging<a class="headerlink" href="#safe-replay-for-debugging" title="Link to this heading"></a></h3>
+<p>Session event records are stored in metadata key <code class="docutils literal notranslate"><span class="pre">event_log</span></code>.</p>
+<ul class="simple">
+<li><p>Each entry includes:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">timestamp</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">direction</span></code> (<code class="docutils literal notranslate"><span class="pre">inbound</span></code>/<code class="docutils literal notranslate"><span class="pre">outbound</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">kind</span></code> (for example <code class="docutils literal notranslate"><span class="pre">user</span></code>, <code class="docutils literal notranslate"><span class="pre">assistant</span></code>, <code class="docutils literal notranslate"><span class="pre">progress</span></code>, <code class="docutils literal notranslate"><span class="pre">final</span></code>)</p></li>
+<li><p>optional <code class="docutils literal notranslate"><span class="pre">turn_id</span></code>, <code class="docutils literal notranslate"><span class="pre">event_id</span></code>, <code class="docutils literal notranslate"><span class="pre">idempotency_key</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">payload</span></code></p></li>
+</ul>
+</li>
+</ul>
+<p>GUI/backend helpers:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">replay_session_debug_events(session_store=...,</span> <span class="pre">session_id=...,</span> <span class="pre">direction=\&quot;\&quot;,</span> <span class="pre">limit=200)</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">format_replay_as_text(events)</span></code></p></li>
+</ul>
+<p>These helpers are implemented in:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">annolid/core/agent/gui_backend/session_io.py</span></code></p></li>
+</ul>
+</section>
 </section>
 </section>
 

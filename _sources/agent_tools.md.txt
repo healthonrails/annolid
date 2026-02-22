@@ -178,3 +178,62 @@ Explicit high-risk intent markers supported by policy/runtime guards:
 - `allow:high-risk`
 - `allow_high_risk`
 - `unsafe:high-risk`
+
+## Session memory and replay
+
+Annolid agent sessions now keep separated memory layers and replayable event logs.
+
+- Working memory:
+  - short-horizon session summary derived from recent user/assistant turns.
+  - stored in session metadata as `working_memory`.
+  - bounded by a character quota in `PersistentSessionStore`.
+- Long-term memory:
+  - stable facts/notes derived from session facts and consolidation updates.
+  - stored in session metadata as `long_term_memory`.
+  - bounded by a character quota in `PersistentSessionStore`.
+
+### Deterministic consolidation and telemetry
+
+Memory consolidation now uses deterministic triggers based on:
+
+- session turn counter (`turn_counter`)
+- next scheduled consolidation turn (`next_consolidation_turn`)
+- history length relative to memory window
+
+Telemetry is persisted in session metadata as `memory_telemetry` with entries like:
+
+- `timestamp`
+- `outcome` (for example `llm_consolidated`, `skipped_short_transcript`, `not_due`)
+- `history_len`, `archive_len`, `keep_len`
+- `elapsed_ms`
+
+### Memory mutation audit trail
+
+Session metadata contains `memory_audit_trail` entries for memory changes, including:
+
+- `timestamp`
+- `scope` (`facts`, `working_memory`, `long_term_memory`)
+- `mutation` (for example `set_fact`, `set_working_memory`)
+- `reason`
+- `turn_id`
+- `before_chars` / `after_chars`
+
+### Safe replay for debugging
+
+Session event records are stored in metadata key `event_log`.
+
+- Each entry includes:
+  - `timestamp`
+  - `direction` (`inbound`/`outbound`)
+  - `kind` (for example `user`, `assistant`, `progress`, `final`)
+  - optional `turn_id`, `event_id`, `idempotency_key`
+  - `payload`
+
+GUI/backend helpers:
+
+- `replay_session_debug_events(session_store=..., session_id=..., direction=\"\", limit=200)`
+- `format_replay_as_text(events)`
+
+These helpers are implemented in:
+
+- `annolid/core/agent/gui_backend/session_io.py`
