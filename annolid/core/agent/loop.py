@@ -306,6 +306,20 @@ class AgentLoop:
         memory_enabled = (
             self._memory_config.enabled if use_memory is None else bool(use_memory)
         )
+        turn_id = str(
+            (dict(inbound_metadata or {}).get("turn_id") if inbound_metadata else "")
+            or ""
+        ).strip()
+        turn_seq = self._increment_session_turn_counter(session_id)
+        if not turn_id:
+            turn_id = f"turn-{turn_seq}"
+        self._record_session_event(
+            session_id=session_id,
+            direction="inbound",
+            kind="user",
+            turn_id=turn_id,
+            payload={"text": str(user_message or "")},
+        )
         self._set_tool_context(channel=channel, chat_id=chat_id)
         self._logger.info(
             "Processing message from %s on %s using model %s",
@@ -329,6 +343,7 @@ class AgentLoop:
                 media=media,
                 skill_names=skill_names,
                 history=history,
+                turn_seq=turn_seq,
             )
             message_build_ms = (time.perf_counter() - build_started) * 1000.0
 
@@ -457,6 +472,18 @@ class AgentLoop:
                         ],
                         max_messages=self._history_persist_limit(),
                     )
+                    self._sync_memory_layers(
+                        session_id=session_id,
+                        reason="append_turn_history",
+                        turn_id=turn_id,
+                    )
+                self._record_session_event(
+                    session_id=session_id,
+                    direction="outbound",
+                    kind="assistant",
+                    turn_id=turn_id,
+                    payload={"text": str(final_content or "")},
+                )
                 return AgentLoopResult(
                     content=final_content,
                     messages=messages,
@@ -493,12 +520,24 @@ class AgentLoop:
                     ],
                     max_messages=self._history_persist_limit(),
                 )
+                self._sync_memory_layers(
+                    session_id=session_id,
+                    reason="append_turn_history",
+                    turn_id=turn_id,
+                )
             result = AgentLoopResult(
                 content=final_content,
                 messages=messages,
                 iterations=last_iteration or self._max_iterations,
                 tool_runs=tuple(tool_runs),
                 stopped_reason=stopped_reason,
+            )
+            self._record_session_event(
+                session_id=session_id,
+                direction="outbound",
+                kind="assistant",
+                turn_id=turn_id,
+                payload={"text": str(final_content or "")},
             )
             return result
         finally:
@@ -683,6 +722,7 @@ class AgentLoop:
         media: Optional[List[str]],
         skill_names: Optional[List[str]],
         history: Optional[Sequence[Mapping[str, Any]]],
+        turn_seq: int = 0,
     ) -> List[Dict[str, Any]]:
         messages: List[Dict[str, Any]] = []
         self._persist_long_term_memory_note_from_user_text(user_message_text)
@@ -691,11 +731,32 @@ class AgentLoop:
         if memory_enabled:
             memory_history = self._memory_store.get_history(session_id)
             memory_facts = self._memory_store.get_facts(session_id)
-            if len(memory_history) > max(2, int(self._memory_config.memory_window)):
+            if self._should_consolidate_memory(
+                session_id=session_id,
+                history_len=len(memory_history),
+                turn_seq=turn_seq,
+            ):
                 memory_history = await self._consolidate_memory(
                     session_id=session_id,
                     history=memory_history,
                 )
+                self._set_next_consolidation_turn(
+                    session_id=session_id,
+                    turn_seq=turn_seq,
+                )
+            else:
+                self._record_memory_telemetry(
+                    session_id=session_id,
+                    outcome="not_due",
+                    history_len=len(memory_history),
+                    archive_len=0,
+                    keep_len=len(memory_history),
+                    elapsed_ms=0.0,
+                )
+            self._sync_memory_layers(
+                session_id=session_id,
+                reason="pre_prompt_build",
+            )
 
         if system_prompt:
             messages.append({"role": "system", "content": str(system_prompt)})
@@ -719,6 +780,18 @@ class AgentLoop:
                 {
                     "role": "system",
                     "content": self._format_memory_facts(memory_facts),
+                }
+            )
+        working_memory = self._get_store_text(
+            "get_working_memory",
+            session_id=session_id,
+        )
+        if memory_enabled and working_memory.strip():
+            messages.append(
+                {
+                    "role": "system",
+                    "content": "Working memory summary (latest turns):\n"
+                    + working_memory.strip(),
                 }
             )
         if memory_enabled and memory_history:
@@ -976,6 +1049,14 @@ class AgentLoop:
                 history_entry = self._fallback_history_entry(transcript)
                 if history_entry:
                     memory.append_history(history_entry)
+                    self._append_memory_audit(
+                        session_id=session_id,
+                        scope="working_memory",
+                        mutation="consolidation_history_entry",
+                        reason="append consolidation history entry",
+                        before="",
+                        after=history_entry,
+                    )
                 self._set_last_consolidated_cursor(session_id=session_id, value=0)
                 outcome = "skipped_short_transcript"
                 self._logger.info(
@@ -1003,6 +1084,14 @@ class AgentLoop:
             if self._is_valid_memory_update(old_long_term, updated_memory):
                 if updated_memory != old_long_term:
                     memory.write_long_term(updated_memory)
+                    self._append_memory_audit(
+                        session_id=session_id,
+                        scope="long_term_memory",
+                        mutation="consolidation_memory_update",
+                        reason="apply LLM memory consolidation update",
+                        before=old_long_term,
+                        after=updated_memory,
+                    )
             self._set_last_consolidated_cursor(session_id=session_id, value=0)
             outcome = "llm_consolidated"
         except Exception as exc:
@@ -1020,7 +1109,232 @@ class AgentLoop:
             cursor,
             (time.perf_counter() - started) * 1000.0,
         )
+        self._record_memory_telemetry(
+            session_id=session_id,
+            outcome=outcome,
+            history_len=len(history),
+            archive_len=len(archive),
+            keep_len=len(keep),
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        )
         return keep
+
+    def _should_consolidate_memory(
+        self,
+        *,
+        session_id: str,
+        history_len: int,
+        turn_seq: int,
+    ) -> bool:
+        window = max(4, int(self._memory_config.memory_window))
+        if history_len <= max(2, window):
+            return False
+        next_turn = self._get_session_meta_int(
+            session_id=session_id,
+            key="next_consolidation_turn",
+            default=1,
+        )
+        return int(turn_seq) >= int(next_turn)
+
+    def _set_next_consolidation_turn(self, *, session_id: str, turn_seq: int) -> None:
+        spacing = max(2, int(self._memory_config.memory_window) // 3)
+        self._update_session_meta(
+            session_id=session_id,
+            updates={"next_consolidation_turn": int(turn_seq) + int(spacing)},
+        )
+
+    def _increment_session_turn_counter(self, session_id: str) -> int:
+        current = self._get_session_meta_int(
+            session_id=session_id,
+            key="turn_counter",
+            default=0,
+        )
+        nxt = int(current) + 1
+        self._update_session_meta(session_id=session_id, updates={"turn_counter": nxt})
+        return nxt
+
+    def _get_session_meta_int(self, *, session_id: str, key: str, default: int) -> int:
+        getter = getattr(self._memory_store, "get_session_metadata", None)
+        if not callable(getter):
+            return int(default)
+        try:
+            meta = getter(session_id)
+        except Exception:
+            return int(default)
+        if not isinstance(meta, Mapping):
+            return int(default)
+        try:
+            return int(meta.get(str(key), default) or default)
+        except Exception:
+            return int(default)
+
+    def _update_session_meta(
+        self, *, session_id: str, updates: Mapping[str, Any]
+    ) -> None:
+        setter = getattr(self._memory_store, "update_session_metadata", None)
+        if not callable(setter):
+            return
+        try:
+            setter(session_id, dict(updates or {}))
+        except Exception:
+            return
+
+    def _record_memory_telemetry(
+        self,
+        *,
+        session_id: str,
+        outcome: str,
+        history_len: int,
+        archive_len: int,
+        keep_len: int,
+        elapsed_ms: float,
+    ) -> None:
+        getter = getattr(self._memory_store, "get_session_metadata", None)
+        setter = getattr(self._memory_store, "update_session_metadata", None)
+        if not callable(getter) or not callable(setter):
+            return
+        try:
+            meta = getter(session_id)
+        except Exception:
+            return
+        rows = []
+        if isinstance(meta, Mapping):
+            rows = list(meta.get("memory_telemetry") or [])
+        rows.append(
+            {
+                "timestamp": datetime.now().isoformat(),
+                "outcome": str(outcome or "").strip().lower(),
+                "history_len": int(history_len),
+                "archive_len": int(archive_len),
+                "keep_len": int(keep_len),
+                "elapsed_ms": float(elapsed_ms),
+            }
+        )
+        if len(rows) > 200:
+            rows = rows[-200:]
+        try:
+            setter(session_id, {"memory_telemetry": rows})
+        except Exception:
+            return
+
+    def _append_memory_audit(
+        self,
+        *,
+        session_id: str,
+        scope: str,
+        mutation: str,
+        reason: str,
+        before: str,
+        after: str,
+    ) -> None:
+        appender = getattr(self._memory_store, "append_memory_audit", None)
+        if not callable(appender):
+            return
+        try:
+            appender(
+                session_id,
+                scope=scope,
+                mutation=mutation,
+                reason=reason,
+                before=before,
+                after=after,
+            )
+        except Exception:
+            return
+
+    def _sync_memory_layers(
+        self,
+        *,
+        session_id: str,
+        reason: str,
+        turn_id: str = "",
+    ) -> None:
+        history = self._memory_store.get_history(session_id)
+        facts = self._memory_store.get_facts(session_id)
+        working_lines: List[str] = []
+        for msg in history[-8:]:
+            role = str(msg.get("role") or "").strip().lower()
+            content = str(msg.get("content") or "").strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            working_lines.append(f"{role}: {content}")
+        working_payload = "\n".join(working_lines).strip()
+        long_term_lines = [
+            f"{k}: {v}" for k, v in sorted(facts.items()) if str(k).strip()
+        ]
+        long_term_payload = "\n".join(long_term_lines).strip()
+        self._set_store_text(
+            "set_working_memory",
+            session_id=session_id,
+            text=working_payload,
+            reason=reason,
+            turn_id=turn_id,
+        )
+        self._set_store_text(
+            "set_long_term_memory",
+            session_id=session_id,
+            text=long_term_payload,
+            reason=reason,
+            turn_id=turn_id,
+        )
+
+    def _set_store_text(
+        self,
+        method_name: str,
+        *,
+        session_id: str,
+        text: str,
+        reason: str,
+        turn_id: str = "",
+    ) -> None:
+        method = getattr(self._memory_store, method_name, None)
+        if not callable(method):
+            return
+        try:
+            method(
+                session_id,
+                text,
+                reason=reason,
+                turn_id=turn_id,
+            )
+        except Exception:
+            return
+
+    def _record_session_event(
+        self,
+        *,
+        session_id: str,
+        direction: str,
+        kind: str,
+        payload: Mapping[str, Any],
+        turn_id: str = "",
+        event_id: str = "",
+        idempotency_key: str = "",
+    ) -> None:
+        recorder = getattr(self._memory_store, "record_event", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(
+                session_id,
+                direction=str(direction or "").strip().lower() or "event",
+                kind=str(kind or "").strip().lower() or "event",
+                payload=dict(payload or {}),
+                turn_id=str(turn_id or "").strip(),
+                event_id=str(event_id or "").strip(),
+                idempotency_key=str(idempotency_key or "").strip(),
+            )
+        except Exception:
+            return
+
+    def _get_store_text(self, method_name: str, *, session_id: str) -> str:
+        method = getattr(self._memory_store, method_name, None)
+        if not callable(method):
+            return ""
+        try:
+            return str(method(session_id) or "")
+        except Exception:
+            return ""
 
     def _get_last_consolidated_cursor(
         self, *, session_id: str, history_len: int

@@ -300,6 +300,21 @@ def persist_turn(
             )
         except Exception:
             pass
+    if session_store:
+        _record_session_event(
+            session_store=session_store,
+            session_id=session_id,
+            direction="inbound",
+            kind="user",
+            payload={"text": user_msg},
+        )
+        _record_session_event(
+            session_store=session_store,
+            session_id=session_id,
+            direction="outbound",
+            kind="assistant",
+            payload={"text": assistant_msg},
+        )
 
     try:
         stamp = datetime.now().strftime("%H:%M:%S")
@@ -313,3 +328,99 @@ def persist_turn(
         workspace_memory.append_history(entry)
     except Exception:
         pass
+
+
+def _record_session_event(
+    *,
+    session_store: Any,
+    session_id: str,
+    direction: str,
+    kind: str,
+    payload: Dict[str, Any],
+) -> None:
+    if session_store is None:
+        return
+    recorder = getattr(session_store, "record_event", None)
+    if not callable(recorder):
+        return
+    try:
+        recorder(
+            session_id,
+            direction=str(direction or "").strip().lower() or "outbound",
+            kind=str(kind or "").strip().lower() or "event",
+            payload=dict(payload or {}),
+        )
+    except Exception:
+        return
+
+
+def replay_session_debug_events(
+    *,
+    session_store: Any,
+    session_id: str,
+    direction: str = "",
+    limit: int = 200,
+) -> List[Dict[str, Any]]:
+    if not session_store:
+        return []
+    replay = getattr(session_store, "replay_events", None)
+    if not callable(replay):
+        return []
+    try:
+        rows = replay(
+            session_id,
+            direction=str(direction or "").strip().lower(),
+            limit=max(1, int(limit)),
+        )
+    except Exception:
+        return []
+    normalized: List[Dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for item in list(rows or []):
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        key = "|".join(
+            [
+                str(row.get("direction") or "").strip().lower(),
+                str(row.get("kind") or "").strip().lower(),
+                str(row.get("event_id") or "").strip(),
+                str(row.get("idempotency_key") or "").strip(),
+                str(
+                    (row.get("payload") or {}).get("text")
+                    if isinstance(row.get("payload"), dict)
+                    else ""
+                ),
+            ]
+        )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        payload = row.get("payload")
+        if isinstance(payload, dict):
+            text = str(payload.get("text") or "")
+            if len(text) > 1024:
+                payload = dict(payload)
+                payload["text"] = text[:1024] + "\n...[truncated]..."
+                row["payload"] = payload
+        normalized.append(row)
+    return normalized
+
+
+def format_replay_as_text(events: List[Dict[str, Any]]) -> str:
+    lines: List[str] = []
+    for item in events:
+        ts = str(item.get("timestamp") or "").strip()
+        direction = str(item.get("direction") or "").strip().lower()
+        kind = str(item.get("kind") or "").strip().lower()
+        payload = item.get("payload")
+        text = ""
+        if isinstance(payload, dict):
+            text = str(payload.get("text") or "").strip()
+        stamp = ts if ts else "-"
+        header = f"[{stamp}] {direction}:{kind}".strip()
+        if text:
+            lines.append(f"{header} {text}")
+        else:
+            lines.append(header)
+    return "\n".join(lines).strip()

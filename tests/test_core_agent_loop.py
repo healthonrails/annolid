@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from annolid.core.agent.loop import AgentLoop, AgentMemoryConfig
+from annolid.core.agent.session_manager import (
+    AgentSessionManager,
+    PersistentSessionStore,
+)
 from annolid.core.agent.tools.function_builtin import WebSearchTool
 from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_registry import FunctionToolRegistry
@@ -1213,3 +1217,63 @@ def test_agent_loop_uses_compact_default_tool_subset_for_low_signal_prompt() -> 
     _ = asyncio.run(loop.run("hi"))
     assert len(observed["tool_names"]) <= 6
     assert "echo" in observed["tool_names"] or "web_search" in observed["tool_names"]
+
+
+def test_agent_loop_records_memory_telemetry_and_turn_counters(tmp_path: Path) -> None:
+    registry = FunctionToolRegistry()
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        return {"content": "ok"}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+        memory_config=AgentMemoryConfig(
+            enabled=True,
+            max_history_messages=64,
+            memory_window=4,
+            include_facts_in_system_prompt=True,
+        ),
+    )
+    for i in range(4):
+        _ = asyncio.run(loop.run(f"turn-{i}", session_id="telemetry"))
+    meta = loop._memory_store.get_session_metadata("telemetry")  # type: ignore[attr-defined]
+    assert int(meta.get("turn_counter") or 0) >= 4
+    assert int(meta.get("next_consolidation_turn") or 0) >= 1
+    rows = list(meta.get("memory_telemetry") or [])
+    assert rows
+
+
+def test_agent_loop_records_inbound_outbound_events_for_replay(tmp_path: Path) -> None:
+    registry = FunctionToolRegistry()
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        return {"content": "ok"}
+
+    store = PersistentSessionStore(
+        AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    )
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        memory_store=store,
+    )
+    _ = asyncio.run(loop.run("hello", session_id="replay-1"))
+    rows = store.replay_events("replay-1", limit=10)
+    assert len(rows) >= 2
+    directions = {str(item.get("direction") or "") for item in rows}
+    assert "inbound" in directions
+    assert "outbound" in directions

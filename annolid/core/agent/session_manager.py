@@ -203,9 +203,26 @@ class AgentSessionManager:
 class PersistentSessionStore:
     """Session store adapter for AgentLoop with disk persistence."""
 
-    def __init__(self, manager: AgentSessionManager):
+    _DEFAULT_WORKING_MEMORY_MAX_CHARS = 8192
+    _DEFAULT_LONG_TERM_MEMORY_MAX_CHARS = 32768
+    _DEFAULT_MEMORY_AUDIT_MAX_ENTRIES = 200
+    _DEFAULT_EVENT_LOG_MAX_ENTRIES = 500
+
+    def __init__(
+        self,
+        manager: AgentSessionManager,
+        *,
+        working_memory_max_chars: int = _DEFAULT_WORKING_MEMORY_MAX_CHARS,
+        long_term_memory_max_chars: int = _DEFAULT_LONG_TERM_MEMORY_MAX_CHARS,
+        memory_audit_max_entries: int = _DEFAULT_MEMORY_AUDIT_MAX_ENTRIES,
+        event_log_max_entries: int = _DEFAULT_EVENT_LOG_MAX_ENTRIES,
+    ):
         self._manager = manager
         self._lock = RLock()
+        self._working_memory_max_chars = max(32, int(working_memory_max_chars))
+        self._long_term_memory_max_chars = max(64, int(long_term_memory_max_chars))
+        self._memory_audit_max_entries = max(10, int(memory_audit_max_entries))
+        self._event_log_max_entries = max(20, int(event_log_max_entries))
 
     def get_history(self, session_id: str) -> List[Dict[str, Any]]:
         with self._lock:
@@ -249,8 +266,18 @@ class PersistentSessionStore:
     def set_fact(self, session_id: str, key: str, value: str) -> None:
         with self._lock:
             session = self._manager.get_or_create(session_id)
-            session.facts[str(key)] = str(value)
+            before = str(session.facts.get(str(key), ""))
+            after = str(value)
+            session.facts[str(key)] = after
             session.updated_at = datetime.now()
+            self._append_memory_audit_entry(
+                session,
+                scope="facts",
+                mutation="set_fact",
+                reason=f"set key={str(key)}",
+                before=before,
+                after=after,
+            )
             self._manager.save(session)
 
     def delete_fact(self, session_id: str, key: str) -> bool:
@@ -258,16 +285,36 @@ class PersistentSessionStore:
             session = self._manager.get_or_create(session_id)
             if key not in session.facts:
                 return False
+            before = str(session.facts.get(str(key), ""))
             session.facts.pop(key, None)
             session.updated_at = datetime.now()
+            self._append_memory_audit_entry(
+                session,
+                scope="facts",
+                mutation="delete_fact",
+                reason=f"delete key={str(key)}",
+                before=before,
+                after="",
+            )
             self._manager.save(session)
             return True
 
     def clear_facts(self, session_id: str) -> None:
         with self._lock:
             session = self._manager.get_or_create(session_id)
+            before = "\n".join(
+                f"{k}: {v}" for k, v in dict(session.facts or {}).items()
+            ).strip()
             session.facts = {}
             session.updated_at = datetime.now()
+            self._append_memory_audit_entry(
+                session,
+                scope="facts",
+                mutation="clear_facts",
+                reason="clear all fact entries",
+                before=before,
+                after="",
+            )
             self._manager.save(session)
 
     def clear_session(self, session_id: str) -> None:
@@ -283,6 +330,164 @@ class PersistentSessionStore:
     ) -> None:
         with self._lock:
             self._manager.update_session_metadata(session_id, updates)
+
+    def get_working_memory(self, session_id: str) -> str:
+        with self._lock:
+            session = self._manager.get_or_create(session_id)
+            payload = str(session.metadata.get("working_memory") or "")
+            return self._truncate_text(payload, self._working_memory_max_chars)
+
+    def set_working_memory(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        reason: str = "",
+        turn_id: str = "",
+    ) -> None:
+        with self._lock:
+            session = self._manager.get_or_create(session_id)
+            before = str(session.metadata.get("working_memory") or "")
+            after = self._truncate_text(str(text or ""), self._working_memory_max_chars)
+            session.metadata["working_memory"] = after
+            session.updated_at = datetime.now()
+            self._append_memory_audit_entry(
+                session,
+                scope="working_memory",
+                mutation="set_working_memory",
+                reason=reason or "set working memory",
+                before=before,
+                after=after,
+                turn_id=turn_id,
+            )
+            self._manager.save(session)
+
+    def get_long_term_memory(self, session_id: str) -> str:
+        with self._lock:
+            session = self._manager.get_or_create(session_id)
+            payload = str(session.metadata.get("long_term_memory") or "")
+            return self._truncate_text(payload, self._long_term_memory_max_chars)
+
+    def set_long_term_memory(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        reason: str = "",
+        turn_id: str = "",
+    ) -> None:
+        with self._lock:
+            session = self._manager.get_or_create(session_id)
+            before = str(session.metadata.get("long_term_memory") or "")
+            after = self._truncate_text(
+                str(text or ""), self._long_term_memory_max_chars
+            )
+            session.metadata["long_term_memory"] = after
+            session.updated_at = datetime.now()
+            self._append_memory_audit_entry(
+                session,
+                scope="long_term_memory",
+                mutation="set_long_term_memory",
+                reason=reason or "set long-term memory",
+                before=before,
+                after=after,
+                turn_id=turn_id,
+            )
+            self._manager.save(session)
+
+    def get_memory_audit_trail(
+        self, session_id: str, *, limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        with self._lock:
+            session = self._manager.get_or_create(session_id)
+            rows = list(session.metadata.get("memory_audit_trail") or [])
+            keep = max(1, int(limit))
+            normalized: List[Dict[str, Any]] = []
+            for item in rows[-keep:]:
+                if isinstance(item, Mapping):
+                    normalized.append(dict(item))
+            return normalized
+
+    def append_memory_audit(
+        self,
+        session_id: str,
+        *,
+        scope: str,
+        mutation: str,
+        reason: str,
+        before: str = "",
+        after: str = "",
+        turn_id: str = "",
+    ) -> None:
+        with self._lock:
+            session = self._manager.get_or_create(session_id)
+            self._append_memory_audit_entry(
+                session,
+                scope=scope,
+                mutation=mutation,
+                reason=reason,
+                before=before,
+                after=after,
+                turn_id=turn_id,
+            )
+            session.updated_at = datetime.now()
+            self._manager.save(session)
+
+    def record_event(
+        self,
+        session_id: str,
+        *,
+        direction: str,
+        kind: str,
+        payload: Mapping[str, Any],
+        turn_id: str = "",
+        event_id: str = "",
+        idempotency_key: str = "",
+    ) -> None:
+        with self._lock:
+            session = self._manager.get_or_create(session_id)
+            events = list(session.metadata.get("event_log") or [])
+            events.append(
+                {
+                    "timestamp": _now_iso(),
+                    "direction": str(direction or "").strip().lower() or "outbound",
+                    "kind": str(kind or "").strip().lower() or "event",
+                    "turn_id": str(turn_id or "").strip(),
+                    "event_id": str(event_id or "").strip(),
+                    "idempotency_key": str(idempotency_key or "").strip(),
+                    "payload": dict(payload or {}),
+                }
+            )
+            if len(events) > self._event_log_max_entries:
+                events = events[-self._event_log_max_entries :]
+            session.metadata["event_log"] = events
+            session.updated_at = datetime.now()
+            self._manager.save(session)
+
+    def replay_events(
+        self,
+        session_id: str,
+        *,
+        direction: str = "",
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        with self._lock:
+            session = self._manager.get_or_create(session_id)
+            events = list(session.metadata.get("event_log") or [])
+            selected: List[Dict[str, Any]] = []
+            want_direction = str(direction or "").strip().lower()
+            for item in events:
+                if not isinstance(item, Mapping):
+                    continue
+                row = dict(item)
+                if (
+                    want_direction
+                    and str(row.get("direction") or "").lower() != want_direction
+                ):
+                    continue
+                selected.append(row)
+            keep = max(1, int(limit))
+            return selected[-keep:]
 
     def record_automation_task_run(
         self,
@@ -324,3 +529,38 @@ class PersistentSessionStore:
                     continue
             cleaned.append(msg)
         return cleaned
+
+    @staticmethod
+    def _truncate_text(value: str, max_chars: int) -> str:
+        text = str(value or "")
+        if len(text) <= int(max_chars):
+            return text
+        keep = max(32, int(max_chars) - 32)
+        return text[:keep] + "\n...[truncated]..."
+
+    def _append_memory_audit_entry(
+        self,
+        session: AgentSession,
+        *,
+        scope: str,
+        mutation: str,
+        reason: str,
+        before: str,
+        after: str,
+        turn_id: str = "",
+    ) -> None:
+        rows = list(session.metadata.get("memory_audit_trail") or [])
+        rows.append(
+            {
+                "timestamp": _now_iso(),
+                "scope": str(scope or "").strip().lower(),
+                "mutation": str(mutation or "").strip().lower(),
+                "reason": str(reason or "").strip(),
+                "turn_id": str(turn_id or "").strip(),
+                "before_chars": len(str(before or "")),
+                "after_chars": len(str(after or "")),
+            }
+        )
+        if len(rows) > self._memory_audit_max_entries:
+            rows = rows[-self._memory_audit_max_entries :]
+        session.metadata["memory_audit_trail"] = rows

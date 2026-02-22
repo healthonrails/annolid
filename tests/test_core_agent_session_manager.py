@@ -150,3 +150,60 @@ def test_persistent_session_store_records_automation_task_runs(tmp_path: Path) -
     assert latest["task_name"] == "camera-check"
     assert latest["status"] == "ok"
     assert "snapshot" in latest["detail"]
+
+
+def test_persistent_session_store_memory_layers_apply_quotas(tmp_path: Path) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    store = PersistentSessionStore(
+        manager,
+        working_memory_max_chars=64,
+        long_term_memory_max_chars=64,
+    )
+    session_id = "gui:memory-layers"
+    long_text = "x" * 200
+    store.set_working_memory(session_id, long_text, reason="test")
+    store.set_long_term_memory(session_id, long_text, reason="test")
+    working = store.get_working_memory(session_id)
+    long_term = store.get_long_term_memory(session_id)
+    assert len(working) <= 80
+    assert len(long_term) <= 80
+    assert "truncated" in working
+    assert "truncated" in long_term
+
+
+def test_persistent_session_store_memory_audit_trail_records_mutations(
+    tmp_path: Path,
+) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    store = PersistentSessionStore(manager)
+    session_id = "gui:audit"
+    store.set_fact(session_id, "animal", "mouse")
+    store.set_working_memory(session_id, "user: hello", reason="sync")
+    trail = store.get_memory_audit_trail(session_id, limit=20)
+    assert trail
+    scopes = {str(item.get("scope") or "") for item in trail}
+    assert "facts" in scopes
+    assert "working_memory" in scopes
+
+
+def test_persistent_session_store_replay_events_roundtrip(tmp_path: Path) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    store = PersistentSessionStore(manager)
+    session_id = "gui:replay"
+    store.record_event(
+        session_id,
+        direction="inbound",
+        kind="user",
+        payload={"text": "hello"},
+    )
+    store.record_event(
+        session_id,
+        direction="outbound",
+        kind="assistant",
+        payload={"text": "world"},
+    )
+    inbound = store.replay_events(session_id, direction="inbound", limit=10)
+    all_rows = store.replay_events(session_id, limit=10)
+    assert len(inbound) == 1
+    assert inbound[0]["payload"]["text"] == "hello"
+    assert len(all_rows) == 2

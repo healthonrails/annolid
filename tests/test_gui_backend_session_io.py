@@ -155,3 +155,51 @@ def test_load_history_messages_preserves_tool_metadata() -> None:
     assert history[0]["role"] == "assistant"
     assert "tool_calls" in history[0]
     assert history[1] == {"role": "assistant", "content": "done"}
+
+
+def test_replay_session_debug_events_and_format_text() -> None:
+    class _Store:
+        def replay_events(self, session_id: str, *, direction: str, limit: int):
+            del session_id, limit
+            long_text = "x" * 2000
+            rows = [
+                {
+                    "timestamp": "2026-02-22T10:00:00",
+                    "direction": "inbound",
+                    "kind": "user",
+                    "payload": {"text": "hello"},
+                    "event_id": "1",
+                    "idempotency_key": "a",
+                },
+                {
+                    "timestamp": "2026-02-22T10:00:01",
+                    "direction": "outbound",
+                    "kind": "assistant",
+                    "payload": {"text": long_text},
+                    "event_id": "2",
+                    "idempotency_key": "b",
+                },
+                {
+                    "timestamp": "2026-02-22T10:00:01",
+                    "direction": "outbound",
+                    "kind": "assistant",
+                    "payload": {"text": long_text},
+                    "event_id": "2",
+                    "idempotency_key": "b",
+                },
+            ]
+            if direction:
+                return [r for r in rows if r["direction"] == direction]
+            return rows
+
+    rows = session_io.replay_session_debug_events(
+        session_store=_Store(),
+        session_id="gui:test",
+        direction="outbound",
+        limit=20,
+    )
+    assert len(rows) == 1
+    assert "truncated" in str(rows[0]["payload"]["text"])
+    text = session_io.format_replay_as_text(rows)
+    assert "outbound:assistant" in text
+    assert "truncated" in text
