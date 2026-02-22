@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 from dataclasses import dataclass
 from datetime import datetime
+from email.utils import parseaddr
 import importlib
 import json
 import os
@@ -1999,19 +2000,48 @@ class StreamingChatTask(QRunnable):
                 QtCore.Q_ARG(str, snapshot_path),
             )
             payload["snapshot_opened_on_canvas"] = bool(opened)
-        email_target = str(email_to or "").strip()
+        email_target = self._normalize_email_recipient(
+            str(payload.get("email_to") or email_to or "")
+        )
+        payload["email_requested"] = bool(email_target)
         if email_target:
-            default_subject = "Annolid camera snapshot"
-            email_result = await self._send_camera_snapshot_email(
-                to=email_target,
-                subject=str(email_subject or "").strip() or default_subject,
-                content=str(email_content or "").strip(),
-                snapshot_path=snapshot_path,
-            )
             payload["email_to"] = email_target
-            payload["email_sent"] = bool(email_result.get("ok"))
-            payload["email_result"] = str(email_result.get("result") or "")
+            if not payload.get("ok"):
+                payload["email_sent"] = False
+                payload["email_result"] = "Skipped email: stream probe did not succeed."
+            elif not snapshot_path:
+                payload["email_sent"] = False
+                payload["email_result"] = (
+                    "Skipped email: snapshot was not created. "
+                    "Retry with save_snapshot=true."
+                )
+            else:
+                default_subject = "Annolid camera snapshot"
+                email_result = await self._send_camera_snapshot_email(
+                    to=email_target,
+                    subject=str(email_subject or "").strip() or default_subject,
+                    content=str(email_content or "").strip(),
+                    snapshot_path=snapshot_path,
+                )
+                payload["email_sent"] = bool(email_result.get("ok"))
+                payload["email_result"] = str(email_result.get("result") or "")
         return payload
+
+    @staticmethod
+    def _normalize_email_recipient(value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        _name, addr = parseaddr(text)
+        normalized = str(addr or text).strip()
+        if not normalized or "@" not in normalized:
+            return ""
+        if any(ch.isspace() for ch in normalized):
+            return ""
+        local, _, domain = normalized.rpartition("@")
+        if not local or "." not in domain:
+            return ""
+        return normalized
 
     @staticmethod
     def _is_network_camera_source(value: str) -> bool:
@@ -2119,13 +2149,26 @@ class StreamingChatTask(QRunnable):
         content: str,
         snapshot_path: str,
     ) -> Dict[str, Any]:
+        recipient = self._normalize_email_recipient(to)
+        if not recipient:
+            return {"ok": False, "result": "Error: Invalid recipient email address."}
+        snapshot_file = str(snapshot_path or "").strip()
+        if snapshot_file and not Path(snapshot_file).exists():
+            return {
+                "ok": False,
+                "result": f"Error: Snapshot not found: {snapshot_file}",
+            }
+
         cfg = load_config()
         tools_cfg = getattr(cfg, "tools", None)
         email_cfg = getattr(tools_cfg, "email", None)
         if email_cfg is None or not bool(getattr(email_cfg, "enabled", False)):
             return {
                 "ok": False,
-                "result": "Error: Email channel is not enabled in Annolid settings.",
+                "result": (
+                    "Error: Email channel is disabled in Annolid settings "
+                    "(tools.email.enabled=false)."
+                ),
             }
 
         workspace = get_agent_workspace_path()
@@ -2146,11 +2189,11 @@ class StreamingChatTask(QRunnable):
         body = str(content or "").strip()
         if not body:
             body = "Camera stream probe completed in Annolid."
-        if snapshot_path:
-            body += f"\n\nSnapshot: {snapshot_path}"
-        attachment_paths = [snapshot_path] if snapshot_path else []
+        if snapshot_file:
+            body += f"\n\nSnapshot: {snapshot_file}"
+        attachment_paths = [snapshot_file] if snapshot_file else []
         result = await tool.execute(
-            to=str(to or "").strip(),
+            to=recipient,
             subject=str(subject or "").strip() or "Annolid camera snapshot",
             content=body,
             attachment_paths=attachment_paths,

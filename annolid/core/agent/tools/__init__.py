@@ -26,6 +26,7 @@ from .citation import (
     BibtexUpsertEntryTool,
 )
 from .cron import CronTool
+from .camera import CameraSnapshotTool
 from .calendar import GoogleCalendarTool
 from .clawhub import (
     ClawHubInstallSkillTool,
@@ -209,6 +210,7 @@ __all__ = [
     "MessageTool",
     "SpawnTool",
     "CronTool",
+    "CameraSnapshotTool",
     "GoogleCalendarTool",
     "register_nanobot_style_tools",
     "register_annolid_gui_tools",

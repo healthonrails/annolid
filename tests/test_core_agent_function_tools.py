@@ -704,6 +704,7 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("video_sample_frames")
     assert registry.has("video_segment")
     assert registry.has("video_process_segments")
+    assert registry.has("camera_snapshot")
     assert registry.has("exec")
     assert registry.has("cron")
     assert registry.has("download_url")

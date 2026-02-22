@@ -145,6 +145,46 @@ def test_check_stream_source_tool_rejects_unsafe_source_shapes() -> None:
     assert "too long" in str(payload_long.get("error", ""))
 
 
+def test_check_stream_source_tool_requires_valid_email_address() -> None:
+    payload = check_stream_source_tool(
+        camera_source="0",
+        email_to="not-an-email",
+        invoke_check=lambda *_args: {"ok": True},
+    )
+    assert payload["ok"] is False
+    assert "valid email address" in str(payload.get("error", ""))
+
+
+def test_check_stream_source_tool_forces_snapshot_when_email_requested() -> None:
+    seen: dict[str, object] = {}
+    payload = check_stream_source_tool(
+        camera_source="0",
+        save_snapshot=False,
+        email_to="user@example.com",
+        invoke_check=lambda source,
+        transport,
+        timeout_sec,
+        probe_frames,
+        save_snapshot: (
+            seen.update(
+                {
+                    "source": source,
+                    "transport": transport,
+                    "timeout_sec": timeout_sec,
+                    "probe_frames": probe_frames,
+                    "save_snapshot": bool(save_snapshot),
+                }
+            )
+            or {"ok": True}
+        ),
+    )
+    assert payload["ok"] is True
+    assert seen["save_snapshot"] is True
+    assert payload["save_snapshot"] is True
+    assert payload["email_requested"] is True
+    assert payload["email_to"] == "user@example.com"
+
+
 def test_rename_file_tool_requires_source_or_active() -> None:
     payload = rename_file_tool(
         source_path="",

@@ -584,6 +584,82 @@ def test_check_stream_source_snapshot_opens_image_on_canvas(monkeypatch) -> None
     assert calls == ["bot_open_image"]
 
 
+def test_check_stream_source_skips_email_when_snapshot_missing(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("hi", widget=None)
+
+    def _fake_check_stream_source_tool(**kwargs):
+        del kwargs
+        return {
+            "ok": True,
+            "camera_source": "0",
+            "snapshot_path": "",
+            "email_to": "user@example.com",
+        }
+
+    monkeypatch.setattr(
+        backend,
+        "gui_check_stream_source_tool",
+        _fake_check_stream_source_tool,
+    )
+
+    async def _fail_if_called(**kwargs):
+        raise AssertionError(f"email sender should not be called: {kwargs}")
+
+    task._send_camera_snapshot_email = _fail_if_called  # type: ignore[method-assign]
+    payload = asyncio.run(
+        task._tool_gui_check_stream_source(
+            camera_source="0",
+            save_snapshot=True,
+            email_to="user@example.com",
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["email_requested"] is True
+    assert payload["email_sent"] is False
+    assert "snapshot was not created" in str(payload.get("email_result") or "").lower()
+
+
+def test_check_stream_source_skips_email_when_probe_fails(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("hi", widget=None)
+
+    def _fake_check_stream_source_tool(**kwargs):
+        del kwargs
+        return {
+            "ok": False,
+            "camera_source": "0",
+            "error": "failed to open",
+            "email_to": "user@example.com",
+        }
+
+    monkeypatch.setattr(
+        backend,
+        "gui_check_stream_source_tool",
+        _fake_check_stream_source_tool,
+    )
+
+    async def _fail_if_called(**kwargs):
+        raise AssertionError(f"email sender should not be called: {kwargs}")
+
+    task._send_camera_snapshot_email = _fail_if_called  # type: ignore[method-assign]
+    payload = asyncio.run(
+        task._tool_gui_check_stream_source(
+            camera_source="0",
+            save_snapshot=True,
+            email_to="user@example.com",
+        )
+    )
+    assert payload["ok"] is False
+    assert payload["email_requested"] is True
+    assert payload["email_sent"] is False
+    assert (
+        "stream probe did not succeed" in str(payload.get("email_result") or "").lower()
+    )
+
+
 def test_gui_label_behavior_segments_invalid_mode() -> None:
     task = StreamingChatTask("hi", widget=None)
     payload = task._tool_gui_label_behavior_segments(segment_mode="bad")

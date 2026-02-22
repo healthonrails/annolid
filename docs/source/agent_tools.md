@@ -125,8 +125,10 @@ The bot recognizes natural-language commands such as `open threejs example ...`.
 Annolid Bot can capture a snapshot from a camera stream and send it by email.
 
 - Stream snapshot:
-  - Use `gui_check_stream_source` with `save_snapshot=true`.
+  - GUI sessions: use `gui_check_stream_source` with `save_snapshot=true`.
+  - Non-GUI channels (for example email/IM): use `camera_snapshot`.
   - Snapshot files are saved under `.annolid/workspace/camera_snapshots/`.
+  - Outlook Safe Links camera URLs are automatically unwrapped to the original stream URL.
 - Email with attachments:
   - Use the `email` tool with:
     - `to`

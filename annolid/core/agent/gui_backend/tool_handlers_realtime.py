@@ -4,6 +4,7 @@ import json
 import ipaddress
 import re
 from urllib.parse import urlsplit, urlunsplit
+from email.utils import parseaddr
 from typing import Any, Callable, Dict
 
 
@@ -63,6 +64,22 @@ def _redact_camera_source_for_bot_display(source: str) -> str:
     return urlunsplit(
         (parts.scheme, replacement, parts.path, parts.query, parts.fragment)
     )
+
+
+def _normalize_email_recipient(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    _name, addr = parseaddr(text)
+    normalized = str(addr or text).strip()
+    if not normalized or "@" not in normalized:
+        return ""
+    if any(ch.isspace() for ch in normalized):
+        return ""
+    local, _, domain = normalized.rpartition("@")
+    if not local or "." not in domain:
+        return ""
+    return normalized
 
 
 def start_realtime_stream_tool(
@@ -318,13 +335,18 @@ def check_stream_source_tool(
     except Exception:
         probe_value = 3
     probe_value = max(1, min(60, probe_value))
+    requested_email_to = _normalize_email_recipient(str(email_to or ""))
+    if str(email_to or "").strip() and not requested_email_to:
+        return {"ok": False, "error": "email_to must be a valid email address."}
+    effective_save_snapshot = bool(save_snapshot or requested_email_to)
+
     try:
         payload = invoke_check(
             source_text,
             transport,
             timeout_value,
             probe_value,
-            bool(save_snapshot),
+            effective_save_snapshot,
         )
     except Exception as exc:
         return {"ok": False, "error": f"Stream probe invocation failed: {exc}"}
@@ -348,10 +370,10 @@ def check_stream_source_tool(
     if "probe_frames" not in payload:
         payload["probe_frames"] = probe_value
     if "save_snapshot" not in payload:
-        payload["save_snapshot"] = bool(save_snapshot)
-    requested_email_to = str(email_to or "").strip()
+        payload["save_snapshot"] = effective_save_snapshot
     if requested_email_to:
         payload["email_to"] = requested_email_to
+    payload["email_requested"] = bool(requested_email_to)
     if str(email_subject or "").strip():
         payload["email_subject"] = str(email_subject or "").strip()
     if str(email_content or "").strip():

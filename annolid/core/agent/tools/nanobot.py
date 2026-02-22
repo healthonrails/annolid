@@ -41,6 +41,7 @@ from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, Open
 from .shell import ExecTool
 from .email import EmailTool, ListEmailsTool, ReadEmailTool
 from .calendar import GoogleCalendarTool
+from .camera import CameraSnapshotTool
 from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
 
 if TYPE_CHECKING:
@@ -149,6 +150,7 @@ async def register_nanobot_style_tools(
             allowed_read_roots=allowed_read_roots,
         )
     )
+    registry.register(CameraSnapshotTool(allowed_dir=allowed_dir))
     registry.register(MessageTool(send_callback=send_callback))
     registry.register(SpawnTool(spawn_callback=spawn_callback))
     registry.register(CronTool(send_callback=send_callback))
