@@ -4,6 +4,7 @@ import asyncio
 from annolid.utils.logger import logger
 from collections import OrderedDict
 from contextlib import suppress
+import re
 from typing import Any, Optional
 
 from ..loop import AgentLoop
@@ -120,7 +121,7 @@ class AgentBusService:
 
             async def _on_progress(content: str) -> None:
                 nonlocal last_progress
-                text = str(content or "").strip()
+                text = self._sanitize_outbound_content(content)
                 if not text or text == last_progress:
                     return
                 last_progress = text
@@ -158,7 +159,7 @@ class AgentBusService:
                 content=f"Error: {exc}",
                 metadata={"error": True},
             )
-        normalized = str(outbound.content or "").strip()
+        normalized = self._sanitize_outbound_content(outbound.content)
         if not normalized:
             if str(inbound.channel or "").strip().lower() == "email":
                 fallback = self._build_empty_email_fallback(inbound)
@@ -220,6 +221,14 @@ class AgentBusService:
             )
         )
         await self.bus.publish_outbound(outbound)
+
+    @staticmethod
+    def _sanitize_outbound_content(content: str | None) -> str:
+        raw = str(content or "")
+        if not raw:
+            return ""
+        without_think = re.sub(r"<think>[\s\S]*?</think>", "", raw)
+        return str(without_think or "").strip()
 
     @staticmethod
     def _build_empty_email_fallback(inbound: InboundMessage) -> str:

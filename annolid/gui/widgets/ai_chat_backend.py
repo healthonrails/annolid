@@ -12,8 +12,9 @@ from pathlib import Path
 import logging
 import re
 import time
-from threading import Lock
+from threading import Event, Lock
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Mapping
 
 from qtpy import QtCore
 from qtpy.QtCore import QRunnable
@@ -232,7 +233,6 @@ from annolid.core.agent.gui_backend.telemetry import (
     wrap_tool_callback as gui_wrap_tool_callback,
 )
 from annolid.core.agent.gui_backend.direct_commands import (
-    execute_direct_gui_command as gui_execute_direct_gui_command,
     run_awaitable_sync as gui_run_awaitable_sync,
 )
 from annolid.core.agent.gui_backend.prompt_builder import (
@@ -358,6 +358,10 @@ class InboundChatMessage:
     settings: Dict[str, Any]
 
 
+class _TaskCancelledError(RuntimeError):
+    """Raised when a streaming chat task is cancelled by the user."""
+
+
 class StreamingChatTask(QRunnable):
     """Stream a chat response from the selected provider back to a widget."""
 
@@ -440,6 +444,29 @@ class StreamingChatTask(QRunnable):
         runtime_cfg = resolve_agent_runtime_config(profile="playground")
         self.max_history_messages = int(runtime_cfg.max_history_messages)
         self._last_progress_update: str = ""
+        self._cancel_event = Event()
+        self._cancelled_notice_emitted = False
+
+    def request_cancel(self) -> None:
+        self._cancel_event.set()
+
+    def _is_cancel_requested(self) -> bool:
+        return bool(self._cancel_event.is_set())
+
+    def _raise_if_cancelled(self) -> None:
+        if self._is_cancel_requested():
+            raise _TaskCancelledError("Cancelled by user.")
+
+    def _emit_cancelled_notice(self) -> None:
+        if self._cancelled_notice_emitted:
+            return
+        self._cancelled_notice_emitted = True
+        gui_emit_final(
+            widget=self.widget,
+            message="Stopped by user.",
+            is_error=False,
+            emit_progress_cb=lambda _update: None,
+        )
 
     def run(self) -> None:
         """Execute the chat task flow."""
@@ -450,6 +477,17 @@ class StreamingChatTask(QRunnable):
             self.model,
             len(str(self.prompt or "")),
         )
+        try:
+            self._raise_if_cancelled()
+        except _TaskCancelledError:
+            self._emit_cancelled_notice()
+            logger.info(
+                "annolid-bot turn stop session=%s provider=%s model=%s status=cancelled",
+                self.session_id,
+                self.provider,
+                self.model,
+            )
+            return
         dep_error = self._provider_dependency_error()
         if dep_error:
             self._emit_progress("Provider dependency check failed")
@@ -469,10 +507,12 @@ class StreamingChatTask(QRunnable):
             )
             return
         try:
+            self._raise_if_cancelled()
             if self._should_run_fast_mode():
                 self._emit_progress(f"Starting fast mode ({self.chat_mode})")
                 try:
                     self._run_fast_mode()
+                    self._raise_if_cancelled()
                 except Exception as fast_exc:
                     if self._is_provider_config_error(fast_exc):
                         logger.warning(
@@ -486,6 +526,7 @@ class StreamingChatTask(QRunnable):
                             "Fast mode unavailable, using standard path"
                         )
                         self._run_agent_loop()
+                        self._raise_if_cancelled()
                         logger.info(
                             "annolid-bot turn stop session=%s provider=%s model=%s status=ok_fast_fallback",
                             self.session_id,
@@ -503,12 +544,22 @@ class StreamingChatTask(QRunnable):
                 return
             self._emit_progress("Starting agent loop")
             self._run_agent_loop()
+            self._raise_if_cancelled()
             logger.info(
                 "annolid-bot turn stop session=%s provider=%s model=%s status=ok",
                 self.session_id,
                 self.provider,
                 self.model,
             )
+        except _TaskCancelledError:
+            self._emit_cancelled_notice()
+            logger.info(
+                "annolid-bot turn stop session=%s provider=%s model=%s status=cancelled",
+                self.session_id,
+                self.provider,
+                self.model,
+            )
+            return
         except Exception as exc:
             if self._is_provider_config_error(exc):
                 message = self._format_provider_config_error(str(exc))
@@ -679,9 +730,13 @@ class StreamingChatTask(QRunnable):
         )
 
     def _emit_chunk(self, chunk: str) -> None:
+        if self._is_cancel_requested():
+            return
         gui_emit_chunk(widget=self.widget, chunk=chunk)
 
     def _emit_progress(self, update: str) -> None:
+        if self._is_cancel_requested():
+            return
         self._last_progress_update = gui_emit_progress(
             widget=self.widget,
             update=update,
@@ -689,6 +744,11 @@ class StreamingChatTask(QRunnable):
         )
 
     def _emit_final(self, message: str, *, is_error: bool) -> None:
+        if (
+            self._is_cancel_requested()
+            and str(message or "").strip() != "Stopped by user."
+        ):
+            return
         gui_emit_final(
             widget=self.widget,
             message=message,
@@ -710,6 +770,8 @@ class StreamingChatTask(QRunnable):
         *,
         persist_session_history: bool = True,
     ) -> None:
+        if self._is_cancel_requested():
+            return
         gui_persist_turn(
             user_text=user_text,
             assistant_text=assistant_text,
@@ -724,14 +786,17 @@ class StreamingChatTask(QRunnable):
         asyncio.run(self._run_agent_loop_async())
 
     async def _run_agent_loop_async(self) -> bool:
+        self._raise_if_cancelled()
         # Check for direct command match first (e.g. "open video path/to/file.mp4")
         if await self._try_execute_direct_gui_command():
             return True
+        self._raise_if_cancelled()
 
         prompt_needs_tools = self._prompt_may_need_tools(self.prompt)
         context = await self._build_agent_execution_context(
             include_tools=prompt_needs_tools
         )
+        self._raise_if_cancelled()
 
         if maybe_handle_ollama_plain_mode(
             provider=self.provider,
@@ -770,6 +835,7 @@ class StreamingChatTask(QRunnable):
             system_prompt=context.system_prompt,
             on_progress=self._emit_progress,
         )
+        self._raise_if_cancelled()
         self._emit_progress("Received model response")
         (
             text,
@@ -779,6 +845,7 @@ class StreamingChatTask(QRunnable):
             result,
             tools=context.tools,
         )
+        self._raise_if_cancelled()
         self._log_agent_result(result, used_recovery, used_direct_gui_fallback)
         emit_agent_loop_result(
             prompt=self.prompt,
@@ -1452,43 +1519,135 @@ class StreamingChatTask(QRunnable):
         return self._run_async(self._execute_direct_gui_command(prompt))
 
     async def _execute_direct_gui_command(self, prompt: str) -> str:
-        return await gui_execute_direct_gui_command(
-            prompt=prompt,
-            parse_direct_gui_command=self._parse_direct_gui_command,
-            route_direct_gui_command=execute_direct_gui_command,
-            handlers={
-                "open_video": self._tool_gui_open_video,
-                "open_url": self._tool_gui_open_url,
-                "open_in_browser": self._tool_gui_open_in_browser,
-                "open_threejs": self._tool_gui_open_threejs,
-                "open_threejs_example": self._tool_gui_open_threejs_example,
-                "open_pdf": self._tool_gui_open_pdf,
-                "set_frame": self._tool_gui_set_frame,
-                "track_next_frames": self._tool_gui_track_next_frames,
-                "segment_track_video": self._tool_gui_segment_track_video,
-                "label_behavior_segments": self._tool_gui_label_behavior_segments,
-                "start_realtime_stream": self._tool_gui_start_realtime_stream,
-                "stop_realtime_stream": self._tool_gui_stop_realtime_stream,
-                "get_realtime_status": self._tool_gui_get_realtime_status,
-                "list_realtime_models": self._tool_gui_list_realtime_models,
-                "list_realtime_logs": self._tool_gui_list_realtime_logs,
-                "check_stream_source": self._tool_gui_check_stream_source,
-                "list_pdfs": self._tool_gui_list_pdfs,
-                "clawhub_search_skills": self._tool_clawhub_search_skills,
-                "clawhub_install_skill": self._tool_clawhub_install_skill,
-                "set_chat_model": self._tool_gui_set_chat_model,
-                "rename_file": self._tool_gui_rename_file,
-                "list_citations": self._tool_gui_list_citations,
-                "add_citation_raw": self._tool_gui_add_citation_raw,
-                "save_citation": self._tool_gui_save_citation,
-                "list_dir": self._tool_gui_list_dir,
-                "read_file": self._tool_gui_read_file,
-                "exec_command": self._tool_gui_exec_command,
-            },
+        command = self._parse_direct_gui_command_with_defaults(prompt)
+        if not command:
+            return ""
+        message = await execute_direct_gui_command(
+            command,
+            **self._direct_command_handlers(),
         )
+        if self._missing_email_recipient_note_required(command, message=message):
+            note = (
+                " Email requested, but no recipient is configured. "
+                "Set a recipient email in Realtime settings or include an address."
+            )
+            return f"{str(message or '').strip()}{note}".strip()
+        return message
 
     def _parse_direct_gui_command(self, prompt: str) -> Dict[str, Any]:
         return parse_direct_gui_command(prompt)
+
+    def _parse_direct_gui_command_with_defaults(self, prompt: str) -> Dict[str, Any]:
+        command = self._parse_direct_gui_command(prompt)
+        if not command:
+            return {}
+        if str(command.get("name") or "").strip() != "check_stream_source":
+            return command
+        args = dict(command.get("args") or {})
+        email_to = self._normalize_email_recipient(str(args.get("email_to") or ""))
+        email_requested = self._prompt_requests_camera_email(prompt)
+        if email_requested and not email_to:
+            fallback = self._resolve_default_email_recipient()
+            if fallback:
+                args["email_to"] = fallback
+                args["save_snapshot"] = True
+            else:
+                args["_email_requested_without_recipient"] = True
+        command["args"] = args
+        return command
+
+    @staticmethod
+    def _prompt_requests_camera_email(prompt: str) -> bool:
+        text = str(prompt or "").strip().lower()
+        if not text:
+            return False
+        if not re.search(r"\b(?:email|e-mail|mail)\b", text):
+            return False
+        return bool(
+            re.search(r"\b(?:send|forward|share|deliver)\b", text)
+            or re.search(r"\bto\s+(?:me|myself|us)\b", text)
+            or re.search(r"\bemail\s+me\b", text)
+        )
+
+    def _resolve_default_email_recipient(self) -> str:
+        candidates: list[str] = []
+        host = getattr(self.widget, "host_window_widget", None) if self.widget else None
+        if host is None and self.widget is not None:
+            with contextlib.suppress(Exception):
+                host = self.widget.window()
+
+        if host is not None:
+            manager = getattr(host, "realtime_manager", None)
+            if manager is not None:
+                candidates.append(str(getattr(manager, "_bot_email_to", "") or ""))
+                control = getattr(manager, "realtime_control_widget", None)
+                email_edit = getattr(control, "bot_email_to_edit", None)
+                text_getter = getattr(email_edit, "text", None)
+                if callable(text_getter):
+                    with contextlib.suppress(Exception):
+                        candidates.append(str(text_getter() or ""))
+
+        with contextlib.suppress(Exception):
+            cfg = load_config()
+            tools_cfg = getattr(cfg, "tools", None)
+            realtime_cfg = getattr(tools_cfg, "realtime", None)
+            if isinstance(realtime_cfg, dict):
+                candidates.append(str(realtime_cfg.get("bot_email_to", "") or ""))
+            email_cfg = getattr(tools_cfg, "email", None)
+            if email_cfg is not None:
+                candidates.append(str(getattr(email_cfg, "default_to", "") or ""))
+
+        for candidate in candidates:
+            normalized = self._normalize_email_recipient(candidate)
+            if normalized:
+                return normalized
+        return ""
+
+    @staticmethod
+    def _missing_email_recipient_note_required(
+        command: Mapping[str, Any], *, message: str
+    ) -> bool:
+        if str(command.get("name") or "").strip() != "check_stream_source":
+            return False
+        args = dict(command.get("args") or {})
+        if not bool(args.get("_email_requested_without_recipient", False)):
+            return False
+        lower = str(message or "").lower()
+        return not any(
+            phrase in lower
+            for phrase in ("email sent", "email send failed", "email requested")
+        )
+
+    def _direct_command_handlers(self) -> Dict[str, Callable[..., Any]]:
+        return {
+            "open_video": self._tool_gui_open_video,
+            "open_url": self._tool_gui_open_url,
+            "open_in_browser": self._tool_gui_open_in_browser,
+            "open_threejs": self._tool_gui_open_threejs,
+            "open_threejs_example": self._tool_gui_open_threejs_example,
+            "open_pdf": self._tool_gui_open_pdf,
+            "set_frame": self._tool_gui_set_frame,
+            "track_next_frames": self._tool_gui_track_next_frames,
+            "segment_track_video": self._tool_gui_segment_track_video,
+            "label_behavior_segments": self._tool_gui_label_behavior_segments,
+            "start_realtime_stream": self._tool_gui_start_realtime_stream,
+            "stop_realtime_stream": self._tool_gui_stop_realtime_stream,
+            "get_realtime_status": self._tool_gui_get_realtime_status,
+            "list_realtime_models": self._tool_gui_list_realtime_models,
+            "list_realtime_logs": self._tool_gui_list_realtime_logs,
+            "check_stream_source": self._tool_gui_check_stream_source,
+            "list_pdfs": self._tool_gui_list_pdfs,
+            "clawhub_search_skills": self._tool_clawhub_search_skills,
+            "clawhub_install_skill": self._tool_clawhub_install_skill,
+            "set_chat_model": self._tool_gui_set_chat_model,
+            "rename_file": self._tool_gui_rename_file,
+            "list_citations": self._tool_gui_list_citations,
+            "add_citation_raw": self._tool_gui_add_citation_raw,
+            "save_citation": self._tool_gui_save_citation,
+            "list_dir": self._tool_gui_list_dir,
+            "read_file": self._tool_gui_read_file,
+            "exec_command": self._tool_gui_exec_command,
+        }
 
     @staticmethod
     def _looks_like_local_access_refusal(text: str) -> bool:
@@ -1902,10 +2061,18 @@ class StreamingChatTask(QRunnable):
         bot_email_report: bool = False,
         bot_email_to: str = "",
     ) -> Dict[str, Any]:
-        resolved_camera_source = self._resolve_preferred_camera_source(
-            camera_source,
-            prefer_network=True,
-        )
+        explicit_camera_source = str(camera_source or "").strip()
+        # Eye blink demos should default to the local webcam unless a source is explicit.
+        if not explicit_camera_source and (
+            bool(classify_eye_blinks)
+            or str(model_name or "").strip().lower() == "mediapipe_face"
+        ):
+            resolved_camera_source = "0"
+        else:
+            resolved_camera_source = self._resolve_preferred_camera_source(
+                camera_source,
+                prefer_network=True,
+            )
         return gui_start_realtime_stream_tool(
             camera_source=resolved_camera_source,
             model_name=model_name,

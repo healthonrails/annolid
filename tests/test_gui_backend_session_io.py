@@ -108,3 +108,41 @@ def test_decode_outbound_event_rejects_unknown_kind() -> None:
         }
     )
     assert session_io.decode_outbound_chat_event(payload) is None
+
+
+def test_load_history_messages_preserves_tool_metadata() -> None:
+    class _Store:
+        def get_history(self, _session_id: str):
+            return [
+                {
+                    "role": "assistant",
+                    "content": "calling tool",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "camera_snapshot", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "name": "camera_snapshot",
+                    "content": '{"ok": true}',
+                },
+                {
+                    "role": "assistant",
+                    "content": "done",
+                },
+            ]
+
+    history = session_io.load_history_messages(
+        session_store=_Store(),
+        session_id="gui:test",
+        max_history_messages=20,
+    )
+    assert len(history) == 2
+    assert history[0]["role"] == "assistant"
+    assert "tool_calls" in history[0]
+    assert history[1] == {"role": "assistant", "content": "done"}

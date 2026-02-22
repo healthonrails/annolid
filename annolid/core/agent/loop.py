@@ -82,6 +82,7 @@ class InMemorySessionStore:
     def __init__(self) -> None:
         self._history: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         self._facts: Dict[str, Dict[str, str]] = defaultdict(dict)
+        self._metadata: Dict[str, Dict[str, Any]] = defaultdict(dict)
         self._lock = RLock()
 
     def get_history(self, session_id: str) -> List[Dict[str, Any]]:
@@ -129,6 +130,22 @@ class InMemorySessionStore:
         with self._lock:
             self._history.pop(session_id, None)
             self._facts.pop(session_id, None)
+            self._metadata.pop(session_id, None)
+
+    def get_session_metadata(self, session_id: str) -> Dict[str, Any]:
+        with self._lock:
+            return dict(self._metadata.get(session_id, {}))
+
+    def update_session_metadata(
+        self, session_id: str, updates: Mapping[str, Any]
+    ) -> None:
+        with self._lock:
+            meta = self._metadata[session_id]
+            for raw_key, raw_value in dict(updates or {}).items():
+                key = str(raw_key or "").strip()
+                if not key:
+                    continue
+                meta[key] = raw_value
 
 
 class SessionStoreProtocol(Protocol):
@@ -146,6 +163,10 @@ class SessionStoreProtocol(Protocol):
     def delete_fact(self, session_id: str, key: str) -> bool: ...
     def clear_facts(self, session_id: str) -> None: ...
     def clear_session(self, session_id: str) -> None: ...
+    def get_session_metadata(self, session_id: str) -> Dict[str, Any]: ...
+    def update_session_metadata(
+        self, session_id: str, updates: Mapping[str, Any]
+    ) -> None: ...
 
 
 class AgentLoop:
@@ -153,6 +174,8 @@ class AgentLoop:
 
     This loop is stateless by default: pass existing history in `history`.
     """
+
+    _MIN_CONSOLIDATION_TRANSCRIPT_CHARS = 64
 
     def __init__(
         self,
@@ -393,7 +416,7 @@ class AgentLoop:
                 repeated_tool_cycles = 0
                 last_tool_cycle_signature = None
 
-                final_content = assistant_text
+                final_content = self._strip_think(assistant_text)
                 if memory_enabled and str(final_content).strip():
                     tools_used = self._extract_tools_used(tool_runs)
                     self._memory_store.append_history(
@@ -803,23 +826,74 @@ class AgentLoop:
         session_id: str,
         history: Sequence[Mapping[str, Any]],
     ) -> List[Dict[str, Any]]:
+        started = time.perf_counter()
         window = max(4, int(self._memory_config.memory_window))
         if len(history) <= window:
             return [dict(m) for m in history]
         keep_count = min(10, max(2, window // 2))
-        archive = [dict(m) for m in history[:-keep_count]]
-        keep = [dict(m) for m in history[-keep_count:]]
+        cursor = self._get_last_consolidated_cursor(
+            session_id=session_id,
+            history_len=len(history),
+        )
+        archive_end = max(0, len(history) - keep_count)
+        keep = [dict(m) for m in history[archive_end:]]
+        archive = [dict(m) for m in history[cursor:archive_end]]
+        outcome = "noop"
         if not archive:
+            if len(history) > len(keep):
+                self._replace_session_history(session_id, keep)
+                self._set_last_consolidated_cursor(session_id=session_id, value=0)
+            outcome = "no_archive"
+            self._logger.info(
+                "memory consolidation session=%s outcome=%s history_len=%d archive_len=%d keep_len=%d cursor=%d elapsed_ms=%.1f",
+                session_id,
+                outcome,
+                len(history),
+                0,
+                len(keep),
+                cursor,
+                (time.perf_counter() - started) * 1000.0,
+            )
             return keep
 
         self._replace_session_history(session_id, keep)
         if not self._workspace:
+            self._set_last_consolidated_cursor(session_id=session_id, value=0)
+            outcome = "no_workspace"
+            self._logger.info(
+                "memory consolidation session=%s outcome=%s history_len=%d archive_len=%d keep_len=%d cursor=%d elapsed_ms=%.1f",
+                session_id,
+                outcome,
+                len(history),
+                len(archive),
+                len(keep),
+                cursor,
+                (time.perf_counter() - started) * 1000.0,
+            )
             return keep
 
         try:
             memory = AgentMemoryStore(Path(self._workspace))
             old_long_term = memory.read_long_term()
             transcript = self._format_consolidation_transcript(archive)
+            if self._should_skip_memory_consolidation_llm(transcript=transcript):
+                history_entry = self._fallback_history_entry(transcript)
+                if history_entry:
+                    memory.append_history(history_entry)
+                self._set_last_consolidated_cursor(session_id=session_id, value=0)
+                outcome = "skipped_short_transcript"
+                self._logger.info(
+                    "memory consolidation session=%s outcome=%s history_len=%d archive_len=%d keep_len=%d cursor=%d transcript_chars=%d elapsed_ms=%.1f",
+                    session_id,
+                    outcome,
+                    len(history),
+                    len(archive),
+                    len(keep),
+                    cursor,
+                    len(transcript),
+                    (time.perf_counter() - started) * 1000.0,
+                )
+                return keep
             payload = await self._request_memory_consolidation(
                 transcript=transcript,
                 current_memory=old_long_term,
@@ -833,11 +907,52 @@ class AgentLoop:
             if self._is_valid_memory_update(old_long_term, updated_memory):
                 if updated_memory != old_long_term:
                     memory.write_long_term(updated_memory)
+            self._set_last_consolidated_cursor(session_id=session_id, value=0)
+            outcome = "llm_consolidated"
         except Exception as exc:
+            outcome = "failed"
             self._logger.warning(
                 "memory consolidation failed for session=%s: %s", session_id, exc
             )
+        self._logger.info(
+            "memory consolidation session=%s outcome=%s history_len=%d archive_len=%d keep_len=%d cursor=%d elapsed_ms=%.1f",
+            session_id,
+            outcome,
+            len(history),
+            len(archive),
+            len(keep),
+            cursor,
+            (time.perf_counter() - started) * 1000.0,
+        )
         return keep
+
+    def _get_last_consolidated_cursor(
+        self, *, session_id: str, history_len: int
+    ) -> int:
+        default = 0
+        getter = getattr(self._memory_store, "get_session_metadata", None)
+        if not callable(getter):
+            return default
+        try:
+            meta = getter(session_id)
+        except Exception:
+            return default
+        if not isinstance(meta, Mapping):
+            return default
+        try:
+            cursor = int(meta.get("last_consolidated", 0) or 0)
+        except Exception:
+            return default
+        return max(0, min(cursor, max(0, int(history_len))))
+
+    def _set_last_consolidated_cursor(self, *, session_id: str, value: int) -> None:
+        setter = getattr(self._memory_store, "update_session_metadata", None)
+        if not callable(setter):
+            return
+        try:
+            setter(session_id, {"last_consolidated": int(max(0, value))})
+        except Exception:
+            return
 
     def _replace_session_history(
         self,
@@ -888,12 +1003,49 @@ class AgentLoop:
             f"Current MEMORY.md:\n{current_memory.strip()}\n\n"
             f"Archived Transcript:\n{transcript}"
         )
+        save_memory_tool = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "save_memory",
+                    "description": (
+                        "Save memory consolidation with history_entry and memory_update."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "history_entry": {
+                                "type": "string",
+                                "description": (
+                                    "One grep-friendly summary line prefixed with "
+                                    "[YYYY-MM-DD HH:MM]."
+                                ),
+                            },
+                            "memory_update": {
+                                "type": "string",
+                                "description": (
+                                    "Full updated MEMORY.md markdown text."
+                                ),
+                            },
+                        },
+                        "required": ["history_entry", "memory_update"],
+                    },
+                },
+            }
+        ]
+
         resp = await self._llm_callable(
             [{"role": "system", "content": prompt}],
-            [],
+            save_memory_tool,
             self.model,
         )
-        content = str(resp.get("content") or "").strip()
+        for call in self._sanitize_tool_calls(self._extract_tool_calls(resp)):
+            if str(call.get("name") or "").strip() != "save_memory":
+                continue
+            args = self._normalize_args(call.get("arguments"))
+            if isinstance(args, Mapping):
+                return dict(args)
+        content = self._strip_think(str(resp.get("content") or "").strip())
         parsed = self._try_parse_json_object(content)
         if parsed is None:
             return {
@@ -901,6 +1053,11 @@ class AgentLoop:
                 "memory_update": current_memory,
             }
         return parsed
+
+    def _should_skip_memory_consolidation_llm(self, *, transcript: str) -> bool:
+        return len(str(transcript or "").strip()) < int(
+            self._MIN_CONSOLIDATION_TRANSCRIPT_CHARS
+        )
 
     @staticmethod
     def _try_parse_json_object(text: str) -> Optional[Dict[str, Any]]:

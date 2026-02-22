@@ -535,6 +535,164 @@ def test_agent_loop_consolidates_large_history_into_history_file(
     assert state["calls"] >= 2
 
 
+def test_agent_loop_consolidation_accepts_save_memory_tool_call(
+    tmp_path: Path,
+) -> None:
+    registry = FunctionToolRegistry()
+    state = {"calls": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del model
+        state["calls"] += 1
+        if (
+            len(messages) == 1
+            and messages[0].get("role") == "system"
+            and "Consolidate the archived chat transcript"
+            in str(messages[0].get("content") or "")
+        ):
+            assert any(
+                isinstance(t.get("function"), Mapping)
+                and t["function"].get("name") == "save_memory"
+                for t in tools
+            )
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "mem_1",
+                        "name": "save_memory",
+                        "arguments": {
+                            "history_entry": "[2026-01-01 11:00] Consolidated via tool call.",
+                            "memory_update": "- project: annolid",
+                        },
+                    }
+                ],
+            }
+        return {"content": "ok"}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+        memory_config=AgentMemoryConfig(
+            enabled=True,
+            max_history_messages=64,
+            memory_window=6,
+            include_facts_in_system_prompt=True,
+        ),
+    )
+    for i in range(5):
+        _ = asyncio.run(loop.run(f"turn-{i}", session_id="c2"))
+
+    history_path = tmp_path / "memory" / "HISTORY.md"
+    assert history_path.exists()
+    assert "Consolidated via tool call." in history_path.read_text(encoding="utf-8")
+    memory_text = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "project: annolid" in memory_text
+    assert state["calls"] >= 2
+
+
+def test_agent_loop_consolidation_parses_json_after_think_block(
+    tmp_path: Path,
+) -> None:
+    registry = FunctionToolRegistry()
+    state = {"calls": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del tools, model
+        state["calls"] += 1
+        if (
+            len(messages) == 1
+            and messages[0].get("role") == "system"
+            and "Consolidate the archived chat transcript"
+            in str(messages[0].get("content") or "")
+        ):
+            return {
+                "content": (
+                    "<think>internal note</think>\n"
+                    '{"history_entry":"[2026-01-01 12:00] Parsed after think.",'
+                    '"memory_update":"- camera: wireless"}'
+                )
+            }
+        return {"content": "ok"}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+        memory_config=AgentMemoryConfig(
+            enabled=True,
+            max_history_messages=64,
+            memory_window=6,
+            include_facts_in_system_prompt=True,
+        ),
+    )
+    for i in range(5):
+        _ = asyncio.run(loop.run(f"turn-{i}", session_id="c3"))
+
+    history_path = tmp_path / "memory" / "HISTORY.md"
+    assert history_path.exists()
+    assert "Parsed after think." in history_path.read_text(encoding="utf-8")
+    memory_text = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "camera: wireless" in memory_text
+    assert state["calls"] >= 2
+
+
+def test_agent_loop_consolidation_skips_llm_for_short_transcript(
+    tmp_path: Path,
+) -> None:
+    registry = FunctionToolRegistry()
+    state = {"calls": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        state["calls"] += 1
+        return {"content": "ok"}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+        memory_config=AgentMemoryConfig(
+            enabled=True,
+            max_history_messages=64,
+            memory_window=4,
+            include_facts_in_system_prompt=True,
+        ),
+    )
+    short_history = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "c"},
+        {"role": "assistant", "content": "d"},
+        {"role": "user", "content": "e"},
+    ]
+    kept = asyncio.run(
+        loop._consolidate_memory(session_id="short", history=short_history)
+    )
+    assert len(kept) == 2
+    assert state["calls"] == 0
+    history_path = tmp_path / "memory" / "HISTORY.md"
+    assert history_path.exists()
+    history_text = history_path.read_text(encoding="utf-8")
+    assert "USER: a" in history_text or "Session history consolidated." in history_text
+
+
 def test_agent_loop_persists_tools_used_metadata() -> None:
     registry = FunctionToolRegistry()
     registry.register(_EchoTool())

@@ -222,3 +222,32 @@ def test_policy_group_automation_includes_google_calendar() -> None:
         "list_emails",
         "read_email",
     }
+
+
+def test_policy_messaging_profile_includes_camera_snapshot() -> None:
+    cfg = ToolsConfig(profile="messaging")
+    all_tools = [
+        "message",
+        "spawn",
+        "cron",
+        "email",
+        "list_emails",
+        "read_email",
+        "camera_snapshot",
+        "exec",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="openrouter",
+        model="gpt-5-mini",
+    )
+    assert resolved.allowed_tools == {
+        "message",
+        "spawn",
+        "cron",
+        "email",
+        "list_emails",
+        "read_email",
+        "camera_snapshot",
+    }

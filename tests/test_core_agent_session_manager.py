@@ -119,3 +119,14 @@ def test_session_manager_overview_includes_counts_and_paths(tmp_path: Path) -> N
     assert int(overview["fact_count"]) == 1
     assert overview["facts"]["timezone"] == "UTC"
     assert str(overview["path"]).endswith(".jsonl")
+
+
+def test_persistent_session_store_metadata_roundtrip(tmp_path: Path) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    store = PersistentSessionStore(manager)
+    session_id = "gui:meta"
+
+    assert store.get_session_metadata(session_id) == {}
+    store.update_session_metadata(session_id, {"last_consolidated": 12})
+    meta = store.get_session_metadata(session_id)
+    assert int(meta.get("last_consolidated") or 0) == 12

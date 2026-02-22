@@ -223,3 +223,48 @@ def test_run_provider_fallback_timeout_is_graceful(monkeypatch) -> None:
     assert emitted["is_error"] is True
     assert "timed out" in emitted["message"].lower()
     assert called["exception_logged"] is False
+
+
+def test_streaming_chat_task_cancel_emits_stopped_message(monkeypatch) -> None:
+    task = StreamingChatTask(
+        prompt="hello",
+        widget=None,
+        provider="openai",
+        model="gpt-5-mini",
+    )
+    emitted = {"message": "", "is_error": True}
+
+    monkeypatch.setattr(task, "_provider_dependency_error", lambda: None)
+    monkeypatch.setattr(
+        ai_chat_backend,
+        "gui_emit_final",
+        lambda **kwargs: emitted.update(
+            {
+                "message": str(kwargs.get("message") or ""),
+                "is_error": bool(kwargs.get("is_error")),
+            }
+        ),
+    )
+
+    task.request_cancel()
+    task.run()
+    assert emitted["message"] == "Stopped by user."
+    assert emitted["is_error"] is False
+
+
+def test_streaming_chat_task_cancel_skips_persist_turn(tmp_path: Path) -> None:
+    store = PersistentSessionStore(
+        AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    )
+    task = StreamingChatTask(
+        prompt="hello",
+        widget=None,
+        provider="openai",
+        model="gpt-4o-mini",
+        session_id="gui:test-cancel-skip-persist",
+        session_store=store,
+    )
+
+    task.request_cancel()
+    task._persist_turn("hi", "hello there")
+    assert task._load_history_messages() == []

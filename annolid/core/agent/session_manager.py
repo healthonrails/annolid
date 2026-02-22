@@ -180,6 +180,25 @@ class AgentSessionManager:
             "path": str(self._session_path(session.key)),
         }
 
+    def get_session_metadata(self, key: str) -> Dict[str, Any]:
+        session = self.get_or_create(str(key or ""))
+        return dict(session.metadata)
+
+    def update_session_metadata(self, key: str, updates: Mapping[str, Any]) -> None:
+        session = self.get_or_create(str(key or ""))
+        changed = False
+        for raw_key, raw_value in dict(updates or {}).items():
+            meta_key = str(raw_key or "").strip()
+            if not meta_key:
+                continue
+            if session.metadata.get(meta_key) == raw_value:
+                continue
+            session.metadata[meta_key] = raw_value
+            changed = True
+        if changed:
+            session.updated_at = datetime.now()
+            self.save(session)
+
 
 class PersistentSessionStore:
     """Session store adapter for AgentLoop with disk persistence."""
@@ -254,6 +273,16 @@ class PersistentSessionStore:
     def clear_session(self, session_id: str) -> None:
         with self._lock:
             self._manager.delete(session_id)
+
+    def get_session_metadata(self, session_id: str) -> Dict[str, Any]:
+        with self._lock:
+            return self._manager.get_session_metadata(session_id)
+
+    def update_session_metadata(
+        self, session_id: str, updates: Mapping[str, Any]
+    ) -> None:
+        with self._lock:
+            self._manager.update_session_metadata(session_id, updates)
 
     @staticmethod
     def _compact_messages(

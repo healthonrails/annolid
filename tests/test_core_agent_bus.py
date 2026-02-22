@@ -118,6 +118,42 @@ def test_agent_bus_service_processes_inbound_to_outbound() -> None:
     asyncio.run(_run())
 
 
+def test_agent_bus_service_strips_model_think_blocks_from_outbound() -> None:
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        return {"content": "<think>internal reasoning</think>\n\nCamera OK."}
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="email",
+                    sender_id="alice@example.com",
+                    chat_id="alice@example.com",
+                    content="check camera",
+                )
+            )
+            out = await bus.consume_outbound(timeout_s=1.0)
+            assert out.content == "Camera OK."
+            assert "<think>" not in out.content
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
 def test_agent_bus_service_streams_intermediate_progress() -> None:
     state = {"n": 0}
 

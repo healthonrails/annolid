@@ -75,7 +75,15 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
         "list_emails",
         "read_email",
     },
-    "messaging": {"message", "spawn", "cron", "email", "list_emails", "read_email"},
+    "messaging": {
+        "message",
+        "spawn",
+        "cron",
+        "email",
+        "list_emails",
+        "read_email",
+        "camera_snapshot",
+    },
 }
 
 
@@ -158,7 +166,13 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "list_emails",
         "read_email",
     },
-    "group:messaging": {"message", "email", "list_emails", "read_email"},
+    "group:messaging": {
+        "message",
+        "email",
+        "list_emails",
+        "read_email",
+        "camera_snapshot",
+    },
     "group:video": {
         "video_info",
         "video_sample_frames",

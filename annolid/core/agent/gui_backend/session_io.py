@@ -152,7 +152,11 @@ def load_history_messages(
     session_id: str,
     max_history_messages: int,
 ) -> List[Dict[str, Any]]:
-    """Load persisted chat history as role/content records."""
+    """Load persisted chat history as role/content records.
+
+    Preserves tool-call metadata when present so resumed sessions can keep
+    assistant-tool continuity across turns.
+    """
     if not session_store:
         return []
     try:
@@ -170,7 +174,17 @@ def load_history_messages(
         text = content.strip()
         if not text:
             continue
-        cleaned.append({"role": role, "content": text})
+        entry: Dict[str, Any] = {"role": role, "content": text}
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            entry["tool_calls"] = tool_calls
+        tool_call_id = msg.get("tool_call_id")
+        if isinstance(tool_call_id, str) and tool_call_id.strip():
+            entry["tool_call_id"] = tool_call_id.strip()
+        name = msg.get("name")
+        if isinstance(name, str) and name.strip():
+            entry["name"] = name.strip()
+        cleaned.append(entry)
     keep = max(1, int(max_history_messages))
     return cleaned[-keep:]
 

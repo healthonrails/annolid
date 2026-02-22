@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import csv
 import ipaddress
 import os
 import tempfile
+import time
 import webbrowser
 from datetime import datetime
 import json
@@ -107,9 +109,11 @@ class _ChatBubble(QtWidgets.QFrame):
         on_speak=None,
         on_copy=None,
         on_regenerate=None,
+        on_stop=None,
         on_open_link=None,
         on_open_link_in_browser=None,
         allow_regenerate: bool = False,
+        allow_stop: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -119,9 +123,11 @@ class _ChatBubble(QtWidgets.QFrame):
         self._on_speak = on_speak
         self._on_copy = on_copy
         self._on_regenerate = on_regenerate
+        self._on_stop = on_stop
         self._on_open_link = on_open_link
         self._on_open_link_in_browser = on_open_link_in_browser
         self._allow_regenerate = bool(allow_regenerate)
+        self._allow_stop = bool(allow_stop)
         self._raw_text = str(text or "")
         # self._preferred_text_width = 600 # Removed for full width
         self._manual_text_width: Optional[int] = None
@@ -206,18 +212,22 @@ class _ChatBubble(QtWidgets.QFrame):
         self.speak_button = self._create_action_button("🔊", "Read aloud")
         self.copy_button = self._create_action_button("📋", "Copy text")
         self.regenerate_button = self._create_action_button("🔄", "Regenerate")
+        self.stop_button = self._create_action_button("⏹", "Stop running")
         self.regenerate_button.setVisible(
             (not self._is_user) and self._allow_regenerate
         )
+        self.stop_button.setVisible((not self._is_user) and self._allow_stop)
 
         # Connect callbacks
         self.speak_button.clicked.connect(self._speak)
         self.copy_button.clicked.connect(self._copy_text)
         self.regenerate_button.clicked.connect(self._regenerate)
+        self.stop_button.clicked.connect(self._stop)
 
         self.actions_layout.addWidget(self.speak_button)
         self.actions_layout.addWidget(self.copy_button)
         self.actions_layout.addWidget(self.regenerate_button)
+        self.actions_layout.addWidget(self.stop_button)
         self.actions_layout.addStretch(1)
 
         self.footer_layout.addLayout(self.actions_layout)
@@ -396,6 +406,13 @@ class _ChatBubble(QtWidgets.QFrame):
         if callable(self._on_regenerate):
             self._on_regenerate(self.text())
 
+    def _stop(self) -> None:
+        if callable(self._on_stop):
+            self._on_stop()
+
+    def set_stop_visible(self, visible: bool) -> None:
+        self.stop_button.setVisible(bool(visible))
+
     def _handle_anchor_clicked(self, url: QtCore.QUrl) -> None:
         target = str(url.toString() if isinstance(url, QtCore.QUrl) else url).strip()
         if not target:
@@ -502,6 +519,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self._current_response_bubble: Optional[_ChatBubble] = None
         self.is_streaming_chat = False
         self._chat_task_active = False
+        self._active_chat_task: Optional[StreamingChatTask] = None
         self._bot_action_result: Dict[str, Any] = {}
         self.session_id = self._new_startup_session_id()
         self._applying_theme_styles = False
@@ -534,6 +552,9 @@ class AIChatWidget(QtWidgets.QWidget):
         self._load_quick_actions_from_settings()
         self._current_progress_bubble: Optional[_ChatBubble] = None
         self._progress_lines: List[str] = []
+        self._last_final_message_text: str = ""
+        self._last_final_message_is_error: bool = False
+        self._last_final_message_ts: float = 0.0
 
         self._build_ui()
         self._apply_theme_styles()
@@ -1365,6 +1386,7 @@ class AIChatWidget(QtWidgets.QWidget):
         *,
         is_user: bool,
         allow_regenerate: bool = False,
+        allow_stop: bool = False,
     ) -> _ChatBubble:
         # Use a row widget (not just a bare layout) so the row reliably expands
         # to the full scroll area width, letting bubbles fill the dock width.
@@ -1383,9 +1405,11 @@ class AIChatWidget(QtWidgets.QWidget):
             on_speak=self.speak_text_async,
             on_copy=self._copy_message_text,
             on_regenerate=self._regenerate_from_bubble,
+            on_stop=self._stop_running_response,
             on_open_link=self._open_chat_link_default,
             on_open_link_in_browser=self._open_chat_link_in_browser,
             allow_regenerate=allow_regenerate,
+            allow_stop=allow_stop,
             parent=self.chat_container,
         )
         # Make bubbles full width as requested
@@ -3481,6 +3505,7 @@ class AIChatWidget(QtWidgets.QWidget):
             "Thinking.",
             is_user=False,
             allow_regenerate=True,
+            allow_stop=True,
         )
         self.send_button.setEnabled(False)
         self.is_streaming_chat = True
@@ -3515,6 +3540,7 @@ class AIChatWidget(QtWidgets.QWidget):
             inbound=inbound,
         )
         self.thread_pool.start(task)
+        self._active_chat_task = task
         if self._chat_message_bus.inbound.qsize() <= 0:
             self._chat_inbound_bus_timer.stop()
 
@@ -3581,10 +3607,22 @@ class AIChatWidget(QtWidgets.QWidget):
 
     @QtCore.Slot(str, bool)
     def update_chat_response(self, message: str, is_error: bool) -> None:
+        text = str(message or "")
+        now = time.monotonic()
+        if (
+            self._current_response_bubble is None
+            and text.strip()
+            and text.strip() == self._last_final_message_text
+            and bool(is_error) == self._last_final_message_is_error
+            and (now - float(self._last_final_message_ts)) <= 2.0
+        ):
+            # Guard against duplicate final events emitted for the same turn.
+            return
+
         if self._current_response_bubble is None:
             bubble = self._add_bubble(
                 "Assistant",
-                message or "",
+                text,
                 is_user=False,
             )
             self._current_response_bubble = bubble
@@ -3592,14 +3630,12 @@ class AIChatWidget(QtWidgets.QWidget):
         if is_error:
             if self._has_streamed_response_chunk:
                 current = self._current_response_bubble.text()
-                self._current_response_bubble.set_text(
-                    (current + "\n" + message).strip()
-                )
+                self._current_response_bubble.set_text((current + "\n" + text).strip())
             else:
-                self._current_response_bubble.set_text(message or "Error")
+                self._current_response_bubble.set_text(text or "Error")
             self.status_label.setText("Error")
-        elif message:
-            self._current_response_bubble.set_text(message)
+        elif text:
+            self._current_response_bubble.set_text(text)
             self.status_label.setText("Done")
         else:
             self.status_label.setText("Done")
@@ -3610,15 +3646,33 @@ class AIChatWidget(QtWidgets.QWidget):
         self._has_streamed_response_chunk = False
         self._chat_task_active = False
         self._on_prompt_text_changed()
+        self._active_chat_task = None
+        if self._current_response_bubble is not None:
+            self._current_response_bubble.set_stop_visible(False)
         self._current_response_bubble = None
         self._current_progress_bubble = None
         self._progress_lines = []
+        self._last_final_message_text = text.strip()
+        self._last_final_message_is_error = bool(is_error)
+        self._last_final_message_ts = now
         QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
         if self._chat_message_bus.inbound.qsize() > 0:
             if not self._chat_inbound_bus_timer.isActive():
                 self._chat_inbound_bus_timer.start()
             QtCore.QTimer.singleShot(0, self._drain_inbound_bus_messages)
+
+    def _stop_running_response(self) -> None:
+        if not self._chat_task_active:
+            return
+        task = self._active_chat_task
+        if task is not None and hasattr(task, "request_cancel"):
+            with contextlib.suppress(Exception):
+                task.request_cancel()
+        self.status_label.setText("Stopping...")
+        if self._current_response_bubble is not None:
+            self._current_response_bubble.set_stop_visible(False)
+        self.update_chat_response("Stopped by user.", False)
 
     def _last_assistant_text(self) -> str:
         # Find last non-user bubble text.

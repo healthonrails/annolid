@@ -123,6 +123,10 @@ class AgentContextBuilder:
             f"phrases (today/tomorrow): {now_iso} (UTC{pretty_offset}).\n\n"
             f"## Runtime\n{runtime}\n\n"
             f"## Workspace\n{workspace_path}\n"
+            "\n"
+            "For camera checks in non-GUI channels, use `camera_snapshot` to probe and save a frame, "
+            "then use `email` with `attachment_paths` to send the saved snapshot.\n"
+            "Do not claim these tools are unavailable before trying them.\n"
         )
 
     def _load_bootstrap_files(self) -> str:
