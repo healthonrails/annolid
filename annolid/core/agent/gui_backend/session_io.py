@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -7,12 +9,100 @@ from qtpy import QtCore
 from qtpy.QtCore import QMetaObject
 
 
+@dataclass(frozen=True)
+class OutboundChatEvent:
+    direction: str
+    kind: str
+    text: str = ""
+    is_error: bool = False
+
+
+def encode_outbound_chat_event(event: OutboundChatEvent) -> str:
+    payload = {
+        "direction": str(event.direction or "").strip().lower() or "outbound",
+        "kind": str(event.kind or "").strip().lower(),
+        "text": str(event.text or ""),
+        "is_error": bool(event.is_error),
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def decode_outbound_chat_event(payload_text: str) -> Optional[OutboundChatEvent]:
+    raw = str(payload_text or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    direction = str(payload.get("direction") or "").strip().lower() or "outbound"
+    kind = str(payload.get("kind") or "").strip().lower()
+    if kind not in {"chunk", "progress", "final"}:
+        return None
+    return OutboundChatEvent(
+        direction=direction,
+        kind=kind,
+        text=str(payload.get("text") or ""),
+        is_error=bool(payload.get("is_error", False)),
+    )
+
+
+def _emit_outbound_chat_event(widget: Any, event: OutboundChatEvent) -> None:
+    if widget is None:
+        return
+    payload_text = encode_outbound_chat_event(event)
+    bus_enqueue_slot = getattr(widget, "enqueue_outbound_bus_message", None)
+    if callable(bus_enqueue_slot):
+        invoked = QMetaObject.invokeMethod(
+            widget,
+            "enqueue_outbound_bus_message",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, payload_text),
+        )
+        if bool(invoked):
+            return
+    consume_slot = getattr(widget, "consume_outbound_chat_event", None)
+    if callable(consume_slot):
+        invoked = QMetaObject.invokeMethod(
+            widget,
+            "consume_outbound_chat_event",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, payload_text),
+        )
+        if bool(invoked):
+            return
+
+    # Backward-compatible fallback for old widgets.
+    if event.kind == "chunk":
+        QMetaObject.invokeMethod(
+            widget,
+            "stream_chat_chunk",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, event.text),
+        )
+    elif event.kind == "progress":
+        QMetaObject.invokeMethod(
+            widget,
+            "stream_chat_progress",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, event.text),
+        )
+    elif event.kind == "final":
+        QMetaObject.invokeMethod(
+            widget,
+            "update_chat_response",
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, event.text),
+            QtCore.Q_ARG(bool, bool(event.is_error)),
+        )
+
+
 def emit_chunk(*, widget: Any, chunk: str) -> None:
-    QMetaObject.invokeMethod(
+    _emit_outbound_chat_event(
         widget,
-        "stream_chat_chunk",
-        QtCore.Qt.QueuedConnection,
-        QtCore.Q_ARG(str, chunk),
+        OutboundChatEvent(direction="outbound", kind="chunk", text=str(chunk or "")),
     )
 
 
@@ -27,11 +117,9 @@ def emit_progress(
     text = str(update or "").strip()
     if not text or text == last_progress_update:
         return last_progress_update
-    QMetaObject.invokeMethod(
+    _emit_outbound_chat_event(
         widget,
-        "stream_chat_progress",
-        QtCore.Qt.QueuedConnection,
-        QtCore.Q_ARG(str, text),
+        OutboundChatEvent(direction="outbound", kind="progress", text=text),
     )
     return text
 
@@ -47,12 +135,14 @@ def emit_final(
         emit_progress_cb("Response failed")
     else:
         emit_progress_cb("Response ready")
-    QMetaObject.invokeMethod(
+    _emit_outbound_chat_event(
         widget,
-        "update_chat_response",
-        QtCore.Qt.QueuedConnection,
-        QtCore.Q_ARG(str, message),
-        QtCore.Q_ARG(bool, is_error),
+        OutboundChatEvent(
+            direction="outbound",
+            kind="final",
+            text=str(message or ""),
+            is_error=bool(is_error),
+        ),
     )
 
 

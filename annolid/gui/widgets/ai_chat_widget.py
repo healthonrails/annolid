@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import ipaddress
 import os
@@ -14,6 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import QThreadPool
 
+from annolid.core.agent.bus import InboundMessage, MessageBus, OutboundMessage
 from annolid.core.agent.session_manager import (
     AgentSessionManager,
     PersistentSessionStore,
@@ -25,7 +27,11 @@ from annolid.gui.realtime_launch import (
 )
 from annolid.gui.models_registry import MODEL_REGISTRY
 from annolid.gui.widgets.ai_chat_audio_controller import ChatAudioController
-from annolid.gui.widgets.ai_chat_backend import StreamingChatTask, clear_chat_session
+from annolid.gui.widgets.ai_chat_backend import (
+    StreamingChatTask,
+    clear_chat_session,
+)
+from annolid.core.agent.gui_backend.session_io import decode_outbound_chat_event
 from annolid.gui.widgets.ai_chat_session_dialog import ChatSessionManagerDialog
 from annolid.gui.widgets.citation_manager_widget import CitationManagerDialog
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
@@ -495,6 +501,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self._snapshot_paths: List[str] = []
         self._current_response_bubble: Optional[_ChatBubble] = None
         self.is_streaming_chat = False
+        self._chat_task_active = False
         self._bot_action_result: Dict[str, Any] = {}
         self.session_id = self._new_startup_session_id()
         self._applying_theme_styles = False
@@ -509,6 +516,13 @@ class AIChatWidget(QtWidgets.QWidget):
         self._typing_timer = QtCore.QTimer(self)
         self._typing_timer.setInterval(350)
         self._typing_timer.timeout.connect(self._on_typing_timer_tick)
+        self._chat_message_bus = MessageBus()
+        self._chat_inbound_bus_timer = QtCore.QTimer(self)
+        self._chat_inbound_bus_timer.setInterval(40)
+        self._chat_inbound_bus_timer.timeout.connect(self._drain_inbound_bus_messages)
+        self._chat_bus_timer = QtCore.QTimer(self)
+        self._chat_bus_timer.setInterval(40)
+        self._chat_bus_timer.timeout.connect(self._drain_outbound_bus_messages)
         self.enable_progress_stream = self._resolve_enable_progress_stream(
             self.llm_settings
         )
@@ -3409,8 +3423,6 @@ class AIChatWidget(QtWidgets.QWidget):
         return image_path
 
     def chat_with_model(self) -> None:
-        if self.is_streaming_chat:
-            return
         self._refresh_runtime_llm_settings()
         raw_prompt = self.prompt_text_edit.toPlainText().strip()
         if not raw_prompt:
@@ -3418,13 +3430,50 @@ class AIChatWidget(QtWidgets.QWidget):
         if not self._ensure_provider_ready():
             return
 
-        self._last_user_prompt = raw_prompt
+        self._add_bubble("You", raw_prompt, is_user=True)
+        self.prompt_text_edit.clear()
+        chat_mode = self._consume_next_chat_mode()
+        chat_image_path = self._prepare_chat_image()
+        ui_prepared = False
+        if not self._chat_task_active:
+            self._prepare_streaming_turn_ui(raw_prompt)
+            ui_prepared = True
+        else:
+            pending = int(self._chat_message_bus.inbound.qsize()) + 1
+            self.status_label.setText(f"Queued message ({pending} pending)")
+
+        inbound_metadata = {
+            "provider": self.selected_provider,
+            "model": self.selected_model,
+            "session_id": self.session_id,
+            "chat_mode": chat_mode,
+            "show_tool_trace": bool(self.tool_trace_checkbox.isChecked()),
+            "enable_web_tools": bool(self.allow_web_tools_checkbox.isChecked()),
+            "settings": dict(self.llm_settings or {}),
+            "image_path": str(chat_image_path or self.image_path or ""),
+            "ui_prepared": bool(ui_prepared),
+        }
+        inbound = InboundMessage(
+            channel="gui",
+            sender_id="gui_user",
+            chat_id=self.session_id,
+            content=raw_prompt,
+            media=(
+                [str(chat_image_path or self.image_path or "")]
+                if str(chat_image_path or self.image_path or "").strip()
+                else []
+            ),
+            metadata=inbound_metadata,
+        )
+        self._chat_message_bus.inbound.put_nowait(inbound)
+        if not self._chat_inbound_bus_timer.isActive():
+            self._chat_inbound_bus_timer.start()
+
+    def _prepare_streaming_turn_ui(self, prompt: str) -> None:
+        self._last_user_prompt = str(prompt or "").strip()
         self._latest_progress_text = ""
         self._has_streamed_response_chunk = False
         self._progress_lines = []
-        chat_mode = self._consume_next_chat_mode()
-        chat_image_path = self._prepare_chat_image()
-        self._add_bubble("You", raw_prompt, is_user=True)
         assistant_name = self._assistant_display_name()
         self.status_label.setText("")
         self._current_response_bubble = self._add_bubble(
@@ -3433,25 +3482,81 @@ class AIChatWidget(QtWidgets.QWidget):
             is_user=False,
             allow_regenerate=True,
         )
-
-        self.prompt_text_edit.clear()
         self.send_button.setEnabled(False)
         self.is_streaming_chat = True
         self._start_typing_indicator()
 
+    def _drain_inbound_bus_messages(self) -> None:
+        if self._chat_task_active:
+            return
+        try:
+            inbound = self._chat_message_bus.inbound.get_nowait()
+        except asyncio.QueueEmpty:
+            self._chat_inbound_bus_timer.stop()
+            return
+        inbound_meta = dict(getattr(inbound, "metadata", {}) or {})
+        if not bool(inbound_meta.get("ui_prepared", False)):
+            self._prepare_streaming_turn_ui(str(getattr(inbound, "content", "") or ""))
+            inbound_meta["ui_prepared"] = True
+            inbound = InboundMessage(
+                channel=str(getattr(inbound, "channel", "gui") or "gui"),
+                sender_id=str(getattr(inbound, "sender_id", "gui_user") or "gui_user"),
+                chat_id=str(
+                    getattr(inbound, "chat_id", self.session_id) or self.session_id
+                ),
+                content=str(getattr(inbound, "content", "") or ""),
+                media=list(getattr(inbound, "media", []) or []),
+                metadata=inbound_meta,
+            )
+        self._chat_task_active = True
         task = StreamingChatTask(
-            prompt=raw_prompt,
-            image_path=chat_image_path or self.image_path,
             widget=self,
-            model=self.selected_model,
-            provider=self.selected_provider,
-            settings=self.llm_settings,
-            session_id=self.session_id,
-            show_tool_trace=self.tool_trace_checkbox.isChecked(),
-            enable_web_tools=self.allow_web_tools_checkbox.isChecked(),
-            chat_mode=chat_mode,
+            prompt=str(getattr(inbound, "content", "") or ""),
+            inbound=inbound,
         )
         self.thread_pool.start(task)
+        if self._chat_message_bus.inbound.qsize() <= 0:
+            self._chat_inbound_bus_timer.stop()
+
+    @QtCore.Slot(str)
+    def enqueue_outbound_bus_message(self, payload_text: str) -> None:
+        self._chat_message_bus.outbound.put_nowait(
+            OutboundMessage(
+                channel="gui-ui",
+                chat_id=self.session_id,
+                content=str(payload_text or ""),
+                metadata={"source": "ai_chat_backend"},
+            )
+        )
+        if not self._chat_bus_timer.isActive():
+            self._chat_bus_timer.start()
+
+    def _drain_outbound_bus_messages(self) -> None:
+        processed = 0
+        max_events_per_tick = 64
+        while processed < max_events_per_tick:
+            try:
+                outbound = self._chat_message_bus.outbound.get_nowait()
+            except asyncio.QueueEmpty:
+                self._chat_bus_timer.stop()
+                return
+            processed += 1
+            self.consume_outbound_chat_event(str(outbound.content or ""))
+        if self._chat_message_bus.outbound.qsize() <= 0:
+            self._chat_bus_timer.stop()
+
+    @QtCore.Slot(str)
+    def consume_outbound_chat_event(self, payload_text: str) -> None:
+        event = decode_outbound_chat_event(payload_text)
+        if event is None:
+            return
+        if event.kind == "chunk":
+            self.stream_chat_chunk(event.text)
+            return
+        if event.kind == "progress":
+            self.stream_chat_progress(event.text)
+            return
+        self.update_chat_response(event.text, bool(event.is_error))
 
     @QtCore.Slot(str)
     def stream_chat_chunk(self, chunk: str) -> None:
@@ -3503,12 +3608,17 @@ class AIChatWidget(QtWidgets.QWidget):
         self._stop_typing_indicator()
         self._latest_progress_text = ""
         self._has_streamed_response_chunk = False
+        self._chat_task_active = False
         self._on_prompt_text_changed()
         self._current_response_bubble = None
         self._current_progress_bubble = None
         self._progress_lines = []
         QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
+        if self._chat_message_bus.inbound.qsize() > 0:
+            if not self._chat_inbound_bus_timer.isActive():
+                self._chat_inbound_bus_timer.start()
+            QtCore.QTimer.singleShot(0, self._drain_inbound_bus_messages)
 
     def _last_assistant_text(self) -> str:
         # Find last non-user bubble text.

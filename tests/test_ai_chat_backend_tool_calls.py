@@ -4,6 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
+from annolid.core.agent.bus import InboundMessage
 from annolid.gui.widgets.ai_chat_backend import StreamingChatTask
 
 
@@ -32,6 +33,33 @@ def test_parse_ollama_tool_calls_handles_mixed_argument_shapes() -> None:
     assert parsed[1]["arguments"]["command"] == "pwd"
     assert parsed[2]["name"] == "bad"
     assert parsed[2]["arguments"]["_raw"] == 123
+
+
+def test_streaming_chat_task_accepts_bus_inbound_message() -> None:
+    inbound = InboundMessage(
+        channel="gui",
+        sender_id="gui_user",
+        chat_id="gui:annolid_bot:test",
+        content="hello",
+        media=["/tmp/image.png"],
+        metadata={
+            "provider": "ollama",
+            "model": "qwen3",
+            "session_id": "gui:annolid_bot:test",
+            "chat_mode": "default",
+            "show_tool_trace": True,
+            "enable_web_tools": False,
+            "settings": {"agent": {"enable_progress_stream": True}},
+        },
+    )
+    task = StreamingChatTask(prompt="", widget=None, inbound=inbound)
+    assert task.prompt == "hello"
+    assert task.image_path == "/tmp/image.png"
+    assert task.provider == "ollama"
+    assert task.model == "qwen3"
+    assert task.session_id == "gui:annolid_bot:test"
+    assert task.show_tool_trace is True
+    assert task.enable_web_tools is False
 
 
 def test_collect_ollama_stream_accumulates_content_and_tool_calls() -> None:

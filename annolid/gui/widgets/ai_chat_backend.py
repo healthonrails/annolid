@@ -39,6 +39,7 @@ from annolid.core.agent.session_manager import (
     AgentSessionManager,
     PersistentSessionStore,
 )
+from annolid.core.agent.bus import InboundMessage as BusInboundMessage
 from annolid.core.agent.tools import (
     FunctionToolRegistry,
 )
@@ -342,6 +343,20 @@ class _AgentExecutionContext:
     system_prompt: str
 
 
+@dataclass(frozen=True)
+class InboundChatMessage:
+    direction: str
+    prompt: str
+    image_path: str
+    provider: str
+    model: str
+    session_id: str
+    chat_mode: str
+    show_tool_trace: bool
+    enable_web_tools: bool
+    settings: Dict[str, Any]
+
+
 class StreamingChatTask(QRunnable):
     """Stream a chat response from the selected provider back to a widget."""
 
@@ -358,19 +373,67 @@ class StreamingChatTask(QRunnable):
         show_tool_trace: bool = False,
         enable_web_tools: bool = True,
         chat_mode: str = "default",
+        inbound: Optional[Any] = None,
     ):
         super().__init__()
-        self.prompt = prompt
-        self.image_path = image_path
+        if inbound is not None:
+            if isinstance(inbound, BusInboundMessage):
+                inbound_meta = dict(inbound.metadata or {})
+                self.prompt = str(inbound.content or "")
+                inbound_image = str(
+                    inbound_meta.get("image_path")
+                    or (inbound.media[0] if inbound.media else "")
+                    or ""
+                ).strip()
+                self.image_path = inbound_image or image_path
+                self.model = str(inbound_meta.get("model") or model)
+                self.provider = str(inbound_meta.get("provider") or provider)
+                self.settings = dict(inbound_meta.get("settings") or settings or {})
+                inbound_session = str(
+                    inbound_meta.get("session_id") or inbound.chat_id or ""
+                ).strip()
+                self.session_id = inbound_session or str(
+                    session_id or "gui:annolid_bot:default"
+                )
+                self.show_tool_trace = bool(
+                    inbound_meta.get("show_tool_trace", show_tool_trace)
+                )
+                self.enable_web_tools = bool(
+                    inbound_meta.get("enable_web_tools", enable_web_tools)
+                )
+                inbound_mode = (
+                    str(inbound_meta.get("chat_mode") or chat_mode or "default")
+                    .strip()
+                    .lower()
+                )
+                self.chat_mode = inbound_mode or "default"
+            else:
+                self.prompt = str(inbound.prompt or "")
+                inbound_image = str(inbound.image_path or "").strip()
+                self.image_path = inbound_image or image_path
+                self.model = str(inbound.model or model)
+                self.provider = str(inbound.provider or provider)
+                self.settings = dict(inbound.settings or settings or {})
+                inbound_session = str(inbound.session_id or "").strip()
+                self.session_id = inbound_session or str(
+                    session_id or "gui:annolid_bot:default"
+                )
+                self.show_tool_trace = bool(inbound.show_tool_trace)
+                self.enable_web_tools = bool(inbound.enable_web_tools)
+                inbound_mode = str(inbound.chat_mode or "").strip().lower()
+                self.chat_mode = inbound_mode or "default"
+        else:
+            self.prompt = prompt
+            self.image_path = image_path
+            self.model = model
+            self.provider = provider
+            self.settings = settings or {}
+            self.session_id = str(session_id or "gui:annolid_bot:default")
+            self.show_tool_trace = bool(show_tool_trace)
+            self.enable_web_tools = bool(enable_web_tools)
+            self.chat_mode = str(chat_mode or "default").strip().lower() or "default"
         self.widget = widget
-        self.model = model
-        self.provider = provider
-        self.settings = settings or {}
-        self.session_id = str(session_id or "gui:annolid_bot:default")
         self.session_store = session_store or _get_session_store()
-        self.show_tool_trace = bool(show_tool_trace)
-        self.enable_web_tools = bool(enable_web_tools)
-        self.chat_mode = str(chat_mode or "default").strip().lower() or "default"
         self.workspace = get_agent_workspace_path()
         self.workspace_memory = AgentMemoryStore(self.workspace)
         runtime_cfg = resolve_agent_runtime_config(profile="playground")
