@@ -59,6 +59,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#caching-semantics">Caching semantics</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#citation-management-tools">Citation management tools</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#three-js-bot-tools">Three.js bot tools</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#realtime-camera-snapshot-email">Realtime camera snapshot + email</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="agent_provider_setup.html">Annolid Bot Provider and Model Setup Tutorial</a></li>
@@ -235,6 +236,34 @@ the service returns cached results without re-running the agent.</p>
 </li>
 </ul>
 <p>The bot recognizes natural-language commands such as <code class="docutils literal notranslate"><span class="pre">open</span> <span class="pre">threejs</span> <span class="pre">example</span> <span class="pre">...</span></code>.</p>
+</section>
+<section id="realtime-camera-snapshot-email">
+<h2>Realtime camera snapshot + email<a class="headerlink" href="#realtime-camera-snapshot-email" title="Link to this heading"></a></h2>
+<p>Annolid Bot can capture a snapshot from a camera stream and send it by email.</p>
+<ul class="simple">
+<li><p>Stream snapshot:</p>
+<ul>
+<li><p>Use <code class="docutils literal notranslate"><span class="pre">gui_check_stream_source</span></code> with <code class="docutils literal notranslate"><span class="pre">save_snapshot=true</span></code>.</p></li>
+<li><p>Snapshot files are saved under <code class="docutils literal notranslate"><span class="pre">.annolid/workspace/camera_snapshots/</span></code>.</p></li>
+</ul>
+</li>
+<li><p>Email with attachments:</p>
+<ul>
+<li><p>Use the <code class="docutils literal notranslate"><span class="pre">email</span></code> tool with:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">to</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">subject</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">content</span></code></p></li>
+<li><p>optional <code class="docutils literal notranslate"><span class="pre">attachment_paths</span></code> (list of local file paths)</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>Example bot intent:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">check</span> <span class="pre">wireless</span> <span class="pre">camera,</span> <span class="pre">save</span> <span class="pre">a</span> <span class="pre">snapshot,</span> <span class="pre">and</span> <span class="pre">email</span> <span class="pre">it</span> <span class="pre">to</span> <span class="pre">user&#64;example.com</span></code></p></li>
+</ul>
 </section>
 </section>
 
