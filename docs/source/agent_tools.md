@@ -119,3 +119,21 @@ Annolid Bot supports direct Three.js viewer control in GUI sessions.
   - `sphere_points_ply`
 
 The bot recognizes natural-language commands such as `open threejs example ...`.
+
+## Realtime camera snapshot + email
+
+Annolid Bot can capture a snapshot from a camera stream and send it by email.
+
+- Stream snapshot:
+  - Use `gui_check_stream_source` with `save_snapshot=true`.
+  - Snapshot files are saved under `.annolid/workspace/camera_snapshots/`.
+- Email with attachments:
+  - Use the `email` tool with:
+    - `to`
+    - `subject`
+    - `content`
+    - optional `attachment_paths` (list of local file paths)
+
+Example bot intent:
+
+- `check wireless camera, save a snapshot, and email it to user@example.com`

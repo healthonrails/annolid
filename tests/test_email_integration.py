@@ -64,6 +64,63 @@ def test_email_tool_send_mocked():
     asyncio.run(_run())
 
 
+def test_email_tool_send_with_attachment_mocked(tmp_path):
+    async def _run():
+        attachment = tmp_path / "camera_probe.jpg"
+        attachment.write_bytes(b"jpeg-bytes")
+
+        tool = EmailTool(
+            smtp_host="localhost",
+            smtp_port=587,
+            user="bot@example.com",
+            password="password",
+            allowed_attachment_roots=[tmp_path],
+        )
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value.__enter__.return_value = mock_server
+
+            result = await tool.execute(
+                to="user@example.com",
+                content="Snapshot attached",
+                subject="Camera snapshot",
+                attachment_paths=[str(attachment)],
+            )
+
+            assert "successfully sent" in result
+            assert "attachment" in result
+            mock_server.send_message.assert_called_once()
+
+    asyncio.run(_run())
+
+
+def test_email_tool_rejects_attachment_outside_allowed_roots(tmp_path):
+    async def _run():
+        allowed = tmp_path / "allowed"
+        allowed.mkdir(parents=True, exist_ok=True)
+        outside = tmp_path / "outside.jpg"
+        outside.write_bytes(b"jpeg-bytes")
+
+        tool = EmailTool(
+            smtp_host="localhost",
+            smtp_port=587,
+            user="bot@example.com",
+            password="password",
+            allowed_attachment_roots=[allowed],
+        )
+
+        result = await tool.execute(
+            to="user@example.com",
+            content="Snapshot attached",
+            attachment_paths=[str(outside)],
+        )
+
+        assert "outside allowed roots" in result
+
+    asyncio.run(_run())
+
+
 def test_email_channel_send_mocked():
     """Test EmailChannel outbound sending using mocked smtplib."""
 

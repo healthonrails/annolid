@@ -268,7 +268,11 @@ def check_stream_source_tool(
     rtsp_transport: str = "auto",
     timeout_sec: float = 3.0,
     probe_frames: int = 3,
-    invoke_check: Callable[[str, str, float, int], Dict[str, Any]],
+    save_snapshot: bool = False,
+    email_to: str = "",
+    email_subject: str = "",
+    email_content: str = "",
+    invoke_check: Callable[[str, str, float, int, bool], Dict[str, Any]],
 ) -> Dict[str, Any]:
     source_text = str(camera_source or "").strip()
     if len(source_text) > 2048:
@@ -315,7 +319,13 @@ def check_stream_source_tool(
         probe_value = 3
     probe_value = max(1, min(60, probe_value))
     try:
-        payload = invoke_check(source_text, transport, timeout_value, probe_value)
+        payload = invoke_check(
+            source_text,
+            transport,
+            timeout_value,
+            probe_value,
+            bool(save_snapshot),
+        )
     except Exception as exc:
         return {"ok": False, "error": f"Stream probe invocation failed: {exc}"}
     if not isinstance(payload, dict):
@@ -337,4 +347,13 @@ def check_stream_source_tool(
         payload["timeout_sec"] = timeout_value
     if "probe_frames" not in payload:
         payload["probe_frames"] = probe_value
+    if "save_snapshot" not in payload:
+        payload["save_snapshot"] = bool(save_snapshot)
+    requested_email_to = str(email_to or "").strip()
+    if requested_email_to:
+        payload["email_to"] = requested_email_to
+    if str(email_subject or "").strip():
+        payload["email_subject"] = str(email_subject or "").strip()
+    if str(email_content or "").strip():
+        payload["email_content"] = str(email_content or "").strip()
     return payload

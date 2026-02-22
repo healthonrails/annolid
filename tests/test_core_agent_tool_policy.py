@@ -177,6 +177,9 @@ def test_policy_coding_profile_includes_google_calendar() -> None:
         "read_file",
         "exec",
         "google_calendar",
+        "email",
+        "list_emails",
+        "read_email",
         "gui_context",
     ]
     resolved = resolve_allowed_tools(
@@ -186,6 +189,9 @@ def test_policy_coding_profile_includes_google_calendar() -> None:
         model="gpt-5-mini",
     )
     assert "google_calendar" in resolved.allowed_tools
+    assert "email" in resolved.allowed_tools
+    assert "list_emails" in resolved.allowed_tools
+    assert "read_email" in resolved.allowed_tools
 
 
 def test_policy_group_automation_includes_google_calendar() -> None:
@@ -197,6 +203,9 @@ def test_policy_group_automation_includes_google_calendar() -> None:
         "cron",
         "spawn",
         "google_calendar",
+        "email",
+        "list_emails",
+        "read_email",
         "exec",
     ]
     resolved = resolve_allowed_tools(
@@ -205,4 +214,11 @@ def test_policy_group_automation_includes_google_calendar() -> None:
         provider="ollama",
         model="qwen3",
     )
-    assert resolved.allowed_tools == {"cron", "spawn", "google_calendar"}
+    assert resolved.allowed_tools == {
+        "cron",
+        "spawn",
+        "google_calendar",
+        "email",
+        "list_emails",
+        "read_email",
+    }

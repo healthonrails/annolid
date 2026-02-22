@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import email
 import imaplib
+import mimetypes
 import smtplib
 from email.message import EmailMessage
+from pathlib import Path
 from typing import Any
 
 from .function_base import FunctionTool
@@ -21,6 +23,7 @@ class EmailTool(FunctionTool):
         imap_port: int = 993,
         user: str = "",
         password: str = "",
+        allowed_attachment_roots: list[str | Path] | None = None,
     ):
         self._smtp_host = str(smtp_host or "").strip()
         self._smtp_port = int(smtp_port or 587)
@@ -30,6 +33,11 @@ class EmailTool(FunctionTool):
         # Strip spaces from password too, as Google app passwords often
         # come with spaces when copy-pasted.
         self._password = str(password or "").replace(" ", "").strip()
+        self._allowed_attachment_roots = [
+            Path(root).expanduser().resolve()
+            for root in (allowed_attachment_roots or [])
+            if str(root).strip()
+        ]
 
     @property
     def name(self) -> str:
@@ -37,7 +45,7 @@ class EmailTool(FunctionTool):
 
     @property
     def description(self) -> str:
-        return "Send an email to a recipient."
+        return "Send an email to a recipient, optionally with file attachments."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -47,6 +55,11 @@ class EmailTool(FunctionTool):
                 "to": {"type": "string", "description": "Recipient email address"},
                 "subject": {"type": "string", "description": "Email subject"},
                 "content": {"type": "string", "description": "Email body content"},
+                "attachment_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional local file paths to attach",
+                },
             },
             "required": ["to", "content"],
         }
@@ -56,6 +69,7 @@ class EmailTool(FunctionTool):
         to: str,
         content: str,
         subject: str = "Message from Annolid Bot",
+        attachment_paths: list[str] | None = None,
         **kwargs: Any,
     ) -> str:
         del kwargs
@@ -75,6 +89,27 @@ class EmailTool(FunctionTool):
         email_msg["From"] = self._user
         email_msg["To"] = to
 
+        attachments = self._normalize_attachment_paths(attachment_paths)
+        for attachment in attachments:
+            valid_path, error = self._resolve_attachment_path(attachment)
+            if valid_path is None:
+                return f"Error sending email: {error}"
+            try:
+                payload = valid_path.read_bytes()
+            except Exception as exc:
+                return f"Error sending email: failed to read attachment {valid_path}: {exc}"
+            mime_type, _encoding = mimetypes.guess_type(str(valid_path))
+            if mime_type:
+                maintype, subtype = mime_type.split("/", 1)
+            else:
+                maintype, subtype = "application", "octet-stream"
+            email_msg.add_attachment(
+                payload,
+                maintype=maintype,
+                subtype=subtype,
+                filename=valid_path.name,
+            )
+
         def _sync_send():
             with smtplib.SMTP(self._smtp_host, self._smtp_port) as server:
                 server.starttls()
@@ -83,9 +118,45 @@ class EmailTool(FunctionTool):
 
         try:
             await asyncio.to_thread(_sync_send)
+            if attachments:
+                return (
+                    f"Email successfully sent to {to} "
+                    f"with {len(attachments)} attachment(s)"
+                )
             return f"Email successfully sent to {to}"
         except Exception as exc:
             return f"Error sending email: {exc}"
+
+    @staticmethod
+    def _normalize_attachment_paths(paths: list[str] | None) -> list[str]:
+        if not isinstance(paths, list):
+            return []
+        normalized: list[str] = []
+        for item in paths:
+            path_text = str(item or "").strip()
+            if path_text:
+                normalized.append(path_text)
+        return normalized
+
+    def _resolve_attachment_path(self, raw_path: str) -> tuple[Path | None, str]:
+        candidate = Path(raw_path).expanduser()
+        try:
+            resolved = candidate.resolve()
+        except Exception as exc:
+            return None, f"invalid attachment path {raw_path}: {exc}"
+        if not resolved.exists() or not resolved.is_file():
+            return None, f"attachment not found: {resolved}"
+        if self._allowed_attachment_roots:
+            in_allowed_root = any(
+                resolved == root or root in resolved.parents
+                for root in self._allowed_attachment_roots
+            )
+            if not in_allowed_root:
+                return (
+                    None,
+                    f"attachment path is outside allowed roots: {resolved}",
+                )
+        return resolved, ""
 
 
 class ListEmailsTool(FunctionTool):

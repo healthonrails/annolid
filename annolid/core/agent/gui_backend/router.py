@@ -296,6 +296,10 @@ async def execute_direct_gui_command(
             rtsp_transport=str(args.get("rtsp_transport") or "auto"),
             timeout_sec=float(args.get("timeout_sec") or 3.0),
             probe_frames=int(args.get("probe_frames") or 3),
+            save_snapshot=bool(args.get("save_snapshot", False)),
+            email_to=str(args.get("email_to") or ""),
+            email_subject=str(args.get("email_subject") or ""),
+            email_content=str(args.get("email_content") or ""),
         )
         if payload.get("ok"):
             source = str(payload.get("camera_source") or "").strip()
@@ -305,7 +309,22 @@ async def execute_direct_gui_command(
             height = int(payload.get("frame_height") or 0)
             if width > 0 and height > 0:
                 size = f" {width}x{height}"
-            return f"Stream probe succeeded for {source or 'source'}.{size}".strip()
+            message = f"Stream probe succeeded for {source or 'source'}.{size}".strip()
+            snapshot_path = str(payload.get("snapshot_path") or "").strip()
+            if snapshot_path:
+                message += f" Snapshot saved: {snapshot_path}"
+            if payload.get("snapshot_opened_on_canvas"):
+                message += " Snapshot opened on canvas."
+            if str(payload.get("email_to") or "").strip():
+                if payload.get("email_sent"):
+                    message += " Email sent successfully."
+                else:
+                    email_result = str(payload.get("email_result") or "").strip()
+                    if email_result:
+                        message += f" Email send failed: {email_result}"
+                    else:
+                        message += " Email send failed."
+            return message
         return str(payload.get("error") or "Stream probe failed.")
 
     if name == "list_pdfs":

@@ -383,6 +383,10 @@ class GuiCheckStreamSourceTool(FunctionTool):
                 "rtsp_transport": {"type": "string", "enum": ["auto", "tcp", "udp"]},
                 "timeout_sec": {"type": "number", "minimum": 0.5, "maximum": 30.0},
                 "probe_frames": {"type": "integer", "minimum": 1, "maximum": 60},
+                "save_snapshot": {"type": "boolean"},
+                "email_to": {"type": "string"},
+                "email_subject": {"type": "string"},
+                "email_content": {"type": "string"},
             },
             "required": [],
         }

@@ -369,6 +369,95 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
     ]
 
 
+def test_start_realtime_stream_prefers_remembered_network_source(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _TextField:
+        def text(self):
+            return "http://198.51.100.21/img/video.mjpeg"
+
+    class _RealtimeControlWidget:
+        camera_edit = _TextField()
+
+    class _RealtimeManager:
+        _last_realtime_camera_source = ""
+        realtime_control_widget = _RealtimeControlWidget()
+
+    class _Host:
+        realtime_manager = _RealtimeManager()
+        _config = {"realtime": {"camera_index": "0"}}
+
+    class _Widget:
+        host_window_widget = _Host()
+
+    task = StreamingChatTask("hi", widget=_Widget())
+
+    captured: dict[str, object] = {}
+
+    def _fake_start_realtime_stream_tool(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "camera_source": str(kwargs.get("camera_source") or "")}
+
+    monkeypatch.setattr(
+        backend,
+        "gui_start_realtime_stream_tool",
+        _fake_start_realtime_stream_tool,
+    )
+
+    payload = task._tool_gui_start_realtime_stream(camera_source="")
+    assert payload["ok"] is True
+    assert (
+        str(captured.get("camera_source") or "")
+        == "http://198.51.100.21/img/video.mjpeg"
+    )
+
+
+def test_check_stream_source_prefers_remembered_network_source(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _TextField:
+        def text(self):
+            return "http://198.51.100.42/img/video.mjpeg"
+
+    class _RealtimeControlWidget:
+        camera_edit = _TextField()
+
+    class _RealtimeManager:
+        _last_realtime_camera_source = ""
+        realtime_control_widget = _RealtimeControlWidget()
+
+    class _Host:
+        realtime_manager = _RealtimeManager()
+        _config = {"realtime": {"camera_index": "0"}}
+
+    class _Widget:
+        host_window_widget = _Host()
+
+    task = StreamingChatTask("hi", widget=_Widget())
+    captured: dict[str, object] = {}
+
+    def _fake_check_stream_source_tool(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "camera_source": str(kwargs.get("camera_source") or ""),
+            "snapshot_path": "",
+        }
+
+    monkeypatch.setattr(
+        backend,
+        "gui_check_stream_source_tool",
+        _fake_check_stream_source_tool,
+    )
+
+    payload = asyncio.run(task._tool_gui_check_stream_source(camera_source=""))
+    assert payload["ok"] is True
+    assert (
+        str(captured.get("camera_source") or "")
+        == "http://198.51.100.42/img/video.mjpeg"
+    )
+
+
 def test_gui_label_behavior_segments_with_widget_result(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -417,6 +506,54 @@ def test_gui_label_behavior_segments_with_widget_result(
     assert payload["labeled_segments"] == 7
     assert payload["timestamps_rows"] == 7
     assert calls == ["bot_label_behavior_segments"]
+
+
+def test_check_stream_source_snapshot_opens_image_on_canvas(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+
+    def _invoke(slot_name: str, *args):
+        del args
+        calls.append(slot_name)
+        return True
+
+    task._invoke_widget_slot = _invoke  # type: ignore[method-assign]
+    snapshot_path = "/tmp/camera_snapshots/camera_probe_20260221_214101.jpg"
+
+    def _fake_check_stream_source_tool(**kwargs):
+        del kwargs
+        return {
+            "ok": True,
+            "camera_source": "0",
+            "snapshot_path": snapshot_path,
+        }
+
+    monkeypatch.setattr(
+        backend,
+        "gui_check_stream_source_tool",
+        _fake_check_stream_source_tool,
+    )
+
+    async def _fake_send_email(**kwargs):
+        del kwargs
+        return {"ok": True, "result": "Email successfully sent"}
+
+    task._send_camera_snapshot_email = _fake_send_email  # type: ignore[method-assign]
+
+    payload = asyncio.run(
+        task._tool_gui_check_stream_source(
+            camera_source="0",
+            save_snapshot=True,
+            email_to="user@example.com",
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["snapshot_path"] == snapshot_path
+    assert payload["snapshot_opened_on_canvas"] is True
+    assert payload["email_sent"] is True
+    assert calls == ["bot_open_image"]
 
 
 def test_gui_label_behavior_segments_invalid_mode() -> None:
@@ -1462,6 +1599,20 @@ def test_parse_direct_gui_command_variants() -> None:
     )
     assert parsed_check_rtsp_health["name"] == "check_stream_source"
     assert parsed_check_rtsp_health["args"]["rtsp_transport"] == "tcp"
+
+    parsed_check_wireless_snapshot = task._parse_direct_gui_command(
+        "check wireless camera and save snapshot and send to you"
+    )
+    assert parsed_check_wireless_snapshot["name"] == "check_stream_source"
+    assert parsed_check_wireless_snapshot["args"]["save_snapshot"] is True
+    parsed_check_wireless_snapshot_email = task._parse_direct_gui_command(
+        "check wireless camera and save snapshot then send email to user@example.com"
+    )
+    assert parsed_check_wireless_snapshot_email["name"] == "check_stream_source"
+    assert parsed_check_wireless_snapshot_email["args"]["save_snapshot"] is True
+    assert (
+        parsed_check_wireless_snapshot_email["args"]["email_to"] == "user@example.com"
+    )
 
     parsed_stop_stream = task._parse_direct_gui_command("stop realtime stream")
     assert parsed_stop_stream["name"] == "stop_realtime_stream"

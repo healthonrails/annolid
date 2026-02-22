@@ -96,13 +96,19 @@ def test_check_stream_source_tool_normalizes_probe_args() -> None:
         rtsp_transport="TCP",
         timeout_sec=99.0,
         probe_frames=0,
-        invoke_check=lambda source, transport, timeout_sec, probe_frames: (
+        save_snapshot=True,
+        invoke_check=lambda source,
+        transport,
+        timeout_sec,
+        probe_frames,
+        save_snapshot: (
             seen.update(
                 {
                     "source": source,
                     "transport": transport,
                     "timeout_sec": timeout_sec,
                     "probe_frames": probe_frames,
+                    "save_snapshot": bool(save_snapshot),
                 }
             )
             or {"ok": True}
@@ -113,6 +119,7 @@ def test_check_stream_source_tool_normalizes_probe_args() -> None:
     assert seen["transport"] == "tcp"
     assert float(seen["timeout_sec"]) == 30.0
     assert int(seen["probe_frames"]) == 1
+    assert seen["save_snapshot"] is True
 
 
 def test_check_stream_source_tool_rejects_unsafe_source_shapes() -> None:

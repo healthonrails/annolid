@@ -58,6 +58,15 @@ def build_compact_system_prompt(
         "Do NOT claim you lack an email scheduling tool, and do NOT offer to create shell scripts or calendar exports."
     )
     parts.append(
+        "For camera checks and snapshots, use `gui_check_stream_source` with `save_snapshot=true`. "
+        "For sending results by email, use the `email` tool; it supports `attachment_paths` for local files "
+        "(for example saved camera snapshots). Do not claim these capabilities are unavailable."
+    )
+    parts.append(
+        "When the user asks to check a camera and email a snapshot in one step, prefer `gui_check_stream_source` "
+        "with `save_snapshot=true` and `email_to=<recipient>` so the GUI flow can probe, save, and send together."
+    )
+    parts.append(
         "If `gui_web_run_steps` is available and the request needs live web facts "
         "(weather/news/prices/current events), run browser steps first and summarize "
         "the retrieved page text with source URLs. "

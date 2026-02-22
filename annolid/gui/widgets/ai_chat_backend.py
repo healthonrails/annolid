@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import logging
+import re
 import time
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -48,6 +49,7 @@ from annolid.core.agent.tools.clawhub import (
 )
 from annolid.core.agent.tools.pdf import DownloadPdfTool
 from annolid.core.agent.tools.filesystem import RenameFileTool
+from annolid.core.agent.tools.email import EmailTool
 from annolid.core.agent.utils import get_agent_workspace_path
 from annolid.core.agent.gui_backend.commands import (
     looks_like_local_access_refusal,
@@ -1836,8 +1838,12 @@ class StreamingChatTask(QRunnable):
         bot_email_report: bool = False,
         bot_email_to: str = "",
     ) -> Dict[str, Any]:
+        resolved_camera_source = self._resolve_preferred_camera_source(
+            camera_source,
+            prefer_network=True,
+        )
         return gui_start_realtime_stream_tool(
-            camera_source=camera_source,
+            camera_source=resolved_camera_source,
             model_name=model_name,
             target_behaviors=target_behaviors,
             confidence_threshold=confidence_threshold,
@@ -1896,21 +1902,200 @@ class StreamingChatTask(QRunnable):
             invoke_widget_json_slot=self._invoke_widget_json_slot
         )
 
-    def _tool_gui_check_stream_source(
+    async def _tool_gui_check_stream_source(
         self,
         *,
         camera_source: str = "",
         rtsp_transport: str = "auto",
         timeout_sec: float = 3.0,
         probe_frames: int = 3,
+        save_snapshot: bool = False,
+        email_to: str = "",
+        email_subject: str = "",
+        email_content: str = "",
     ) -> Dict[str, Any]:
-        return gui_check_stream_source_tool(
-            camera_source=camera_source,
+        resolved_camera_source = self._resolve_preferred_camera_source(
+            camera_source,
+            prefer_network=True,
+        )
+        payload = gui_check_stream_source_tool(
+            camera_source=resolved_camera_source,
             rtsp_transport=rtsp_transport,
             timeout_sec=timeout_sec,
             probe_frames=probe_frames,
+            save_snapshot=save_snapshot,
+            email_to=email_to,
+            email_subject=email_subject,
+            email_content=email_content,
             invoke_check=self._check_stream_source_local,
         )
+        snapshot_path = str(payload.get("snapshot_path") or "").strip()
+        if payload.get("ok") and snapshot_path:
+            opened = self._invoke_widget_slot(
+                "bot_open_image",
+                QtCore.Q_ARG(str, snapshot_path),
+            )
+            payload["snapshot_opened_on_canvas"] = bool(opened)
+        email_target = str(email_to or "").strip()
+        if email_target:
+            default_subject = "Annolid camera snapshot"
+            email_result = await self._send_camera_snapshot_email(
+                to=email_target,
+                subject=str(email_subject or "").strip() or default_subject,
+                content=str(email_content or "").strip(),
+                snapshot_path=snapshot_path,
+            )
+            payload["email_to"] = email_target
+            payload["email_sent"] = bool(email_result.get("ok"))
+            payload["email_result"] = str(email_result.get("result") or "")
+        return payload
+
+    @staticmethod
+    def _is_network_camera_source(value: str) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return False
+        if re.fullmatch(r"\d{1,4}", text):
+            return False
+        if text.startswith(("~", "/", "./", "../")):
+            return False
+        return bool(re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", text))
+
+    @staticmethod
+    def _extract_camera_source_from_memory_text(text: str) -> str:
+        content = str(text or "")
+        if not content:
+            return ""
+        matches = re.findall(
+            r"\b(?:rtsp|rtsps|rtp|udp|tcp|srt|http|https)://[^\s\"'<>]+",
+            content,
+            flags=re.IGNORECASE,
+        )
+        # Prefer the most recently mentioned network stream endpoint.
+        for candidate in reversed(matches):
+            cleaned = str(candidate).strip().rstrip(").,;!?")
+            if cleaned:
+                return cleaned
+        return ""
+
+    def _resolve_preferred_camera_source(
+        self, camera_source: str, *, prefer_network: bool = True
+    ) -> str:
+        explicit = str(camera_source or "").strip()
+        if explicit:
+            return explicit
+
+        candidates: list[str] = []
+        host = getattr(self.widget, "host_window_widget", None) if self.widget else None
+        if host is None and self.widget is not None:
+            with contextlib.suppress(Exception):
+                host = self.widget.window()
+
+        if host is not None:
+            manager = getattr(host, "realtime_manager", None)
+            if manager is not None:
+                last_source = str(
+                    getattr(manager, "_last_realtime_camera_source", "") or ""
+                ).strip()
+                if last_source:
+                    candidates.append(last_source)
+                control_widget = getattr(manager, "realtime_control_widget", None)
+                camera_edit = getattr(control_widget, "camera_edit", None)
+                text_getter = getattr(camera_edit, "text", None)
+                if callable(text_getter):
+                    with contextlib.suppress(Exception):
+                        configured = str(text_getter() or "").strip()
+                        if configured:
+                            candidates.append(configured)
+            realtime_cfg = getattr(host, "_config", {}).get("realtime", {})
+            if isinstance(realtime_cfg, dict):
+                configured = str(realtime_cfg.get("camera_index", "") or "").strip()
+                if configured:
+                    candidates.append(configured)
+
+        with contextlib.suppress(Exception):
+            cfg = load_config()
+            cfg_realtime = getattr(getattr(cfg, "tools", None), "realtime", None)
+            if isinstance(cfg_realtime, dict):
+                configured = str(cfg_realtime.get("camera_index", "") or "").strip()
+                if configured:
+                    candidates.append(configured)
+
+        with contextlib.suppress(Exception):
+            workspace = get_agent_workspace_path()
+            memory_file = workspace / "memory" / "MEMORY.md"
+            if memory_file.exists():
+                text = memory_file.read_text(encoding="utf-8")
+                remembered = self._extract_camera_source_from_memory_text(text)
+                if remembered:
+                    candidates.append(remembered)
+
+        unique_candidates: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            normalized = str(candidate or "").strip()
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_candidates.append(normalized)
+
+        if prefer_network:
+            for candidate in unique_candidates:
+                if self._is_network_camera_source(candidate):
+                    return candidate
+        return unique_candidates[0] if unique_candidates else ""
+
+    async def _send_camera_snapshot_email(
+        self,
+        *,
+        to: str,
+        subject: str,
+        content: str,
+        snapshot_path: str,
+    ) -> Dict[str, Any]:
+        cfg = load_config()
+        tools_cfg = getattr(cfg, "tools", None)
+        email_cfg = getattr(tools_cfg, "email", None)
+        if email_cfg is None or not bool(getattr(email_cfg, "enabled", False)):
+            return {
+                "ok": False,
+                "result": "Error: Email channel is not enabled in Annolid settings.",
+            }
+
+        workspace = get_agent_workspace_path()
+        attachment_roots: list[str | Path] = [workspace]
+        for root in list(getattr(tools_cfg, "allowed_read_roots", []) or []):
+            if str(root).strip():
+                attachment_roots.append(root)
+
+        tool = EmailTool(
+            smtp_host=str(getattr(email_cfg, "smtp_host", "")),
+            smtp_port=int(getattr(email_cfg, "smtp_port", 587) or 587),
+            imap_host=str(getattr(email_cfg, "imap_host", "")),
+            imap_port=int(getattr(email_cfg, "imap_port", 993) or 993),
+            user=str(getattr(email_cfg, "user", "")),
+            password=str(getattr(email_cfg, "password", "")),
+            allowed_attachment_roots=attachment_roots,
+        )
+        body = str(content or "").strip()
+        if not body:
+            body = "Camera stream probe completed in Annolid."
+        if snapshot_path:
+            body += f"\n\nSnapshot: {snapshot_path}"
+        attachment_paths = [snapshot_path] if snapshot_path else []
+        result = await tool.execute(
+            to=str(to or "").strip(),
+            subject=str(subject or "").strip() or "Annolid camera snapshot",
+            content=body,
+            attachment_paths=attachment_paths,
+        )
+        return {
+            "ok": not str(result).strip().lower().startswith("error"),
+            "result": str(result or ""),
+        }
 
     def _check_stream_source_local(
         self,
@@ -1918,6 +2103,7 @@ class StreamingChatTask(QRunnable):
         rtsp_transport: str,
         timeout_sec: float,
         probe_frames: int,
+        save_snapshot: bool,
     ) -> Dict[str, Any]:
         try:
             import cv2
@@ -1974,6 +2160,18 @@ class StreamingChatTask(QRunnable):
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
             fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            snapshot_path = ""
+            if bool(got_frame) and bool(save_snapshot):
+                try:
+                    workspace = get_agent_workspace_path()
+                    snapshots_dir = workspace / "camera_snapshots"
+                    snapshots_dir.mkdir(parents=True, exist_ok=True)
+                    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    snapshot_file = snapshots_dir / f"camera_probe_{stamp}.jpg"
+                    if frame is not None and cv2.imwrite(str(snapshot_file), frame):
+                        snapshot_path = str(snapshot_file)
+                except Exception:
+                    snapshot_path = ""
             return {
                 "ok": bool(got_frame),
                 "camera_source": str(source),
@@ -1985,6 +2183,8 @@ class StreamingChatTask(QRunnable):
                 "fps": fps,
                 "timeout_sec": float(timeout_sec),
                 "probe_frames": int(probe_frames),
+                "save_snapshot": bool(save_snapshot),
+                "snapshot_path": snapshot_path,
                 "error": (
                     ""
                     if got_frame

@@ -111,6 +111,16 @@ def _normalize_threejs_example_id(value: str) -> str:
     return ""
 
 
+def _extract_email_address(text: str) -> str:
+    match = re.search(
+        r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b",
+        str(text or ""),
+    )
+    if not match:
+        return ""
+    return str(match.group(0) or "").strip()
+
+
 def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
     text = str(prompt or "").strip()
     if not text:
@@ -449,10 +459,15 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         return {"name": "stop_realtime_stream", "args": {}}
 
     check_stream_health_match = re.search(
-        r"\b(?:check|test|probe|verify)\b.*\b(?:camera|stream(?:ing)?|rtsp|rtp)\b.*\b(?:health|status|connect(?:ion|ivity)?)\b",
+        r"\b(?:check|test|probe|verify)\b.*\b(?:camera|wireless\s+camera|stream(?:ing)?|rtsp|rtp)\b.*\b(?:health|status|connect(?:ion|ivity)?|snapshot|photo|image|frame)\b",
         lower,
     )
-    if check_stream_health_match:
+    asks_for_email = bool(
+        re.search(r"\b(?:email|e-mail|mail)\b", lower)
+        and re.search(r"\b(?:send|forward|share)\b", lower)
+    )
+    parsed_email_to = _extract_email_address(text)
+    if check_stream_health_match and (not asks_for_email or parsed_email_to):
         camera_source = ""
         stream_match = re.search(
             r"\b(?:rtsp|rtsps|rtp|udp|srt|tcp)://[^\s\"'<>]+",
@@ -476,6 +491,12 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                 r"\b(?:rtsp(?:\s+over)?\s+udp|udp\s+rtsp|using\s+udp)\b", lower
             ):
                 rtsp_transport = "udp"
+        save_snapshot = bool(
+            re.search(
+                r"\b(?:save|take|capture)\b.*\b(?:snapshot|photo|image|frame)\b", lower
+            )
+            or re.search(r"\bsnapshot\b", lower)
+        )
         return {
             "name": "check_stream_source",
             "args": {
@@ -483,6 +504,8 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                 "rtsp_transport": rtsp_transport,
                 "timeout_sec": 3.0,
                 "probe_frames": 3,
+                "save_snapshot": (True if parsed_email_to else save_snapshot),
+                "email_to": parsed_email_to,
             },
         }
 
@@ -845,6 +868,12 @@ def prompt_may_need_tools(prompt: str) -> bool:
         "command",
         "pwd",
         "open",
+        "email",
+        "mail",
+        "snapshot",
+        "mjpeg",
+        "rtsp",
+        "rtp",
         "threejs",
         "three.js",
         "3d",

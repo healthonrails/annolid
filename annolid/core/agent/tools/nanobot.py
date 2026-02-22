@@ -154,6 +154,12 @@ async def register_nanobot_style_tools(
     registry.register(CronTool(send_callback=send_callback))
 
     if email_cfg and email_cfg.enabled:
+        attachment_roots: list[str | Path] = []
+        if allowed_dir is not None:
+            attachment_roots.append(allowed_dir)
+        for root in allowed_read_roots or []:
+            if str(root).strip():
+                attachment_roots.append(root)
         registry.register(
             EmailTool(
                 smtp_host=email_cfg.smtp_host,
@@ -162,6 +168,7 @@ async def register_nanobot_style_tools(
                 imap_port=email_cfg.imap_port,
                 user=email_cfg.user,
                 password=email_cfg.password,
+                allowed_attachment_roots=attachment_roots,
             )
         )
         registry.register(

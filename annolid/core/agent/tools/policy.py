@@ -70,8 +70,11 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
         "gui_list_realtime_logs",
         "gui_check_stream_source",
         "gui_save_citation",
+        "email",
+        "list_emails",
+        "read_email",
     },
-    "messaging": {"message", "spawn", "cron"},
+    "messaging": {"message", "spawn", "cron", "email", "list_emails", "read_email"},
 }
 
 
@@ -146,8 +149,15 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "gui_check_stream_source",
         "gui_save_citation",
     },
-    "group:automation": {"cron", "spawn", "google_calendar"},
-    "group:messaging": {"message"},
+    "group:automation": {
+        "cron",
+        "spawn",
+        "google_calendar",
+        "email",
+        "list_emails",
+        "read_email",
+    },
+    "group:messaging": {"message", "email", "list_emails", "read_email"},
     "group:video": {
         "video_info",
         "video_sample_frames",

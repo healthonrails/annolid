@@ -2095,6 +2095,32 @@ class AIChatWidget(QtWidgets.QWidget):
         except Exception as exc:
             self.status_label.setText(f"Bot action failed: {exc}")
 
+    @QtCore.Slot(str)
+    def bot_open_image(self, image_path: str) -> None:
+        path_text = str(image_path or "").strip()
+        if not path_text:
+            self.status_label.setText("Bot action failed: empty image path.")
+            return
+        resolved = Path(path_text).expanduser()
+        if not resolved.exists() or not resolved.is_file():
+            self.status_label.setText(
+                f"Bot action failed: image not found: {path_text}"
+            )
+            return
+        host = self.host_window_widget or self.window()
+        load_file = getattr(host, "loadFile", None)
+        if not callable(load_file):
+            self.status_label.setText("Bot action failed: image loader is unavailable.")
+            return
+        try:
+            load_file(str(resolved))
+            set_view = getattr(host, "_set_active_view", None)
+            if callable(set_view):
+                set_view("canvas")
+            self.status_label.setText(f"Opened image on canvas: {resolved.name}")
+        except Exception as exc:
+            self.status_label.setText(f"Bot action failed: {exc}")
+
     def _set_bot_action_result(self, *args: Any, **kwargs: Any) -> None:
         """
         Backward-compatible bot action result setter.
