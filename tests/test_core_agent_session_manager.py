@@ -130,3 +130,23 @@ def test_persistent_session_store_metadata_roundtrip(tmp_path: Path) -> None:
     store.update_session_metadata(session_id, {"last_consolidated": 12})
     meta = store.get_session_metadata(session_id)
     assert int(meta.get("last_consolidated") or 0) == 12
+
+
+def test_persistent_session_store_records_automation_task_runs(tmp_path: Path) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    store = PersistentSessionStore(manager)
+    session_id = "gui:auto"
+
+    store.record_automation_task_run(
+        session_id,
+        task_name="camera-check",
+        status="ok",
+        detail="snapshot sent",
+    )
+    meta = store.get_session_metadata(session_id)
+    runs = list(meta.get("automation_runs") or [])
+    assert runs
+    latest = runs[-1]
+    assert latest["task_name"] == "camera-check"
+    assert latest["status"] == "ok"
+    assert "snapshot" in latest["detail"]

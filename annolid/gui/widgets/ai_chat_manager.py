@@ -136,12 +136,32 @@ class AIChatManager(QtCore.QObject):
                     whatsapp_auto_start = bool(config.tools.whatsapp.auto_start)
                     whatsapp_start_runtime = whatsapp_enabled and whatsapp_auto_start
                     logger.info(
-                        "Background services config: email_enabled=%s whatsapp_enabled=%s whatsapp_auto_start=%s bridge_mode=%s webhook_enabled=%s",
+                        "Background services config: email_enabled=%s whatsapp_enabled=%s whatsapp_auto_start=%s bridge_mode=%s webhook_enabled=%s max_parallel_sessions=%s max_pending_messages=%s collapse_superseded_pending=%s transient_retry_attempts=%s",
                         bool(config.tools.email.enabled),
                         whatsapp_enabled,
                         whatsapp_auto_start,
                         str(config.tools.whatsapp.bridge_mode or "python"),
                         bool(config.tools.whatsapp.webhook_enabled),
+                        int(
+                            getattr(config.agents.defaults, "max_parallel_sessions", 1)
+                        ),
+                        int(
+                            getattr(
+                                config.agents.defaults, "max_pending_messages", 2048
+                            )
+                        ),
+                        bool(
+                            getattr(
+                                config.agents.defaults,
+                                "collapse_superseded_pending",
+                                True,
+                            )
+                        ),
+                        int(
+                            getattr(
+                                config.agents.defaults, "transient_retry_attempts", 2
+                            )
+                        ),
                     )
                     if not (config.tools.email.enabled or whatsapp_start_runtime):
                         logger.info("Background services disabled by config")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import MethodType
 from typing import Any, Mapping, Sequence
 
 from annolid.core.agent.bus import (
@@ -467,7 +468,19 @@ def test_agent_bus_service_uses_session_defaults_from_config() -> None:
         )
         cfg = AgentConfig()
         cfg.agents.defaults.session = SessionRoutingConfig(dm_scope="per-peer")
+        cfg.agents.defaults.max_parallel_sessions = 3
+        cfg.agents.defaults.max_pending_messages = 1024
+        cfg.agents.defaults.collapse_superseded_pending = False
+        cfg.agents.defaults.transient_retry_attempts = 5
+        cfg.agents.defaults.transient_retry_initial_backoff_s = 0.25
+        cfg.agents.defaults.transient_retry_max_backoff_s = 3.0
         svc = AgentBusService.from_agent_config(bus=bus, loop=loop, agent_config=cfg)
+        assert svc._max_parallel_sessions == 3
+        assert svc._max_pending_messages == 1024
+        assert svc._collapse_superseded_pending is False
+        assert svc._transient_retry_attempts == 5
+        assert svc._transient_retry_initial_backoff_s == 0.25
+        assert svc._transient_retry_max_backoff_s == 3.0
         await svc.start()
         try:
             for sender in ("alice", "bob"):
@@ -488,6 +501,402 @@ def test_agent_bus_service_uses_session_defaults_from_config() -> None:
             assert out1.content == "run:1"
             assert out2.content == "run:2"
             assert state["calls"] == 2
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_agent_bus_service_scheduler_overflow_returns_transport_error() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=lambda *_args, **_kwargs: {"content": "unused"},
+            model="fake",
+        )
+        svc = AgentBusService(
+            bus=bus,
+            loop=loop,
+            max_parallel_sessions=1,
+            max_pending_messages=1,
+        )
+
+        async def _fake_process(
+            self: AgentBusService,
+            inbound: InboundMessage,
+            *,
+            session_key: str | None = None,
+        ) -> None:
+            del session_key
+            await asyncio.sleep(0.2)
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=inbound.channel,
+                    chat_id=inbound.chat_id,
+                    content=str(inbound.content),
+                )
+            )
+
+        svc._process_inbound = MethodType(_fake_process, svc)
+        await svc.start()
+        try:
+            for idx in range(6):
+                await bus.publish_inbound(
+                    InboundMessage(
+                        channel="telegram",
+                        sender_id=f"alice-{idx}",
+                        chat_id=f"chat-{idx}",
+                        content=f"m-{idx}",
+                    )
+                )
+
+            messages: list[OutboundMessage] = []
+            for _ in range(6):
+                try:
+                    msg = await bus.consume_outbound(timeout_s=1.0)
+                    messages.append(msg)
+                except TimeoutError:
+                    break
+
+            dropped = [
+                m
+                for m in messages
+                if bool((m.metadata or {}).get("dropped_by_scheduler"))
+            ]
+            assert dropped
+            assert all(
+                (m.metadata or {}).get("error_type") == "transport_error"
+                for m in dropped
+            )
+            assert all(
+                (m.metadata or {}).get("turn_status") == "failed" for m in dropped
+            )
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_agent_bus_service_scheduler_serializes_same_session() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=lambda *_args, **_kwargs: {"content": "unused"},
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop, max_parallel_sessions=2)
+
+        active_by_session: dict[str, int] = {}
+        max_active_by_session: dict[str, int] = {}
+
+        async def _fake_process(
+            self: AgentBusService,
+            inbound: InboundMessage,
+            *,
+            session_key: str | None = None,
+        ) -> None:
+            key = str(session_key or "missing")
+            active = active_by_session.get(key, 0) + 1
+            active_by_session[key] = active
+            max_active_by_session[key] = max(max_active_by_session.get(key, 0), active)
+            await asyncio.sleep(0.03)
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=inbound.channel,
+                    chat_id=inbound.chat_id,
+                    content=str(inbound.content),
+                )
+            )
+            active_by_session[key] = max(0, active_by_session.get(key, 1) - 1)
+
+        svc._process_inbound = MethodType(_fake_process, svc)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="telegram",
+                    sender_id="alice",
+                    chat_id="chat-1",
+                    content="first",
+                )
+            )
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="telegram",
+                    sender_id="alice",
+                    chat_id="chat-1",
+                    content="second",
+                )
+            )
+            out1 = await bus.consume_outbound(timeout_s=1.0)
+            out2 = await bus.consume_outbound(timeout_s=1.0)
+            assert out1.content == "first"
+            assert out2.content == "second"
+            assert max(max_active_by_session.values() or [0]) == 1
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_agent_bus_service_scheduler_runs_sessions_in_parallel() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=lambda *_args, **_kwargs: {"content": "unused"},
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop, max_parallel_sessions=2)
+
+        active = 0
+        max_active = 0
+
+        async def _fake_process(
+            self: AgentBusService,
+            inbound: InboundMessage,
+            *,
+            session_key: str | None = None,
+        ) -> None:
+            del session_key
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.05)
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=inbound.channel,
+                    chat_id=inbound.chat_id,
+                    content=str(inbound.content),
+                )
+            )
+            active = max(0, active - 1)
+
+        svc._process_inbound = MethodType(_fake_process, svc)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="telegram",
+                    sender_id="alice",
+                    chat_id="chat-1",
+                    content="first",
+                )
+            )
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="telegram",
+                    sender_id="bob",
+                    chat_id="chat-2",
+                    content="second",
+                )
+            )
+            _ = await bus.consume_outbound(timeout_s=1.0)
+            _ = await bus.consume_outbound(timeout_s=1.0)
+            assert max_active >= 2
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_agent_bus_service_collapses_superseded_pending_prompts() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=lambda *_args, **_kwargs: {"content": "unused"},
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop, max_parallel_sessions=1)
+
+        async def _fake_process(
+            self: AgentBusService,
+            inbound: InboundMessage,
+            *,
+            session_key: str | None = None,
+        ) -> None:
+            del session_key
+            await asyncio.sleep(0.05)
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=inbound.channel,
+                    chat_id=inbound.chat_id,
+                    content=str(inbound.content),
+                )
+            )
+
+        svc._process_inbound = MethodType(_fake_process, svc)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="gui",
+                    sender_id="u1",
+                    chat_id="chat-1",
+                    content="first",
+                )
+            )
+            await asyncio.sleep(0.01)
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="gui",
+                    sender_id="u1",
+                    chat_id="chat-1",
+                    content="second",
+                )
+            )
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="gui",
+                    sender_id="u1",
+                    chat_id="chat-1",
+                    content="third",
+                )
+            )
+            out1 = await bus.consume_outbound(timeout_s=1.0)
+            out2 = await bus.consume_outbound(timeout_s=1.0)
+            assert out1.content == "first"
+            assert out2.content == "third"
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_agent_bus_service_preserves_pending_when_queue_keep_all() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=lambda *_args, **_kwargs: {"content": "unused"},
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop, max_parallel_sessions=1)
+
+        async def _fake_process(
+            self: AgentBusService,
+            inbound: InboundMessage,
+            *,
+            session_key: str | None = None,
+        ) -> None:
+            del session_key
+            await asyncio.sleep(0.03)
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=inbound.channel,
+                    chat_id=inbound.chat_id,
+                    content=str(inbound.content),
+                )
+            )
+
+        svc._process_inbound = MethodType(_fake_process, svc)
+        await svc.start()
+        try:
+            for text in ("first", "second", "third"):
+                await bus.publish_inbound(
+                    InboundMessage(
+                        channel="gui",
+                        sender_id="u1",
+                        chat_id="chat-1",
+                        content=text,
+                        metadata={"queue_keep_all": True},
+                    )
+                )
+            out = [await bus.consume_outbound(timeout_s=1.0) for _ in range(3)]
+            assert [m.content for m in out] == ["first", "second", "third"]
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_agent_bus_service_retries_transient_failures_with_backoff() -> None:
+    calls = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise TimeoutError("provider timeout")
+        return {"content": "ok-after-retry"}
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(
+            bus=bus,
+            loop=loop,
+            transient_retry_attempts=2,
+            transient_retry_initial_backoff_s=0.01,
+            transient_retry_max_backoff_s=0.02,
+        )
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="telegram",
+                    sender_id="alice",
+                    chat_id="chat-1",
+                    content="ping",
+                )
+            )
+            out = await bus.consume_outbound(timeout_s=1.0)
+            assert out.content == "ok-after-retry"
+            assert calls["n"] == 2
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_agent_bus_service_marks_exhausted_transient_as_transport_error() -> None:
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        raise TimeoutError("still timing out")
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(
+            bus=bus,
+            loop=loop,
+            transient_retry_attempts=1,
+            transient_retry_initial_backoff_s=0.01,
+            transient_retry_max_backoff_s=0.02,
+        )
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="telegram",
+                    sender_id="alice",
+                    chat_id="chat-1",
+                    content="ping",
+                )
+            )
+            out = await bus.consume_outbound(timeout_s=1.0)
+            assert out.content.startswith("Error:")
+            assert out.metadata.get("error_type") == "transport_error"
+            assert out.metadata.get("turn_status") == "failed"
         finally:
             await svc.stop()
 

@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import asyncio
 from annolid.utils.logger import logger
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from contextlib import suppress
 import hashlib
 import re
 import time
-from typing import Any, Optional
+from typing import Any, Deque, Optional
 
 from ..loop import AgentLoop
 from ..gui_backend.turn_state import (
     ERROR_TYPE_INTERNAL,
     ERROR_TYPE_NONE,
+    ERROR_TYPE_TRANSPORT,
     TURN_STATUS_COMPLETED,
     TURN_STATUS_FAILED,
     TURN_STATUS_RUNNING,
@@ -30,6 +31,12 @@ class AgentBusService:
         bus: MessageBus,
         loop: AgentLoop,
         max_idempotency_cache: int = 512,
+        max_parallel_sessions: int = 1,
+        max_pending_messages: int = 2048,
+        collapse_superseded_pending: bool = True,
+        transient_retry_attempts: int = 2,
+        transient_retry_initial_backoff_s: float = 0.5,
+        transient_retry_max_backoff_s: float = 4.0,
         default_dm_scope: str = "main",
         default_main_session_key: str = "",
     ) -> None:
@@ -37,14 +44,31 @@ class AgentBusService:
         self.loop = loop
         self._logger = logger
         self._max_idempotency_cache = max(16, int(max_idempotency_cache))
+        self._max_parallel_sessions = max(1, int(max_parallel_sessions))
+        self._max_pending_messages = max(1, int(max_pending_messages))
+        self._collapse_superseded_pending = bool(collapse_superseded_pending)
+        self._transient_retry_attempts = max(0, int(transient_retry_attempts))
+        self._transient_retry_initial_backoff_s = max(
+            0.0, float(transient_retry_initial_backoff_s)
+        )
+        self._transient_retry_max_backoff_s = max(
+            self._transient_retry_initial_backoff_s,
+            float(transient_retry_max_backoff_s),
+        )
         self._default_dm_scope = str(default_dm_scope or "").strip() or "main"
         self._default_main_session_key = str(default_main_session_key or "").strip()
         self._idempotency_cache: OrderedDict[str, OutboundMessage] = OrderedDict()
         self._outbound_dedupe_cache: OrderedDict[str, float] = OrderedDict()
+        self._pending_by_session: dict[str, Deque[InboundMessage]] = {}
+        self._runnable_sessions: Deque[str] = deque()
+        self._active_sessions: set[str] = set()
+        self._scheduled_count = 0
+        self._scheduler_condition = asyncio.Condition()
         self._outbound_seq = 0
         self._state_version = 0
         self._running = False
-        self._task: Optional[asyncio.Task[None]] = None
+        self._dispatcher_task: Optional[asyncio.Task[None]] = None
+        self._worker_tasks: list[asyncio.Task[None]] = []
 
     @classmethod
     def from_agent_config(
@@ -57,6 +81,12 @@ class AgentBusService:
     ) -> "AgentBusService":
         dm_scope = "main"
         main_key = "main"
+        max_parallel_sessions = 1
+        max_pending_messages = 2048
+        collapse_superseded_pending = True
+        transient_retry_attempts = 2
+        transient_retry_initial_backoff_s = 0.5
+        transient_retry_max_backoff_s = 4.0
         try:
             defaults = agent_config.agents.defaults
             session = getattr(defaults, "session", None)
@@ -65,49 +95,207 @@ class AgentBusService:
                 main_key = str(
                     getattr(session, "main_session_key", main_key) or main_key
                 )
+            max_parallel_sessions = max(
+                1, int(getattr(defaults, "max_parallel_sessions", 1))
+            )
+            max_pending_messages = max(
+                1, int(getattr(defaults, "max_pending_messages", 2048))
+            )
+            collapse_superseded_pending = bool(
+                getattr(defaults, "collapse_superseded_pending", True)
+            )
+            transient_retry_attempts = max(
+                0, int(getattr(defaults, "transient_retry_attempts", 2))
+            )
+            transient_retry_initial_backoff_s = max(
+                0.0, float(getattr(defaults, "transient_retry_initial_backoff_s", 0.5))
+            )
+            transient_retry_max_backoff_s = max(
+                transient_retry_initial_backoff_s,
+                float(getattr(defaults, "transient_retry_max_backoff_s", 4.0)),
+            )
         except Exception:
             pass
         return cls(
             bus=bus,
             loop=loop,
             max_idempotency_cache=max_idempotency_cache,
+            max_parallel_sessions=max_parallel_sessions,
+            max_pending_messages=max_pending_messages,
+            collapse_superseded_pending=collapse_superseded_pending,
+            transient_retry_attempts=transient_retry_attempts,
+            transient_retry_initial_backoff_s=transient_retry_initial_backoff_s,
+            transient_retry_max_backoff_s=transient_retry_max_backoff_s,
             default_dm_scope=dm_scope,
             default_main_session_key=main_key,
         )
 
     async def start(self) -> None:
-        if self._running and self._task is not None and not self._task.done():
+        if self._running and self._dispatcher_task is not None:
             return
         self._running = True
-        self._task = asyncio.create_task(self._run())
+        self._dispatcher_task = asyncio.create_task(self._run())
+        self._worker_tasks = [
+            asyncio.create_task(self._worker_loop(i))
+            for i in range(self._max_parallel_sessions)
+        ]
 
     async def stop(self) -> None:
         self._running = False
-        task = self._task
-        self._task = None
+        async with self._scheduler_condition:
+            self._scheduler_condition.notify_all()
+        task = self._dispatcher_task
+        self._dispatcher_task = None
         if task is not None:
             task.cancel()
+        worker_tasks = list(self._worker_tasks)
+        self._worker_tasks = []
+        for worker in worker_tasks:
+            worker.cancel()
+        if task is not None:
             with suppress(asyncio.CancelledError):
                 await task
+        for worker in worker_tasks:
+            with suppress(asyncio.CancelledError):
+                await worker
 
     async def _run(self) -> None:
         while self._running:
             try:
                 inbound = await self.bus.consume_inbound()
+                session_key = self._resolve_session_key(inbound)
                 self._logger.info(
-                    "New message from %s via %s",
+                    "Queued message from %s via %s session=%s",
                     inbound.sender_id,
                     inbound.channel,
+                    session_key,
                 )
-                await self._process_inbound(inbound)
+                await self._enqueue_for_scheduling(
+                    inbound=inbound, session_key=session_key
+                )
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 self._logger.error("Bus service loop error: %s", exc)
 
-    async def _process_inbound(self, inbound: InboundMessage) -> None:
-        session_key = self._resolve_session_key(inbound)
-        cache_key = self._idempotency_cache_key(inbound, session_key=session_key)
+    async def _worker_loop(self, worker_index: int) -> None:
+        while self._running:
+            try:
+                scheduled = await self._dequeue_scheduled_item()
+                if scheduled is None:
+                    continue
+                session_key, inbound = scheduled
+                self._logger.debug(
+                    "Worker %d handling session=%s channel=%s chat=%s",
+                    worker_index,
+                    session_key,
+                    inbound.channel,
+                    inbound.chat_id,
+                )
+                try:
+                    await self._process_inbound(inbound, session_key=session_key)
+                finally:
+                    await self._complete_scheduled_item(session_key)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                self._logger.error("Worker loop error: %s", exc)
+
+    async def _enqueue_for_scheduling(
+        self, *, inbound: InboundMessage, session_key: str
+    ) -> None:
+        overflowed = False
+        collapsed = 0
+        async with self._scheduler_condition:
+            if self._scheduled_count >= self._max_pending_messages:
+                overflowed = True
+            else:
+                queue = self._pending_by_session.setdefault(session_key, deque())
+                if (
+                    self._collapse_superseded_pending
+                    and not bool((inbound.metadata or {}).get("queue_keep_all"))
+                    and session_key in self._active_sessions
+                    and len(queue) > 0
+                ):
+                    collapsed = len(queue)
+                    queue.clear()
+                    self._scheduled_count = max(0, self._scheduled_count - collapsed)
+                queue.append(inbound)
+                self._scheduled_count += 1
+                if (
+                    session_key not in self._active_sessions
+                    and session_key not in self._runnable_sessions
+                ):
+                    self._runnable_sessions.append(session_key)
+                self._scheduler_condition.notify()
+        if overflowed:
+            await self.bus.publish_outbound(
+                self._annotate_outbound(
+                    OutboundMessage(
+                        channel=inbound.channel,
+                        chat_id=inbound.chat_id,
+                        content="System busy, please retry shortly.",
+                        metadata={
+                            "error": True,
+                            "error_type": ERROR_TYPE_TRANSPORT,
+                            "turn_status": TURN_STATUS_FAILED,
+                            "dropped_by_scheduler": True,
+                        },
+                    )
+                )
+            )
+            self._logger.warning(
+                "Dropped inbound due scheduler overflow session=%s channel=%s chat=%s",
+                session_key,
+                inbound.channel,
+                inbound.chat_id,
+            )
+        elif collapsed > 0:
+            self._logger.info(
+                "Collapsed %d superseded pending prompts session=%s",
+                collapsed,
+                session_key,
+            )
+
+    async def _dequeue_scheduled_item(self) -> Optional[tuple[str, InboundMessage]]:
+        async with self._scheduler_condition:
+            while self._running:
+                if self._runnable_sessions:
+                    session_key = self._runnable_sessions.popleft()
+                    queue = self._pending_by_session.get(session_key)
+                    if queue:
+                        inbound = queue.popleft()
+                        self._scheduled_count = max(0, self._scheduled_count - 1)
+                        self._active_sessions.add(session_key)
+                        return (session_key, inbound)
+                    self._pending_by_session.pop(session_key, None)
+                    self._active_sessions.discard(session_key)
+                    continue
+                await self._scheduler_condition.wait()
+            return None
+
+    async def _complete_scheduled_item(self, session_key: str) -> None:
+        async with self._scheduler_condition:
+            self._active_sessions.discard(session_key)
+            queue = self._pending_by_session.get(session_key)
+            if queue and len(queue) > 0:
+                self._runnable_sessions.append(session_key)
+                self._scheduler_condition.notify()
+            else:
+                self._pending_by_session.pop(session_key, None)
+
+    async def _process_inbound(
+        self,
+        inbound: InboundMessage,
+        *,
+        session_key: Optional[str] = None,
+    ) -> None:
+        resolved_session_key = str(
+            session_key or ""
+        ).strip() or self._resolve_session_key(inbound)
+        cache_key = self._idempotency_cache_key(
+            inbound, session_key=resolved_session_key
+        )
         if cache_key:
             cached = self._idempotency_cache.get(cache_key)
             if cached is not None:
@@ -140,12 +328,9 @@ class AgentBusService:
                     content=text,
                 )
 
-            result = await self.loop.run(
-                inbound.content,
-                session_id=session_key,
-                channel=inbound.channel,
-                chat_id=inbound.chat_id,
-                media=list(inbound.media or []),
+            result = await self._run_with_transient_retry(
+                inbound=inbound,
+                resolved_session_key=resolved_session_key,
                 on_progress=_on_progress,
             )
             outbound_meta = {
@@ -171,7 +356,11 @@ class AgentBusService:
                 content=f"Error: {exc}",
                 metadata={
                     "error": True,
-                    "error_type": ERROR_TYPE_INTERNAL,
+                    "error_type": (
+                        ERROR_TYPE_TRANSPORT
+                        if self._is_transient_failure(exc)
+                        else ERROR_TYPE_INTERNAL
+                    ),
                     "turn_status": TURN_STATUS_FAILED,
                 },
             )
@@ -334,3 +523,66 @@ class AgentBusService:
         if stamp is None:
             return False
         return (now - float(stamp)) <= 1.0
+
+    async def _run_with_transient_retry(
+        self,
+        *,
+        inbound: InboundMessage,
+        resolved_session_key: str,
+        on_progress,
+    ):
+        attempts = 0
+        backoff = self._transient_retry_initial_backoff_s
+        while True:
+            try:
+                return await self.loop.run(
+                    inbound.content,
+                    session_id=resolved_session_key,
+                    channel=inbound.channel,
+                    chat_id=inbound.chat_id,
+                    media=list(inbound.media or []),
+                    on_progress=on_progress,
+                )
+            except Exception as exc:
+                if (
+                    not self._is_transient_failure(exc)
+                    or attempts >= self._transient_retry_attempts
+                ):
+                    raise
+                attempts += 1
+                delay = min(backoff, self._transient_retry_max_backoff_s)
+                self._logger.warning(
+                    "Transient run failure session=%s attempt=%d/%d backoff=%.2fs error=%s",
+                    resolved_session_key,
+                    attempts,
+                    self._transient_retry_attempts,
+                    delay,
+                    exc,
+                )
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                backoff = max(delay * 2.0, self._transient_retry_initial_backoff_s)
+
+    @staticmethod
+    def _is_transient_failure(exc: Exception) -> bool:
+        if isinstance(
+            exc, (TimeoutError, ConnectionError, OSError, asyncio.TimeoutError)
+        ):
+            return True
+        text = str(exc or "").strip().lower()
+        if not text:
+            return False
+        transient_markers = (
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+            "temporary failure",
+            "rate limit",
+            "too many requests",
+            "connection reset",
+            "connection refused",
+            "try again",
+            "service unavailable",
+            "overloaded",
+        )
+        return any(marker in text for marker in transient_markers)

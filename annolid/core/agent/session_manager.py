@@ -284,6 +284,32 @@ class PersistentSessionStore:
         with self._lock:
             self._manager.update_session_metadata(session_id, updates)
 
+    def record_automation_task_run(
+        self,
+        session_id: str,
+        *,
+        task_name: str,
+        status: str,
+        detail: str = "",
+    ) -> None:
+        with self._lock:
+            session = self._manager.get_or_create(session_id)
+            runs = list(session.metadata.get("automation_runs") or [])
+            runs.append(
+                {
+                    "task_name": str(task_name or "").strip(),
+                    "status": str(status or "").strip().lower(),
+                    "detail": str(detail or "").strip(),
+                    "timestamp": _now_iso(),
+                }
+            )
+            # Keep bounded history in metadata.
+            if len(runs) > 100:
+                runs = runs[-100:]
+            session.metadata["automation_runs"] = runs
+            session.updated_at = datetime.now()
+            self._manager.save(session)
+
     @staticmethod
     def _compact_messages(
         messages: Sequence[Mapping[str, Any]],

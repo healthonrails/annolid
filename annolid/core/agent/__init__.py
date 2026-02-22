@@ -69,6 +69,7 @@ if TYPE_CHECKING:  # pragma: no cover
         AgentSessionManager,
         PersistentSessionStore,
     )
+    from .scheduler import ScheduledTask, TaskScheduler
     from .providers import (
         LLMProvider,
         LLMResponse,
@@ -156,6 +157,8 @@ __all__ = [
     "AgentSession",
     "AgentSessionManager",
     "PersistentSessionStore",
+    "ScheduledTask",
+    "TaskScheduler",
     "LLMProvider",
     "LLMResponse",
     "ToolCallRequest",
@@ -383,6 +386,14 @@ def __getattr__(name: str):  # noqa: ANN001
             "AgentSession": AgentSession,
             "AgentSessionManager": AgentSessionManager,
             "PersistentSessionStore": PersistentSessionStore,
+        }[name]
+
+    if name in {"ScheduledTask", "TaskScheduler"}:
+        from .scheduler import ScheduledTask, TaskScheduler
+
+        return {
+            "ScheduledTask": ScheduledTask,
+            "TaskScheduler": TaskScheduler,
         }[name]
 
     if name in {

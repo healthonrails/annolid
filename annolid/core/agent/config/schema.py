@@ -288,6 +288,12 @@ class AgentDefaults:
     max_tool_iterations: int = 12
     memory_window: int = 50
     session: SessionRoutingConfig = field(default_factory=SessionRoutingConfig)
+    max_parallel_sessions: int = 1
+    max_pending_messages: int = 2048
+    collapse_superseded_pending: bool = True
+    transient_retry_attempts: int = 2
+    transient_retry_initial_backoff_s: float = 0.5
+    transient_retry_max_backoff_s: float = 4.0
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "AgentDefaults":
@@ -322,6 +328,57 @@ class AgentDefaults:
                 )
             ),
             session=SessionRoutingConfig.from_dict(session_payload),
+            max_parallel_sessions=max(
+                1,
+                int(
+                    payload.get(
+                        "max_parallel_sessions",
+                        payload.get("maxParallelSessions", 1),
+                    )
+                ),
+            ),
+            max_pending_messages=max(
+                1,
+                int(
+                    payload.get(
+                        "max_pending_messages",
+                        payload.get("maxPendingMessages", 2048),
+                    )
+                ),
+            ),
+            collapse_superseded_pending=bool(
+                payload.get(
+                    "collapse_superseded_pending",
+                    payload.get("collapseSupersededPending", True),
+                )
+            ),
+            transient_retry_attempts=max(
+                0,
+                int(
+                    payload.get(
+                        "transient_retry_attempts",
+                        payload.get("transientRetryAttempts", 2),
+                    )
+                ),
+            ),
+            transient_retry_initial_backoff_s=max(
+                0.0,
+                float(
+                    payload.get(
+                        "transient_retry_initial_backoff_s",
+                        payload.get("transientRetryInitialBackoffS", 0.5),
+                    )
+                ),
+            ),
+            transient_retry_max_backoff_s=max(
+                0.0,
+                float(
+                    payload.get(
+                        "transient_retry_max_backoff_s",
+                        payload.get("transientRetryMaxBackoffS", 4.0),
+                    )
+                ),
+            ),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -333,6 +390,12 @@ class AgentDefaults:
             "max_tool_iterations": self.max_tool_iterations,
             "memory_window": self.memory_window,
             "session": self.session.to_dict(),
+            "max_parallel_sessions": self.max_parallel_sessions,
+            "max_pending_messages": self.max_pending_messages,
+            "collapse_superseded_pending": self.collapse_superseded_pending,
+            "transient_retry_attempts": self.transient_retry_attempts,
+            "transient_retry_initial_backoff_s": self.transient_retry_initial_backoff_s,
+            "transient_retry_max_backoff_s": self.transient_retry_max_backoff_s,
         }
 
 

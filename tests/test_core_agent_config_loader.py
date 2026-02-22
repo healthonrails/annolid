@@ -32,6 +32,12 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     cfg = AgentConfig()
     cfg.agents.defaults.workspace = str(tmp_path / "workspace")
     cfg.agents.defaults.model = "gemini-1.5-flash"
+    cfg.agents.defaults.max_parallel_sessions = 3
+    cfg.agents.defaults.max_pending_messages = 512
+    cfg.agents.defaults.collapse_superseded_pending = False
+    cfg.agents.defaults.transient_retry_attempts = 4
+    cfg.agents.defaults.transient_retry_initial_backoff_s = 0.2
+    cfg.agents.defaults.transient_retry_max_backoff_s = 2.0
     cfg.agents.defaults.session = SessionRoutingConfig(
         dm_scope="per-account-channel-peer",
         main_session_key="main",
@@ -80,6 +86,12 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
 
     assert loaded.agents.defaults.workspace == str(tmp_path / "workspace")
     assert loaded.agents.defaults.model == "gemini-1.5-flash"
+    assert loaded.agents.defaults.max_parallel_sessions == 3
+    assert loaded.agents.defaults.max_pending_messages == 512
+    assert loaded.agents.defaults.collapse_superseded_pending is False
+    assert loaded.agents.defaults.transient_retry_attempts == 4
+    assert loaded.agents.defaults.transient_retry_initial_backoff_s == 0.2
+    assert loaded.agents.defaults.transient_retry_max_backoff_s == 2.0
     assert loaded.agents.defaults.session.dm_scope == "per-account-channel-peer"
     assert loaded.agents.defaults.session.main_session_key == "main"
     assert loaded.providers["gemini"].api_key == "secret"
