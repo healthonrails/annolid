@@ -52,8 +52,10 @@ class AgentSessionManager:
         *,
         sessions_dir: Optional[Path] = None,
     ) -> None:
-        del workspace  # kept for API compatibility/future workspace scoping
-        base = sessions_dir or get_sessions_path()
+        if workspace is not None:
+            base = Path(workspace) / ".annolid" / "sessions"
+        else:
+            base = sessions_dir or get_sessions_path()
         self.sessions_dir = Path(base).expanduser()
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self._cache: Dict[str, AgentSession] = {}

@@ -268,7 +268,7 @@ async function boot() {
 
         console.log(`Loading Gaussian Splats: ${vertexCount} points, stride ${stride} bytes.`);
 
-        const limit = 1000000;
+        const limit = 3500000;
         const count = Math.min(vertexCount, limit);
 
         const geometry = new THREE.BufferGeometry();

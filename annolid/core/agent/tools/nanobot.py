@@ -38,7 +38,7 @@ from .git import (
 from .memory import MemoryGetTool, MemorySearchTool, MemorySetTool
 from .messaging import MessageTool, SpawnTool
 from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
-from .shell import ExecTool
+from .sandboxed_shell import SandboxedExecTool
 from .email import EmailTool, ListEmailsTool, ReadEmailTool
 from .calendar import GoogleCalendarTool
 from .camera import CameraSnapshotTool
@@ -120,7 +120,7 @@ async def register_nanobot_style_tools(
             allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots
         )
     )
-    registry.register(ExecTool())
+    registry.register(SandboxedExecTool())
     registry.register(WebSearchTool())
     registry.register(WebFetchTool())
     registry.register(DownloadUrlTool(allowed_dir=allowed_dir))

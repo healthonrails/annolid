@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import shutil
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -68,6 +69,9 @@ def _ensure_threejs_http_server() -> str:
 
                 if path.startswith("/threejs/"):
                     name = unquote(path[len("/threejs/") :]).strip().lstrip("/")
+                    if "\0" in name:
+                        self.send_error(400)
+                        return
                     if name not in {
                         "annolid_threejs_viewer.js",
                         "annolid_threejs_viewer.css",
@@ -118,6 +122,9 @@ def _ensure_threejs_http_server() -> str:
                     return
 
                 token_and_path = unquote(path[len("/model/") :]).strip()
+                if "\0" in token_and_path:
+                    self.send_error(400)
+                    return
                 parts = token_and_path.split("/", 1)
                 token = parts[0]
 
@@ -156,12 +163,12 @@ def _ensure_threejs_http_server() -> str:
                         self.send_error(403)
                         return
 
-                if not file_path.exists():
+                if not file_path.exists() or not file_path.is_file():
                     self.send_error(404)
                     return
 
                 try:
-                    payload = file_path.read_bytes()
+                    file_size = file_path.stat().st_size
                 except Exception:
                     self.send_error(404)
                     return
@@ -190,11 +197,12 @@ def _ensure_threejs_http_server() -> str:
                 self.send_header("Content-Type", content_type)
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Content-Length", str(file_size))
                 self.end_headers()
                 if send_body:
                     try:
-                        self.wfile.write(payload)
+                        with file_path.open("rb") as f:
+                            shutil.copyfileobj(f, self.wfile)
                     except Exception:
                         return
 

@@ -48,6 +48,7 @@ from .messaging import MessageTool, SpawnTool
 from .nanobot import register_nanobot_style_tools
 from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
 from .shell import ExecTool
+from .sandboxed_shell import SandboxedExecTool
 from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
 from .function_gui_core import (
     GuiContextTool,
@@ -151,6 +152,7 @@ __all__ = [
     "MemoryGetTool",
     "MemorySetTool",
     "ExecTool",
+    "SandboxedExecTool",
     "ClawHubSearchSkillsTool",
     "ClawHubInstallSkillTool",
     "clawhub_search_skills",

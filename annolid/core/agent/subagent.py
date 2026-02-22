@@ -34,6 +34,7 @@ class SubagentTask:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     finished_at: str = ""
+    inbox: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
 
 
 class SubagentManager:
@@ -70,6 +71,19 @@ class SubagentManager:
             origin_channel=origin_channel,
             origin_chat_id=origin_chat_id,
         )
+
+        # Evict old tasks to prevent memory leak in long-running sessions
+        if len(self._tasks) >= 100:
+            finished = [
+                tid
+                for tid, t in self._tasks.items()
+                if t.status not in ("running", "queued")
+            ]
+            if finished:
+                del self._tasks[finished[0]]
+            else:
+                del self._tasks[next(iter(self._tasks))]
+
         self._tasks[task_id] = meta
         bg = asyncio.create_task(self._run_subagent(meta))
         self._running[task_id] = bg
@@ -103,6 +117,14 @@ class SubagentManager:
         if task is None:
             return False
         task.cancel()
+        return True
+
+    async def send_message(self, task_id: str, message: str) -> bool:
+        """Send a message to a running subagent's inbox."""
+        meta = self._tasks.get(task_id)
+        if meta is None or meta.status != "running":
+            return False
+        await meta.inbox.put(message)
         return True
 
     async def _run_subagent(self, meta: SubagentTask) -> None:

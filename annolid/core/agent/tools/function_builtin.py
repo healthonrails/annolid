@@ -38,7 +38,7 @@ from .memory import MemoryGetTool, MemorySearchTool, MemorySetTool
 from .messaging import MessageTool, SpawnTool
 from .nanobot import register_nanobot_style_tools
 from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
-from .shell import ExecTool
+from .sandboxed_shell import SandboxedExecTool
 from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
 
 __all__ = [
@@ -71,7 +71,7 @@ __all__ = [
     "GitLogTool",
     "GitHubPrStatusTool",
     "GitHubPrChecksTool",
-    "ExecTool",
+    "SandboxedExecTool",
     "WebSearchTool",
     "WebFetchTool",
     "DownloadUrlTool",

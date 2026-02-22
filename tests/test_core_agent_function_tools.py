@@ -26,7 +26,7 @@ from annolid.core.agent.tools.function_builtin import (
     DownloadPdfTool,
     DownloadUrlTool,
     EditFileTool,
-    ExecTool,
+    SandboxedExecTool,
     ExtractPdfImagesTool,
     ExtractPdfTextTool,
     GitDiffTool,
@@ -455,9 +455,40 @@ def test_video_tools_allow_external_read_root_but_write_to_workspace(
 
 
 def test_exec_tool_guard_blocks_dangerous() -> None:
-    tool = ExecTool()
+    tool = SandboxedExecTool()
     result = asyncio.run(tool.execute(command="rm -rf /tmp/foo"))
     assert "blocked by safety guard" in result
+
+
+def test_sandboxed_exec_tool_builds_hardened_docker_command(tmp_path: Path) -> None:
+    tool = SandboxedExecTool(container_image="ubuntu:24.04")
+    cmd = tool._build_docker_command(  # noqa: SLF001 - targeted unit test
+        command="echo hi",
+        cwd_path=tmp_path.resolve(),
+    )
+    joined = " ".join(cmd)
+    assert "docker run --rm" in joined
+    assert f"-v {tmp_path.resolve()}:{tmp_path.resolve()}:ro" in joined
+    assert "--network none" in joined
+    assert "--cap-drop ALL" in joined
+    assert "--security-opt no-new-privileges" in joined
+    assert "--pids-limit 256" in joined
+    assert "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m" in joined
+    assert "ubuntu:24.04 bash -c echo hi" in joined
+
+
+def test_sandboxed_exec_tool_can_enable_writable_host_mount(tmp_path: Path) -> None:
+    tool = SandboxedExecTool(
+        container_image="ubuntu:24.04",
+        docker_host_mount_read_only=False,
+    )
+    cmd = tool._build_docker_command(  # noqa: SLF001 - targeted unit test
+        command="echo hi",
+        cwd_path=tmp_path.resolve(),
+    )
+    joined = " ".join(cmd)
+    assert f"-v {tmp_path.resolve()}:{tmp_path.resolve()}" in joined
+    assert f"-v {tmp_path.resolve()}:{tmp_path.resolve()}:ro" not in joined
 
 
 def test_web_search_tool_without_key_reports_config_error() -> None:

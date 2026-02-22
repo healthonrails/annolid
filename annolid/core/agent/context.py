@@ -126,7 +126,7 @@ class AgentContextBuilder:
             f"phrases (today/tomorrow): {now_iso} (UTC{pretty_offset}).\n\n"
             f"## Runtime\n{runtime}\n\n"
             f"## Workspace\n{workspace_path}\n"
-            "\n"
+            "You are operating within an isolated project sandbox. Do not attempt to read or modify files outside of this workspace path.\n\n"
             "For camera checks in non-GUI channels, use `camera_snapshot` to probe and save a frame, "
             "then use `email` with `attachment_paths` to send the saved snapshot.\n"
             "Do not claim these tools are unavailable before trying them.\n"
