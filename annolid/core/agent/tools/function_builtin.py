@@ -17,6 +17,7 @@ from .common import (
     _validate_url,
 )
 from .cron import CronTool
+from .automation_scheduler import AutomationSchedulerTool
 from .camera import CameraSnapshotTool
 from .filesystem import (
     EditFileTool,
@@ -81,6 +82,7 @@ __all__ = [
     "MessageTool",
     "SpawnTool",
     "CronTool",
+    "AutomationSchedulerTool",
     "CameraSnapshotTool",
     "register_nanobot_style_tools",
 ]

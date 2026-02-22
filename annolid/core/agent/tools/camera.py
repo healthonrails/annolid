@@ -76,6 +76,41 @@ def _safe_snapshot_filename(filename: str) -> str:
     return sanitized
 
 
+def _is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+        return True
+    except Exception:
+        return False
+
+
+def _resolve_snapshot_output_path(
+    *,
+    workspace_root: Path,
+    filename: str,
+) -> tuple[Path | None, str]:
+    root = Path(workspace_root).expanduser().resolve()
+    snapshots_dir = root / "camera_snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+
+    snapshots_real = snapshots_dir.resolve()
+    if not _is_relative_to(snapshots_real, root):
+        return None, "camera_snapshots directory resolves outside workspace root."
+
+    safe_filename = _safe_snapshot_filename(filename)
+    if not safe_filename:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_filename = f"camera_probe_{stamp}.jpg"
+    out_path = snapshots_real / safe_filename
+
+    parent_real = out_path.parent.resolve()
+    if not _is_relative_to(parent_real, snapshots_real):
+        return None, "Snapshot output path resolves outside camera_snapshots directory."
+    if out_path.exists() and out_path.is_symlink():
+        return None, "Snapshot output path cannot be a symlink."
+    return out_path, ""
+
+
 class CameraSnapshotTool(FunctionTool):
     def __init__(self, allowed_dir: Path | None = None):
         self._allowed_dir = (
@@ -206,13 +241,20 @@ class CameraSnapshotTool(FunctionTool):
                 )
 
             workspace = self._allowed_dir or Path.cwd()
-            snapshots_dir = workspace / "camera_snapshots"
-            snapshots_dir.mkdir(parents=True, exist_ok=True)
-            safe_filename = _safe_snapshot_filename(filename)
-            if not safe_filename:
-                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                safe_filename = f"camera_probe_{stamp}.jpg"
-            snapshot_path = snapshots_dir / safe_filename
+            snapshot_path, path_error = _resolve_snapshot_output_path(
+                workspace_root=workspace,
+                filename=filename,
+            )
+            if snapshot_path is None:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "camera_source": source_display,
+                        "opened": True,
+                        "got_frame": True,
+                        "error": path_error,
+                    }
+                )
             saved = bool(cv2.imwrite(str(snapshot_path), frame))
             if not saved:
                 return json.dumps(
@@ -258,4 +300,5 @@ __all__ = [
     "_unwrap_safelinks_url",
     "_normalize_stream_source",
     "_validate_stream_source",
+    "_resolve_snapshot_output_path",
 ]

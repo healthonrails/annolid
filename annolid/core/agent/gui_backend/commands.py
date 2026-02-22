@@ -121,6 +121,21 @@ def _extract_email_address(text: str) -> str:
     return str(match.group(0) or "").strip()
 
 
+def _parse_interval_seconds(
+    raw_value: str,
+    raw_unit: str,
+) -> float:
+    value = float(raw_value or 0)
+    if value <= 0:
+        return 0.0
+    unit = str(raw_unit or "").strip().lower()
+    if unit.startswith(("hour", "hr")):
+        return value * 3600.0
+    if unit.startswith(("minute", "min")):
+        return value * 60.0
+    return value
+
+
 def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
     text = str(prompt or "").strip()
     if not text:
@@ -457,6 +472,96 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
     )
     if stop_stream_match:
         return {"name": "stop_realtime_stream", "args": {}}
+
+    schedule_add_match = re.search(
+        r"\b(?:schedule|add)\b[\s\S]*?\b("
+        r"camera\s*check|periodic\s*report|email\s*summary"
+        r")\b[\s\S]*?\bevery\s+(\d+(?:\.\d+)?)\s*"
+        r"(seconds?|secs?|minutes?|mins?|hours?|hrs?)?\b",
+        lower,
+        flags=re.IGNORECASE,
+    )
+    if schedule_add_match:
+        task_type_text = str(schedule_add_match.group(1) or "").strip().lower()
+        if "camera" in task_type_text:
+            task_type = "camera_check"
+        elif "periodic" in task_type_text:
+            task_type = "periodic_report"
+        else:
+            task_type = "email_summary"
+        every_seconds = _parse_interval_seconds(
+            str(schedule_add_match.group(2) or "").strip(),
+            str(schedule_add_match.group(3) or "").strip(),
+        )
+        camera_source = ""
+        source_match = re.search(
+            r"\b(?:rtsp|rtsps|rtp|udp|srt|tcp|https?|http)://[^\s\"'<>]+",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if source_match:
+            camera_source = _strip_trailing_punctuation(source_match.group(0))
+        email_to = _extract_email_address(text)
+        max_runs_match = re.search(
+            r"\b(?:for|max)\s+(\d+)\s+(?:runs?|times?)\b",
+            lower,
+        )
+        return {
+            "name": "automation_schedule",
+            "args": {
+                "action": "add",
+                "task_type": task_type,
+                "name": task_type,
+                "every_seconds": every_seconds,
+                "camera_source": camera_source,
+                "email_to": email_to,
+                "run_immediately": bool(
+                    re.search(r"\b(?:start now|run now|immediately)\b", lower)
+                ),
+                "max_runs": (
+                    int(max_runs_match.group(1)) if max_runs_match is not None else None
+                ),
+            },
+        }
+
+    schedule_list_match = re.search(
+        r"\b(?:list|show)\b[\s\S]*\b(?:automation|scheduled)\b[\s\S]*\b(?:tasks?|jobs?)\b",
+        lower,
+    )
+    if schedule_list_match:
+        return {"name": "automation_schedule", "args": {"action": "list"}}
+
+    schedule_status_match = re.search(
+        r"\b(?:automation|scheduler)\b[\s\S]*\bstatus\b",
+        lower,
+    )
+    if schedule_status_match:
+        return {"name": "automation_schedule", "args": {"action": "status"}}
+
+    schedule_run_match = re.search(
+        r"\b(?:run|trigger)\b[\s\S]*\b(?:automation\s+)?(?:task|job)\s+([a-zA-Z0-9_-]+)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if schedule_run_match:
+        return {
+            "name": "automation_schedule",
+            "args": {"action": "run", "task_id": schedule_run_match.group(1).strip()},
+        }
+
+    schedule_remove_match = re.search(
+        r"\b(?:remove|delete|cancel)\b[\s\S]*\b(?:automation\s+)?(?:task|job)\s+([a-zA-Z0-9_-]+)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if schedule_remove_match:
+        return {
+            "name": "automation_schedule",
+            "args": {
+                "action": "remove",
+                "task_id": schedule_remove_match.group(1).strip(),
+            },
+        }
 
     check_stream_health_match = re.search(
         r"\b(?:check|test|probe|verify)\b.*\b(?:camera|wireless\s+camera|stream(?:ing)?|rtsp|rtp)\b.*\b(?:health|status|connect(?:ion|ivity)?|snapshot|photo|image|frame)\b",

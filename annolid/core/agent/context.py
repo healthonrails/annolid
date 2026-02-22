@@ -4,6 +4,7 @@ import base64
 import mimetypes
 import platform
 from datetime import datetime
+import re
 from pathlib import Path
 import time
 from typing import Any, List, Mapping, Optional, Sequence
@@ -92,7 +93,9 @@ class AgentContextBuilder:
         system_prompt = self.build_system_prompt(skill_names)
         if channel and chat_id:
             system_prompt += (
-                f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+                "\n\n## Current Session\n"
+                f"Channel: {self._redact_session_value(channel)}\n"
+                f"Chat ID: {self._redact_session_value(chat_id)}"
             )
         messages.append({"role": "system", "content": system_prompt})
         messages.extend([dict(m) for m in history])
@@ -161,6 +164,24 @@ class AgentContextBuilder:
             return text
         images.append({"type": "text", "text": text})
         return images
+
+    @staticmethod
+    def _redact_session_value(value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if re.fullmatch(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text):
+            local, _, domain = text.partition("@")
+            masked_local = (
+                f"{local[:2]}***{local[-1:]}" if len(local) > 3 else f"{local[:1]}***"
+            )
+            return f"{masked_local}@{domain}"
+        if len(text) <= 6:
+            return "***"
+        return f"{text[:3]}***{text[-3:]}"
+
+    def redact_session_value(self, value: str) -> str:
+        return self._redact_session_value(value)
 
     def build_user_content(
         self, text: str, media: Optional[List[str]] = None

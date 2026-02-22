@@ -201,6 +201,7 @@ def test_policy_group_automation_includes_google_calendar() -> None:
     )
     all_tools = [
         "cron",
+        "automation_schedule",
         "spawn",
         "google_calendar",
         "email",
@@ -216,6 +217,7 @@ def test_policy_group_automation_includes_google_calendar() -> None:
     )
     assert resolved.allowed_tools == {
         "cron",
+        "automation_schedule",
         "spawn",
         "google_calendar",
         "email",
@@ -230,6 +232,7 @@ def test_policy_messaging_profile_includes_camera_snapshot() -> None:
         "message",
         "spawn",
         "cron",
+        "automation_schedule",
         "email",
         "list_emails",
         "read_email",
@@ -244,10 +247,78 @@ def test_policy_messaging_profile_includes_camera_snapshot() -> None:
     )
     assert resolved.allowed_tools == {
         "message",
-        "spawn",
         "cron",
+        "automation_schedule",
         "email",
         "list_emails",
         "read_email",
         "camera_snapshot",
     }
+
+
+def test_policy_capability_profile_expression_unions_capabilities() -> None:
+    cfg = ToolsConfig(profile="capability:gui,email")
+    all_tools = [
+        "gui_context",
+        "gui_open_video",
+        "email",
+        "message",
+        "read_file",
+        "exec",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="openrouter",
+        model="gpt-5-mini",
+    )
+    assert resolved.allowed_tools == {
+        "gui_context",
+        "gui_open_video",
+        "email",
+        "message",
+    }
+
+
+def test_policy_denies_read_file_with_email_without_explicit_high_risk_intent() -> None:
+    cfg = ToolsConfig(
+        profile="minimal",
+        allow=["read_file", "email", "automation_schedule"],
+    )
+    all_tools = [
+        "gui_context",
+        "gui_shared_image_path",
+        "read_file",
+        "email",
+        "automation_schedule",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="ollama",
+        model="qwen3",
+    )
+    assert "email" in resolved.allowed_tools
+    assert "read_file" not in resolved.allowed_tools
+
+
+def test_policy_allows_high_risk_combo_with_explicit_intent_marker() -> None:
+    cfg = ToolsConfig(
+        profile="minimal",
+        allow=["read_file", "email", "automation_schedule", "intent:high-risk"],
+    )
+    all_tools = [
+        "gui_context",
+        "gui_shared_image_path",
+        "read_file",
+        "email",
+        "automation_schedule",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="ollama",
+        model="qwen3",
+    )
+    assert "email" in resolved.allowed_tools
+    assert "read_file" in resolved.allowed_tools

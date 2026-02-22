@@ -70,6 +70,7 @@ async def execute_direct_gui_command(
     list_citations: Callable[..., Any],
     add_citation_raw: Callable[..., Any],
     save_citation: Callable[..., Any],
+    automation_schedule: Callable[..., Any],
     list_dir: Callable[..., Any],
     read_file: Callable[..., Any],
     exec_command: Callable[..., Any],
@@ -527,6 +528,29 @@ async def execute_direct_gui_command(
             return "Saved citation from provided BibTeX."
         return str(payload.get("error") or "Failed to add citation from BibTeX.")
         return str(payload.get("error") or "Failed to add citation from BibTeX.")
+
+    if name == "automation_schedule":
+        payload = await _run(
+            automation_schedule,
+            action=str(args.get("action") or ""),
+            task_id=str(args.get("task_id") or ""),
+            name=str(args.get("name") or ""),
+            task_type=str(args.get("task_type") or ""),
+            every_seconds=float(args.get("every_seconds") or 0),
+            camera_source=str(args.get("camera_source") or ""),
+            email_to=str(args.get("email_to") or ""),
+            notes=str(args.get("notes") or ""),
+            run_immediately=bool(args.get("run_immediately", True)),
+            max_runs=(
+                int(args.get("max_runs"))
+                if args.get("max_runs") not in (None, "")
+                else None
+            ),
+        )
+        if payload.get("ok"):
+            result = str(payload.get("result") or "").strip()
+            return result or "Automation command completed."
+        return str(payload.get("error") or "Failed to execute automation command.")
 
     if name == "list_dir":
         payload = await _run(list_dir, str(args.get("path") or ""))

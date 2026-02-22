@@ -38,6 +38,7 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     cfg.agents.defaults.transient_retry_attempts = 4
     cfg.agents.defaults.transient_retry_initial_backoff_s = 0.2
     cfg.agents.defaults.transient_retry_max_backoff_s = 2.0
+    cfg.agents.defaults.strict_runtime_tool_guard = False
     cfg.agents.defaults.session = SessionRoutingConfig(
         dm_scope="per-account-channel-peer",
         main_session_key="main",
@@ -92,6 +93,7 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     assert loaded.agents.defaults.transient_retry_attempts == 4
     assert loaded.agents.defaults.transient_retry_initial_backoff_s == 0.2
     assert loaded.agents.defaults.transient_retry_max_backoff_s == 2.0
+    assert loaded.agents.defaults.strict_runtime_tool_guard is False
     assert loaded.agents.defaults.session.dm_scope == "per-account-channel-peer"
     assert loaded.agents.defaults.session.main_session_key == "main"
     assert loaded.providers["gemini"].api_key == "secret"

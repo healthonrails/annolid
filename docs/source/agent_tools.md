@@ -139,3 +139,42 @@ Annolid Bot can capture a snapshot from a camera stream and send it by email.
 Example bot intent:
 
 - `check wireless camera, save a snapshot, and email it to user@example.com`
+
+## Security and policy hardening (Phase 2)
+
+Adds stricter defaults for tool access and data handling:
+
+- Capability-oriented tool profiles:
+  - `gui`, `email`, `realtime`, `filesystem`
+  - explicit capability expressions are supported, for example:
+    - `capability:gui,email`
+    - `capability:gui+realtime`
+- Snapshot path hardening:
+  - `camera_snapshot` writes only under workspace `camera_snapshots/`.
+  - symlink escape paths are rejected.
+- Redaction-at-source:
+  - private/local stream endpoints are redacted in outbound content.
+  - sensitive metadata keys (for example `peer_id`, `account_id`) are redacted before publish.
+- Runtime high-risk guard:
+  - deny-by-default blocks risky multi-tool chains unless explicit intent is provided.
+  - config toggle: `agents.defaults.strict_runtime_tool_guard` (default `true`).
+
+Example config:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "strict_runtime_tool_guard": true
+    }
+  }
+}
+```
+
+Explicit high-risk intent markers supported by policy/runtime guards:
+
+- `intent:high-risk`
+- `intent:high_risk`
+- `allow:high-risk`
+- `allow_high_risk`
+- `unsafe:high-risk`

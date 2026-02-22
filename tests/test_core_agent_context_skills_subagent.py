@@ -130,6 +130,20 @@ def test_context_builder_builds_user_media_payload(tmp_path: Path) -> None:
     assert messages[-1]["content"][-1]["text"] == "describe"
 
 
+def test_context_builder_redacts_session_identifiers(tmp_path: Path) -> None:
+    ctx = AgentContextBuilder(tmp_path)
+    messages = ctx.build_messages(
+        history=[],
+        current_message="hello",
+        channel="email",
+        chat_id="user@example.com",
+    )
+    system_content = str(messages[0]["content"])
+    assert "Channel: ***" in system_content
+    assert "user@example.com" not in system_content
+    assert "us***r@example.com" in system_content
+
+
 def test_subagent_manager_runs_background_task(tmp_path: Path) -> None:
     async def fake_llm(
         messages: Sequence[Mapping[str, Any]],

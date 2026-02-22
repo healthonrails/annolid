@@ -42,10 +42,12 @@ from .shell import ExecTool
 from .email import EmailTool, ListEmailsTool, ReadEmailTool
 from .calendar import GoogleCalendarTool
 from .camera import CameraSnapshotTool
+from .automation_scheduler import AutomationSchedulerTool
 from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
 
 if TYPE_CHECKING:
     from annolid.core.agent.config.schema import CalendarToolConfig, EmailChannelConfig
+    from annolid.core.agent.scheduler import TaskScheduler
 
 
 async def register_nanobot_style_tools(
@@ -59,6 +61,7 @@ async def register_nanobot_style_tools(
     stack: Any | None = None,
     email_cfg: EmailChannelConfig | None = None,
     calendar_cfg: CalendarToolConfig | None = None,
+    task_scheduler: "TaskScheduler | None" = None,
 ) -> None:
     """Register a Nanobot-like default tool set."""
 
@@ -151,6 +154,7 @@ async def register_nanobot_style_tools(
         )
     )
     registry.register(CameraSnapshotTool(allowed_dir=allowed_dir))
+    registry.register(AutomationSchedulerTool(scheduler=task_scheduler))
     registry.register(MessageTool(send_callback=send_callback))
     registry.register(SpawnTool(spawn_callback=spawn_callback))
     registry.register(CronTool(send_callback=send_callback))

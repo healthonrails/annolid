@@ -294,6 +294,7 @@ class AgentDefaults:
     transient_retry_attempts: int = 2
     transient_retry_initial_backoff_s: float = 0.5
     transient_retry_max_backoff_s: float = 4.0
+    strict_runtime_tool_guard: bool = True
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "AgentDefaults":
@@ -379,6 +380,12 @@ class AgentDefaults:
                     )
                 ),
             ),
+            strict_runtime_tool_guard=bool(
+                payload.get(
+                    "strict_runtime_tool_guard",
+                    payload.get("strictRuntimeToolGuard", True),
+                )
+            ),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -396,6 +403,7 @@ class AgentDefaults:
             "transient_retry_attempts": self.transient_retry_attempts,
             "transient_retry_initial_backoff_s": self.transient_retry_initial_backoff_s,
             "transient_retry_max_backoff_s": self.transient_retry_max_backoff_s,
+            "strict_runtime_tool_guard": self.strict_runtime_tool_guard,
         }
 
 

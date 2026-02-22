@@ -157,6 +157,42 @@ def test_agent_bus_service_strips_model_think_blocks_from_outbound() -> None:
     asyncio.run(_run())
 
 
+def test_agent_bus_service_redacts_private_stream_endpoints_from_outbound() -> None:
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        return {"content": "Stream: rtsp://192.168.1.21:554/live/ch0"}
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="email",
+                    sender_id="alice@example.com",
+                    chat_id="alice@example.com",
+                    content="check stream",
+                )
+            )
+            out = await bus.consume_outbound(timeout_s=1.0)
+            assert "<private-host>" in out.content
+            assert "192.168.1.21" not in out.content
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
 def test_agent_bus_service_streams_intermediate_progress() -> None:
     state = {"n": 0}
 
@@ -210,6 +246,33 @@ def test_agent_bus_service_streams_intermediate_progress() -> None:
             await svc.stop()
 
     asyncio.run(_run())
+
+
+def test_agent_bus_service_redacts_sensitive_metadata_in_annotate() -> None:
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        return {"content": "ok"}
+
+    bus = MessageBus()
+    loop = AgentLoop(tools=FunctionToolRegistry(), llm_callable=fake_llm, model="fake")
+    svc = AgentBusService(bus=bus, loop=loop)
+    outbound = OutboundMessage(
+        channel="email",
+        chat_id="alice@example.com",
+        content="check http://192.168.1.21/img/video.mjpeg",
+        metadata={
+            "peer_id": "peer-123",
+            "info": "rtsp://192.168.1.21:554/stream",
+        },
+    )
+    redacted = svc._annotate_outbound(outbound)
+    assert redacted.metadata.get("peer_id") == "<redacted>"
+    assert "<private-host>" in str(redacted.metadata.get("info"))
+    assert "192.168.1.21" not in str(redacted.metadata.get("info"))
 
 
 def test_agent_bus_service_substitutes_empty_email_reply_with_fallback() -> None:

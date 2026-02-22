@@ -67,6 +67,17 @@ def build_compact_system_prompt(
         "with `save_snapshot=true` and `email_to=<recipient>` so the GUI flow can probe, save, and send together."
     )
     parts.append(
+        "Direct command aliases are supported for automation scheduling. "
+        "Use these forms when helpful: "
+        "'schedule camera check every 5 minutes', "
+        "'schedule periodic report every 10 minutes', "
+        "'schedule email summary every 1 hour', "
+        "'list automation tasks', "
+        "'automation scheduler status', "
+        "'run automation task <task_id>', "
+        "'remove automation task <task_id>'."
+    )
+    parts.append(
         "If `gui_web_run_steps` is available and the request needs live web facts "
         "(weather/news/prices/current events), run browser steps first and summarize "
         "the retrieved page text with source URLs. "

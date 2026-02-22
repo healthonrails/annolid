@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 from annolid.utils.logger import logger
 from collections import OrderedDict, deque
 from contextlib import suppress
@@ -8,6 +9,7 @@ import hashlib
 import re
 import time
 from typing import Any, Deque, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from ..loop import AgentLoop
 from ..gui_backend.turn_state import (
@@ -442,7 +444,7 @@ class AgentBusService:
         if not raw:
             return ""
         without_think = re.sub(r"<think>[\s\S]*?</think>", "", raw)
-        return str(without_think or "").strip()
+        return AgentBusService._redact_sensitive_text(str(without_think or "").strip())
 
     @staticmethod
     def _build_empty_email_fallback(inbound: InboundMessage) -> str:
@@ -488,16 +490,90 @@ class AgentBusService:
         self._outbound_seq += 1
         self._state_version += 1
         meta = dict(outbound.metadata or {})
+        meta = self._redact_sensitive_metadata(meta)
         meta.setdefault("seq", self._outbound_seq)
         meta.setdefault("state_version", self._state_version)
         return OutboundMessage(
             channel=outbound.channel,
             chat_id=outbound.chat_id,
-            content=outbound.content,
+            content=self._sanitize_outbound_content(outbound.content),
             reply_to=outbound.reply_to,
             media=list(outbound.media or []),
             metadata=meta,
         )
+
+    @staticmethod
+    def _is_private_host(host: str) -> bool:
+        text = str(host or "").strip().strip("[]").lower()
+        if not text:
+            return False
+        if text in {"localhost", "127.0.0.1", "::1"}:
+            return True
+        if text.endswith(".local") or text.endswith(".lan"):
+            return True
+        try:
+            ip = ipaddress.ip_address(text)
+            return bool(
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_reserved
+                or ip.is_multicast
+            )
+        except ValueError:
+            return False
+
+    @classmethod
+    def _redact_sensitive_url(cls, raw_url: str) -> str:
+        text = str(raw_url or "").strip()
+        if "://" not in text:
+            return text
+        with suppress(Exception):
+            parts = urlsplit(text)
+            host = str(parts.hostname or "")
+            if cls._is_private_host(host):
+                port = f":{parts.port}" if parts.port else ""
+                redacted_netloc = f"<private-host>{port}"
+                return urlunsplit(
+                    (
+                        parts.scheme,
+                        redacted_netloc,
+                        parts.path,
+                        parts.query,
+                        parts.fragment,
+                    )
+                )
+        return text
+
+    @classmethod
+    def _redact_sensitive_text(cls, text: str) -> str:
+        raw = str(text or "")
+        if not raw:
+            return ""
+        pattern = re.compile(
+            r"\b(?:https?|rtsp|rtsps|rtp|udp|tcp|srt)://[^\s<>\]\[)\"']+",
+            re.IGNORECASE,
+        )
+        return pattern.sub(lambda m: cls._redact_sensitive_url(m.group(0)), raw)
+
+    @classmethod
+    def _redact_sensitive_metadata(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            redacted: dict[str, Any] = {}
+            for key, item in value.items():
+                k = str(key)
+                if k.lower() in cls._SENSITIVE_META_KEYS:
+                    redacted[k] = "<redacted>"
+                else:
+                    redacted[k] = cls._redact_sensitive_metadata(item)
+            return redacted
+        if isinstance(value, list):
+            return [cls._redact_sensitive_metadata(v) for v in value]
+        if isinstance(value, tuple):
+            return tuple(cls._redact_sensitive_metadata(v) for v in value)
+        if isinstance(value, str):
+            return cls._redact_sensitive_text(value)
+        return value
 
     def _is_duplicate_outbound(self, outbound: OutboundMessage) -> bool:
         meta = dict(outbound.metadata or {})
@@ -542,6 +618,7 @@ class AgentBusService:
                     chat_id=inbound.chat_id,
                     media=list(inbound.media or []),
                     on_progress=on_progress,
+                    inbound_metadata=dict(inbound.metadata or {}),
                 )
             except Exception as exc:
                 if (
@@ -586,3 +663,14 @@ class AgentBusService:
             "overloaded",
         )
         return any(marker in text for marker in transient_markers)
+
+    _SENSITIVE_META_KEYS = frozenset(
+        {
+            "peer_id",
+            "account_id",
+            "workspace_id",
+            "tenant_id",
+            "channel_key",
+            "idempotency_key",
+        }
+    )

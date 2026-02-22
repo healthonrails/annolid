@@ -31,7 +31,12 @@ from .context import AgentContextBuilder
 from .memory import AgentMemoryStore
 from .providers import LiteLLMProvider, OpenAICompatProvider, resolve_openai_compat
 from .tools import FunctionToolRegistry
-from .tools.function_builtin import CronTool, MessageTool, SpawnTool
+from .tools.function_builtin import (
+    AutomationSchedulerTool,
+    CronTool,
+    MessageTool,
+    SpawnTool,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from .subagent import SubagentManager
@@ -176,6 +181,17 @@ class AgentLoop:
     """
 
     _MIN_CONSOLIDATION_TRANSCRIPT_CHARS = 64
+    _HIGH_RISK_INTENT_MARKERS = (
+        "intent:high-risk",
+        "intent:high_risk",
+        "allow:high-risk",
+        "allow_high_risk",
+        "unsafe:high-risk",
+    )
+    _HIGH_RISK_TOOL_MESSAGING = frozenset(
+        {"email", "list_emails", "read_email", "message", "camera_snapshot"}
+    )
+    _HIGH_RISK_TOOL_AUTOMATION = frozenset({"cron", "automation_schedule", "spawn"})
 
     def __init__(
         self,
@@ -197,6 +213,7 @@ class AgentLoop:
         llm_timeout_seconds: Optional[float] = None,
         tool_timeout_seconds: Optional[float] = None,
         browser_first_for_web: bool = True,
+        strict_runtime_tool_guard: bool = True,
     ) -> None:
         self._tools = tools
         runtime_cfg = resolve_agent_runtime_config(profile=profile)
@@ -232,6 +249,7 @@ class AgentLoop:
             else None
         )
         self._browser_first_for_web = bool(browser_first_for_web)
+        self._strict_runtime_tool_guard = bool(strict_runtime_tool_guard)
         self._provider_impl: Optional[Any] = None
 
         self._provider = provider
@@ -277,6 +295,7 @@ class AgentLoop:
         media: Optional[List[str]] = None,
         skill_names: Optional[List[str]] = None,
         on_progress: Optional[ProgressCallback] = None,
+        inbound_metadata: Optional[Mapping[str, Any]] = None,
     ) -> AgentLoopResult:
         run_started = time.perf_counter()
         llm_total_ms = 0.0
@@ -314,8 +333,13 @@ class AgentLoop:
             message_build_ms = (time.perf_counter() - build_started) * 1000.0
 
             tool_runs: List[AgentToolRun] = []
+            executed_tools: set[str] = set()
             final_content = ""
             stopped_reason = "done"
+            explicit_high_risk_intent = self._has_explicit_high_risk_intent(
+                user_message_text,
+                inbound_metadata=inbound_metadata,
+            )
             all_tool_definitions, tool_signature, tool_index, default_tools = (
                 self._prepare_tool_selection()
             )
@@ -408,6 +432,8 @@ class AgentLoop:
                         tool_calls=tool_calls,
                         messages=messages,
                         tool_runs=tool_runs,
+                        executed_tools=executed_tools,
+                        explicit_high_risk_intent=explicit_high_risk_intent,
                     )
                     tool_exec_total_ms += cycle_exec_ms
                     tool_call_count += cycle_call_count
@@ -573,6 +599,8 @@ class AgentLoop:
         tool_calls: Sequence[Mapping[str, Any]],
         messages: List[Dict[str, Any]],
         tool_runs: List[AgentToolRun],
+        executed_tools: set[str],
+        explicit_high_risk_intent: bool,
     ) -> tuple[float, int]:
         cycle_exec_ms = 0.0
         cycle_call_count = 0
@@ -583,13 +611,21 @@ class AgentLoop:
             args = self._normalize_args(raw_args)
             tool_started = time.perf_counter()
             try:
-                if self._tool_timeout_seconds is not None:
-                    result = await asyncio.wait_for(
-                        self._tools.execute(name, args),
-                        timeout=self._tool_timeout_seconds,
-                    )
+                block_reason = self._high_risk_block_reason(
+                    tool_name=name,
+                    executed_tools=executed_tools,
+                    explicit_high_risk_intent=explicit_high_risk_intent,
+                )
+                if block_reason:
+                    result = f"Error: {block_reason}"
                 else:
-                    result = await self._tools.execute(name, args)
+                    if self._tool_timeout_seconds is not None:
+                        result = await asyncio.wait_for(
+                            self._tools.execute(name, args),
+                            timeout=self._tool_timeout_seconds,
+                        )
+                    else:
+                        result = await self._tools.execute(name, args)
             except asyncio.TimeoutError:
                 result = (
                     f"Error: Tool '{name}' timed out after "
@@ -606,6 +642,7 @@ class AgentLoop:
             tool_elapsed_ms = (time.perf_counter() - tool_started) * 1000.0
             cycle_exec_ms += tool_elapsed_ms
             cycle_call_count += 1
+            executed_tools.add(name)
             if tool_elapsed_ms >= 500.0:
                 self._logger.info(
                     "annolid-bot profile tool session=%s model=%s iteration=%d tool=%s elapsed_ms=%.1f",
@@ -668,7 +705,9 @@ class AgentLoop:
             )
             if channel and chat_id:
                 contextual += (
-                    f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+                    "\n\n## Current Session\n"
+                    f"Channel: {self._context_builder.redact_session_value(channel)}\n"
+                    f"Chat ID: {self._context_builder.redact_session_value(chat_id)}"
                 )
             messages.append({"role": "system", "content": contextual})
         if (
@@ -708,6 +747,63 @@ class AgentLoop:
         tool_index = self._get_cached_tool_index(all_tool_definitions, tool_signature)
         default_tools = self._get_cached_default_tools(tool_index, tool_signature)
         return all_tool_definitions, tool_signature, tool_index, default_tools
+
+    @classmethod
+    def _has_explicit_high_risk_intent(
+        cls,
+        user_message: str,
+        *,
+        inbound_metadata: Optional[Mapping[str, Any]] = None,
+    ) -> bool:
+        text = str(user_message or "").strip().lower()
+        if any(marker in text for marker in cls._HIGH_RISK_INTENT_MARKERS):
+            return True
+        if re.search(
+            r"\b(i|we)\s+(explicitly\s+)?(allow|approve|authorize|consent)\b.*\b(high[\s_-]?risk|dangerous)\b",
+            text,
+        ):
+            return True
+        meta = dict(inbound_metadata or {})
+        if bool(meta.get("high_risk_intent")):
+            return True
+        for key in ("allow", "allow_patterns", "intent_markers"):
+            raw = meta.get(key)
+            if isinstance(raw, (list, tuple, set)):
+                joined = " ".join(str(v) for v in raw)
+            else:
+                joined = str(raw or "")
+            lowered = joined.lower()
+            if any(marker in lowered for marker in cls._HIGH_RISK_INTENT_MARKERS):
+                return True
+        return False
+
+    def _high_risk_block_reason(
+        self,
+        *,
+        tool_name: str,
+        executed_tools: set[str],
+        explicit_high_risk_intent: bool,
+    ) -> str:
+        if not self._strict_runtime_tool_guard:
+            return ""
+        if explicit_high_risk_intent:
+            return ""
+        candidate = set(executed_tools)
+        candidate.add(str(tool_name or "").strip())
+        has_exec = "exec" in candidate
+        has_messaging = bool(candidate.intersection(self._HIGH_RISK_TOOL_MESSAGING))
+        has_automation = bool(candidate.intersection(self._HIGH_RISK_TOOL_AUTOMATION))
+        if has_exec and (has_messaging or has_automation):
+            return (
+                "Blocked by safety policy: exec cannot be combined with "
+                "messaging/automation tools without explicit high-risk intent."
+            )
+        if "read_file" in candidate and has_messaging and has_automation:
+            return (
+                "Blocked by safety policy: read_file + messaging + automation "
+                "requires explicit high-risk intent."
+            )
+        return ""
 
     async def _disconnect_mcp(self) -> None:
         if self._mcp_stack is None:
@@ -1146,6 +1242,10 @@ class AgentLoop:
         if isinstance(spawn_tool, SpawnTool):
             spawn_tool.set_context(resolved_channel, resolved_chat_id)
 
+        automation_tool = self._tools.get("automation_schedule")
+        if isinstance(automation_tool, AutomationSchedulerTool):
+            automation_tool.set_context(resolved_channel, resolved_chat_id)
+
     def _create_default_subagent_manager(self) -> Optional["SubagentManager"]:
         try:
             from .subagent import SubagentManager, build_subagent_tools_registry
@@ -1168,6 +1268,7 @@ class AgentLoop:
                     allowed_read_roots=self._allowed_read_roots,
                     mcp_servers=self._mcp_servers,
                     llm_timeout_seconds=self._llm_timeout_seconds,
+                    strict_runtime_tool_guard=self._strict_runtime_tool_guard,
                 )
 
             return _create()

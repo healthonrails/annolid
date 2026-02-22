@@ -11,6 +11,7 @@ import numpy as np
 from annolid.core.agent.tools.camera import (
     CameraSnapshotTool,
     _normalize_stream_source,
+    _resolve_snapshot_output_path,
     _unwrap_safelinks_url,
 )
 
@@ -92,3 +93,15 @@ def test_camera_snapshot_tool_captures_frame_with_fake_cv2(
     assert payload["ok"] is True
     assert payload["snapshot_path"].endswith("camera_snapshots/probe.jpg")
     assert Path(payload["snapshot_path"]).exists()
+
+
+def test_resolve_snapshot_output_path_rejects_symlink_escape(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside_snapshots"
+    outside.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "camera_snapshots").symlink_to(outside, target_is_directory=True)
+    out, error = _resolve_snapshot_output_path(
+        workspace_root=tmp_path,
+        filename="probe.jpg",
+    )
+    assert out is None
+    assert "outside workspace root" in error

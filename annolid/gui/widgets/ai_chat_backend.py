@@ -53,6 +53,7 @@ from annolid.core.agent.tools.clawhub import (
 from annolid.core.agent.tools.pdf import DownloadPdfTool
 from annolid.core.agent.tools.filesystem import RenameFileTool
 from annolid.core.agent.tools.email import EmailTool
+from annolid.core.agent.tools.automation_scheduler import AutomationSchedulerTool
 from annolid.core.agent.utils import get_agent_workspace_path
 from annolid.core.agent.gui_backend.commands import (
     looks_like_local_access_refusal,
@@ -353,6 +354,7 @@ class _AgentExecutionContext:
     allowed_read_roots: List[str]
     tools: FunctionToolRegistry
     system_prompt: str
+    strict_runtime_tool_guard: bool
 
 
 @dataclass(frozen=True)
@@ -971,6 +973,7 @@ class StreamingChatTask(QRunnable):
             ),
             tool_timeout_seconds=self._agent_loop_tool_timeout_seconds(),
             browser_first_for_web=self._browser_first_for_web(),
+            strict_runtime_tool_guard=context.strict_runtime_tool_guard,
         )
 
     def _build_media_payload(self) -> Optional[List[str]]:
@@ -1077,6 +1080,9 @@ class StreamingChatTask(QRunnable):
             allowed_read_roots=allowed_read_roots,
             tools=tools,
             system_prompt=system_prompt,
+            strict_runtime_tool_guard=bool(
+                getattr(agent_cfg.agents.defaults, "strict_runtime_tool_guard", True)
+            ),
         )
 
     def _load_execution_prerequisites(
@@ -1701,6 +1707,7 @@ class StreamingChatTask(QRunnable):
             "list_citations": self._tool_gui_list_citations,
             "add_citation_raw": self._tool_gui_add_citation_raw,
             "save_citation": self._tool_gui_save_citation,
+            "automation_schedule": self._tool_gui_automation_schedule,
             "list_dir": self._tool_gui_list_dir,
             "read_file": self._tool_gui_read_file,
             "exec_command": self._tool_gui_exec_command,
@@ -2250,6 +2257,49 @@ class StreamingChatTask(QRunnable):
                 payload["email_sent"] = bool(email_result.get("ok"))
                 payload["email_result"] = str(email_result.get("result") or "")
         return payload
+
+    async def _tool_gui_automation_schedule(
+        self,
+        *,
+        action: str = "",
+        task_id: str = "",
+        name: str = "",
+        task_type: str = "",
+        every_seconds: float = 0.0,
+        camera_source: str = "",
+        email_to: str = "",
+        notes: str = "",
+        run_immediately: bool = True,
+        max_runs: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        host = getattr(self.widget, "host_window_widget", None) if self.widget else None
+        if host is None and self.widget is not None:
+            with contextlib.suppress(Exception):
+                host = self.widget.window()
+        manager = getattr(host, "ai_chat_manager", None) if host is not None else None
+        scheduler = getattr(manager, "_task_scheduler", None)
+        tool = AutomationSchedulerTool(scheduler=scheduler)
+        channel = "gui"
+        chat_id = "annolid_bot"
+        if isinstance(self.inbound, BusInboundMessage):
+            channel = str(self.inbound.channel or channel).strip() or channel
+            chat_id = str(self.inbound.chat_id or chat_id).strip() or chat_id
+        tool.set_context(channel, chat_id)
+        result = await tool.execute(
+            action=str(action or "").strip(),
+            task_id=str(task_id or "").strip(),
+            name=str(name or "").strip(),
+            task_type=str(task_type or "").strip(),
+            every_seconds=float(every_seconds or 0.0),
+            camera_source=str(camera_source or "").strip(),
+            email_to=str(email_to or "").strip(),
+            notes=str(notes or "").strip(),
+            run_immediately=bool(run_immediately),
+            max_runs=max_runs,
+        )
+        if str(result or "").startswith("Error:"):
+            return {"ok": False, "error": str(result)}
+        return {"ok": True, "result": str(result)}
 
     @staticmethod
     def _normalize_email_recipient(value: str) -> str:

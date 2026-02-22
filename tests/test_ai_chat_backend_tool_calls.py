@@ -200,6 +200,8 @@ def test_compact_system_prompt_includes_allowed_read_roots(tmp_path: Path) -> No
     )
     assert "Allowed Read Roots" in prompt
     assert "/Users/chenyang/Downloads/test_annolid_videos_batch" in prompt
+    assert "schedule camera check every 5 minutes" in prompt
+    assert "list automation tasks" in prompt
 
 
 def test_build_agent_context_disables_web_tools_by_default(monkeypatch) -> None:
@@ -1765,6 +1767,39 @@ def test_parse_direct_gui_command_variants() -> None:
     parsed_stop_stream = task._parse_direct_gui_command("stop realtime stream")
     assert parsed_stop_stream["name"] == "stop_realtime_stream"
 
+    parsed_schedule_camera = task._parse_direct_gui_command(
+        "schedule camera check every 5 minutes and email to user@example.com"
+    )
+    assert parsed_schedule_camera["name"] == "automation_schedule"
+    assert parsed_schedule_camera["args"]["action"] == "add"
+    assert parsed_schedule_camera["args"]["task_type"] == "camera_check"
+    assert parsed_schedule_camera["args"]["every_seconds"] == 300.0
+    assert parsed_schedule_camera["args"]["email_to"] == "user@example.com"
+
+    parsed_schedule_list = task._parse_direct_gui_command("list automation tasks")
+    assert parsed_schedule_list["name"] == "automation_schedule"
+    assert parsed_schedule_list["args"]["action"] == "list"
+
+    parsed_schedule_status = task._parse_direct_gui_command(
+        "automation scheduler status"
+    )
+    assert parsed_schedule_status["name"] == "automation_schedule"
+    assert parsed_schedule_status["args"]["action"] == "status"
+
+    parsed_schedule_run = task._parse_direct_gui_command(
+        "run automation task task_abc123"
+    )
+    assert parsed_schedule_run["name"] == "automation_schedule"
+    assert parsed_schedule_run["args"]["action"] == "run"
+    assert parsed_schedule_run["args"]["task_id"] == "task_abc123"
+
+    parsed_schedule_remove = task._parse_direct_gui_command(
+        "remove automation task task_abc123"
+    )
+    assert parsed_schedule_remove["name"] == "automation_schedule"
+    assert parsed_schedule_remove["args"]["action"] == "remove"
+    assert parsed_schedule_remove["args"]["task_id"] == "task_abc123"
+
     parsed_rename_pdf = task._parse_direct_gui_command(
         "rename this pdf with title A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf"
     )
@@ -1945,6 +1980,26 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         ],
         "bib_file": str(tmp_path / "citations.bib"),
     }
+    task._tool_gui_automation_schedule = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "result": (
+            "Created automation task 'camera_check' (id: task_abc123)"
+            if str(kwargs.get("action") or "") == "add"
+            else (
+                "Automation tasks:\n- camera_check (id: task_abc123, every=300.0s, runs=0, enabled)"
+                if str(kwargs.get("action") or "") == "list"
+                else (
+                    "Automation scheduler: tasks=1 enabled=1"
+                    if str(kwargs.get("action") or "") == "status"
+                    else (
+                        "Triggered task task_abc123"
+                        if str(kwargs.get("action") or "") == "run"
+                        else "Removed task task_abc123"
+                    )
+                )
+            )
+        ),
+    }
 
     out_pdf = asyncio.run(task._execute_direct_gui_command("open pdf"))
     assert "Opened PDF in Annolid:" in out_pdf
@@ -2049,6 +2104,34 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
     )
     assert "Found 1 citation(s):" in out_list_citations
     assert "yang2024annolid" in out_list_citations
+
+    out_schedule_add = asyncio.run(
+        task._execute_direct_gui_command(
+            "schedule camera check every 5 minutes and email to user@example.com"
+        )
+    )
+    assert "Created automation task 'camera_check'" in out_schedule_add
+
+    out_schedule_list = asyncio.run(
+        task._execute_direct_gui_command("list automation tasks")
+    )
+    assert "Automation tasks:" in out_schedule_list
+    assert "task_abc123" in out_schedule_list
+
+    out_schedule_status = asyncio.run(
+        task._execute_direct_gui_command("automation scheduler status")
+    )
+    assert "Automation scheduler: tasks=1 enabled=1" == out_schedule_status
+
+    out_schedule_run = asyncio.run(
+        task._execute_direct_gui_command("run automation task task_abc123")
+    )
+    assert "Triggered task task_abc123" == out_schedule_run
+
+    out_schedule_remove = asyncio.run(
+        task._execute_direct_gui_command("remove automation task task_abc123")
+    )
+    assert "Removed task task_abc123" == out_schedule_remove
 
 
 def test_direct_camera_email_to_me_uses_default_recipient(

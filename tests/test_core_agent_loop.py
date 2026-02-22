@@ -123,6 +123,48 @@ class _SlowTool(FunctionTool):
         return "slow-done"
 
 
+class _ExecTool(FunctionTool):
+    @property
+    def name(self) -> str:
+        return "exec"
+
+    @property
+    def description(self) -> str:
+        return "Execute shell command."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return f"exec:{kwargs.get('command', '')}"
+
+
+class _EmailTool(FunctionTool):
+    @property
+    def name(self) -> str:
+        return "email"
+
+    @property
+    def description(self) -> str:
+        return "Send email."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"to": {"type": "string"}, "body": {"type": "string"}},
+            "required": ["to", "body"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return f"email:{kwargs.get('to', '')}"
+
+
 def test_agent_loop_runs_tool_then_finishes() -> None:
     registry = FunctionToolRegistry()
     registry.register(_EchoTool())
@@ -151,6 +193,163 @@ def test_agent_loop_runs_tool_then_finishes() -> None:
     assert result.iterations == 2
     assert len(result.tool_runs) == 1
     assert result.tool_runs[0].result == "tool:hello"
+
+
+def test_agent_loop_blocks_high_risk_tool_combo_without_explicit_intent() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_ExecTool())
+    registry.register(_EmailTool())
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "exec", "arguments": {"command": "ls"}}
+                ],
+            }
+        if state["n"] == 2:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c2",
+                        "name": "email",
+                        "arguments": {"to": "a@example.com", "body": "hello"},
+                    }
+                ],
+            }
+        return {"content": "done"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    result = asyncio.run(loop.run("please do the task"))
+    assert result.content == "done"
+    assert len(result.tool_runs) == 2
+    assert result.tool_runs[0].result.startswith("exec:")
+    assert "Blocked by safety policy" in result.tool_runs[1].result
+
+
+def test_agent_loop_allows_high_risk_tool_combo_with_explicit_intent() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_ExecTool())
+    registry.register(_EmailTool())
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "exec", "arguments": {"command": "ls"}}
+                ],
+            }
+        if state["n"] == 2:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c2",
+                        "name": "email",
+                        "arguments": {"to": "a@example.com", "body": "hello"},
+                    }
+                ],
+            }
+        return {"content": "done"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    result = asyncio.run(
+        loop.run("intent:high-risk please run command and email summary")
+    )
+    assert result.content == "done"
+    assert len(result.tool_runs) == 2
+    assert result.tool_runs[0].result.startswith("exec:")
+    assert result.tool_runs[1].result.startswith("email:")
+
+
+def test_agent_loop_allows_high_risk_combo_when_guard_disabled() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_ExecTool())
+    registry.register(_EmailTool())
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "exec", "arguments": {"command": "ls"}}
+                ],
+            }
+        if state["n"] == 2:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c2",
+                        "name": "email",
+                        "arguments": {"to": "a@example.com", "body": "hello"},
+                    }
+                ],
+            }
+        return {"content": "done"}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        strict_runtime_tool_guard=False,
+    )
+    result = asyncio.run(loop.run("please do the task"))
+    assert result.content == "done"
+    assert len(result.tool_runs) == 2
+    assert result.tool_runs[0].result.startswith("exec:")
+    assert result.tool_runs[1].result.startswith("email:")
+
+
+def test_agent_loop_redacts_session_values_in_contextual_prompt(tmp_path: Path) -> None:
+    observed = {"system": ""}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+    ) -> Mapping[str, Any]:
+        del tools, model
+        observed["system"] = str(messages[0].get("content") or "")
+        return {"content": "ok"}
+
+    loop = AgentLoop(
+        tools=FunctionToolRegistry(),
+        llm_callable=fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+    )
+    _ = asyncio.run(
+        loop.run(
+            "hello", channel="email", chat_id="person@example.com", use_memory=False
+        )
+    )
+    assert "person@example.com" not in observed["system"]
+    assert "pe***n@example.com" in observed["system"]
 
 
 def test_agent_loop_emits_intermediate_progress_for_tool_calls() -> None:

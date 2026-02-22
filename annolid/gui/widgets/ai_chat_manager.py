@@ -17,6 +17,7 @@ from annolid.core.agent.channels.whatsapp_webhook_server import WhatsAppWebhookS
 from annolid.core.agent.config import load_config
 from annolid.core.agent.cron import CronJob, CronService
 from annolid.core.agent.loop import AgentLoop
+from annolid.core.agent.scheduler import ScheduledTask, TaskScheduler
 from annolid.core.agent.tools import (
     FunctionToolRegistry,
     register_nanobot_style_tools,
@@ -42,6 +43,7 @@ class AIChatManager(QtCore.QObject):
         self._whatsapp_python_bridge: Optional[WhatsAppPythonBridge] = None
         self._channel_start_task: Optional[asyncio.Task[None]] = None
         self._cron_service: Optional[CronService] = None
+        self._task_scheduler: Optional[TaskScheduler] = None
 
     def _on_dock_visibility_changed(self, visible: bool) -> None:
         if not visible:
@@ -194,16 +196,32 @@ class AIChatManager(QtCore.QObject):
                     # Setup Agent Loop for background replies
                     tools = FunctionToolRegistry()
                     calendar_cfg = getattr(config.tools, "calendar", None)
+                    self._task_scheduler = TaskScheduler(
+                        on_run=self._on_automation_task_run,
+                        tick_seconds=0.25,
+                    )
+                    await self._task_scheduler.start()
                     await register_nanobot_style_tools(
                         tools,
                         allowed_dir=get_agent_workspace_path(),
                         email_cfg=config.tools.email,
                         calendar_cfg=calendar_cfg,
+                        task_scheduler=self._task_scheduler,
                     )
 
                     # In background mode, we use a standard loop.
                     workspace = get_agent_workspace_path()
-                    loop_instance = AgentLoop(tools=tools, workspace=workspace)
+                    loop_instance = AgentLoop(
+                        tools=tools,
+                        workspace=workspace,
+                        strict_runtime_tool_guard=bool(
+                            getattr(
+                                config.agents.defaults,
+                                "strict_runtime_tool_guard",
+                                True,
+                            )
+                        ),
+                    )
                     logger.info("AgentLoop initialized with workspace: %s", workspace)
 
                     self._bus_service = AgentBusService.from_agent_config(
@@ -357,6 +375,15 @@ class AIChatManager(QtCore.QObject):
             except Exception:
                 logger.exception("Failed stopping cron service")
             self._cron_service = None
+        if self._task_scheduler is not None and self._background_loop is not None:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._task_scheduler.stop(), self._background_loop
+                )
+                fut.result(timeout=2.0)
+            except Exception:
+                logger.exception("Failed stopping task scheduler")
+            self._task_scheduler = None
         if self._bus_service is not None and self._background_loop is not None:
             try:
                 fut = asyncio.run_coroutine_threadsafe(
@@ -376,3 +403,27 @@ class AIChatManager(QtCore.QObject):
             # Don't block for too long during GUI shutdown.
             self._background_thread.join(timeout=1.0)
             self._background_thread = None
+
+    async def _on_automation_task_run(self, task: ScheduledTask) -> Optional[str]:
+        bus = self._background_bus
+        if bus is None:
+            return "Error: background bus unavailable"
+        prompt = str(task.prompt or "").strip()
+        if not prompt:
+            return "Error: empty task prompt"
+        channel = str(task.channel or "automation")
+        chat_id = str(task.chat_id or "automation")
+        await bus.publish_inbound(
+            InboundMessage(
+                channel=channel,
+                sender_id="automation_scheduler",
+                chat_id=chat_id,
+                content=prompt,
+                metadata={
+                    "automation_task_id": task.id,
+                    "automation_task_name": task.name,
+                    "automation_task_runs": int(task.runs),
+                },
+            )
+        )
+        return "Inbound generated"

@@ -26,6 +26,7 @@ from .citation import (
     BibtexUpsertEntryTool,
 )
 from .cron import CronTool
+from .automation_scheduler import AutomationSchedulerTool
 from .camera import CameraSnapshotTool
 from .calendar import GoogleCalendarTool
 from .clawhub import (
@@ -210,6 +211,7 @@ __all__ = [
     "MessageTool",
     "SpawnTool",
     "CronTool",
+    "AutomationSchedulerTool",
     "CameraSnapshotTool",
     "GoogleCalendarTool",
     "register_nanobot_style_tools",
