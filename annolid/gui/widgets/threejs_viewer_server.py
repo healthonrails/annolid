@@ -35,20 +35,34 @@ _THREEJS_ALLOWED_ASSETS = {
 }
 
 # Global Swarm State for 3D Visualizer
-_SWARM_STATE: dict[str, dict[str, str]] = {
-    "planner": {"status": "idle", "task": "Awaiting Tasks"},
-    "researcher": {"status": "idle", "task": "Idle"},
-    "coder": {"status": "idle", "task": "Idle"},
-    "reviewer": {"status": "idle", "task": "Idle"},
-}
+_SWARM_STATE: dict[str, dict[str, str]] = {}
 _SWARM_STATE_LOCK = threading.Lock()
 
 
-def update_swarm_node(node_id: str, status: str, task: str) -> None:
-    """Update the status and current task of a specific swarm agent node."""
+def update_swarm_node(
+    node_id: str,
+    status: str,
+    task: str,
+    thinking: str = "",
+    output: str = "",
+    parent: str = "",
+) -> None:
+    """Update the status, current task, thinking, and output of a specific swarm agent node."""
     with _SWARM_STATE_LOCK:
-        if node_id in _SWARM_STATE:
-            _SWARM_STATE[node_id] = {"status": status, "task": task}
+        _SWARM_STATE[node_id] = {
+            "status": status,
+            "task": task,
+            "thinking": thinking,
+            "output": output,
+            "parent": parent,
+        }
+
+
+def clear_swarm_state() -> None:
+    """Reset the global swarm state."""
+    global _SWARM_STATE
+    with _SWARM_STATE_LOCK:
+        _SWARM_STATE = {}
 
 
 def get_swarm_state() -> dict[str, dict[str, str]]:

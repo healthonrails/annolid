@@ -13,7 +13,7 @@ def fast_mode_timeout_seconds(settings: Dict[str, Any]) -> float:
     except (TypeError, ValueError):
         value = 60.0
     # Keep a sane range to avoid accidental extreme values.
-    return max(10.0, min(300.0, value))
+    return max(10.0, min(600.0, value))
 
 
 def agent_loop_llm_timeout_seconds(
@@ -25,7 +25,7 @@ def agent_loop_llm_timeout_seconds(
         if prompt_needs_tools
         else "loop_llm_timeout_seconds_no_tools"
     )
-    default = 60.0 if prompt_needs_tools else 40.0
+    default = 600.0 if prompt_needs_tools else 180.0
     raw = default
     if isinstance(agent_cfg, dict):
         raw = agent_cfg.get(key, agent_cfg.get("loop_llm_timeout_seconds", default))
@@ -33,19 +33,19 @@ def agent_loop_llm_timeout_seconds(
         value = float(raw)
     except (TypeError, ValueError):
         value = default
-    return max(5.0, min(300.0, value))
+    return max(5.0, min(1800.0, value))
 
 
 def ollama_agent_tool_timeout_seconds(settings: Dict[str, Any]) -> float:
     agent_cfg = settings.get("agent", {})
-    raw = 45.0
+    raw = 120.0
     if isinstance(agent_cfg, dict):
         raw = agent_cfg.get("ollama_tool_timeout_seconds", raw)
     try:
         value = float(raw)
     except (TypeError, ValueError):
         value = 45.0
-    return max(5.0, min(180.0, value))
+    return max(5.0, min(600.0, value))
 
 
 def agent_loop_tool_timeout_seconds(
@@ -54,14 +54,14 @@ def agent_loop_tool_timeout_seconds(
     agent_cfg = settings.get("agent", {})
     if provider == "ollama":
         return ollama_agent_tool_timeout_seconds(settings)
-    raw = 20.0
+    raw = 600.0
     if isinstance(agent_cfg, dict):
         raw = agent_cfg.get("loop_tool_timeout_seconds", raw)
     try:
         value = float(raw)
     except (TypeError, ValueError):
         value = 20.0
-    return max(3.0, min(120.0, value))
+    return max(3.0, min(1800.0, value))
 
 
 def browser_first_for_web(settings: Dict[str, Any]) -> bool:
@@ -80,7 +80,7 @@ def ollama_agent_plain_timeout_seconds(settings: Dict[str, Any]) -> float:
         value = float(raw)
     except (TypeError, ValueError):
         value = 25.0
-    return max(5.0, min(180.0, value))
+    return max(5.0, min(600.0, value))
 
 
 def ollama_plain_recovery_timeout_seconds(settings: Dict[str, Any]) -> float:
@@ -109,7 +109,7 @@ def ollama_plain_recovery_nudge_timeout_seconds(settings: Dict[str, Any]) -> flo
 
 def fallback_retry_timeout_seconds(settings: Dict[str, Any]) -> float:
     agent_cfg = settings.get("agent", {})
-    raw = 20.0
+    raw = 60.0
     if isinstance(agent_cfg, dict):
         raw = agent_cfg.get("fallback_retry_timeout_seconds", raw)
     try:
@@ -117,7 +117,7 @@ def fallback_retry_timeout_seconds(settings: Dict[str, Any]) -> float:
     except (TypeError, ValueError):
         value = 20.0
     # Keep retry short so total wall time doesn't balloon after a timeout.
-    return max(5.0, min(60.0, value))
+    return max(5.0, min(300.0, value))
 
 
 def fallback_timeout_retry_seconds(

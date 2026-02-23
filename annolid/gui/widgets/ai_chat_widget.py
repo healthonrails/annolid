@@ -812,6 +812,10 @@ class AIChatWidget(QtWidgets.QWidget):
         meta_row.setContentsMargins(4, 0, 4, 0)
         self.status_label = QtWidgets.QLabel("", self)
         self.status_label.setObjectName("chatStatusLabel")
+        self.status_label.setWordWrap(True)
+        self.status_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+        )
         meta_row.addWidget(self.status_label, 1)
 
         self.prompt_count_label = QtWidgets.QLabel("0/4000", self)
@@ -1334,6 +1338,11 @@ class AIChatWidget(QtWidgets.QWidget):
                     border-top: 1px solid {border_main};
                     border-bottom-left-radius: 12px;
                     border-bottom-right-radius: 12px;
+                }}
+                QLabel#chatStatusLabel {{
+                    color: {subtitle_fg};
+                    font-size: 11px;
+                    background: transparent;
                 }}
                 """
             )

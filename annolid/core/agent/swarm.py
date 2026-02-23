@@ -76,6 +76,19 @@ class SwarmManager:
         Runs a collaborative swarm loop where agents take turns processing the task context.
         Agents can observe each other's outputs.
         """
+        try:
+            from annolid.gui.widgets.threejs_viewer_server import (
+                clear_swarm_state,
+                update_swarm_node,
+            )
+        except ImportError:
+
+            def clear_swarm_state() -> None:
+                pass
+
+            def update_swarm_node(node_id: str, status: str, current_task: str) -> None:
+                pass
+
         if not self.agents:
             return "No agents registered in swarm."
         if max_turns <= 0:
@@ -83,6 +96,19 @@ class SwarmManager:
 
         current_context = task
         output = f"Starting swarm with task: {task}\n"
+        previous_agent_name = ""
+
+        # Clear old state and register all new agents in the visualizer immediately
+        try:
+            clear_swarm_state()
+        except Exception:
+            pass
+
+        for name, agent in self.agents.items():
+            try:
+                update_swarm_node(agent.name.lower(), "idle", "Awaiting Tasks")
+            except Exception:
+                pass
 
         for turn in range(max_turns):
             for name, agent in self.agents.items():
@@ -104,12 +130,50 @@ class SwarmManager:
                     f"If the task is fully resolved, include 'TASK COMPLETE' in your output."
                 )
 
+                def _progress_cb(text: str, p_agent=previous_agent_name) -> None:
+                    try:
+                        # Extract the thinking part if it starts with <think>
+                        thinking_match = ""
+                        if text.strip().startswith("<think>"):
+                            thinking_match = (
+                                text.replace("<think>", "")
+                                .replace("</think>", "")
+                                .strip()
+                            )
+
+                        short_thought = (
+                            (thinking_match[:100] + "...")
+                            if len(thinking_match) > 100
+                            else thinking_match
+                        )
+                        short_task = (text[:40] + "...") if len(text) > 40 else text
+
+                        update_swarm_node(
+                            agent.name.lower(),
+                            "active",
+                            f"Thinking: {short_task}",
+                            thinking=short_thought,
+                            parent=p_agent.lower() if p_agent else "",
+                        )
+                    except Exception:
+                        pass
+
                 try:
+                    update_swarm_node(
+                        agent.name.lower(),
+                        "active",
+                        "Thinking...",
+                        parent=previous_agent_name.lower()
+                        if previous_agent_name
+                        else "",
+                    )
                     result = await loop.run(
                         swarm_prompt,
                         session_id=agent.session_id,
                         system_prompt=agent.system_prompt,
                         use_memory=True,
+                        on_progress=_progress_cb,
+                        inbound_metadata={"parent_id": previous_agent_name},
                     )
                 except Exception as exc:
                     error_block = (
@@ -118,8 +182,34 @@ class SwarmManager:
                     output += error_block
                     current_context = self._append_context(current_context, error_block)
                     continue
+                finally:
+                    pass
 
                 content = str(getattr(result, "content", "") or "").strip()
+
+                # Check for thinking blocks and extract clean output
+                clean_output = content
+                thinking_block = ""
+                if "<think>" in content and "</think>" in content:
+                    parts = content.split("</think>", 1)
+                    thinking_block = parts[0].replace("<think>", "").strip()
+                    clean_output = parts[1].strip()
+
+                try:
+                    update_swarm_node(
+                        agent.name.lower(),
+                        "idle",
+                        "Awaiting Tasks",
+                        thinking=thinking_block[:100] + "..."
+                        if len(thinking_block) > 100
+                        else thinking_block,
+                        output=clean_output[:150] + "..."
+                        if len(clean_output) > 150
+                        else clean_output,
+                    )
+                except Exception:
+                    pass
+
                 if len(content) > 6000:
                     content = (
                         content[:3000] + "\n... [TRUNCATED] ...\n" + content[-3000:]
@@ -128,6 +218,7 @@ class SwarmManager:
                 turn_output = f"\n--- {agent.name} ({agent.role}) ---\n{content}\n"
                 output += turn_output
                 current_context = self._append_context(current_context, turn_output)
+                previous_agent_name = agent.name
 
                 if "TASK COMPLETE" in content:
                     output += "\nSwarm reached consensus: TASK COMPLETE."

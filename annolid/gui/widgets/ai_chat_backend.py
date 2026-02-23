@@ -743,9 +743,15 @@ class StreamingChatTask(QRunnable):
         return gui_ollama_agent_tool_timeout_seconds(self.settings)
 
     def _agent_loop_tool_timeout_seconds(self) -> float:
-        return gui_agent_loop_tool_timeout_seconds(
+        base = gui_agent_loop_tool_timeout_seconds(
             self.settings, provider=self.provider
         )
+        if self.prompt and (
+            "swarm" in self.prompt.lower() or "agents" in self.prompt.lower()
+        ):
+            # Enforce a 10-minute floor for swarm-related tool calls to prevent timeouts
+            return max(base, 600.0)
+        return base
 
     def _browser_first_for_web(self) -> bool:
         return gui_browser_first_for_web(self.settings)

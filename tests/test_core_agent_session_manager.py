@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from annolid.core.agent.loop import AgentLoop
 from annolid.core.agent.session_manager import (
@@ -43,8 +43,9 @@ def test_persistent_session_store_works_across_loop_instances(tmp_path: Path) ->
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del tools, model
+        del tools, model, on_token
         call_state["n"] += 1
         if call_state["n"] == 2:
             seen = any(

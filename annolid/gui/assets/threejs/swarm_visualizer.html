@@ -8,37 +8,59 @@
         body {
             margin: 0;
             overflow: hidden;
-            background-color: #0b0f19;
+            background-color: #050810;
             color: #ffffff;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
         }
 
         #infoPanel {
             position: absolute;
-            top: 20px;
-            left: 20px;
-            padding: 15px;
-            background: rgba(15, 20, 35, 0.85);
-            border: 1px solid rgba(100, 150, 255, 0.3);
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-            backdrop-filter: blur(8px);
-            pointer-events: none;
-            z-index: 10;
+            top: 24px;
+            left: 24px;
+            padding: 20px;
+            background: rgba(10, 15, 30, 0.7);
+            border: 1px solid rgba(100, 180, 255, 0.2);
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            pointer-events: auto;
+            z-index: 100;
+            min-width: 220px;
+            transition: all 0.3s ease;
+        }
+
+        #infoPanel:hover {
+            background: rgba(15, 25, 45, 0.8);
+            border-color: rgba(100, 180, 255, 0.4);
+            transform: translateY(-2px);
         }
 
         h1 {
-            margin: 0 0 10px 0;
-            font-size: 1.2rem;
+            margin: 0 0 12px 0;
+            font-size: 1rem;
+            font-weight: 700;
             color: #88bbff;
             text-transform: uppercase;
-            letter-spacing: 2px;
+            letter-spacing: 3px;
         }
 
         .stats {
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             color: #aaccff;
-            margin-bottom: 5px;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .stats-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #33ff66;
+            box-shadow: 0 0 10px #33ff66;
+            display: inline-block;
         }
 
         #canvasContainer {
@@ -46,26 +68,204 @@
             height: 100vh;
         }
 
+        .label-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            pointer-events: auto;
+            cursor: pointer;
+        }
+
         .label {
             color: white;
-            font-family: monospace;
-            padding: 4px 8px;
-            background: rgba(0, 0, 0, 0.6);
-            border: 1px solid #444;
-            border-radius: 4px;
+            padding: 8px 16px;
+            background: rgba(15, 20, 35, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(8px);
             pointer-events: none;
-            font-size: 14px;
-            white-space: pre-wrap;
+            font-size: 13px;
+            white-space: nowrap;
             text-align: center;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .label-container:hover .label {
+            transform: scale(1.1);
+            background: rgba(25, 35, 60, 0.9);
+            border-color: rgba(100, 180, 255, 0.5);
+            box-shadow: 0 0 20px rgba(100, 180, 255, 0.3);
+        }
+
+        .thinking-bubble {
+            font-size: 11px;
+            color: #88ccff;
+            font-style: italic;
+            margin-top: 8px;
+            background: rgba(0, 40, 80, 0.4);
+            padding: 6px 12px;
+            border-radius: 8px;
+            border-left: 3px solid #3399ff;
+            max-width: 200px;
+            max-height: 100px;
+            overflow-y: auto;
+            animation: pulseFade 2s infinite ease-in-out;
+            pointer-events: auto;
+        }
+
+        .output-bubble {
+            background: rgba(10, 15, 35, 0.95);
+            color: #ffffff;
+            border: 1px solid rgba(136, 187, 255, 0.4);
+            border-radius: 16px;
+            padding: 14px;
+            font-size: 12px;
+            line-height: 1.5;
+            max-width: 350px;
+            max-height: 250px;
+            overflow-y: auto;
+            scrollbar-width: auto;
+            /* Use standard scrollbar for better visibility */
+            scrollbar-color: #3399ff rgba(255, 255, 255, 0.05);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 20px rgba(136, 187, 255, 0.15);
+            margin-top: 12px;
+            position: relative;
+            transform-origin: top center;
+            animation: popIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            text-align: left;
+            pointer-events: auto;
+            /* Ensure it catches mouse events */
+            cursor: initial;
+            /* Don't show pointer cursor on text/bubbles */
+        }
+
+        /* Custom scrollbar for Webkit (Chrome/Safari) */
+        .output-bubble::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .output-bubble::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 4px;
+        }
+
+        .output-bubble::-webkit-scrollbar-thumb {
+            background: #3399ff;
+            border-radius: 4px;
+        }
+
+        .output-bubble::-webkit-scrollbar-thumb:hover {
+            background: #55aaff;
+        }
+
+        @keyframes popIn {
+            from {
+                transform: scale(0.6);
+                opacity: 0;
+            }
+
+            to {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+
+        @keyframes pulseFade {
+
+            0%,
+            100% {
+                opacity: 0.7;
+            }
+
+            50% {
+                opacity: 1;
+            }
+        }
+
+        #detailsPanel {
+            position: absolute;
+            bottom: 24px;
+            right: 24px;
+            width: 320px;
+            background: rgba(10, 15, 30, 0.7);
+            border: 1px solid rgba(100, 180, 255, 0.2);
+            border-radius: 16px;
+            padding: 20px;
+            backdrop-filter: blur(12px);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+            display: none;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .detail-header {
+            font-size: 0.9rem;
+            font-weight: bold;
+            color: #88bbff;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            padding-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .detail-item {
+            font-size: 0.8rem;
+            color: #ccc;
+        }
+
+        .control-btn {
+            background: rgba(100, 180, 255, 0.1);
+            border: 1px solid rgba(100, 180, 255, 0.3);
+            color: #88bbff;
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .control-btn:hover {
+            background: rgba(100, 180, 255, 0.2);
+            border-color: rgba(100, 180, 255, 0.6);
+            transform: translateY(-1px);
+        }
+
+        .control-btn.active {
+            background: rgba(100, 180, 255, 0.4);
+            color: #ffffff;
+            border-color: #88bbff;
+            box-shadow: 0 0 10px rgba(100, 180, 255, 0.3);
         }
     </style>
 </head>
 
 <body>
     <div id="infoPanel">
-        <h1>Swarm Command Center</h1>
-        <div class="stats" id="activeAgents">Active Agents: 0</div>
+        <h1>Command Center</h1>
+        <div class="stats" id="activeAgents">
+            <span class="stats-dot"></span>
+            <span>Active Agents: 0</span>
+        </div>
         <div class="stats" id="swarmStatus">Status: Awaiting Tasks</div>
+
+        <div style="margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap;">
+            <button id="btnFitAll" class="control-btn">Fit All</button>
+            <button id="btnFollow" class="control-btn active">Auto-Follow</button>
+        </div>
+    </div>
+
+    <div id="detailsPanel">
+        <div class="detail-header" id="detail-name">Agent Name <span style="font-size: 10px; opacity: 0.6;">(ID)</span>
+        </div>
+        <div class="detail-item"><strong>Role:</strong> <span id="detail-role">-</span></div>
+        <div class="detail-item"><strong>Status:</strong> <span id="detail-status">-</span></div>
+        <div class="detail-item" id="detail-logs"
+            style="max-height: 150px; overflow-y: auto; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 8px; font-family: monospace;">
+            Awaiting activity...</div>
     </div>
 
     <div id="canvasContainer"></div>
@@ -89,11 +289,11 @@
 
         // Scene Setup
         const scene = new THREE.Scene();
-        scene.fog = new THREE.FogExp2(0x0b0f19, 0.05);
+        scene.fog = new THREE.FogExp2(0x050810, 0.04);
 
         const initialViewport = getViewportSize();
-        const camera = new THREE.PerspectiveCamera(45, initialViewport.width / initialViewport.height, 0.1, 1000);
-        camera.position.set(0, 8, 15);
+        const camera = new THREE.PerspectiveCamera(40, initialViewport.width / initialViewport.height, 0.1, 1000);
+        camera.position.set(0, 10, 20);
 
         const renderer = new THREE.WebGLRenderer({
             antialias: true,
@@ -103,8 +303,8 @@
         renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         renderer.setSize(initialViewport.width, initialViewport.height);
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        renderer.toneMappingExposure = 1.2;
-        renderer.setClearColor(0x0b0f19, 1);
+        renderer.toneMappingExposure = 1.0;
+        renderer.setClearColor(0x050810, 1);
         container.appendChild(renderer.domElement);
 
         const labelRenderer = new CSS2DRenderer();
@@ -118,214 +318,564 @@
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
-        controls.maxPolarAngle = Math.PI / 2 + 0.1;
+        controls.maxPolarAngle = Math.PI / 2 + 0.05;
+        controls.minDistance = 5;
+        controls.maxDistance = 50;
 
         // Lighting
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.2);
         scene.add(ambientLight);
 
-        const dirLight = new THREE.DirectionalLight(0x88bbff, 1.5);
-        dirLight.position.set(5, 10, 7);
+        const dirLight = new THREE.DirectionalLight(0x88bbff, 1.2);
+        dirLight.position.set(5, 15, 10);
         scene.add(dirLight);
 
-        const gridHelper = new THREE.GridHelper(30, 30, 0x4466aa, 0x223355);
-        gridHelper.material.opacity = 0.3;
+        const gridHelper = new THREE.GridHelper(40, 40, 0x4488ff, 0x112244);
+        gridHelper.material.opacity = 0.15;
         gridHelper.material.transparent = true;
         scene.add(gridHelper);
 
-        // Agents Data Configuration
-        const agentData = [
-            { id: "planner", role: "Planner", color: 0x33ff66, pos: new THREE.Vector3(-4, 0, -2) },
-            { id: "researcher", role: "Researcher", color: 0x3399ff, pos: new THREE.Vector3(0, 0, -4) },
-            { id: "coder", role: "Coder", color: 0xff3366, pos: new THREE.Vector3(4, 0, -2) },
-            { id: "reviewer", role: "Reviewer", color: 0xffcc00, pos: new THREE.Vector3(0, 0, 2) }
-        ];
+        // Starfield
+        const starCount = 1500;
+        const starGeo = new THREE.BufferGeometry();
+        const starPos = new Float32Array(starCount * 3);
+        for (let i = 0; i < starCount; i++) {
+            const r = 40 + Math.random() * 60;
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.random() * Math.PI;
+            starPos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+            starPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+            starPos[i * 3 + 2] = r * Math.cos(phi);
+        }
+        starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+        const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.15, transparent: true, opacity: 0.8 });
+        const stars = new THREE.Points(starGeo, starMat);
+        scene.add(stars);
 
+        // Agents Data Configuration
         const agents = new Map();
         const agentIds = [];
         const agentOffsets = new Map();
+        let activeAgentId = null;
+        let selectedAgentId = null;
 
-        // Materials
+        // Interaction
+        const detailsPanel = document.getElementById('detailsPanel');
+        const detailName = document.getElementById('detail-name');
+        const detailRole = document.getElementById('detail-role');
+        const detailStatus = document.getElementById('detail-status');
+        const detailLogs = document.getElementById('detail-logs');
+
+        function updateDetails(id) {
+            const agent = agents.get(id);
+            if (!agent) return;
+            selectedAgentId = id;
+            detailsPanel.style.display = 'flex';
+            detailName.innerHTML = `${agent.role} <span style="font-size: 10px; opacity: 0.6;">(${id})</span>`;
+            detailRole.innerText = agent.role;
+            detailStatus.innerText = agent.state;
+            detailStatus.style.color = agent.state === 'active' ? '#33ff66' : '#aaa';
+        }
+
         const nodeGeometry = new THREE.SphereGeometry(0.8, 32, 32);
-        const ringGeometry = new THREE.RingGeometry(1.2, 1.3, 32);
+        const ringGeometry = new THREE.RingGeometry(1.2, 1.35, 64);
 
         // Core Hub
-        const hubGeo = new THREE.OctahedronGeometry(1.5, 0);
+        const hubGeo = new THREE.IcosahedronGeometry(1.5, 1);
         const hubMat = new THREE.MeshPhysicalMaterial({
-            color: 0xaaaaaa,
-            metalness: 0.9,
-            roughness: 0.1,
-            emissive: 0x222222,
-            transmission: 0.5,
-            transparent: true
+            color: 0x88bbff,
+            metalness: 1.0,
+            roughness: 0.05,
+            emissive: 0x112244,
+            emissiveIntensity: 0.5,
+            transmission: 0.8,
+            transparent: true,
+            thickness: 1.0
         });
         const hub = new THREE.Mesh(hubGeo, hubMat);
-        hub.position.set(0, 2, 0);
+        hub.position.set(0, 2.5, 0);
         scene.add(hub);
 
-        // Core light
-        const hubLight = new THREE.PointLight(0xffffff, 2, 10);
+        const hubLight = new THREE.PointLight(0x3399ff, 3, 15);
         hub.add(hubLight);
 
-        // Initialize Agents
-        agentData.forEach(data => {
-            const group = new THREE.Group();
-            group.position.copy(data.pos);
-            group.position.y = 1.5;
+        // Geometries for cute avatars
+        const bodyGeo = new THREE.SphereGeometry(0.8, 32, 32);
+        bodyGeo.scale(1, 0.85, 0.9); // Squashed for cuteness
 
-            // Core sphere
+        const eyeScleraGeo = new THREE.SphereGeometry(0.18, 16, 16);
+        const eyePupilGeo = new THREE.SphereGeometry(0.08, 16, 16);
+        const eyeWhiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        const eyeBlackMat = new THREE.MeshBasicMaterial({ color: 0x050810 });
+
+        // Initialize Agent Function
+        function createAgent(id, role, color, pos) {
+            if (agents.has(id)) return agents.get(id);
+
+            const group = new THREE.Group();
+            group.position.copy(pos);
+            group.position.y = 1.8;
+
             const mat = new THREE.MeshStandardMaterial({
-                color: data.color,
-                emissive: data.color,
-                emissiveIntensity: 0.2,
-                roughness: 0.2,
-                metalness: 0.8
+                color: color,
+                emissive: color,
+                emissiveIntensity: 0.3,
+                roughness: 0.1,
+                metalness: 0.9
             });
-            const mesh = new THREE.Mesh(nodeGeometry, mat);
+            const mesh = new THREE.Mesh(bodyGeo, mat);
             group.add(mesh);
 
-            // Orbiting ring
+            // Aura Glow
+            const glowGeo = new THREE.SphereGeometry(1.2, 32, 32);
+            const glowMat = new THREE.MeshBasicMaterial({
+                color: color,
+                transparent: true,
+                opacity: 0.05
+            });
+            const glow = new THREE.Mesh(glowGeo, glowMat);
+            group.add(glow);
+
+            // --- CUTE FACE FEATURES ---
+            const eyesGroup = new THREE.Group();
+            eyesGroup.position.set(0, 0.1, 0.65);
+            group.add(eyesGroup);
+
+            // Left Eye
+            const eyeL = new THREE.Group();
+            eyeL.position.set(-0.25, 0, 0.1);
+            const scleraL = new THREE.Mesh(eyeScleraGeo, eyeWhiteMat);
+            const pupilL = new THREE.Mesh(eyePupilGeo, eyeBlackMat);
+            pupilL.position.z = 0.12;
+            eyeL.add(scleraL);
+            eyeL.add(pupilL);
+            eyesGroup.add(eyeL);
+
+            // Right Eye
+            const eyeR = new THREE.Group();
+            eyeR.position.set(0.25, 0, 0.1);
+            const scleraR = new THREE.Mesh(eyeScleraGeo, eyeWhiteMat);
+            const pupilR = new THREE.Mesh(eyePupilGeo, eyeBlackMat);
+            pupilR.position.z = 0.12;
+            eyeR.add(scleraR);
+            eyeR.add(pupilR);
+            eyesGroup.add(eyeR);
+
+            const roleLower = role.toLowerCase();
+            // Specialized Features
+            if (roleLower.includes("planner")) {
+                const hatGeo = new THREE.CylinderGeometry(0.3, 0.5, 0.4, 32);
+                const hat = new THREE.Mesh(hatGeo, mat);
+                hat.position.set(0, 0.75, -0.1);
+                hat.rotation.x = -0.2;
+                group.add(hat);
+            } else if (roleLower.includes("researcher")) {
+                // Goggles
+                const gogGeo = new THREE.TorusGeometry(0.25, 0.05, 16, 32);
+                const gogMat = new THREE.MeshStandardMaterial({ color: 0x3399ff, metalness: 0.8, roughness: 0.2 });
+                const gogL = new THREE.Mesh(gogGeo, gogMat);
+                gogL.position.set(-0.25, 0.1, 0.65);
+                group.add(gogL);
+                const gogR = new THREE.Mesh(gogGeo, gogMat);
+                gogR.position.set(0.25, 0.1, 0.65);
+                group.add(gogR);
+            } else if (roleLower.includes("coder")) {
+                const antGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.6, 8);
+                const ant = new THREE.Mesh(antGeo, new THREE.MeshBasicMaterial({ color: 0x888888 }));
+                ant.position.set(0.1, 0.9, 0);
+                ant.rotation.z = -0.2;
+                group.add(ant);
+                const bulbGeo = new THREE.SphereGeometry(0.12, 16, 16);
+                const bulb = new THREE.Mesh(bulbGeo, new THREE.MeshBasicMaterial({ color: 0x33ff66 }));
+                bulb.position.set(0.2, 1.2, 0);
+                group.add(bulb);
+            } else if (roleLower.includes("reviewer")) {
+                // Halo
+                const haloGeo = new THREE.TorusGeometry(0.5, 0.03, 16, 64);
+                const haloMat = new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.6 });
+                const halo = new THREE.Mesh(haloGeo, haloMat);
+                halo.position.set(0, 0.9, -0.2);
+                halo.rotation.x = Math.PI / 2 - 0.2;
+                group.add(halo);
+            } else if (roleLower.includes("security")) {
+                // Shield
+                const shieldGeo = new THREE.BoxGeometry(0.4, 0.5, 0.1);
+                const shield = new THREE.Mesh(shieldGeo, mat);
+                shield.position.set(0.6, 0, 0.4);
+                shield.rotation.y = -Math.PI / 4;
+                group.add(shield);
+            }
+
             const ringMat = new THREE.MeshBasicMaterial({
-                color: data.color,
+                color: color,
                 side: THREE.DoubleSide,
                 transparent: true,
-                opacity: 0.6
+                opacity: 0.2
             });
             const ring = new THREE.Mesh(ringGeometry, ringMat);
             ring.rotation.x = Math.PI / 2;
             group.add(ring);
 
-            // Light
-            const ptLight = new THREE.PointLight(data.color, 1, 5);
-            group.add(ptLight);
+            // Label Container
+            const containerDiv = document.createElement('div');
+            containerDiv.className = 'label-container';
+            containerDiv.onclick = (e) => {
+                e.stopPropagation();
+                updateDetails(id);
+                targetCameraPos.set(pos.x, 6, pos.z + 10);
+                targetLookAt.copy(pos);
+            };
 
-            // Label
             const div = document.createElement('div');
             div.className = 'label';
-            div.innerHTML = `<strong>${data.role}</strong><br/><span style="color:#aaa;font-size:10px;">Idle</span>`;
+            div.innerHTML = `<strong>${role}</strong>`;
             div.style.borderColor = '#' + mat.color.getHexString();
-            const label = new CSS2DObject(div);
-            label.position.set(0, 1.8, 0);
+            containerDiv.appendChild(div);
+
+            const thinkingDiv = document.createElement('div');
+            thinkingDiv.className = 'thinking-bubble';
+            thinkingDiv.style.display = 'none';
+            thinkingDiv.onwheel = (e) => e.stopPropagation();
+            thinkingDiv.onclick = (e) => e.stopPropagation();
+            containerDiv.appendChild(thinkingDiv);
+
+            const outputDiv = document.createElement('div');
+            outputDiv.className = 'output-bubble';
+            outputDiv.style.display = 'none';
+            // Prevent scrolling bubble from zooming scene
+            outputDiv.onwheel = (e) => e.stopPropagation();
+            outputDiv.onclick = (e) => e.stopPropagation();
+            containerDiv.appendChild(outputDiv);
+
+            const label = new CSS2DObject(containerDiv);
+            label.position.set(0, 2.5, 0);
             group.add(label);
 
             scene.add(group);
 
-            // Connection line to hub
-            const lineMat = new THREE.LineBasicMaterial({
-                color: data.color,
-                transparent: true,
-                opacity: 0.2
-            });
+            // Base connection to hub
+            const lineMat = new THREE.LineBasicMaterial({ color: color, transparent: true, opacity: 0.1 });
             const pts = [group.position, hub.position];
             const lineGeo = new THREE.BufferGeometry().setFromPoints(pts);
             const line = new THREE.Line(lineGeo, lineMat);
             scene.add(line);
 
-            agents.set(data.id, {
-                group, mesh, ring, labelDiv: div, role: data.role, baseColor: mat.color.clone(),
-                state: 'idle', // idle, active, processing
-                targetIntensity: 0.2,
-                currentIntensity: 0.2,
-                line: line
-            });
-            agentIds.push(data.id);
-            agentOffsets.set(data.id, agentIds.length - 1);
-        });
+            // Pulse point
+            const pulseGeo = new THREE.SphereGeometry(0.1, 8, 8);
+            const pulseMat = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0 });
+            const pulse = new THREE.Mesh(pulseGeo, pulseMat);
+            scene.add(pulse);
 
-        function setAgentLabelStatus(agent, stateText, style) {
-            agent.labelDiv.innerHTML = `<strong>${agent.role}</strong><br/><span style="${style}">${stateText}</span>`;
+            const agentObj = {
+                group, mesh, ring, glow, label, labelDiv: div, thinkingDiv, outputDiv,
+                role, baseColor: mat.color.clone(),
+                state: 'idle', targetIntensity: 0.3, currentIntensity: 0.3,
+                line, pulse, pulseProgress: 0, parentId: null, collabLine: null
+            };
+            agentObj.eyesGroup = eyesGroup;
+            agents.set(id, agentObj);
+            agentIds.push(id);
+            agentOffsets.set(id, agentIds.length - 1);
+            return agentObj;
         }
 
-        // Floating particles
-        const particleCount = 100;
-        const pGeo = new THREE.BufferGeometry();
-        const pPos = new Float32Array(particleCount * 3);
-        const pVels = [];
-        for (let i = 0; i < particleCount; i++) {
-            pPos[i * 3] = (Math.random() - 0.5) * 20;
-            pPos[i * 3 + 1] = Math.random() * 8;
-            pPos[i * 3 + 2] = (Math.random() - 0.5) * 20;
-            pVels.push({
-                y: Math.random() * 0.02 + 0.01,
-                x: (Math.random() - 0.5) * 0.01
-            });
-        }
-        pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
-        const pMat = new THREE.PointsMaterial({
-            color: 0x88ccff, size: 0.1, transparent: true, opacity: 0.6
+        const targetCameraPos = new THREE.Vector3(0, 10, 25);
+        const targetLookAt = new THREE.Vector3(0, 2, 0);
+        const currentLookAt = new THREE.Vector3(0, 2, 0);
+
+        let isUserInteracting = false;
+        let lastUserInteractionTime = 0;
+        const INTERACTION_COOLDOWN = 5000; // 5 seconds
+
+        controls.addEventListener('start', () => {
+            isUserInteracting = true;
         });
-        const particles = new THREE.Points(pGeo, pMat);
-        scene.add(particles);
+
+        controls.addEventListener('end', () => {
+            lastUserInteractionTime = Date.now();
+        });
+
+        function fitView() {
+            if (agents.size === 0) {
+                targetCameraPos.set(0, 10, 25);
+                targetLookAt.set(0, 2, 0);
+                return;
+            }
+
+            const box = new THREE.Box3();
+            agents.forEach(agent => {
+                box.expandByObject(agent.group);
+            });
+
+            const center = new THREE.Vector3();
+            box.getCenter(center);
+            const size = new THREE.Vector3();
+            box.getSize(size);
+
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const fov = camera.fov * (Math.PI / 180);
+            let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
+            cameraZ *= 1.5; // Zoom out a bit
+
+            targetCameraPos.set(center.x, center.y + cameraZ * 0.4, center.z + cameraZ);
+            targetLookAt.copy(center);
+
+            // Allow auto-move to happen even if just interacted, as this is an explicit "Reset" usually
+            isUserInteracting = false;
+        }
 
         // Simulation Loop
         const clock = new THREE.Clock();
-        let animationFrameId = 0;
-        let swarmIntervalId = 0;
-
         function animate() {
-            animationFrameId = requestAnimationFrame(animate);
+            requestAnimationFrame(animate);
             const delta = clock.getDelta();
             const time = clock.getElapsedTime();
 
+            if (isUserInteracting && Date.now() - lastUserInteractionTime > INTERACTION_COOLDOWN) {
+                isUserInteracting = false;
+            }
+
             controls.update();
 
-            // Hub animation
-            hub.rotation.y += delta * 0.5;
-            hub.rotation.x += delta * 0.2;
-            hub.position.y = 2 + Math.sin(time) * 0.2;
-
-            // Particles animation
-            const positions = particles.geometry.attributes.position.array;
-            for (let i = 0; i < particleCount; i++) {
-                positions[i * 3 + 1] += pVels[i].y;
-                positions[i * 3] += pVels[i].x;
-                if (positions[i * 3 + 1] > 10) {
-                    positions[i * 3 + 1] = 0;
-                    positions[i * 3] = (Math.random() - 0.5) * 20;
-                    positions[i * 3 + 2] = (Math.random() - 0.5) * 20;
-                }
+            // Camera Smoothing
+            if (!isUserInteracting) {
+                camera.position.lerp(targetCameraPos, delta * 2.5);
+                currentLookAt.lerp(targetLookAt, delta * 3.5);
+                controls.target.copy(currentLookAt);
             }
-            particles.geometry.attributes.position.needsUpdate = true;
 
-            // Agents Animation
+            hub.rotation.y += delta * 0.4;
+            hub.rotation.z += delta * 0.15;
+            hub.position.y = 2.5 + Math.sin(time) * 0.3;
+
+            // Stars slight rotation
+            stars.rotation.y += delta * 0.02;
+
             agents.forEach((agent, id) => {
-                // Bobbing
                 const offset = agentOffsets.get(id) || 0;
-                agent.group.position.y = 1.5 + Math.sin(time * 2 + offset) * 0.1;
 
-                // Ring rotation
-                agent.ring.rotation.z += delta * (agent.state === 'active' ? 2 : 0.5);
-                agent.ring.rotation.x = Math.PI / 2 + Math.sin(time + offset) * 0.2;
+                // Wobbly Animation
+                const wobbleX = Math.sin(time * 2 + offset) * 0.05;
+                const wobbleZ = Math.cos(time * 2.5 + offset) * 0.05;
+                const bounceY = Math.sin(time * 1.5 + offset) * 0.15;
 
-                // Pulsing emission
-                if (agent.state === 'active') {
-                    agent.targetIntensity = 0.8 + Math.sin(time * 8) * 0.4;
-                    agent.line.material.opacity = 0.8;
-                } else if (agent.state === 'processing') {
-                    agent.targetIntensity = 0.5 + Math.sin(time * 4) * 0.2;
-                    agent.line.material.opacity = 0.4;
+                agent.group.position.y = 1.8 + bounceY;
+                agent.mesh.rotation.z = wobbleX;
+                agent.mesh.rotation.x = wobbleZ;
+
+                // Blinking Logic
+                if (Math.sin(time * 0.5 + offset * 10) > 0.98) {
+                    agent.eyesGroup.scale.y = 0.1;
                 } else {
-                    agent.targetIntensity = 0.2;
-                    agent.line.material.opacity = 0.1;
+                    agent.eyesGroup.scale.y = 1.0;
                 }
 
-                agent.currentIntensity += (agent.targetIntensity - agent.currentIntensity) * delta * 5;
+                agent.ring.rotation.z += delta * (agent.state === 'active' ? 4 : 0.8);
+                agent.ring.rotation.x = Math.PI / 2 + Math.sin(time + offset) * 0.4;
+
+                if (agent.state === 'active') {
+                    agent.targetIntensity = 1.2 + Math.sin(time * 12) * 0.5;
+                    agent.line.material.opacity = 0.6;
+                    agent.glow.material.opacity = 0.4 + Math.sin(time * 6) * 0.2;
+
+                    // Pulse animation
+                    agent.pulse.material.opacity = 1.0;
+                    agent.pulseProgress = (agent.pulseProgress + delta * 0.8) % 1.0;
+                    agent.pulse.position.lerpVectors(hub.position, agent.group.position, agent.pulseProgress);
+                } else {
+                    agent.targetIntensity = 0.3;
+                    agent.line.material.opacity = 0.1;
+                    agent.glow.material.opacity = 0.05;
+                    agent.pulse.material.opacity = 0;
+                }
+
+                agent.currentIntensity += (agent.targetIntensity - agent.currentIntensity) * delta * 6;
                 agent.mesh.material.emissiveIntensity = agent.currentIntensity;
 
-                // Update Line positions
                 const linePositions = agent.line.geometry.attributes.position;
                 linePositions.setXYZ(0, agent.group.position.x, agent.group.position.y, agent.group.position.z);
                 linePositions.setXYZ(1, hub.position.x, hub.position.y, hub.position.z);
                 linePositions.needsUpdate = true;
+
+                // Collab Line
+                if (agent.parentId && agents.has(agent.parentId)) {
+                    const parent = agents.get(agent.parentId);
+                    if (!agent.collabLine) {
+                        const cMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3 });
+                        const cGeo = new THREE.BufferGeometry().setFromPoints([agent.group.position, parent.group.position]);
+                        agent.collabLine = new THREE.Line(cGeo, cMat);
+                        scene.add(agent.collabLine);
+                    }
+                    const cPos = agent.collabLine.geometry.attributes.position;
+                    cPos.setXYZ(0, agent.group.position.x, agent.group.position.y, agent.group.position.z);
+                    cPos.setXYZ(1, parent.group.position.x, parent.group.position.y, parent.group.position.z);
+                    cPos.needsUpdate = true;
+                } else if (agent.collabLine) {
+                    scene.remove(agent.collabLine);
+                    agent.collabLine = null;
+                }
             });
 
             renderer.render(scene, camera);
             labelRenderer.render(scene, camera);
         }
-
         animate();
 
-        // Responsive
+        const roleColors = {
+            "planner": 0x33ff66,
+            "researcher": 0x3399ff,
+            "coder": 0xff3366,
+            "reviewer": 0xffcc00,
+            "architecture": 0xaa66ff,
+            "performance": 0xff9933,
+            "ui/ux": 0xff66cc,
+            "security": 0x55ffcc,
+            "testing": 0xccff33,
+            "documentation": 0x99ccff
+        };
+
+        function getRoleColor(role) {
+            const r = role.toLowerCase();
+            for (const [key, color] of Object.entries(roleColors)) {
+                if (r.includes(key)) return color;
+            }
+            return 0x88bbff; // Default cyan-blue
+        }
+
+        const agentPositions = new Map();
+        let positionCounter = 0;
+
+        function getStablePosition(id) {
+            if (agentPositions.has(id)) return agentPositions.get(id);
+
+            const radius = 8 + Math.floor(positionCounter / 8) * 4;
+            const angle = (positionCounter % 8) * (Math.PI / 4) + (Math.floor(positionCounter / 8) * 0.5);
+            const pos = new THREE.Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+
+            agentPositions.set(id, pos);
+            positionCounter++;
+            return pos;
+        }
+
+        const btnFitAll = document.getElementById('btnFitAll');
+        const btnFollow = document.getElementById('btnFollow');
+        let autoFollowEnabled = true;
+
+        btnFitAll.onclick = () => {
+            fitView();
+        };
+
+        btnFollow.onclick = () => {
+            autoFollowEnabled = !autoFollowEnabled;
+            btnFollow.classList.toggle('active', autoFollowEnabled);
+        };
+
+        async function fetchSwarmStatus() {
+            try {
+                const response = await fetch('/swarm/status');
+                if (!response.ok) return;
+                const state = await response.json();
+                const stateIds = Object.keys(state);
+                const now = Date.now();
+
+                const agentsCreated = stateIds.length > 0 && Array.from(agents.keys()).length === 0;
+
+                // Update lastSeen for all agents in current state
+                stateIds.forEach(id => {
+                    const agent = agents.get(id);
+                    if (agent) agent.lastSeen = now;
+                });
+
+                // Housekeeping with delayed removal (5 seconds)
+                agents.forEach((agent, id) => {
+                    if (!stateIds.includes(id)) {
+                        const timeSinceSeen = now - (agent.lastSeen || 0);
+                        if (timeSinceSeen > 5000) {
+                            scene.remove(agent.group);
+                            scene.remove(agent.line);
+                            scene.remove(agent.pulse);
+                            if (agent.collabLine) scene.remove(agent.collabLine);
+                            agents.delete(id);
+                            agentIds.splice(agentIds.indexOf(id), 1);
+                        } else {
+                            // Ghost state
+                            agent.state = 'idle';
+                            agent.targetIntensity = 0.1;
+                            agent.mesh.material.opacity = 0.3;
+                            agent.mesh.material.transparent = true;
+                        }
+                    } else {
+                        // Restore from ghost state if it was ghosting
+                        agent.mesh.material.opacity = 1.0;
+                        agent.mesh.material.transparent = false;
+                    }
+                });
+
+                stateIds.forEach((id) => {
+                    if (!agents.has(id)) {
+                        const role = id.charAt(0).toUpperCase() + id.slice(1);
+                        const pos = getStablePosition(id);
+                        const agent = createAgent(id, role, getRoleColor(role), pos);
+                        agent.lastSeen = now;
+                    }
+                });
+
+                if (agentsCreated) {
+                    setTimeout(fitView, 100);
+                }
+
+                let activeCount = 0;
+                let foundActive = false;
+
+                agents.forEach((agent, id) => {
+                    const nodeState = state[id];
+                    if (!nodeState) return;
+
+                    agent.state = nodeState.status;
+                    const thinking = nodeState.thinking || "";
+                    const output = nodeState.output || "";
+                    agent.parentId = nodeState.parent || null;
+
+                    if (agent.state === 'active') {
+                        activeCount++;
+                        foundActive = true;
+                        if (activeAgentId !== id && autoFollowEnabled) {
+                            activeAgentId = id;
+                            targetCameraPos.set(agent.group.position.x, 8, agent.group.position.z + 12);
+                            targetLookAt.copy(agent.group.position);
+                        }
+                    }
+
+                    agent.thinkingDiv.style.display = thinking ? 'block' : 'none';
+                    if (thinking) agent.thinkingDiv.innerText = thinking;
+
+                    agent.outputDiv.style.display = output ? 'block' : 'none';
+                    if (output) {
+                        agent.outputDiv.innerText = output;
+                        // Scroll to bottom of output if it's long
+                        if (agent.outputDiv.scrollHeight > agent.outputDiv.clientHeight) {
+                            agent.outputDiv.scrollTop = agent.outputDiv.scrollHeight;
+                        }
+                    }
+                });
+
+                if (!foundActive) {
+                    activeAgentId = null;
+                    if (autoFollowEnabled && !isUserInteracting && agents.size > 0) {
+                        // Fit view if no one is active but only if we haven't just moved
+                        // fitView();
+                    }
+                }
+
+                uiActiveAgents.querySelector('span:last-child').innerText = `Active Agents: ${activeCount}`;
+                uiSwarmStatus.innerText = `Status: ${foundActive ? 'Collaborating...' : 'Awaiting Tasks'}`;
+
+                if (selectedAgentId) updateDetails(selectedAgentId);
+
+            } catch (err) { console.error(err); }
+        }
+        setInterval(fetchSwarmStatus, 800);
+
         function onResize() {
             const { width, height } = getViewportSize();
             camera.aspect = width / height;
@@ -334,45 +884,6 @@
             labelRenderer.setSize(width, height);
         }
         window.addEventListener('resize', onResize);
-
-        // Fetch live Swarm status from the Annolid 3D Server
-        async function fetchSwarmStatus() {
-            try {
-                const response = await fetch('/swarm/status');
-                if (!response.ok) return;
-                const state = await response.json();
-
-                let activeCount = 0;
-                let swarmTaskText = "Awaiting Tasks";
-
-                agents.forEach((agent, id) => {
-                    const nodeState = state[id];
-                    if (nodeState) {
-                        agent.state = nodeState.status;
-                        const taskText = nodeState.task;
-
-                        if (nodeState.status === 'active') {
-                            setAgentLabelStatus(agent, taskText, 'color:#fff;font-size:11px;font-weight:bold;');
-                            swarmTaskText = taskText;
-                            activeCount++;
-                        } else if (nodeState.status === 'processing') {
-                            setAgentLabelStatus(agent, 'Processing', 'color:#ddd;font-size:10px;');
-                            activeCount++;
-                        } else {
-                            setAgentLabelStatus(agent, 'Idle', 'color:#aaa;font-size:10px;');
-                        }
-                    }
-                });
-
-                uiSwarmStatus.innerText = `Status: ${activeCount > 0 ? swarmTaskText + '...' : 'Awaiting Tasks'}`;
-                uiActiveAgents.innerText = `Active Agents: ${activeCount}`;
-            } catch (err) {
-                // Silently ignore fetch errors (e.g., if server goes down)
-            }
-        }
-
-        // Poll every 1 second
-        swarmIntervalId = setInterval(fetchSwarmStatus, 1000);
 
         function disposeScene() {
             window.removeEventListener('resize', onResize);

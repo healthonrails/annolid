@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,7 @@ class LLMProvider(ABC):
         model: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: Optional[float] = 0.7,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> LLMResponse:
         raise NotImplementedError
 

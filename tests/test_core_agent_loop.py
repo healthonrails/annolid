@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from annolid.core.agent.loop import AgentLoop, AgentMemoryConfig
 from annolid.core.agent.session_manager import (
@@ -178,8 +178,9 @@ def test_agent_loop_runs_tool_then_finishes() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del tools, model
+        del tools, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -209,8 +210,9 @@ def test_agent_loop_blocks_high_risk_tool_combo_without_explicit_intent() -> Non
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -250,8 +252,9 @@ def test_agent_loop_allows_high_risk_tool_combo_with_explicit_intent() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -293,8 +296,9 @@ def test_agent_loop_allows_high_risk_combo_when_guard_disabled() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -336,8 +340,9 @@ def test_agent_loop_redacts_session_values_in_contextual_prompt(tmp_path: Path) 
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del tools, model
+        del tools, model, on_token
         observed["system"] = str(messages[0].get("content") or "")
         return {"content": "ok"}
 
@@ -366,8 +371,9 @@ def test_agent_loop_emits_intermediate_progress_for_tool_calls() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -397,8 +403,9 @@ def test_agent_loop_progress_uses_tool_hint_when_content_empty() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -427,8 +434,9 @@ def test_agent_loop_progress_accepts_sync_callback() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -451,8 +459,9 @@ def test_agent_loop_timeout_raises_explicit_message() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         await asyncio.sleep(0.05)
         return {"content": "late"}
 
@@ -478,8 +487,9 @@ def test_agent_loop_tool_timeout_returns_error_result() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -509,8 +519,9 @@ def test_agent_loop_handles_string_tool_arguments() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -541,8 +552,9 @@ def test_agent_loop_respects_max_iterations() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         return {
             "content": "",
             "tool_calls": [{"id": "c1", "name": "echo", "arguments": {"text": "x"}}],
@@ -567,8 +579,9 @@ def test_agent_loop_persists_history_per_session() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del tools, model
+        del tools, model, on_token
         state["calls"] += 1
         if state["calls"] == 2:
             state["seen_prev_assistant"] = any(
@@ -594,8 +607,9 @@ def test_agent_loop_memory_facts_injected() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del tools, model
+        del tools, model, on_token
         observed["has_memory_fact"] = any(
             m.get("role") == "system"
             and "preferred_language: zh" in str(m.get("content") or "")
@@ -624,8 +638,9 @@ def test_agent_loop_remember_persists_long_term_memory(tmp_path: Path) -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         return {"content": "ok"}
 
     loop = AgentLoop(
@@ -651,8 +666,9 @@ def test_agent_loop_remember_prompt_persists_note_to_long_term_memory(
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         return {"content": "Noted."}
 
     loop = AgentLoop(
@@ -676,8 +692,9 @@ def test_agent_loop_does_not_persist_empty_assistant_reply() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         return {"content": ""}
 
     loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
@@ -696,8 +713,9 @@ def test_agent_loop_consolidates_large_history_into_history_file(
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del tools, model
+        del tools, model, on_token
         state["calls"] += 1
         if (
             len(messages) == 1
@@ -748,8 +766,9 @@ def test_agent_loop_consolidation_accepts_save_memory_tool_call(
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del model
+        del model, on_token
         state["calls"] += 1
         if (
             len(messages) == 1
@@ -810,8 +829,9 @@ def test_agent_loop_consolidation_parses_json_after_think_block(
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del tools, model
+        del tools, model, on_token
         state["calls"] += 1
         if (
             len(messages) == 1
@@ -861,8 +881,9 @@ def test_agent_loop_consolidation_skips_llm_for_short_transcript(
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         state["calls"] += 1
         return {"content": "ok"}
 
@@ -905,8 +926,9 @@ def test_agent_loop_persists_tools_used_metadata() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del tools, model
+        del tools, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -932,8 +954,9 @@ def test_agent_loop_sanitizes_and_deduplicates_tool_calls() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         return {"content": "ok"}
 
     loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
@@ -959,8 +982,9 @@ def test_agent_loop_stops_on_repeated_identical_tool_cycles() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         return {
             "content": "",
             "tool_calls": [{"id": "c1", "name": "echo", "arguments": {"text": "x"}}],
@@ -987,8 +1011,9 @@ def test_agent_loop_toolcall_web_search_example() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del model
+        del model, on_token
         state["n"] += 1
         if state["n"] == 1:
             assert any(
@@ -1028,8 +1053,9 @@ def test_agent_loop_selects_relevant_tools_by_description() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, model
+        del messages, model, on_token
         observed["tool_names"] = [
             str((t.get("function") or {}).get("name") or "") for t in tools
         ]
@@ -1052,8 +1078,9 @@ def test_agent_loop_prefers_browser_tool_for_web_intent_queries() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, model
+        del messages, model, on_token
         observed["tool_names"] = [
             str((t.get("function") or {}).get("name") or "") for t in tools
         ]
@@ -1076,8 +1103,9 @@ def test_agent_loop_can_disable_browser_first_for_web() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, model
+        del messages, model, on_token
         observed["tool_names"] = [
             str((t.get("function") or {}).get("name") or "") for t in tools
         ]
@@ -1103,8 +1131,9 @@ def test_agent_loop_inserts_post_tool_system_guidance() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del tools, model
+        del tools, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -1142,8 +1171,9 @@ def test_agent_loop_can_disable_post_tool_guidance() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del tools, model
+        del tools, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -1206,8 +1236,9 @@ def test_agent_loop_uses_compact_default_tool_subset_for_low_signal_prompt() -> 
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, model
+        del messages, model, on_token
         observed["tool_names"] = [
             str((t.get("function") or {}).get("name") or "") for t in tools
         ]
@@ -1226,8 +1257,9 @@ def test_agent_loop_records_memory_telemetry_and_turn_counters(tmp_path: Path) -
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         return {"content": "ok"}
 
     loop = AgentLoop(
@@ -1258,8 +1290,9 @@ def test_agent_loop_records_inbound_outbound_events_for_replay(tmp_path: Path) -
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         return {"content": "ok"}
 
     store = PersistentSessionStore(

@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
-from annolid.gui.widgets.threejs_viewer_server import update_swarm_node
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -46,7 +45,12 @@ if TYPE_CHECKING:  # pragma: no cover
     from .subagent import SubagentManager
 
 LLMCallable = Callable[
-    [Sequence[Mapping[str, Any]], Sequence[Mapping[str, Any]], str],
+    [
+        Sequence[Mapping[str, Any]],
+        Sequence[Mapping[str, Any]],
+        str,
+        Optional[Callable[[str], None]],
+    ],
     Awaitable[Mapping[str, Any]],
 ]
 ProgressCallback = Callable[[str], Any]
@@ -310,10 +314,10 @@ class AgentLoop:
         memory_enabled = (
             self._memory_config.enabled if use_memory is None else bool(use_memory)
         )
-        turn_id = str(
-            (dict(inbound_metadata or {}).get("turn_id") if inbound_metadata else "")
-            or ""
-        ).strip()
+        inbound_meta = dict(inbound_metadata or {})
+        turn_id = str(inbound_meta.get("turn_id") or "").strip()
+        parent_id = str(inbound_meta.get("parent_id") or "").strip()
+
         turn_seq = self._increment_session_turn_counter(session_id)
         if not turn_id:
             turn_id = f"turn-{turn_seq}"
@@ -375,11 +379,71 @@ class AgentLoop:
                     user_message_text=user_message_text,
                     messages=messages,
                 )
+                active_node_id = "planner"
+                if session_id and session_id.startswith("swarm:"):
+                    active_node_id = session_id.split(":", 1)[1].lower()
+
+                token_buffer = []
+                thought_buffer = []
+                is_thinking = False
+                last_update = time.perf_counter()
+
+                def _on_llm_token(token: str) -> None:
+                    nonlocal is_thinking, last_update
+
+                    if "<think>" in token:
+                        is_thinking = True
+                        token = token.replace("<think>", "")
+                    if "</think>" in token:
+                        is_thinking = False
+                        token = token.replace("</think>", "")
+
+                    if is_thinking:
+                        thought_buffer.append(token)
+                    else:
+                        token_buffer.append(token)
+
+                    # Throttled visualizer update (every 500ms or so)
+                    now = time.perf_counter()
+                    if now - last_update > 0.5:
+                        last_update = now
+                        current_thought = "".join(thought_buffer)
+                        current_output = "".join(token_buffer)
+
+                        short_thought = (
+                            (current_thought[-100:] + "...")
+                            if len(current_thought) > 100
+                            else current_thought
+                        )
+                        short_output = (
+                            (current_output[-100:] + "...")
+                            if len(current_output) > 100
+                            else current_output
+                        )
+
+                        try:
+                            from annolid.gui.widgets.threejs_viewer_server import (
+                                update_swarm_node,
+                            )
+
+                            update_swarm_node(
+                                active_node_id,
+                                "active",
+                                f"Output: {short_output}"
+                                if short_output
+                                else "Thinking...",
+                                thinking=short_thought,
+                                parent=parent_id.lower() if parent_id else "",
+                            )
+                        except Exception:
+                            pass
+
                 response, llm_elapsed_ms = await self._execute_llm_cycle(
                     session_id=session_id,
                     iteration=iteration,
                     messages=messages,
                     tool_definitions=tool_definitions,
+                    on_token=_on_llm_token,
                 )
                 llm_total_ms += llm_elapsed_ms
 
@@ -421,9 +485,20 @@ class AgentLoop:
                     tools_str = ", ".join(
                         str(tc.get("name") or "") for tc in tool_calls
                     )
+                    active_node_id = "planner"
+                    if session_id and session_id.startswith("swarm:"):
+                        active_node_id = session_id.split(":", 1)[1].lower()
+
                     try:
+                        from annolid.gui.widgets.threejs_viewer_server import (
+                            update_swarm_node,
+                        )
+
                         update_swarm_node(
-                            "planner", "active", f"Executing: {tools_str}"
+                            active_node_id,
+                            "active",
+                            f"Executing: {tools_str}",
+                            thinking=reasoning or self._strip_think(assistant_text),
                         )
                     except Exception:
                         pass
@@ -445,10 +520,27 @@ class AgentLoop:
                         )
                         break
 
+                    # Clean up assistant text to remove raw tool call syntax before saving to history,
+                    # so the LLM doesn't get confused by both raw text tools and native JSON `tool_calls`.
+                    clean_assistant_text = assistant_text
+                    if "<|tool_call_begin|>" in clean_assistant_text:
+                        import re
+
+                        clean_assistant_text = re.sub(
+                            r"<\|tool_call_begin\|>.*?<\|tool_call_end\|>",
+                            "",
+                            clean_assistant_text,
+                            flags=re.DOTALL,
+                        )
+                        clean_assistant_text = re.sub(
+                            r"<\|tool_calls_section_end\|>", "", clean_assistant_text
+                        )
+                        clean_assistant_text = clean_assistant_text.strip()
+
                     messages.append(
                         {
                             "role": "assistant",
-                            "content": assistant_text,
+                            "content": clean_assistant_text,
                             "tool_calls": [
                                 self._to_openai_tool_call(tc) for tc in tool_calls
                             ],
@@ -466,13 +558,49 @@ class AgentLoop:
                     )
 
                     try:
-                        update_swarm_node("planner", "idle", "Awaiting Tasks")
+                        from annolid.gui.widgets.threejs_viewer_server import (
+                            update_swarm_node,
+                        )
+
+                        update_swarm_node(active_node_id, "idle", "Awaiting Tasks")
                     except Exception:
                         pass
 
                     tool_exec_total_ms += cycle_exec_ms
                     tool_call_count += cycle_call_count
                     continue
+                else:
+                    # Fallback for local models that output raw string tokens instead of JSON arrays
+                    active_node_id = "planner"
+                    if session_id and session_id.startswith("swarm:"):
+                        active_node_id = session_id.split(":", 1)[1].lower()
+
+                    import re
+
+                    text_tools = re.findall(
+                        r"(?:functions\.|<\|tool_call_begin\|>\s*)([a-zA-Z0-9_]+)",
+                        assistant_text,
+                    )
+                    if text_tools:
+                        tools_str = ", ".join(set(text_tools))
+                        try:
+                            from annolid.gui.widgets.threejs_viewer_server import (
+                                update_swarm_node,
+                            )
+
+                            update_swarm_node(
+                                active_node_id, "active", f"Executing: {tools_str}"
+                            )
+                        except Exception:
+                            pass
+                    try:
+                        from annolid.gui.widgets.threejs_viewer_server import (
+                            update_swarm_node,
+                        )
+
+                        update_swarm_node(active_node_id, "idle", "Awaiting Tasks")
+                    except Exception:
+                        pass
 
                 repeated_tool_cycles = 0
                 last_tool_cycle_signature = None
@@ -545,6 +673,37 @@ class AgentLoop:
                     reason="append_turn_history",
                     turn_id=turn_id,
                 )
+
+            # Update visualizer with final output if in a swarm
+            if session_id and session_id.startswith("swarm:"):
+                active_node_id = session_id.split(":", 1)[1].lower()
+                try:
+                    from annolid.gui.widgets.threejs_viewer_server import (
+                        update_swarm_node,
+                    )
+
+                    # Clean up output for display (strip thinking tags)
+                    clean_output = str(final_content or "")
+                    thinking_block = ""
+                    if "<think>" in clean_output and "</think>" in clean_output:
+                        parts = clean_output.split("</think>", 1)
+                        thinking_block = parts[0].replace("<think>", "").strip()
+                        clean_output = parts[1].strip()
+
+                    update_swarm_node(
+                        active_node_id,
+                        "idle",
+                        "Awaiting Tasks",
+                        thinking=thinking_block[:100] + "..."
+                        if len(thinking_block) > 100
+                        else thinking_block,
+                        output=clean_output[:150] + "..."
+                        if len(clean_output) > 150
+                        else clean_output,
+                    )
+                except Exception:
+                    pass
+
             result = AgentLoopResult(
                 content=final_content,
                 messages=messages,
@@ -623,9 +782,10 @@ class AgentLoop:
         iteration: int,
         messages: Sequence[Mapping[str, Any]],
         tool_definitions: Sequence[Mapping[str, Any]],
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> tuple[Dict[str, Any], float]:
         llm_started = time.perf_counter()
-        llm_call = self._llm_callable(messages, tool_definitions, self.model)
+        llm_call = self._llm_callable(messages, tool_definitions, self.model, on_token)
         try:
             if self._llm_timeout_seconds is not None:
                 response = await asyncio.wait_for(
@@ -1631,7 +1791,9 @@ class AgentLoop:
         workspace_path = Path(self._workspace) if self._workspace else None
         return SubagentManager(loop_factory=_loop_factory, workspace=workspace_path)
 
-    async def _create_swarm_manager_and_run(self, task: str, max_turns: int = 5) -> str:
+    async def _create_swarm_manager_and_run(
+        self, task: str, max_turns: int = 5, agents: list[str] | None = None
+    ) -> str:
         try:
             from .swarm import SwarmAgent, SwarmManager
         except Exception as e:
@@ -1653,23 +1815,44 @@ class AgentLoop:
 
         manager = SwarmManager()
 
-        planner_prompt = "You are the Planner. Break down the task into steps. Read files if needed. Guide the others."
-        researcher_prompt = "You are the Researcher. Find facts, patterns, and relevant files using list_dir and read_file."
-        coder_prompt = "You are the Implementer. Write and edit code to fulfill the task using your tools."
-        reviewer_prompt = "You are the Reviewer. Check the work so far. If complete, say 'TASK COMPLETE'."
+        roles = agents or []
+        if not roles:
+            # Look for "(Role1, Role2, ...)" or "(Role1 x Role2)" anywhere in the task
+            import re
 
-        manager.register_agent(
-            SwarmAgent("Planner", "Planner", planner_prompt, _loop_factory)
-        )
-        manager.register_agent(
-            SwarmAgent("Researcher", "Researcher", researcher_prompt, _loop_factory)
-        )
-        manager.register_agent(
-            SwarmAgent("Implementer", "Coder", coder_prompt, _loop_factory)
-        )
-        manager.register_agent(
-            SwarmAgent("Reviewer", "Reviewer", reviewer_prompt, _loop_factory)
-        )
+            match = re.search(r"\(([^)]+)\)", task)
+            if match:
+                raw_roles = match.group(1)
+                # Normalize separators: split by comma, x, &, or " and "
+                normalized = re.sub(r"\s+(?:x|&|and)\s+", ", ", raw_roles)
+                roles = [r.strip() for r in normalized.split(",") if r.strip()]
+            elif "specialized agents (" in task:
+                match = re.search(r"specialized agents \((.*?)\)", task)
+                if match:
+                    roles = [r.strip() for r in match.group(1).split(",")]
+            elif "agents:" in task.lower():
+                # agents: Role1, Role2
+                match = re.search(r"agents:\s*(.*?)(?:\n|$)", task, re.IGNORECASE)
+                if match:
+                    roles = [r.strip() for r in match.group(1).split(",")]
+
+        if not roles:
+            roles = ["Planner", "Researcher", "Coder", "Reviewer"]
+
+        for role in roles:
+            prompt = f"You are the {role}. "
+            if "planner" in role.lower():
+                prompt += "Break down the task into steps. Read files if needed. Guide the others."
+            elif "researcher" in role.lower():
+                prompt += "Find facts, patterns, and relevant files using list_dir and read_file."
+            elif "coder" in role.lower() or "implement" in role.lower():
+                prompt += "Write and edit code to fulfill the task using your tools."
+            elif "reviewer" in role.lower() or "security" in role.lower():
+                prompt += "Check the work so far. If complete, say 'TASK COMPLETE'."
+            else:
+                prompt += "Contribute to the task based on your specialized knowledge."
+
+            manager.register_agent(SwarmAgent(role, role, prompt, _loop_factory))
 
         return await manager.run_swarm(task, max_turns=max_turns)
 
@@ -1748,6 +1931,7 @@ class AgentLoop:
         "gui_run_ai_text_segmentation",
         "gui_track_next_frames",
         "gui_context",
+        "run_swarm",
         "read_file",
         "list_dir",
         "video_info",
@@ -2046,6 +2230,27 @@ class AgentLoop:
             if not name:
                 continue
             normalized.append({"id": call_id, "name": name, "arguments": args})
+
+        if not normalized:
+            content = str(response.get("content") or "")
+            import re
+            import json
+
+            matches = re.finditer(
+                r"<\|tool_call_begin\|>\s*(?:functions\.)?([a-zA-Z0-9_]+)(?::[a-zA-Z0-9_-]+)?\s*<\|tool_call_argument_begin\|>\s*(.*?)\s*<\|tool_call_end\|>",
+                content,
+                re.DOTALL,
+            )
+            for i, match in enumerate(matches):
+                name = match.group(1).strip()
+                args_str = match.group(2).strip()
+                try:
+                    args = json.loads(args_str)
+                except Exception:
+                    args = {"_raw": args_str}
+                normalized.append(
+                    {"id": f"call_parsed_{i}", "name": name, "arguments": args}
+                )
         return normalized
 
     def _to_openai_tool_call(self, call: Mapping[str, Any]) -> Dict[str, Any]:
@@ -2155,12 +2360,14 @@ class AgentLoop:
             messages: Sequence[Mapping[str, Any]],
             tools: Sequence[Mapping[str, Any]],
             model_id: str,
+            on_token: Optional[Callable[[str], None]] = None,
         ) -> Mapping[str, Any]:
             resp = await provider_impl.chat(
                 messages=list(messages),
                 tools=list(tools) if tools else None,
                 model=model_id,
                 temperature=self._default_temperature,
+                on_token=on_token,
             )
             tool_calls: List[Dict[str, Any]] = []
             for tc in resp.tool_calls:

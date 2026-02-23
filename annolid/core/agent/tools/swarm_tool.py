@@ -27,8 +27,10 @@ class SwarmTool(FunctionTool):
         return (
             "Launch a multi-agent swarm to collaborate on a complex task. "
             "Use this when a task is too complex for a single agent or requires multiple perspectives "
-            "(e.g., Planning, Researching, Coding, Reviewing). "
-            "The swarm will work autonomously and return a final consolidated answer."
+            "(e.g., Planning, Researching, Coding, Reviewing, Architecture, Performance, Security). "
+            "You MUST use this tool to spawn subagents for 'brainstorming', 'roundtable' discussions, debates, or collaborative reviews. "
+            "Do NOT simulate, roleplay, or transcribe the discussion yourself in text; always use this tool so the system can track subagent progress and display them in the COMMAND CENTER. "
+            "The swarm will work autonomously and return a final consolidated answer with consensus on roadmap and priorities."
         )
 
     @property
@@ -45,17 +47,28 @@ class SwarmTool(FunctionTool):
                     "description": "Maximum number of turn cycles the swarm is allowed to take (default: 5).",
                     "default": 5,
                 },
+                "agents": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of agent roles/names to participate (e.g. ['Architecture', 'Security']). If omitted, uses default roles.",
+                },
             },
             "required": ["task"],
         }
 
-    async def execute(self, task: str, max_turns: int = 5, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        task: str,
+        max_turns: int = 5,
+        agents: list[str] | None = None,
+        **kwargs: Any,
+    ) -> str:
         del kwargs
         if self._run_swarm_callback is None:
             return "Error: swarm callback not configured in AgentLoop"
 
         try:
-            ret = self._run_swarm_callback(task, max_turns)
+            ret = self._run_swarm_callback(task, max_turns, agents)
         except Exception as exc:
             return f"Error triggering swarm: {exc}"
 

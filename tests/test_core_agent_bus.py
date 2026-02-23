@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import MethodType
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from annolid.core.agent.bus import (
     AgentBusService,
@@ -83,8 +83,9 @@ def test_agent_bus_service_processes_inbound_to_outbound() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del tools, model
+        del tools, model, on_token
         last = messages[-1]
         return {"content": f"echo:{last.get('content', '')}"}
 
@@ -126,9 +127,10 @@ def test_agent_bus_service_strips_model_think_blocks_from_outbound() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
-        return {"content": "<think>internal reasoning</think>\n\nCamera OK."}
+        del messages, tools, model, on_token
+        return {"content": "<think>private actual reasoning</think>\n\nCamera OK."}
 
     async def _run() -> None:
         bus = MessageBus()
@@ -162,9 +164,10 @@ def test_agent_bus_service_redacts_private_stream_endpoints_from_outbound() -> N
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
-        return {"content": "Stream: rtsp://192.168.1.21:554/live/ch0"}
+        del messages, tools, model, on_token
+        return {"content": "check rtsp://192.168.1.100:554/live"}
 
     async def _run() -> None:
         bus = MessageBus()
@@ -200,8 +203,9 @@ def test_agent_bus_service_streams_intermediate_progress() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -253,8 +257,9 @@ def test_agent_bus_service_redacts_sensitive_metadata_in_annotate() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         return {"content": "ok"}
 
     bus = MessageBus()
@@ -280,8 +285,9 @@ def test_agent_bus_service_substitutes_empty_email_reply_with_fallback() -> None
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         return {"content": "   "}
 
     async def _run() -> None:
@@ -322,8 +328,9 @@ def test_agent_bus_service_idempotency_replays_cached_result() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         state["calls"] += 1
         return {"content": f"run:{state['calls']}"}
 
@@ -364,8 +371,9 @@ def test_agent_bus_service_assigns_error_taxonomy_for_failures() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         raise RuntimeError("boom")
 
     async def _run() -> None:
@@ -470,8 +478,9 @@ def test_agent_bus_service_idempotency_isolated_by_peer_scope() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         state["calls"] += 1
         return {"content": f"run:{state['calls']}"}
 
@@ -517,8 +526,9 @@ def test_agent_bus_service_uses_session_defaults_from_config() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         state["calls"] += 1
         return {"content": f"run:{state['calls']}"}
 
@@ -883,8 +893,9 @@ def test_agent_bus_service_retries_transient_failures_with_backoff() -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         calls["n"] += 1
         if calls["n"] < 2:
             raise TimeoutError("provider timeout")
@@ -928,8 +939,9 @@ def test_agent_bus_service_marks_exhausted_transient_as_transport_error() -> Non
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         raise TimeoutError("still timing out")
 
     async def _run() -> None:

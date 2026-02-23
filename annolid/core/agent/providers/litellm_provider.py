@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .base import LLMProvider, LLMResponse, ToolCallRequest
 from .registry import find_by_model, find_by_name, find_gateway
@@ -92,6 +92,7 @@ class LiteLLMProvider(LLMProvider):
         model: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: Optional[float] = 0.7,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> LLMResponse:
         try:
             import litellm  # type: ignore
@@ -127,17 +128,64 @@ class LiteLLMProvider(LLMProvider):
 
         if self.extra_headers:
             payload["extra_headers"] = dict(self.extra_headers)
+
+        # Tools do not support streaming well in many LiteLLM integrations if mixed with content.
+        # But we can try streaming if no tools are provided.
+        should_stream = bool(on_token) and not tools
+
         if tools:
             payload["tools"] = list(tools)
             payload["tool_choice"] = "auto"
+            should_stream = (
+                False  # Disable streaming when tools are present for stability
+            )
 
         try:
-            completion = await acompletion(**payload)
+            if should_stream:
+                payload["stream"] = True
+                response_content = []
+                reasoning_chunks = []
+                finish_reason = "stop"
+                usage = {}
+
+                async for chunk in await acompletion(**payload):
+                    delta = chunk.choices[0].delta
+                    content = getattr(delta, "content", "") or ""
+                    reasoning = getattr(delta, "reasoning_content", None)
+
+                    if reasoning:
+                        on_token(f"<think>{reasoning}</think>")
+                        reasoning_chunks.append(reasoning)
+
+                    if content:
+                        on_token(content)
+                        response_content.append(content)
+
+                    if chunk.choices[0].finish_reason:
+                        finish_reason = chunk.choices[0].finish_reason
+
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        usage = {
+                            "prompt_tokens": chunk.usage.prompt_tokens,
+                            "completion_tokens": chunk.usage.completion_tokens,
+                            "total_tokens": chunk.usage.total_tokens,
+                        }
+
+                return LLMResponse(
+                    content="".join(response_content),
+                    finish_reason=finish_reason,
+                    usage=usage,
+                    reasoning_content="".join(reasoning_chunks)
+                    if reasoning_chunks
+                    else None,
+                )
+            else:
+                completion = await acompletion(**payload)
+                return self._parse_response(completion)
         except Exception as exc:
             return LLMResponse(
                 content=f"Error calling LLM: {exc}", finish_reason="error"
             )
-        return self._parse_response(completion)
 
     def _parse_response(self, completion: Any) -> LLMResponse:
         choice = completion.choices[0]

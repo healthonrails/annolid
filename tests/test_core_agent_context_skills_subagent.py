@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import platform
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 import pytest
 
@@ -149,8 +149,9 @@ def test_subagent_manager_runs_background_task(tmp_path: Path) -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         return {"content": "subagent-result"}
 
     def loop_factory() -> AgentLoop:
@@ -201,8 +202,9 @@ def test_subagent_prompt_includes_time_and_skills_path(tmp_path: Path) -> None:
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         return {"content": "ok"}
 
     manager = SubagentManager(
@@ -274,8 +276,9 @@ def test_agent_loop_connects_mcp_without_overwriting_existing_tools(
         messages: Sequence[Mapping[str, Any]],
         tools: Sequence[Mapping[str, Any]],
         model: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model
+        del messages, tools, model, on_token
         return {"content": "done"}
 
     registry = FunctionToolRegistry()

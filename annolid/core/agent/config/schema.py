@@ -427,7 +427,7 @@ class ExecToolConfig:
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "ExecToolConfig":
         payload = data or {}
-        return cls(timeout=int(payload.get("timeout", 60)))
+        return cls(timeout=int(payload.get("timeout", 180)))
 
     def to_dict(self) -> Dict[str, Any]:
         return {"timeout": self.timeout}
