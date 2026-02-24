@@ -94,6 +94,8 @@ Examples:
 
 ## Optional extras (`--extras` / `-Extras`)
 
+`gui` is installed by default by the one-line installers, so `annolid` launches without additional flags.
+
 Current supported extras:
 - `sam3`
 - `image_editing`

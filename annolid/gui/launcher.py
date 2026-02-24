@@ -5,8 +5,10 @@ This keeps `annolid --help` and `annolid --version` fast by deferring the
 heavy Qt/torch/OpenCV imports until the GUI actually launches.
 """
 
+import importlib
 from importlib import metadata
 import os
+import sys
 from typing import Any, Optional, Sequence
 
 from annolid.gui.cli import parse_cli
@@ -38,7 +40,20 @@ def main(argv: Optional[Sequence[str]] = None) -> Any:
     configure_logging()
 
     # Import heavy dependencies only when actually launching the GUI.
-    from annolid.gui import app as gui_app
+    try:
+        gui_app = importlib.import_module("annolid.gui.app")
+    except Exception as exc:
+        if exc.__class__.__name__ == "QtBindingsNotFoundError":
+            print(
+                (
+                    "No Qt binding detected. Install GUI dependencies with:\n"
+                    '  pip install -e ".[gui]"\n'
+                    "or install a Qt binding directly (for example `PyQt5` or `PySide6`)."
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        raise
 
     return gui_app.main(argv=argv, config=config)
 

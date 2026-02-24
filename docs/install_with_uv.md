@@ -36,7 +36,7 @@ You can reuse this environment on future shells with the same activate command.
 With the environment active, let `uv` resolve and install everything declared in `pyproject.toml` (including editable mode for development):
 
 ```bash
-uv pip install -e .
+uv pip install -e ".[gui]"
 ```
 
 This step pulls PyPI wheels plus the bundled Git dependency for Segment Anything HQ. The install may take a few minutes on the first run.
@@ -72,6 +72,7 @@ If you need behavior logging or segmentation models, drop your trained weights u
 - **`ModuleNotFoundError: No module named 'zmq'`:** Ensure you are installing with the updated `pyproject.toml` that depends on `pyzmq`. If you already have an environment, run `uv pip install pyzmq` inside it and retry `annolid`.
 - **`ModuleNotFoundError: No module named 'ffpyplayer'`:** The GUI’s real-time widgets use ffpyplayer’s video frame utils. Install it with `uv pip install ffpyplayer` or recreate the environment after pulling the updated dependency list.
 - **`ModuleNotFoundError: No module named 'tree_config'`:** Realtime configs rely on `tree-config`. Install it with `uv pip install tree-config` or rebuild the environment after syncing the latest dependencies.
+- **`qtpy.QtBindingsNotFoundError: No Qt bindings could be found`:** Install the GUI extra in the active environment: `uv pip install -e ".[gui]"`.
 - **Windows + CUDA 12.x ONNX Runtime DLL/import errors:** In the activated environment, run:
   `uv pip install onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/`
   If CUDA is not 12.x, install CPU ONNX Runtime instead: `uv pip install onnxruntime`.

@@ -10,7 +10,7 @@
 # Options:
 #   --install-dir DIR   Directory to install annolid (default: ./annolid)
 #   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
-#   --extras EXTRAS     Comma-separated optional extras: sam3,image_editing,text_to_speech,qwen3_embedding
+#   --extras EXTRAS     Comma-separated optional extras: sam3,image_editing,text_to_speech,qwen3_embedding (GUI extras are always included)
 #   --no-gpu            Skip GPU/CUDA detection
 #   --use-conda         Use conda instead of venv (requires conda/mamba)
 #   --no-interactive    Skip all prompts and use defaults
@@ -613,12 +613,18 @@ install_annolid() {
         fi
     fi
 
-    INSTALL_TARGET="-e ."
-
+    # GUI dependencies are always installed so `annolid` can launch immediately.
+    INSTALL_EXTRAS="gui"
     if [[ -n "$EXTRAS" ]]; then
-        INSTALL_TARGET="-e .[${EXTRAS}]"
-        echo "  Including extras: $EXTRAS"
+        NORMALIZED_EXTRAS="$(echo "$EXTRAS" | tr -d '[:space:]')"
+        if [[ -n "$NORMALIZED_EXTRAS" && ",$NORMALIZED_EXTRAS," != *",gui,"* ]]; then
+            INSTALL_EXTRAS="gui,${NORMALIZED_EXTRAS}"
+        elif [[ -n "$NORMALIZED_EXTRAS" ]]; then
+            INSTALL_EXTRAS="$NORMALIZED_EXTRAS"
+        fi
     fi
+    INSTALL_TARGET="-e .[${INSTALL_EXTRAS}]"
+    echo "  Including extras: $INSTALL_EXTRAS"
 
     echo "  Installing annolid (this may take a few minutes)..."
     $PIP_CMD install $INSTALL_TARGET
@@ -654,6 +660,13 @@ validate_installation() {
     echo "  Checking imports..."
     python -c "import annolid; print(f'  Annolid version: {annolid.__version__}')" 2>/dev/null || \
         python -c "import annolid; print('  Annolid imported successfully')"
+
+    echo "  Checking Qt bindings..."
+    if ! python -c "from qtpy import QtCore; print('  Qt binding import OK')"; then
+        print_error "Qt bindings are missing. Reinstall with GUI extras:"
+        echo "  pip install -e \".[gui]\""
+        exit 1
+    fi
 
     echo "  Checking PyTorch..."
     python -c "import torch; print(f'  PyTorch version: {torch.__version__}')"

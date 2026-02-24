@@ -9,7 +9,7 @@
 # Options:
 #   -InstallDir DIR      Directory to install annolid (default: .\annolid)
 #   -VenvDir DIR         Directory for virtual environment (default: .venv)
-#   -Extras EXTRAS       Comma-separated extras: sam3,image_editing,text_to_speech,qwen3_embedding
+#   -Extras EXTRAS       Comma-separated extras: sam3,image_editing,text_to_speech,qwen3_embedding (GUI extras are always included)
 #   -NoGpu               Skip GPU/CUDA detection
 #   -NoInteractive       Skip all prompts and use defaults
 
@@ -465,11 +465,16 @@ function Install-Annolid {
         }
     }
 
-    $installTarget = "-e ."
+    # GUI dependencies are always installed so `annolid` can launch immediately.
+    $installExtras = @("gui")
     if (-not [string]::IsNullOrEmpty($Extras)) {
-        $installTarget = "-e .[$Extras]"
-        Write-Host "  Including extras: $Extras"
+        $requestedExtras = $Extras.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+        $installExtras += $requestedExtras
     }
+    $installExtras = $installExtras | Select-Object -Unique
+    $extrasCsv = $installExtras -join ","
+    $installTarget = "-e .[$extrasCsv]"
+    Write-Host "  Including extras: $extrasCsv"
 
     Write-Host "  Installing annolid (this may take a few minutes)..."
     if ($script:UseUv) {
@@ -569,6 +574,15 @@ function Test-Installation {
 
     Write-Host "  Checking imports..."
     & python -c "import annolid; print(f'  Annolid imported successfully')"
+
+    Write-Host "  Checking Qt bindings..."
+    try {
+        & python -c "from qtpy import QtCore; print('  Qt binding import OK')"
+    } catch {
+        Write-Error-Msg "Qt bindings are missing. Reinstall with GUI extras:"
+        Write-Host "  pip install -e "".[gui]"""
+        exit 1
+    }
 
     Write-Host "  Checking PyTorch..."
     & python -c "import torch; print(f'  PyTorch version: {torch.__version__}')"

@@ -23,7 +23,7 @@ conda activate annolid-env
 conda install git ffmpeg
 git clone --recurse-submodules https://github.com/healthonrails/annolid.git
 cd annolid
-pip install -e .
+pip install -e ".[gui]"
 annolid  # launches the GUI
 ```
 
@@ -56,7 +56,7 @@ Works well on machines without Conda. You are responsible for installing system 
 python -m venv annolid-env
 source annolid-env/bin/activate
 pip install --upgrade pip
-pip install annolid
+pip install "annolid[gui]"
 pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
 annolid
 ```
@@ -70,7 +70,7 @@ git clone --recurse-submodules https://github.com/healthonrails/annolid.git
 cd annolid
 uv venv .venv --python 3.11
 source .venv/bin/activate
-uv pip install -e .
+uv pip install -e ".[gui]"
 annolid
 ```
 
@@ -83,7 +83,7 @@ conda activate annolid-env
 git clone --recurse-submodules https://github.com/healthonrails/annolid.git
 cd annolid
 source .venv/bin/activate
-pip install -e .
+pip install -e ".[gui]"
 annolid
 ```
 
@@ -126,6 +126,8 @@ Replace `<IMAGE_ID>` with the identifier printed by `docker build`.
   This can be triggered by an OpenMP runtime conflict between PyTorch and ONNX Runtime. Set `KMP_DUPLICATE_LIB_OK=TRUE` in your environment and retry launching. Newer Annolid versions set this automatically when launching the GUI.
 - **macOS Qt warning** (`Class QCocoaPageLayoutDelegate is implemented in both ...`):
   `conda install qtpy` normally resolves the conflict between OpenCV and PyQt.
+- **`qtpy.QtBindingsNotFoundError: No Qt bindings could be found`:**
+  install GUI extras in your active environment: `pip install -e ".[gui]"` (from source) or `pip install "annolid[gui]"` (from PyPI).
 - **Launch failures**:
   Confirm the correct environment is active (`conda activate annolid-env` or `source .venv/bin/activate`) and run `annolid --help`.
 - **Advanced Training/Inference**:
