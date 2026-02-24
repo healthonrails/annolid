@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import builtins
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
@@ -203,6 +205,43 @@ def test_whatsapp_channel_ingest_webhook_payload() -> None:
     asyncio.run(_run())
 
 
+def test_whatsapp_channel_ingest_webhook_skips_self_sender_by_default() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = WhatsAppChannel({}, bus)
+        payload = {
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "field": "messages",
+                            "value": {
+                                "metadata": {
+                                    "phone_number_id": "123",
+                                    "display_phone_number": "+1 (555) 123-4567",
+                                },
+                                "messages": [
+                                    {
+                                        "id": "wamid.SELF",
+                                        "from": "15551234567",
+                                        "type": "text",
+                                        "text": {"body": "my own message"},
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                }
+            ]
+        }
+        ingested = await channel.ingest_webhook_payload(payload)
+        assert ingested == 0
+        with pytest.raises(asyncio.TimeoutError):
+            await bus.consume_inbound(timeout_s=0.2)
+
+    asyncio.run(_run())
+
+
 def test_whatsapp_channel_build_cloud_api_payload() -> None:
     bus = MessageBus()
     channel = WhatsAppChannel(
@@ -328,12 +367,63 @@ def test_whatsapp_channel_bridge_prefers_chat_id_when_present() -> None:
     asyncio.run(_run())
 
 
+def test_whatsapp_channel_bridge_media_only_message_ingest() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = WhatsAppChannel({"bridge_url": "ws://127.0.0.1:3001"}, bus)
+        await channel._handle_bridge_message(
+            '{"type":"message","id":"m-media-1","sender":"15551234567@s.whatsapp.net","media_type":"image","media":["wa-bridge-media:image:m-media-1"],"content":"","timestamp":123,"isGroup":false}'
+        )
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert inbound.channel == "whatsapp"
+        assert inbound.content == "[image message]"
+        assert inbound.media == ["wa-bridge-media:image:m-media-1"]
+        assert inbound.metadata.get("has_media") is True
+        assert inbound.metadata.get("media_type") == "image"
+
+    asyncio.run(_run())
+
+
+def test_whatsapp_channel_self_chat_bypasses_allowlist() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        # allow_from does NOT include "Message yourself"
+        channel = WhatsAppChannel(
+            {"bridge_url": "ws://127.0.0.1:3001", "allow_from": ["someone-else"]},
+            bus,
+        )
+        # This sender should be allowed due to the override
+        ok = await channel.ingest(
+            sender_id="Message yourself",
+            chat_id="Message yourself",
+            content="hello self",
+        )
+        assert ok is True
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert inbound.sender_id == "Message yourself"
+
+    asyncio.run(_run())
+
+
 def test_whatsapp_channel_bridge_self_message_direction_out() -> None:
     async def _run() -> None:
         bus = MessageBus()
         channel = WhatsAppChannel({"bridge_url": "ws://127.0.0.1:3001"}, bus)
         await channel._handle_bridge_message(
             '{"type":"message","id":"m3","sender":"15551234567","content":"self ping","direction":"out","timestamp":123,"isGroup":false}'
+        )
+        with pytest.raises(asyncio.TimeoutError):
+            await bus.consume_inbound(timeout_s=0.2)
+
+    asyncio.run(_run())
+
+
+def test_whatsapp_channel_bridge_self_message_from_me_ignored() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = WhatsAppChannel({"bridge_url": "ws://127.0.0.1:3001"}, bus)
+        await channel._handle_bridge_message(
+            '{"type":"message","id":"m3b","sender":"15551234567","chat_id":"15551234567","content":"self reply","fromMe":true,"direction":"in","timestamp":123,"isGroup":false}'
         )
         with pytest.raises(asyncio.TimeoutError):
             await bus.consume_inbound(timeout_s=0.2)
@@ -447,5 +537,234 @@ def test_whatsapp_python_provider_start_without_playwright() -> None:
         assert events
         assert events[0].get("type") == "error"
         assert "Playwright is required" in str(events[0].get("error", ""))
+
+    asyncio.run(_run())
+
+
+def test_whatsapp_python_provider_dispatch_media_send_uses_caption_enter() -> None:
+    async def _run() -> None:
+        async def _on_event(_: dict[str, str]) -> None:
+            return
+
+        provider = _PlaywrightWhatsAppProvider(
+            session_dir="~/.annolid/whatsapp-web-session",
+            headless=True,
+            on_event=_on_event,
+        )
+
+        page = MagicMock()
+        provider._page = page
+        page.keyboard = MagicMock()
+        page.keyboard.press = AsyncMock()
+        page.wait_for_selector = AsyncMock()
+
+        sent = {"done": False}
+        caption_box = MagicMock()
+
+        async def _caption_press(key: str) -> None:
+            assert key == "Enter"
+            sent["done"] = True
+
+        caption_box.press = AsyncMock(side_effect=_caption_press)
+
+        async def _query_selector(selector: str):
+            if selector == provider.SELECTORS["caption_box"]:
+                return None if sent["done"] else caption_box
+            if selector == provider.SELECTORS["footer_composer"]:
+                return MagicMock() if sent["done"] else None
+            if selector == provider.SELECTORS["media_preview"]:
+                return None
+            return None
+
+        page.query_selector = AsyncMock(side_effect=_query_selector)
+        provider._click_with_fallback = AsyncMock()
+
+        await provider._dispatch_media_send("Message yourself")
+
+        assert caption_box.press.called
+        assert not page.keyboard.press.called
+        assert not page.wait_for_selector.called
+
+    asyncio.run(_run())
+
+
+def test_whatsapp_python_provider_dispatch_media_send_falls_back_to_button() -> None:
+    async def _run() -> None:
+        async def _on_event(_: dict[str, str]) -> None:
+            return
+
+        provider = _PlaywrightWhatsAppProvider(
+            session_dir="~/.annolid/whatsapp-web-session",
+            headless=True,
+            on_event=_on_event,
+        )
+
+        page = MagicMock()
+        provider._page = page
+        page.keyboard = MagicMock()
+        page.keyboard.press = AsyncMock(side_effect=RuntimeError("enter failed"))
+
+        sent = {"done": False}
+        caption_box = MagicMock()
+        caption_box.press = AsyncMock(side_effect=RuntimeError("caption enter failed"))
+        send_btn = MagicMock()
+
+        async def _query_selector(selector: str):
+            if selector == provider.SELECTORS["caption_box"]:
+                return None if sent["done"] else caption_box
+            if selector == provider.SELECTORS["footer_composer"]:
+                return MagicMock() if sent["done"] else None
+            if selector == provider.SELECTORS["media_preview"]:
+                return MagicMock() if not sent["done"] else None
+            return None
+
+        async def _click_send_btn(*args, **kwargs) -> None:
+            sent["done"] = True
+
+        page.query_selector = AsyncMock(side_effect=_query_selector)
+        page.wait_for_selector = AsyncMock(return_value=send_btn)
+        provider._click_with_fallback = AsyncMock(side_effect=_click_send_btn)
+
+        await provider._dispatch_media_send("Message yourself")
+
+        assert page.wait_for_selector.called
+        assert provider._click_with_fallback.called
+
+    asyncio.run(_run())
+
+
+def test_whatsapp_channel_bridge_send_media(tmp_path: Path) -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = WhatsAppChannel(
+            {"bridge_url": "ws://127.0.0.1:3001"},
+            bus,
+        )
+
+        # Mock the websocket
+        mock_ws = MagicMock()
+        mock_ws.send = AsyncMock()
+        channel._bridge_ws = mock_ws
+
+        media_file = tmp_path / "test.png"
+        media_file.write_bytes(b"fake-image")
+        msg = OutboundMessage(
+            channel="whatsapp",
+            chat_id="12345",
+            content="here is an image",
+            media=[str(media_file)],
+        )
+
+        await channel.send(msg)
+
+        assert mock_ws.send.called
+        sent_args = mock_ws.send.call_args[0][0]
+        data = json.loads(sent_args)
+        assert data["type"] == "send_media"
+        assert data["to"] == "12345"
+        assert data["media"] == [str(media_file.resolve())]
+        assert data["caption"] == "here is an image"
+
+    asyncio.run(_run())
+
+
+def test_whatsapp_channel_bridge_virtual_media_ref_falls_back_to_text() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = WhatsAppChannel(
+            {"bridge_url": "ws://127.0.0.1:3001"},
+            bus,
+        )
+        mock_ws = MagicMock()
+        mock_ws.send = AsyncMock()
+        channel._bridge_ws = mock_ws
+
+        msg = OutboundMessage(
+            channel="whatsapp",
+            chat_id="Message yourself",
+            content="camera stream is reachable",
+            media=["wa-bridge-media:image:true_123_out"],
+        )
+        await channel.send(msg)
+
+        assert mock_ws.send.called
+        payload = json.loads(mock_ws.send.call_args[0][0])
+        assert payload["type"] == "send"
+        assert payload["text"] == "camera stream is reachable"
+
+    asyncio.run(_run())
+
+
+def test_whatsapp_channel_bridge_self_outgoing_ingested_when_enabled() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = WhatsAppChannel(
+            {"bridge_url": "ws://127.0.0.1:3001", "ingest_outgoing_messages": True},
+            bus,
+        )
+        await channel._handle_bridge_message(
+            '{"type":"message","id":"m-self-out","sender":"Message yourself","chat_id":"Message yourself","content":"what do you see from camera?","direction":"out","timestamp":123,"isGroup":false}'
+        )
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert inbound.sender_id == "Message yourself"
+        assert inbound.chat_id == "Message yourself"
+        assert inbound.content == "what do you see from camera?"
+        assert inbound.metadata.get("bridge_direction") == "out"
+
+    asyncio.run(_run())
+
+
+def test_whatsapp_channel_bridge_self_outgoing_echo_suppressed() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = WhatsAppChannel(
+            {"bridge_url": "ws://127.0.0.1:3001", "ingest_outgoing_messages": True},
+            bus,
+        )
+        channel._remember_sent_content("bot echo")
+        await channel._handle_bridge_message(
+            '{"type":"message","id":"m-self-out-echo","sender":"Message yourself","chat_id":"Message yourself","content":"bot echo","direction":"out","timestamp":123,"isGroup":false}'
+        )
+        with pytest.raises(asyncio.TimeoutError):
+            await bus.consume_inbound(timeout_s=0.2)
+
+    asyncio.run(_run())
+
+
+def test_whatsapp_channel_webhook_video_with_caption_includes_media_metadata() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = WhatsAppChannel({}, bus)
+        payload = {
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "field": "messages",
+                            "value": {
+                                "messages": [
+                                    {
+                                        "id": "wamid.VIDEO1",
+                                        "from": "15551234567",
+                                        "type": "video",
+                                        "video": {
+                                            "id": "media123",
+                                            "caption": "see this clip",
+                                        },
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                }
+            ]
+        }
+        ingested = await channel.ingest_webhook_payload(payload)
+        assert ingested == 1
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert inbound.content == "see this clip"
+        assert inbound.media == ["wa-media:media123"]
+        assert inbound.metadata.get("whatsapp_message_type") == "video"
+        assert inbound.metadata.get("has_media") is True
 
     asyncio.run(_run())

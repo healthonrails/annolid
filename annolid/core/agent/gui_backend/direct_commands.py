@@ -22,9 +22,12 @@ async def execute_direct_gui_command(
     parse_direct_gui_command: Callable[[str], Dict[str, Any]],
     route_direct_gui_command: Callable[..., Any],
     handlers: Dict[str, Callable[..., Any]],
-) -> str:
-    """Route direct command to the router and get back a result string."""
+) -> Dict[str, Any]:
+    """Route direct command to the router and get back a result dictionary."""
     command = parse_direct_gui_command(prompt)
     if not command:
-        return ""
-    return await route_direct_gui_command(command, **handlers)
+        return {"message": "", "payload": {}}
+    res = await route_direct_gui_command(command, **handlers)
+    if isinstance(res, dict):
+        return res
+    return {"message": str(res or ""), "payload": {}}

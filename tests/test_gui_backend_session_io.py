@@ -203,3 +203,34 @@ def test_replay_session_debug_events_and_format_text() -> None:
     text = session_io.format_replay_as_text(rows)
     assert "outbound:assistant" in text
     assert "truncated" in text
+
+
+def test_format_replay_as_text_includes_media_summary() -> None:
+    rows = [
+        {
+            "timestamp": "2026-02-23T10:00:00",
+            "direction": "inbound",
+            "kind": "user",
+            "payload": {
+                "text": "[image message]",
+                "media_type": "image",
+                "media": [
+                    "wa-bridge-media:image:m1",
+                    "wa-bridge-media:image:m2",
+                ],
+            },
+        },
+        {
+            "timestamp": "2026-02-23T10:00:01",
+            "direction": "inbound",
+            "kind": "user",
+            "payload": {
+                "media_type": "video",
+                "media": ["wa-media:video123"],
+            },
+        },
+    ]
+    text = session_io.format_replay_as_text(rows)
+    assert "inbound:user [image message]" in text
+    assert "[image x2:" in text
+    assert "[video x1:" in text

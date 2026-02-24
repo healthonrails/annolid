@@ -61,12 +61,20 @@ class LiteLLMProvider(LLMProvider):
 
     def _resolve_model(self, model: str) -> str:
         model_name = str(model or self.default_model)
-        spec = self._provider_spec() or find_by_model(model_name)
+
+        # If the model looks like it has an explicit prefix, try to find that specific spec first
+        model_spec = find_by_model(model_name) if "/" in model_name else None
+        spec = model_spec or self._provider_spec() or find_by_model(model_name)
         if spec is None:
             return model_name
 
-        if self._gateway and spec.strip_model_prefix and "/" in model_name:
-            model_name = model_name.split("/")[-1]
+        if spec.strip_model_prefix and "/" in model_name:
+            # Only strip the specific provider prefix if it matches
+            prefixes_to_strip = [f"{spec.name}/", f"{spec.litellm_prefix}/"]
+            for pfx in prefixes_to_strip:
+                if model_name.startswith(pfx):
+                    model_name = model_name[len(pfx) :]
+                    break
 
         if spec.litellm_prefix:
             if not any(model_name.startswith(prefix) for prefix in spec.skip_prefixes):

@@ -8,8 +8,12 @@ from qtpy.QtWidgets import (
     QShortcut,
     QStyle,
     QTableWidget,
-    QUndoStack,
 )
+
+try:
+    from qtpy.QtWidgets import QUndoStack
+except ImportError:
+    from qtpy.QtGui import QUndoStack
 from qtpy.QtCore import QPropertyAnimation
 from typing import Dict
 import re

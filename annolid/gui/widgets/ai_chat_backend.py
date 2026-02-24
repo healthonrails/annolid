@@ -1603,16 +1603,37 @@ class StreamingChatTask(QRunnable):
         command = self._parse_direct_gui_command_with_defaults(prompt)
         if not command:
             return ""
-        message = await execute_direct_gui_command(
+        result = await execute_direct_gui_command(
             command,
             **self._direct_command_handlers(),
         )
+        if isinstance(result, dict):
+            message = str(result.get("message") or "").strip()
+            payload = result.get("payload") or {}
+            # Capture snapshot for media delivery if needed
+            snapshot_path = str(payload.get("snapshot_path") or "").strip()
+            if not snapshot_path:
+                # support nested structure from tools like CameraSnapshotTool
+                snapshot_path = str(
+                    payload.get("steps", {}).get("capture", {}).get("snapshot_path")
+                    or ""
+                ).strip()
+
+            if snapshot_path and not str(payload.get("email_to") or "").strip():
+                # For direct GUI commands, we might need a way to pass this back to the bus
+                # if we want it to be delivered. The current architecture for direct commands
+                # in ai_chat_backend mostly relies on the GUI to display it, but for
+                # channel-aware delivery, we need it in the payload.
+                payload["snapshot_path_intercepted"] = snapshot_path
+        else:
+            message = str(result or "").strip()
+
         if self._missing_email_recipient_note_required(command, message=message):
             note = (
                 " Email requested, but no recipient is configured. "
                 "Set a recipient email in Realtime settings or include an address."
             )
-            return f"{str(message or '').strip()}{note}".strip()
+            return f"{message}{note}".strip()
         return message
 
     def _parse_direct_gui_command(self, prompt: str) -> Dict[str, Any]:
@@ -1627,13 +1648,30 @@ class StreamingChatTask(QRunnable):
         args = dict(command.get("args") or {})
         email_to = self._normalize_email_recipient(str(args.get("email_to") or ""))
         email_requested = self._prompt_requests_camera_email(prompt)
+
+        # Channel-aware defaulting logic
+        session_id = str(self.session_id or "")
+        is_email_channel = session_id.startswith("email:")
+
         if email_requested and not email_to:
-            fallback = self._resolve_default_email_recipient()
+            fallback = ""
+            if is_email_channel:
+                # Default to sender email if we are in email channel
+                fallback = session_id.split(":", 1)[1] if ":" in session_id else ""
+
+            if not fallback:
+                fallback = self._resolve_default_email_recipient()
+
             if fallback:
                 args["email_to"] = fallback
                 args["save_snapshot"] = True
             else:
                 args["_email_requested_without_recipient"] = True
+        elif not email_requested and not email_to:
+            # If no email requested, but it's a snapshot request, ensure save_snapshot is True
+            # so the caller can send it to the chat channel.
+            args["save_snapshot"] = True
+
         command["args"] = args
         return command
 

@@ -70,6 +70,7 @@ class AgentLoopResult:
     messages: Sequence[Dict[str, Any]]
     iterations: int
     tool_runs: Sequence[AgentToolRun] = field(default_factory=tuple)
+    media: Sequence[str] = field(default_factory=tuple)
     stopped_reason: str = "done"
 
 
@@ -356,6 +357,7 @@ class AgentLoop:
             message_build_ms = (time.perf_counter() - build_started) * 1000.0
 
             tool_runs: List[AgentToolRun] = []
+            messages_media: List[str] = list(media or [])
             executed_tools: set[str] = set()
             final_content = ""
             stopped_reason = "done"
@@ -553,6 +555,7 @@ class AgentLoop:
                         tool_calls=tool_calls,
                         messages=messages,
                         tool_runs=tool_runs,
+                        media_list=messages_media,
                         executed_tools=executed_tools,
                         explicit_high_risk_intent=explicit_high_risk_intent,
                     )
@@ -637,6 +640,7 @@ class AgentLoop:
                     messages=messages,
                     iterations=iteration,
                     tool_runs=tuple(tool_runs),
+                    media=tuple(messages_media),
                     stopped_reason=stopped_reason,
                 )
 
@@ -818,6 +822,7 @@ class AgentLoop:
         tool_calls: Sequence[Mapping[str, Any]],
         messages: List[Dict[str, Any]],
         tool_runs: List[AgentToolRun],
+        media_list: List[str],
         executed_tools: set[str],
         explicit_high_risk_intent: bool,
     ) -> tuple[float, int]:
@@ -879,6 +884,48 @@ class AgentLoop:
                     result=str(result),
                 )
             )
+            # Intercept snapshots for media delivery if not sent via email
+            if name in {
+                "check_stream_source",
+                "gui_check_stream_source",
+                "camera_snapshot",
+            }:
+                try:
+                    res_data = json.loads(str(result or "{}"))
+                    if isinstance(res_data, dict) and res_data.get("ok"):
+                        # Extract snapshot_path from various possible locations
+                        # (Top-level, inside 'payload', or inside 'steps/capture')
+                        def find_snapshot_path(d: Any) -> str:
+                            if not isinstance(d, dict):
+                                return ""
+                            # 1. Direct hit
+                            path = str(d.get("snapshot_path") or "").strip()
+                            if path:
+                                return path
+                            # 2. Check common ancestors
+                            for key in ("payload", "steps", "capture"):
+                                if key in d:
+                                    path = find_snapshot_path(d[key])
+                                    if path:
+                                        return path
+                            return ""
+
+                        snapshot_path = find_snapshot_path(res_data)
+                        email_to = str(
+                            res_data.get("email_to")
+                            or res_data.get("payload", {}).get("email_to")
+                            or ""
+                        ).strip()
+
+                        if snapshot_path and not email_to:
+                            # Ensure absolute path for the delivery channel
+                            path_obj = Path(snapshot_path)
+                            if not path_obj.is_absolute():
+                                base = Path(self._workspace or Path.cwd()).resolve()
+                                path_obj = (base / path_obj).resolve()
+                            media_list.append(str(path_obj))
+                except Exception:
+                    pass
             messages.append(
                 {
                     "role": "tool",

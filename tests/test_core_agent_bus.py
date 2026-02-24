@@ -196,6 +196,124 @@ def test_agent_bus_service_redacts_private_stream_endpoints_from_outbound() -> N
     asyncio.run(_run())
 
 
+def test_agent_bus_service_preserves_private_stream_for_whatsapp_outbound() -> None:
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        return {"content": "view rtsp://192.168.1.100:554/live"}
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="whatsapp",
+                    sender_id="15551234567",
+                    chat_id="15551234567",
+                    content="show stream",
+                )
+            )
+            out = await bus.consume_outbound(timeout_s=1.0)
+            assert "rtsp://192.168.1.100:554/live" in out.content
+            assert "<private-host>" not in out.content
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_agent_bus_service_strips_url_credentials_in_outbound_content() -> None:
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        return {"content": "rtsp://user:pass@camera.local:554/live"}
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="whatsapp",
+                    sender_id="15551234567",
+                    chat_id="15551234567",
+                    content="show camera",
+                )
+            )
+            out = await bus.consume_outbound(timeout_s=1.0)
+            assert "user:pass@" not in out.content
+            assert "camera.local:554/live" in out.content
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_agent_bus_service_preserves_private_mjpeg_probe_url_for_whatsapp() -> None:
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        return {
+            "content": (
+                "Stream probe succeeded for "
+                "http://192.168.1.21/img/video.mjpeg. "
+                "Snapshot saved: camera_snapshots/probe.jpg"
+            )
+        }
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="whatsapp",
+                    sender_id="15551234567",
+                    chat_id="15551234567",
+                    content="check stream source and show me link",
+                )
+            )
+            out = await bus.consume_outbound(timeout_s=1.0)
+            assert "http://192.168.1.21/img/video.mjpeg" in out.content
+            assert "<private-host>" not in out.content
+            assert "camera_snapshots/probe.jpg" in out.content
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
 def test_agent_bus_service_streams_intermediate_progress() -> None:
     state = {"n": 0}
 

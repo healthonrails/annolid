@@ -605,7 +605,7 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         }
 
     check_stream_health_match = re.search(
-        r"\b(?:check|test|probe|verify)\b.*\b(?:camera|wireless\s+camera|stream(?:ing)?|rtsp|rtp)\b.*\b(?:health|status|connect(?:ion|ivity)?|snapshot|photo|image|frame)\b",
+        r"\b(?:check|test|probe|verify|take|get|send|show)\b.*\b(?:camera|wireless\s+camera|stream(?:ing)?|rtsp|rtp|snapshot|photo|image|frame)\b",
         lower,
     )
     asks_for_email = bool(
@@ -613,10 +613,19 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         and re.search(r"\b(?:send|forward|share)\b", lower)
     )
     parsed_email_to = _extract_email_address(text)
-    if check_stream_health_match and (not asks_for_email or parsed_email_to):
+    is_detection_request = bool(
+        "yolo11" in lower
+        or "mediapipe" in lower
+        or re.search(r"\b(?:detect|predict|track)\b", lower)
+    )
+    if (
+        check_stream_health_match
+        and (not asks_for_email or parsed_email_to)
+        and not is_detection_request
+    ):
         camera_source = ""
         stream_match = re.search(
-            r"\b(?:rtsp|rtsps|rtp|udp|srt|tcp)://[^\s\"'<>]+",
+            r"\b(?:rtsp|rtsps|rtp|udp|srt|tcp|https?|http)://[^\s\"'<>]+",
             text,
             flags=re.IGNORECASE,
         )
@@ -674,7 +683,9 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
     ):
         return {"name": "list_realtime_logs", "args": {}}
 
-    if re.search(r"\b(?:realtime|real[-\s]?time|stream(?:ing)?)\b", lower):
+    if re.search(
+        r"\b(?:realtime|real[-\s]?time|stream(?:ing)?|camera|webcam|device)\b", lower
+    ):
         start_stream_hint = (
             re.search(r"\b(?:start|open|run|launch|begin|check|test|detect)\b", lower)
             or ("mediapipe" in lower)

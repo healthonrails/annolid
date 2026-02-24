@@ -75,12 +75,12 @@ async def execute_direct_gui_command(
     list_dir: Callable[..., Any],
     read_file: Callable[..., Any],
     exec_command: Callable[..., Any],
-) -> str:
+) -> Dict[str, Any]:
     if not command:
-        return ""
+        return {"message": "", "payload": {}}
     name = str(command.get("name") or "")
     args = dict(command.get("args") or {})
-    payload: Dict[str, Any]
+    payload: Dict[str, Any] = {}
 
     async def _run(func: Callable, *a, **kw):
         res = func(*a, **kw)
@@ -326,8 +326,11 @@ async def execute_direct_gui_command(
                         message += f" Email send failed: {email_result}"
                     else:
                         message += " Email send failed."
-            return message
-        return str(payload.get("error") or "Stream probe failed.")
+            return {"message": message, "payload": payload}
+        return {
+            "message": str(payload.get("error") or "Stream probe failed."),
+            "payload": payload,
+        }
 
     if name == "list_pdfs":
         payload = await _run(list_pdfs, query=args.get("query"))

@@ -98,13 +98,23 @@ PROVIDERS: Tuple[ProviderSpec, ...] = (
         env_extras=(("ZHIPUAI_API_KEY", "{api_key}"),),
     ),
     ProviderSpec(
+        name="nvidia",
+        keywords=("nvidia", "moonshotai"),
+        env_key="NVIDIA_API_KEY",
+        default_api_base="https://integrate.api.nvidia.com/v1",
+        detect_by_key_prefix="nvapi-",
+        detect_by_base_keyword="nvidia",
+        litellm_prefix="nvidia_nim",
+        strip_model_prefix=True,
+        skip_prefixes=("nvidia_nim/", "nvidia/"),
+    ),
+    ProviderSpec(
         name="moonshot",
         keywords=("moonshot", "kimi"),
         env_key="MOONSHOT_API_KEY",
-        default_api_base="https://api.moonshot.ai/v1",
         litellm_prefix="moonshot",
+        strip_model_prefix=True,
         skip_prefixes=("moonshot/", "openrouter/"),
-        env_extras=(("MOONSHOT_API_BASE", "{api_base}"),),
         model_overrides=(("kimi-k2.5", {"temperature": 1.0}),),
     ),
     ProviderSpec(
@@ -135,6 +145,14 @@ def find_by_name(name: str) -> Optional[ProviderSpec]:
 
 def find_by_model(model: str) -> Optional[ProviderSpec]:
     model_lower = str(model or "").lower()
+
+    # Check for explicit provider/prefix first (e.g. nvidia/ or moonshot/)
+    if "/" in model_lower:
+        prefix = model_lower.split("/", 1)[0]
+        for spec in PROVIDERS:
+            if spec.name == prefix or spec.litellm_prefix == prefix:
+                return spec
+
     for spec in PROVIDERS:
         if spec.is_gateway or spec.is_local:
             continue

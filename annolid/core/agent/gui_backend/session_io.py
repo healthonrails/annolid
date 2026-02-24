@@ -398,11 +398,14 @@ def replay_session_debug_events(
         seen_keys.add(key)
         payload = row.get("payload")
         if isinstance(payload, dict):
+            payload = dict(payload)
             text = str(payload.get("text") or "")
             if len(text) > 1024:
-                payload = dict(payload)
                 payload["text"] = text[:1024] + "\n...[truncated]..."
-                row["payload"] = payload
+            media = payload.get("media")
+            if isinstance(media, list) and len(media) > 8:
+                payload["media"] = list(media[:8]) + ["...[truncated]..."]
+            row["payload"] = payload
         normalized.append(row)
     return normalized
 
@@ -415,12 +418,33 @@ def format_replay_as_text(events: List[Dict[str, Any]]) -> str:
         kind = str(item.get("kind") or "").strip().lower()
         payload = item.get("payload")
         text = ""
+        media_summary = ""
         if isinstance(payload, dict):
             text = str(payload.get("text") or "").strip()
+            media_summary = _format_replay_media_summary(payload)
         stamp = ts if ts else "-"
         header = f"[{stamp}] {direction}:{kind}".strip()
-        if text:
-            lines.append(f"{header} {text}")
+        body = " ".join(part for part in [text, media_summary] if part).strip()
+        if body:
+            lines.append(f"{header} {body}")
         else:
             lines.append(header)
     return "\n".join(lines).strip()
+
+
+def _format_replay_media_summary(payload: Dict[str, Any]) -> str:
+    media = payload.get("media")
+    media_type = str(payload.get("media_type") or "").strip().lower()
+    if not isinstance(media, list) or not media:
+        return ""
+    refs: List[str] = []
+    for item in media[:3]:
+        ref = str(item or "").strip()
+        if not ref:
+            continue
+        refs.append(ref if len(ref) <= 96 else (ref[:96] + "..."))
+    count = len(media)
+    type_text = media_type if media_type else "media"
+    refs_text = ", ".join(refs)
+    extra = f" (+{count - len(refs)} more)" if count > len(refs) else ""
+    return f"[{type_text} x{count}: {refs_text}{extra}]"

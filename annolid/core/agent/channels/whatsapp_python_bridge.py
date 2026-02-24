@@ -98,37 +98,281 @@ class _PlaywrightWhatsAppProvider:
                 pass
             self._playwright = None
 
+    # Centralized selectors for WhatsApp Web UI
+    SELECTORS = {
+        "compose_box": 'div[contenteditable="true"][data-tab]',
+        "footer_composer": 'footer div[contenteditable="true"][data-tab]',
+        "chat_header": "header span[title]",
+        "main_header": "#main header",
+        "attach_btn": (
+            'button[aria-label="Attach"], '
+            '[title="Attach"], '
+            'span[data-icon="plus"], '
+            'span[data-icon="add"], '
+            'span[data-icon="plus-alt"], '
+            'span[data-icon="clip"]'
+        ),
+        "file_input": 'input[type="file"][accept*="image"], input[type="file"][accept*="video"], input[type="file"]',
+        "caption_box": (
+            'div[role="dialog"] div[contenteditable="true"][data-tab], '
+            'div[role="dialog"] div[contenteditable="true"][role="textbox"]'
+        ),
+        "send_btn": (
+            'span[data-icon="send"], '
+            'span[data-icon="send-light"], '
+            'span[data-icon^="send"], '
+            'button[aria-label="Send"], '
+            'button[data-testid*="send"], '
+            'div[role="button"] span[data-icon="send"], '
+            '[data-testid="send"]'
+        ),
+        "qr_node": "div[data-ref]",
+        "app_root": "#app",
+        "sidebar": "aside",
+        "media_preview": 'div[role="dialog"], div[style*="background-image"], canvas',
+    }
+
+    def _normalize_content(self, text: str) -> str:
+        """Utility for consistent text normalization (strip, lower, whitespace)."""
+        return " ".join(str(text or "").strip().lower().split())
+
+    async def _click_with_fallback(self, element: Any, *, label: str) -> None:
+        """Click helper resilient to transient overlay/pointer intercept issues."""
+        last_exc: Optional[Exception] = None
+        try:
+            await element.click(timeout=3000)
+            return
+        except Exception as exc:
+            last_exc = exc
+            logger.debug("WhatsApp bridge %s click failed (normal): %s", label, exc)
+        try:
+            await element.click(timeout=3000, force=True)
+            return
+        except Exception as exc:
+            last_exc = exc
+            logger.debug("WhatsApp bridge %s click failed (force): %s", label, exc)
+        try:
+            await element.evaluate("el => el && el.click()")
+            return
+        except Exception as exc:
+            last_exc = exc
+            logger.debug("WhatsApp bridge %s click failed (js): %s", label, exc)
+        if last_exc is not None:
+            raise last_exc
+
+    async def _is_media_preview_active(self) -> bool:
+        if self._page is None:
+            return False
+        try:
+            preview_caption = await self._page.query_selector(
+                self.SELECTORS["caption_box"]
+            )
+            if preview_caption is not None:
+                return True
+            preview_container = await self._page.query_selector(
+                self.SELECTORS["media_preview"]
+            )
+            return preview_container is not None
+        except Exception:
+            return False
+
+    async def _dispatch_media_send(self, to: str) -> None:
+        """Send media preview with low-latency retries and bounded total time."""
+        if self._page is None:
+            raise RuntimeError("WhatsApp Web is not initialized")
+
+        deadline = asyncio.get_running_loop().time() + 6.0
+        last_exc: Optional[Exception] = None
+
+        while asyncio.get_running_loop().time() < deadline:
+            # If preview is already gone and footer composer is back, send succeeded.
+            if not await self._is_media_preview_active():
+                footer = await self._page.query_selector(
+                    self.SELECTORS["footer_composer"]
+                )
+                if footer is not None:
+                    logger.info("WhatsApp bridge media sent to %s", to)
+                    return
+
+            caption_box = await self._page.query_selector(self.SELECTORS["caption_box"])
+            if caption_box is not None:
+                try:
+                    await caption_box.press("Enter")
+                    await asyncio.sleep(0.12)
+                    continue
+                except Exception as exc:
+                    last_exc = exc
+                    logger.debug("WhatsApp bridge: caption Enter send failed: %s", exc)
+
+            try:
+                await self._page.keyboard.press("Enter")
+                await asyncio.sleep(0.12)
+                continue
+            except Exception as exc:
+                last_exc = exc
+                logger.debug("WhatsApp bridge: global Enter send failed: %s", exc)
+
+            try:
+                send_btn = await self._page.wait_for_selector(
+                    self.SELECTORS["send_btn"], timeout=1200
+                )
+                await self._click_with_fallback(send_btn, label="send button")
+                await asyncio.sleep(0.12)
+                continue
+            except Exception as exc:
+                last_exc = exc
+                logger.debug("WhatsApp bridge: send button click failed: %s", exc)
+
+            await asyncio.sleep(0.15)
+
+        if last_exc is not None:
+            raise RuntimeError(
+                f"Timed out sending media preview for {to}; last error: {last_exc}"
+            ) from last_exc
+        raise RuntimeError(f"Timed out sending media preview for {to}")
+
+    async def _ensure_chat_open(self, to: str) -> Optional[Any]:
+        """Ensures the chat with 'to' is open. Returns the composer if successful."""
+        raw_target = str(to or "").strip()
+        # Extract numeric target if possible
+        target_num = "".join(ch for ch in raw_target.split("@", 1)[0] if ch.isdigit())
+
+        if target_num:
+            send_url = f"https://web.whatsapp.com/send?phone={quote(target_num)}"
+            logger.debug("WhatsApp bridge navigating to numeric target: %s", target_num)
+            await self._page.goto(send_url, wait_until="domcontentloaded")
+        else:
+            logger.info(
+                "WhatsApp bridge: using active chat for non-numeric recipient %r",
+                raw_target,
+            )
+
+        try:
+            # Wait for chat UI elements
+            await self._page.wait_for_selector(
+                f"{self.SELECTORS['footer_composer']}, {self.SELECTORS['main_header']}",
+                timeout=15000,
+            )
+
+            # Log current active chat for debugging
+            current_active = await self._page.evaluate(
+                f"() => {{ const h = document.querySelector('{self.SELECTORS['chat_header']}'); return h ? h.getAttribute('title') : 'Unknown'; }}"
+            )
+            logger.info(
+                "WhatsApp bridge: active chat identified as %r (requested: %r)",
+                current_active,
+                raw_target,
+            )
+
+            return await self._page.wait_for_selector(
+                self.SELECTORS["footer_composer"], timeout=5000
+            )
+        except Exception as exc:
+            logger.warning(
+                "WhatsApp bridge failed to confirm open chat for %r: %s",
+                raw_target,
+                exc,
+            )
+            return None
+
     async def send_text(self, to: str, text: str) -> None:
         if self._page is None:
             raise RuntimeError("WhatsApp Web is not initialized")
-        raw_target = str(to or "").strip()
-        target = raw_target.split("@", 1)[0]
-        target = "".join(ch for ch in target if ch.isdigit())
+
         message = str(text or "")
-        if target:
-            send_url = f"https://web.whatsapp.com/send?phone={quote(target)}&text={quote(message)}"
-            await self._page.goto(send_url, wait_until="domcontentloaded")
-            # Wait for compose box and send by Enter.
-            box = await self._page.wait_for_selector(
-                'div[contenteditable="true"][data-tab]', timeout=15000
-            )
-            await box.press("Enter")
-        else:
-            # Fallback for chats resolved by WhatsApp title (self-chat / business label):
-            # send in the currently open chat composer.
-            logger.warning(
-                "WhatsApp bridge send fallback: non-numeric recipient=%r, sending to active chat",
-                raw_target,
-            )
-            composer = await self._page.wait_for_selector(
-                'footer div[contenteditable="true"][data-tab]',
-                timeout=15000,
-            )
+        composer = await self._ensure_chat_open(to)
+
+        if not composer:
+            raise RuntimeError(f"Could not open or find chat for {to}")
+
+        try:
+            # If we navigated via URL with &text=, it might be filled, but ensure_chat_open
+            # currently uses base URL. We fill manually for robustness.
             await composer.click()
             await composer.fill("")
             await composer.type(message)
+
+            # Remember for echo cancellation BEFORE we send
+            self._remember_bot_message(message)
             await composer.press("Enter")
-        self._remember_bot_message(message)
+            logger.info("WhatsApp bridge text sent to %s", to)
+        except Exception as exc:
+            logger.error("WhatsApp bridge send_text failed: %s", exc)
+            raise
+
+    async def send_media(
+        self, to: str, media_paths: list[str], caption: str = ""
+    ) -> None:
+        if self._page is None:
+            raise RuntimeError("WhatsApp Web is not initialized")
+        if not media_paths:
+            return
+
+        composer = await self._ensure_chat_open(to)
+        if not composer:
+            raise RuntimeError(
+                f"Could not open or find chat for {to} for media delivery"
+            )
+
+        try:
+            # 1. Click Attach
+            attach_btn = await self._page.wait_for_selector(
+                self.SELECTORS["attach_btn"], timeout=15000
+            )
+            await self._click_with_fallback(attach_btn, label="attach button")
+
+            # 2. Set files on the hidden input
+            file_input = await self._page.wait_for_selector(
+                self.SELECTORS["file_input"], timeout=5000, state="attached"
+            )
+
+            resolved_paths = []
+            for p in media_paths:
+                abs_p = str(Path(p).expanduser().resolve())
+                if Path(abs_p).exists():
+                    resolved_paths.append(abs_p)
+                else:
+                    logger.warning(
+                        "WhatsApp bridge media path does not exist: %s", abs_p
+                    )
+
+            if not resolved_paths:
+                raise FileNotFoundError(
+                    "None of the provided media paths exist locally"
+                )
+
+            await file_input.set_input_files(resolved_paths)
+            logger.info(
+                "WhatsApp bridge: files attached, waiting for preview/caption box"
+            )
+
+            # 3. Handle caption and wait for preview
+            # We wait for the caption box OR the preview container to ensure UI has switched
+            try:
+                await self._page.wait_for_selector(
+                    f"{self.SELECTORS['caption_box']}, {self.SELECTORS['media_preview']}",
+                    timeout=15000,
+                )
+                logger.info("WhatsApp bridge: media preview/caption box appeared")
+            except Exception:
+                logger.warning(
+                    "WhatsApp bridge: media preview did not appear within 15s, proceeding anyway"
+                )
+
+            if caption:
+                caption_box = await self._page.wait_for_selector(
+                    self.SELECTORS["caption_box"], timeout=5000
+                )
+                await caption_box.fill(str(caption))
+            if caption:
+                self._remember_bot_message(caption)
+
+            # 4. Send media immediately with bounded retries and completion checks.
+            await self._dispatch_media_send(to)
+
+        except Exception as exc:
+            logger.error("WhatsApp bridge send_media failed: %s", exc)
+            raise
 
     async def _is_ready(self) -> bool:
         if self._page is None:
@@ -177,10 +421,20 @@ class _PlaywrightWhatsAppProvider:
                         lastWrap.querySelector('span.selectable-text') ||
                         lastWrap.querySelector('span[dir="ltr"]') ||
                         lastWrap.querySelector('span[dir="auto"]');
-                      const text = (textNode ? textNode.innerText : lastWrap.innerText || '').trim();
+                      let text = (textNode ? textNode.innerText : lastWrap.innerText || '').trim();
+                      const videoNode = lastWrap.querySelector('video');
+                      const imageNode = lastWrap.querySelector('img[src], canvas');
+                      const mediaType = videoNode ? 'video' : (imageNode ? 'image' : '');
+                      const mediaRefs = [];
+                      if (mediaType && id) {
+                        mediaRefs.push(`wa-bridge-media:${mediaType}:${id}`);
+                      }
+                      if (!text && mediaType) {
+                        text = `[${mediaType} message]`;
+                      }
                       if (!text) return null;
                       const direction = bubble && bubble.classList.contains('message-out') ? 'out' : 'in';
-                      return { id, text, sender, jid, pn, direction };
+                      return { id, text, sender, jid, pn, direction, mediaType, media: mediaRefs };
                     }
                     """
                 )
@@ -193,13 +447,26 @@ class _PlaywrightWhatsAppProvider:
                     direction = (
                         str(payload.get("direction", "in") or "in").strip().lower()
                     )
+                    media_type = str(payload.get("mediaType", "") or "").strip().lower()
+                    media = payload.get("media")
+                    if isinstance(media, str):
+                        media = [media]
+                    if not isinstance(media, list):
+                        media = []
+
+                    key = msg_id or f"{sender_jid or sender_pn or sender_title}:{text}"
+                    is_new = key and key != self._last_seen_id
+
                     if direction == "out" and self._is_recent_bot_message(text):
-                        await asyncio.sleep(2.0)
+                        if is_new:
+                            self._last_seen_id = key
+                        await asyncio.sleep(1.0)
                         continue
+
                     sender = sender_jid or sender_pn or sender_title
                     chat_id = sender_pn or sender_jid or sender_title
-                    key = msg_id or f"{sender}:{text}"
-                    if key and key != self._last_seen_id:
+
+                    if is_new:
                         self._last_seen_id = key
                         self._last_activity_ts = asyncio.get_running_loop().time()
                         logger.info(
@@ -216,6 +483,8 @@ class _PlaywrightWhatsAppProvider:
                                 "chat_id": chat_id,
                                 "pn": sender_pn,
                                 "content": text,
+                                "media_type": media_type,
+                                "media": media,
                                 "timestamp": int(asyncio.get_running_loop().time()),
                                 "isGroup": False,
                                 "direction": direction,
@@ -234,30 +503,37 @@ class _PlaywrightWhatsAppProvider:
             await asyncio.sleep(2.0)
 
     def _remember_bot_message(self, text: str) -> None:
-        content = str(text or "").strip()
+        content = self._normalize_content(text)
         if not content:
             return
         now = asyncio.get_running_loop().time()
         self._recent_bot_messages.append((now, content))
-        cutoff = now - 30.0
+        cutoff = now - 60.0  # Keep for 60s
         self._recent_bot_messages = [
             (ts, body) for ts, body in self._recent_bot_messages if ts >= cutoff
         ]
 
     def _is_recent_bot_message(self, text: str) -> bool:
-        content = str(text or "").strip()
+        content = self._normalize_content(text)
         if not content:
             return False
         now = asyncio.get_running_loop().time()
         keep: list[tuple[float, str]] = []
         matched = False
+
+        logger.debug(
+            "WhatsApp bridge checking echo content=%r cache_size=%d",
+            content[:50],
+            len(self._recent_bot_messages),
+        )
         for ts, body in self._recent_bot_messages:
-            if now - ts > 30.0:
-                continue
-            if not matched and body == content and now - ts <= 15.0:
+            if not matched and body == content and now - ts <= 30.0:
+                logger.debug("WhatsApp bridge echo match found for %r", content[:50])
                 matched = True
                 continue
-            keep.append((ts, body))
+            if now - ts <= 60.0:
+                keep.append((ts, body))
+
         self._recent_bot_messages = keep
         return matched
 
@@ -375,6 +651,21 @@ class WhatsAppPythonBridge:
                     try:
                         await self._provider.send_text(to, text)
                         await websocket.send(json.dumps({"type": "sent", "to": to}))
+                    except Exception as exc:
+                        await websocket.send(
+                            json.dumps({"type": "error", "error": str(exc)})
+                        )
+                elif msg_type == "send_media":
+                    to = str(data.get("to", "") or "")
+                    caption = str(data.get("caption", "") or "")
+                    media = data.get("media", []) or []
+                    if isinstance(media, str):
+                        media = [media]
+                    try:
+                        await self._provider.send_media(to, media, caption)
+                        await websocket.send(
+                            json.dumps({"type": "sent_media", "to": to})
+                        )
                     except Exception as exc:
                         await websocket.send(
                             json.dumps({"type": "error", "error": str(exc)})

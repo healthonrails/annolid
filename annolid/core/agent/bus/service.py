@@ -321,7 +321,10 @@ class AgentBusService:
 
             async def _on_progress(content: str) -> None:
                 nonlocal last_progress
-                text = self._sanitize_outbound_content(content)
+                text = self._sanitize_outbound_content(
+                    content,
+                    channel=inbound.channel,
+                )
                 if not text or text == last_progress:
                     return
                 last_progress = text
@@ -349,6 +352,7 @@ class AgentBusService:
                 channel=inbound.channel,
                 chat_id=inbound.chat_id,
                 content=result.content,
+                media=list(result.media or []),
                 metadata=outbound_meta,
             )
         except Exception as exc:
@@ -366,7 +370,10 @@ class AgentBusService:
                     "turn_status": TURN_STATUS_FAILED,
                 },
             )
-        normalized = self._sanitize_outbound_content(outbound.content)
+        normalized = self._sanitize_outbound_content(
+            outbound.content,
+            channel=outbound.channel,
+        )
         if not normalized:
             if str(inbound.channel or "").strip().lower() == "email":
                 fallback = self._build_empty_email_fallback(inbound)
@@ -438,13 +445,22 @@ class AgentBusService:
         )
         await self.bus.publish_outbound(outbound)
 
-    @staticmethod
-    def _sanitize_outbound_content(content: str | None) -> str:
+    @classmethod
+    def _sanitize_outbound_content(
+        cls,
+        content: str | None,
+        *,
+        channel: str = "",
+    ) -> str:
         raw = str(content or "")
         if not raw:
             return ""
         without_think = re.sub(r"<think>[\s\S]*?</think>", "", raw)
-        return AgentBusService._redact_sensitive_text(str(without_think or "").strip())
+        preserve_private_hosts = str(channel or "").strip().lower() == "whatsapp"
+        return cls._redact_sensitive_text(
+            str(without_think or "").strip(),
+            preserve_private_hosts=preserve_private_hosts,
+        )
 
     @staticmethod
     def _build_empty_email_fallback(inbound: InboundMessage) -> str:
@@ -496,7 +512,9 @@ class AgentBusService:
         return OutboundMessage(
             channel=outbound.channel,
             chat_id=outbound.chat_id,
-            content=self._sanitize_outbound_content(outbound.content),
+            content=self._sanitize_outbound_content(
+                outbound.content, channel=outbound.channel
+            ),
             reply_to=outbound.reply_to,
             media=list(outbound.media or []),
             metadata=meta,
@@ -524,14 +542,31 @@ class AgentBusService:
             return False
 
     @classmethod
-    def _redact_sensitive_url(cls, raw_url: str) -> str:
+    def _redact_sensitive_url(
+        cls,
+        raw_url: str,
+        *,
+        preserve_private_host: bool = False,
+    ) -> str:
         text = str(raw_url or "").strip()
         if "://" not in text:
             return text
         with suppress(Exception):
             parts = urlsplit(text)
+            netloc = str(parts.netloc or "")
+            safe_netloc = cls._strip_url_credentials(netloc)
             host = str(parts.hostname or "")
             if cls._is_private_host(host):
+                if preserve_private_host:
+                    return urlunsplit(
+                        (
+                            parts.scheme,
+                            safe_netloc,
+                            parts.path,
+                            parts.query,
+                            parts.fragment,
+                        )
+                    )
                 port = f":{parts.port}" if parts.port else ""
                 redacted_netloc = f"<private-host>{port}"
                 return urlunsplit(
@@ -543,10 +578,24 @@ class AgentBusService:
                         parts.fragment,
                     )
                 )
+            return urlunsplit(
+                (
+                    parts.scheme,
+                    safe_netloc,
+                    parts.path,
+                    parts.query,
+                    parts.fragment,
+                )
+            )
         return text
 
     @classmethod
-    def _redact_sensitive_text(cls, text: str) -> str:
+    def _redact_sensitive_text(
+        cls,
+        text: str,
+        *,
+        preserve_private_hosts: bool = False,
+    ) -> str:
         raw = str(text or "")
         if not raw:
             return ""
@@ -554,7 +603,24 @@ class AgentBusService:
             r"\b(?:https?|rtsp|rtsps|rtp|udp|tcp|srt)://[^\s<>\]\[)\"']+",
             re.IGNORECASE,
         )
-        return pattern.sub(lambda m: cls._redact_sensitive_url(m.group(0)), raw)
+        return pattern.sub(
+            lambda m: cls._redact_sensitive_url(
+                m.group(0),
+                preserve_private_host=preserve_private_hosts,
+            ),
+            raw,
+        )
+
+    @staticmethod
+    def _strip_url_credentials(netloc: str) -> str:
+        raw = str(netloc or "")
+        if not raw:
+            return raw
+        if raw.startswith("@"):
+            return raw
+        if "@" not in raw:
+            return raw
+        return raw.split("@", 1)[1]
 
     @classmethod
     def _redact_sensitive_metadata(cls, value: Any) -> Any:
