@@ -766,6 +766,28 @@ def test_register_nanobot_style_tools_skips_calendar_when_deps_missing(
     assert registry.has("google_calendar") is False
 
 
+def test_register_nanobot_style_tools_skips_calendar_when_availability_check_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = FunctionToolRegistry()
+
+    def _raise_check() -> bool:
+        raise ModuleNotFoundError("No module named 'google.auth'")
+
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.nanobot.GoogleCalendarTool.is_available",
+        _raise_check,
+    )
+    asyncio.run(
+        register_nanobot_style_tools(
+            registry,
+            allowed_dir=tmp_path,
+            calendar_cfg=CalendarToolConfig(enabled=True, provider="google"),
+        )
+    )
+    assert registry.has("google_calendar") is False
+
+
 def test_mcp_tool_wrapper_sanitizes_name_and_schema() -> None:
     class _ToolDef:
         name = "search.web"

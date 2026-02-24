@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 
 from annolid.core.agent.tools.calendar import GoogleCalendarTool
@@ -68,6 +69,20 @@ def test_google_calendar_tool_missing_optional_packages() -> None:
         assert "dependencies are not installed" in text.lower()
 
     asyncio.run(_run())
+
+
+def test_google_calendar_is_available_handles_missing_google_namespace(
+    monkeypatch,
+) -> None:
+    real_find_spec = importlib.util.find_spec
+
+    def _fake_find_spec(name: str):
+        if name == "google.auth.transport.requests":
+            raise ModuleNotFoundError("No module named 'google.auth'")
+        return real_find_spec(name)
+
+    monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec)
+    assert GoogleCalendarTool.is_available() is False
 
 
 def test_google_calendar_tool_list_and_create() -> None:

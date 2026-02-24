@@ -16,7 +16,8 @@ QR bridge keeps traffic local and avoids exposing a public webhook:
 Install optional dependencies:
 
 ```bash
-pip install "annolid[whatsapp]"
+# Annolid Bot extras bundle (includes WhatsApp + Google Calendar + MCP)
+pip install "annolid[annolid_bot]"
 python -m playwright install chromium
 ```
 
@@ -70,7 +71,7 @@ If WhatsApp shows connected but the bot does not answer:
    - clear `allowFrom` temporarily, retest, then add only trusted numbers
 4. Self-chat (`Message yourself`) is supported, but make sure the self chat is the active WhatsApp Web chat.
 5. Verify dependency/runtime:
-   - `pip install "annolid[whatsapp]"`
+   - `pip install "annolid[annolid_bot]"`
    - `python -m playwright install chromium`
 
 ## 4. Optional: Cloud API mode

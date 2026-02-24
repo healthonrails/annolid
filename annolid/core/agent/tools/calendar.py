@@ -163,9 +163,13 @@ class GoogleCalendarTool(FunctionTool):
             "google_auth_oauthlib.flow",
             "googleapiclient.discovery",
         )
-        return all(
-            importlib.util.find_spec(name) is not None for name in required_modules
-        )
+        for name in required_modules:
+            try:
+                if importlib.util.find_spec(name) is None:
+                    return False
+            except (ImportError, ModuleNotFoundError):
+                return False
+        return True
 
     def _import_google_modules(self) -> tuple[Any, Any, Any, Any]:
         from google.auth.transport.requests import Request

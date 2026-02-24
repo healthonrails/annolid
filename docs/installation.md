@@ -128,7 +128,15 @@ Replace `<IMAGE_ID>` with the identifier printed by `docker build`.
   `conda install qtpy` normally resolves the conflict between OpenCV and PyQt.
 - **`qtpy.QtBindingsNotFoundError: No Qt bindings could be found`:**
   install GUI extras in your active environment: `pip install -e ".[gui]"` (from source) or `pip install "annolid[gui]"` (from PyPI).
+- **`No module named 'google.auth'` during Annolid Bot background startup:**
+  install Annolid Bot extras: `pip install "annolid[annolid_bot]"`, or disable calendar in `~/.annolid/agent/config.json` (`"tools": {"calendar": {"enabled": false}}`).
+- **`No module named 'websockets'` during Annolid Bot background startup:**
+  install Annolid Bot extras: `pip install "annolid[annolid_bot]"`, or set `tools.whatsapp.autoStart=false`.
+- **Migration note (breaking change):**
+  focused extras `annolid[whatsapp]`, `annolid[google_calendar]`, and `annolid[mcp]` are consolidated into `annolid[annolid_bot]`.
 - **Launch failures**:
   Confirm the correct environment is active (`conda activate annolid-env` or `source .venv/bin/activate`) and run `annolid --help`.
 - **Advanced Training/Inference**:
   Use `annolid-run list-models`, `annolid-run train`, and `annolid-run predict` for CLI operations.
+- **Optional service setup guide**:
+  see `docs/source/agent_background_services_tutorial.md` for step-by-step Email/WhatsApp/Calendar setup.

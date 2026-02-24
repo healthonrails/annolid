@@ -207,7 +207,16 @@ async def register_nanobot_style_tools(
     if calendar_cfg and calendar_cfg.enabled:
         provider_name = str(calendar_cfg.provider or "google").strip().lower()
         if provider_name == "google":
-            if GoogleCalendarTool.is_available():
+            try:
+                calendar_available = GoogleCalendarTool.is_available()
+            except Exception as exc:  # pragma: no cover - defensive guard
+                calendar_available = False
+                logger.warning(
+                    "Calendar tool availability check failed: %s. "
+                    "Continuing without calendar tool.",
+                    exc,
+                )
+            if calendar_available:
                 registry.register(
                     GoogleCalendarTool(
                         credentials_file=calendar_cfg.credentials_file,

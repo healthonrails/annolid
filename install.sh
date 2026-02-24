@@ -10,7 +10,7 @@
 # Options:
 #   --install-dir DIR   Directory to install annolid (default: ./annolid)
 #   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
-#   --extras EXTRAS     Comma-separated optional extras: sam3,image_editing,text_to_speech,qwen3_embedding (GUI extras are always included)
+#   --extras EXTRAS     Comma-separated optional extras: sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot (GUI extras are always included)
 #   --no-gpu            Skip GPU/CUDA detection
 #   --use-conda         Use conda instead of venv (requires conda/mamba)
 #   --no-interactive    Skip all prompts and use defaults
@@ -495,6 +495,10 @@ interactive_config() {
 
     if prompt_yes_no "    Include text-to-speech?" "n"; then
         SELECTED_EXTRAS+=("text_to_speech")
+    fi
+
+    if prompt_yes_no "    Include Annolid Bot integrations (WhatsApp + Google Calendar + MCP)?" "n"; then
+        SELECTED_EXTRAS+=("annolid_bot")
     fi
 
     if [[ ${#SELECTED_EXTRAS[@]} -gt 0 ]]; then

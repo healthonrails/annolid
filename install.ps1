@@ -9,7 +9,7 @@
 # Options:
 #   -InstallDir DIR      Directory to install annolid (default: .\annolid)
 #   -VenvDir DIR         Directory for virtual environment (default: .venv)
-#   -Extras EXTRAS       Comma-separated extras: sam3,image_editing,text_to_speech,qwen3_embedding (GUI extras are always included)
+#   -Extras EXTRAS       Comma-separated extras: sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot (GUI extras are always included)
 #   -NoGpu               Skip GPU/CUDA detection
 #   -NoInteractive       Skip all prompts and use defaults
 
@@ -362,6 +362,7 @@ function Get-InteractiveConfig {
     if (Prompt-YesNo "    Include SAM3 (advanced segmentation)?" $false) { $selectedExtras += "sam3" }
     if (Prompt-YesNo "    Include image editing (diffusion models)?" $false) { $selectedExtras += "image_editing" }
     if (Prompt-YesNo "    Include text-to-speech?" $false) { $selectedExtras += "text_to_speech" }
+    if (Prompt-YesNo "    Include Annolid Bot integrations (WhatsApp + Google Calendar + MCP)?" $false) { $selectedExtras += "annolid_bot" }
 
     if ($selectedExtras.Count -gt 0) {
         $script:Extras = $selectedExtras -join ","

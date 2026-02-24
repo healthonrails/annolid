@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import threading
 from annolid.utils.logger import logger
 from typing import Optional
@@ -24,6 +25,14 @@ from annolid.core.agent.tools import (
 )
 from annolid.core.agent.utils import get_agent_workspace_path
 from annolid.gui.widgets.ai_chat_widget import AIChatWidget
+
+
+def _missing_whatsapp_python_bridge_deps() -> list[str]:
+    """Return missing optional dependencies required by embedded WhatsApp bridge."""
+    missing: list[str] = []
+    if importlib.util.find_spec("websockets") is None:
+        missing.append("websockets")
+    return missing
 
 
 class AIChatManager(QtCore.QObject):
@@ -178,20 +187,40 @@ class AIChatManager(QtCore.QObject):
                         .lower()
                     )
                     if whatsapp_start_runtime and bridge_mode == "python":
-                        bridge = WhatsAppPythonBridge(
-                            host=config.tools.whatsapp.bridge_host,
-                            port=int(config.tools.whatsapp.bridge_port),
-                            token=config.tools.whatsapp.bridge_token,
-                            session_dir=config.tools.whatsapp.bridge_session_dir,
-                            headless=bool(config.tools.whatsapp.bridge_headless),
-                        )
-                        await bridge.start()
-                        self._whatsapp_python_bridge = bridge
-                        whatsapp_cfg["bridge_url"] = bridge.bridge_url
-                        logger.info(
-                            "Embedded WhatsApp Python bridge started at %s",
-                            bridge.bridge_url,
-                        )
+                        missing_deps = _missing_whatsapp_python_bridge_deps()
+                        if missing_deps:
+                            whatsapp_start_runtime = False
+                            whatsapp_cfg["enabled"] = False
+                            logger.warning(
+                                "WhatsApp auto-start disabled: missing optional dependencies (%s). "
+                                'Install with: pip install "annolid[whatsapp]"',
+                                ", ".join(missing_deps),
+                            )
+                        else:
+                            bridge = WhatsAppPythonBridge(
+                                host=config.tools.whatsapp.bridge_host,
+                                port=int(config.tools.whatsapp.bridge_port),
+                                token=config.tools.whatsapp.bridge_token,
+                                session_dir=config.tools.whatsapp.bridge_session_dir,
+                                headless=bool(config.tools.whatsapp.bridge_headless),
+                            )
+                            try:
+                                await bridge.start()
+                            except RuntimeError as exc:
+                                whatsapp_start_runtime = False
+                                whatsapp_cfg["enabled"] = False
+                                logger.warning(
+                                    "WhatsApp Python bridge failed to start (%s). "
+                                    "Continuing without WhatsApp bridge.",
+                                    exc,
+                                )
+                            else:
+                                self._whatsapp_python_bridge = bridge
+                                whatsapp_cfg["bridge_url"] = bridge.bridge_url
+                                logger.info(
+                                    "Embedded WhatsApp Python bridge started at %s",
+                                    bridge.bridge_url,
+                                )
 
                     # Setup Agent Loop for background replies
                     tools = FunctionToolRegistry()
