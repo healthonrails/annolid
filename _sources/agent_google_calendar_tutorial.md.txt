@@ -5,7 +5,8 @@ This guide shows how to let Annolid Bot read and manage Google Calendar events.
 ## 1. Install optional dependency
 
 ```bash
-pip install "annolid[google_calendar]"
+# Annolid Bot extras bundle (includes Google Calendar + WhatsApp + MCP)
+pip install "annolid[annolid_bot]"
 ```
 
 If this optional package is not installed, Annolid skips registering calendar tools and other features keep working normally.

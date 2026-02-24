@@ -55,6 +55,7 @@
 <li class="toctree-l1"><a class="reference internal" href="dino_kpseg.html">DINOv3 Keypoint Segmentation (DinoKPSEG)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="agent_tools.html">Agent Tools Developer Guide</a></li>
 <li class="toctree-l1"><a class="reference internal" href="agent_provider_setup.html">Annolid Bot Provider and Model Setup Tutorial</a></li>
+<li class="toctree-l1"><a class="reference internal" href="agent_background_services_tutorial.html">Annolid Bot Background Services Setup</a></li>
 <li class="toctree-l1"><a class="reference internal" href="agent_google_calendar_tutorial.html">Annolid Bot Google Calendar Tutorial</a></li>
 <li class="toctree-l1"><a class="reference internal" href="agent_clawhub_tutorial.html">Annolid Bot ClawHub Skills Tutorial</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Annolid Bot WhatsApp Setup Tutorial</a><ul>
@@ -112,7 +113,8 @@
 <li><p>local-only bridge on <code class="docutils literal notranslate"><span class="pre">127.0.0.1</span></code></p></li>
 </ul>
 <p>Install optional dependencies:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;annolid[whatsapp]&quot;</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Annolid Bot extras bundle (includes WhatsApp + Google Calendar + MCP)</span>
+pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;annolid[annolid_bot]&quot;</span>
 python<span class="w"> </span>-m<span class="w"> </span>playwright<span class="w"> </span>install<span class="w"> </span>chromium
 </pre></div>
 </div>
@@ -177,7 +179,7 @@ WhatsApp -&gt; Settings -&gt; Linked Devices -&gt; Link a Device</p></li>
 <li><p>Self-chat (<code class="docutils literal notranslate"><span class="pre">Message</span> <span class="pre">yourself</span></code>) is supported, but make sure the self chat is the active WhatsApp Web chat.</p></li>
 <li><p>Verify dependency/runtime:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">&quot;annolid[whatsapp]&quot;</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">&quot;annolid[annolid_bot]&quot;</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">playwright</span> <span class="pre">install</span> <span class="pre">chromium</span></code></p></li>
 </ul>
 </li>

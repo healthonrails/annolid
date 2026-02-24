@@ -20,7 +20,7 @@
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
     <link rel="next" title="Annolid Bot ClawHub Skills Tutorial" href="agent_clawhub_tutorial.html" />
-    <link rel="prev" title="Annolid Bot Provider and Model Setup Tutorial" href="agent_provider_setup.html" /> 
+    <link rel="prev" title="Annolid Bot Background Services Setup" href="agent_background_services_tutorial.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -55,6 +55,7 @@
 <li class="toctree-l1"><a class="reference internal" href="dino_kpseg.html">DINOv3 Keypoint Segmentation (DinoKPSEG)</a></li>
 <li class="toctree-l1"><a class="reference internal" href="agent_tools.html">Agent Tools Developer Guide</a></li>
 <li class="toctree-l1"><a class="reference internal" href="agent_provider_setup.html">Annolid Bot Provider and Model Setup Tutorial</a></li>
+<li class="toctree-l1"><a class="reference internal" href="agent_background_services_tutorial.html">Annolid Bot Background Services Setup</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Annolid Bot Google Calendar Tutorial</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#install-optional-dependency">1. Install optional dependency</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#create-google-oauth-desktop-credentials">2. Create Google OAuth desktop credentials</a></li>
@@ -100,7 +101,8 @@
 <p>This guide shows how to let Annolid Bot read and manage Google Calendar events.</p>
 <section id="install-optional-dependency">
 <h2>1. Install optional dependency<a class="headerlink" href="#install-optional-dependency" title="Link to this heading"></a></h2>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;annolid[google_calendar]&quot;</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Annolid Bot extras bundle (includes Google Calendar + WhatsApp + MCP)</span>
+pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;annolid[annolid_bot]&quot;</span>
 </pre></div>
 </div>
 <p>If this optional package is not installed, Annolid skips registering calendar tools and other features keep working normally.</p>
@@ -161,7 +163,7 @@
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="agent_provider_setup.html" class="btn btn-neutral float-left" title="Annolid Bot Provider and Model Setup Tutorial" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="agent_background_services_tutorial.html" class="btn btn-neutral float-left" title="Annolid Bot Background Services Setup" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
         <a href="agent_clawhub_tutorial.html" class="btn btn-neutral float-right" title="Annolid Bot ClawHub Skills Tutorial" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
