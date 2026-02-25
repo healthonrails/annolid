@@ -21,6 +21,7 @@ from annolid.gui.window_base import QT5
 from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 from annolid.utils.annotation_compat import AI_MODELS
 from annolid.utils.annotation_compat import utils
+from annolid.utils.devices import clear_device_cache
 from annolid.utils.logger import logger
 from annolid.utils.prompts import extract_number_and_remove_digits
 from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
@@ -200,20 +201,7 @@ class Canvas(QtWidgets.QWidget):
     def _release_device_cache() -> None:
         """Best-effort cache release after unloading GPU-backed models."""
         gc.collect()
-        try:
-            import torch  # type: ignore
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            mps = getattr(torch, "mps", None)
-            mps_available = bool(
-                getattr(getattr(torch, "backends", None), "mps", None)
-                and torch.backends.mps.is_available()
-            )
-            if mps_available and mps is not None and hasattr(mps, "empty_cache"):
-                mps.empty_cache()
-        except Exception:
-            pass
+        clear_device_cache()
 
     def _release_model(self, model, *, context: str) -> None:
         """Best-effort close hook for optional AI model instances."""

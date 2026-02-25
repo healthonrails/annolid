@@ -25,8 +25,8 @@ def open(name, mode):
         encoding = None
     else:
         encoding = "utf-8"
-    yield io.open(name, mode, encoding=encoding)
-    return
+    with io.open(name, mode, encoding=encoding) as file_obj:
+        yield file_obj
 
 
 class LabelFileError(Exception):

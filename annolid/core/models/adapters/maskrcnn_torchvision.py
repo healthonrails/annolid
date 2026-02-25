@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from ..base import ModelCapabilities, ModelRequest, ModelResponse, RuntimeModel
+from annolid.utils.devices import clear_device_cache
 
 
 @dataclass(frozen=True)
@@ -140,25 +141,7 @@ class TorchvisionMaskRCNNAdapter(RuntimeModel):
         gc.collect()
         if torch_mod is None:
             return
-
-        device_type = str(getattr(device, "type", device or "")).lower()
-        if device_type.startswith("cuda"):
-            try:
-                if torch_mod.cuda.is_available():
-                    torch_mod.cuda.empty_cache()
-            except Exception:
-                pass
-        elif device_type.startswith("mps"):
-            try:
-                mps = getattr(torch_mod, "mps", None)
-                mps_available = bool(
-                    getattr(getattr(torch_mod, "backends", None), "mps", None)
-                    and torch_mod.backends.mps.is_available()
-                )
-                if mps_available and mps is not None and hasattr(mps, "empty_cache"):
-                    mps.empty_cache()
-            except Exception:
-                pass
+        clear_device_cache(torch_module=torch_mod, device=device)
 
     def _load_image_rgb(self, request: ModelRequest):
         if request.image is not None:

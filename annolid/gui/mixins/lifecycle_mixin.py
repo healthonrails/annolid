@@ -56,8 +56,10 @@ class LifecycleMixin:
         if hasattr(self, "realtime_manager") and self.realtime_manager:
             try:
                 self.realtime_manager.stop_realtime_inference()
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError, TypeError) as exc:
+                logger.debug(
+                    "Failed stopping realtime inference during cleanup: %s", exc
+                )
         quit_and_wait(self.frame_worker, "Thank you!")
         quit_and_wait(self.seg_train_thread, "See you next time!")
         quit_and_wait(self.seg_pred_thread, "Bye!")
@@ -71,17 +73,17 @@ class LifecycleMixin:
         if hasattr(self, "ai_chat_manager") and self.ai_chat_manager:
             try:
                 self.ai_chat_manager.cleanup()
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError, TypeError) as exc:
+                logger.debug("Failed cleaning up AI chat manager: %s", exc)
         try:
             dialog = getattr(self, "_training_dashboard_dialog", None)
             if dialog is not None:
                 dialog.close()
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError) as exc:
+            logger.debug("Failed closing training dashboard dialog: %s", exc)
         try:
             from annolid.gui.tensorboard import stop_tensorboard
 
             stop_tensorboard()
-        except Exception:
-            pass
+        except (ImportError, AttributeError, RuntimeError, TypeError) as exc:
+            logger.debug("Failed stopping tensorboard during cleanup: %s", exc)

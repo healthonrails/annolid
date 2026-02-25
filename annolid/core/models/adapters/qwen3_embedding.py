@@ -4,6 +4,7 @@ import gc
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Sequence
 
+from annolid.utils.devices import clear_device_cache
 from annolid.core.models.base import (
     ModelCapabilities,
     ModelRequest,
@@ -127,24 +128,9 @@ class Qwen3EmbeddingAdapter(RuntimeModel):
 
         if torch_mod is None:
             return
-        device_type = str(getattr(getattr(model, "device", None), "type", "")).lower()
-        if device_type.startswith("cuda"):
-            try:
-                if torch_mod.cuda.is_available():
-                    torch_mod.cuda.empty_cache()
-            except Exception:
-                pass
-        elif device_type.startswith("mps"):
-            try:
-                mps = getattr(torch_mod, "mps", None)
-                mps_available = bool(
-                    getattr(getattr(torch_mod, "backends", None), "mps", None)
-                    and torch_mod.backends.mps.is_available()
-                )
-                if mps_available and mps is not None and hasattr(mps, "empty_cache"):
-                    mps.empty_cache()
-            except Exception:
-                pass
+        clear_device_cache(
+            torch_module=torch_mod, device=getattr(model, "device", None)
+        )
 
     def _format_conversation(
         self,

@@ -20,7 +20,8 @@ class WindowLifecycleMixin:
             return False
         try:
             current = viewer_stack.currentWidget()
-        except Exception:
+        except (AttributeError, RuntimeError, TypeError) as exc:
+            logger.debug("Unable to determine active viewer widget: %s", exc)
             return False
 
         try:
@@ -28,16 +29,16 @@ class WindowLifecycleMixin:
             if pdf_manager is not None and current is pdf_manager.pdf_widget():
                 pdf_manager.close_pdf()
                 return True
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError) as exc:
+            logger.debug("Failed closing active PDF view: %s", exc)
 
         try:
             web_manager = getattr(self, "web_manager", None)
             if web_manager is not None and current is web_manager.viewer_widget():
                 web_manager.close_web()
                 return True
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError) as exc:
+            logger.debug("Failed closing active web view: %s", exc)
 
         try:
             threejs_manager = getattr(self, "threejs_manager", None)
@@ -47,8 +48,8 @@ class WindowLifecycleMixin:
             ):
                 threejs_manager.close_threejs()
                 return True
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError) as exc:
+            logger.debug("Failed closing active ThreeJS view: %s", exc)
         return False
 
     def closeFile(self, _value=False, *, suppress_tracking_prompt=False):
@@ -74,8 +75,8 @@ class WindowLifecycleMixin:
             if hasattr(self, "embedding_search_widget"):
                 self.embedding_search_widget.set_video_path(None)
                 self.embedding_search_widget.set_query_frame_index(None)
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError) as exc:
+            logger.debug("Failed clearing embedding search state: %s", exc)
         if self.caption_widget is not None:
             self.caption_widget.set_video_context(None, None, None)
             self.caption_widget.set_video_segments([])
@@ -111,8 +112,8 @@ class WindowLifecycleMixin:
         try:
             if self.canvas:
                 self.canvas.setDepthPreviewOverlay(None)
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError) as exc:
+            logger.debug("Failed clearing depth preview overlay: %s", exc)
         if getattr(self, "optical_flow_manager", None) is not None:
             self.optical_flow_manager.clear()
         self.frame_number = 0
@@ -222,8 +223,8 @@ class WindowLifecycleMixin:
             )
         try:
             self._persist_window_geometry(force=True)
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError) as exc:
+            logger.debug("Failed persisting window geometry on close: %s", exc)
         try:
             if getattr(self, "sam3_manager", None):
                 self.sam3_manager.close_session()
@@ -249,5 +250,5 @@ class WindowLifecycleMixin:
         try:
             self.settings.setValue("window/position", self.pos())
             self.settings.setValue("window/size", self.size())
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError) as exc:
+            logger.debug("Failed to persist window geometry: %s", exc)

@@ -29,6 +29,7 @@ from annolid.utils.files import (
     get_frame_number_from_json,
 )
 from annolid.utils.logger import logger
+from annolid.utils.devices import clear_device_cache
 
 try:
     import qimage2ndarray
@@ -346,18 +347,7 @@ class TrackAllWorker(QThread):
         gc.collect()
         if torch is None:
             return
-        if device.type == "cuda":
-            try:
-                torch.cuda.empty_cache()
-            except Exception as e:
-                self.logger.info(f"CUDA cache clearing failed: {e}")
-        elif device.type == "mps":
-            try:
-                torch.mps.empty_cache()
-            except AttributeError:
-                self.logger.info(
-                    "MPS cache clearing not supported in this PyTorch version"
-                )
+        clear_device_cache(torch_module=torch, device=device)
 
     def log_gpu_memory(self, video_name, stage):
         """Log device memory usage."""
