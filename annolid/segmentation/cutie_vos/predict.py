@@ -1284,6 +1284,23 @@ class CutieCoreVideoProcessor:
         selected = one_hot[unique_ids]
         return selected, unique_ids
 
+    def _build_seed_mask_dict(
+        self,
+        segment: SeedSegment,
+        expected_labels: Set[str],
+    ) -> Dict[str, np.ndarray]:
+        """Build per-label masks directly from the seed segment."""
+        seed_masks: Dict[str, np.ndarray] = {}
+        for label in sorted(expected_labels):
+            value = segment.labels_map.get(label)
+            if value is None:
+                continue
+            label_mask = segment.mask == int(value)
+            if not np.any(label_mask):
+                continue
+            seed_masks[str(label)] = label_mask
+        return seed_masks
+
     @staticmethod
     def _map_local_prediction_to_global(
         prediction: np.ndarray, active_global_ids: List[int]
@@ -1713,6 +1730,10 @@ class CutieCoreVideoProcessor:
         delimiter = "#"
         segment_length = max(1, int(end_frame - segment.start_frame + 1))
         progress_log_every = max(100, min(1000, segment_length // 200 or 1))
+        missing_log_every = 25
+        last_missing_key: Optional[Tuple[str, ...]] = None
+        missing_streak = 0
+        suppressed_missing_logs = 0
 
         logger.info(
             "Processing Cutie segment [%s, %s] (%s frames, %s tracked instance(s)).",
@@ -1843,6 +1864,24 @@ class CutieCoreVideoProcessor:
                         )
 
                     shape_notes_for_frame: Dict[str, str] = {}
+                    # CUTIE can occasionally omit a seeded object on the first step.
+                    # Backfill directly from the seed mask to keep expected instances
+                    # stable and prime fallback history for subsequent frames.
+                    if current_frame_index == segment.start_frame:
+                        seed_mask_dict = self._build_seed_mask_dict(
+                            segment, instance_names
+                        )
+                        missing_seed_labels = instance_names - set(mask_dict.keys())
+                        if missing_seed_labels:
+                            for missing_label in sorted(missing_seed_labels):
+                                seed_mask = seed_mask_dict.get(missing_label)
+                                if seed_mask is None:
+                                    continue
+                                mask_dict[missing_label] = seed_mask.copy()
+                                shape_notes_for_frame[missing_label] = (
+                                    "filled_from_seed_mask(start_frame)"
+                                )
+
                     if len(mask_dict) < expected_instance_count:
                         missing_instances = instance_names - set(mask_dict.keys())
                         if missing_instances:
@@ -1856,7 +1895,31 @@ class CutieCoreVideoProcessor:
                             message_with_index = (
                                 message + delimiter + str(current_frame_index)
                             )
-                            logger.info(message)
+                            missing_key = tuple(
+                                sorted(str(instance) for instance in missing_instances)
+                            )
+                            if missing_key == last_missing_key:
+                                missing_streak += 1
+                            else:
+                                last_missing_key = missing_key
+                                missing_streak = 1
+                                suppressed_missing_logs = 0
+
+                            should_log_missing = (
+                                missing_streak == 1
+                                or missing_streak % missing_log_every == 0
+                            )
+                            if should_log_missing:
+                                if suppressed_missing_logs > 0:
+                                    logger.info(
+                                        "Suppressed %s repetitive missing-instance log(s) for: %s",
+                                        suppressed_missing_logs,
+                                        ", ".join(missing_key),
+                                    )
+                                    suppressed_missing_logs = 0
+                                logger.info(message)
+                            else:
+                                suppressed_missing_logs += 1
 
                             if self.auto_missing_instance_recovery:
                                 recovered_instances, _ = (

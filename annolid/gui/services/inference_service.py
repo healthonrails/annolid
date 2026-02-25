@@ -8,11 +8,21 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, TypedDict
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+class InferenceResult(TypedDict):
+    model_type: str
+    detections: List[Dict[str, Any]]
+    masks: List[Any]
+    keypoints: List[Any]
+    results: Any
+    meta: Dict[str, Any]
+    error: Optional[str]
 
 
 class InferenceService:
@@ -111,7 +121,7 @@ class InferenceService:
         raw_results: Any,
         model_config: Dict[str, Any],
         postprocessing_config: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    ) -> InferenceResult:
         """
         Process raw inference results into standardized format.
 
@@ -126,94 +136,262 @@ class InferenceService:
         """
         try:
             if model_type == "yolo":
-                return self._process_yolo_results(
+                parsed = self._process_yolo_results(
                     raw_results, model_config, postprocessing_config
                 )
             elif model_type in ["sam", "sam2", "sam3"]:
-                return self._process_sam_results(
+                parsed = self._process_sam_results(
                     raw_results, model_config, postprocessing_config
                 )
             elif model_type == "dino":
-                return self._process_dino_results(
+                parsed = self._process_dino_results(
                     raw_results, model_config, postprocessing_config
                 )
             else:
-                return {"results": raw_results}
+                parsed = self._result_template(
+                    model_type=model_type, results=raw_results
+                )
+            return self.normalize_inference_result(parsed, model_type_hint=model_type)
         except Exception as e:
             logger.error(f"Failed to process inference results: {e}")
-            return {"results": raw_results, "error": str(e)}
+            return self.normalize_inference_result(
+                self._result_template(
+                    model_type=model_type,
+                    results=raw_results,
+                    error=str(e),
+                ),
+                model_type_hint=model_type,
+            )
+
+    def normalize_inference_result(
+        self, payload: Any, model_type_hint: str = ""
+    ) -> InferenceResult:
+        """Normalize legacy/partial payloads to the stable inference schema."""
+        if not isinstance(payload, dict):
+            return self._result_template(
+                model_type=model_type_hint or "unknown", results=payload
+            )
+
+        model_type = str(payload.get("model_type") or model_type_hint or "unknown")
+        detections = payload.get("detections")
+        masks = payload.get("masks")
+        keypoints = payload.get("keypoints")
+        meta = payload.get("meta")
+        error = payload.get("error")
+        results = payload.get("results", payload)
+
+        if not isinstance(detections, list):
+            detections = []
+        if not isinstance(masks, list):
+            masks = []
+        if not isinstance(keypoints, list):
+            keypoints = []
+        if not isinstance(meta, dict):
+            meta = {}
+        if error is not None and not isinstance(error, str):
+            error = str(error)
+
+        return self._result_template(
+            model_type=model_type,
+            detections=detections,
+            masks=masks,
+            keypoints=keypoints,
+            results=results,
+            meta=meta,
+            error=error,
+        )
+
+    @staticmethod
+    def _resolve_class_name(
+        class_names: Any,
+        class_id: int,
+    ) -> str:
+        if isinstance(class_names, dict):
+            name = class_names.get(class_id, class_names.get(str(class_id), "unknown"))
+            return str(name)
+        if isinstance(class_names, (list, tuple)):
+            if 0 <= class_id < len(class_names):
+                return str(class_names[class_id])
+        return f"class_{class_id}"
+
+    def _extract_yolo_object_detections(
+        self,
+        yolo_obj: Any,
+        *,
+        confidence_threshold: float,
+        class_names: Any,
+    ) -> List[Dict[str, Any]]:
+        boxes = getattr(yolo_obj, "boxes", None)
+        if boxes is None:
+            return []
+        xyxy = getattr(boxes, "xyxy", None)
+        conf = getattr(boxes, "conf", None)
+        cls = getattr(boxes, "cls", None)
+        if xyxy is None or conf is None or cls is None:
+            return []
+
+        detections: List[Dict[str, Any]] = []
+        for box, score, class_id in zip(xyxy, conf, cls):
+            score_value = float(score)
+            if score_value < confidence_threshold:
+                continue
+            class_id_value = int(class_id)
+            detections.append(
+                {
+                    "bbox": box.tolist() if hasattr(box, "tolist") else list(box),
+                    "confidence": score_value,
+                    "class_id": class_id_value,
+                    "class_name": self._resolve_class_name(class_names, class_id_value),
+                }
+            )
+        return detections
+
+    def _extract_yolo_dict_detections(
+        self,
+        raw_results: Dict[str, Any],
+        *,
+        confidence_threshold: float,
+        class_names: Any,
+    ) -> List[Dict[str, Any]]:
+        raw_detections = raw_results.get("detections")
+        if not isinstance(raw_detections, list):
+            return []
+        detections: List[Dict[str, Any]] = []
+        for item in raw_detections:
+            if not isinstance(item, dict):
+                continue
+            confidence = float(item.get("confidence", 0.0))
+            if confidence < confidence_threshold:
+                continue
+            class_id = int(item.get("class_id", -1))
+            class_name = item.get("class_name")
+            if not class_name:
+                class_name = self._resolve_class_name(class_names, class_id)
+            bbox = item.get("bbox", [])
+            if hasattr(bbox, "tolist"):
+                bbox = bbox.tolist()
+            detections.append(
+                {
+                    "bbox": list(bbox) if isinstance(bbox, Iterable) else [],
+                    "confidence": confidence,
+                    "class_id": class_id,
+                    "class_name": str(class_name),
+                }
+            )
+        return detections
+
+    def _collect_yolo_detections(
+        self,
+        raw_results: Any,
+        *,
+        confidence_threshold: float,
+        class_names: Any,
+    ) -> List[Dict[str, Any]]:
+        if isinstance(raw_results, dict):
+            detections = self._extract_yolo_dict_detections(
+                raw_results,
+                confidence_threshold=confidence_threshold,
+                class_names=class_names,
+            )
+            if detections:
+                return detections
+        if isinstance(raw_results, (list, tuple)):
+            all_detections: List[Dict[str, Any]] = []
+            for result in raw_results:
+                all_detections.extend(
+                    self._extract_yolo_object_detections(
+                        result,
+                        confidence_threshold=confidence_threshold,
+                        class_names=class_names,
+                    )
+                )
+            return all_detections
+        return self._extract_yolo_object_detections(
+            raw_results,
+            confidence_threshold=confidence_threshold,
+            class_names=class_names,
+        )
+
+    @staticmethod
+    def _result_template(
+        *,
+        model_type: str,
+        detections: Optional[List[Dict[str, Any]]] = None,
+        masks: Optional[List[Any]] = None,
+        keypoints: Optional[List[Any]] = None,
+        results: Any = None,
+        meta: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+    ) -> InferenceResult:
+        return {
+            "model_type": str(model_type or ""),
+            "detections": detections or [],
+            "masks": masks or [],
+            "keypoints": keypoints or [],
+            "results": results,
+            "meta": meta or {},
+            "error": error,
+        }
 
     def _process_yolo_results(
         self,
         raw_results: Any,
         model_config: Dict[str, Any],
         postprocessing_config: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    ) -> InferenceResult:
         """Process YOLO inference results."""
-        # Standardize YOLO results format
-        processed = {
-            "detections": [],
-            "model_type": "yolo",
-            "confidence_threshold": model_config.get("confidence_threshold", 0.5),
-        }
+        confidence_threshold = float(model_config.get("confidence_threshold", 0.5))
+        class_names = model_config.get("class_names", [])
+        detections = self._collect_yolo_detections(
+            raw_results,
+            confidence_threshold=confidence_threshold,
+            class_names=class_names,
+        )
 
-        # Process raw results into standardized format
-        if hasattr(raw_results, "boxes") and hasattr(raw_results, "scores"):
-            # Assume ultralytics format
-            boxes = raw_results.boxes
-            for i, (box, score, cls) in enumerate(
-                zip(boxes.xyxy, boxes.conf, boxes.cls)
-            ):
-                if score >= processed["confidence_threshold"]:
-                    detection = {
-                        "bbox": box.tolist(),
-                        "confidence": float(score),
-                        "class_id": int(cls),
-                        "class_name": model_config.get("class_names", ["unknown"])[
-                            int(cls)
-                        ],
-                    }
-                    processed["detections"].append(detection)
-
-        return processed
+        return self._result_template(
+            model_type="yolo",
+            detections=detections,
+            results=raw_results,
+            meta={"confidence_threshold": confidence_threshold},
+        )
 
     def _process_sam_results(
         self,
         raw_results: Any,
         model_config: Dict[str, Any],
         postprocessing_config: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    ) -> InferenceResult:
         """Process SAM inference results."""
-        # Standardize SAM results format
-        processed = {
-            "masks": [],
-            "model_type": "sam",
-        }
+        masks: List[Any] = []
 
         # Process raw results into standardized format
         if isinstance(raw_results, dict) and "masks" in raw_results:
-            processed["masks"] = raw_results["masks"]
+            masks = list(raw_results["masks"] or [])
 
-        return processed
+        return self._result_template(
+            model_type="sam",
+            masks=masks,
+            results=raw_results,
+        )
 
     def _process_dino_results(
         self,
         raw_results: Any,
         model_config: Dict[str, Any],
         postprocessing_config: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    ) -> InferenceResult:
         """Process DINO inference results."""
-        # Standardize DINO results format
-        processed = {
-            "keypoints": [],
-            "model_type": "dino",
-        }
+        keypoints: List[Any] = []
 
         # Process raw results into standardized format
         if isinstance(raw_results, dict) and "keypoints" in raw_results:
-            processed["keypoints"] = raw_results["keypoints"]
+            keypoints = list(raw_results["keypoints"] or [])
 
-        return processed
+        return self._result_template(
+            model_type="dino",
+            keypoints=keypoints,
+            results=raw_results,
+        )
 
     def validate_inference_results(
         self,
@@ -231,26 +409,22 @@ class InferenceService:
             Tuple of (is_valid, error_messages)
         """
         errors = []
+        normalized = self.normalize_inference_result(results)
 
-        if not isinstance(results, dict):
-            errors.append("Results must be a dictionary")
-            return False, errors
-
-        # Check for required fields based on model type
-        model_type = results.get("model_type", "")
-        if not model_type:
-            errors.append("Missing model_type in results")
-
-        # Model-specific validation
-        if model_type == "yolo":
-            if "detections" not in results:
-                errors.append("YOLO results missing detections field")
-        elif model_type in ["sam", "sam2", "sam3"]:
-            if "masks" not in results:
-                errors.append("SAM results missing masks field")
-        elif model_type == "dino":
-            if "keypoints" not in results:
-                errors.append("DINO results missing keypoints field")
+        if not normalized.get("model_type"):
+            errors.append("model_type must be a non-empty string")
+        if not isinstance(normalized.get("detections"), list):
+            errors.append("detections must be a list")
+        if not isinstance(normalized.get("masks"), list):
+            errors.append("masks must be a list")
+        if not isinstance(normalized.get("keypoints"), list):
+            errors.append("keypoints must be a list")
+        if not isinstance(normalized.get("meta"), dict):
+            errors.append("meta must be a dictionary")
+        if normalized.get("error") is not None and not isinstance(
+            normalized.get("error"), str
+        ):
+            errors.append("error must be a string or None")
 
         return len(errors) == 0, errors
 

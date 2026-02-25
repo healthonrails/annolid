@@ -7,7 +7,7 @@ Handles UI interactions and coordinates AI inference operations.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from qtpy import QtCore
 
@@ -105,6 +105,15 @@ class InferenceController(QtCore.QObject):
             postprocessing_config: Optional postprocessing configuration
         """
         try:
+            if (
+                self._inference_thread is not None
+                and self._inference_thread.isRunning()
+            ):
+                self.inference_error.emit(
+                    "Inference is already running. Cancel it before starting a new request."
+                )
+                return
+
             # Validate model config first
             is_valid, errors = self.validate_model_config(model_config)
             if not is_valid:
@@ -116,6 +125,22 @@ class InferenceController(QtCore.QObject):
                 model_type, input_data, model_config
             )
 
+            raw_inference_callable = model_config.get("raw_inference_callable")
+            if raw_inference_callable is None:
+                error_msg = (
+                    "InferenceController.run_inference is deprecated without a real "
+                    "inference callable. Use Inference Wizard/InferenceProcessor, or "
+                    "set model_config['raw_inference_callable']."
+                )
+                self.inference_error.emit(error_msg)
+                logger.error(error_msg)
+                return
+            if not callable(raw_inference_callable):
+                error_msg = "model_config['raw_inference_callable'] must be callable."
+                self.inference_error.emit(error_msg)
+                logger.error(error_msg)
+                return
+
             # Start inference in background thread
             self._inference_thread = InferenceWorker(
                 inference_service=self._inference_service,
@@ -123,6 +148,7 @@ class InferenceController(QtCore.QObject):
                 input_data=prepared_input,
                 model_config=model_config,
                 postprocessing_config=postprocessing_config,
+                raw_inference_callable=raw_inference_callable,
             )
 
             # Connect signals
@@ -131,6 +157,8 @@ class InferenceController(QtCore.QObject):
             )
             self._inference_thread.inference_error.connect(self._on_inference_error)
             self._inference_thread.progress_updated.connect(self._on_progress_updated)
+            self._inference_thread.finished.connect(self._on_inference_thread_finished)
+            self._inference_thread.finished.connect(self._inference_thread.deleteLater)
 
             # Start inference
             model_name = model_config.get("identifier", "Unknown")
@@ -317,6 +345,7 @@ class InferenceController(QtCore.QObject):
         """Cancel the current inference operation."""
         if self._inference_thread and self._inference_thread.isRunning():
             self._inference_thread.cancel()
+            self._inference_thread.requestInterruption()
             logger.info("Inference cancelled")
 
     def is_inference_running(self) -> bool:
@@ -353,6 +382,13 @@ class InferenceController(QtCore.QObject):
         """Handle progress updates."""
         self.progress_updated.emit(progress, message)
 
+    def _on_inference_thread_finished(self) -> None:
+        if (
+            self._inference_thread is not None
+            and not self._inference_thread.isRunning()
+        ):
+            self._inference_thread = None
+
 
 class InferenceWorker(QtCore.QThread):
     """
@@ -373,6 +409,9 @@ class InferenceWorker(QtCore.QThread):
         input_data: Any,
         model_config: Dict[str, Any],
         postprocessing_config: Optional[Dict[str, Any]] = None,
+        raw_inference_callable: Optional[
+            Callable[[str, Any, Dict[str, Any], Optional[Dict[str, Any]]], Any]
+        ] = None,
         parent: Optional[QtCore.QObject] = None,
     ):
         """
@@ -392,6 +431,7 @@ class InferenceWorker(QtCore.QThread):
         self._input_data = input_data
         self._model_config = model_config
         self._postprocessing_config = postprocessing_config
+        self._raw_inference_callable = raw_inference_callable
         self._cancelled = False
 
     def run(self) -> None:
@@ -402,30 +442,34 @@ class InferenceWorker(QtCore.QThread):
             # Simulate progress (in real implementation, this would come from the model)
             self.progress_updated.emit(25, "Loading model...")
 
-            if self._cancelled:
+            if self._cancelled or self.isInterruptionRequested():
                 return
 
-            # Run inference (this is where the actual model inference would happen)
-            # For now, we'll simulate it
             self.progress_updated.emit(50, "Running inference...")
 
-            if self._cancelled:
+            if self._cancelled or self.isInterruptionRequested():
                 return
 
-            # Process results
+            if self._raw_inference_callable is None:
+                raise RuntimeError(
+                    "InferenceWorker requires a real raw_inference_callable."
+                )
+            raw_results = self._raw_inference_callable(
+                self._model_type,
+                self._input_data,
+                self._model_config,
+                self._postprocessing_config,
+            )
+
             self.progress_updated.emit(75, "Processing results...")
 
-            # In a real implementation, you would call the actual inference here
-            # For this example, we'll create mock results
-            mock_results = self._create_mock_results()
-
-            if self._cancelled:
+            if self._cancelled or self.isInterruptionRequested():
                 return
 
             # Process results using service
             processed_results = self._inference_service.process_inference_results(
                 self._model_type,
-                mock_results,
+                raw_results,
                 self._model_config,
                 self._postprocessing_config,
             )
@@ -440,29 +484,3 @@ class InferenceWorker(QtCore.QThread):
     def cancel(self) -> None:
         """Cancel the inference operation."""
         self._cancelled = True
-
-    def _create_mock_results(self) -> Any:
-        """Create mock inference results for demonstration."""
-        # This would be replaced with actual model inference
-        if self._model_type == "yolo":
-            return type(
-                "MockResults",
-                (),
-                {
-                    "boxes": type(
-                        "Boxes",
-                        (),
-                        {
-                            "xyxy": [[100, 100, 200, 200], [300, 300, 400, 400]],
-                            "conf": [0.9, 0.8],
-                            "cls": [0, 1],
-                        },
-                    )()
-                },
-            )()
-        elif self._model_type == "sam":
-            return {"masks": [[[True, False], [False, True]]]}
-        elif self._model_type == "dino":
-            return {"keypoints": [[150, 150], [350, 350]]}
-        else:
-            return {}
