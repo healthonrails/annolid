@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Dict
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -53,10 +54,44 @@ class WindowLifecycleMixin:
         return False
 
     def closeFile(self, _value=False, *, suppress_tracking_prompt=False):
+        start_ts = time.perf_counter()
+        logger.info(
+            "Lifecycle close started (video=%s).",
+            str(getattr(self, "video_file", None) or ""),
+        )
         if self._close_active_non_canvas_view():
+            elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+            logger.info(
+                "Lifecycle close redirected to non-canvas view close in %.1fms.",
+                elapsed_ms,
+            )
             return
         if not self.mayContinue():
+            elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+            logger.info(
+                "Lifecycle close aborted by mayContinue() in %.1fms.", elapsed_ms
+            )
             return
+        self._closefile_reset_view_and_core_state()
+        self._closefile_reset_audio_and_slider_state()
+        self._closefile_reset_tracking_prediction_state()
+        if not self._closefile_handle_tracking_stop_prompt(
+            suppress_tracking_prompt=suppress_tracking_prompt
+        ):
+            elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+            logger.info(
+                "Lifecycle close aborted by tracking prompt in %.1fms.", elapsed_ms
+            )
+            return
+
+        super().closeFile(_value)
+
+        self.open_segment_editor_action.setEnabled(False)
+        self._current_video_defined_segments = []
+        elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+        logger.info("File closed in AnnolidWindow (%.1fms).", elapsed_ms)
+
+    def _closefile_reset_view_and_core_state(self) -> None:
         self._set_active_view("canvas")
         self.resetState()
         self.dino_controller.deactivate_patch_similarity()
@@ -80,6 +115,8 @@ class WindowLifecycleMixin:
         if self.caption_widget is not None:
             self.caption_widget.set_video_context(None, None, None)
             self.caption_widget.set_video_segments([])
+
+    def _closefile_reset_audio_and_slider_state(self) -> None:
         self._release_audio_loader()
         if self.audio_widget:
             self.audio_widget.set_audio_loader(None)
@@ -98,6 +135,8 @@ class WindowLifecycleMixin:
             self.behavior_controller.attach_slider(None)
             self.seekbar = None
         self.behavior_controller.attach_annotation_store(None)
+
+    def _closefile_reset_tracking_prediction_state(self) -> None:
         self._df = None
         self._df_deeplabcut = None
         self._df_deeplabcut_scorer = None
@@ -162,32 +201,33 @@ class WindowLifecycleMixin:
             self.seekbar.removeMarksByType("predicted")
             self.seekbar.removeMarksByType("predicted_existing")
 
-        if self.tracking_controller.is_tracking_busy():
-            if (
-                suppress_tracking_prompt
-                or self.tracking_controller.is_track_all_running()
-            ):
-                logger.info(
-                    "Skipping tracking stop prompt while batch processing is active."
-                )
-            else:
-                reply = QtWidgets.QMessageBox.question(
-                    self,
-                    "Tracking in Progress",
-                    "Stop tracking and close video?",
-                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                    QtWidgets.QMessageBox.No,
-                )
-                if reply == QtWidgets.QMessageBox.Yes:
-                    self.tracking_controller.stop_active_worker()
-                else:
-                    return
+    def _closefile_handle_tracking_stop_prompt(
+        self, *, suppress_tracking_prompt: bool
+    ) -> bool:
+        if not self.tracking_controller.is_tracking_busy():
+            return True
+        if suppress_tracking_prompt or self.tracking_controller.is_track_all_running():
+            logger.info(
+                "Skipping tracking stop prompt while batch processing is active."
+            )
+            return True
 
-        super().closeFile(_value)
-
-        self.open_segment_editor_action.setEnabled(False)
-        self._current_video_defined_segments = []
-        logger.info("File closed in AnnolidWindow.")
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Tracking in Progress",
+            "Stop tracking and close video?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if reply == QtWidgets.QMessageBox.Yes:
+            stop_start = time.perf_counter()
+            self.tracking_controller.stop_active_worker()
+            stop_elapsed_ms = (time.perf_counter() - stop_start) * 1000.0
+            logger.info(
+                "Requested active tracking worker stop in %.1fms.", stop_elapsed_ms
+            )
+            return True
+        return False
 
     def _update_frame_display_and_emit_update(self):
         self._emit_live_frame_update()

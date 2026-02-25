@@ -1,8 +1,39 @@
 from __future__ import annotations
 
+import logging
+import time
 from qtpy import QtCore
 
 from annolid.utils.logger import logger
+
+
+def _iter_effective_handlers(log: logging.Logger):
+    cur: logging.Logger | None = log
+    while cur is not None:
+        for handler in cur.handlers:
+            yield handler
+        if not cur.propagate:
+            break
+        cur = cur.parent  # type: ignore[assignment]
+
+
+def _has_closed_stream_handler(log: logging.Logger) -> bool:
+    for handler in _iter_effective_handlers(log):
+        stream = getattr(handler, "stream", None)
+        if stream is not None and bool(getattr(stream, "closed", False)):
+            return True
+    return False
+
+
+def _safe_info(message: str, *args) -> None:
+    """Best-effort logging that tolerates interpreter/shutdown stream teardown."""
+    if _has_closed_stream_handler(logger):
+        return
+    try:
+        logger.info(message, *args)
+    except (ValueError, RuntimeError):
+        # Logging handlers/streams may already be closed during late shutdown.
+        return
 
 
 class LifecycleMixin:
@@ -13,6 +44,7 @@ class LifecycleMixin:
         loader = getattr(self, "frame_loader", None)
         if loader is None:
             return
+        stop_start = time.perf_counter()
 
         old_loader = loader
         try:
@@ -41,6 +73,8 @@ class LifecycleMixin:
         finally:
             if self.frame_loader is old_loader:
                 self.frame_loader = None
+            elapsed_ms = (time.perf_counter() - stop_start) * 1000.0
+            _safe_info("Frame loader stop completed in %.1fms.", elapsed_ms)
 
     def clean_up(self):
         def quit_and_wait(thread, message):

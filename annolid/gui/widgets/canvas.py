@@ -1,5 +1,6 @@
 import gc
 import os
+import time
 from pathlib import Path
 
 import cv2
@@ -543,34 +544,15 @@ class Canvas(QtWidgets.QWidget):
         self.current = None
 
     def initializeAiModel(self, name, _custom_ai_models=None):
-        # Find the model class based on name
-        model_class = None
-        for m in AI_MODELS:
-            if m.name == name:
-                model_class = m
-                break
-
+        init_start = time.perf_counter()
+        model_class = self._resolve_ai_model_class(
+            name=name,
+            custom_model_names=_custom_ai_models,
+        )
         if model_class is None:
-            if _custom_ai_models and name in _custom_ai_models:
-                # Custom models are likely YOLO, not SAM, so skip SAM initialization
-                logger.debug(
-                    "Custom model selected: %s, skipping SAM initialization" % name
-                )
-                return
-            # The dropdown can include non point-prompt models (e.g. Cutie). For
-            # AI polygon/mask we require a point-prompt segmentation model, so
-            # silently fall back to a known-good option.
-            for m in AI_MODELS:
-                if getattr(m, "name", None) == "EfficientSam (speed)":
-                    model_class = m
-                    break
-            if model_class is None and AI_MODELS:
-                model_class = AI_MODELS[0]
-            if model_class is None:
-                logger.warning(
-                    "No AI segmentation models are available; skipping initialization."
-                )
-                return
+            elapsed_ms = (time.perf_counter() - init_start) * 1000.0
+            logger.info("AI model init skipped for '%s' (%.1fms).", name, elapsed_ms)
+            return
 
         if self._ai_model is not None and self._ai_model.name == model_class.name:
             logger.debug("AI model is already initialized: %r" % model_class.name)
@@ -579,15 +561,16 @@ class Canvas(QtWidgets.QWidget):
             self._release_model(self._ai_model, context="previous AI")
             self._ai_model = None
             self._ai_model_pixmap_key = None
-            try:
-                self._ai_model = model_class()
-            except Exception as exc:
-                # Do not crash the GUI when optional model weights/deps are missing.
-                self._ai_model = None
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    "AI Model Unavailable",
-                    f"Failed to initialize AI model '{getattr(model_class, 'name', name)}'.\n\n{exc}",
+            self._ai_model = self._instantiate_ai_model(
+                model_class,
+                requested_name=name,
+            )
+            if self._ai_model is None:
+                elapsed_ms = (time.perf_counter() - init_start) * 1000.0
+                logger.warning(
+                    "AI model init failed for '%s' in %.1fms.",
+                    getattr(model_class, "name", name),
+                    elapsed_ms,
                 )
                 return
 
@@ -597,6 +580,50 @@ class Canvas(QtWidgets.QWidget):
             return
 
         self._sync_ai_model_image(force=True)
+        elapsed_ms = (time.perf_counter() - init_start) * 1000.0
+        logger.info(
+            "AI model '%s' initialized and synced in %.1fms.",
+            getattr(model_class, "name", name),
+            elapsed_ms,
+        )
+
+    def _resolve_ai_model_class(self, name: str, custom_model_names=None):
+        model_class = None
+        for candidate in AI_MODELS:
+            if candidate.name == name:
+                model_class = candidate
+                break
+
+        if model_class is None:
+            if custom_model_names and name in custom_model_names:
+                logger.debug(
+                    "Custom model selected: %s, skipping SAM initialization", name
+                )
+                return None
+            for candidate in AI_MODELS:
+                if getattr(candidate, "name", None) == "EfficientSam (speed)":
+                    model_class = candidate
+                    break
+            if model_class is None and AI_MODELS:
+                model_class = AI_MODELS[0]
+            if model_class is None:
+                logger.warning(
+                    "No AI segmentation models are available; skipping initialization."
+                )
+                return None
+        return model_class
+
+    def _instantiate_ai_model(self, model_class, *, requested_name: str):
+        try:
+            return model_class()
+        except Exception as exc:
+            self._ai_model = None
+            QtWidgets.QMessageBox.warning(
+                self,
+                "AI Model Unavailable",
+                f"Failed to initialize AI model '{getattr(model_class, 'name', requested_name)}'.\n\n{exc}",
+            )
+            return None
 
     def _sync_ai_model_image(self, *, force: bool = False) -> bool:
         if self._ai_model is None:

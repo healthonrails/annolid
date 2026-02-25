@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 from qtpy import QtCore, QtWidgets
 
@@ -37,38 +38,22 @@ class VideoWorkflowMixin:
         programmatic_call=False,
     ):
         """Open a video for annotation frame by frame."""
-        if not programmatic_call and (self.dirty or self.video_loader is not None):
-            message_box = QtWidgets.QMessageBox()
-            message_box.setWindowTitle("Unsaved Changes or Closing the Existing Video")
-            message_box.setText(
-                "The existing video will be closed,\n"
-                "and any unsaved changes may be lost.\n"
-                "Do you want to continue and open the new video?"
-            )
-            message_box.setStandardButtons(
-                QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel
-            )
-            choice = message_box.exec()
+        start_ts = time.perf_counter()
+        logger.info(
+            "Lifecycle open requested (from_list=%s, programmatic=%s, input=%s).",
+            bool(from_video_list),
+            bool(programmatic_call),
+            str(video_path or ""),
+        )
+        if not self._confirm_video_switch(programmatic_call=programmatic_call):
+            elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+            logger.info("Lifecycle open cancelled by user in %.1fms.", elapsed_ms)
+            return
 
-            if choice == QtWidgets.QMessageBox.Ok:
-                self.closeFile()
-            elif choice == QtWidgets.QMessageBox.Cancel:
-                return
-
-        if not from_video_list:
-            video_path = Path(self.filename).parent if self.filename else "."
-            formats = ["*.*"]
-            filters = self.tr(f"Video files {formats[0]}")
-            video_filename = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                self.tr("Annolid - Choose Video"),
-                str(video_path),
-                filters,
-            )
-            if QT5:
-                video_filename, _ = video_filename
-        else:
-            video_filename = video_path
+        video_filename = self._resolve_video_filename(
+            from_video_list=from_video_list,
+            video_path=video_path,
+        )
 
         video_filename = str(video_filename)
         self.stepSizeWidget.setEnabled(True)
@@ -98,14 +83,11 @@ class VideoWorkflowMixin:
             if getattr(self, "optical_flow_manager", None) is not None:
                 self.optical_flow_manager.load_records(video_filename)
             try:
-                suffix_lower = Path(video_filename).suffix.lower()
-                if suffix_lower in {".tif", ".tiff"} or video_filename.lower().endswith(
-                    (".ome.tif", ".ome.tiff")
-                ):
-                    self.video_loader = videos.TiffStackVideo(video_filename)
-                else:
-                    self.video_loader = videos.CV2Video(video_filename)
-            except Exception:
+                self.video_loader = self._create_video_loader(video_filename)
+            except Exception as exc:
+                logger.warning(
+                    "Lifecycle open loader init failed for %s: %s", video_filename, exc
+                )
                 QtWidgets.QMessageBox.about(
                     self,
                     "Not a valid media file",
@@ -205,8 +187,64 @@ class VideoWorkflowMixin:
                 logger.info(
                     f"Video '{self.filename}' loaded. Segment definition enabled."
                 )
+                elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+                logger.info("Lifecycle open completed in %.1fms.", elapsed_ms)
             else:
                 self.open_segment_editor_action.setEnabled(False)
                 self._current_video_defined_segments = []
                 if self.caption_widget is not None:
                     self.caption_widget.set_video_segments([])
+        else:
+            elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+            logger.info(
+                "Lifecycle open ended without selecting a video (%.1fms).", elapsed_ms
+            )
+
+    def _confirm_video_switch(self, *, programmatic_call: bool) -> bool:
+        if programmatic_call or not (self.dirty or self.video_loader is not None):
+            return True
+        message_box = QtWidgets.QMessageBox()
+        message_box.setWindowTitle("Unsaved Changes or Closing the Existing Video")
+        message_box.setText(
+            "The existing video will be closed,\n"
+            "and any unsaved changes may be lost.\n"
+            "Do you want to continue and open the new video?"
+        )
+        message_box.setStandardButtons(
+            QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel
+        )
+        choice = message_box.exec()
+        if choice == QtWidgets.QMessageBox.Ok:
+            self.closeFile()
+            return True
+        return False
+
+    def _resolve_video_filename(
+        self,
+        *,
+        from_video_list: bool,
+        video_path,
+    ):
+        if from_video_list:
+            return video_path
+        start_dir = Path(self.filename).parent if self.filename else "."
+        formats = ["*.*"]
+        filters = self.tr(f"Video files {formats[0]}")
+        video_filename = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            self.tr("Annolid - Choose Video"),
+            str(start_dir),
+            filters,
+        )
+        if QT5:
+            video_filename, _ = video_filename
+        return video_filename
+
+    @staticmethod
+    def _create_video_loader(video_filename: str):
+        suffix_lower = Path(video_filename).suffix.lower()
+        if suffix_lower in {".tif", ".tiff"} or video_filename.lower().endswith(
+            (".ome.tif", ".ome.tiff")
+        ):
+            return videos.TiffStackVideo(video_filename)
+        return videos.CV2Video(video_filename)

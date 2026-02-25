@@ -7,6 +7,7 @@ Handles UI interactions and coordinates AI inference operations.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from qtpy import QtCore
@@ -52,6 +53,62 @@ class InferenceController(QtCore.QObject):
         self._inference_service = inference_service or InferenceService()
         self._current_model_config: Optional[Dict[str, Any]] = None
         self._inference_thread: Optional[InferenceWorker] = None
+
+    def _is_worker_running(self) -> bool:
+        return self._inference_thread is not None and self._inference_thread.isRunning()
+
+    def _emit_if_worker_running(self) -> bool:
+        if self._is_worker_running():
+            self.inference_error.emit(
+                "Inference is already running. Cancel it before starting a new request."
+            )
+            return True
+        return False
+
+    @staticmethod
+    def _resolve_raw_inference_callable(
+        model_config: Dict[str, Any],
+    ) -> Tuple[
+        Optional[Callable[[str, Any, Dict[str, Any], Optional[Dict[str, Any]]], Any]],
+        Optional[str],
+    ]:
+        raw_inference_callable = model_config.get("raw_inference_callable")
+        if raw_inference_callable is None:
+            return (
+                None,
+                "InferenceController.run_inference is deprecated without a real "
+                "inference callable. Use Inference Wizard/InferenceProcessor, or "
+                "set model_config['raw_inference_callable'].",
+            )
+        if not callable(raw_inference_callable):
+            return None, "model_config['raw_inference_callable'] must be callable."
+        return raw_inference_callable, None
+
+    def _create_and_connect_worker(
+        self,
+        *,
+        model_type: str,
+        prepared_input: Any,
+        model_config: Dict[str, Any],
+        postprocessing_config: Optional[Dict[str, Any]],
+        raw_inference_callable: Callable[
+            [str, Any, Dict[str, Any], Optional[Dict[str, Any]]], Any
+        ],
+    ) -> InferenceWorker:
+        worker = InferenceWorker(
+            inference_service=self._inference_service,
+            model_type=model_type,
+            input_data=prepared_input,
+            model_config=model_config,
+            postprocessing_config=postprocessing_config,
+            raw_inference_callable=raw_inference_callable,
+        )
+        worker.inference_completed.connect(self._on_inference_completed)
+        worker.inference_error.connect(self._on_inference_error)
+        worker.progress_updated.connect(self._on_progress_updated)
+        worker.finished.connect(self._on_inference_thread_finished)
+        worker.finished.connect(worker.deleteLater)
+        return worker
 
     def validate_model_config(
         self, model_config: Dict[str, Any]
@@ -105,67 +162,44 @@ class InferenceController(QtCore.QObject):
             postprocessing_config: Optional postprocessing configuration
         """
         try:
-            if (
-                self._inference_thread is not None
-                and self._inference_thread.isRunning()
-            ):
-                self.inference_error.emit(
-                    "Inference is already running. Cancel it before starting a new request."
-                )
+            if self._emit_if_worker_running():
                 return
 
-            # Validate model config first
             is_valid, errors = self.validate_model_config(model_config)
             if not is_valid:
                 self.inference_error.emit(f"Invalid model config: {'; '.join(errors)}")
                 return
 
-            # Prepare input data
             prepared_input = self._inference_service.prepare_inference_input(
                 model_type, input_data, model_config
             )
 
-            raw_inference_callable = model_config.get("raw_inference_callable")
-            if raw_inference_callable is None:
-                error_msg = (
-                    "InferenceController.run_inference is deprecated without a real "
-                    "inference callable. Use Inference Wizard/InferenceProcessor, or "
-                    "set model_config['raw_inference_callable']."
-                )
-                self.inference_error.emit(error_msg)
-                logger.error(error_msg)
-                return
-            if not callable(raw_inference_callable):
-                error_msg = "model_config['raw_inference_callable'] must be callable."
+            raw_inference_callable, callable_error = (
+                self._resolve_raw_inference_callable(model_config)
+            )
+            if callable_error:
+                error_msg = callable_error
                 self.inference_error.emit(error_msg)
                 logger.error(error_msg)
                 return
 
-            # Start inference in background thread
-            self._inference_thread = InferenceWorker(
-                inference_service=self._inference_service,
+            model_name = model_config.get("identifier", "Unknown")
+            start_ts = time.perf_counter()
+            self._inference_thread = self._create_and_connect_worker(
                 model_type=model_type,
-                input_data=prepared_input,
+                prepared_input=prepared_input,
                 model_config=model_config,
                 postprocessing_config=postprocessing_config,
-                raw_inference_callable=raw_inference_callable,
+                raw_inference_callable=raw_inference_callable,  # type: ignore[arg-type]
             )
-
-            # Connect signals
-            self._inference_thread.inference_completed.connect(
-                self._on_inference_completed
-            )
-            self._inference_thread.inference_error.connect(self._on_inference_error)
-            self._inference_thread.progress_updated.connect(self._on_progress_updated)
-            self._inference_thread.finished.connect(self._on_inference_thread_finished)
-            self._inference_thread.finished.connect(self._inference_thread.deleteLater)
-
-            # Start inference
-            model_name = model_config.get("identifier", "Unknown")
             self.inference_started.emit(model_name)
             self._inference_thread.start()
-
-            logger.info(f"Inference started for model: {model_name}")
+            elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+            logger.info(
+                "Inference worker started for model '%s' in %.1fms.",
+                model_name,
+                elapsed_ms,
+            )
 
         except Exception as e:
             error_msg = f"Failed to start inference: {str(e)}"
@@ -343,10 +377,10 @@ class InferenceController(QtCore.QObject):
 
     def cancel_inference(self) -> None:
         """Cancel the current inference operation."""
-        if self._inference_thread and self._inference_thread.isRunning():
+        if self._is_worker_running():
             self._inference_thread.cancel()
             self._inference_thread.requestInterruption()
-            logger.info("Inference cancelled")
+            logger.info("Inference cancel requested for running worker.")
 
     def shutdown(self, timeout_ms: int = 1000) -> None:
         """Best-effort cleanup for any running inference worker thread."""
@@ -354,6 +388,7 @@ class InferenceController(QtCore.QObject):
         if thread is None:
             return
 
+        start_ts = time.perf_counter()
         try:
             if thread.isRunning():
                 thread.cancel()
@@ -364,6 +399,8 @@ class InferenceController(QtCore.QObject):
             logger.warning(f"Failed to shutdown inference thread cleanly: {e}")
         finally:
             self._inference_thread = None
+            elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+            logger.info("Inference shutdown completed in %.1fms.", elapsed_ms)
 
     def is_inference_running(self) -> bool:
         """
