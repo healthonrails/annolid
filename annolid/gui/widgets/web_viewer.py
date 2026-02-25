@@ -21,6 +21,13 @@ from annolid.gui.widgets.bot_explain import (
     explain_selection_with_annolid_bot,
 )
 from annolid.gui.widgets.dictionary_lookup import DictionaryLookupTask
+from annolid.utils.citations import (
+    BibEntry,
+    load_bibtex,
+    parse_bibtex,
+    save_bibtex,
+    upsert_entry,
+)
 from annolid.utils.logger import logger
 
 
@@ -1365,6 +1372,16 @@ class WebViewerWidget(QtWidgets.QWidget):
                 menu.actions()[0] if menu.actions() else None, explain_action
             )
 
+            bib_entries = self._extract_bibtex_entries(selected_text)
+            add_citation_action = QtWidgets.QAction("Add Citation to BibTeX File", self)
+            add_citation_action.setEnabled(bool(bib_entries))
+            add_citation_action.triggered.connect(
+                lambda: self._add_selected_citation_to_bib(selected_text)
+            )
+            menu.insertAction(
+                menu.actions()[0] if menu.actions() else None, add_citation_action
+            )
+
             describe_image_action = QtWidgets.QAction(
                 "Describe image with Annolid Bot", self
             )
@@ -1559,6 +1576,53 @@ class WebViewerWidget(QtWidgets.QWidget):
         )
         if message:
             self.status_changed.emit(message if ok else f"Explain failed: {message}")
+
+    @staticmethod
+    def _extract_bibtex_entries(selected_text: str) -> list[BibEntry]:
+        text = str(selected_text or "").strip()
+        if not text:
+            return []
+        try:
+            return parse_bibtex(text)
+        except Exception:
+            return []
+
+    @staticmethod
+    def _default_citation_bib_path() -> Path:
+        return get_agent_workspace_path() / "citations.bib"
+
+    def _add_selected_citation_to_bib(self, selected_text: str) -> None:
+        entries = self._extract_bibtex_entries(selected_text)
+        if not entries:
+            self.status_changed.emit("No valid BibTeX citation found in selected text.")
+            return
+
+        bib_path = self._default_citation_bib_path()
+        try:
+            existing = load_bibtex(bib_path)
+            created = 0
+            updated = 0
+            for entry in entries:
+                existing, is_created = upsert_entry(existing, entry)
+                if is_created:
+                    created += 1
+                else:
+                    updated += 1
+            save_bibtex(bib_path, existing, sort_keys=True)
+        except Exception as exc:
+            self.status_changed.emit(f"Failed to save citation(s): {exc}")
+            return
+
+        if len(entries) == 1:
+            action = "Added" if created == 1 else "Updated"
+            self.status_changed.emit(
+                f"{action} citation '{entries[0].key}' in {bib_path.name}."
+            )
+            return
+        self.status_changed.emit(
+            f"Saved {len(entries)} citation(s) to {bib_path.name} "
+            f"({created} added, {updated} updated)."
+        )
 
     @staticmethod
     def _decode_data_url(data_url: str) -> tuple[bytes, str]:
