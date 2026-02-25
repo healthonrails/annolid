@@ -64,6 +64,10 @@ from annolid.gui.widgets.ai_chat_manager import AIChatManager
 
 from annolid.annotation.pose_schema import PoseSchema
 from annolid.gui.model_manager import AIModelManager
+from annolid.gui.models_registry import (
+    get_runtime_model_registry,
+    validate_model_registry_entries,
+)
 from typing import Any, Dict, List, Optional, Set
 from annolid.jobs.tracking_jobs import TrackingSegment
 
@@ -203,6 +207,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
             base_config=self._config,
             canvas_getter=lambda: getattr(self, "canvas", None),
         )
+        self._validate_model_registry_startup()
         self.yolo_training_manager = YOLOTrainingManager(self)
         self.dino_kpseg_training_manager = DinoKPSEGTrainingManager(self)
         self._training_dashboard_dialog = None
@@ -518,6 +523,21 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
 
         self.populateModeActions()
         QtCore.QTimer.singleShot(0, self._startup_annolid_bot)
+
+    def _validate_model_registry_startup(self) -> None:
+        try:
+            registry = get_runtime_model_registry(
+                config=self._config,
+                settings=self.settings,
+            )
+            is_valid, errors, warnings = validate_model_registry_entries(registry)
+            for message in warnings:
+                logger.warning("Model registry warning: %s", message)
+            if not is_valid:
+                for message in errors:
+                    logger.error("Model registry error: %s", message)
+        except Exception as exc:
+            logger.warning("Model registry startup validation failed: %s", exc)
 
     def _startup_annolid_bot(self) -> None:
         """Start Annolid Bot when the main window opens."""

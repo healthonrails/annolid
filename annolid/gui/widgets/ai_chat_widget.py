@@ -28,7 +28,10 @@ from annolid.gui.realtime_launch import (
     build_realtime_launch_payload,
     resolve_realtime_model_weight,
 )
-from annolid.gui.models_registry import MODEL_REGISTRY
+from annolid.gui.models_registry import (
+    get_model_unavailable_reason,
+    get_runtime_model_registry,
+)
 from annolid.gui.widgets.ai_chat_audio_controller import ChatAudioController
 from annolid.gui.widgets.ai_chat_backend import (
     StreamingChatTask,
@@ -3300,13 +3303,18 @@ class AIChatWidget(QtWidgets.QWidget):
     @QtCore.Slot()
     def bot_list_realtime_models(self) -> None:
         models: list[dict[str, str]] = []
-        for item in MODEL_REGISTRY:
+        host = self.host_window_widget or self.window()
+        settings = getattr(host, "settings", None)
+        config = getattr(host, "_config", None)
+        for item in get_runtime_model_registry(config=config, settings=settings):
+            unavailable_reason = get_model_unavailable_reason(item)
             models.append(
                 {
-                    "id": str(item.id),
+                    "id": str(item.identifier),
                     "display_name": str(item.display_name),
                     "weight_file": str(item.weight_file),
-                    "description": str(item.description),
+                    "available": str(unavailable_reason is None).lower(),
+                    "unavailable_reason": str(unavailable_reason or ""),
                 }
             )
         self._set_bot_action_result(

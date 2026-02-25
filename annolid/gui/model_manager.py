@@ -5,7 +5,11 @@ from typing import Callable, List, Optional, Set
 from annolid.utils.annotation_compat import AI_MODELS as MODELS
 from qtpy import QtCore, QtWidgets
 
-from annolid.gui.models_registry import MODEL_REGISTRY, ModelConfig
+from annolid.gui.models_registry import (
+    ModelConfig,
+    get_model_unavailable_reason,
+    get_runtime_model_registry,
+)
 from annolid.utils.logger import logger
 
 
@@ -32,6 +36,10 @@ class AIModelManager(QtCore.QObject):
         self._browse_custom_label = parent.tr("Browse Custom YOLO…")
         self._missing_custom_weights_logged: Set[str] = set()
         self._custom_model_configs: List[ModelConfig] = self._load_custom_models()
+        self._runtime_registry: List[ModelConfig] = get_runtime_model_registry(
+            config=self._config,
+            settings=self._settings,
+        )
         self._last_selection: Optional[str] = None
         self._refresh_in_progress = False
 
@@ -76,7 +84,7 @@ class AIModelManager(QtCore.QObject):
 
     @property
     def all_model_configs(self) -> List[ModelConfig]:
-        return [*MODEL_REGISTRY, *self._available_custom_models]
+        return [*self._runtime_registry, *self._available_custom_models]
 
     def refresh(self, target_selection: Optional[str] = None) -> None:
         """Rebuild the combo box while preserving or applying a selection."""
@@ -110,14 +118,31 @@ class AIModelManager(QtCore.QObject):
         combo.blockSignals(True)
         try:
             combo.clear()
+            self._runtime_registry = get_runtime_model_registry(
+                config=self._config,
+                settings=self._settings,
+            )
 
             for model in MODELS:
                 combo.addItem(model.name)
 
-            registry_names = [cfg.display_name for cfg in MODEL_REGISTRY]
-            for name in registry_names:
+            for cfg in self._runtime_registry:
+                name = cfg.display_name
                 if combo.findText(name) == -1:
                     combo.addItem(name)
+                idx = combo.findText(name)
+                if idx >= 0:
+                    reason = get_model_unavailable_reason(cfg)
+                    model_obj = combo.model()
+                    item = model_obj.item(idx) if hasattr(model_obj, "item") else None
+                    if reason:
+                        combo.setItemData(idx, reason, QtCore.Qt.ToolTipRole)
+                        if item is not None:
+                            item.setEnabled(False)
+                    else:
+                        combo.setItemData(idx, "", QtCore.Qt.ToolTipRole)
+                        if item is not None:
+                            item.setEnabled(True)
 
             for name in self.custom_model_names:
                 if combo.findText(name) == -1:
@@ -135,6 +160,21 @@ class AIModelManager(QtCore.QObject):
                     index = combo.findText(default_text)
                 else:
                     index = 0 if combo.count() else -1
+
+            if index >= 0:
+                model_obj = combo.model()
+                item = model_obj.item(index) if hasattr(model_obj, "item") else None
+                if item is not None and not item.isEnabled():
+                    index = -1
+                    for candidate_index in range(combo.count()):
+                        candidate_item = (
+                            model_obj.item(candidate_index)
+                            if hasattr(model_obj, "item")
+                            else None
+                        )
+                        if candidate_item is None or candidate_item.isEnabled():
+                            index = candidate_index
+                            break
 
             if index >= 0:
                 combo.setCurrentIndex(index)
@@ -157,11 +197,19 @@ class AIModelManager(QtCore.QObject):
             return
 
         selected_model = self._find_model_config(current_text)
-        if selected_model and self._is_custom_model(selected_model):
-            if not self._is_model_available(selected_model):
+        if selected_model and not self._is_model_available(selected_model):
+            if self._is_custom_model(selected_model):
                 self._warn_missing_custom_weight(selected_model)
-                self._restore_previous_selection(exclude=selected_model.display_name)
-                return
+            else:
+                reason = get_model_unavailable_reason(selected_model)
+                if reason:
+                    logger.warning(
+                        "Model '%s' unavailable: %s",
+                        selected_model.display_name,
+                        reason,
+                    )
+            self._restore_previous_selection(exclude=selected_model.display_name)
+            return
 
         self._last_selection = current_text
 
@@ -218,7 +266,7 @@ class AIModelManager(QtCore.QObject):
             target_display = existing.display_name
         else:
             display_base = weight_path.stem
-            existing_names = {cfg.display_name for cfg in MODEL_REGISTRY} | {
+            existing_names = {cfg.display_name for cfg in self._runtime_registry} | {
                 cfg.display_name for cfg in self._custom_model_configs
             }
             candidate = display_base
@@ -257,7 +305,7 @@ class AIModelManager(QtCore.QObject):
 
     def _is_model_available(self, model: ModelConfig) -> bool:
         if not self._is_custom_model(model):
-            return True
+            return get_model_unavailable_reason(model) is None
         resolved = Path(model.weight_file).expanduser()
         exists = resolved.exists()
         if exists:

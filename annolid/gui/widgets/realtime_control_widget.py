@@ -6,7 +6,11 @@ from typing import Callable, Iterable, Optional, Tuple
 from qtpy import QtCore, QtWidgets
 
 from annolid.gui.realtime_launch import build_realtime_launch_payload
-from annolid.gui.models_registry import MODEL_REGISTRY, ModelConfig
+from annolid.gui.models_registry import (
+    ModelConfig,
+    get_model_unavailable_reason,
+    get_runtime_model_registry,
+)
 from annolid.realtime.config import Config as RealtimeConfig
 
 
@@ -30,6 +34,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self._config = config or {}
         self._label_provider = label_provider
         self._custom_model_path: Optional[Path] = None
+        self._runtime_registry = get_runtime_model_registry(config=self._config)
 
         self._build_ui()
         self._load_defaults()
@@ -47,8 +52,16 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         model_group = QtWidgets.QGroupBox(self.tr("Model"))
         model_layout = QtWidgets.QGridLayout(model_group)
         self.model_combo = QtWidgets.QComboBox()
-        for model in MODEL_REGISTRY:
+        for model in self._runtime_registry:
             self.model_combo.addItem(model.display_name, model)
+            idx = self.model_combo.count() - 1
+            reason = get_model_unavailable_reason(model)
+            if reason:
+                self.model_combo.setItemData(idx, reason, QtCore.Qt.ToolTipRole)
+                model_obj = self.model_combo.model()
+                item = model_obj.item(idx) if hasattr(model_obj, "item") else None
+                if item is not None:
+                    item.setEnabled(False)
         self.model_combo.addItem(self.tr("Custom…"), "__custom__")
         self.model_combo.currentIndexChanged.connect(self._on_model_combo_changed)
 
@@ -467,6 +480,16 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.start_requested.emit(config, extras)
 
     def _build_runtime_config(self) -> Tuple[RealtimeConfig, dict]:
+        selected_data = self.model_combo.currentData()
+        if isinstance(selected_data, ModelConfig):
+            unavailable_reason = get_model_unavailable_reason(selected_data)
+            if unavailable_reason:
+                raise ValueError(
+                    self.tr("Selected model is unavailable: {reason}").format(
+                        reason=unavailable_reason
+                    )
+                )
+
         model_path = self.model_path_edit.text().strip()
         if not model_path:
             raise ValueError(self.tr("Please select a YOLO model file."))
