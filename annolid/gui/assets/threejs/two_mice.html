@@ -158,10 +158,10 @@
     // ═══════════════════════════════════════════════════════════════
     function defaultProportions() {
       return {
-        bodyLength: 2.9, bodyGirthX: 1.55, bodyGirthY: 1.5,
-        ribcageDepth: 1.0, waistTaper: 0.65, haunchWidth: 0.95, shoulderWidth: 0.85,
+        bodyLength: 3.0, bodyGirthX: 1.50, bodyGirthY: 1.44,
+        ribcageDepth: 1.0, waistTaper: 0.64, haunchWidth: 1.00, shoulderWidth: 0.82,
         neckLength: 0.8, neckGirth: 0.55,
-        headSize: 1.0, snoutLength: 1.4, snoutWidth: 1.15, cheekFullness: 0.4,
+        headSize: 0.98, snoutLength: 1.44, snoutWidth: 1.10, cheekFullness: 0.34,
         earSize: 0.85, earSetBack: -0.35, earYaw: 0.75, earThickness: 0.06,
         eyeSize: 0.16, eyeSpacing: 0.50, eyeProtrusion: 1.15, eyeYaw: 0.5,
         foreLimbLength: 1.0, hindLimbLength: 0.78,
@@ -204,8 +204,229 @@
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
       return tex;
     }
+    function createEarNormalMap(size = 256) {
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#8080ff';
+      ctx.fillRect(0, 0, size, size);
+      const cx = size * 0.5;
+      const cy = size * 0.58;
+      const maxR = size * 0.48;
+      // Fine cartilage grain
+      for (let i = 0; i < 220; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = Math.pow(Math.random(), 0.55) * maxR;
+        const x = cx + Math.cos(a) * r;
+        const y = cy + Math.sin(a) * r * 0.92;
+        const d = Math.hypot(x - cx, y - cy);
+        if (d > maxR) continue;
+        const h = Math.floor(120 + Math.random() * 25);
+        ctx.fillStyle = `rgba(${h},${h},255,0.55)`;
+        ctx.beginPath();
+        ctx.ellipse(x, y, 1.0 + Math.random() * 2.2, 0.7 + Math.random() * 1.6, a, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Subtle radial striations (magnified ear look)
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 120; i++) {
+        const a = -Math.PI * 0.75 + Math.random() * Math.PI * 1.5;
+        const r0 = maxR * (0.08 + Math.random() * 0.10);
+        const r1 = maxR * (0.55 + Math.random() * 0.40);
+        const x0 = cx + Math.cos(a) * r0;
+        const y0 = cy + Math.sin(a) * r0 * 0.90;
+        const x1 = cx + Math.cos(a) * r1;
+        const y1 = cy + Math.sin(a) * r1 * 0.92;
+        const dx = Math.cos(a) * (8 + Math.random() * 10);
+        const dy = Math.sin(a) * (5 + Math.random() * 9);
+        const r = Math.max(98, Math.min(158, 128 + dx));
+        const g = Math.max(98, Math.min(158, 128 + dy));
+        ctx.strokeStyle = `rgba(${Math.floor(r)},${Math.floor(g)},255,${0.06 + Math.random() * 0.07})`;
+        ctx.lineWidth = 0.6 + Math.random() * 1.2;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        const mx = (x0 + x1) * 0.5 + (Math.random() - 0.5) * 6;
+        const my = (y0 + y1) * 0.5 + (Math.random() - 0.5) * 6;
+        ctx.quadraticCurveTo(mx, my, x1, y1);
+        ctx.stroke();
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      return tex;
+    }
+    function createEarRoughnessMap(size = 256) {
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      const g = ctx.createRadialGradient(size * 0.5, size * 0.55, size * 0.08, size * 0.5, size * 0.55, size * 0.52);
+      g.addColorStop(0.0, '#9a9a9a');
+      g.addColorStop(0.55, '#b8b8b8');
+      g.addColorStop(1.0, '#d0d0d0');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 900; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const v = 140 + Math.floor(Math.random() * 80);
+        ctx.fillStyle = `rgb(${v},${v},${v})`;
+        ctx.fillRect(x, y, 1, 1);
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      return tex;
+    }
+    function createEarAlbedoMap(size = 512) {
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      const cx = size * 0.5;
+      const cy = size * 0.6;
+      const maxR = size * 0.48;
+      const base = ctx.createRadialGradient(cx, cy, size * 0.06, cx, cy, maxR);
+      base.addColorStop(0.0, '#f4e1cb');
+      base.addColorStop(0.5, '#ecd2b8');
+      base.addColorStop(1.0, '#dcb99c');
+      ctx.fillStyle = base;
+      ctx.fillRect(0, 0, size, size);
+      // Root/base warmth near ear attachment.
+      const root = ctx.createRadialGradient(cx, cy + maxR * 0.28, size * 0.05, cx, cy + maxR * 0.30, maxR * 0.65);
+      root.addColorStop(0.0, 'rgba(176,120,98,0.10)');
+      root.addColorStop(0.55, 'rgba(170,118,98,0.05)');
+      root.addColorStop(1.0, 'rgba(170,118,98,0.0)');
+      ctx.fillStyle = root;
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 16; i++) {
+        const a = -Math.PI * 0.65 + (i / 15) * Math.PI * 1.3;
+        const r0 = size * 0.10 + Math.random() * size * 0.08;
+        const r1 = size * 0.36 + Math.random() * size * 0.07;
+        const x0 = cx + Math.cos(a) * r0;
+        const y0 = cy + Math.sin(a) * r0;
+        const x1 = cx + Math.cos(a) * r1;
+        const y1 = cy + Math.sin(a) * r1;
+        ctx.strokeStyle = `rgba(175,130,100,${0.07 + Math.random() * 0.08})`;
+        ctx.lineWidth = 1.0 + Math.random() * 1.4;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        const mx = (x0 + x1) * 0.5 + (Math.random() - 0.5) * 8;
+        const my = (y0 + y1) * 0.5 + (Math.random() - 0.5) * 8;
+        ctx.quadraticCurveTo(mx, my, x1, y1);
+        ctx.stroke();
+      }
+      // A few faint veins/capillaries.
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI * 0.70 + Math.random() * Math.PI * 1.4;
+        const r0 = size * (0.10 + Math.random() * 0.10);
+        const r1 = size * (0.34 + Math.random() * 0.12);
+        const x0 = cx + Math.cos(a) * r0;
+        const y0 = cy + Math.sin(a) * r0 * 0.94;
+        const x1 = cx + Math.cos(a) * r1;
+        const y1 = cy + Math.sin(a) * r1 * 0.96;
+        ctx.strokeStyle = `rgba(190,145,130,${0.05 + Math.random() * 0.05})`;
+        ctx.lineWidth = 0.8 + Math.random() * 0.7;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        const mx = (x0 + x1) * 0.5 + (Math.random() - 0.5) * 10;
+        const my = (y0 + y1) * 0.5 + (Math.random() - 0.5) * 10;
+        ctx.quadraticCurveTo(mx, my, x1, y1);
+        ctx.stroke();
+      }
+      const rim = ctx.createRadialGradient(cx, cy, maxR * 0.78, cx, cy, maxR * 1.05);
+      rim.addColorStop(0.0, 'rgba(255,255,255,0.0)');
+      rim.addColorStop(0.45, 'rgba(255,245,230,0.0)');
+      rim.addColorStop(0.75, 'rgba(248,236,222,0.26)');
+      rim.addColorStop(1.0, 'rgba(232,204,178,0.38)');
+      ctx.fillStyle = rim;
+      ctx.fillRect(0, 0, size, size);
+      // Micro mottling
+      for (let i = 0; i < 1200; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const v = 210 + Math.floor(Math.random() * 35);
+        ctx.fillStyle = `rgba(${v},${v - 18},${v - 28},0.05)`;
+        ctx.fillRect(x, y, 1, 1);
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      return tex;
+    }
+    function createNoseAlbedoMap(size = 256) {
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      const cx = size * 0.5;
+      const cy = size * 0.55;
+      const g = ctx.createRadialGradient(cx, cy, size * 0.03, cx, cy, size * 0.50);
+      g.addColorStop(0.0, '#e38f87');
+      g.addColorStop(0.42, '#d07e76');
+      g.addColorStop(1.0, '#a16861');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, size, size);
+      // Warm red wet ring around nostril region.
+      const ring = ctx.createRadialGradient(cx, cy, size * 0.06, cx, cy, size * 0.18);
+      ring.addColorStop(0.0, 'rgba(140,35,35,0.10)');
+      ring.addColorStop(0.55, 'rgba(170,50,50,0.28)');
+      ring.addColorStop(1.0, 'rgba(120,30,30,0.0)');
+      ctx.fillStyle = ring;
+      ctx.fillRect(0, 0, size, size);
+      // subtle philtrum tone
+      ctx.strokeStyle = 'rgba(165,100,96,0.30)';
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - size * 0.03);
+      ctx.quadraticCurveTo(cx + size * 0.01, cy + size * 0.05, cx, cy + size * 0.14);
+      ctx.stroke();
+      for (let i = 0; i < 350; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const v = 170 + Math.floor(Math.random() * 40);
+        ctx.fillStyle = `rgba(${v},${v - 15},${v - 20},0.12)`;
+        ctx.fillRect(x, y, 1, 1);
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+      return tex;
+    }
+    function createNoseNormalMap(size = 256) {
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#8080ff';
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 480; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const v = 120 + Math.floor(Math.random() * 22);
+        ctx.fillStyle = `rgb(${v},${v},255)`;
+        ctx.beginPath();
+        ctx.arc(x, y, 0.4 + Math.random() * 1.0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+      return tex;
+    }
+    function createNoseRoughnessMap(size = 256) {
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      const g = ctx.createRadialGradient(size * 0.5, size * 0.54, size * 0.03, size * 0.5, size * 0.54, size * 0.52);
+      g.addColorStop(0.0, '#666666');
+      g.addColorStop(1.0, '#c2c2c2');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 900; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const v = 120 + Math.floor(Math.random() * 90);
+        ctx.fillStyle = `rgb(${v},${v},${v})`;
+        ctx.fillRect(x, y, 1, 1);
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+      return tex;
+    }
     const padNormalMap = createPadNormalMap();
     const tailRoughnessMap = createTailRingRoughnessMap();
+    const earNormalMap = createEarNormalMap();
+    const earRoughnessMap = createEarRoughnessMap();
+    const earAlbedoMap = createEarAlbedoMap();
+    const noseAlbedoMap = createNoseAlbedoMap();
+    const noseNormalMap = createNoseNormalMap();
+    const noseRoughnessMap = createNoseRoughnessMap();
 
     // ═══════════════════════════════════════════════════════════════
     // 4. PBR MATERIALS
@@ -245,80 +466,95 @@
 
     const deformBody = (v) => {
       const zNorm = (v.z + 1) / 2;
-      // Pear/teardrop: wide haunches → narrower shoulders
-      const haunchW = 1.0 + (1.0 - zNorm) * 0.2;
-      const shoulderT = 1.0 - zNorm * 0.35;
-      const lateral = shoulderT * haunchW;
+      // Side-view profile: rear-dominant body mass with lower shoulders.
+      const rearMass = Math.exp(-Math.pow((zNorm - 0.26) / 0.22, 2.0));
+      let shoulderDrop = THREE.MathUtils.clamp((zNorm - 0.68) / 0.32, 0, 1);
+      shoulderDrop = shoulderDrop * shoulderDrop * (3.0 - 2.0 * shoulderDrop);
+      const waistNarrow = Math.exp(-Math.pow((zNorm - 0.56) / 0.14, 2.0));
+      const lateral = (1.0 + rearMass * 0.24 - shoulderDrop * 0.20 - waistNarrow * (1.0 - PROP.waistTaper) * 0.26);
       v.x *= lateral * PROP.bodyGirthX;
-      v.y *= shoulderT * PROP.bodyGirthY;
+      v.y *= (1.0 - zNorm * 0.26) * PROP.bodyGirthY;
       v.z *= PROP.bodyLength;
-      // Spinal curve
-      const spineY = Math.sin(Math.pow(zNorm, 0.7) * Math.PI) * 0.9;
-      v.y += spineY;
-      // Belly bulge
-      if (v.y < 0.2 && v.y > -0.5) {
-        const bulge = (1.0 - Math.abs(zNorm - 0.4) * 1.5) * 0.12;
-        v.x *= 1.0 + Math.max(0, bulge);
+      // Rounder cross-section so top view does not show a hard flank shelf.
+      const sideBlend = THREE.MathUtils.clamp((Math.abs(v.y) - 0.06) / 0.72, 0, 1);
+      v.x *= 0.95 + sideBlend * 0.05;
+
+      // Dorsal line: peak around rear-mid, shoulder and tail-base slightly lower.
+      const hump = Math.exp(-Math.pow((zNorm - 0.34) / 0.19, 2.0));
+      const rump = Math.exp(-Math.pow((zNorm - 0.12) / 0.10, 2.0));
+      v.y += hump * 0.36 + rump * 0.14 - shoulderDrop * 0.16;
+
+      // Ventrum: continuous shaping (avoid crease/cut line in top view).
+      const yRef = v.y;
+      const bellyWidth = Math.exp(-Math.pow((zNorm - 0.52) / 0.30, 2.0));
+      const bellyMask = THREE.MathUtils.smoothstep(0.18, -0.65, yRef);
+      const bellyInfluence = bellyWidth * bellyMask;
+      v.x *= 1.0 + bellyInfluence * 0.14;
+      const dropMask = THREE.MathUtils.smoothstep(0.24, -0.22, yRef);
+      v.y -= bellyWidth * dropMask * 0.10;
+
+      const lowerBlend = THREE.MathUtils.clamp((0.10 - yRef) / 0.46, 0, 1);
+      const groinTuck = Math.exp(-Math.pow((zNorm - 0.18) / 0.15, 2.0)) * 0.10;
+      let chestDrop = THREE.MathUtils.clamp((zNorm - 0.72) / 0.28, 0, 1);
+      chestDrop = chestDrop * chestDrop * (3.0 - 2.0 * chestDrop) * 0.05;
+      const targetY = v.y * 0.76 + groinTuck - chestDrop;
+      v.y = THREE.MathUtils.lerp(v.y, targetY, lowerBlend);
+
+      // Subtle scapular and haunch emphasis from side.
+      if (zNorm > 0.68 && zNorm < 0.86 && Math.abs(v.x) > 0.26) {
+        const scapBulge = 1.0 - Math.abs(zNorm - 0.76) * 10.0;
+        if (scapBulge > 0) { v.x *= 1.0 + scapBulge * 0.06; if (v.y > 0) v.y += scapBulge * 0.04; }
       }
-      if (v.y < 0) v.y *= 0.5;
-      // Rump rounding
-      if (zNorm < 0.25) {
-        v.y += (0.25 - zNorm) * 0.35;
-        v.x *= 1.0 + (0.25 - zNorm) * 0.2;
+      if (zNorm > 0.14 && zNorm < 0.36 && Math.abs(v.x) > 0.26) {
+        const hB = 1.0 - Math.abs(zNorm - 0.25) * 6.0;
+        if (hB > 0) { v.x *= 1.0 + hB * 0.11; if (v.y < 0) v.y *= 1.0 + hB * 0.06; }
       }
-      // Shoulder mass / scapula region
-      if (zNorm > 0.65 && zNorm < 0.85 && Math.abs(v.x) > 0.3) {
-        const scapBulge = (1.0 - Math.abs(zNorm - 0.75) * 10.0);
-        if (scapBulge > 0) {
-          v.x *= 1.0 + scapBulge * 0.08;
-          if (v.y > 0) v.y += scapBulge * 0.06;
-        }
-      }
-      // Waist taper
-      if (zNorm > 0.4 && zNorm < 0.65) {
-        const taper = 1.0 - (1.0 - Math.abs(zNorm - 0.52) * 5.0) * (1.0 - PROP.waistTaper) * 0.15;
-        v.x *= Math.max(0.85, taper);
-      }
-      // Haunch bulge at hind leg attachment
-      if (zNorm > 0.15 && zNorm < 0.4 && Math.abs(v.x) > 0.3) {
-        const hB = (1.0 - Math.abs(zNorm - 0.27) * 5.0);
-        if (hB > 0) { v.x *= 1.0 + hB * 0.12; if (v.y < 0) v.y *= 1.0 + hB * 0.08; }
-      }
-      // Neck transition: slight narrowing at front
-      if (zNorm > 0.85) {
-        const neckT = (zNorm - 0.85) / 0.15;
-        v.x *= 1.0 - neckT * 0.2;
-        v.y *= 1.0 - neckT * 0.15;
+
+      // Narrow neck root at very front.
+      if (zNorm > 0.86) {
+        const neckT = (zNorm - 0.86) / 0.14;
+        v.x *= 1.0 - neckT * 0.30;
+        v.y *= 1.0 - neckT * 0.18;
       }
     };
 
     const deformHead = (v) => {
       const zNorm = (v.z + 1) / 2;
-      const snoutTaper = Math.pow(1.0 - zNorm * 0.6, 1.0);
+      const snoutTaper = Math.pow(1.0 - zNorm * 0.46, 1.0);
       v.x *= snoutTaper * PROP.snoutWidth;
       v.y *= snoutTaper * 0.98;
       v.z *= PROP.snoutLength;
-      v.y -= zNorm * 0.12;
+      v.y -= zNorm * 0.11;
       // Cheeks
-      if (zNorm < 0.5) {
-        const cF = (0.5 - zNorm) * PROP.cheekFullness;
+      if (zNorm < 0.55) {
+        const cF = (0.55 - zNorm) * PROP.cheekFullness;
         v.x *= 1.0 + cF;
-        if (v.y < 0) v.x *= 1.0 + cF * 0.4;
+        if (v.y < 0) v.x *= 1.0 + cF * 0.25;
       }
-      // Snout narrowing
-      if (zNorm > 0.6) {
-        const p = (zNorm - 0.6) / 0.4;
-        v.x *= 1.0 - p * 0.35;
-        v.y *= 1.0 - p * 0.15;
-        v.y -= p * 0.04;
+      // Snout wedge with softer, rounder tip.
+      if (zNorm > 0.64) {
+        const p = (zNorm - 0.64) / 0.36;
+        v.x *= 1.0 - p * 0.11;
+        v.y *= 1.0 - p * 0.08;
+        v.y -= p * 0.02;
+        if (v.y < 0) v.x *= 1.0 + p * 0.08;
       }
-      // Cranial dome
-      if (zNorm > 0.1 && zNorm < 0.55 && v.y > 0) {
-        const dF = 1.0 - Math.abs(zNorm - 0.3) * 2.5;
-        v.y += Math.max(0, dF) * 0.2;
+      if (zNorm > 0.82) {
+        const tip = (zNorm - 0.82) / 0.18;
+        v.x *= 1.0 + tip * 0.16;
+        v.y *= 1.0 + tip * 0.08;
+      }
+      // Cranium: fuller at back, shallower near frontal region (side-view realism).
+      if (zNorm > 0.08 && zNorm < 0.50 && v.y > 0) {
+        const dF = 1.0 - Math.abs(zNorm - 0.25) * 2.9;
+        v.y += Math.max(0, dF) * 0.24;
+      }
+      if (zNorm > 0.50 && zNorm < 0.78 && v.y > 0) {
+        const frontalDrop = 1.0 - Math.abs(zNorm - 0.64) * 5.5;
+        if (frontalDrop > 0) v.y -= frontalDrop * 0.04;
       }
       // Orbital ridges
-      if (zNorm > 0.3 && zNorm < 0.5 && Math.abs(v.x) > 0.3) v.y += 0.04;
+      if (zNorm > 0.32 && zNorm < 0.54 && Math.abs(v.x) > 0.26) v.y += 0.03;
     };
 
     const deformThigh = (v) => {
@@ -328,21 +564,91 @@
     const deformEar = (v) => {
       const y01 = (v.y + 1.0) * 0.5;
       const radial = Math.sqrt(v.x * v.x + v.y * v.y);
-      v.x *= 1.3; v.y *= 1.25; v.z *= PROP.earThickness;
-      const concave = Math.pow(radial, 1.4) * 0.7;
-      v.z -= concave;
-      const rimDist = Math.abs(radial - 0.85);
-      if (rimDist < 0.15) { const rS = 1.0 - rimDist / 0.15; v.z += rS * rS * 0.12; }
-      if (y01 < 0.3) {
-        const taper = Math.pow(y01 / 0.3, 0.7);
-        v.x *= taper; v.z += (0.3 - y01) * 0.5; v.z *= 1.0 + (0.3 - y01) * 2.0;
+      const t = PROP.earThickness;
+      // Mouse-like ear silhouette: bell profile with broad shoulders and rounded dome.
+      v.x *= 1.34;
+      v.y *= 1.02;
+      v.z *= t * 0.85;
+      const baseTaper = THREE.MathUtils.smoothstep(0.0, 0.35, y01);
+      v.x *= 0.32 + baseTaper * 0.68;
+      v.z += (1.0 - baseTaper) * t * 0.75;
+      const shoulder = Math.exp(-Math.pow((y01 - 0.72) / 0.18, 2.0));
+      v.x *= 1.0 + shoulder * 0.18;
+      const upperRound = THREE.MathUtils.smoothstep(0.52, 1.0, y01);
+      v.x *= 1.0 + upperRound * 0.24;
+      // Cup depth must live in the same scale as thickness (avoid "inflated ear").
+      const concave = Math.pow(radial, 1.35);
+      v.z -= concave * t * 1.36;
+      const cup = Math.exp(-(v.x * v.x * 1.9 + Math.pow(v.y - 0.35, 2.0) * 2.6));
+      v.z -= cup * t * 0.52;
+      const rimDist = Math.abs(radial - 0.83);
+      if (rimDist < 0.14) {
+        const rimBoost = 1.0 - rimDist / 0.14;
+        v.z += rimBoost * rimBoost * t * 1.06;
       }
-      if (y01 > 0.75) {
-        const tR = 1.0 - (y01 - 0.75) * 2.0;
-        v.x *= Math.max(0.15, tR); v.y *= Math.max(0.6, tR);
+      // Slight forward fold near the upper rim.
+      if (y01 > 0.70) {
+        const fold = THREE.MathUtils.smoothstep(0.70, 0.98, y01);
+        const rim = THREE.MathUtils.smoothstep(0.62, 0.86, radial);
+        v.z += fold * rim * t * 0.32;
       }
-      v.z -= (1.0 - y01) * 0.08;
+      if (y01 > 0.80) {
+        const tipTaper = 1.0 - (y01 - 0.82) / 0.18;
+        v.x *= Math.max(0.98, tipTaper);
+        // Bell cap: preserve width at apex and reduce pointiness.
+        const cap = THREE.MathUtils.smoothstep(0.88, 1.0, y01);
+        v.x *= 1.0 + cap * 0.30;
+        v.y *= 1.0 - cap * 0.05;
+      }
+      if (y01 > 0.90) {
+        const flatten = (y01 - 0.90) / 0.10;
+        v.y -= flatten * 0.06;
+      }
+      v.x *= 1.0 + (y01 - 0.45) * 0.05;
+      v.z -= (1.0 - y01) * t * 0.45;
     };
+    function createEarInnerGeometry(depthMul = 1.0) {
+      const geo = new THREE.CircleGeometry(1, 56);
+      const pos = geo.attributes.position;
+      const v = new THREE.Vector3();
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i);
+        const r = Math.sqrt(v.x * v.x + v.y * v.y);
+        const y01 = (v.y + 1.0) * 0.5;
+        const ang = Math.atan2(v.y, v.x);
+        const rootTaper = THREE.MathUtils.smoothstep(0.0, 0.30, y01);
+        v.x *= 0.30 + rootTaper * 0.70;
+        const shoulder = Math.exp(-Math.pow((y01 - 0.72) / 0.18, 2.0));
+        v.x *= 1.0 + shoulder * 0.13;
+        // Soft concha depression with gentle mouse-like folds.
+        v.z = -Math.pow(r, 1.5) * 0.22 * depthMul;
+        const ridge = Math.exp(-(v.x * v.x * 2.1 + Math.pow(v.y - 0.24, 2.0) * 3.0));
+        v.z += ridge * 0.062 * depthMul;
+        const fold = Math.exp(-(Math.pow(v.x - 0.02, 2.0) * 2.8 + Math.pow(v.y + 0.08, 2.0) * 3.4));
+        v.z += fold * 0.026 * depthMul;
+        v.z += Math.sin(ang * 1.8) * (0.003 + (1.0 - r) * 0.004) * depthMul;
+        // Rim thickening so the cavity reads in close-up.
+        const rim = THREE.MathUtils.smoothstep(0.70, 0.94, r);
+        v.z += rim * 0.020 * Math.min(1.2, depthMul);
+        // Small lower-front nub only (avoid human tragus shape).
+        const nub = Math.exp(-(Math.pow(v.x + 0.14, 2.0) * 8.0 + Math.pow(v.y + 0.66, 2.0) * 15.0));
+        v.z += nub * 0.016 * depthMul;
+        if (y01 > 0.80) {
+          const tipTaper = 1.0 - (y01 - 0.82) / 0.18;
+          v.x *= Math.max(0.94, tipTaper);
+          const cap = THREE.MathUtils.smoothstep(0.88, 1.0, y01);
+          v.x *= 1.0 + cap * 0.30;
+          v.y *= 1.0 - cap * 0.10;
+        }
+        if (y01 > 0.90) {
+          const flatten = (y01 - 0.90) / 0.10;
+          v.y -= flatten * 0.04;
+        }
+        pos.setXYZ(i, v.x, v.y * 0.95, v.z);
+      }
+      geo.computeVertexNormals();
+      return geo;
+    }
 
     // Upper arm / forearm deform
     const deformUpperArm = (v) => {
@@ -357,6 +663,8 @@
     const headGeo = deform(new THREE.SphereGeometry(1, 48, 48), deformHead);
     const thighGeo = deform(new THREE.SphereGeometry(1, 32, 32), deformThigh);
     const earGeo = deform(new THREE.SphereGeometry(1, 32, 32), deformEar);
+    const earInnerGeo = createEarInnerGeometry(1.0);
+    const earConchaGeo = createEarInnerGeometry(2.25);
 
 
     // ═══════════════════════════════════════════════════════════════
@@ -364,11 +672,20 @@
     // ═══════════════════════════════════════════════════════════════
     function createPaw(mat, isFore = false, strain = {}) {
       const paw = new THREE.Group();
+      const pawFleshMat = mat.clone();
+      pawFleshMat.color.set(strain.pawColor ?? '#e6b0a7');
+      pawFleshMat.transmission = 0.22;
+      pawFleshMat.thickness = 0.22;
+      pawFleshMat.roughness = 0.42;
+      pawFleshMat.clearcoat = 0.22;
+      pawFleshMat.clearcoatRoughness = 0.28;
       const padMat = mat.clone();
-      padMat.color.multiplyScalar(strain.padDarken ?? 0.84);
-      padMat.transmission = 0.18; padMat.thickness = 0.35;
-      padMat.roughness = 0.52; padMat.normalMap = padNormalMap;
-      padMat.normalScale = new THREE.Vector2(0.3, 0.3);
+      padMat.color.set(strain.pawPadColor ?? strain.pawColor ?? '#e9b8ae');
+      padMat.color.multiplyScalar(strain.padDarken ?? 0.9);
+      padMat.transmission = 0.28; padMat.thickness = 0.26;
+      padMat.roughness = 0.36; padMat.clearcoat = 0.32; padMat.clearcoatRoughness = 0.18;
+      padMat.normalMap = padNormalMap;
+      padMat.normalScale = new THREE.Vector2(0.22, 0.22);
 
       const pawScale = isFore ? (PROP.forePawSize) : (PROP.hindPawSize);
 
@@ -386,24 +703,31 @@
           iPad.castShadow = true; paw.add(iPad);
         }
       } else {
-        // Hind sole - longer
-        const sole = new THREE.Mesh(new THREE.SphereGeometry(0.16, 20, 20), padMat);
-        sole.scale.set(1.1 * pawScale, 0.4, 1.5 * pawScale);
-        sole.position.set(0, -0.04, 0.03);
+        // Hind sole - elongated and slimmer (digitigrade contact strip)
+        const sole = new THREE.Mesh(new THREE.SphereGeometry(0.14, 20, 20), padMat);
+        sole.scale.set(0.95 * pawScale, 0.32, 1.85 * pawScale);
+        sole.position.set(0, -0.045, 0.06);
         sole.castShadow = true; paw.add(sole);
-        // Heel pad (hind only)
-        const heelPad = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 12), padMat);
-        heelPad.scale.set(1.0, 0.5, 1.2);
-        heelPad.position.set(0, -0.03, -0.12 * pawScale);
+        // Heel pad (small posterior pad)
+        const heelPad = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 12), padMat);
+        heelPad.scale.set(0.95, 0.45, 1.05);
+        heelPad.position.set(0, -0.032, -0.16 * pawScale);
         heelPad.castShadow = true; paw.add(heelPad);
+        // Mid pad transitions metatarsus to toes.
+        const midPad = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 12), padMat);
+        midPad.scale.set(0.9, 0.4, 1.3);
+        midPad.position.set(0, -0.04, 0.14 * pawScale);
+        midPad.castShadow = true; paw.add(midPad);
       }
 
       const pawSpreadMul = strain.pawSpreadMul ?? 1.0;
       const toeCount = isFore ? 4 : 5;
-      const baseSpread = isFore ? 0.12 : 0.10;
+      const baseSpread = isFore ? 0.11 : 0.102;
       const spread = baseSpread * pawSpreadMul * pawScale;
 
-      const clawLocalMat = new THREE.MeshPhysicalMaterial({ color: strain.clawColor ?? 0xd7cdc2, roughness: 0.3, clearcoat: 0.8 });
+      const clawLocalMat = new THREE.MeshPhysicalMaterial({
+        color: strain.clawColor ?? 0xf0e7df, roughness: 0.18, clearcoat: 1.0, clearcoatRoughness: 0.12
+      });
 
       for (let i = 0; i < toeCount; i++) {
         const t = (i - (toeCount - 1) * 0.5) * spread;
@@ -412,33 +736,43 @@
         let lenMul = 1.0;
         if (isFore && (i === 0 || i === 3)) lenMul = 0.8;
         if (!isFore && (i === 0 || i === 4)) lenMul = 0.75;
-        const toeLen = (isFore ? 0.22 : 0.25) * (strain.toeLenMul ?? 1.0) * lenMul * pawScale;
-        const p1 = new THREE.Mesh(new THREE.CapsuleGeometry(isFore ? 0.025 : 0.034, toeLen, 10, 10), mat);
+        const toeLen = (isFore ? 0.20 : 0.27) * (strain.toeLenMul ?? 1.0) * lenMul * pawScale;
+        const p1 = new THREE.Mesh(new THREE.CapsuleGeometry(isFore ? 0.024 : 0.026, toeLen, 10, 10), pawFleshMat);
         p1.rotation.x = Math.PI / 2;
         p1.castShadow = true; toe.add(p1);
         if (isFore) {
-          const knuckle = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 10), mat);
+          const knuckle = new THREE.Mesh(new THREE.SphereGeometry(0.030, 10, 10), pawFleshMat);
           knuckle.position.set(0, 0.012, -toeLen * 0.35);
           knuckle.castShadow = true; toe.add(knuckle);
           p1.rotation.x = Math.PI / 2 - 0.15;
+        } else {
+          const knuckle = new THREE.Mesh(new THREE.SphereGeometry(0.028, 10, 10), pawFleshMat);
+          knuckle.position.set(0, 0.006, -toeLen * 0.32);
+          knuckle.castShadow = true; toe.add(knuckle);
+          p1.rotation.x = Math.PI / 2 - 0.26;
         }
-        let zPos = isFore ? (0.16 - arc * 0.04) : (0.24 - arc * 0.03);
+        let zPos = isFore ? (0.145 - arc * 0.035) : (0.255 - arc * 0.045);
         zPos *= pawScale;
-        toe.position.set(t, -0.035 + arc * 0.012, zPos);
+        toe.position.set(t, isFore ? (-0.035 + arc * 0.012) : (-0.045 + arc * 0.006), zPos);
         // Slight toe splay/curvature
-        toe.rotation.y = t * 0.3;
-        toe.rotation.x = -arc * 0.1;
+        toe.rotation.y = t * (isFore ? 0.3 : 0.45);
+        toe.rotation.x = isFore ? (-0.06 - arc * 0.08) : (-0.18 - arc * 0.07);
         paw.add(toe);
+        // Distal fleshy toe tip.
+        const toeTip = new THREE.Mesh(new THREE.SphereGeometry(isFore ? 0.020 : 0.022, 10, 10), pawFleshMat);
+        toeTip.scale.set(1.25, 0.82, 1.05);
+        toeTip.position.set(t, isFore ? (-0.082 + arc * 0.006) : (-0.09 + arc * 0.005), zPos + (isFore ? 0.11 : 0.12) * lenMul);
+        toeTip.castShadow = true; paw.add(toeTip);
         const toePad = new THREE.Mesh(new THREE.SphereGeometry(isFore ? 0.035 : 0.045, 10, 10), padMat);
-        toePad.scale.set(1.15, 0.48, 1.0);
-        toePad.position.set(t, -0.12 + arc * 0.008, zPos + (isFore ? 0.09 : 0.08) * lenMul);
+        toePad.scale.set(isFore ? 1.15 : 1.0, isFore ? 0.48 : 0.38, isFore ? 1.0 : 1.1);
+        toePad.position.set(t, isFore ? (-0.108 + arc * 0.008) : (-0.102 + arc * 0.004), zPos + (isFore ? 0.08 : 0.088) * lenMul);
         toePad.castShadow = true; paw.add(toePad);
-        const clawLength = isFore ? 0.05 : 0.07;
-        const clawGeo = new THREE.ConeGeometry(isFore ? 0.012 : 0.016, clawLength, 8);
+        const clawLength = isFore ? 0.045 : 0.052;
+        const clawGeo = new THREE.ConeGeometry(isFore ? 0.012 : 0.0135, clawLength, 8);
         clawGeo.translate(0, -clawLength / 2, 0);
         const claw = new THREE.Mesh(clawGeo, clawLocalMat);
-        claw.rotation.x = Math.PI / 2 + (isFore ? -0.2 : 0);
-        claw.position.set(t, -0.06 + arc * 0.004, zPos + (isFore ? 0.13 : 0.17) * lenMul * pawScale);
+        claw.rotation.x = Math.PI / 2 + (isFore ? -0.22 : -0.16);
+        claw.position.set(t, isFore ? (-0.055 + arc * 0.004) : (-0.072 + arc * 0.004), zPos + (isFore ? 0.115 : 0.165) * lenMul * pawScale);
         claw.castShadow = true; paw.add(claw);
       }
       return paw;
@@ -452,7 +786,7 @@
       const chain = new THREE.Group();
       const fl = PROP.foreLimbLength;
       // Scapula/shoulder anchor — place at shoulder width, slightly below spine
-      chain.position.set(sign * 0.66 * PROP.shoulderWidth / 0.85, -0.08, PROP.bodyLength * 0.64);
+      chain.position.set(sign * 0.76 * PROP.shoulderWidth / 0.85, -0.14, PROP.bodyLength * 0.70);
 
       // Upper arm (humerus) — substantial visible segment
       const upperArm = new THREE.Group();
@@ -463,6 +797,7 @@
       upperArmMesh.position.y = -uaLen * 0.5;
       upperArmMesh.castShadow = true;
       upperArm.add(upperArmMesh);
+      upperArm.rotation.x = -0.26;
       // Shoulder joint sphere (visible scapula bump)
       const shoulderJoint = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 12), fleshMat);
       shoulderJoint.scale.set(1.1, 0.9, 1.0);
@@ -473,7 +808,7 @@
       // Forearm (radius/ulna) — attached at elbow
       const forearm = new THREE.Group();
       const faLen = 0.45 * fl;
-      forearm.position.set(0, -uaLen - 0.015, 0.055);
+      forearm.position.set(0, -uaLen - 0.01, 0.08);
       // Soft-tissue bridge to avoid segmented look between upper arm and forearm.
       const elbowBridge = new THREE.Mesh(new THREE.CapsuleGeometry(0.125, 0.09, 10, 10), fleshMat);
       elbowBridge.position.set(0, -uaLen * 0.92, 0.03);
@@ -495,7 +830,7 @@
 
       // Wrist joint
       const wrist = new THREE.Group();
-      wrist.position.set(0, -faLen - 0.02, 0.05);
+      wrist.position.set(0, -faLen - 0.018, 0.08);
       const wristJoint = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 8), fleshMat);
       wristJoint.scale.set(1.1, 0.95, 1.05);
       wristJoint.castShadow = true;
@@ -509,8 +844,9 @@
 
       // Paw — sits at bottom of wrist
       const paw = createPaw(fleshMat, true, strain);
-      paw.position.set(0, -0.12, 0.05);
-      paw.scale.set(1.2, 1.2, 1.2);
+      paw.position.set(0, -0.095, 0.055);
+      paw.scale.set(1.08, 1.08, 1.08);
+      paw.rotation.x = -0.18;
       wrist.add(paw);
 
       // Short fur on upper arm + forearm
@@ -547,22 +883,35 @@
       const chain = new THREE.Group();
       const hl = PROP.hindLimbLength;
       // Hip anchor — at widest haunch point
-      chain.position.set(sign * 0.50 * PROP.haunchWidth / 1.2, 0.14, -PROP.bodyLength * 0.40);
+      chain.position.set(sign * 0.68 * PROP.haunchWidth / 1.2, 0.06, -PROP.bodyLength * 0.35);
 
       // Hip joint (visible mass)
       const hipJoint = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 12), fleshMat);
-      hipJoint.scale.set(0.86, 0.72, 0.88);
+      hipJoint.scale.set(0.90, 0.76, 0.94);
       hipJoint.castShadow = true;
       chain.add(hipJoint);
       // Soft blend into lower back to avoid a hard hip seam.
       const hipBlend = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.24, 10, 10), fleshMat);
-      hipBlend.position.set(0, 0.10, -0.06);
-      hipBlend.rotation.x = 0.45;
-      hipBlend.scale.set(1.05, 0.85, 1.2);
+      hipBlend.position.set(0, 0.07, -0.03);
+      hipBlend.rotation.x = 0.34;
+      hipBlend.scale.set(1.08, 0.90, 1.24);
       hipBlend.castShadow = true;
       chain.add(hipBlend);
+      // Inboard pelvis bridge to blend hip into torso and avoid detached look.
+      const pelvisBridge = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.30, 10, 10), fleshMat);
+      pelvisBridge.position.set(-sign * 0.14, 0.08, -0.02);
+      pelvisBridge.rotation.z = Math.PI / 2;
+      pelvisBridge.rotation.x = 0.16;
+      pelvisBridge.scale.set(1.0, 0.88, 1.15);
+      pelvisBridge.castShadow = true;
+      chain.add(pelvisBridge);
+      const hipSkirt = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 12), fleshMat);
+      hipSkirt.position.set(-sign * 0.10, -0.01, 0.02);
+      hipSkirt.scale.set(1.20, 0.82, 1.08);
+      hipSkirt.castShadow = true;
+      chain.add(hipSkirt);
       // Extra local fur on hip blend to hide seam against back.
-      const hipFurCount = Math.floor(3800 * density);
+      const hipFurCount = Math.floor(5200 * density);
       if (hipFurCount > 0) {
         const hfGeo = new THREE.ConeGeometry(0.006, 0.09, 3);
         hfGeo.translate(0, 0.045, 0);
@@ -575,7 +924,7 @@
         for (let i = 0; i < hipFurCount; i++) {
           const theta = Math.random() * Math.PI * 2;
           const y = (Math.random() - 0.5) * 1.6;
-          hNrm.set(Math.cos(theta) * 0.95, y * 0.45, Math.sin(theta) * 1.1).normalize();
+          hNrm.set(Math.cos(theta) * 0.95, y * 0.48 - 0.12, Math.sin(theta) * 1.1).normalize();
           hDummy.position.set(hNrm.x * 0.16, hNrm.y * 0.18, hNrm.z * 0.17);
           hDummy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), hNrm);
           const s = 0.72 + Math.random() * 0.55;
@@ -588,15 +937,15 @@
 
       // Thigh (femur) — enlarged deformed sphere
       const thigh = new THREE.Mesh(thighGeo, fleshMat);
-      thigh.position.set(0, -0.06, 0.02);
-      thigh.scale.set(0.94, 0.86 * hl, 0.98);
+      thigh.position.set(0, -0.08, 0.05);
+      thigh.scale.set(0.92, 0.88 * hl, 1.02);
       thigh.castShadow = true;
       chain.add(thigh);
       thigh.add(generateFurLayer(deformThigh, Math.floor(8200 * density), furColor, 0.15, false));
 
       // Shank (tibia/fibula) — substantial capsule
       const shank = new THREE.Group();
-      shank.position.set(0.02 * sign, -0.75 * hl, 0.18);
+      shank.position.set(0.03 * sign, -0.73 * hl, 0.23);
       thigh.add(shank);
 
       // Knee joint (visible bump)
@@ -605,42 +954,48 @@
       kneeJoint.castShadow = true;
       shank.add(kneeJoint);
 
-      const shankLen = 0.55 * hl;
-      const shankMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.10, shankLen, 8, 8), fleshMat);
-      shankMesh.rotation.x = -0.05;
-      shankMesh.position.set(0, -shankLen * 0.5, 0.05);
+      const shankLen = 0.60 * hl;
+      const shankMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.088, shankLen, 8, 8), fleshMat);
+      shankMesh.rotation.x = -0.16;
+      shankMesh.position.set(0, -shankLen * 0.5, 0.09);
       shankMesh.castShadow = true;
       shank.add(shankMesh);
 
       // Ankle/heel (digitigrade visible heel rise)
       const ankle = new THREE.Group();
-      ankle.position.set(0, -shankLen - 0.05, 0.12);
+      ankle.position.set(0, -shankLen - 0.06, 0.20);
       shank.add(ankle);
 
-      const ankleJoint = new THREE.Mesh(new THREE.SphereGeometry(0.10, 10, 10), fleshMat);
+      const ankleJoint = new THREE.Mesh(new THREE.SphereGeometry(0.085, 10, 10), fleshMat);
       ankleJoint.castShadow = true;
       ankle.add(ankleJoint);
 
       // Heel bone (calcaneus) - visible heel rise
-      const heel = new THREE.Mesh(new THREE.SphereGeometry(0.12, 14, 14), fleshMat);
-      heel.scale.set(0.9, 1.1, 1.3);
-      heel.position.set(0, 0.02, -0.08);
+      const heel = new THREE.Mesh(new THREE.SphereGeometry(0.11, 14, 14), fleshMat);
+      heel.scale.set(0.82, 1.18, 1.45);
+      heel.position.set(0, 0.02, -0.09);
       heel.castShadow = true;
       ankle.add(heel);
 
       // Metatarsals (connects heel to toes) — angled forward
-      const metaLen = 0.25 * PROP.hindPawSize;
-      const metaMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.07, metaLen, 6, 6), fleshMat);
-      metaMesh.rotation.x = Math.PI / 2 - 0.35;
-      metaMesh.position.set(0, -0.10, 0.12);
+      const metaLen = 0.36 * PROP.hindPawSize;
+      const metaMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, metaLen, 6, 6), fleshMat);
+      metaMesh.rotation.x = Math.PI / 2 - 0.22;
+      metaMesh.position.set(0, -0.125, 0.18);
       metaMesh.castShadow = true;
       ankle.add(metaMesh);
 
       // Hindpaw — planted on ground
       const paw = createPaw(fleshMat, false, strain);
-      paw.position.set(0, -0.16, 0.24);
-      paw.scale.set(1.15, 1.15, 1.15);
+      paw.position.set(0, -0.19, 0.31);
+      paw.rotation.x = -0.12;
+      paw.scale.set(1.08, 1.08, 1.08);
       ankle.add(paw);
+
+      // Baseline crouched posture so underside view reads organic, not columnar.
+      chain.rotation.x = -0.08;
+      shank.rotation.x = 0.24;
+      ankle.rotation.x = -0.10;
 
       chain._thigh = thigh;
       chain._shank = shank;
@@ -654,15 +1009,17 @@
     // ═══════════════════════════════════════════════════════════════
     function createVolumetricWhiskers(colorHex, isLeft) {
       const group = new THREE.Group();
-      const mat = new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.5 });
+      const mat = new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.55 });
       const sign = isLeft ? 1 : -1;
-      for (let i = 0; i < 18; i++) {
+      for (let i = 0; i < 22; i++) {
+        const baseLen = 1.55 + Math.random() * 0.85;
         const curve = new THREE.QuadraticBezierCurve3(
           new THREE.Vector3(0, 0, 0),
-          new THREE.Vector3(sign * 0.6, (Math.random() - 0.5) * 0.3, 0.3),
-          new THREE.Vector3(sign * (1.2 + Math.random() * 0.6), (Math.random() - 0.5) * 0.8, 0.4 + Math.random() * 0.6)
+          new THREE.Vector3(sign * (0.70 + Math.random() * 0.12), (Math.random() - 0.5) * 0.34, 0.34),
+          new THREE.Vector3(sign * baseLen, (Math.random() - 0.5) * 0.95, 0.55 + Math.random() * 0.75)
         );
-        group.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 6, 0.005, 4, false), mat));
+        // Slightly thicker whiskers so they remain visible at distance.
+        group.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 7, 0.0065, 5, false), mat));
       }
       return group;
     }
@@ -691,17 +1048,18 @@
         pos.set(Math.sin(phi) * Math.cos(theta), Math.sin(phi) * Math.sin(theta), Math.cos(phi));
         normal.copy(pos).normalize();
         const preZ = pos.z;
+        const preY = pos.y;
         deformFn(pos);
         pos.addScaledVector(normal, isUndercoat ? 0.005 : 0.012);
         let flowDir;
-        if (isHead && preZ > 0.3) flowDir = new THREE.Vector3(normal.x * 0.15, -0.2, -1).normalize();
+        if (isHead && preZ > 0.3) flowDir = new THREE.Vector3(normal.x * 0.22, -0.10, -0.72).normalize();
         else if (isHead) flowDir = new THREE.Vector3(normal.x * 0.3, normal.y * 0.2, -1).normalize();
         else flowDir = new THREE.Vector3(normal.x * 0.5, normal.y * 0.3 - 0.15, -1).normalize();
         if (isUndercoat) { flowDir.lerp(new THREE.Vector3(0, 0, -1), 0.3); flowDir.normalize(); }
         dummy.position.copy(pos);
         dummy.lookAt(pos.clone().add(flowDir));
         let scale = 0.5 + Math.random() * 0.7;
-        if (isHead && preZ > 0.4) scale *= 0.3;
+        if (isHead && preZ > 0.4) scale *= 0.42;
         if (isHead && preZ > 0.2 && preZ <= 0.4) scale *= 0.6;
         if (!isHead && preZ < -0.6) scale *= 1.25;
         if (isUndercoat) scale = 0.6 + Math.random() * 0.3;
@@ -713,9 +1071,16 @@
         strandColor.copy(baseColor);
         const hsl = {}; strandColor.getHSL(hsl);
         const lumV = isUndercoat ? 0.06 : 0.08;
+        const ventrum = isHead ? 0.0 : THREE.MathUtils.clamp((-preY - 0.18) / 1.05, 0, 1);
+        const ventrumBlend = ventrum * ventrum * (3.0 - 2.0 * ventrum);
+        const isVeryLight = hsl.l > 0.74;
+        const ventrumSatDrop = isVeryLight ? 0.010 : (hsl.l < 0.35 ? 0.020 : 0.040);
+        const ventrumLift = isVeryLight
+          ? (isUndercoat ? 0.010 : 0.006)
+          : (hsl.l < 0.35 ? (isUndercoat ? 0.030 : 0.020) : (isUndercoat ? 0.060 : 0.042));
         strandColor.setHSL(hsl.h + (Math.random() - 0.5) * 0.02,
-          Math.max(0, Math.min(1, hsl.s + (Math.random() - 0.5) * 0.05)),
-          Math.max(0, Math.min(1, hsl.l + (Math.random() - 0.5) * lumV)));
+          Math.max(0, Math.min(1, hsl.s + (Math.random() - 0.5) * 0.05 - ventrumBlend * ventrumSatDrop)),
+          Math.max(0, Math.min(1, hsl.l + (Math.random() - 0.5) * lumV + ventrumBlend * ventrumLift)));
         inst.instanceColor.setXYZ(i, strandColor.r, strandColor.g, strandColor.b);
       }
       return inst;
@@ -819,13 +1184,15 @@
         const skinColor = params.skinColor;
         const density = FUR_DETAIL[params.furDetailLevel || 'Med'] * (params.furDensity || 0.85);
         const chonk = params.chonkiness;
-        const eSize = params.earSize;
+        const earScaleByHead = THREE.MathUtils.clamp(0.9 + (params.headSize - 1.0) * 0.18, 0.82, 1.08);
+        const eSize = params.earSize * earScaleByHead;
         const strain = getStrainProfile(params.presets);
 
         // Per-instance subtle asymmetry
         this.asymmetry = {
           earTiltL: (Math.random() - 0.5) * 0.06,
           earTiltR: (Math.random() - 0.5) * 0.06,
+          earYawDelta: (Math.random() - 0.5) * 0.05,
           earHeightDiff: (Math.random() - 0.5) * 0.03,
           noseYaw: (Math.random() - 0.5) * 0.03,
           haunchDiff: (Math.random() - 0.5) * 0.02,
@@ -891,9 +1258,9 @@
         // NECK
         const neckGeo = new THREE.CapsuleGeometry(PROP.neckGirth, PROP.neckLength, 12, 12);
         const neckMesh = new THREE.Mesh(neckGeo, this.fleshMat);
-        neckMesh.position.set(0, 0.15, PROP.bodyLength * 0.76);
-        neckMesh.rotation.x = Math.PI / 2 + 0.15;
-        neckMesh.scale.set(1.0, 1.0, 0.85);
+        neckMesh.position.set(0, 0.08, PROP.bodyLength * 0.79);
+        neckMesh.rotation.x = Math.PI / 2 + 0.08;
+        neckMesh.scale.set(0.96, 0.95, 0.82);
         neckMesh.castShadow = true;
         this.rig.add(neckMesh);
         // Neck fur
@@ -918,17 +1285,46 @@
           neckMesh.add(nfInst);
         }
 
-        // BELLY BRIDGE
-        const bellyGeo = new THREE.CapsuleGeometry(0.4, 1.2, 8, 8);
-        const bellyMesh = new THREE.Mesh(bellyGeo, this.fleshMat);
-        bellyMesh.position.set(0, -0.47, PROP.bodyLength * 0.58);
-        bellyMesh.rotation.x = Math.PI / 2;
-        bellyMesh.scale.set(0.86, 0.70, 0.48);
-        this.rig.add(bellyMesh);
+        // BELLY FUR ANCHOR (no visible geometry; avoids hard side cut-lines from above)
+        const bellyFurAnchor = new THREE.Group();
+        bellyFurAnchor.position.set(0, -0.43, PROP.bodyLength * 0.56);
+        bellyFurAnchor.rotation.x = Math.PI / 2;
+        bellyFurAnchor.scale.set(0.82, 0.76, 0.58);
+        this.rig.add(bellyFurAnchor);
+        // Add short ventral + flank fur to soften the dorsal/ventral transition.
+        const bellyFurCount = Math.floor(7000 * density);
+        if (bellyFurCount > 0) {
+          const bfGeo = new THREE.ConeGeometry(0.006, 0.09, 3);
+          bfGeo.translate(0, 0.045, 0);
+          const bfMat = new THREE.MeshPhysicalMaterial({
+            color: new THREE.Color(furColor), roughness: 0.76, transparent: true, opacity: 0.82
+          });
+          const bfInst = new THREE.InstancedMesh(bfGeo, bfMat, bellyFurCount);
+          const bDummy = new THREE.Object3D();
+          const bNrm = new THREE.Vector3();
+          for (let i = 0; i < bellyFurCount; i++) {
+            const flank = Math.random() < 0.42;
+            const theta = flank
+              ? ((Math.random() < 0.5 ? 0 : Math.PI) + (Math.random() - 0.5) * 0.90)
+              : (Math.random() * Math.PI * 2);
+            const r = Math.pow(Math.random(), 0.70);
+            const x = Math.cos(theta) * r * (flank ? 0.30 : 0.24);
+            const z = Math.sin(theta) * r * 0.23;
+            const y = flank ? (-0.06 + (Math.random() - 0.5) * 0.30) : (-0.18 + (Math.random() - 0.5) * 0.22);
+            bDummy.position.set(x, y, z);
+            bNrm.set(x, y * 1.35 - 0.06, z).normalize();
+            bDummy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), bNrm);
+            const s = 0.65 + Math.random() * 0.45;
+            bDummy.scale.set(s, s, s);
+            bDummy.updateMatrix();
+            bfInst.setMatrixAt(i, bDummy.matrix);
+          }
+          bellyFurAnchor.add(bfInst);
+        }
 
         // HEAD
         this.headGroup = new THREE.Group();
-        this.headGroup.position.set(0, 0.35 * chonk, PROP.bodyLength * 0.93);
+        this.headGroup.position.set(0, 0.24 * chonk, PROP.bodyLength * 0.96);
         this.rig.add(this.headGroup);
 
         this.head = new THREE.Mesh(headGeo, this.fleshMat);
@@ -939,26 +1335,47 @@
         // SNOUT
         const noseMat = this.fleshMat.clone();
         noseMat.color.set(strain.noseColor ?? skinColor);
-        noseMat.roughness = 0.15; noseMat.transmission = 0.2; noseMat.thickness = 0.3;
-        noseMat.clearcoat = 0.8; noseMat.clearcoatRoughness = 0.1;
-        this.snoutTip = new THREE.Mesh(new THREE.SphereGeometry(0.13, 20, 20), noseMat);
-        this.snoutTip.scale.set(1.1, 0.8, 1.0);
-        this.snoutTip.position.set(this.asymmetry.noseYaw, -0.18, PROP.snoutLength * 1.07);
+        noseMat.map = noseAlbedoMap;
+        noseMat.normalMap = noseNormalMap;
+        noseMat.normalScale = new THREE.Vector2(0.14, 0.14);
+        noseMat.roughnessMap = noseRoughnessMap;
+        noseMat.roughness = 0.38;
+        noseMat.transmission = 0.12;
+        noseMat.thickness = 0.10;
+        noseMat.clearcoat = 0.42;
+        noseMat.clearcoatRoughness = 0.22;
+        this.snoutTip = new THREE.Mesh(new THREE.SphereGeometry(0.14, 24, 24), noseMat);
+        this.snoutTip.scale.set(1.06, 0.76, 0.72);
+        this.snoutTip.position.set(this.asymmetry.noseYaw * 0.65, -0.158, PROP.snoutLength * 0.99);
         this.head.add(this.snoutTip);
 
         // Nostrils
-        const nostrilMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
-        const nL = new THREE.Mesh(new THREE.SphereGeometry(0.025, 8, 8), nostrilMat);
-        nL.position.set(0.045, -0.01, 0.11); this.snoutTip.add(nL);
-        const nR = new THREE.Mesh(new THREE.SphereGeometry(0.025, 8, 8), nostrilMat);
-        nR.position.set(-0.045, -0.01, 0.11); this.snoutTip.add(nR);
+        const nostrilMat = new THREE.MeshPhysicalMaterial({ color: 0x3a1d1c, roughness: 0.75, metalness: 0.0 });
+        const nL = new THREE.Mesh(new THREE.SphereGeometry(0.012, 12, 12), nostrilMat);
+        nL.scale.set(1.10, 0.58, 0.85);
+        nL.position.set(0.030, -0.004, 0.066); this.snoutTip.add(nL);
+        const nR = new THREE.Mesh(new THREE.SphereGeometry(0.012, 12, 12), nostrilMat);
+        nR.scale.set(1.10, 0.58, 0.85);
+        nR.position.set(-0.030, -0.004, 0.066); this.snoutTip.add(nR);
+        // Mild center cleft between nostrils.
+        const philtrum = new THREE.Mesh(new THREE.CapsuleGeometry(0.004, 0.025, 4, 8), nostrilMat);
+        philtrum.rotation.z = Math.PI / 2;
+        philtrum.position.set(0, -0.014, 0.060);
+        this.snoutTip.add(philtrum);
 
         // MOUTH + INCISORS
-        const mouthMat = new THREE.MeshBasicMaterial({ color: 0x0d0d0d });
-        this.mouth = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 0.09, 10, 10), mouthMat);
+        const mouthMat = new THREE.MeshPhysicalMaterial({
+          color: 0x7b4b45, roughness: 0.68, metalness: 0.0, clearcoat: 0.08, transparent: true, opacity: 0.94
+        });
+        this.mouth = new THREE.Mesh(new THREE.CapsuleGeometry(0.042, 0.085, 10, 10), mouthMat);
         this.mouth.rotation.z = Math.PI / 2;
-        this.mouth.position.set(0, -0.27, PROP.snoutLength * 1.02);
+        this.mouth.position.set(0, -0.262, PROP.snoutLength * 0.985);
         this.head.add(this.mouth);
+        const lowerLip = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 12), this.fleshMat);
+        lowerLip.scale.set(1.35, 0.52, 0.72);
+        lowerLip.position.set(0, -0.282, PROP.snoutLength * 0.955);
+        lowerLip.castShadow = true;
+        this.head.add(lowerLip);
 
         const toothMat = new THREE.MeshPhysicalMaterial({
           color: 0xf5e9cf, roughness: 0.35, metalness: 0.0, clearcoat: 0.35, clearcoatRoughness: 0.2
@@ -982,30 +1399,90 @@
 
         // EARS (with asymmetry)
         const earOuterMat = this.fleshMat.clone();
-        earOuterMat.transmission = strain.earOuterTransmission ?? 0.6;
-        earOuterMat.thickness = 0.15;
-        earOuterMat.roughness = strain.earOuterRoughness ?? 0.4;
+        earOuterMat.color.set(strain.earOuterColor ?? skinColor);
+        // Keep ear tone close to skin tone instead of strong peach/pink shifts.
+        earOuterMat.color.lerp(new THREE.Color(skinColor), 0.72);
+        earOuterMat.transmission = strain.earOuterTransmission ?? 0.30;
+        earOuterMat.ior = 1.36;
+        earOuterMat.thickness = 0.065;
+        earOuterMat.roughness = strain.earOuterRoughness ?? 0.56;
+        earOuterMat.map = earAlbedoMap;
+        earOuterMat.roughnessMap = earRoughnessMap;
+        earOuterMat.normalMap = earNormalMap;
+        earOuterMat.normalScale = new THREE.Vector2(0.30, 0.24);
+        earOuterMat.clearcoat = 0.03;
+        earOuterMat.clearcoatRoughness = 0.30;
+        earOuterMat.sheen = 0.35;
+        earOuterMat.sheenColor = new THREE.Color(0xffe6cf);
         earOuterMat.side = THREE.DoubleSide;
         const earInnerMat = this.fleshMat.clone();
-        earInnerMat.color.offsetHSL(0.0, strain.earInnerSatOffset ?? 0.12, strain.earInnerLightOffset ?? 0.12);
-        earInnerMat.transmission = strain.earInnerTransmission ?? 0.78;
-        earInnerMat.thickness = 0.08; earInnerMat.roughness = 0.3; earInnerMat.side = THREE.DoubleSide;
+        earInnerMat.color.set(strain.earInnerColor ?? strain.earOuterColor ?? skinColor);
+        earInnerMat.color.lerp(new THREE.Color(skinColor), 0.80);
+        earInnerMat.color.offsetHSL(0.0, strain.earInnerSatOffset ?? 0.04, strain.earInnerLightOffset ?? 0.03);
+        earInnerMat.transmission = strain.earInnerTransmission ?? 0.60;
+        earInnerMat.ior = 1.36;
+        earInnerMat.thickness = 0.040;
+        earInnerMat.roughness = 0.52;
+        earInnerMat.map = earAlbedoMap;
+        earInnerMat.roughnessMap = earRoughnessMap;
+        earInnerMat.normalMap = earNormalMap;
+        earInnerMat.normalScale = new THREE.Vector2(0.36, 0.28);
+        earInnerMat.clearcoat = 0.02;
+        earInnerMat.clearcoatRoughness = 0.28;
+        earInnerMat.sheen = 0.50;
+        earInnerMat.sheenColor = new THREE.Color(0xffdfc8);
+        earInnerMat.side = THREE.DoubleSide;
+
+        // Deeper cavity material for internal cup shading.
+        const earCavityMat = earInnerMat.clone();
+        earCavityMat.color = earCavityMat.color.clone();
+        earCavityMat.color.offsetHSL(0.0, -0.01, -0.08);
+        earCavityMat.transmission = Math.min(0.28, earInnerMat.transmission);
+        earCavityMat.thickness = 0.065;
+        earCavityMat.roughness = 0.64;
+        earCavityMat.clearcoat = 0.0;
 
         const earL = new THREE.Mesh(earGeo, earOuterMat);
-        earL.position.set(0.62, 0.42 + (strain.earHeightOffset ?? 0.0) + this.asymmetry.earHeightDiff, PROP.earSetBack);
-        earL.rotation.set(-0.3 + this.asymmetry.earTiltL, -(strain.earYaw ?? PROP.earYaw), 0.25);
-        earL.scale.set(eSize, eSize, eSize);
+        earL.position.set(0.56, 0.54 + (strain.earHeightOffset ?? 0.0) + this.asymmetry.earHeightDiff, PROP.earSetBack + 0.00);
+        // Mouse ear: gentle forward tilt, cavity opening toward snout.
+        earL.rotation.set(-0.05 + this.asymmetry.earTiltL, -((strain.earYaw ?? PROP.earYaw) * 0.34 + this.asymmetry.earYawDelta), 0.10);
+        earL.scale.set(eSize * 0.95, eSize * 0.80, eSize * 0.84);
         earL.castShadow = true; this.head.add(earL);
-        const earLI = new THREE.Mesh(earGeo, earInnerMat);
-        earLI.scale.set(0.82, 0.85, 0.5); earLI.position.set(0, 0, -0.05); earL.add(earLI);
+        const earLCav = new THREE.Group();
+        earLCav.position.set(0, 0.02, 0.035);
+        earLCav.rotation.set(-0.03, 0.0, 0.01);
+        earL.add(earLCav);
+        const earLI = new THREE.Mesh(earInnerGeo, earInnerMat);
+        earLI.scale.set(0.70, 0.86, 1.0);
+        earLI.castShadow = true;
+        earLCav.add(earLI);
+        const conchaL = new THREE.Mesh(earConchaGeo, earCavityMat);
+        conchaL.scale.set(0.58, 0.72, 1.0);
+        conchaL.position.set(-0.03, -0.05, -0.098);
+        conchaL.rotation.set(0.03, 0.02, -0.01);
+        conchaL.castShadow = true;
+        earLCav.add(conchaL);
 
         const earR = new THREE.Mesh(earGeo, earOuterMat);
-        earR.position.set(-0.62, 0.42 + (strain.earHeightOffset ?? 0.0) - this.asymmetry.earHeightDiff, PROP.earSetBack);
-        earR.rotation.set(-0.3 + this.asymmetry.earTiltR, (strain.earYaw ?? PROP.earYaw), -0.25);
-        earR.scale.set(eSize, eSize, eSize);
+        earR.position.set(-0.56, 0.54 + (strain.earHeightOffset ?? 0.0) - this.asymmetry.earHeightDiff, PROP.earSetBack + 0.00);
+        // Mouse ear: gentle forward tilt, cavity opening toward snout.
+        earR.rotation.set(-0.05 + this.asymmetry.earTiltR, (strain.earYaw ?? PROP.earYaw) * 0.34 + this.asymmetry.earYawDelta, -0.10);
+        earR.scale.set(eSize * 0.95, eSize * 0.80, eSize * 0.84);
         earR.castShadow = true; this.head.add(earR);
-        const earRI = new THREE.Mesh(earGeo, earInnerMat);
-        earRI.scale.set(0.82, 0.85, 0.5); earRI.position.set(0, 0, -0.05); earR.add(earRI);
+        const earRCav = new THREE.Group();
+        earRCav.position.set(0, 0.02, 0.035);
+        earRCav.rotation.set(-0.03, 0.0, -0.01);
+        earR.add(earRCav);
+        const earRI = new THREE.Mesh(earInnerGeo, earInnerMat);
+        earRI.scale.set(0.70, 0.86, 1.0);
+        earRI.castShadow = true;
+        earRCav.add(earRI);
+        const conchaR = new THREE.Mesh(earConchaGeo, earCavityMat);
+        conchaR.scale.set(0.58, 0.72, 1.0);
+        conchaR.position.set(0.03, -0.05, -0.098);
+        conchaR.rotation.set(0.03, -0.02, 0.01);
+        conchaR.castShadow = true;
+        earRCav.add(conchaR);
 
         // EYES (lateral placement with asymmetry, two-layer)
         const eyeL = new THREE.Mesh(new THREE.SphereGeometry(PROP.eyeSize, 20, 20), eyeMat);
@@ -1067,6 +1544,14 @@
         this.tailInstanced = new THREE.InstancedMesh(tGeo, tailMat, this.tailCount);
         this.tailInstanced.castShadow = true; this.tailInstanced.receiveShadow = true;
         this.mesh.add(this.tailInstanced);
+        // Root bridge to blend tail emergence into the rump.
+        const tailRootGeo = new THREE.CylinderGeometry(0.11, 0.13, 0.30, 12);
+        tailRootGeo.translate(0, 0.15, 0);
+        tailRootGeo.rotateX(Math.PI / 2);
+        this.tailRoot = new THREE.Mesh(tailRootGeo, tailMat);
+        this.tailRoot.castShadow = true;
+        this.tailRoot.scale.set(1.0, 0.72, 1.18);
+        this.mesh.add(this.tailRoot);
         this.dummy = new THREE.Object3D();
 
         // POSE TRACKING SKELETON
@@ -1100,8 +1585,8 @@
         // Paws attached to limb chains
         createTrackingNode('lforepaw', this.armL._wrist, new THREE.Vector3(0, -0.06, 0.05));
         createTrackingNode('rforepaw', this.armR._wrist, new THREE.Vector3(0, -0.06, 0.05));
-        createTrackingNode('lhindpaw', this.hindL._ankle, new THREE.Vector3(0, -0.14, 0.20));
-        createTrackingNode('rhindpaw', this.hindR._ankle, new THREE.Vector3(0, -0.14, 0.20));
+        createTrackingNode('lhindpaw', this.hindL._ankle, new THREE.Vector3(0, -0.19, 0.31));
+        createTrackingNode('rhindpaw', this.hindR._ankle, new THREE.Vector3(0, -0.19, 0.31));
 
         this.mesh.updateMatrixWorld(true);
         this.mesh.traverse(child => {
@@ -1416,37 +1901,37 @@
 
         if (isMoving) {
           // Hindlimb: hip drives, knee follows with phase offset
-          this.hindL.rotation.x = Math.sin(legCycle) * gaitAmp;
-          this.hindR.rotation.x = Math.sin(legCycle + Math.PI) * gaitAmp;
-          this.shankL.rotation.x = Math.max(0, Math.sin(legCycle + 0.5)) * gaitAmp * 0.5;
-          this.shankR.rotation.x = Math.max(0, Math.sin(legCycle + Math.PI + 0.5)) * gaitAmp * 0.5;
+          this.hindL.rotation.x = -0.08 + Math.sin(legCycle) * gaitAmp * 0.9;
+          this.hindR.rotation.x = -0.08 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.9;
+          this.shankL.rotation.x = 0.24 + Math.max(0, Math.sin(legCycle + 0.5)) * gaitAmp * 0.42;
+          this.shankR.rotation.x = 0.24 + Math.max(0, Math.sin(legCycle + Math.PI + 0.5)) * gaitAmp * 0.42;
           // Ankle follows shank, pushes off
-          if (this.hindL._ankle) this.hindL._ankle.rotation.x = Math.sin(legCycle - 0.3) * gaitAmp * 0.3;
-          if (this.hindR._ankle) this.hindR._ankle.rotation.x = Math.sin(legCycle + Math.PI - 0.3) * gaitAmp * 0.3;
+          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.10 + Math.sin(legCycle - 0.3) * gaitAmp * 0.22;
+          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.10 + Math.sin(legCycle + Math.PI - 0.3) * gaitAmp * 0.22;
 
           // Forelimb: shoulder drives, elbow/wrist follow
-          this.armL.rotation.x = Math.sin(legCycle + Math.PI) * gaitAmp * 0.7;
-          this.armR.rotation.x = Math.sin(legCycle) * gaitAmp * 0.7;
+          this.armL.rotation.x = -0.18 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.62;
+          this.armR.rotation.x = -0.18 + Math.sin(legCycle) * gaitAmp * 0.62;
           // Elbow flex
-          if (this.armL._forearm) this.armL._forearm.rotation.x = Math.max(0, Math.sin(legCycle + Math.PI + 0.4)) * gaitAmp * 0.4;
-          if (this.armR._forearm) this.armR._forearm.rotation.x = Math.max(0, Math.sin(legCycle + 0.4)) * gaitAmp * 0.4;
+          if (this.armL._forearm) this.armL._forearm.rotation.x = 0.14 + Math.max(0, Math.sin(legCycle + Math.PI + 0.4)) * gaitAmp * 0.3;
+          if (this.armR._forearm) this.armR._forearm.rotation.x = 0.14 + Math.max(0, Math.sin(legCycle + 0.4)) * gaitAmp * 0.3;
           // Wrist flex
-          if (this.armL._wrist) this.armL._wrist.rotation.x = Math.sin(legCycle + Math.PI + 0.6) * gaitAmp * 0.15;
-          if (this.armR._wrist) this.armR._wrist.rotation.x = Math.sin(legCycle + 0.6) * gaitAmp * 0.15;
+          if (this.armL._wrist) this.armL._wrist.rotation.x = -0.06 + Math.sin(legCycle + Math.PI + 0.6) * gaitAmp * 0.12;
+          if (this.armR._wrist) this.armR._wrist.rotation.x = -0.06 + Math.sin(legCycle + 0.6) * gaitAmp * 0.12;
         } else {
           // Idle pose
-          this.hindL.rotation.x = 0; this.hindR.rotation.x = 0;
-          this.shankL.rotation.x = 0; this.shankR.rotation.x = 0;
-          if (this.hindL._ankle) this.hindL._ankle.rotation.x = 0;
-          if (this.hindR._ankle) this.hindR._ankle.rotation.x = 0;
+          this.hindL.rotation.x = -0.08; this.hindR.rotation.x = -0.08;
+          this.shankL.rotation.x = 0.24; this.shankR.rotation.x = 0.24;
+          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.10;
+          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.10;
 
           // Neutral planted stance: keep forepaws on the floor at idle.
-          this.armL.rotation.x = -0.12; this.armR.rotation.x = -0.12;
-          this.armL.rotation.z = -0.03; this.armR.rotation.z = 0.03;
-          if (this.armL._forearm) this.armL._forearm.rotation.x = 0.18;
-          if (this.armR._forearm) this.armR._forearm.rotation.x = 0.18;
-          if (this.armL._wrist) this.armL._wrist.rotation.x = 0.04;
-          if (this.armR._wrist) this.armR._wrist.rotation.x = 0.04;
+          this.armL.rotation.x = -0.18; this.armR.rotation.x = -0.18;
+          this.armL.rotation.z = -0.04; this.armR.rotation.z = 0.04;
+          if (this.armL._forearm) this.armL._forearm.rotation.x = 0.14;
+          if (this.armR._forearm) this.armR._forearm.rotation.x = 0.14;
+          if (this.armL._wrist) this.armL._wrist.rotation.x = -0.06;
+          if (this.armR._wrist) this.armR._wrist.rotation.x = -0.06;
         }
 
         const rear = this.rearAmount;
@@ -1492,7 +1977,7 @@
         if (rear > 0) this.headGroup.rotation.x += rear * 0.32;
 
         // ═══ TAIL ═══
-        let tailBase = new THREE.Vector3(0, -0.2, -PROP.bodyLength * 0.93);
+        let tailBase = new THREE.Vector3(0, -0.16, -PROP.bodyLength * 0.90);
         this.rig.updateMatrix();
         tailBase.applyMatrix4(this.rig.matrix);
         let tailCurve = [];
@@ -1519,6 +2004,8 @@
         for (let i = 0; i < this.tailCount; i++) {
           let p = i / this.tailCount;
           let radius = 1.0 - p * PROP.tailTaper;
+          const rootBlend = 1.0 - THREE.MathUtils.smoothstep(p, 0.0, 0.20);
+          radius *= 1.0 + rootBlend * 0.45;
           radius *= 1.0 + Math.sin(i * 2.8) * 0.04;
           this.dummy.position.copy(tailCurve[i]);
           this.dummy.lookAt(tailCurve[i + 1]);
@@ -1537,6 +2024,15 @@
           }
         }
         this.tailInstanced.instanceMatrix.needsUpdate = true;
+        // Keep a soft root collar aligned with the first tail segment.
+        if (this.tailRoot && tailCurve.length > 4) {
+          const thickMul = this.guiParams.tailThickness;
+          const dir = tailCurve[3].clone().sub(tailCurve[0]).normalize();
+          this.tailRoot.position.copy(tailCurve[0]).addScaledVector(dir, segLen * 0.25);
+          this.tailRoot.lookAt(tailCurve[3]);
+          const s = 1.0 + (thickMul - 1.0) * 0.7;
+          this.tailRoot.scale.set(0.95 * s, 0.68 * s, 1.15 * s);
+        }
 
         // Tracking visibility
         this.trackingGroup.visible = guiParams.showTrackingKeypoints;
@@ -1550,7 +2046,7 @@
         this.bodyMesh.scale.y = this.guiParams.chonkiness;
         this.bodyMesh.scale.z = this.guiParams.chonkiness + breath;
         this.head.scale.setScalar(this.guiParams.headSize);
-        this.snoutTip.scale.set(1.1, 0.8, this.guiParams.snoutLength);
+        this.snoutTip.scale.set(1.06, 0.76, this.guiParams.snoutLength * 0.72);
         this.fleshMat.color.set(this.guiParams.skinColor);
         this.prevVelocity.copy(this.velocity);
 
@@ -1668,7 +2164,7 @@
 
     const guiParams = {
       furColor: '#ffffff', skinColor: '#d8d8d3',
-      chonkiness: 1.128, earSize: 0.78, furDensity: 0.85,
+      chonkiness: 1.128, earSize: 0.82, furDensity: 1.0,
       showTrackingKeypoints: true, wireframeMode: false, isPaused: false,
       addSubject: () => spawnMouse(), clearSubjects: () => clearMice(),
       presets: 'BALB/c (White)',
@@ -1710,8 +2206,10 @@
         return {
           earOuterTransmission: 0.65, earInnerTransmission: 0.75,
           earInnerSatOffset: 0.10, earInnerLightOffset: 0.15, earOuterRoughness: 0.32,
+          earOuterColor: '#c3a88f', earInnerColor: '#e1ccb6',
           earYaw: 0.96, earHeightOffset: 0.0, padDarken: 0.88, clawColor: 0xcccccc,
-          noseColor: '#b48a8a', pawSpreadMul: 1.0, toeLenMul: 0.98,
+          pawColor: '#c28b86', pawPadColor: '#c98f89',
+          noseColor: '#b97972', pawSpreadMul: 1.0, toeLenMul: 0.98,
           gaitAmpMul: 0.92, headIdleYawMul: 0.82, headIdlePitchMul: 0.88,
           sniffAmpMul: 0.75, breathIdleAmp: 0.010, breathMoveAmp: 0.012,
           breathIdleFreq: 10.0, breathMoveFreq: 18.0, tailWaveAmpMul: 0.85, tailWaveFreqMul: 0.90
@@ -1721,8 +2219,10 @@
         return {
           earOuterTransmission: 0.66, earInnerTransmission: 0.82,
           earInnerSatOffset: 0.14, earInnerLightOffset: 0.14, earOuterRoughness: 0.28,
+          earOuterColor: '#efc2ba', earInnerColor: '#ffd9ce',
           earYaw: 0.42, earHeightOffset: 0.015, padDarken: 0.88, clawColor: 0xe1d7cb,
-          noseColor: '#ff9ea8', pawSpreadMul: 1.04, toeLenMul: 1.05,
+          pawColor: '#f0bbb2', pawPadColor: '#f3c4bb',
+          noseColor: '#d29089', pawSpreadMul: 1.04, toeLenMul: 1.05,
           gaitAmpMul: 1.08, headIdleYawMul: 1.15, headIdlePitchMul: 1.12,
           sniffAmpMul: 1.25, breathIdleAmp: 0.018, breathMoveAmp: 0.024,
           breathIdleFreq: 13.0, breathMoveFreq: 24.0, tailWaveAmpMul: 1.18, tailWaveFreqMul: 1.12
@@ -1731,8 +2231,10 @@
       return { // BALB/c default
         earOuterTransmission: 0.58, earInnerTransmission: 0.76,
         earInnerSatOffset: 0.11, earInnerLightOffset: 0.11, earOuterRoughness: 0.33,
+        earOuterColor: '#d6c0a8', earInnerColor: '#ebd8c5',
         earYaw: 0.40, earHeightOffset: 0.0, padDarken: 0.84, clawColor: 0xd7cdc2,
-        noseColor: '#f2adb0', pawSpreadMul: 1.0, toeLenMul: 1.0,
+        pawColor: '#dfaea5', pawPadColor: '#e7bab0',
+        noseColor: '#c9867f', pawSpreadMul: 1.0, toeLenMul: 1.0,
         gaitAmpMul: 1.0, headIdleYawMul: 1.0, headIdlePitchMul: 1.0,
         sniffAmpMul: 1.0, breathIdleAmp: 0.013, breathMoveAmp: 0.016,
         breathIdleFreq: 12.0, breathMoveFreq: 20.0, tailWaveAmpMul: 1.0, tailWaveFreqMul: 1.0
@@ -1741,10 +2243,10 @@
 
     function applyStrainPreset(name) {
       guiParams.presets = name;
-      if (name === 'BALB/c (White)') { guiParams.furColor = '#ffffff'; guiParams.skinColor = '#d8d8d3'; guiParams.furDensity = 0.62; guiParams.earSize = 0.78; }
-      if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#111015'; guiParams.skinColor = '#3a3438'; guiParams.furDensity = 0.72; guiParams.earSize = 0.9; }
-      if (name === 'CBA (Brown)') { guiParams.furColor = '#6a4b3a'; guiParams.skinColor = '#d0a090'; guiParams.furDensity = 0.55; guiParams.earSize = 0.8; }
-      if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.95; }
+      if (name === 'BALB/c (White)') { guiParams.furColor = '#ffffff'; guiParams.skinColor = '#d8d8d3'; guiParams.furDensity = 0.82; guiParams.earSize = 0.74; }
+      if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#111015'; guiParams.skinColor = '#3a3438'; guiParams.furDensity = 0.92; guiParams.earSize = 0.84; }
+      if (name === 'CBA (Brown)') { guiParams.furColor = '#6a4b3a'; guiParams.skinColor = '#d0a090'; guiParams.furDensity = 0.76; guiParams.earSize = 0.76; }
+      if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.9; }
     }
 
     const gui = new GUI({ title: 'GENETICS LAB (GUI)' });
