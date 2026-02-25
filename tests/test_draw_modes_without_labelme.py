@@ -116,3 +116,47 @@ def test_ai_model_image_refreshes_after_pixmap_switch():
         assert not np.array_equal(fake_model.images[0], fake_model.images[1])
     finally:
         w.close()
+
+
+def test_switching_ai_models_closes_previous_instance(monkeypatch):
+    _ensure_qapp()
+
+    from annolid.gui.app import AnnolidWindow
+    import annolid.gui.widgets.canvas as canvas_mod
+
+    class NewAiModel:
+        name = "NewTestModel"
+
+        def set_image(self, image):
+            _ = image
+
+    class OldAiModel:
+        name = "OldTestModel"
+
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+        def set_image(self, image):
+            _ = image
+
+    monkeypatch.setattr(canvas_mod, "AI_MODELS", [NewAiModel])
+
+    w = AnnolidWindow(config={})
+    try:
+        img = QtGui.QImage(96, 64, QtGui.QImage.Format_RGB32)
+        img.fill(QtGui.QColor(80, 90, 100))
+        w.image_to_canvas(img, "switch_test.png", 0)
+
+        old_model = OldAiModel()
+        w.canvas._ai_model = old_model
+        w.canvas._ai_model_pixmap_key = None
+
+        w.canvas.initializeAiModel("NewTestModel")
+
+        assert old_model.closed is True
+        assert isinstance(w.canvas._ai_model, NewAiModel)
+    finally:
+        w.close()

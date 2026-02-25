@@ -1,26 +1,29 @@
+import gc
+import os
+from pathlib import Path
+
+import cv2
+import imgviz
+import numpy as np
 from qtpy import QtCore
 from qtpy import QtGui
 from qtpy import QtWidgets
 from qtpy.QtWidgets import QLabel
-from annolid.gui.window_base import QT5
-import numpy as np
 from PIL import Image
-import cv2
-import os
-import imgviz
-from pathlib import Path
-from annolid.utils.annotation_compat import AI_MODELS
-from annolid.utils.logger import logger
-from annolid.utils.annotation_compat import utils
-from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
-from annolid.utils.prompts import extract_number_and_remove_digits
-from annolid.gui.shape import Shape, MaskShape, MultipoinstShape
-from annolid.annotation.pose_schema import PoseSchema
+
 from annolid.annotation.keypoint_visibility import (
     KeypointVisibility,
     set_keypoint_visibility_on_shape_object,
 )
+from annolid.annotation.pose_schema import PoseSchema
+from annolid.gui.shape import Shape, MaskShape, MultipoinstShape
+from annolid.gui.window_base import QT5
 from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
+from annolid.utils.annotation_compat import AI_MODELS
+from annolid.utils.annotation_compat import utils
+from annolid.utils.logger import logger
+from annolid.utils.prompts import extract_number_and_remove_digits
+from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
 # TODO(unknown):
 # - [maybe] Find optimal epsilon value.
 
@@ -192,6 +195,37 @@ class Canvas(QtWidgets.QWidget):
 
     def setCaption(self, text):
         self.caption_label.setText(text)
+
+    @staticmethod
+    def _release_device_cache() -> None:
+        """Best-effort cache release after unloading GPU-backed models."""
+        gc.collect()
+        try:
+            import torch  # type: ignore
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            mps = getattr(torch, "mps", None)
+            mps_available = bool(
+                getattr(getattr(torch, "backends", None), "mps", None)
+                and torch.backends.mps.is_available()
+            )
+            if mps_available and mps is not None and hasattr(mps, "empty_cache"):
+                mps.empty_cache()
+        except Exception:
+            pass
+
+    def _release_model(self, model, *, context: str) -> None:
+        """Best-effort close hook for optional AI model instances."""
+        if model is None:
+            return
+        try:
+            close_fn = getattr(model, "close", None)
+            if callable(close_fn):
+                close_fn()
+        except Exception:
+            logger.debug("Failed to close %s model cleanly.", context, exc_info=True)
+        self._release_device_cache()
 
     def setBehaviorText(self, text):
         self.current_behavior_text = text
@@ -554,6 +588,9 @@ class Canvas(QtWidgets.QWidget):
             logger.debug("AI model is already initialized: %r" % model_class.name)
         else:
             logger.debug("Initializing AI model: %r" % model_class.name)
+            self._release_model(self._ai_model, context="previous AI")
+            self._ai_model = None
+            self._ai_model_pixmap_key = None
             try:
                 self._ai_model = model_class()
             except Exception as exc:
@@ -2312,6 +2349,15 @@ class Canvas(QtWidgets.QWidget):
         if self.createMode == "polygonSAM" and self.pixmap and self.sam_predictor:
             self.samEmbedding()
         self.update()
+
+    def closeEvent(self, event):
+        self._release_model(self._ai_model, context="canvas AI")
+        self._release_model(self.sam_hq_model, context="SAM HQ")
+        self._release_model(self._ai_model_rect, context="rectangle detector")
+        self._ai_model = None
+        self.sam_hq_model = None
+        self._ai_model_rect = None
+        super().closeEvent(event)
 
     def _predict_similar_rectangles(
         self, rectangle_shapes=None, prompt=None, confidence_threshold=0.23

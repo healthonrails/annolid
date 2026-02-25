@@ -12,6 +12,7 @@ from annolid.core.models.adapters.llm_chat import LLMChatAdapter, _OpenAICompatC
 from annolid.core.models.adapters.maskrcnn_torchvision import (
     TorchvisionMaskRCNNAdapter,
 )
+from annolid.core.models.adapters.qwen3_embedding import Qwen3EmbeddingAdapter
 
 
 class _FakeOpenAIChatCompletions:
@@ -100,3 +101,58 @@ def test_cv_adapter_caption_swappable_with_fake_model(tmp_path: Path):
 def test_pipeline_interface_stays_constant():
     req = ModelRequest(task="caption", image_path="x.png", text="Describe")
     assert req.task == "caption"
+
+
+def test_maskrcnn_adapter_close_clears_cuda_cache():
+    calls = {"empty_cache": 0}
+
+    class _Cuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def empty_cache() -> None:
+            calls["empty_cache"] += 1
+
+    class _Torch:
+        cuda = _Cuda()
+
+    adapter = TorchvisionMaskRCNNAdapter(model_factory=lambda: object())
+    adapter._torch = _Torch()
+    adapter._device = SimpleNamespace(type="cuda")
+    adapter._model = object()
+
+    adapter.close()
+
+    assert calls["empty_cache"] == 1
+    assert adapter._model is None
+    assert adapter._torch is None
+
+
+def test_qwen_adapter_close_clears_cuda_cache():
+    calls = {"empty_cache": 0}
+
+    class _Cuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def empty_cache() -> None:
+            calls["empty_cache"] += 1
+
+    class _Torch:
+        cuda = _Cuda()
+
+    adapter = Qwen3EmbeddingAdapter()
+    adapter._torch = _Torch()
+    adapter._model = SimpleNamespace(device=SimpleNamespace(type="cuda"))
+    adapter._processor = object()
+    adapter._process_vision_info = object()
+
+    adapter.close()
+
+    assert calls["empty_cache"] == 1
+    assert adapter._model is None
+    assert adapter._torch is None

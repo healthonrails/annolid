@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -131,9 +132,33 @@ class TorchvisionMaskRCNNAdapter(RuntimeModel):
         )
 
     def close(self) -> None:
+        torch_mod = self._torch
+        device = self._device
         self._model = None
         self._device = None
         self._torch = None
+        gc.collect()
+        if torch_mod is None:
+            return
+
+        device_type = str(getattr(device, "type", device or "")).lower()
+        if device_type.startswith("cuda"):
+            try:
+                if torch_mod.cuda.is_available():
+                    torch_mod.cuda.empty_cache()
+            except Exception:
+                pass
+        elif device_type.startswith("mps"):
+            try:
+                mps = getattr(torch_mod, "mps", None)
+                mps_available = bool(
+                    getattr(getattr(torch_mod, "backends", None), "mps", None)
+                    and torch_mod.backends.mps.is_available()
+                )
+                if mps_available and mps is not None and hasattr(mps, "empty_cache"):
+                    mps.empty_cache()
+            except Exception:
+                pass
 
     def _load_image_rgb(self, request: ModelRequest):
         if request.image is not None:

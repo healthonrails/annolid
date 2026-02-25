@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Sequence
 
@@ -116,8 +117,34 @@ class Qwen3EmbeddingAdapter(RuntimeModel):
         )
 
     def close(self) -> None:
+        model = self._model
+        torch_mod = self._torch
         self._model = None
         self._processor = None
+        self._process_vision_info = None
+        self._torch = None
+        gc.collect()
+
+        if torch_mod is None:
+            return
+        device_type = str(getattr(getattr(model, "device", None), "type", "")).lower()
+        if device_type.startswith("cuda"):
+            try:
+                if torch_mod.cuda.is_available():
+                    torch_mod.cuda.empty_cache()
+            except Exception:
+                pass
+        elif device_type.startswith("mps"):
+            try:
+                mps = getattr(torch_mod, "mps", None)
+                mps_available = bool(
+                    getattr(getattr(torch_mod, "backends", None), "mps", None)
+                    and torch_mod.backends.mps.is_available()
+                )
+                if mps_available and mps is not None and hasattr(mps, "empty_cache"):
+                    mps.empty_cache()
+            except Exception:
+                pass
 
     def _format_conversation(
         self,
@@ -187,10 +214,13 @@ class Qwen3EmbeddingAdapter(RuntimeModel):
             **video_kwargs,
         )
         inputs = {key: val.to(model.device) for key, val in inputs.items()}
-        outputs = model(**inputs)
-        attention_mask = inputs["attention_mask"]
-        embeddings = self._pool_last_token(outputs.last_hidden_state, attention_mask)
-        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+        with torch.inference_mode():
+            outputs = model(**inputs)
+            attention_mask = inputs["attention_mask"]
+            embeddings = self._pool_last_token(
+                outputs.last_hidden_state, attention_mask
+            )
+            embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
         return embeddings.cpu().tolist()
 
     @staticmethod
