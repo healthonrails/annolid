@@ -928,6 +928,7 @@ def train(
     lr_pair_margin_px: float = dino_defaults.LR_PAIR_MARGIN_PX,
     lr_side_loss_weight: float = dino_defaults.LR_SIDE_LOSS_WEIGHT,
     lr_side_loss_margin: float = dino_defaults.LR_SIDE_LOSS_MARGIN,
+    log_every_steps: int = 100,
 ) -> Path:
     if seed is not None:
         _set_global_seed(int(seed))
@@ -1275,6 +1276,7 @@ def train(
             f"lr_pair_margin_px: {float(lr_pair_margin_px)}",
             f"lr_side_loss_weight: {float(lr_side_loss_weight)}",
             f"lr_side_loss_margin: {float(lr_side_loss_margin)}",
+            f"log_every_steps: {int(log_every_steps)}",
             f"augment: {bool(augment_cfg.enabled)}",
             f"hflip: {float(augment_cfg.hflip_prob)}",
             f"degrees: {float(augment_cfg.degrees)}",
@@ -1302,6 +1304,7 @@ def train(
 
     batch_size = max(1, int(batch_size))
     accumulate = max(1, int(accumulate))
+    log_interval = max(0, int(log_every_steps))
     patch_size = int(extractor.patch_size)
 
     def collate_fn(batch: list[dict]) -> dict:
@@ -1686,6 +1689,8 @@ def train(
             writer.writeheader()
 
             for epoch in range(1, int(epochs) + 1):
+                train_steps_total = int(len(train_loader))
+                val_steps_total = int(len(val_loader)) if val_loader is not None else 0
                 radius_epoch = float(radius_px)
                 schedule = str(radius_schedule or "none").strip().lower()
                 if schedule != "none":
@@ -2122,6 +2127,28 @@ def train(
                                     overlay.clamp(0.0, 1.0),
                                     epoch,
                                 )
+                    if log_interval > 0 and (
+                        (n_train % int(log_interval)) == 0
+                        or int(n_train) == int(train_steps_total)
+                    ):
+                        elapsed_train = max(1e-6, float(time.time() - t0))
+                        steps_per_s = float(n_train) / elapsed_train
+                        logger.info(
+                            "Epoch %d/%d - train step %d/%d (%.1f%%) "
+                            "base_loss=%.6f total_loss=%.6f speed=%.2f steps/s",
+                            epoch,
+                            epochs,
+                            n_train,
+                            train_steps_total,
+                            (
+                                100.0
+                                * float(n_train)
+                                / max(1.0, float(train_steps_total))
+                            ),
+                            (train_loss / max(1, n_train)),
+                            (train_loss_total / max(1, n_train)),
+                            steps_per_s,
+                        )
 
                 if int(n_train) % int(accumulate) != 0:
                     if float(grad_clip) > 0.0:
@@ -2195,7 +2222,9 @@ def train(
                     error_max = 4
                     pred_max = 4
                     with torch.no_grad():
+                        n_val = 0
                         for batch in val_loader:
+                            n_val += 1
                             feats = batch["feats"].to(device_str, non_blocking=True)
                             masks = batch["masks"].to(device_str, non_blocking=True)
                             coords = batch.get("coords")
@@ -2557,6 +2586,22 @@ def train(
                                         error_samples.sort(key=lambda x: x[0])
                                         if mean_err > error_samples[0][0]:
                                             error_samples[0] = (mean_err, overlay)
+                            if log_interval > 0 and (
+                                (n_val % int(log_interval)) == 0
+                                or int(n_val) == int(val_steps_total)
+                            ):
+                                logger.info(
+                                    "Epoch %d/%d - val step %d/%d (%.1f%%)",
+                                    epoch,
+                                    epochs,
+                                    n_val,
+                                    val_steps_total,
+                                    (
+                                        100.0
+                                        * float(n_val)
+                                        / max(1.0, float(val_steps_total))
+                                    ),
+                                )
                     if losses:
                         val_loss = float(sum(losses) / len(losses))
                     if pck_acc is not None:
@@ -3094,6 +3139,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=1.0,
         help="Gradient clipping max norm (0=off).",
     )
+    p.add_argument(
+        "--log-every-steps",
+        type=int,
+        default=100,
+        help="Emit step-level progress logs every N train/val batches (0=off).",
+    )
     group = p.add_mutually_exclusive_group()
     group.add_argument(
         "--balanced-bce",
@@ -3462,6 +3513,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         lr_pair_margin_px=float(args.lr_pair_margin_px),
         lr_side_loss_weight=float(args.lr_side_loss_weight),
         lr_side_loss_margin=float(args.lr_side_loss_margin),
+        log_every_steps=int(args.log_every_steps),
         dice_loss_weight=float(args.dice_loss_weight),
         coord_loss_weight=float(args.coord_loss_weight),
         coord_loss_type=str(args.coord_loss_type),

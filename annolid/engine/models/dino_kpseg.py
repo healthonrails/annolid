@@ -77,6 +77,12 @@ class DinoKPSEGPlugin(ModelPluginBase):
         parser.add_argument("--hidden-dim", type=int, default=dino_defaults.HIDDEN_DIM)
         parser.add_argument("--lr", type=float, default=dino_defaults.LR)
         parser.add_argument("--epochs", type=int, default=dino_defaults.EPOCHS)
+        parser.add_argument(
+            "--log-every-steps",
+            type=int,
+            default=100,
+            help="Emit step-level progress logs every N train/val batches (0=off).",
+        )
         parser.add_argument("--threshold", type=float, default=dino_defaults.THRESHOLD)
         parser.add_argument("--device", default=None)
         parser.add_argument(
@@ -378,6 +384,7 @@ class DinoKPSEGPlugin(ModelPluginBase):
             lr_pair_margin_px=float(args.lr_pair_margin_px),
             lr_side_loss_weight=float(args.lr_side_loss_weight),
             lr_side_loss_margin=float(args.lr_side_loss_margin),
+            log_every_steps=int(getattr(args, "log_every_steps", 100)),
             dice_loss_weight=float(args.dice_loss_weight),
             coord_loss_weight=float(args.coord_loss_weight),
             coord_loss_type=str(args.coord_loss_type),
