@@ -533,6 +533,7 @@ class TrainModelDialog(QtWidgets.QDialog):
             ("Auto-detect (recommended)", "auto"),
             ("YOLO pose dataset", "yolo"),
             ("LabelMe JSON + spec", "labelme"),
+            ("COCO keypoints spec", "coco"),
         ]
         dino_format_default = 0
         for idx, (label, value) in enumerate(dino_formats):

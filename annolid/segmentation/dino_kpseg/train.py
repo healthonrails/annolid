@@ -31,6 +31,9 @@ from annolid.segmentation.dino_kpseg.data import (
     summarize_labelme_pose_labels,
     summarize_yolo_pose_labels,
 )
+from annolid.segmentation.dino_kpseg.format_utils import (
+    normalize_dino_kpseg_data_format,
+)
 from annolid.segmentation.dino_kpseg.model import (
     DinoKPSEGCheckpointMeta,
     DinoKPSEGHead,
@@ -929,23 +932,16 @@ def train(
     if seed is not None:
         _set_global_seed(int(seed))
 
-    data_format_norm = str(data_format or "auto").strip().lower()
-    if data_format_norm not in {"auto", "yolo", "labelme", "coco"}:
-        raise ValueError(f"Unsupported data_format: {data_format_norm!r}")
+    requested_data_format = str(data_format or "auto").strip().lower()
+    if requested_data_format not in {"auto", "yolo", "labelme", "coco"}:
+        raise ValueError(f"Unsupported data_format: {requested_data_format!r}")
 
-    if data_format_norm == "auto":
-        payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
-        fmt_token = ""
-        if isinstance(payload, dict):
-            fmt_token = (
-                str(payload.get("format") or payload.get("type") or "").strip().lower()
-            )
-        if "labelme" in fmt_token:
-            data_format_norm = "labelme"
-        elif "coco" in fmt_token:
-            data_format_norm = "coco"
-        else:
-            data_format_norm = "yolo"
+    payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+    payload = payload if isinstance(payload, dict) else {}
+    data_format_norm = normalize_dino_kpseg_data_format(
+        payload,
+        data_format=requested_data_format,
+    )
 
     staged_yolo_yaml: Optional[Path] = None
     label_format = "yolo"

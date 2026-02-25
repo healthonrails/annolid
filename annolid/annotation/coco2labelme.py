@@ -146,24 +146,13 @@ def _install_file(src: Path, dst: Path, *, mode: str = "hardlink") -> None:
     raise ValueError(f"Unsupported link mode: {mode!r}")
 
 
-def convert_coco_json_to_labelme(
-    coco_json_path: Path | str,
-    *,
-    output_dir: Path | str,
-    images_dir: Optional[Path | str] = None,
-    include_polygons: bool = True,
-    include_keypoints: bool = True,
-    include_bbox_when_missing: bool = True,
-) -> Dict[str, int]:
-    """Convert one COCO annotation JSON file into per-image LabelMe JSON files."""
-
-    coco_json_path = Path(coco_json_path).expanduser().resolve()
-    output_dir = Path(output_dir).expanduser().resolve()
-    images_dir_path = (
-        Path(images_dir).expanduser().resolve() if images_dir is not None else None
-    )
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+def _load_coco_components(
+    coco_json_path: Path,
+) -> tuple[
+    List[Dict[str, object]],
+    Dict[int, List[Dict[str, object]]],
+    Dict[int, Dict[str, object]],
+]:
     payload = json.loads(coco_json_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"Invalid COCO payload: {coco_json_path}")
@@ -171,14 +160,24 @@ def convert_coco_json_to_labelme(
     images = payload.get("images")
     annotations = payload.get("annotations")
     categories = payload.get("categories")
-    image_list = images if isinstance(images, list) else []
-    ann_list = annotations if isinstance(annotations, list) else []
-    cat_list = categories if isinstance(categories, list) else []
+    image_list = (
+        [img for img in images if isinstance(img, dict)]
+        if isinstance(images, list)
+        else []
+    )
+    ann_list = (
+        [ann for ann in annotations if isinstance(ann, dict)]
+        if isinstance(annotations, list)
+        else []
+    )
+    cat_list = (
+        [cat for cat in categories if isinstance(cat, dict)]
+        if isinstance(categories, list)
+        else []
+    )
 
     categories_by_id: Dict[int, Dict[str, object]] = {}
     for cat in cat_list:
-        if not isinstance(cat, dict):
-            continue
         try:
             cid = int(cat.get("id"))
         except Exception:
@@ -187,21 +186,105 @@ def convert_coco_json_to_labelme(
 
     anns_by_image: Dict[int, List[Dict[str, object]]] = {}
     for ann in ann_list:
-        if not isinstance(ann, dict):
-            continue
         try:
             image_id = int(ann.get("image_id"))
         except Exception:
             continue
         anns_by_image.setdefault(image_id, []).append(ann)
+    return image_list, anns_by_image, categories_by_id
+
+
+def _build_shapes_for_image(
+    *,
+    image_id: int,
+    anns_by_image: Dict[int, List[Dict[str, object]]],
+    categories_by_id: Dict[int, Dict[str, object]],
+    include_polygons: bool,
+    include_keypoints: bool,
+    include_bbox_when_missing: bool,
+) -> List[Dict[str, object]]:
+    shapes: List[Dict[str, object]] = []
+    for ann in anns_by_image.get(image_id, []):
+        category_id = int(_ensure_float(ann.get("category_id"), default=0))
+        category = categories_by_id.get(category_id) or {}
+        category_name = str(category.get("name") or f"class_{category_id}")
+        keypoint_names = (
+            [str(x) for x in category.get("keypoints", [])]
+            if isinstance(category.get("keypoints"), list)
+            else None
+        )
+        group_id = (
+            int(_ensure_float(ann.get("id"))) if ann.get("id") is not None else None
+        )
+
+        segmentation = ann.get("segmentation")
+        polygons = _segmentation_polygons(segmentation)
+        if include_polygons and polygons:
+            for poly in polygons:
+                shapes.append(
+                    {
+                        "label": category_name,
+                        "points": poly,
+                        "group_id": group_id,
+                        "shape_type": "polygon",
+                        "flags": {},
+                    }
+                )
+
+        if include_bbox_when_missing and not polygons:
+            bbox = ann.get("bbox")
+            if isinstance(bbox, list):
+                rect = _bbox_to_rect_points(bbox)
+                if rect is not None:
+                    shapes.append(
+                        {
+                            "label": category_name,
+                            "points": rect,
+                            "group_id": group_id,
+                            "shape_type": "rectangle",
+                            "flags": {},
+                        }
+                    )
+
+        if include_keypoints:
+            shapes.extend(
+                _keypoint_shapes(
+                    ann.get("keypoints"),
+                    keypoint_names=keypoint_names,
+                    group_id=group_id,
+                )
+            )
+    return shapes
+
+
+def _convert_coco_json(
+    coco_json_path: Path | str,
+    *,
+    output_dir: Path | str,
+    images_dir: Optional[Path | str] = None,
+    include_polygons: bool = True,
+    include_keypoints: bool = True,
+    include_bbox_when_missing: bool = True,
+    save_json_with_image: bool,
+    link_mode: str = "hardlink",
+) -> Dict[str, int]:
+    """Shared COCO->LabelMe converter for both dataset and legacy layouts."""
+
+    coco_json_path = Path(coco_json_path).expanduser().resolve()
+    output_dir = Path(output_dir).expanduser().resolve()
+    images_dir_path = (
+        Path(images_dir).expanduser().resolve() if images_dir is not None else None
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    image_list, anns_by_image, categories_by_id = _load_coco_components(coco_json_path)
 
     converted = 0
     missing_images = 0
     shapes_total = 0
+    copied_images = 0
 
     for image in image_list:
-        if not isinstance(image, dict):
-            continue
         try:
             image_id = int(image.get("id"))
         except Exception:
@@ -218,160 +301,13 @@ def convert_coco_json_to_labelme(
             logger.warning("Image file missing for COCO record: %s", resolved_image)
             continue
 
-        image_width = int(_ensure_float(image.get("width"), default=0))
-        image_height = int(_ensure_float(image.get("height"), default=0))
-
-        shapes: List[Dict[str, object]] = []
-        for ann in anns_by_image.get(image_id, []):
-            category_id = int(_ensure_float(ann.get("category_id"), default=0))
-            category = categories_by_id.get(category_id) or {}
-            category_name = str(category.get("name") or f"class_{category_id}")
-            keypoint_names = (
-                [str(x) for x in category.get("keypoints", [])]
-                if isinstance(category.get("keypoints"), list)
-                else None
-            )
-            group_id = (
-                int(_ensure_float(ann.get("id"))) if ann.get("id") is not None else None
-            )
-
-            segmentation = ann.get("segmentation")
-            polygons = _segmentation_polygons(segmentation)
-            if include_polygons and polygons:
-                for poly in polygons:
-                    shapes.append(
-                        {
-                            "label": category_name,
-                            "points": poly,
-                            "group_id": group_id,
-                            "shape_type": "polygon",
-                            "flags": {},
-                        }
-                    )
-
-            if include_bbox_when_missing and not polygons:
-                bbox = ann.get("bbox")
-                if isinstance(bbox, list):
-                    rect = _bbox_to_rect_points(bbox)
-                    if rect is not None:
-                        shapes.append(
-                            {
-                                "label": category_name,
-                                "points": rect,
-                                "group_id": group_id,
-                                "shape_type": "rectangle",
-                                "flags": {},
-                            }
-                        )
-
-            if include_keypoints:
-                shapes.extend(
-                    _keypoint_shapes(
-                        ann.get("keypoints"),
-                        keypoint_names=keypoint_names,
-                        group_id=group_id,
-                    )
-                )
-
-        out_json = output_dir / f"{Path(file_name).stem}.json"
-        labelme_payload = {
-            "version": "5.0.1",
-            "flags": {},
-            "shapes": shapes,
-            "imagePath": str(resolved_image),
-            "imageData": None,
-            "imageHeight": image_height,
-            "imageWidth": image_width,
-        }
-        out_json.write_text(json.dumps(labelme_payload, indent=2), encoding="utf-8")
-        converted += 1
-        shapes_total += len(shapes)
-
-    return {
-        "images_total": len(image_list),
-        "converted_images": int(converted),
-        "missing_images": int(missing_images),
-        "shapes_total": int(shapes_total),
-    }
-
-
-def convert_coco_json_to_labelme_dataset(
-    coco_json_path: Path | str,
-    *,
-    output_dir: Path | str,
-    images_dir: Optional[Path | str] = None,
-    include_polygons: bool = True,
-    include_keypoints: bool = True,
-    include_bbox_when_missing: bool = True,
-    link_mode: str = "hardlink",
-) -> Dict[str, int]:
-    """Convert one COCO JSON into a LabelMe dataset with sidecar JSON next to images."""
-
-    coco_json_path = Path(coco_json_path).expanduser().resolve()
-    output_dir = Path(output_dir).expanduser().resolve()
-    images_dir_path = (
-        Path(images_dir).expanduser().resolve() if images_dir is not None else None
-    )
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    payload = json.loads(coco_json_path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"Invalid COCO payload: {coco_json_path}")
-
-    images = payload.get("images")
-    annotations = payload.get("annotations")
-    categories = payload.get("categories")
-    image_list = images if isinstance(images, list) else []
-    ann_list = annotations if isinstance(annotations, list) else []
-    cat_list = categories if isinstance(categories, list) else []
-
-    categories_by_id: Dict[int, Dict[str, object]] = {}
-    for cat in cat_list:
-        if not isinstance(cat, dict):
-            continue
-        try:
-            cid = int(cat.get("id"))
-        except Exception:
-            continue
-        categories_by_id[cid] = cat
-
-    anns_by_image: Dict[int, List[Dict[str, object]]] = {}
-    for ann in ann_list:
-        if not isinstance(ann, dict):
-            continue
-        try:
-            image_id = int(ann.get("image_id"))
-        except Exception:
-            continue
-        anns_by_image.setdefault(image_id, []).append(ann)
-
-    converted = 0
-    missing_images = 0
-    shapes_total = 0
-    copied_images = 0
-
-    for image in image_list:
-        if not isinstance(image, dict):
-            continue
-        try:
-            image_id = int(image.get("id"))
-        except Exception:
-            continue
-        file_name = str(image.get("file_name") or "").strip()
-        if not file_name:
-            continue
-        src_image = _resolve_image_path(
-            file_name, coco_json_path=coco_json_path, images_dir=images_dir_path
-        )
-        if not src_image.exists():
-            missing_images += 1
-            logger.warning("Image file missing for COCO record: %s", src_image)
-            continue
-
-        rel_target = _image_target_relative(file_name, image_id=image_id)
-        dst_image = (output_dir / rel_target).resolve()
-        _install_file(src_image, dst_image, mode=link_mode)
-        copied_images += 1
+        if save_json_with_image:
+            rel_target = _image_target_relative(file_name, image_id=image_id)
+            target_image = (output_dir / rel_target).resolve()
+            _install_file(resolved_image, target_image, mode=link_mode)
+            copied_images += 1
+        else:
+            target_image = resolved_image
 
         image_width = int(_ensure_float(image.get("width"), default=0))
         image_height = int(_ensure_float(image.get("height"), default=0))
@@ -379,69 +315,31 @@ def convert_coco_json_to_labelme_dataset(
             try:
                 from PIL import Image as PILImage
 
-                with PILImage.open(dst_image) as pil:
+                with PILImage.open(target_image) as pil:
                     image_width, image_height = pil.size
             except Exception:
                 pass
 
-        shapes: List[Dict[str, object]] = []
-        for ann in anns_by_image.get(image_id, []):
-            category_id = int(_ensure_float(ann.get("category_id"), default=0))
-            category = categories_by_id.get(category_id) or {}
-            category_name = str(category.get("name") or f"class_{category_id}")
-            keypoint_names = (
-                [str(x) for x in category.get("keypoints", [])]
-                if isinstance(category.get("keypoints"), list)
-                else None
-            )
-            group_id = (
-                int(_ensure_float(ann.get("id"))) if ann.get("id") is not None else None
-            )
+        shapes = _build_shapes_for_image(
+            image_id=image_id,
+            anns_by_image=anns_by_image,
+            categories_by_id=categories_by_id,
+            include_polygons=include_polygons,
+            include_keypoints=include_keypoints,
+            include_bbox_when_missing=include_bbox_when_missing,
+        )
+        if save_json_with_image:
+            out_json = target_image.with_suffix(".json")
+            image_path = target_image.name
+        else:
+            out_json = output_dir / f"{Path(file_name).stem}.json"
+            image_path = str(resolved_image)
 
-            segmentation = ann.get("segmentation")
-            polygons = _segmentation_polygons(segmentation)
-            if include_polygons and polygons:
-                for poly in polygons:
-                    shapes.append(
-                        {
-                            "label": category_name,
-                            "points": poly,
-                            "group_id": group_id,
-                            "shape_type": "polygon",
-                            "flags": {},
-                        }
-                    )
-
-            if include_bbox_when_missing and not polygons:
-                bbox = ann.get("bbox")
-                if isinstance(bbox, list):
-                    rect = _bbox_to_rect_points(bbox)
-                    if rect is not None:
-                        shapes.append(
-                            {
-                                "label": category_name,
-                                "points": rect,
-                                "group_id": group_id,
-                                "shape_type": "rectangle",
-                                "flags": {},
-                            }
-                        )
-
-            if include_keypoints:
-                shapes.extend(
-                    _keypoint_shapes(
-                        ann.get("keypoints"),
-                        keypoint_names=keypoint_names,
-                        group_id=group_id,
-                    )
-                )
-
-        out_json = dst_image.with_suffix(".json")
         labelme_payload = {
             "version": "5.0.1",
             "flags": {},
             "shapes": shapes,
-            "imagePath": dst_image.name,
+            "imagePath": image_path,
             "imageData": None,
             "imageHeight": image_height,
             "imageWidth": image_width,
@@ -457,6 +355,57 @@ def convert_coco_json_to_labelme_dataset(
         "shapes_total": int(shapes_total),
         "copied_images": int(copied_images),
     }
+
+
+def convert_coco_json_to_labelme(
+    coco_json_path: Path | str,
+    *,
+    output_dir: Path | str,
+    images_dir: Optional[Path | str] = None,
+    include_polygons: bool = True,
+    include_keypoints: bool = True,
+    include_bbox_when_missing: bool = True,
+    save_json_with_image: bool = True,
+    link_mode: str = "hardlink",
+) -> Dict[str, int]:
+    """Convert one COCO JSON into LabelMe JSON files.
+
+    By default (`save_json_with_image=True`) this creates a LabelMe dataset
+    layout where each output image and sidecar JSON live together.
+    """
+    return _convert_coco_json(
+        coco_json_path,
+        output_dir=output_dir,
+        images_dir=images_dir,
+        include_polygons=include_polygons,
+        include_keypoints=include_keypoints,
+        include_bbox_when_missing=include_bbox_when_missing,
+        save_json_with_image=save_json_with_image,
+        link_mode=link_mode,
+    )
+
+
+def convert_coco_json_to_labelme_dataset(
+    coco_json_path: Path | str,
+    *,
+    output_dir: Path | str,
+    images_dir: Optional[Path | str] = None,
+    include_polygons: bool = True,
+    include_keypoints: bool = True,
+    include_bbox_when_missing: bool = True,
+    link_mode: str = "hardlink",
+) -> Dict[str, int]:
+    """Convert one COCO JSON into a LabelMe dataset with sidecar JSON next to images."""
+    return convert_coco_json_to_labelme(
+        coco_json_path,
+        output_dir=output_dir,
+        images_dir=images_dir,
+        include_polygons=include_polygons,
+        include_keypoints=include_keypoints,
+        include_bbox_when_missing=include_bbox_when_missing,
+        save_json_with_image=True,
+        link_mode=link_mode,
+    )
 
 
 class COCO2Labeme:
@@ -482,6 +431,7 @@ class COCO2Labeme:
                 jf,
                 output_dir=self.images_dir,
                 images_dir=self.images_dir,
+                save_json_with_image=False,
             )
             logger.info("Finished %s.", jf)
 
@@ -501,6 +451,7 @@ def convert_coco_dir_to_labelme(
                 coco_json,
                 output_dir=output_dir,
                 images_dir=images_dir,
+                save_json_with_image=False,
             )
         )
     return results

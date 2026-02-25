@@ -19,6 +19,9 @@ from qtpy import QtCore, QtWidgets
 from annolid.datasets.labelme_collection import DEFAULT_LABEL_INDEX_DIRNAME
 from annolid.gui.workers import FlexibleWorker
 from annolid.segmentation.dino_kpseg import defaults as dino_defaults
+from annolid.segmentation.dino_kpseg.format_utils import (
+    normalize_dino_kpseg_data_format,
+)
 from annolid.utils.logger import logger
 from annolid.utils.runs import allocate_run_dir, new_run_dir, shared_runs_root
 
@@ -143,7 +146,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
             if split in data_cfg and data_cfg[split]:
                 data_cfg[split] = resolve_entry(data_cfg[split])
 
-        if not data_cfg.get("kpt_shape"):
+        if data_format_norm in {"yolo", "labelme"} and not data_cfg.get("kpt_shape"):
             QtWidgets.QMessageBox.warning(
                 self._window,
                 "Pose Dataset Required",
@@ -161,6 +164,9 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 return None
             if not data_cfg.get("format") and not data_cfg.get("type"):
                 data_cfg["format"] = "labelme"
+        elif data_format_norm == "coco":
+            if not data_cfg.get("format") and not data_cfg.get("type"):
+                data_cfg["format"] = "coco"
 
         missing_paths: List[str] = []
         for split in ("train", "val", "test"):
@@ -768,7 +774,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
             data_cfg, data_format=data_format
         )
 
-        if not data_cfg.get("kpt_shape"):
+        if data_format_norm in {"yolo", "labelme"} and not data_cfg.get("kpt_shape"):
             QtWidgets.QMessageBox.warning(
                 self._window,
                 "Pose Dataset Required",
@@ -800,7 +806,12 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 f"Validation set is very small ({val_count} images). Metrics may be unstable/noisy."
             )
 
-        if bool(augment) and data_cfg.get("kpt_shape") and not data_cfg.get("flip_idx"):
+        if (
+            bool(augment)
+            and data_format_norm in {"yolo", "labelme"}
+            and data_cfg.get("kpt_shape")
+            and not data_cfg.get("flip_idx")
+        ):
             warnings.append(
                 "Augmentations are enabled but the pose dataset has no 'flip_idx' in the YAML; horizontal flip may be incorrect."
             )
@@ -881,23 +892,27 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                         for line in p.read_text(encoding="utf-8").splitlines()
                         if line.strip()
                     )
+                if p.suffix.lower() == ".json" and str(data_format).lower() == "coco":
+                    try:
+                        payload = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                    except Exception:
+                        return 0
+                    if not isinstance(payload, dict):
+                        return 0
+                    images = payload.get("images")
+                    if not isinstance(images, list):
+                        return 0
+                    return sum(1 for rec in images if isinstance(rec, dict))
         except OSError:
             return 0
         return 0
 
     @staticmethod
     def _normalize_data_format(data_cfg: Dict[str, Any], *, data_format: str) -> str:
-        fmt = str(data_format or "auto").strip().lower()
-        if fmt not in {"auto", "yolo", "labelme"}:
-            return "auto"
-        if fmt == "auto":
-            token = (
-                str(data_cfg.get("format") or data_cfg.get("type") or "")
-                .strip()
-                .lower()
-            )
-            fmt = "labelme" if "labelme" in token else "yolo"
-        return fmt
+        return normalize_dino_kpseg_data_format(
+            data_cfg,
+            data_format=data_format,
+        )
 
     def _set_active_process(self, proc: subprocess.Popen) -> None:
         with self._process_lock:

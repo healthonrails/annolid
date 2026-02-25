@@ -23,11 +23,14 @@ def test_convert_coco_json_to_labelme_from_fixture(tmp_path: Path) -> None:
     assert summary["images_total"] == 2
     assert summary["converted_images"] == 2
     assert summary["missing_images"] == 0
+    assert summary["copied_images"] == 2
 
-    outputs = sorted(out_dir.glob("*.json"))
-    assert len(outputs) == 2
+    png_files = sorted(out_dir.rglob("*.png"))
+    json_files = sorted(out_dir.rglob("*.json"))
+    assert len(png_files) == 2
+    assert len(json_files) == 2
 
-    sample = json.loads(outputs[0].read_text(encoding="utf-8"))
+    sample = json.loads(json_files[0].read_text(encoding="utf-8"))
     assert "shapes" in sample
     assert isinstance(sample["shapes"], list)
     assert sample["imagePath"]
@@ -38,6 +41,35 @@ def test_convert_coco_json_to_labelme_from_fixture(tmp_path: Path) -> None:
     shape_types = {str(shape.get("shape_type")) for shape in sample["shapes"]}
     assert "point" in shape_types
     assert "rectangle" in shape_types
+
+    for img in png_files:
+        sidecar = img.with_suffix(".json")
+        assert sidecar.exists()
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        assert payload["imagePath"] == img.name
+
+
+def test_convert_coco_json_to_labelme_legacy_json_only_mode(tmp_path: Path) -> None:
+    fixture_root = Path("tests/fixtures/dino_kpseg_coco_tiny").resolve()
+    coco_json = fixture_root / "annotations" / "train.json"
+    out_dir = tmp_path / "labelme_json_only"
+
+    summary = convert_coco_json_to_labelme(
+        coco_json,
+        output_dir=out_dir,
+        images_dir=fixture_root,
+        save_json_with_image=False,
+    )
+
+    assert summary["images_total"] == 2
+    assert summary["converted_images"] == 2
+    assert summary["copied_images"] == 0
+
+    outputs = sorted(out_dir.glob("*.json"))
+    assert len(outputs) == 2
+
+    sample = json.loads(outputs[0].read_text(encoding="utf-8"))
+    assert sample["imagePath"].endswith(".png")
 
 
 def test_convert_coco_annotations_dir_to_labelme_dataset_from_fixture(
