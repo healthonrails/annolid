@@ -223,6 +223,38 @@ class PredictionExecutionMixin:
 
         return int(max_frame)
 
+    def _dino_kpseg_gui_inference_config(self) -> dict:
+        settings = getattr(self, "settings", None)
+        if settings is None:
+            return {
+                "tta_hflip": False,
+                "tta_merge": "mean",
+                "min_keypoint_score": 0.0,
+                "stabilize_lr": True,
+            }
+        try:
+            tta_hflip = bool(settings.value("dino_kpseg/tta_hflip", False, type=bool))
+            tta_merge = (
+                str(settings.value("dino_kpseg/tta_merge", "mean", type=str) or "mean")
+                .strip()
+                .lower()
+            )
+            if tta_merge not in {"mean", "max"}:
+                tta_merge = "mean"
+            min_score = float(
+                settings.value("dino_kpseg/min_keypoint_score", 0.0, type=float)
+            )
+        except Exception:
+            tta_hflip = False
+            tta_merge = "mean"
+            min_score = 0.0
+        return {
+            "tta_hflip": bool(tta_hflip),
+            "tta_merge": str(tta_merge),
+            "min_keypoint_score": max(0.0, float(min_score)),
+            "stabilize_lr": True,
+        }
+
     def predict_from_next_frame(self, to_frame=60):
         model_config, model_identifier, model_weight = self._resolve_model_identity()
         _ = model_config
@@ -454,6 +486,7 @@ class PredictionExecutionMixin:
 
                 try:
                     resolved_path = str(Path(resolved).expanduser().resolve())
+                    dino_infer_cfg = self._dino_kpseg_gui_inference_config()
                     cached = getattr(self, "_dinokpseg_inference_processor", None)
                     if (
                         cached is not None
@@ -463,6 +496,10 @@ class PredictionExecutionMixin:
                         cached.keypoint_names = pose_keypoint_names or getattr(
                             cached, "keypoint_names", None
                         )
+                        try:
+                            cached.set_dino_kpseg_inference_config(dino_infer_cfg)
+                        except Exception:
+                            pass
                         self.video_processor = cached
                     else:
                         self.video_processor = InferenceProcessor(
@@ -470,6 +507,7 @@ class PredictionExecutionMixin:
                             model_type="dinokpseg",
                             keypoint_names=pose_keypoint_names,
                             pose_schema_path=pose_schema_path,
+                            dino_kpseg_inference_config=dino_infer_cfg,
                         )
                         self._dinokpseg_inference_processor = self.video_processor
                 except Exception as exc:

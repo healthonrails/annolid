@@ -29,6 +29,7 @@ class InferenceProcessor:
         persist_json: bool = False,
         yoloe_text_prompt: bool = True,
         prompt_class_names: Optional[list] = None,
+        dino_kpseg_inference_config: Optional[dict] = None,
     ) -> None:
         """
         Initializes the InferenceProcessor with a specified model.
@@ -63,6 +64,35 @@ class InferenceProcessor:
             pose_schema_path=pose_schema_path,
         )
         self.persist_json: bool = bool(persist_json)
+        self._dino_kpseg_inference_config = self._sanitize_dino_kpseg_inference_config(
+            dino_kpseg_inference_config
+        )
+
+    @staticmethod
+    def _sanitize_dino_kpseg_inference_config(
+        cfg: Optional[dict],
+    ) -> Dict[str, object]:
+        payload = dict(cfg or {})
+        tta_merge = str(payload.get("tta_merge", "mean") or "mean").strip().lower()
+        if tta_merge not in {"mean", "max"}:
+            tta_merge = "mean"
+        try:
+            min_score = float(payload.get("min_keypoint_score", 0.0))
+        except Exception:
+            min_score = 0.0
+        if not np.isfinite(min_score) or min_score < 0:
+            min_score = 0.0
+        return {
+            "tta_hflip": bool(payload.get("tta_hflip", False)),
+            "tta_merge": str(tta_merge),
+            "min_keypoint_score": float(min_score),
+            "stabilize_lr": bool(payload.get("stabilize_lr", True)),
+        }
+
+    def set_dino_kpseg_inference_config(self, cfg: Optional[dict]) -> None:
+        self._dino_kpseg_inference_config = self._sanitize_dino_kpseg_inference_config(
+            cfg
+        )
 
     def _apply_prompt_names_to_model(self) -> None:
         """Apply prompt class name mapping to Ultralytics models (used by YOLOE visual prompting)."""
@@ -1175,6 +1205,11 @@ class InferenceProcessor:
         instance_ids: Optional[Sequence[object]] = None,
     ) -> list:
         annotations = []
+        dino_cfg = dict(getattr(self, "_dino_kpseg_inference_config", {}) or {})
+        tta_hflip = bool(dino_cfg.get("tta_hflip", False))
+        tta_merge = str(dino_cfg.get("tta_merge", "mean") or "mean")
+        min_keypoint_score = float(dino_cfg.get("min_keypoint_score", 0.0))
+        stabilize_lr = bool(dino_cfg.get("stabilize_lr", True))
         try:
             if instance_masks:
                 from annolid.segmentation.dino_kpseg.inference_utils import (
@@ -1192,7 +1227,9 @@ class InferenceProcessor:
                     self.model,
                     crops,
                     return_patch_masks=False,
-                    stabilize_lr=True,
+                    stabilize_lr=bool(stabilize_lr),
+                    tta_hflip=bool(tta_hflip),
+                    tta_merge=str(tta_merge),
                 )
             elif bboxes is not None and len(bboxes) > 0:
                 predictions = self.model.predict_instances(
@@ -1200,7 +1237,9 @@ class InferenceProcessor:
                     bboxes_xyxy=bboxes,
                     instance_ids=instance_ids,
                     return_patch_masks=False,
-                    stabilize_lr=True,
+                    stabilize_lr=bool(stabilize_lr),
+                    tta_hflip=bool(tta_hflip),
+                    tta_merge=str(tta_merge),
                 )
             else:
                 # No prompts (no polygons / boxes). Fall back to multi-peak decoding
@@ -1210,12 +1249,18 @@ class InferenceProcessor:
                     threshold=None,
                     topk=5,
                     nms_radius_px=12.0,
+                    tta_hflip=bool(tta_hflip),
+                    tta_merge=str(tta_merge),
                 )
                 predictions = [
                     (
                         None,
                         self.model.predict(
-                            frame_bgr, return_patch_masks=False, stabilize_lr=True
+                            frame_bgr,
+                            return_patch_masks=False,
+                            stabilize_lr=bool(stabilize_lr),
+                            tta_hflip=bool(tta_hflip),
+                            tta_merge=str(tta_merge),
                         ),
                     )
                 ]
@@ -1230,10 +1275,13 @@ class InferenceProcessor:
 
         # Emit multi-peak points only when no instance separation signals were present.
         if (bboxes is None or len(bboxes) == 0) and not instance_masks:
+            emitted_peaks = 0
             if kp_names:
                 for kpt_id, channel_peaks in enumerate(peaks):
                     label = kp_names[kpt_id] if kpt_id < len(kp_names) else str(kpt_id)
                     for rank, (x, y, score) in enumerate(channel_peaks):
+                        if float(score) < float(min_keypoint_score):
+                            continue
                         point_shape = Shape(
                             label,
                             shape_type="point",
@@ -1246,13 +1294,17 @@ class InferenceProcessor:
                         point_shape.other_data["peak_rank"] = int(rank)
                         point_shape.other_data["multi_peak"] = True
                         annotations.append(point_shape)
-                return annotations
+                        emitted_peaks += 1
+                if emitted_peaks > 0:
+                    return annotations
 
         for instance_id, prediction in predictions:
             group_id = int(instance_id) if instance_id is not None else None
             for kpt_id, (xy, score) in enumerate(
                 zip(prediction.keypoints_xy, prediction.keypoint_scores)
             ):
+                if float(score) < float(min_keypoint_score):
+                    continue
                 label = kp_names[kpt_id] if kpt_id < len(kp_names) else str(kpt_id)
                 x, y = float(xy[0]), float(xy[1])
 

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 import math
 import hashlib
+import random
 import shutil
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -683,6 +684,26 @@ def _safe_int(value: object) -> Optional[int]:
         return None
 
 
+def _safe_float(value: object) -> Optional[float]:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _safe_bool(value: object, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    token = str(value).strip().lower()
+    if token in {"1", "true", "yes", "y", "on"}:
+        return True
+    if token in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
 @dataclass(frozen=True)
 class CocoPoseDatasetSpec:
     root: Path
@@ -695,6 +716,9 @@ class CocoPoseDatasetSpec:
     flip_idx: Optional[List[int]]
     category_names: List[str]
     category_id_to_index: Dict[int, int]
+    val_split: float
+    val_seed: int
+    auto_val_split: bool
 
 
 def _load_coco_payload(path: Path) -> Dict[str, object]:
@@ -877,6 +901,18 @@ def load_coco_pose_spec(data_yaml: Path) -> CocoPoseDatasetSpec:
         if inferred is not None:
             flip_idx = inferred
 
+    raw_val_split = payload.get("val_split")
+    val_split = _safe_float(raw_val_split)
+    if val_split is None:
+        val_split = 0.1 if val_ann is None else 0.0
+    val_split = float(max(0.0, min(0.9, val_split)))
+
+    raw_seed = payload.get("val_seed")
+    val_seed = _safe_int(raw_seed)
+    if val_seed is None:
+        val_seed = 0
+    auto_val_split = _safe_bool(payload.get("auto_val_split"), default=True)
+
     return CocoPoseDatasetSpec(
         root=root_path,
         image_root=image_root,
@@ -888,6 +924,9 @@ def load_coco_pose_spec(data_yaml: Path) -> CocoPoseDatasetSpec:
         flip_idx=flip_idx,
         category_names=list(category_names),
         category_id_to_index=dict(category_id_to_index),
+        val_split=val_split,
+        val_seed=int(val_seed),
+        auto_val_split=bool(auto_val_split),
     )
 
 
@@ -905,9 +944,14 @@ def materialize_coco_pose_as_yolo(
     (output_dir / "labels" / "train").mkdir(parents=True, exist_ok=True)
     (output_dir / "labels" / "val").mkdir(parents=True, exist_ok=True)
 
-    def _convert_split(split_name: str, ann_path: Optional[Path]) -> None:
+    def _convert_split(
+        split_name: str,
+        ann_path: Optional[Path],
+        *,
+        include_image_ids: Optional[set[int]] = None,
+    ) -> int:
         if ann_path is None:
-            return
+            return 0
         payload = _load_coco_payload(ann_path)
         images_raw = payload.get("images")
         ann_raw = payload.get("annotations")
@@ -932,7 +976,10 @@ def materialize_coco_pose_as_yolo(
                 continue
             ann_by_image.setdefault(img_id, []).append(rec)
 
+        written = 0
         for image_id in sorted(images_by_id.keys()):
+            if include_image_ids is not None and int(image_id) not in include_image_ids:
+                continue
             image_rec = images_by_id[image_id]
             file_name = str(image_rec.get("file_name") or "").strip()
             if not file_name:
@@ -1034,9 +1081,65 @@ def materialize_coco_pose_as_yolo(
                 ("\n".join(lines) + ("\n" if lines else "")),
                 encoding="utf-8",
             )
+            written += 1
+        return int(written)
 
-    _convert_split("train", spec.train_ann)
-    _convert_split("val", spec.val_ann)
+    def _split_train_ids_for_val_from_train(
+        ann_path: Path,
+        *,
+        val_split: float,
+        seed: int,
+    ) -> Tuple[set[int], set[int]]:
+        payload = _load_coco_payload(ann_path)
+        images_raw = payload.get("images")
+        images_list = images_raw if isinstance(images_raw, list) else []
+        image_ids = [
+            int(img_id)
+            for img_id in (
+                _safe_int(rec.get("id")) if isinstance(rec, dict) else None
+                for rec in images_list
+            )
+            if img_id is not None
+        ]
+        image_ids = sorted(set(image_ids))
+        if len(image_ids) <= 1 or float(val_split) <= 0.0:
+            return set(image_ids), set()
+
+        val_count = int(round(float(len(image_ids)) * float(val_split)))
+        val_count = max(1, min(len(image_ids) - 1, val_count))
+        rng = random.Random(int(seed))
+        val_ids = set(rng.sample(image_ids, val_count))
+        train_ids = {int(i) for i in image_ids if int(i) not in val_ids}
+        return train_ids, val_ids
+
+    auto_val_split_used = False
+    written_train = 0
+    written_val = 0
+    if (
+        spec.train_ann is not None
+        and spec.val_ann is None
+        and spec.auto_val_split
+        and float(spec.val_split) > 0.0
+    ):
+        train_ids, val_ids = _split_train_ids_for_val_from_train(
+            spec.train_ann,
+            val_split=float(spec.val_split),
+            seed=int(spec.val_seed),
+        )
+        written_train = _convert_split(
+            "train",
+            spec.train_ann,
+            include_image_ids=train_ids,
+        )
+        written_val = _convert_split(
+            "val",
+            spec.train_ann,
+            include_image_ids=val_ids,
+        )
+        auto_val_split_used = bool(written_val > 0)
+    else:
+        written_train = _convert_split("train", spec.train_ann)
+        written_val = _convert_split("val", spec.val_ann)
 
     names = list(spec.category_names or ["animal"])
     yolo_payload: Dict[str, object] = {
@@ -1052,6 +1155,13 @@ def materialize_coco_pose_as_yolo(
     }
     if spec.flip_idx:
         yolo_payload["flip_idx"] = [int(x) for x in spec.flip_idx]
+    if auto_val_split_used:
+        yolo_payload["auto_val_split"] = True
+        yolo_payload["val_split"] = float(spec.val_split)
+        yolo_payload["val_seed"] = int(spec.val_seed)
+        yolo_payload["source_val_missing"] = True
+    yolo_payload["images_train_count"] = int(written_train)
+    yolo_payload["images_val_count"] = int(written_val)
 
     yolo_yaml = output_dir / "data.yaml"
     yolo_yaml.write_text(
@@ -1283,18 +1393,29 @@ def _infer_flip_idx_from_names(
     return infer_flip_idx_from_names(names, kpt_count=int(kpt_count))
 
 
-def merge_feature_layers(feats: torch.Tensor) -> torch.Tensor:
+def merge_feature_layers(feats: torch.Tensor, *, mode: str = "concat") -> torch.Tensor:
     """Merge multi-layer DINO features into a single CHW tensor.
 
-    When multiple transformer layers are requested, the extractor returns
-    [L, D, H, W]. We flatten layers into the channel dimension -> [L*D, H, W].
+    Supported modes:
+      - concat: [L,D,H,W] -> [L*D,H,W]
+      - mean:   [L,D,H,W] -> [D,H,W]
+      - max:    [L,D,H,W] -> [D,H,W]
     """
     if feats.ndim == 3:
         return feats
     if feats.ndim != 4:
         raise ValueError("Expected DINO features as CHW or LDHW")
+    mode_norm = str(mode or "concat").strip().lower()
     layer_count, dim, h, w = feats.shape
-    return feats.contiguous().view(int(layer_count * dim), int(h), int(w))
+    if mode_norm == "concat":
+        return feats.contiguous().view(int(layer_count * dim), int(h), int(w))
+    if mode_norm == "mean":
+        return feats.mean(dim=0)
+    if mode_norm == "max":
+        return feats.max(dim=0).values
+    raise ValueError(
+        f"Unsupported feature merge mode: {mode!r} (expected concat/mean/max)"
+    )
 
 
 @dataclass(frozen=True)
@@ -1556,6 +1677,7 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         cache_dtype: torch.dtype = torch.float16,
         return_images: bool = False,
         return_keypoints: bool = False,
+        feature_merge: str = "concat",
     ) -> None:
         self.image_paths = list(image_paths)
         self.kpt_count = int(kpt_count)
@@ -1591,6 +1713,12 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         # Feature caching is incompatible with random image augmentations.
         self.cache_dir = None if self.augment.enabled else cache_dir
         self.cache_dtype = cache_dtype
+        self.feature_merge = str(feature_merge or "concat").strip().lower()
+        if self.feature_merge not in {"concat", "mean", "max"}:
+            raise ValueError(
+                f"Unsupported feature_merge: {self.feature_merge!r} "
+                "(expected concat/mean/max)"
+            )
 
         if self.cache_dir is not None:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1864,10 +1992,8 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         model_id = str(getattr(self.extractor, "model_id", "") or "")
         short_side = str(getattr(cfg, "short_side", "") or "")
         patch_size = str(getattr(self.extractor, "patch_size", "") or "")
-        payload = (
-            f"{model_id}|{short_side}|{patch_size}|{layers_token}|{image_path}".encode(
-                "utf-8", errors="ignore"
-            )
+        payload = f"{model_id}|{short_side}|{patch_size}|{layers_token}|{self.feature_merge}|{image_path}".encode(
+            "utf-8", errors="ignore"
         )
         if cache_salt:
             payload = payload + b"|" + bytes(cache_salt)
@@ -1883,7 +2009,7 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
     ) -> torch.Tensor:
         if self.cache_dir is None:
             feats = self.extractor.extract(pil, return_type="torch")
-            feats = merge_feature_layers(feats)
+            feats = merge_feature_layers(feats, mode=self.feature_merge)
             return feats.to(dtype=self.cache_dtype)
 
         cache_path = self._cache_path(image_path, cache_salt=cache_salt)
@@ -1891,20 +2017,24 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
             try:
                 payload = torch.load(cache_path, map_location="cpu")
                 if isinstance(payload, torch.Tensor):
-                    cached = merge_feature_layers(payload)
+                    cached = merge_feature_layers(payload, mode=self.feature_merge)
                     if self._is_compatible_cached_features(cached):
                         return cached
                 if isinstance(payload, dict) and isinstance(
                     payload.get("feats"), torch.Tensor
                 ):
-                    cached = merge_feature_layers(payload["feats"])
+                    cached = merge_feature_layers(
+                        payload["feats"], mode=self.feature_merge
+                    )
                     if self._is_compatible_cached_features(cached):
                         return cached
             except Exception:
                 pass
 
         feats = self.extractor.extract(pil, return_type="torch")
-        feats = merge_feature_layers(feats).to(dtype=self.cache_dtype)
+        feats = merge_feature_layers(feats, mode=self.feature_merge).to(
+            dtype=self.cache_dtype
+        )
         try:
             torch.save({"feats": feats}, cache_path)
         except Exception:
@@ -1914,22 +2044,24 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
     def _is_compatible_cached_features(self, feats: torch.Tensor) -> bool:
         try:
             if feats.ndim == 4:
-                feats = merge_feature_layers(feats)
+                feats = merge_feature_layers(feats, mode=self.feature_merge)
             if feats.ndim != 3:
                 return False
             expected = getattr(getattr(self.extractor, "model", None), "config", None)
             expected_dim = int(getattr(expected, "hidden_size", 0) or 0)
             if expected_dim <= 0:
                 return True
-            layers = getattr(getattr(self.extractor, "cfg", None), "layers", None)
-            if layers is not None:
-                try:
-                    layer_count = len(list(layers))
-                except Exception:
+            if self.feature_merge == "concat":
+                layers = getattr(getattr(self.extractor, "cfg", None), "layers", None)
+                if layers is not None:
+                    try:
+                        layer_count = len(list(layers))
+                    except Exception:
+                        layer_count = 1
+                else:
                     layer_count = 1
-            else:
-                layer_count = 1
-            return int(feats.shape[0]) == int(expected_dim) * int(layer_count)
+                return int(feats.shape[0]) == int(expected_dim) * int(layer_count)
+            return int(feats.shape[0]) == int(expected_dim)
         except Exception:
             return False
 

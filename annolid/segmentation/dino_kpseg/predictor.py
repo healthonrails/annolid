@@ -193,6 +193,36 @@ class DinoKPSEGPredictor:
         return gated
 
     @staticmethod
+    def _flip_probs_horizontal(probs_khw: torch.Tensor) -> torch.Tensor:
+        if probs_khw.ndim != 3:
+            raise ValueError("Expected probs in KHW format")
+        return torch.flip(probs_khw, dims=[2])
+
+    def _restore_flip_semantics(self, probs_khw: torch.Tensor) -> torch.Tensor:
+        """Map horizontally flipped predictions back to canonical keypoint channels."""
+        if probs_khw.ndim != 3:
+            raise ValueError("Expected probs in KHW format")
+        flip_idx = self.flip_idx
+        if not flip_idx:
+            return probs_khw
+        if len(flip_idx) != int(probs_khw.shape[0]):
+            return probs_khw
+        index = torch.as_tensor(flip_idx, device=probs_khw.device, dtype=torch.long)
+        return probs_khw.index_select(0, index)
+
+    @staticmethod
+    def _merge_tta_probs(
+        probs_a: torch.Tensor,
+        probs_b: torch.Tensor,
+        *,
+        mode: str,
+    ) -> torch.Tensor:
+        tta_mode = str(mode or "mean").strip().lower()
+        if tta_mode == "max":
+            return torch.maximum(probs_a, probs_b)
+        return 0.5 * (probs_a + probs_b)
+
+    @staticmethod
     def _soft_argmax_coords(
         probs: torch.Tensor,
         *,
@@ -287,6 +317,8 @@ class DinoKPSEGPredictor:
         *,
         frame_shape: Tuple[int, int],
         mask: Optional[np.ndarray] = None,
+        tta_hflip: bool = False,
+        tta_merge: str = "mean",
     ) -> Tuple[torch.Tensor, Tuple[int, int], int]:
         """Compute keypoint probability maps in patch-grid resolution (K, H_p, W_p)."""
         feats = self._validate_features(feats)
@@ -298,6 +330,19 @@ class DinoKPSEGPredictor:
         logits = self.head(x)[0]  # [K, H_p, W_p]
         probs_raw = torch.sigmoid(logits).to("cpu")
         probs = probs_raw
+        if bool(tta_hflip):
+            # Test-time augmentation: run a horizontal flip pass and average.
+            x_flip = torch.flip(x, dims=[3])
+            logits_flip = self.head(x_flip)[0]
+            probs_flip = torch.sigmoid(logits_flip).to("cpu")
+            probs_flip = self._flip_probs_horizontal(probs_flip)
+            probs_flip = self._restore_flip_semantics(probs_flip)
+            probs_raw = self._merge_tta_probs(
+                probs_raw,
+                probs_flip,
+                mode=str(tta_merge),
+            )
+            probs = probs_raw
 
         if mask is not None:
             mask_arr = self._mask_to_uint8(mask, frame_shape=frame_shape)
@@ -319,10 +364,16 @@ class DinoKPSEGPredictor:
         topk: int = 5,
         nms_radius_px: float = 12.0,
         keypoint_indices: Optional[Iterable[int]] = None,
+        tta_hflip: bool = False,
+        tta_merge: str = "mean",
     ) -> List[List[Tuple[float, float, float]]]:
         """Return multiple peaks per keypoint channel as [(x, y, score), ...]."""
         probs, (resized_h, resized_w), patch_size = self._compute_probs(
-            feats, frame_shape=frame_shape, mask=mask
+            feats,
+            frame_shape=frame_shape,
+            mask=mask,
+            tta_hflip=bool(tta_hflip),
+            tta_merge=str(tta_merge),
         )
         thr = self._sanitize_threshold(
             float(threshold) if threshold is not None else float(self.meta.threshold)
@@ -376,6 +427,8 @@ class DinoKPSEGPredictor:
         topk: int = 5,
         nms_radius_px: float = 12.0,
         keypoint_indices: Optional[Iterable[int]] = None,
+        tta_hflip: bool = False,
+        tta_merge: str = "mean",
     ) -> List[List[Tuple[float, float, float]]]:
         feats = self.extract_features(frame_bgr)
         return self.predict_multi_peaks_from_features(
@@ -386,6 +439,8 @@ class DinoKPSEGPredictor:
             topk=topk,
             nms_radius_px=nms_radius_px,
             keypoint_indices=keypoint_indices,
+            tta_hflip=bool(tta_hflip),
+            tta_merge=str(tta_merge),
         )
 
     def extract_features(self, frame_bgr: np.ndarray) -> torch.Tensor:
@@ -393,7 +448,7 @@ class DinoKPSEGPredictor:
         feats = self.extractor.extract(
             frame_bgr, color_space="BGR", return_type="torch"
         )
-        feats = merge_feature_layers(feats)
+        feats = merge_feature_layers(feats, mode=str(self.meta.feature_merge))
         if feats.ndim != 3:
             raise ValueError("Expected DINO features as CHW")
         return feats
@@ -409,7 +464,7 @@ class DinoKPSEGPredictor:
                 f"checkpoint expects {self.head.in_dim} channels but extractor produced {int(feats.shape[0])}. "
                 "This often happens when training reused stale cached features from a different DINO backbone or layer set. "
                 "Fix by retraining with cache disabled (--no-cache) or clearing "
-                "~/.cache/annolid/dinokpseg/features, and ensure the checkpoint matches the backbone."
+                "~/.cache/annolid/dinokpseg/features, and ensure the checkpoint matches the backbone/layers/feature_merge."
             )
         return feats
 
@@ -443,6 +498,8 @@ class DinoKPSEGPredictor:
         stabilize_lr: bool = False,
         stabilize_cfg: Optional[LRStabilizeConfig] = None,
         instance_id: Optional[int] = None,
+        tta_hflip: bool = False,
+        tta_merge: str = "mean",
     ) -> DinoKPSEGPrediction:
         prev_xy = self._prev_keypoints_xy
         prev_scores = self._prev_keypoint_scores
@@ -454,7 +511,11 @@ class DinoKPSEGPredictor:
                 prev_xy, prev_scores = None, None
 
         probs, (resized_h, resized_w), patch_size = self._compute_probs(
-            feats, frame_shape=frame_shape, mask=mask
+            feats,
+            frame_shape=frame_shape,
+            mask=mask,
+            tta_hflip=bool(tta_hflip),
+            tta_merge=str(tta_merge),
         )
 
         thr = self._sanitize_threshold(
@@ -526,10 +587,11 @@ class DinoKPSEGPredictor:
         stabilize_lr: bool = False,
         stabilize_cfg: Optional[LRStabilizeConfig] = None,
         instance_id: Optional[int] = None,
+        tta_hflip: bool = False,
+        tta_merge: str = "mean",
     ) -> DinoKPSEGPrediction:
         feats = self.extract_features(frame_bgr)
-        return self.predict_from_features(
-            feats,
+        kwargs = dict(
             frame_shape=(int(frame_bgr.shape[0]), int(frame_bgr.shape[1])),
             mask=mask,
             threshold=threshold,
@@ -537,7 +599,16 @@ class DinoKPSEGPredictor:
             stabilize_lr=stabilize_lr,
             stabilize_cfg=stabilize_cfg,
             instance_id=instance_id,
+            tta_hflip=bool(tta_hflip),
+            tta_merge=str(tta_merge),
         )
+        try:
+            return self.predict_from_features(feats, **kwargs)
+        except TypeError:
+            # Backward compatibility for monkeypatched or legacy callables.
+            kwargs.pop("tta_hflip", None)
+            kwargs.pop("tta_merge", None)
+            return self.predict_from_features(feats, **kwargs)
 
     def predict_instances(
         self,
@@ -551,6 +622,8 @@ class DinoKPSEGPredictor:
         stabilize_cfg: Optional[LRStabilizeConfig] = None,
         bbox_scale: float = 1.0,
         normalized: bool = False,
+        tta_hflip: bool = False,
+        tta_merge: str = "mean",
     ) -> List[Tuple[int, DinoKPSEGPrediction]]:
         if frame_bgr.ndim != 3:
             raise ValueError("Expected BGR frame with shape HxWx3")
@@ -588,15 +661,22 @@ class DinoKPSEGPredictor:
 
             crop = frame_bgr[ry1:ry2, rx1:rx2]
             feats = self.extract_features(crop)
-            pred = self.predict_from_features(
-                feats,
+            kwargs = dict(
                 frame_shape=(int(crop.shape[0]), int(crop.shape[1])),
                 threshold=threshold,
                 return_patch_masks=return_patch_masks,
                 stabilize_lr=stabilize_lr,
                 stabilize_cfg=stabilize_cfg,
                 instance_id=int(instance_id),
+                tta_hflip=bool(tta_hflip),
+                tta_merge=str(tta_merge),
             )
+            try:
+                pred = self.predict_from_features(feats, **kwargs)
+            except TypeError:
+                kwargs.pop("tta_hflip", None)
+                kwargs.pop("tta_merge", None)
+                pred = self.predict_from_features(feats, **kwargs)
             shifted_xy = [
                 (float(x) + float(rx1), float(y) + float(ry1))
                 for x, y in pred.keypoints_xy

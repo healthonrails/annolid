@@ -6,6 +6,8 @@ from __future__ import annotations
 MODEL_NAME = "facebook/dinov3-vits16-pretrain-lvd1689m"
 SHORT_SIDE = 768
 LAYERS = "-1,-2"
+FEATURE_MERGE = "concat"
+FEATURE_ALIGN_DIM = 0
 
 # Supervision/instance handling
 RADIUS_PX = 5.5
@@ -23,6 +25,7 @@ HEAD_TYPE = "hybrid"
 ATTN_HEADS = 4
 ATTN_LAYERS = 2
 COORD_WARMUP_EPOCHS = 5
+FLAT_EPOCH = 0
 
 # Loss weighting
 BCE_TYPE = "bce"
@@ -31,6 +34,12 @@ FOCAL_GAMMA = 1.0
 DICE_LOSS_WEIGHT = 0.35
 COORD_LOSS_WEIGHT = 0.50
 COORD_LOSS_TYPE = "smooth_l1"
+OBJ_LOSS_WEIGHT = 0.0
+BOX_LOSS_WEIGHT = 0.0
+INST_LOSS_WEIGHT = 0.0
+MULTITASK_AUX_WARMUP_EPOCHS = 10
+USE_EMA = True
+EMA_DECAY = 0.9995
 
 # Localization curriculum defaults
 RADIUS_SCHEDULE = "linear"
@@ -61,6 +70,20 @@ SCALE = 0.03
 BRIGHTNESS = 0.03
 CONTRAST = 0.03
 SATURATION = 0.02
+AUG_START_EPOCH = 1
+AUG_STOP_EPOCH = 0
+NO_AUG_EPOCH = 0
+
+# Training schedule presets
+SCHEDULE_PROFILE = "baseline"
+AGGRESSIVE_S_CHANGE_MATCHER = False
+AGGRESSIVE_S_MATCHER_CHANGE_EPOCH = 100
+AGGRESSIVE_S_IOU_ORDER_ALPHA = 4.0
+
+# Backward-compatible aliases
+DEIM_CHANGE_MATCHER = AGGRESSIVE_S_CHANGE_MATCHER
+DEIM_MATCHER_CHANGE_EPOCH = AGGRESSIVE_S_MATCHER_CHANGE_EPOCH
+DEIM_IOU_ORDER_ALPHA = AGGRESSIVE_S_IOU_ORDER_ALPHA
 
 # TensorBoard projector defaults (expensive; keep opt-in by default)
 TB_PROJECTOR = False

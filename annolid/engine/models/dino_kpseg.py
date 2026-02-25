@@ -13,6 +13,19 @@ from annolid.segmentation.dino_kpseg.cli_utils import parse_layers
 from annolid.segmentation.dino_kpseg import defaults as dino_defaults
 
 
+def _parse_weight_list(text: Optional[str], *, n: int) -> tuple[float, ...]:
+    raw = str(text or "").strip()
+    if not raw:
+        return tuple(1.0 for _ in range(int(n)))
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if len(parts) != int(n):
+        raise ValueError(f"Expected {int(n)} comma-separated floats, got {len(parts)}")
+    out = []
+    for token in parts:
+        out.append(float(token))
+    return tuple(out)
+
+
 @register_model
 class DinoKPSEGPlugin(ModelPluginBase):
     name = "dino_kpseg"
@@ -49,6 +62,17 @@ class DinoKPSEGPlugin(ModelPluginBase):
             default=dino_defaults.LAYERS,
             help="Comma-separated transformer block indices",
         )
+        parser.add_argument(
+            "--feature-merge",
+            choices=("concat", "mean", "max"),
+            default=dino_defaults.FEATURE_MERGE,
+            help="How to merge multi-layer DINO features.",
+        )
+        parser.add_argument(
+            "--feature-align-dim",
+            default=str(dino_defaults.FEATURE_ALIGN_DIM),
+            help="Optional trainable 1x1 feature alignment dim (0=off or auto).",
+        )
         parser.add_argument("--radius-px", type=float, default=dino_defaults.RADIUS_PX)
         parser.add_argument(
             "--mask-type",
@@ -77,20 +101,93 @@ class DinoKPSEGPlugin(ModelPluginBase):
         parser.add_argument("--hidden-dim", type=int, default=dino_defaults.HIDDEN_DIM)
         parser.add_argument("--lr", type=float, default=dino_defaults.LR)
         parser.add_argument("--epochs", type=int, default=dino_defaults.EPOCHS)
+        parser.add_argument("--batch", type=int, default=dino_defaults.BATCH)
+        parser.add_argument(
+            "--accumulate",
+            type=int,
+            default=1,
+            help="Gradient accumulation steps.",
+        )
+        parser.add_argument(
+            "--grad-clip",
+            type=float,
+            default=1.0,
+            help="Gradient clipping max norm (0=off).",
+        )
         parser.add_argument(
             "--log-every-steps",
             type=int,
             default=100,
             help="Emit step-level progress logs every N train/val batches (0=off).",
         )
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument(
+            "--balanced-bce",
+            dest="balanced_bce",
+            action="store_true",
+            help="Enable per-batch positive class reweighting for BCE (recommended).",
+        )
+        group.add_argument(
+            "--no-balanced-bce",
+            dest="balanced_bce",
+            action="store_false",
+            help="Disable positive class reweighting for BCE.",
+        )
+        parser.set_defaults(balanced_bce=True)
+        parser.add_argument(
+            "--max-pos-weight",
+            type=float,
+            default=50.0,
+            help="Clamp for balanced BCE pos_weight (prevents instability).",
+        )
         parser.add_argument("--threshold", type=float, default=dino_defaults.THRESHOLD)
         parser.add_argument("--device", default=None)
         parser.add_argument(
             "--no-cache", action="store_true", help="Disable feature caching"
         )
+        sched_group = parser.add_mutually_exclusive_group()
+        sched_group.add_argument(
+            "--cos-lr",
+            dest="cos_lr",
+            action="store_true",
+            help="Use cosine LR decay (recommended).",
+        )
+        sched_group.add_argument(
+            "--no-cos-lr",
+            dest="cos_lr",
+            action="store_false",
+            help="Disable cosine LR decay.",
+        )
+        parser.set_defaults(cos_lr=True)
+        parser.add_argument(
+            "--warmup-epochs",
+            type=int,
+            default=3,
+            help="Linear LR warmup epochs (0=off).",
+        )
+        parser.add_argument(
+            "--lrf",
+            "--lr-final-frac",
+            dest="lr_final_frac",
+            type=float,
+            default=0.01,
+            help="Final LR fraction for cosine schedule.",
+        )
+        parser.add_argument(
+            "--flat-epoch",
+            type=int,
+            default=dino_defaults.FLAT_EPOCH,
+            help="Hold base LR through this epoch before cosine decay starts (0=off).",
+        )
+        parser.add_argument(
+            "--schedule-profile",
+            choices=("baseline", "aggressive_s"),
+            default=dino_defaults.SCHEDULE_PROFILE,
+            help="Optional schedule preset. aggressive_s sets epoch windows to [4,64,120] with 12 no-aug tail.",
+        )
         parser.add_argument(
             "--head-type",
-            choices=("conv", "attn", "hybrid"),
+            choices=("conv", "attn", "hybrid", "multitask"),
             default=dino_defaults.HEAD_TYPE,
             help="Head architecture",
         )
@@ -147,6 +244,50 @@ class DinoKPSEGPlugin(ModelPluginBase):
             choices=("smooth_l1", "l1", "l2"),
             default=dino_defaults.COORD_LOSS_TYPE,
             help="Coordinate regression loss type.",
+        )
+        parser.add_argument(
+            "--obj-loss-weight",
+            type=float,
+            default=dino_defaults.OBJ_LOSS_WEIGHT,
+            help="Auxiliary objectness loss weight (multitask head).",
+        )
+        parser.add_argument(
+            "--box-loss-weight",
+            type=float,
+            default=dino_defaults.BOX_LOSS_WEIGHT,
+            help="Auxiliary box regression loss weight (multitask head).",
+        )
+        parser.add_argument(
+            "--inst-loss-weight",
+            type=float,
+            default=dino_defaults.INST_LOSS_WEIGHT,
+            help="Auxiliary instance-mask loss weight (multitask head).",
+        )
+        parser.add_argument(
+            "--multitask-aux-warmup-epochs",
+            type=int,
+            default=dino_defaults.MULTITASK_AUX_WARMUP_EPOCHS,
+            help="Warm up multitask auxiliary losses over N epochs (0=off).",
+        )
+        ema_group = parser.add_mutually_exclusive_group()
+        ema_group.add_argument(
+            "--ema",
+            dest="use_ema",
+            action="store_true",
+            help="Enable EMA model for validation/checkpoints.",
+        )
+        ema_group.add_argument(
+            "--no-ema",
+            dest="use_ema",
+            action="store_false",
+            help="Disable EMA model.",
+        )
+        parser.set_defaults(use_ema=bool(dino_defaults.USE_EMA))
+        parser.add_argument(
+            "--ema-decay",
+            type=float,
+            default=dino_defaults.EMA_DECAY,
+            help="EMA decay factor (0..1).",
         )
         parser.add_argument(
             "--bce-type",
@@ -211,6 +352,24 @@ class DinoKPSEGPlugin(ModelPluginBase):
             type=int,
             default=dino_defaults.EARLY_STOP_MIN_EPOCHS,
             help="Do not early-stop before this epoch",
+        )
+        parser.add_argument(
+            "--best-metric",
+            choices=("pck@8px", "pck_weighted", "val_loss", "train_loss"),
+            default=dino_defaults.BEST_METRIC,
+            help="Metric for best checkpoint selection.",
+        )
+        parser.add_argument(
+            "--early-stop-metric",
+            choices=("auto", "pck@8px", "pck_weighted", "val_loss", "train_loss"),
+            default=dino_defaults.EARLY_STOP_METRIC,
+            help="Metric for early stopping (default: auto -> same as best-metric).",
+        )
+        parser.add_argument(
+            "--pck-weighted-weights",
+            type=str,
+            default=dino_defaults.PCK_WEIGHTED_WEIGHTS,
+            help="Comma-separated weights for pck_weighted thresholds [2,4,8,16].",
         )
         parser.add_argument(
             "--tb-add-graph",
@@ -332,6 +491,24 @@ class DinoKPSEGPlugin(ModelPluginBase):
             help="Saturation jitter (+/-)",
         )
         parser.add_argument(
+            "--aug-start-epoch",
+            type=int,
+            default=dino_defaults.AUG_START_EPOCH,
+            help="First epoch where train augmentations are active.",
+        )
+        parser.add_argument(
+            "--aug-stop-epoch",
+            type=int,
+            default=dino_defaults.AUG_STOP_EPOCH,
+            help="Last epoch where train augmentations are active (0=until no-aug tail).",
+        )
+        parser.add_argument(
+            "--no-aug-epoch",
+            type=int,
+            default=dino_defaults.NO_AUG_EPOCH,
+            help="Disable train augmentations for the final N epochs (0=off).",
+        )
+        parser.add_argument(
             "--seed",
             type=int,
             default=None,
@@ -364,6 +541,12 @@ class DinoKPSEGPlugin(ModelPluginBase):
             model_name=str(args.model_name),
             short_side=int(args.short_side),
             layers=layers,
+            feature_merge=str(
+                getattr(args, "feature_merge", dino_defaults.FEATURE_MERGE)
+            ),
+            feature_align_dim=getattr(
+                args, "feature_align_dim", dino_defaults.FEATURE_ALIGN_DIM
+            ),
             radius_px=float(args.radius_px),
             mask_type=str(args.mask_type),
             heatmap_sigma_px=(
@@ -375,6 +558,18 @@ class DinoKPSEGPlugin(ModelPluginBase):
             lr=float(args.lr),
             epochs=int(args.epochs),
             threshold=float(args.threshold),
+            batch_size=int(getattr(args, "batch", dino_defaults.BATCH)),
+            accumulate=int(getattr(args, "accumulate", 1)),
+            grad_clip=float(getattr(args, "grad_clip", 1.0)),
+            balanced_bce=bool(getattr(args, "balanced_bce", True)),
+            max_pos_weight=float(getattr(args, "max_pos_weight", 50.0)),
+            cos_lr=bool(getattr(args, "cos_lr", True)),
+            warmup_epochs=int(getattr(args, "warmup_epochs", 3)),
+            lr_final_frac=float(getattr(args, "lr_final_frac", 0.01)),
+            flat_epoch=int(getattr(args, "flat_epoch", dino_defaults.FLAT_EPOCH)),
+            schedule_profile=str(
+                getattr(args, "schedule_profile", dino_defaults.SCHEDULE_PROFILE)
+            ),
             device=(str(args.device).strip() if args.device else None),
             cache_features=not bool(args.no_cache),
             head_type=str(args.head_type),
@@ -388,6 +583,24 @@ class DinoKPSEGPlugin(ModelPluginBase):
             dice_loss_weight=float(args.dice_loss_weight),
             coord_loss_weight=float(args.coord_loss_weight),
             coord_loss_type=str(args.coord_loss_type),
+            obj_loss_weight=float(
+                getattr(args, "obj_loss_weight", dino_defaults.OBJ_LOSS_WEIGHT)
+            ),
+            box_loss_weight=float(
+                getattr(args, "box_loss_weight", dino_defaults.BOX_LOSS_WEIGHT)
+            ),
+            inst_loss_weight=float(
+                getattr(args, "inst_loss_weight", dino_defaults.INST_LOSS_WEIGHT)
+            ),
+            multitask_aux_warmup_epochs=int(
+                getattr(
+                    args,
+                    "multitask_aux_warmup_epochs",
+                    dino_defaults.MULTITASK_AUX_WARMUP_EPOCHS,
+                )
+            ),
+            use_ema=bool(getattr(args, "use_ema", dino_defaults.USE_EMA)),
+            ema_decay=float(getattr(args, "ema_decay", dino_defaults.EMA_DECAY)),
             bce_type=str(getattr(args, "bce_type", dino_defaults.BCE_TYPE)),
             focal_alpha=float(getattr(args, "focal_alpha", dino_defaults.FOCAL_ALPHA)),
             focal_gamma=float(getattr(args, "focal_gamma", dino_defaults.FOCAL_GAMMA)),
@@ -412,6 +625,16 @@ class DinoKPSEGPlugin(ModelPluginBase):
             early_stop_patience=int(args.early_stop_patience),
             early_stop_min_delta=float(args.early_stop_min_delta),
             early_stop_min_epochs=int(args.early_stop_min_epochs),
+            best_metric=str(getattr(args, "best_metric", dino_defaults.BEST_METRIC)),
+            early_stop_metric=str(
+                getattr(args, "early_stop_metric", dino_defaults.EARLY_STOP_METRIC)
+            ),
+            pck_weighted_weights=_parse_weight_list(
+                getattr(
+                    args, "pck_weighted_weights", dino_defaults.PCK_WEIGHTED_WEIGHTS
+                ),
+                n=4,
+            ),
             tb_add_graph=bool(args.tb_add_graph),
             tb_projector=bool(
                 getattr(args, "tb_projector", dino_defaults.TB_PROJECTOR)
@@ -491,6 +714,13 @@ class DinoKPSEGPlugin(ModelPluginBase):
                 saturation=float(args.saturation),
                 seed=(int(args.seed) if args.seed is not None else None),
             ),
+            aug_start_epoch=int(
+                getattr(args, "aug_start_epoch", dino_defaults.AUG_START_EPOCH)
+            ),
+            aug_stop_epoch=int(
+                getattr(args, "aug_stop_epoch", dino_defaults.AUG_STOP_EPOCH)
+            ),
+            no_aug_epoch=int(getattr(args, "no_aug_epoch", dino_defaults.NO_AUG_EPOCH)),
         )
         print(str(best))
         return 0
@@ -502,6 +732,23 @@ class DinoKPSEGPlugin(ModelPluginBase):
         parser.add_argument("--image", required=True, help="Input image path")
         parser.add_argument("--device", default=None)
         parser.add_argument("--threshold", type=float, default=None)
+        parser.add_argument(
+            "--tta-hflip",
+            action="store_true",
+            help="Enable horizontal-flip test-time augmentation.",
+        )
+        parser.add_argument(
+            "--tta-merge",
+            choices=("mean", "max"),
+            default="mean",
+            help="How to merge original and flipped predictions when --tta-hflip is enabled.",
+        )
+        parser.add_argument(
+            "--min-keypoint-score",
+            type=float,
+            default=0.0,
+            help="Drop keypoints below this confidence score in output payload.",
+        )
         parser.add_argument(
             "--out", default=None, help="Optional JSON output path (default: stdout)"
         )
@@ -518,6 +765,9 @@ class DinoKPSEGPlugin(ModelPluginBase):
             raise RuntimeError("DinoKPSEG predict requires opencv-python.") from exc
 
         from annolid.segmentation.dino_kpseg.predictor import DinoKPSEGPredictor
+        from annolid.segmentation.dino_kpseg.inference_utils import (
+            filter_keypoints_by_score,
+        )
 
         img_path = Path(args.image).expanduser().resolve()
         frame_bgr = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
@@ -531,7 +781,21 @@ class DinoKPSEGPlugin(ModelPluginBase):
             frame_bgr,
             threshold=args.threshold,
             return_patch_masks=bool(args.return_patch_masks),
+            tta_hflip=bool(getattr(args, "tta_hflip", False)),
+            tta_merge=str(getattr(args, "tta_merge", "mean")),
         )
+        pred, kept_indices = filter_keypoints_by_score(
+            pred,
+            min_score=float(getattr(args, "min_keypoint_score", 0.0)),
+            return_indices=True,
+        )
+        keypoint_names = predictor.keypoint_names
+        if keypoint_names is not None:
+            keypoint_names = [
+                str(keypoint_names[int(i)])
+                for i in kept_indices
+                if 0 <= int(i) < len(keypoint_names)
+            ]
 
         payload = {
             "model": "dino_kpseg",
@@ -539,7 +803,7 @@ class DinoKPSEGPlugin(ModelPluginBase):
             "image": str(img_path),
             "keypoints_xy": [[float(x), float(y)] for x, y in pred.keypoints_xy],
             "keypoint_scores": [float(s) for s in pred.keypoint_scores],
-            "keypoint_names": predictor.keypoint_names,
+            "keypoint_names": keypoint_names,
             "resized_hw": [int(pred.resized_hw[0]), int(pred.resized_hw[1])],
             "patch_size": int(pred.patch_size),
             "masks_patch": pred.masks_patch.tolist()

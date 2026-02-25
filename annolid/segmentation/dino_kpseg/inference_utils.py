@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -105,12 +106,13 @@ def predict_on_instance_crops(
     return_patch_masks: bool = False,
     stabilize_lr: bool = False,
     stabilize_cfg: Optional[LRStabilizeConfig] = None,
+    tta_hflip: bool = False,
+    tta_merge: str = "mean",
 ) -> List[Tuple[int, DinoKPSEGPrediction]]:
     results: List[Tuple[int, DinoKPSEGPrediction]] = []
     for crop in crops:
         feats = predictor.extract_features(crop.crop_bgr)
-        pred = predictor.predict_from_features(
-            feats,
+        kwargs = dict(
             frame_shape=(int(crop.crop_bgr.shape[0]), int(crop.crop_bgr.shape[1])),
             mask=crop.crop_mask,
             threshold=threshold,
@@ -118,7 +120,15 @@ def predict_on_instance_crops(
             stabilize_lr=stabilize_lr,
             stabilize_cfg=stabilize_cfg,
             instance_id=int(crop.instance_id),
+            tta_hflip=bool(tta_hflip),
+            tta_merge=str(tta_merge),
         )
+        try:
+            pred = predictor.predict_from_features(feats, **kwargs)
+        except TypeError:
+            kwargs.pop("tta_hflip", None)
+            kwargs.pop("tta_merge", None)
+            pred = predictor.predict_from_features(feats, **kwargs)
         shifted_xy = [
             (float(x) + float(crop.offset_xy[0]), float(y) + float(crop.offset_xy[1]))
             for x, y in pred.keypoints_xy
@@ -136,6 +146,40 @@ def predict_on_instance_crops(
             )
         )
     return results
+
+
+def filter_keypoints_by_score(
+    pred: DinoKPSEGPrediction,
+    *,
+    min_score: float = 0.0,
+    return_indices: bool = False,
+) -> DinoKPSEGPrediction | Tuple[DinoKPSEGPrediction, List[int]]:
+    """Return a prediction with low-confidence keypoints dropped."""
+    thr = float(min_score)
+    if not math.isfinite(thr) or thr <= 0:
+        if return_indices:
+            return pred, list(range(len(pred.keypoint_scores)))
+        return pred
+    keep_xy: List[Tuple[float, float]] = []
+    keep_scores: List[float] = []
+    keep_idx: List[int] = []
+    for idx, ((x, y), s) in enumerate(zip(pred.keypoints_xy, pred.keypoint_scores)):
+        score = float(s)
+        if score < thr:
+            continue
+        keep_xy.append((float(x), float(y)))
+        keep_scores.append(score)
+        keep_idx.append(int(idx))
+    filtered = DinoKPSEGPrediction(
+        keypoints_xy=keep_xy,
+        keypoint_scores=keep_scores,
+        masks_patch=pred.masks_patch,
+        resized_hw=pred.resized_hw,
+        patch_size=pred.patch_size,
+    )
+    if return_indices:
+        return filtered, keep_idx
+    return filtered
 
 
 def build_instance_crops_for_tracking(

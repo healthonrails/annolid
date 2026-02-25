@@ -5,6 +5,8 @@ import json
 import math
 import random
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -22,8 +24,14 @@ from annolid.segmentation.dino_kpseg.data import (
     _parse_yolo_pose_line,
     DinoKPSEGPoseDataset,
     build_extractor,
+    load_coco_pose_spec,
     load_labelme_pose_spec,
     load_yolo_pose_spec,
+    materialize_coco_pose_as_yolo,
+)
+from annolid.segmentation.dino_kpseg import defaults as dino_defaults
+from annolid.segmentation.dino_kpseg.format_utils import (
+    normalize_dino_kpseg_data_format,
 )
 from annolid.segmentation.dino_kpseg.keypoints import infer_left_right_pairs
 from annolid.utils.annotation_store import load_labelme_json
@@ -828,117 +836,184 @@ def precompute_features(
     bbox_scale: float = 1.25,
     cache_dir: Optional[Path] = None,
     cache_dtype: str = "float16",
+    feature_merge: str = "concat",
 ) -> Dict[str, object]:
-    """Precompute and cache DINOv3 features for a pose dataset (YOLO or LabelMe)."""
-    data_yaml = Path(data_yaml)
-    data_format_norm = str(data_format or "auto").strip().lower()
-    if data_format_norm not in {"auto", "yolo", "labelme"}:
-        raise ValueError(f"Unsupported data_format: {data_format_norm!r}")
-    if data_format_norm == "auto":
-        try:
-            payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
-        except Exception:
-            payload = {}
-        fmt_token = ""
-        if isinstance(payload, dict):
-            fmt_token = (
-                str(payload.get("format") or payload.get("type") or "").strip().lower()
-            )
-        data_format_norm = "labelme" if "labelme" in fmt_token else "yolo"
+    """Precompute and cache DINOv3 features for a pose dataset."""
+    data_yaml = Path(data_yaml).expanduser().resolve()
+    feature_merge = str(feature_merge or "concat").strip().lower()
+    if feature_merge not in {"concat", "mean", "max"}:
+        raise ValueError(
+            f"Unsupported feature_merge: {feature_merge!r} (expected concat/mean/max)"
+        )
+    requested_data_format = str(data_format or "auto").strip().lower()
+    if requested_data_format not in {"auto", "yolo", "labelme", "coco"}:
+        raise ValueError(f"Unsupported data_format: {requested_data_format!r}")
 
-    if data_format_norm == "labelme":
-        spec_lm = load_labelme_pose_spec(Path(data_yaml))
-        train_images = list(spec_lm.train_images)
-        val_images = list(spec_lm.val_images)
-        train_labels = list(spec_lm.train_json)
-        val_labels = list(spec_lm.val_json)
-        kpt_count = int(spec_lm.kpt_count)
-        kpt_dims = int(spec_lm.kpt_dims)
-        keypoint_names = list(spec_lm.keypoint_names)
-        flip_idx = spec_lm.flip_idx
-    else:
-        spec = load_yolo_pose_spec(Path(data_yaml))
-        train_images = list(spec.train_images)
-        val_images = list(spec.val_images)
-        train_labels = None
-        val_labels = None
-        kpt_count = int(spec.kpt_count)
-        kpt_dims = int(spec.kpt_dims)
-        keypoint_names = list(spec.keypoint_names or [])
-        flip_idx = spec.flip_idx
-
-    extractor = build_extractor(
-        model_name=str(model_name),
-        short_side=int(short_side),
-        layers=tuple(int(x) for x in layers),
-        device=(str(device).strip() if device else None),
+    payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+    payload = payload if isinstance(payload, dict) else {}
+    data_format_norm = normalize_dino_kpseg_data_format(
+        payload,
+        data_format=requested_data_format,
     )
-    if cache_dir is None:
-        cache_root = Path.home() / ".cache" / "annolid" / "dinokpseg" / "features"
-        fingerprint = f"{model_name}|{short_side}|{tuple(int(x) for x in layers)}"
-        digest = (
-            __import__("hashlib").sha1(fingerprint.encode("utf-8")).hexdigest()[:12]
+
+    temp_coco_staging: Optional[Path] = None
+    source_yaml = Path(data_yaml)
+    if data_format_norm == "coco":
+        coco_spec = load_coco_pose_spec(data_yaml)
+        temp_coco_staging = Path(
+            tempfile.mkdtemp(
+                prefix="dino_kpseg_precompute_coco_",
+                dir=tempfile.gettempdir(),
+            )
         )
-        cache_dir = cache_root / digest
-    cache_dir.mkdir(parents=True, exist_ok=True)
+        source_yaml = materialize_coco_pose_as_yolo(
+            spec=coco_spec,
+            output_dir=temp_coco_staging,
+        )
+        data_format_norm = "yolo"
 
-    cache_dtype_norm = str(cache_dtype).strip().lower()
-    torch_dtype = None
-    if cache_dtype_norm == "float32":
-        torch_dtype = torch.float32
-    else:
-        torch_dtype = torch.float16
+    try:
+        if data_format_norm == "labelme":
+            spec_lm = load_labelme_pose_spec(source_yaml)
+            train_images = list(spec_lm.train_images)
+            val_images = list(spec_lm.val_images)
+            train_labels = list(spec_lm.train_json)
+            val_labels = list(spec_lm.val_json)
+            kpt_count = int(spec_lm.kpt_count)
+            kpt_dims = int(spec_lm.kpt_dims)
+            keypoint_names = list(spec_lm.keypoint_names)
+            flip_idx = spec_lm.flip_idx
+        else:
+            spec = load_yolo_pose_spec(source_yaml)
+            train_images = list(spec.train_images)
+            val_images = list(spec.val_images)
+            train_labels = None
+            val_labels = None
+            kpt_count = int(spec.kpt_count)
+            kpt_dims = int(spec.kpt_dims)
+            keypoint_names = list(spec.keypoint_names or [])
+            flip_idx = spec.flip_idx
 
-    summary: Dict[str, object] = {
-        "cache_dir": str(cache_dir),
-        "model_name": str(model_name),
-        "short_side": int(short_side),
-        "layers": [int(x) for x in layers],
-        "split": str(split),
-        "data_format": str(data_format_norm),
-        "counts": {},
+        extractor = build_extractor(
+            model_name=str(model_name),
+            short_side=int(short_side),
+            layers=tuple(int(x) for x in layers),
+            device=(str(device).strip() if device else None),
+        )
+        if cache_dir is None:
+            cache_root = Path.home() / ".cache" / "annolid" / "dinokpseg" / "features"
+            fingerprint = f"{model_name}|{short_side}|{tuple(int(x) for x in layers)}"
+            digest = (
+                __import__("hashlib").sha1(fingerprint.encode("utf-8")).hexdigest()[:12]
+            )
+            cache_dir = cache_root / digest
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        cache_dtype_norm = str(cache_dtype).strip().lower()
+        torch_dtype = torch.float32 if cache_dtype_norm == "float32" else torch.float16
+
+        summary: Dict[str, object] = {
+            "cache_dir": str(cache_dir),
+            "model_name": str(model_name),
+            "short_side": int(short_side),
+            "layers": [int(x) for x in layers],
+            "split": str(split),
+            "data_format": str(data_format_norm),
+            "counts": {},
+        }
+
+        split_norm = str(split or "both").strip().lower()
+        split_items: List[Tuple[str, List[Path], Optional[List[Optional[Path]]]]] = []
+        if split_norm == "train":
+            split_items = [("train", train_images, train_labels)]
+        elif split_norm == "val":
+            split_items = [("val", val_images, val_labels)]
+        else:
+            split_items = [
+                ("train", train_images, train_labels),
+                ("val", val_images, val_labels),
+            ]
+
+        for split_name, images, label_paths in split_items:
+            if not images:
+                summary["counts"][split_name] = 0
+                continue
+            ds = DinoKPSEGPoseDataset(
+                list(images),
+                kpt_count=kpt_count,
+                kpt_dims=kpt_dims,
+                radius_px=6.0,
+                extractor=extractor,
+                label_format=str(data_format_norm),
+                label_paths=label_paths,
+                keypoint_names=keypoint_names,
+                flip_idx=flip_idx,
+                augment=None,
+                cache_dir=cache_dir,
+                mask_type="gaussian",
+                heatmap_sigma_px=None,
+                instance_mode=str(instance_mode),
+                bbox_scale=float(bbox_scale),
+                cache_dtype=torch_dtype,
+                return_images=False,
+                feature_merge=str(feature_merge),
+            )
+            for idx in range(len(ds)):
+                _ = ds[int(idx)]
+            summary["counts"][split_name] = int(len(ds))
+
+        return summary
+    finally:
+        if temp_coco_staging is not None:
+            shutil.rmtree(temp_coco_staging, ignore_errors=True)
+
+
+def generate_train_config(
+    *,
+    data_yaml: Path,
+    output: Path,
+    schedule_profile: str = "aggressive_s",
+    data_format: str = "auto",
+    augment: bool = True,
+) -> Dict[str, object]:
+    """Write a DinoKPSEG training config YAML and return a launch summary."""
+    profile = str(schedule_profile or "baseline").strip().lower()
+    if profile not in {"baseline", "aggressive_s"}:
+        raise ValueError(
+            f"Unsupported schedule_profile: {schedule_profile!r} "
+            "(expected baseline/aggressive_s)"
+        )
+    data_yaml = Path(data_yaml).expanduser().resolve()
+    out_path = Path(output).expanduser().resolve()
+    if out_path.suffix.lower() not in {".yaml", ".yml"}:
+        out_path = out_path / f"train_{profile}.yaml"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload: Dict[str, object] = {
+        "data": str(data_yaml),
+        "data_format": str(data_format),
+        "schedule_profile": str(profile),
+        "augment": bool(augment),
+        "feature_merge": str(dino_defaults.FEATURE_MERGE),
+        "feature_align_dim": int(dino_defaults.FEATURE_ALIGN_DIM),
+        "model_name": str(dino_defaults.MODEL_NAME),
+        "short_side": int(dino_defaults.SHORT_SIDE),
+        "layers": str(dino_defaults.LAYERS),
+        "hidden_dim": int(dino_defaults.HIDDEN_DIM),
+        "batch": int(dino_defaults.BATCH),
+        "log_every_steps": 100,
+        "instance_mode": str(dino_defaults.INSTANCE_MODE),
+        "bbox_scale": float(dino_defaults.BBOX_SCALE),
     }
-
-    split_norm = str(split or "both").strip().lower()
-    split_items: List[Tuple[str, List[Path], Optional[List[Optional[Path]]]]] = []
-    if split_norm == "train":
-        split_items = [("train", train_images, train_labels)]
-    elif split_norm == "val":
-        split_items = [("val", val_images, val_labels)]
-    else:
-        split_items = [
-            ("train", train_images, train_labels),
-            ("val", val_images, val_labels),
-        ]
-
-    for split_name, images, label_paths in split_items:
-        if not images:
-            summary["counts"][split_name] = 0
-            continue
-        ds = DinoKPSEGPoseDataset(
-            list(images),
-            kpt_count=kpt_count,
-            kpt_dims=kpt_dims,
-            radius_px=6.0,
-            extractor=extractor,
-            label_format=str(data_format_norm),
-            label_paths=label_paths,
-            keypoint_names=keypoint_names,
-            flip_idx=flip_idx,
-            augment=None,
-            cache_dir=cache_dir,
-            mask_type="gaussian",
-            heatmap_sigma_px=None,
-            instance_mode=str(instance_mode),
-            bbox_scale=float(bbox_scale),
-            cache_dtype=torch_dtype,
-            return_images=False,
-        )
-        for idx in range(len(ds)):
-            _ = ds[int(idx)]
-        summary["counts"][split_name] = int(len(ds))
-
-    return summary
+    out_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    launch_cmd = (
+        f"python -m annolid.segmentation.dino_kpseg.train --config {str(out_path)}"
+    )
+    return {
+        "config_yaml": str(out_path),
+        "schedule_profile": str(profile),
+        "launch_cmd": launch_cmd,
+    }
 
 
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -955,7 +1030,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     audit_p.add_argument(
         "--data-format",
-        choices=("auto", "yolo", "labelme"),
+        choices=("auto", "yolo", "labelme", "coco"),
         default="auto",
         help="Dataset annotation format (default: auto-detect from YAML).",
     )
@@ -998,7 +1073,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     pre_p.add_argument(
         "--data-format",
-        choices=("auto", "yolo", "labelme"),
+        choices=("auto", "yolo", "labelme", "coco"),
         default="auto",
         help="Dataset annotation format (default: auto-detect from YAML).",
     )
@@ -1017,6 +1092,42 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     pre_p.add_argument(
         "--cache-dtype", choices=("float16", "float32"), default="float16"
     )
+    pre_p.add_argument(
+        "--feature-merge",
+        choices=("concat", "mean", "max"),
+        default=str(dino_defaults.FEATURE_MERGE),
+        help="How to merge multi-layer DINO features before caching.",
+    )
+
+    cfg_p = sub.add_parser(
+        "train-config",
+        help="Generate a training config YAML for DinoKPSEG.",
+    )
+    cfg_p.add_argument(
+        "--data",
+        required=True,
+        help="Path to dataset YAML (for train --data).",
+    )
+    cfg_p.add_argument(
+        "--output",
+        required=True,
+        help="Output config path or directory.",
+    )
+    cfg_p.add_argument(
+        "--schedule-profile",
+        choices=("baseline", "aggressive_s"),
+        default="aggressive_s",
+    )
+    cfg_p.add_argument(
+        "--data-format",
+        choices=("auto", "yolo", "labelme", "coco"),
+        default="auto",
+    )
+    cfg_p.add_argument(
+        "--no-augment",
+        action="store_true",
+        help="Write augment: false in generated config.",
+    )
     return p.parse_args(argv)
 
 
@@ -1024,41 +1135,52 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parse_args(argv)
     if args.command == "audit":
         data_yaml = Path(args.data).expanduser().resolve()
-        data_format_norm = (
+        requested_data_format = (
             str(getattr(args, "data_format", "auto") or "auto").strip().lower()
         )
-        if data_format_norm not in {"auto", "yolo", "labelme"}:
-            raise ValueError(f"Unsupported data_format: {data_format_norm!r}")
-        if data_format_norm == "auto":
-            try:
-                payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
-            except Exception:
-                payload = {}
-            fmt_token = ""
-            if isinstance(payload, dict):
-                fmt_token = (
-                    str(payload.get("format") or payload.get("type") or "")
-                    .strip()
-                    .lower()
-                )
-            data_format_norm = "labelme" if "labelme" in fmt_token else "yolo"
+        if requested_data_format not in {"auto", "yolo", "labelme", "coco"}:
+            raise ValueError(f"Unsupported data_format: {requested_data_format!r}")
+        payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+        payload = payload if isinstance(payload, dict) else {}
+        data_format_norm = normalize_dino_kpseg_data_format(
+            payload,
+            data_format=requested_data_format,
+        )
 
-        if data_format_norm == "labelme":
-            report = audit_labelme_pose_dataset(
-                data_yaml,
-                split=str(args.split),
-                max_images=args.max_images,
-                seed=int(args.seed),
-            )
-        else:
-            report = audit_yolo_pose_dataset(
-                data_yaml,
-                split=str(args.split),
-                max_images=args.max_images,
-                seed=int(args.seed),
-                instance_mode=str(args.instance_mode),
-                bbox_scale=float(args.bbox_scale),
-            )
+        temp_coco_staging: Optional[Path] = None
+        try:
+            if data_format_norm == "labelme":
+                report = audit_labelme_pose_dataset(
+                    data_yaml,
+                    split=str(args.split),
+                    max_images=args.max_images,
+                    seed=int(args.seed),
+                )
+            else:
+                source_yaml = data_yaml
+                if data_format_norm == "coco":
+                    coco_spec = load_coco_pose_spec(data_yaml)
+                    temp_coco_staging = Path(
+                        tempfile.mkdtemp(
+                            prefix="dino_kpseg_audit_coco_",
+                            dir=tempfile.gettempdir(),
+                        )
+                    )
+                    source_yaml = materialize_coco_pose_as_yolo(
+                        spec=coco_spec,
+                        output_dir=temp_coco_staging,
+                    )
+                report = audit_yolo_pose_dataset(
+                    source_yaml,
+                    split=str(args.split),
+                    max_images=args.max_images,
+                    seed=int(args.seed),
+                    instance_mode=str(args.instance_mode),
+                    bbox_scale=float(args.bbox_scale),
+                )
+        finally:
+            if temp_coco_staging is not None:
+                shutil.rmtree(temp_coco_staging, ignore_errors=True)
         out = args.out
         if out:
             out_path = Path(out).expanduser().resolve()
@@ -1094,6 +1216,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 Path(args.cache_dir).expanduser().resolve() if args.cache_dir else None
             ),
             cache_dtype=str(args.cache_dtype),
+            feature_merge=str(args.feature_merge),
+        )
+        print(json.dumps(summary, indent=2))
+        return 0
+    if args.command == "train-config":
+        summary = generate_train_config(
+            data_yaml=Path(args.data).expanduser().resolve(),
+            output=Path(args.output),
+            schedule_profile=str(args.schedule_profile),
+            data_format=str(args.data_format),
+            augment=not bool(args.no_augment),
         )
         print(json.dumps(summary, indent=2))
         return 0

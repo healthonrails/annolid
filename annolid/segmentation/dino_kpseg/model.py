@@ -38,6 +38,9 @@ class DinoKPSEGCheckpointMeta:
     attn_proj_norm: bool = True
     attn_anchor_kv_norm: bool = True
     orientation_anchor_idx: Optional[list[int]] = None
+    feature_merge: str = "concat"
+    feature_align_dim: int = 0
+    multitask: bool = False
 
 
 class DinoKPSEGHead(nn.Module):
@@ -394,6 +397,125 @@ class DinoKPSEGHybridHead(nn.Module):
         return logits
 
 
+class DinoKPSEGAlignedHead(nn.Module):
+    """Optional feature-alignment adapter before a DinoKPSEG head.
+
+    When enabled, this projects backbone features from `in_dim` to
+    `feature_dim` using a lightweight 1x1 conv block.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_head: nn.Module,
+        in_dim: int,
+        feature_dim: int,
+    ) -> None:
+        super().__init__()
+        self.base_head = base_head
+        self.in_dim = int(in_dim)
+        self.feature_dim = int(feature_dim)
+        if self.feature_dim <= 0:
+            raise ValueError("feature_dim must be > 0")
+        if self.in_dim == self.feature_dim:
+            self.adapter = nn.Identity()
+        else:
+            self.adapter = nn.Sequential(
+                nn.Conv2d(self.in_dim, self.feature_dim, kernel_size=1),
+                nn.GELU(),
+                nn.GroupNorm(
+                    num_groups=_groupnorm_groups(self.feature_dim, max_groups=8),
+                    num_channels=self.feature_dim,
+                ),
+            )
+
+    def forward(
+        self,
+        feats_bchw: torch.Tensor,
+        *,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        x = self.adapter(feats_bchw)
+        try:
+            return self.base_head(x, key_padding_mask=key_padding_mask)
+        except TypeError:
+            return self.base_head(x)
+
+
+class DinoKPSEGMultiTaskHead(nn.Module):
+    """Single-stage multitask head with shared trunk and auxiliary branches.
+
+    Branches:
+      - keypoint logits (K,H,W) used by existing DinoKPSEG pipeline
+      - objectness logits (1,H,W)
+      - box logits (4,H,W) for coarse box regression
+      - instance-mask logits (1,H,W)
+    """
+
+    def __init__(self, *, in_dim: int, hidden_dim: int, num_parts: int) -> None:
+        super().__init__()
+        self.in_dim = int(in_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.num_parts = int(num_parts)
+
+        self.trunk = nn.Sequential(
+            nn.Conv2d(self.in_dim, self.hidden_dim, kernel_size=1),
+            nn.GELU(),
+            nn.GroupNorm(
+                num_groups=_groupnorm_groups(self.hidden_dim, max_groups=8),
+                num_channels=self.hidden_dim,
+            ),
+            nn.Conv2d(self.hidden_dim, self.hidden_dim, kernel_size=3, padding=1),
+            nn.GELU(),
+        )
+        self.kpt_head = nn.Conv2d(self.hidden_dim, self.num_parts, kernel_size=1)
+        self.obj_head = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
+        self.box_head = nn.Conv2d(self.hidden_dim, 4, kernel_size=1)
+        self.inst_head = nn.Conv2d(self.hidden_dim, 1, kernel_size=1)
+
+    def forward_all(
+        self,
+        feats_bchw: torch.Tensor,
+        *,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        if feats_bchw.ndim != 4:
+            raise ValueError("Expected feats in BCHW format")
+        b, _, h, w = feats_bchw.shape
+        if key_padding_mask is not None:
+            mask_hw = key_padding_mask.to(dtype=torch.bool).view(b, h, w)
+        else:
+            mask_hw = None
+
+        x = self.trunk(feats_bchw)
+        kpt_logits = self.kpt_head(x)
+        obj_logits = self.obj_head(x)
+        box_logits = self.box_head(x)
+        inst_logits = self.inst_head(x)
+        if mask_hw is not None:
+            invalid = mask_hw[:, None, :, :]
+            kpt_logits = kpt_logits.masked_fill(invalid, -20.0)
+            obj_logits = obj_logits.masked_fill(invalid, -20.0)
+            inst_logits = inst_logits.masked_fill(invalid, -20.0)
+            box_logits = box_logits.masked_fill(invalid, 0.0)
+        return {
+            "kpt_logits": kpt_logits,
+            "obj_logits": obj_logits,
+            "box_logits": box_logits,
+            "inst_logits": inst_logits,
+        }
+
+    def forward(
+        self,
+        feats_bchw: torch.Tensor,
+        *,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        return self.forward_all(feats_bchw, key_padding_mask=key_padding_mask)[
+            "kpt_logits"
+        ]
+
+
 def checkpoint_pack(
     *,
     head: nn.Module,
@@ -421,6 +543,9 @@ def checkpoint_pack(
             "attn_proj_norm": bool(meta.attn_proj_norm),
             "attn_anchor_kv_norm": bool(meta.attn_anchor_kv_norm),
             "orientation_anchor_idx": meta.orientation_anchor_idx,
+            "feature_merge": str(meta.feature_merge),
+            "feature_align_dim": int(meta.feature_align_dim),
+            "multitask": bool(meta.multitask),
         },
         "state_dict": head.state_dict(),
     }
@@ -462,7 +587,7 @@ def checkpoint_unpack(
         .strip()
         .lower()
     )
-    if head_type not in ("conv", "attn", "hybrid"):
+    if head_type not in ("conv", "attn", "hybrid", "multitask"):
         head_type = "conv"
 
     try:
@@ -522,6 +647,16 @@ def checkpoint_unpack(
             except Exception:
                 orientation_anchor_idx = None
 
+    feature_merge = str(meta_raw.get("feature_merge") or "concat").strip().lower()
+    if feature_merge not in {"concat", "mean", "max"}:
+        feature_merge = "concat"
+    try:
+        feature_align_dim = int(meta_raw.get("feature_align_dim") or 0)
+    except Exception:
+        feature_align_dim = 0
+    feature_align_dim = max(0, int(feature_align_dim))
+    multitask = _parse_bool(meta_raw.get("multitask"), default=head_type == "multitask")
+
     meta = DinoKPSEGCheckpointMeta(
         model_name=str(meta_raw.get("model_name")),
         short_side=int(meta_raw.get("short_side")),
@@ -542,11 +677,20 @@ def checkpoint_unpack(
         attn_proj_norm=bool(attn_proj_norm),
         attn_anchor_kv_norm=bool(attn_anchor_kv_norm),
         orientation_anchor_idx=orientation_anchor_idx,
+        feature_merge=feature_merge,
+        feature_align_dim=feature_align_dim,
+        multitask=bool(multitask),
     )
+
+    core_in_dim = int(meta.in_dim)
+    if int(meta.feature_align_dim) > 0 and int(meta.feature_align_dim) != int(
+        meta.in_dim
+    ):
+        core_in_dim = int(meta.feature_align_dim)
 
     if meta.head_type == "attn":
         head: nn.Module = DinoKPSEGAttentionHead(
-            in_dim=meta.in_dim,
+            in_dim=int(core_in_dim),
             hidden_dim=meta.hidden_dim,
             num_parts=meta.num_parts,
             num_heads=int(meta.attn_heads),
@@ -560,7 +704,7 @@ def checkpoint_unpack(
         )
     elif meta.head_type == "hybrid":
         head = DinoKPSEGHybridHead(
-            in_dim=meta.in_dim,
+            in_dim=int(core_in_dim),
             hidden_dim=meta.hidden_dim,
             num_parts=meta.num_parts,
             num_heads=int(meta.attn_heads),
@@ -572,9 +716,25 @@ def checkpoint_unpack(
             proj_norm=bool(meta.attn_proj_norm),
             anchor_kv_norm=bool(meta.attn_anchor_kv_norm),
         )
+    elif meta.head_type == "multitask":
+        head = DinoKPSEGMultiTaskHead(
+            in_dim=int(core_in_dim),
+            hidden_dim=meta.hidden_dim,
+            num_parts=meta.num_parts,
+        )
     else:
         head = DinoKPSEGHead(
-            in_dim=meta.in_dim, hidden_dim=meta.hidden_dim, num_parts=meta.num_parts
+            in_dim=int(core_in_dim),
+            hidden_dim=meta.hidden_dim,
+            num_parts=meta.num_parts,
+        )
+    if int(meta.feature_align_dim) > 0 and int(meta.feature_align_dim) != int(
+        meta.in_dim
+    ):
+        head = DinoKPSEGAlignedHead(
+            base_head=head,
+            in_dim=int(meta.in_dim),
+            feature_dim=int(meta.feature_align_dim),
         )
 
     state = payload.get("state_dict") or {}

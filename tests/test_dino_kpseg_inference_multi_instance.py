@@ -160,3 +160,36 @@ def test_extract_dino_kpseg_results_forwards_instance_ids_to_predictor() -> None
     assert processor.model.instance_id_calls == [[12, 21]]
     assert len(out) == 2
     assert {int(shape.group_id) for shape in out} == {12, 21}
+
+
+def test_extract_dino_kpseg_results_applies_min_keypoint_score_filter() -> None:
+    class _DummyModel:
+        def predict(self, *_args, **_kwargs):
+            return DinoKPSEGPrediction(
+                keypoints_xy=[(4.0, 5.0), (7.0, 8.0)],
+                keypoint_scores=[0.2, 0.9],
+                masks_patch=None,
+                resized_hw=(8, 8),
+                patch_size=16,
+            )
+
+        def predict_multi_peaks(self, *_args, **_kwargs):
+            return [[], []]
+
+    processor = InferenceProcessor.__new__(InferenceProcessor)
+    processor.model = _DummyModel()
+    processor.model_type = "dinokpseg"
+    processor.keypoint_names = ["nose", "tail"]
+    processor.pose_schema = None
+    processor._instance_label_to_gid = {}
+    processor._dino_kpseg_inference_config = {
+        "tta_hflip": False,
+        "tta_merge": "mean",
+        "min_keypoint_score": 0.5,
+        "stabilize_lr": True,
+    }
+
+    frame = np.zeros((24, 24, 3), dtype=np.uint8)
+    out = processor.extract_dino_kpseg_results(frame)
+    assert len(out) == 1
+    assert out[0].label == "tail"

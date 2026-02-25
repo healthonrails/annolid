@@ -510,6 +510,49 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
         pose_layout.addRow("", self.show_pose_edges_check)
 
         layout.addWidget(pose_group)
+
+        dino_group = QtWidgets.QGroupBox("DINO KPSEG Settings")
+        dino_layout = QtWidgets.QFormLayout(dino_group)
+        self.dino_group = dino_group
+
+        self.dino_tta_hflip_check = QtWidgets.QCheckBox("Enable horizontal flip TTA")
+        self.dino_tta_hflip_check.setChecked(
+            self._settings.value("dino_kpseg/tta_hflip", False, type=bool)
+        )
+        self.dino_tta_hflip_check.toggled.connect(self._persist_dino_settings)
+        dino_layout.addRow("", self.dino_tta_hflip_check)
+
+        self.dino_tta_merge_combo = QtWidgets.QComboBox()
+        self.dino_tta_merge_combo.addItems(["mean", "max"])
+        dino_merge = (
+            str(
+                self._settings.value("dino_kpseg/tta_merge", "mean", type=str) or "mean"
+            )
+            .strip()
+            .lower()
+        )
+        merge_idx = self.dino_tta_merge_combo.findText(
+            dino_merge if dino_merge in {"mean", "max"} else "mean"
+        )
+        self.dino_tta_merge_combo.setCurrentIndex(max(0, merge_idx))
+        self.dino_tta_merge_combo.currentIndexChanged.connect(
+            self._persist_dino_settings
+        )
+        dino_layout.addRow("TTA merge:", self.dino_tta_merge_combo)
+
+        self.dino_min_score_spin = QtWidgets.QDoubleSpinBox()
+        self.dino_min_score_spin.setRange(0.0, 1.0)
+        self.dino_min_score_spin.setSingleStep(0.05)
+        self.dino_min_score_spin.setDecimals(3)
+        self.dino_min_score_spin.setValue(
+            float(
+                self._settings.value("dino_kpseg/min_keypoint_score", 0.0, type=float)
+            )
+        )
+        self.dino_min_score_spin.valueChanged.connect(self._persist_dino_settings)
+        dino_layout.addRow("Min keypoint score:", self.dino_min_score_spin)
+
+        layout.addWidget(dino_group)
         layout.addStretch()
 
     def _browse_output(self) -> None:
@@ -567,6 +610,32 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
         except Exception:
             pass
 
+    def initializePage(self) -> None:
+        super().initializePage()
+        wizard = self.wizard()
+        model_type = ""
+        if wizard is not None and hasattr(wizard, "select_model_page"):
+            try:
+                model_type = str(wizard.select_model_page.get_model_type() or "")
+            except Exception:
+                model_type = ""
+        self.dino_group.setVisible(model_type == "dino_kpseg")
+
+    def _persist_dino_settings(self, *_args: Any) -> None:
+        try:
+            self._settings.setValue(
+                "dino_kpseg/tta_hflip", bool(self.dino_tta_hflip_check.isChecked())
+            )
+            self._settings.setValue(
+                "dino_kpseg/tta_merge", str(self.dino_tta_merge_combo.currentText())
+            )
+            self._settings.setValue(
+                "dino_kpseg/min_keypoint_score",
+                float(self.dino_min_score_spin.value()),
+            )
+        except Exception:
+            pass
+
     def get_config(self) -> Dict[str, Any]:
         return {
             "score_threshold": self.score_threshold_spin.value(),
@@ -578,6 +647,9 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
             "save_csv": self.save_csv_check.isChecked(),
             "save_labelme": self.save_labelme_check.isChecked(),
             "save_pose_bbox": self.save_pose_bbox_check.isChecked(),
+            "dino_kpseg_tta_hflip": self.dino_tta_hflip_check.isChecked(),
+            "dino_kpseg_tta_merge": str(self.dino_tta_merge_combo.currentText()),
+            "dino_kpseg_min_keypoint_score": float(self.dino_min_score_spin.value()),
         }
 
 
@@ -776,6 +848,16 @@ class InferenceWorker(QtCore.QObject):
         model_path = self._config.get("model_path")
         if not model_path:
             raise ValueError("Missing model path.")
+        dino_cfg = None
+        if model_type == "dino_kpseg":
+            dino_cfg = {
+                "tta_hflip": bool(self._config.get("dino_kpseg_tta_hflip", False)),
+                "tta_merge": str(self._config.get("dino_kpseg_tta_merge", "mean")),
+                "min_keypoint_score": float(
+                    self._config.get("dino_kpseg_min_keypoint_score", 0.0)
+                ),
+                "stabilize_lr": True,
+            }
 
         if (
             self._processor is None
@@ -785,7 +867,13 @@ class InferenceWorker(QtCore.QObject):
             self._processor = InferenceProcessor(
                 model_name=model_path,
                 model_type=resolved_type,
+                dino_kpseg_inference_config=dino_cfg,
             )
+        elif model_type == "dino_kpseg":
+            try:
+                self._processor.set_dino_kpseg_inference_config(dino_cfg)
+            except Exception:
+                pass
 
         total_frames = self._get_total_frames(video_path)
         start_frame, end_frame = self._resolve_segment(total_frames)
@@ -1004,6 +1092,13 @@ class InferenceProgressPage(QtWidgets.QWizardPage):
         self._log(f"Videos: {len(videos)}")
         if config.get("score_threshold") is not None:
             self._log(f"Threshold: {config['score_threshold']}")
+        if str(config.get("model_type", "")).lower() == "dino_kpseg":
+            self._log(
+                "DINO KPSEG: "
+                f"tta_hflip={bool(config.get('dino_kpseg_tta_hflip', False))}, "
+                f"tta_merge={str(config.get('dino_kpseg_tta_merge', 'mean'))}, "
+                f"min_score={float(config.get('dino_kpseg_min_keypoint_score', 0.0)):.3f}"
+            )
         self._log("")
 
         self._cleanup_worker()
