@@ -56,9 +56,14 @@
 <li class="toctree-l2"><a class="reference internal" href="#training">Training</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#native-labelme-training">Native LabelMe training</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#native-coco-keypoints-training">Native COCO keypoints training</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#one-command-aggressive-schedule-launch-config">One-command aggressive schedule launch config</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#single-stage-multitask-head-step-3">Single-stage Multitask Head (Step 3)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#training-schedule-hardening-step-4">Training Schedule Hardening (Step 4)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#relational-attention-head">Relational (Attention) Head</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="#inference-cli">Inference (CLI)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#inference-gui">Inference (GUI)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#evaluation">Evaluation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#labelme-to-coco-gui">LabelMe to COCO (GUI)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#coco-to-labelme-gui">COCO to LabelMe (GUI)</a></li>
@@ -164,6 +169,41 @@
 </div>
 <p>Annolid will stage the COCO annotations into YOLO-pose labels automatically inside
 the run directory and train with the same DinoKPSEG pipeline.</p>
+</section>
+<section id="one-command-aggressive-schedule-launch-config">
+<h3>One-command aggressive schedule launch config<a class="headerlink" href="#one-command-aggressive-schedule-launch-config" title="Link to this heading"></a></h3>
+<p>Generate a ready-to-run training config YAML (useful after dataset split/prep):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.dataset_tools<span class="w"> </span>train-config<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/data_split.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>/path/to/configs<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--schedule-profile<span class="w"> </span>aggressive_s
+</pre></div>
+</div>
+<p>You can also audit and precompute directly from COCO specs:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.dataset_tools<span class="w"> </span>audit<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/coco_spec.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data-format<span class="w"> </span>coco
+
+python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.dataset_tools<span class="w"> </span>precompute<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/coco_spec.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data-format<span class="w"> </span>coco<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-name<span class="w"> </span>facebook/dinov3-vits16-pretrain-lvd1689m<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--layers<span class="w"> </span>-2,-1<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--feature-merge<span class="w"> </span>concat
+</pre></div>
+</div>
+<p>This writes a config like <code class="docutils literal notranslate"><span class="pre">/path/to/configs/train_aggressive_s.yaml</span></code>. Launch training with:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>/path/to/configs/train_aggressive_s.yaml
+</pre></div>
+</div>
+<p>CLI flags always override config values, for example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>/path/to/configs/train_aggressive_s.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--batch<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--epochs<span class="w"> </span><span class="m">80</span>
+</pre></div>
+</div>
 <p>LabelMe conventions:</p>
 <ul class="simple">
 <li><p>Keypoints are <code class="docutils literal notranslate"><span class="pre">shape_type:</span> <span class="pre">point</span></code> with <code class="docutils literal notranslate"><span class="pre">label</span></code> matching an entry in <code class="docutils literal notranslate"><span class="pre">keypoint_names</span></code>.</p></li>
@@ -193,6 +233,59 @@ the run directory and train with the same DinoKPSEG pipeline.</p>
 <span class="w">  </span>--layers<span class="w"> </span>-2,-1
 </pre></div>
 </div>
+<p>You can also control how multi-layer features are merged:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--layers<span class="w"> </span>-3,-2,-1<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--feature-merge<span class="w"> </span>mean
+</pre></div>
+</div>
+<p>Optional trainable channel alignment before the keypoint head:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--layers<span class="w"> </span>-3,-2,-1<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--feature-merge<span class="w"> </span>concat<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--feature-align-dim<span class="w"> </span>auto
+</pre></div>
+</div>
+</section>
+<section id="single-stage-multitask-head-step-3">
+<h3>Single-stage Multitask Head (Step 3)<a class="headerlink" href="#single-stage-multitask-head-step-3" title="Link to this heading"></a></h3>
+<p>Enable a shared single-stage multitask head (keypoints + objectness + box + instance-mask branches):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--head-type<span class="w"> </span>multitask<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--obj-loss-weight<span class="w"> </span><span class="m">0</span>.25<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--box-loss-weight<span class="w"> </span><span class="m">0</span>.25<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--inst-loss-weight<span class="w"> </span><span class="m">0</span>.25
+</pre></div>
+</div>
+<p>Notes:</p>
+<ul class="simple">
+<li><p>Keypoint supervision and decoding stay unchanged.</p></li>
+<li><p>Auxiliary branches are additive; set weights to <code class="docutils literal notranslate"><span class="pre">0</span></code> to disable them.</p></li>
+</ul>
+</section>
+<section id="training-schedule-hardening-step-4">
+<h3>Training Schedule Hardening (Step 4)<a class="headerlink" href="#training-schedule-hardening-step-4" title="Link to this heading"></a></h3>
+<p>Recommended stability knobs:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--schedule-profile<span class="w"> </span>aggressive_s<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ema<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ema-decay<span class="w"> </span><span class="m">0</span>.9995<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--multitask-aux-warmup-epochs<span class="w"> </span><span class="m">10</span>
+</pre></div>
+</div>
+<p>What this adds:</p>
+<ul class="simple">
+<li><p>EMA model used for validation/checkpoint export.</p></li>
+<li><p>Auxiliary multitask losses warmed up over early epochs.</p></li>
+<li><p>Non-finite loss batches are skipped defensively.</p></li>
+</ul>
+<p>Equivalent <code class="docutils literal notranslate"><span class="pre">annolid-run</span></code> training flags are also supported (for example
+<code class="docutils literal notranslate"><span class="pre">--schedule-profile</span></code>, <code class="docutils literal notranslate"><span class="pre">--batch</span></code>, <code class="docutils literal notranslate"><span class="pre">--cos-lr</span></code>, <code class="docutils literal notranslate"><span class="pre">--warmup-epochs</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--best-metric</span></code>, and augmentation epoch windows).</p>
 </section>
 <section id="relational-attention-head">
 <h3>Relational (Attention) Head<a class="headerlink" href="#relational-attention-head" title="Link to this heading"></a></h3>
@@ -240,6 +333,35 @@ as orientation anchors and inject them into other keypoints via cross-attention.
 </pre></div>
 </div>
 </section>
+</section>
+<section id="inference-cli">
+<h2>Inference (CLI)<a class="headerlink" href="#inference-cli" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>annolid-run<span class="w"> </span>dino_kpseg<span class="w"> </span>predict<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--weights<span class="w"> </span>/path/to/weights/best.pt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--image<span class="w"> </span>/path/to/frame.png<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tta-hflip<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tta-merge<span class="w"> </span>max<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--min-keypoint-score<span class="w"> </span><span class="m">0</span>.20<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--out<span class="w"> </span>/path/to/prediction.json
+</pre></div>
+</div>
+<p>Notes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--tta-hflip</span></code> enables horizontal flip test-time augmentation.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--tta-merge</span></code> controls TTA fusion: <code class="docutils literal notranslate"><span class="pre">mean</span></code> (default) or <code class="docutils literal notranslate"><span class="pre">max</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--min-keypoint-score</span></code> drops low-confidence keypoints from output JSON.</p></li>
+</ul>
+</section>
+<section id="inference-gui">
+<h2>Inference (GUI)<a class="headerlink" href="#inference-gui" title="Link to this heading"></a></h2>
+<p>In <strong>Inference Wizard</strong> with model type <strong>DINO KPSEG</strong>, the Configure page now exposes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Enable</span> <span class="pre">horizontal</span> <span class="pre">flip</span> <span class="pre">TTA</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">TTA</span> <span class="pre">merge</span></code> (<code class="docutils literal notranslate"><span class="pre">mean</span></code> or <code class="docutils literal notranslate"><span class="pre">max</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Min</span> <span class="pre">keypoint</span> <span class="pre">score</span></code></p></li>
+</ul>
+<p>These settings are persisted in <code class="docutils literal notranslate"><span class="pre">QSettings</span></code> and are also applied in the standard
+GUI prediction workflow (not only wizard runs).</p>
 </section>
 <section id="evaluation">
 <h2>Evaluation<a class="headerlink" href="#evaluation" title="Link to this heading"></a></h2>

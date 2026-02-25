@@ -70,6 +70,48 @@ python -m annolid.segmentation.dino_kpseg.train \
 Annolid will stage the COCO annotations into YOLO-pose labels automatically inside
 the run directory and train with the same DinoKPSEG pipeline.
 
+### One-command aggressive schedule launch config
+
+Generate a ready-to-run training config YAML (useful after dataset split/prep):
+
+```bash
+python -m annolid.segmentation.dino_kpseg.dataset_tools train-config \
+  --data /path/to/data_split.yaml \
+  --output /path/to/configs \
+  --schedule-profile aggressive_s
+```
+
+You can also audit and precompute directly from COCO specs:
+
+```bash
+python -m annolid.segmentation.dino_kpseg.dataset_tools audit \
+  --data /path/to/coco_spec.yaml \
+  --data-format coco
+
+python -m annolid.segmentation.dino_kpseg.dataset_tools precompute \
+  --data /path/to/coco_spec.yaml \
+  --data-format coco \
+  --model-name facebook/dinov3-vits16-pretrain-lvd1689m \
+  --layers -2,-1 \
+  --feature-merge concat
+```
+
+This writes a config like `/path/to/configs/train_aggressive_s.yaml`. Launch training with:
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --config /path/to/configs/train_aggressive_s.yaml
+```
+
+CLI flags always override config values, for example:
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --config /path/to/configs/train_aggressive_s.yaml \
+  --batch 16 \
+  --epochs 80
+```
+
 LabelMe conventions:
 
 - Keypoints are `shape_type: point` with `label` matching an entry in `keypoint_names`.
@@ -104,6 +146,64 @@ python -m annolid.segmentation.dino_kpseg.train \
   --data /path/to/YOLO_dataset/data.yaml \
   --layers -2,-1
 ```
+
+You can also control how multi-layer features are merged:
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --layers -3,-2,-1 \
+  --feature-merge mean
+```
+
+Optional trainable channel alignment before the keypoint head:
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --layers -3,-2,-1 \
+  --feature-merge concat \
+  --feature-align-dim auto
+```
+
+### Single-stage Multitask Head (Step 3)
+
+Enable a shared single-stage multitask head (keypoints + objectness + box + instance-mask branches):
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --head-type multitask \
+  --obj-loss-weight 0.25 \
+  --box-loss-weight 0.25 \
+  --inst-loss-weight 0.25
+```
+
+Notes:
+- Keypoint supervision and decoding stay unchanged.
+- Auxiliary branches are additive; set weights to `0` to disable them.
+
+### Training Schedule Hardening (Step 4)
+
+Recommended stability knobs:
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --schedule-profile aggressive_s \
+  --ema \
+  --ema-decay 0.9995 \
+  --multitask-aux-warmup-epochs 10
+```
+
+What this adds:
+- EMA model used for validation/checkpoint export.
+- Auxiliary multitask losses warmed up over early epochs.
+- Non-finite loss batches are skipped defensively.
+
+Equivalent `annolid-run` training flags are also supported (for example
+`--schedule-profile`, `--batch`, `--cos-lr`, `--warmup-epochs`,
+`--best-metric`, and augmentation epoch windows).
 
 ### Relational (Attention) Head
 
@@ -154,6 +254,33 @@ python -m annolid.segmentation.dino_kpseg.train \
   --run-name experiment_01 \
   --epochs 50
 ```
+
+## Inference (CLI)
+
+```bash
+annolid-run dino_kpseg predict \
+  --weights /path/to/weights/best.pt \
+  --image /path/to/frame.png \
+  --tta-hflip \
+  --tta-merge max \
+  --min-keypoint-score 0.20 \
+  --out /path/to/prediction.json
+```
+
+Notes:
+- `--tta-hflip` enables horizontal flip test-time augmentation.
+- `--tta-merge` controls TTA fusion: `mean` (default) or `max`.
+- `--min-keypoint-score` drops low-confidence keypoints from output JSON.
+
+## Inference (GUI)
+
+In **Inference Wizard** with model type **DINO KPSEG**, the Configure page now exposes:
+- `Enable horizontal flip TTA`
+- `TTA merge` (`mean` or `max`)
+- `Min keypoint score`
+
+These settings are persisted in `QSettings` and are also applied in the standard
+GUI prediction workflow (not only wizard runs).
 
 ## Evaluation
 
