@@ -348,6 +348,23 @@ class InferenceController(QtCore.QObject):
             self._inference_thread.requestInterruption()
             logger.info("Inference cancelled")
 
+    def shutdown(self, timeout_ms: int = 1000) -> None:
+        """Best-effort cleanup for any running inference worker thread."""
+        thread = self._inference_thread
+        if thread is None:
+            return
+
+        try:
+            if thread.isRunning():
+                thread.cancel()
+                thread.requestInterruption()
+                thread.quit()
+                thread.wait(max(0, int(timeout_ms)))
+        except Exception as e:
+            logger.warning(f"Failed to shutdown inference thread cleanly: {e}")
+        finally:
+            self._inference_thread = None
+
     def is_inference_running(self) -> bool:
         """
         Check if inference is currently running.

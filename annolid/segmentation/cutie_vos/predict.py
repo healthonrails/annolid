@@ -160,6 +160,8 @@ class CutieCoreVideoProcessor:
         # Latest per-instance masks available in the current run.
         self._recent_instance_masks: Dict[str, np.ndarray] = {}
         self._recent_instance_mask_frames: Dict[str, int] = {}
+        self._last_saved_instance_masks: Dict[str, np.ndarray] = {}
+        self._repetitive_warning_state: Dict[Tuple[str, str], Dict[str, int]] = {}
 
     def set_same_hq(self, sam_hq):
         self.sam_hq = sam_hq
@@ -199,6 +201,48 @@ class CutieCoreVideoProcessor:
         if not np.isfinite(parsed):
             return default
         return parsed
+
+    def _log_repetitive_warning(
+        self,
+        key: Tuple[str, str],
+        message: str,
+        *,
+        every: int = 25,
+    ) -> None:
+        """Log repetitive warnings with first-hit + periodic cadence."""
+        state = getattr(self, "_repetitive_warning_state", None)
+        if not isinstance(state, dict):
+            state = {}
+            self._repetitive_warning_state = state
+
+        entry = state.get(key)
+        current_frame = int(getattr(self, "_frame_number", -1))
+        if entry is None:
+            entry = {"streak": 0, "suppressed": 0, "last_frame": current_frame}
+        else:
+            last_frame = int(entry.get("last_frame", current_frame))
+            if current_frame != last_frame + 1:
+                entry["streak"] = 0
+                entry["suppressed"] = 0
+            entry["last_frame"] = current_frame
+
+        entry["streak"] = int(entry.get("streak", 0)) + 1
+        should_log = entry["streak"] == 1 or (every > 0 and entry["streak"] % every == 0)
+        if should_log:
+            suppressed = int(entry.get("suppressed", 0))
+            if suppressed > 0:
+                logger.warning(
+                    "Suppressed %s repetitive warning(s) for %s/%s.",
+                    suppressed,
+                    key[0],
+                    key[1],
+                )
+                entry["suppressed"] = 0
+            logger.warning(message)
+        else:
+            entry["suppressed"] = int(entry.get("suppressed", 0)) + 1
+
+        state[key] = entry
 
     def _read_tracking_rows_from_csv(self, path: Path) -> Dict[tuple, tuple]:
         rows: Dict[tuple, tuple] = {}
@@ -828,6 +872,7 @@ class CutieCoreVideoProcessor:
         height, width, _ = frame_shape
         frame_area = height * width
         label_list = []
+        persisted_masks: Dict[str, np.ndarray] = {}
         shape_notes = shape_notes or {}
         for label_id, mask in mask_dict.items():
             label = str(label_id)
@@ -835,18 +880,18 @@ class CutieCoreVideoProcessor:
                 label, mask, float(frame_area)
             )
             if corrected:
-                logger.warning(
-                    "CUTIE full-frame mask corrected for '%s' at frame %s.",
-                    label,
-                    self._frame_number,
+                self._log_repetitive_warning(
+                    ("full_frame_corrected", label),
+                    "CUTIE full-frame mask corrected for '%s' at frame %s."
+                    % (label, self._frame_number),
                 )
             if self.reject_suspicious_mask_jumps and self._is_suspicious_mask_jump(
                 label, mask, float(frame_area)
             ):
-                logger.warning(
-                    "CUTIE mask jump rejected for '%s' at frame %s (possible full-frame artifact).",
-                    label,
-                    self._frame_number,
+                self._log_repetitive_warning(
+                    ("mask_jump_rejected", label),
+                    "CUTIE mask jump rejected for '%s' at frame %s (possible full-frame artifact)."
+                    % (label, self._frame_number),
                 )
                 continue
 
@@ -884,18 +929,63 @@ class CutieCoreVideoProcessor:
                 points=points,
                 frame_area=float(frame_area),
             ):
-                logger.warning(
-                    "CUTIE frame-sized artifact rejected for '%s' at frame %s.",
-                    label,
-                    self._frame_number,
+                fallback_mask = self._recent_instance_masks.get(label)
+                if fallback_mask is not None:
+                    fallback_mask = np.asarray(fallback_mask).astype(bool)
+                if fallback_mask is None or fallback_mask.ndim != 2 or not fallback_mask.any():
+                    self._log_repetitive_warning(
+                        ("frame_sized_rejected", label),
+                        "CUTIE frame-sized artifact rejected for '%s' at frame %s."
+                        % (label, self._frame_number),
+                    )
+                    continue
+
+                self._log_repetitive_warning(
+                    ("frame_sized_fallback", label),
+                    "CUTIE frame-sized artifact rejected for '%s' at frame %s; "
+                    "falling back to last good mask."
+                    % (label, self._frame_number),
                 )
-                continue
+                mask = fallback_mask.copy()
+                note_text = str(shape_notes.get(label, "") or "").strip()
+                fallback_note = "fallback_previous_mask_after_frame_sized_artifact"
+                if note_text:
+                    note_text = f"{note_text}; {fallback_note}"
+                else:
+                    note_text = fallback_note
+                description = f"motion_index: {motion_index}; note: {note_text}"
+                current_shape = MaskShape(
+                    label=label,
+                    flags={},
+                    description=description,
+                )
+                current_shape.other_data = {
+                    "cx": cx,
+                    "cy": cy,
+                    "motion_index": motion_index,
+                    "note": note_text,
+                }
+                current_shape.mask = mask
+                _shapes = current_shape.toPolygons(epsilon=self.epsilon_for_polygon)
+                if len(_shapes) <= 0:
+                    continue
+                current_shape = _shapes[0]
+                points = [[point.x(), point.y()] for point in current_shape.points]
+                if self._should_reject_frame_sized_prediction(
+                    label=label,
+                    mask=mask,
+                    points=points,
+                    frame_area=float(frame_area),
+                ):
+                    continue
             self._save_bbox(points, frame_area, label)
             current_shape.points = points
             label_list.append(current_shape)
+            persisted_masks[label] = np.asarray(mask).astype(bool)
             self._last_mask_area_ratio[label] = float(np.count_nonzero(mask)) / max(
                 float(frame_area), 1.0
             )
+        self._last_saved_instance_masks = persisted_masks
         save_labels(
             filename=filename,
             imagePath=None,
@@ -1964,8 +2054,13 @@ class CutieCoreVideoProcessor:
                                     frame.shape,
                                     shape_notes=shape_notes_for_frame,
                                 )
+                                saved_mask_dict = getattr(
+                                    self, "_last_saved_instance_masks", {}
+                                )
+                                if not isinstance(saved_mask_dict, dict):
+                                    saved_mask_dict = {}
                                 self._update_recent_instance_masks(
-                                    current_frame_index, mask_dict
+                                    current_frame_index, saved_mask_dict
                                 )
                                 if pred_worker is not None:
                                     pred_worker.stop_signal.emit()
@@ -1977,7 +2072,12 @@ class CutieCoreVideoProcessor:
                         frame.shape,
                         shape_notes=shape_notes_for_frame,
                     )
-                    self._update_recent_instance_masks(current_frame_index, mask_dict)
+                    saved_mask_dict = getattr(self, "_last_saved_instance_masks", {})
+                    if not isinstance(saved_mask_dict, dict):
+                        saved_mask_dict = {}
+                    self._update_recent_instance_masks(
+                        current_frame_index, saved_mask_dict
+                    )
 
                     if recording:
                         if global_prediction is None:

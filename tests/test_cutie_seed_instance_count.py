@@ -473,3 +473,145 @@ def test_process_segment_suppresses_repetitive_missing_instance_logs(
         if "There is 1 missing instance in the current frame" in msg
     ]
     assert len(repetitive_missing_logs) == 1
+
+
+def test_save_annotation_falls_back_to_previous_mask_on_frame_sized_artifact(
+    monkeypatch, tmp_path
+) -> None:
+    class _Cache:
+        def __init__(self):
+            self._bbox = (0.0, 0.0, 1.0, 1.0)
+
+        def add_bbox(self, _key, bbox):
+            self._bbox = tuple(float(v) for v in bbox)
+
+        def get_most_recent_bbox(self, _key):
+            return self._bbox
+
+    class _Point:
+        def __init__(self, x, y):
+            self._x = float(x)
+            self._y = float(y)
+
+        def x(self):
+            return self._x
+
+        def y(self):
+            return self._y
+
+    class _PolyShape:
+        def __init__(self, points):
+            self.points = points
+
+    class _FakeMaskShape:
+        def __init__(self, label, flags=None, description=""):
+            self.label = label
+            self.flags = flags or {}
+            self.description = description
+            self.other_data = {}
+            self.mask = None
+
+        def toPolygons(self, epsilon=2.0):
+            _ = epsilon
+            mask = np.asarray(self.mask).astype(bool)
+            ys, xs = np.where(mask)
+            if xs.size == 0 or ys.size == 0:
+                return []
+            minx, maxx = int(xs.min()), int(xs.max())
+            miny, maxy = int(ys.min()), int(ys.max())
+            return [
+                _PolyShape(
+                    [
+                        _Point(minx, miny),
+                        _Point(maxx, miny),
+                        _Point(maxx, maxy),
+                        _Point(minx, maxy),
+                    ]
+                )
+            ]
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor._frame_number = 1
+    processor.epsilon_for_polygon = 2.0
+    processor.reject_suspicious_mask_jumps = False
+    processor._last_mask_area_ratio = {}
+    processor._recent_instance_masks = {
+        "mouse": np.array(
+            [[0, 0, 0, 0], [0, 1, 1, 0], [0, 1, 1, 0], [0, 0, 0, 0]], dtype=bool
+        )
+    }
+    processor._recent_instance_mask_frames = {"mouse": 0}
+    processor._last_saved_instance_masks = {}
+    processor.cache = _Cache()
+    processor._flow_hsv = None
+    processor.showing_KMedoids_in_mask = False
+
+    processor._sanitize_full_frame_artifact = lambda label, mask, frame_area: (
+        np.asarray(mask).astype(bool),
+        False,
+    )
+    processor._is_suspicious_mask_jump = lambda label, mask, frame_area: False
+    processor._save_results = lambda label, mask: (1.0, 2.0, -1.0)
+    processor.save_KMedoids_in_mask = lambda label_list, mask: None
+
+    def _reject(label, mask, points, frame_area):
+        _ = label, points, frame_area
+        return bool(np.count_nonzero(mask) >= (mask.size - 1))
+
+    processor._should_reject_frame_sized_prediction = _reject
+
+    saved = {"count": 0}
+
+    def _capture_save_labels(**kwargs):
+        saved["count"] = len(kwargs.get("label_list") or [])
+
+    monkeypatch.setattr(cutie_predict, "MaskShape", _FakeMaskShape)
+    monkeypatch.setattr(cutie_predict, "save_labels", _capture_save_labels)
+
+    bad_mask = np.ones((4, 4), dtype=bool)
+    processor._save_annotation_with_notes(
+        filename=str(tmp_path / "frame.json"),
+        mask_dict={"mouse": bad_mask},
+        frame_shape=(4, 4, 3),
+        shape_notes={},
+    )
+
+    assert saved["count"] == 1
+    assert "mouse" in processor._last_saved_instance_masks
+    assert np.array_equal(
+        processor._last_saved_instance_masks["mouse"],
+        processor._recent_instance_masks["mouse"],
+    )
+
+
+def test_repetitive_warning_logger_logs_first_and_periodic(monkeypatch) -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    logged = []
+
+    def _capture_warning(msg, *args):
+        if args:
+            msg = msg % args
+        logged.append(str(msg))
+
+    monkeypatch.setattr(cutie_predict.logger, "warning", _capture_warning)
+
+    for frame_idx in range(1, 5):
+        processor._frame_number = frame_idx
+        processor._log_repetitive_warning(
+            ("frame_sized_rejected", "mouse"),
+            "CUTIE frame-sized artifact rejected for 'mouse' at frame %s." % frame_idx,
+            every=3,
+        )
+
+    assert any(
+        "CUTIE frame-sized artifact rejected for 'mouse' at frame 1." in msg
+        for msg in logged
+    )
+    assert any(
+        "Suppressed 1 repetitive warning(s) for frame_sized_rejected/mouse." in msg
+        for msg in logged
+    )
+    assert any(
+        "CUTIE frame-sized artifact rejected for 'mouse' at frame 3." in msg
+        for msg in logged
+    )
