@@ -148,6 +148,27 @@ class _BrowserTypeLikeTool(FunctionTool):
         return f"type:{kwargs.get('text', '')}"
 
 
+class _ReadFileLikeTool(FunctionTool):
+    @property
+    def name(self) -> str:
+        return "read_file"
+
+    @property
+    def description(self) -> str:
+        return "Read a file from workspace paths."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return f"read:{kwargs.get('path', '')}"
+
+
 class _SlowTool(FunctionTool):
     @property
     def name(self) -> str:
@@ -1210,6 +1231,30 @@ def test_agent_loop_can_disable_browser_first_for_web() -> None:
     _ = asyncio.run(loop.run("what is the weather today?"))
     assert observed["tool_names"]
     assert observed["tool_names"][0] == "web_search"
+
+
+def test_agent_loop_keeps_read_file_available_for_weather_intent() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_SearchLikeTool())
+    registry.register(_BrowserLikeTool())
+    registry.register(_ReadFileLikeTool())
+    observed = {"tool_names": []}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, model, on_token
+        observed["tool_names"] = [
+            str((t.get("function") or {}).get("name") or "") for t in tools
+        ]
+        return {"content": "ok"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    _ = asyncio.run(loop.run("weather in Ithaca NY"))
+    assert "read_file" in observed["tool_names"]
 
 
 def test_agent_loop_prefers_browser_search_workflow_tools_over_web_search() -> None:

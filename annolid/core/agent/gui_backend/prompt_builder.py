@@ -194,6 +194,16 @@ def build_compact_system_prompt(
                     "Available skills exist in workspace. Use `read_file` to inspect a "
                     f"skill before using it. Skills: {preview}"
                 )
+                parts.append(
+                    "When reading skills, use absolute paths under "
+                    f"`{str((inputs.workspace / 'skills').resolve())}` "
+                    "instead of relative `.annolid/...` paths."
+                )
+                if "weather" in {name.strip().lower() for name in names}:
+                    parts.append(
+                        "For weather/forecast requests, consult the `weather` skill first "
+                        "before ad-hoc browsing."
+                    )
         docs_preview = _annolid_docs_index_preview()
         if docs_preview:
             parts.append("# Annolid Docs Index\n" + docs_preview)

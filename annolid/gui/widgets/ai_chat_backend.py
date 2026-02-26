@@ -330,16 +330,38 @@ def _read_text_limited_cached(path: Path, max_chars: int) -> str:
 
 
 def _list_workspace_skill_names_cached(skills_dir: Path) -> List[str]:
+    def _signature_for(path: Path) -> Optional[int]:
+        try:
+            root_stat = path.stat()
+            children = sorted(
+                [p for p in path.iterdir() if p.is_dir()],
+                key=lambda p: p.name,
+            )
+        except Exception:
+            return None
+        parts: list[str] = [f"root:{int(getattr(root_stat, 'st_mtime_ns', 0))}"]
+        for child in children:
+            try:
+                child_mtime = int(getattr(child.stat(), "st_mtime_ns", 0))
+            except Exception:
+                child_mtime = 0
+            skill_file = child / "SKILL.md"
+            try:
+                skill_mtime = int(getattr(skill_file.stat(), "st_mtime_ns", 0))
+            except Exception:
+                skill_mtime = -1
+            parts.append(f"{child.name}:{child_mtime}:{skill_mtime}")
+        return hash(tuple(parts))
+
     key = str(skills_dir)
-    try:
-        stamp = int(getattr(skills_dir.stat(), "st_mtime_ns", 0))
-    except Exception:
+    signature = _signature_for(skills_dir)
+    if signature is None:
         return []
     with _SKILL_DIR_CACHE_LOCK:
         cached = _SKILL_DIR_CACHE.get(key)
     if cached is not None:
         cached_stamp, cached_names = cached
-        if cached_stamp == stamp:
+        if cached_stamp == signature:
             return list(cached_names)
     try:
         names = sorted(
@@ -350,7 +372,7 @@ def _list_workspace_skill_names_cached(skills_dir: Path) -> List[str]:
     except Exception:
         return []
     with _SKILL_DIR_CACHE_LOCK:
-        _SKILL_DIR_CACHE[key] = (stamp, list(names))
+        _SKILL_DIR_CACHE[key] = (signature, list(names))
     return names
 
 

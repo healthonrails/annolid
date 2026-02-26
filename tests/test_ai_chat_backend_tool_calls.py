@@ -204,6 +204,35 @@ def test_compact_system_prompt_includes_allowed_read_roots(tmp_path: Path) -> No
     assert "list automation tasks" in prompt
 
 
+def test_workspace_skill_name_cache_invalidation_detects_new_skill_file(
+    tmp_path: Path,
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    skills_dir = tmp_path / "skills"
+    weather_dir = skills_dir / "weather"
+    weather_dir.mkdir(parents=True)
+
+    first = backend._list_workspace_skill_names_cached(skills_dir)
+    assert "weather" not in first
+
+    (weather_dir / "SKILL.md").write_text(
+        "---\nname: weather\ndescription: weather test\n---\n",
+        encoding="utf-8",
+    )
+
+    second = backend._list_workspace_skill_names_cached(skills_dir)
+    assert "weather" in second
+
+
+def test_non_ollama_empty_output_message_does_not_suggest_ollama_switch() -> None:
+    task = StreamingChatTask("check weather", widget=None, provider="nvidia", model="m")
+    text = task._ensure_non_empty_final_text("")
+    assert "Provider=nvidia, model=m." in text
+    assert "switch to another Ollama model" not in text
+    assert "Please retry" in text
+
+
 def test_build_agent_context_disables_web_tools_by_default(monkeypatch) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
 

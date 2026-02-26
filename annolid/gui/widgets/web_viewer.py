@@ -46,8 +46,9 @@ except Exception:
     _WEBENGINE_AVAILABLE = False
 
 
-def _is_ignorable_js_console_message(message: str) -> bool:
+def _is_ignorable_js_console_message(message: str, source_id: str = "") -> bool:
     value = str(message or "").strip().lower()
+    source = str(source_id or "").strip().lower()
     if not value:
         return True
     noisy_exact = {
@@ -79,7 +80,48 @@ def _is_ignorable_js_console_message(message: str) -> bool:
         "has been blocked by cors policy",
         "no 'access-control-allow-origin' header is present on the requested resource",
     )
-    return any(marker in value for marker in noisy_markers)
+    if any(marker in value for marker in noisy_markers):
+        return True
+
+    # Weather.com frequently logs third-party analytics/geolocation/react noise that
+    # is non-actionable for Annolid and can overwhelm logs.
+    if "weather.com" in source:
+        weather_patterns = (
+            r"identity value for 'email' is falsy",
+            r"for 'enrolled-in-experiment'.*schemaversion.*must be a string, number, boolean, or null",
+            r"position latitude and/or longitude must both be of type number",
+            r"for 'page-viewed'.*must be a string, number, boolean, or null",
+            r"for 'module-viewed'.*must be a string, number, boolean, or null",
+            r"google accounts sdk is not available",
+            r"minified react error #\d+",
+            r"geolocation failed in saga: error: geolocation request timed out",
+        )
+        for pattern in weather_patterns:
+            if re.search(pattern, value):
+                return True
+
+    return False
+
+
+def _console_source_domain(source_id: str) -> str:
+    raw = str(source_id or "").strip()
+    if not raw:
+        return "unknown"
+    try:
+        host = str(urllib.parse.urlparse(raw).netloc or "").strip().lower()
+    except Exception:
+        host = ""
+    return host or "unknown"
+
+
+def _format_suppressed_console_summary(
+    counters: Dict[str, int], *, top_n: int = 3
+) -> str:
+    if not counters:
+        return ""
+    items = sorted(counters.items(), key=lambda pair: (-pair[1], pair[0]))
+    shown = items[: max(1, int(top_n))]
+    return ", ".join(f"{domain}={count}" for domain, count in shown)
 
 
 class _SavePdfTask(QtCore.QRunnable):
@@ -291,7 +333,9 @@ if _WEBENGINE_AVAILABLE:
                 super().__init__(parent)
             self._open_url_callback = open_url_callback
             self._console_seen: dict[str, int] = {}
+            self._console_suppressed_by_domain: dict[str, int] = {}
             self._console_last_cleanup = time.monotonic()
+            self._console_last_suppressed_emit = time.monotonic()
             self._install_compat_scripts()
 
         def _install_compat_scripts(self) -> None:
@@ -444,7 +488,32 @@ if _WEBENGINE_AVAILABLE:
                 return
             if len(self._console_seen) > 500:
                 self._console_seen.clear()
+            if len(self._console_suppressed_by_domain) > 200:
+                self._console_suppressed_by_domain.clear()
             self._console_last_cleanup = now
+
+        def _record_suppressed_console_message(self, source_id: str) -> None:
+            domain = _console_source_domain(source_id)
+            self._console_suppressed_by_domain[domain] = (
+                self._console_suppressed_by_domain.get(domain, 0) + 1
+            )
+            now = time.monotonic()
+            total = sum(self._console_suppressed_by_domain.values())
+            should_emit = total >= 50 or (
+                total >= 10 and (now - self._console_last_suppressed_emit) >= 90
+            )
+            if not should_emit:
+                return
+            summary = _format_suppressed_console_summary(
+                self._console_suppressed_by_domain
+            )
+            if summary:
+                logger.info(
+                    "QtWebEngine js: suppressed noisy console messages (top domains): %s",
+                    summary,
+                )
+            self._console_suppressed_by_domain.clear()
+            self._console_last_suppressed_emit = now
 
         def javaScriptConsoleMessage(  # noqa: N802 - Qt override
             self,
@@ -454,7 +523,8 @@ if _WEBENGINE_AVAILABLE:
             sourceID: str,
         ) -> None:
             msg = str(message or "").strip()
-            if _is_ignorable_js_console_message(msg):
+            if _is_ignorable_js_console_message(msg, sourceID):
+                self._record_suppressed_console_message(sourceID)
                 return
 
             self._cleanup_console_seen()

@@ -58,10 +58,15 @@ def apply_empty_ollama_recovery(
 def ensure_non_empty_final_text(text: str, *, provider: str, model: str) -> str:
     if text:
         return text
+    provider_name = str(provider or "").strip().lower()
+    suggestion = (
+        "Please switch to another Ollama model for Annolid Bot."
+        if provider_name == "ollama"
+        else "Please retry, then try a different model/provider if this persists."
+    )
     return (
         "Model returned empty output after multiple attempts. "
-        f"Provider={provider}, model={model}. "
-        "Please switch to another Ollama model for Annolid Bot."
+        f"Provider={provider}, model={model}. " + suggestion
     )
 
 

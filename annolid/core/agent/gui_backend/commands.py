@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict
 
+from annolid.core.agent.web_intents import LIVE_WEB_INTENT_HINTS
+
 _DIRECT_GUI_REFUSAL_HINTS = (
     "cannot directly access",
     "can't directly access",
@@ -1170,15 +1172,6 @@ def prompt_may_need_tools(prompt: str) -> bool:
         "paper",
         "gui_",
         "use ",
-        "weather",
-        "forecast",
-        "temperature",
-        "news",
-        "price",
-        "stock",
-        "latest",
-        "current",
-        "live",
-        "today",
+        *LIVE_WEB_INTENT_HINTS,
     )
     return any(token in text for token in hints)

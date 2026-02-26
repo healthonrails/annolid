@@ -33,6 +33,7 @@ from .eval.telemetry import RunTraceStore
 from .memory import AgentMemoryStore
 from .memory_store.flush import append_pre_compaction_flush
 from .providers import LiteLLMProvider, OpenAICompatProvider, resolve_openai_compat
+from .web_intents import LIVE_WEB_INTENT_TOKENS, WEATHER_INTENT_TOKENS
 from .tools import FunctionToolRegistry
 from .tools.function_builtin import (
     AutomationSchedulerTool,
@@ -2061,7 +2062,8 @@ class AgentLoop:
     }
     _DEFAULT_TOOL_SELECTION_MAX = 6
     _WEB_INTENT_TOKENS = frozenset(
-        {
+        set(LIVE_WEB_INTENT_TOKENS)
+        | {
             "search",
             "web",
             "website",
@@ -2069,16 +2071,6 @@ class AgentLoop:
             "three",
             "3d",
             "url",
-            "weather",
-            "forecast",
-            "temperature",
-            "news",
-            "price",
-            "stock",
-            "latest",
-            "current",
-            "live",
-            "today",
         }
     )
     _DEFAULT_TOOL_PRIORITY = (
@@ -2290,6 +2282,7 @@ class AgentLoop:
         scored: List[tuple[int, Dict[str, Any]]] = []
         entries = list(tool_index) or self._compile_tool_index(tools)
         web_intent = bool(self._WEB_INTENT_TOKENS.intersection(query_tokens))
+        weather_intent = bool(WEATHER_INTENT_TOKENS.intersection(query_tokens))
         for entry in entries:
             score = self._score_tool_schema(entry, query_tokens)
             if self._browser_first_for_web and web_intent:
@@ -2315,11 +2308,7 @@ class AgentLoop:
         selected_names = {
             str((schema.get("function") or {}).get("name") or "") for schema in selected
         }
-        if (
-            "read_file" in self._tools
-            and "read_file" not in selected_names
-            and len(selected) < max_tools
-        ):
+        if "read_file" in self._tools and "read_file" not in selected_names:
             read_file_schema = next(
                 (
                     schema
@@ -2330,7 +2319,12 @@ class AgentLoop:
                 None,
             )
             if read_file_schema is not None:
-                selected.append(read_file_schema)
+                if weather_intent and selected:
+                    selected[-1] = read_file_schema
+                    selected_names.add("read_file")
+                elif len(selected) < max_tools:
+                    selected.append(read_file_schema)
+                    selected_names.add("read_file")
         return selected or [dict(t) for t in default_tool_definitions]
 
     @classmethod

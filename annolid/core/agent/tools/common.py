@@ -9,6 +9,27 @@ from typing import Sequence
 from urllib.parse import urlparse
 
 
+def _normalize_workspace_alias_path(path: str) -> str:
+    raw = str(path or "").strip()
+    if not raw:
+        return raw
+    normalized = raw.replace("\\", "/")
+    home_workspace_prefix = str((Path.home() / ".annolid" / "workspace")).replace(
+        "\\", "/"
+    )
+
+    if normalized.startswith(".annolid/workspace/"):
+        return str(Path.home() / normalized)
+    if normalized.startswith("./.annolid/workspace/"):
+        return str(Path.home() / normalized[2:])
+    if "/.annolid/workspace/" in normalized and not normalized.startswith(
+        home_workspace_prefix
+    ):
+        suffix = normalized.split("/.annolid/workspace/", 1)[1]
+        return str(Path.home() / ".annolid" / "workspace" / suffix)
+    return raw
+
+
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
     resolved = Path(path).expanduser().resolve()
     if allowed_dir and not str(resolved).startswith(str(allowed_dir.resolve())):
@@ -48,7 +69,8 @@ def _resolve_read_path(
     allowed_dir: Path | None = None,
     allowed_read_roots: Sequence[str | Path] | None = None,
 ) -> Path:
-    resolved = Path(path).expanduser().resolve()
+    normalized_path = _normalize_workspace_alias_path(path)
+    resolved = Path(normalized_path).expanduser().resolve()
     roots = _normalize_allowed_read_roots(allowed_dir, allowed_read_roots)
     if roots and not any(_is_within_root(resolved, root) for root in roots):
         allowed = ", ".join(str(root) for root in roots)

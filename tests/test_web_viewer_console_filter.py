@@ -1,4 +1,8 @@
-from annolid.gui.widgets.web_viewer import _is_ignorable_js_console_message
+from annolid.gui.widgets.web_viewer import (
+    _console_source_domain,
+    _format_suppressed_console_summary,
+    _is_ignorable_js_console_message,
+)
 
 
 def test_ignorable_console_noise_markers() -> None:
@@ -54,6 +58,61 @@ def test_non_ignorable_console_errors() -> None:
     assert not _is_ignorable_js_console_message(
         "Uncaught SyntaxError: Failed to execute 'matches' on 'Element': '[open]:not(:modal)' is not a valid selector."
     )
+
+
+def test_ignorable_weather_com_console_noise() -> None:
+    src = "https://weather.com/weather/today/l/Ithaca+NY"
+    assert _is_ignorable_js_console_message(
+        "Identity value for 'email' is falsy (). This value will be removed from the request.",
+        src,
+    )
+    assert _is_ignorable_js_console_message(
+        "For 'enrolled-in-experiment', the corresponding attribute value of 'schemaVersion' must be a string, number, boolean, or null.",
+        src,
+    )
+    assert _is_ignorable_js_console_message(
+        "Position latitude and/or longitude must both be of type number",
+        src,
+    )
+    assert _is_ignorable_js_console_message(
+        "For 'page-viewed', the corresponding attribute value of 'premiumContent' must be a string, number, boolean, or null.",
+        src,
+    )
+    assert _is_ignorable_js_console_message(
+        "[object Object] Google Accounts SDK is not available",
+        src,
+    )
+    assert _is_ignorable_js_console_message(
+        "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418",
+        src,
+    )
+    assert _is_ignorable_js_console_message(
+        "Geolocation failed in saga: Error: Geolocation request timed out.",
+        src,
+    )
+
+
+def test_weather_like_message_not_ignored_for_non_weather_source() -> None:
+    src = "https://example.org/app"
+    assert not _is_ignorable_js_console_message(
+        "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418",
+        src,
+    )
+
+
+def test_console_source_domain_parsing() -> None:
+    assert _console_source_domain("https://weather.com/weather/today/l/Ithaca+NY") == (
+        "weather.com"
+    )
+    assert _console_source_domain("") == "unknown"
+    assert _console_source_domain("not-a-url") == "unknown"
+
+
+def test_format_suppressed_console_summary_top_order() -> None:
+    summary = _format_suppressed_console_summary(
+        {"weather.com": 7, "unknown": 2, "example.org": 5}
+    )
+    assert summary == "weather.com=7, example.org=5, unknown=2"
 
 
 # ---------------------------------------------------------------------------
