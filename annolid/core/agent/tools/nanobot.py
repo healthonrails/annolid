@@ -43,6 +43,12 @@ from .email import EmailTool, ListEmailsTool, ReadEmailTool
 from .calendar import GoogleCalendarTool
 from .camera import CameraSnapshotTool
 from .automation_scheduler import AutomationSchedulerTool
+from .function_admin import (
+    AdminEvalRunTool,
+    AdminMemoryFlushTool,
+    AdminSkillsRefreshTool,
+    AdminUpdateRunTool,
+)
 from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
 from .swarm_tool import SwarmTool
 
@@ -157,6 +163,10 @@ async def register_nanobot_style_tools(
     )
     registry.register(CameraSnapshotTool(allowed_dir=allowed_dir))
     registry.register(AutomationSchedulerTool(scheduler=task_scheduler))
+    registry.register(AdminSkillsRefreshTool())
+    registry.register(AdminMemoryFlushTool())
+    registry.register(AdminEvalRunTool())
+    registry.register(AdminUpdateRunTool())
     if "message" not in ignored_tools:
         registry.register(MessageTool(send_callback=send_callback))
     if "spawn" not in ignored_tools:

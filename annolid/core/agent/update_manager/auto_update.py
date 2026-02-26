@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from annolid.core.agent.config import load_config
+
 
 @dataclass(frozen=True)
 class AutoUpdatePolicy:
@@ -64,6 +66,60 @@ class AutoUpdatePolicy:
             jitter_seconds=jitter_seconds,
             timeout_s=timeout_s,
             require_signature=require_signature,
+        )
+
+    @classmethod
+    def from_config_and_env(cls) -> "AutoUpdatePolicy":
+        cfg_auto = None
+        try:
+            cfg = load_config()
+            cfg_auto = getattr(getattr(cfg, "update", None), "auto", None)
+        except Exception:
+            cfg_auto = None
+
+        base = cls(
+            enabled=bool(getattr(cfg_auto, "enabled", False)),
+            channel=str(getattr(cfg_auto, "channel", "stable") or "stable")
+            .strip()
+            .lower(),
+            interval_seconds=max(
+                300, int(getattr(cfg_auto, "interval_seconds", 24 * 3600) or 24 * 3600)
+            ),
+            jitter_seconds=max(
+                0, int(getattr(cfg_auto, "jitter_seconds", 15 * 60) or 15 * 60)
+            ),
+            timeout_s=max(1.0, float(getattr(cfg_auto, "timeout_s", 4.0) or 4.0)),
+            require_signature=bool(getattr(cfg_auto, "require_signature", False)),
+        )
+        if base.channel not in {"stable", "beta", "dev"}:
+            base = cls(
+                enabled=base.enabled,
+                channel="stable",
+                interval_seconds=base.interval_seconds,
+                jitter_seconds=base.jitter_seconds,
+                timeout_s=base.timeout_s,
+                require_signature=base.require_signature,
+            )
+        env = cls.from_env()
+        return cls(
+            enabled=env.enabled
+            if os.getenv("ANNOLID_AUTO_UPDATE_ENABLED") is not None
+            else base.enabled,
+            channel=env.channel
+            if os.getenv("ANNOLID_AUTO_UPDATE_CHANNEL") is not None
+            else base.channel,
+            interval_seconds=env.interval_seconds
+            if os.getenv("ANNOLID_AUTO_UPDATE_INTERVAL_SECONDS") is not None
+            else base.interval_seconds,
+            jitter_seconds=env.jitter_seconds
+            if os.getenv("ANNOLID_AUTO_UPDATE_JITTER_SECONDS") is not None
+            else base.jitter_seconds,
+            timeout_s=env.timeout_s
+            if os.getenv("ANNOLID_AUTO_UPDATE_TIMEOUT_S") is not None
+            else base.timeout_s,
+            require_signature=env.require_signature
+            if os.getenv("ANNOLID_AUTO_UPDATE_REQUIRE_SIGNATURE") is not None
+            else base.require_signature,
         )
 
     @staticmethod

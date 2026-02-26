@@ -100,3 +100,25 @@ def test_auto_update_policy_due_with_interval_and_jitter() -> None:
     result = policy.is_due(last_check_epoch_s=0.0, now_epoch_s=1000.0)
     assert isinstance(result["due"], bool)
     assert "next_due_epoch_s" in result
+
+
+def test_auto_update_policy_from_config_and_env(monkeypatch) -> None:
+    import annolid.core.agent.update_manager.auto_update as auto_update_mod
+    from annolid.core.agent.config.schema import AgentConfig
+
+    cfg = AgentConfig()
+    cfg.update.auto.enabled = True
+    cfg.update.auto.channel = "beta"
+    cfg.update.auto.interval_seconds = 1800
+    cfg.update.auto.jitter_seconds = 120
+    cfg.update.auto.timeout_s = 9.5
+    cfg.update.auto.require_signature = True
+    monkeypatch.setattr(auto_update_mod, "load_config", lambda: cfg)
+    monkeypatch.delenv("ANNOLID_AUTO_UPDATE_CHANNEL", raising=False)
+    policy = AutoUpdatePolicy.from_config_and_env()
+    assert policy.enabled is True
+    assert policy.channel == "beta"
+    assert policy.interval_seconds == 1800
+    assert policy.jitter_seconds == 120
+    assert policy.timeout_s == 9.5
+    assert policy.require_signature is True

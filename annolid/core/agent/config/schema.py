@@ -589,10 +589,149 @@ class ToolsConfig:
 
 
 @dataclass
+class SkillsLoadConfig:
+    watch: bool = False
+    poll_seconds: float = 1.0
+    extra_dirs: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "SkillsLoadConfig":
+        payload = data or {}
+        dirs_raw = payload.get("extra_dirs", payload.get("extraDirs", []))
+        if isinstance(dirs_raw, (list, tuple)):
+            extra_dirs = [str(item).strip() for item in dirs_raw if str(item).strip()]
+        else:
+            extra_dirs = []
+        poll_seconds = payload.get("poll_seconds", payload.get("pollSeconds", 1.0))
+        try:
+            poll_value = max(0.0, float(poll_seconds))
+        except (TypeError, ValueError):
+            poll_value = 1.0
+        return cls(
+            watch=bool(payload.get("watch", False)),
+            poll_seconds=poll_value,
+            extra_dirs=extra_dirs,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "watch": bool(self.watch),
+            "poll_seconds": float(self.poll_seconds),
+            "extra_dirs": list(self.extra_dirs),
+        }
+
+
+@dataclass
+class SkillsConfig:
+    load: SkillsLoadConfig = field(default_factory=SkillsLoadConfig)
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "SkillsConfig":
+        payload = data or {}
+        return cls(load=SkillsLoadConfig.from_dict(payload.get("load")))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"load": self.load.to_dict()}
+
+
+@dataclass
+class MemoryConfig:
+    mode: str = "semantic_keyword"
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "MemoryConfig":
+        payload = data or {}
+        mode = str(payload.get("mode") or "semantic_keyword").strip().lower()
+        if mode not in {"semantic_keyword", "lexical"}:
+            mode = "semantic_keyword"
+        return cls(mode=mode)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"mode": self.mode}
+
+
+@dataclass
+class AutoUpdateConfig:
+    enabled: bool = False
+    channel: str = "stable"
+    interval_seconds: int = 24 * 3600
+    jitter_seconds: int = 15 * 60
+    timeout_s: float = 4.0
+    require_signature: bool = False
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "AutoUpdateConfig":
+        payload = data or {}
+        channel = str(payload.get("channel") or "stable").strip().lower()
+        if channel not in {"stable", "beta", "dev"}:
+            channel = "stable"
+        try:
+            interval_seconds = max(
+                300,
+                int(
+                    payload.get(
+                        "interval_seconds", payload.get("intervalSeconds", 86400)
+                    )
+                ),
+            )
+        except (TypeError, ValueError):
+            interval_seconds = 86400
+        try:
+            jitter_seconds = max(
+                0, int(payload.get("jitter_seconds", payload.get("jitterSeconds", 900)))
+            )
+        except (TypeError, ValueError):
+            jitter_seconds = 900
+        try:
+            timeout_s = max(
+                1.0, float(payload.get("timeout_s", payload.get("timeoutS", 4.0)))
+            )
+        except (TypeError, ValueError):
+            timeout_s = 4.0
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            channel=channel,
+            interval_seconds=interval_seconds,
+            jitter_seconds=jitter_seconds,
+            timeout_s=timeout_s,
+            require_signature=bool(
+                payload.get("require_signature", payload.get("requireSignature", False))
+            ),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": bool(self.enabled),
+            "channel": self.channel,
+            "interval_seconds": int(self.interval_seconds),
+            "jitter_seconds": int(self.jitter_seconds),
+            "timeout_s": float(self.timeout_s),
+            "require_signature": bool(self.require_signature),
+        }
+
+
+@dataclass
+class UpdateConfig:
+    auto: AutoUpdateConfig = field(default_factory=AutoUpdateConfig)
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "UpdateConfig":
+        payload = data or {}
+        auto_payload = payload.get("auto", payload.get("auto_update"))
+        return cls(auto=AutoUpdateConfig.from_dict(auto_payload))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"auto": self.auto.to_dict()}
+
+
+@dataclass
 class AgentConfig:
     agents: AgentsConfig = field(default_factory=AgentsConfig)
     providers: Dict[str, ProviderConfig] = field(default_factory=dict)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    skills: SkillsConfig = field(default_factory=SkillsConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+    update: UpdateConfig = field(default_factory=UpdateConfig)
 
     @property
     def workspace_path(self) -> Path:
@@ -612,6 +751,9 @@ class AgentConfig:
             agents=AgentsConfig.from_dict(payload.get("agents")),
             providers=providers,
             tools=ToolsConfig.from_dict(payload.get("tools")),
+            skills=SkillsConfig.from_dict(payload.get("skills")),
+            memory=MemoryConfig.from_dict(payload.get("memory")),
+            update=UpdateConfig.from_dict(payload.get("update")),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -619,6 +761,9 @@ class AgentConfig:
             "agents": self.agents.to_dict(),
             "providers": {name: cfg.to_dict() for name, cfg in self.providers.items()},
             "tools": self.tools.to_dict(),
+            "skills": self.skills.to_dict(),
+            "memory": self.memory.to_dict(),
+            "update": self.update.to_dict(),
         }
 
     def _provider_candidates(self) -> Tuple[str, ...]:

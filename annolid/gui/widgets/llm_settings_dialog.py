@@ -524,7 +524,268 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         env_note.setStyleSheet("color: #6b7280;")
         layout.addRow(env_note)
 
+        bot_note = QtWidgets.QLabel(
+            "Bot settings control skill loading and workspace memory retrieval behavior."
+        )
+        bot_note.setWordWrap(True)
+        bot_note.setStyleSheet("color: #6b7280;")
+        layout.addRow(bot_note)
+
+        skills_watch_default = False
+        memory_mode_default = "semantic_keyword"
+        skills_extra_dirs_default: list[str] = []
+        if self._agent_config is not None:
+            skills_cfg = getattr(self._agent_config, "skills", None)
+            skills_load_cfg = getattr(skills_cfg, "load", None)
+            skills_watch_default = bool(getattr(skills_load_cfg, "watch", False))
+            memory_mode_default = str(
+                getattr(
+                    getattr(self._agent_config, "memory", None),
+                    "mode",
+                    "semantic_keyword",
+                )
+                or "semantic_keyword"
+            ).strip()
+            skills_extra_dirs_default = list(
+                getattr(skills_load_cfg, "extra_dirs", []) or []
+            )
+
+        self.skills_hot_reload_checkbox = QtWidgets.QCheckBox(
+            "Enable skill hot reload (skills.load.watch)", widget
+        )
+        self.skills_hot_reload_checkbox.setChecked(bool(skills_watch_default))
+        layout.addRow(self.skills_hot_reload_checkbox)
+
+        self.memory_mode_combo = QtWidgets.QComboBox(widget)
+        self.memory_mode_combo.addItem(
+            "Semantic + keyword fallback", "semantic_keyword"
+        )
+        self.memory_mode_combo.addItem("Keyword only (lexical)", "lexical")
+        mode_index = self.memory_mode_combo.findData(memory_mode_default)
+        if mode_index < 0:
+            mode_index = 0
+        self.memory_mode_combo.setCurrentIndex(mode_index)
+        layout.addRow("Memory mode:", self.memory_mode_combo)
+
+        self.skill_source_locations_edit = QtWidgets.QLineEdit(widget)
+        self.skill_source_locations_edit.setPlaceholderText(
+            "Extra skill dirs (colon-separated)"
+        )
+        self.skill_source_locations_edit.setText(
+            os.pathsep.join(skills_extra_dirs_default)
+        )
+        layout.addRow("Skill source locations:", self.skill_source_locations_edit)
+
+        update_note = QtWidgets.QLabel(
+            "Update settings control automatic checks and release channel policy."
+        )
+        update_note.setWordWrap(True)
+        update_note.setStyleSheet("color: #6b7280;")
+        layout.addRow(update_note)
+
+        update_auto_default = False
+        update_channel_default = "stable"
+        update_interval_default = 24 * 3600
+        update_jitter_default = 15 * 60
+        update_timeout_default = 4.0
+        update_require_sig_default = False
+        if self._agent_config is not None:
+            auto_cfg = getattr(
+                getattr(self._agent_config, "update", None), "auto", None
+            )
+            if auto_cfg is not None:
+                update_auto_default = bool(getattr(auto_cfg, "enabled", False))
+                update_channel_default = str(
+                    getattr(auto_cfg, "channel", "stable") or "stable"
+                ).strip()
+                update_interval_default = int(
+                    getattr(auto_cfg, "interval_seconds", 24 * 3600) or 24 * 3600
+                )
+                update_jitter_default = int(
+                    getattr(auto_cfg, "jitter_seconds", 15 * 60) or 15 * 60
+                )
+                update_timeout_default = float(
+                    getattr(auto_cfg, "timeout_s", 4.0) or 4.0
+                )
+                update_require_sig_default = bool(
+                    getattr(auto_cfg, "require_signature", False)
+                )
+
+        self.auto_update_enabled_checkbox = QtWidgets.QCheckBox(
+            "Enable auto-update", widget
+        )
+        self.auto_update_enabled_checkbox.setChecked(bool(update_auto_default))
+        layout.addRow(self.auto_update_enabled_checkbox)
+
+        self.auto_update_channel_combo = QtWidgets.QComboBox(widget)
+        self.auto_update_channel_combo.addItem("Stable", "stable")
+        self.auto_update_channel_combo.addItem("Beta", "beta")
+        self.auto_update_channel_combo.addItem("Dev", "dev")
+        channel_index = self.auto_update_channel_combo.findData(update_channel_default)
+        if channel_index < 0:
+            channel_index = 0
+        self.auto_update_channel_combo.setCurrentIndex(channel_index)
+        layout.addRow("Update channel:", self.auto_update_channel_combo)
+
+        self.auto_update_interval_spin = QtWidgets.QSpinBox(widget)
+        self.auto_update_interval_spin.setRange(300, 7 * 24 * 3600)
+        self.auto_update_interval_spin.setSingleStep(300)
+        self.auto_update_interval_spin.setValue(max(300, int(update_interval_default)))
+        self.auto_update_interval_spin.setSuffix(" s")
+        layout.addRow("Auto-update interval:", self.auto_update_interval_spin)
+
+        self.auto_update_jitter_spin = QtWidgets.QSpinBox(widget)
+        self.auto_update_jitter_spin.setRange(0, 3600)
+        self.auto_update_jitter_spin.setSingleStep(60)
+        self.auto_update_jitter_spin.setValue(max(0, int(update_jitter_default)))
+        self.auto_update_jitter_spin.setSuffix(" s")
+        layout.addRow("Auto-update jitter:", self.auto_update_jitter_spin)
+
+        self.auto_update_timeout_spin = QtWidgets.QDoubleSpinBox(widget)
+        self.auto_update_timeout_spin.setRange(1.0, 120.0)
+        self.auto_update_timeout_spin.setSingleStep(0.5)
+        self.auto_update_timeout_spin.setDecimals(1)
+        self.auto_update_timeout_spin.setValue(max(1.0, float(update_timeout_default)))
+        self.auto_update_timeout_spin.setSuffix(" s")
+        layout.addRow("Update timeout:", self.auto_update_timeout_spin)
+
+        self.auto_update_require_sig_checkbox = QtWidgets.QCheckBox(
+            "Require signed manifest", widget
+        )
+        self.auto_update_require_sig_checkbox.setChecked(
+            bool(update_require_sig_default)
+        )
+        layout.addRow(self.auto_update_require_sig_checkbox)
+
+        update_actions = QtWidgets.QWidget(widget)
+        update_actions_layout = QtWidgets.QHBoxLayout(update_actions)
+        update_actions_layout.setContentsMargins(0, 0, 0, 0)
+        update_actions_layout.setSpacing(6)
+        self.update_check_now_button = QtWidgets.QPushButton(
+            "Check now", update_actions
+        )
+        self.update_check_now_button.clicked.connect(self._check_now_update)
+        self.update_rollback_button = QtWidgets.QPushButton("Rollback", update_actions)
+        self.update_rollback_button.clicked.connect(self._rollback_update)
+        update_actions_layout.addWidget(self.update_check_now_button)
+        update_actions_layout.addWidget(self.update_rollback_button)
+        update_actions_layout.addStretch(1)
+        layout.addRow("Update actions:", update_actions)
+
         self._tabs.addTab(widget, "Agent Runtime")
+
+    def _check_now_update(self) -> None:
+        try:
+            from annolid.core.agent.update_manager.service import UpdateManagerService
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Update Check Failed",
+                f"Could not load update service.\n\n{exc}",
+            )
+            return
+
+        channel = str(self.auto_update_channel_combo.currentData() or "stable")
+        timeout_s = float(self.auto_update_timeout_spin.value())
+        require_signature = bool(self.auto_update_require_sig_checkbox.isChecked())
+        try:
+            service = UpdateManagerService(project="annolid")
+            plan = service.check(
+                channel=channel,
+                timeout_s=timeout_s,
+                require_signature=require_signature,
+            )
+            details = [
+                f"Current version: {plan.current_version}",
+                f"Target version: {plan.manifest.version}",
+                f"Channel: {plan.channel}",
+                f"Update available: {plan.update_available}",
+                f"Verification: {plan.verification.reason}",
+            ]
+            QtWidgets.QMessageBox.information(
+                self,
+                "Update Check",
+                "\n".join(details),
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Update Check Failed",
+                f"Could not check updates.\n\n{exc}",
+            )
+
+    def _rollback_update(self) -> None:
+        try:
+            from annolid.core.agent.update_manager.rollback import (
+                build_rollback_plan,
+                execute_rollback,
+            )
+            from annolid.core.agent.update_manager.service import UpdateManagerService
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Rollback Failed",
+                f"Could not load rollback dependencies.\n\n{exc}",
+            )
+            return
+
+        previous_version, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "Rollback",
+            "Previous known-good version:",
+        )
+        if not ok:
+            return
+        version = str(previous_version or "").strip()
+        if not version:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Rollback",
+                "Rollback cancelled: previous version was empty.",
+            )
+            return
+
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Confirm Rollback",
+            (
+                "Run rollback now?\n\n"
+                f"Target previous version: {version}\n"
+                "This may run package manager commands."
+            ),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+
+        try:
+            service = UpdateManagerService(project="annolid")
+            preflight = service.manager.preflight()
+            plan = build_rollback_plan(
+                install_mode=str(preflight.get("install_mode") or "package"),
+                project="annolid",
+                previous_version=version,
+            )
+            payload = execute_rollback(plan, execute=True)
+            if bool(payload.get("ok", False)):
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Rollback Complete",
+                    "Rollback completed successfully.",
+                )
+                return
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Rollback Result",
+                str(payload.get("reason") or "Rollback failed."),
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Rollback Failed",
+                f"Could not execute rollback.\n\n{exc}",
+            )
 
     @QtCore.Slot()
     def _browse_chatterbox_voice_prompt(self) -> None:
@@ -1100,15 +1361,83 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             try:
                 poll_seconds = int(self.email_poll_interval_spin.value())
                 self._agent_config.tools.email.polling_interval = max(10, poll_seconds)
+                self._agent_config.skills.load.watch = bool(
+                    self.skills_hot_reload_checkbox.isChecked()
+                )
+                raw_extra = str(self.skill_source_locations_edit.text() or "").strip()
+                extra_dirs = [
+                    part.strip() for part in raw_extra.split(os.pathsep) if part.strip()
+                ]
+                self._agent_config.skills.load.extra_dirs = extra_dirs
+                memory_mode = str(
+                    self.memory_mode_combo.currentData() or "semantic_keyword"
+                ).strip()
+                self._agent_config.memory.mode = (
+                    memory_mode
+                    if memory_mode in {"semantic_keyword", "lexical"}
+                    else "semantic_keyword"
+                )
+                channel = str(
+                    self.auto_update_channel_combo.currentData() or "stable"
+                ).strip()
+                if channel not in {"stable", "beta", "dev"}:
+                    channel = "stable"
+                self._agent_config.update.auto.enabled = bool(
+                    self.auto_update_enabled_checkbox.isChecked()
+                )
+                self._agent_config.update.auto.channel = channel
+                self._agent_config.update.auto.interval_seconds = max(
+                    300, int(self.auto_update_interval_spin.value())
+                )
+                self._agent_config.update.auto.jitter_seconds = max(
+                    0, int(self.auto_update_jitter_spin.value())
+                )
+                self._agent_config.update.auto.timeout_s = max(
+                    1.0, float(self.auto_update_timeout_spin.value())
+                )
+                self._agent_config.update.auto.require_signature = bool(
+                    self.auto_update_require_sig_checkbox.isChecked()
+                )
                 save_config(self._agent_config)
                 os.environ["ANNOLID_EMAIL_POLL_INTERVAL_SECONDS"] = str(
                     self._agent_config.tools.email.polling_interval
                 )
+                os.environ["ANNOLID_SKILLS_LOAD_WATCH"] = (
+                    "1" if bool(self._agent_config.skills.load.watch) else "0"
+                )
+                os.environ["ANNOLID_SKILLS_EXTRA_DIRS"] = os.pathsep.join(
+                    self._agent_config.skills.load.extra_dirs
+                )
+                os.environ["ANNOLID_MEMORY_RETRIEVAL_PLUGIN"] = (
+                    "lexical"
+                    if str(self._agent_config.memory.mode).strip() == "lexical"
+                    else "workspace_semantic_keyword_v1"
+                )
+                os.environ["ANNOLID_AUTO_UPDATE_ENABLED"] = (
+                    "1" if bool(self._agent_config.update.auto.enabled) else "0"
+                )
+                os.environ["ANNOLID_AUTO_UPDATE_CHANNEL"] = (
+                    self._agent_config.update.auto.channel
+                )
+                os.environ["ANNOLID_AUTO_UPDATE_INTERVAL_SECONDS"] = str(
+                    int(self._agent_config.update.auto.interval_seconds)
+                )
+                os.environ["ANNOLID_AUTO_UPDATE_JITTER_SECONDS"] = str(
+                    int(self._agent_config.update.auto.jitter_seconds)
+                )
+                os.environ["ANNOLID_AUTO_UPDATE_TIMEOUT_S"] = str(
+                    float(self._agent_config.update.auto.timeout_s)
+                )
+                os.environ["ANNOLID_AUTO_UPDATE_REQUIRE_SIGNATURE"] = (
+                    "1"
+                    if bool(self._agent_config.update.auto.require_signature)
+                    else "0"
+                )
             except Exception as exc:
                 QtWidgets.QMessageBox.warning(
                     self,
-                    "Could not persist email poll interval",
-                    f"Failed to update agent config with email polling interval.\n\n{exc}",
+                    "Could not persist agent runtime settings",
+                    f"Failed to update agent config runtime settings.\n\n{exc}",
                 )
 
         self._tts_settings = {

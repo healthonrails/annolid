@@ -20,6 +20,12 @@ from .detection import DetectionResult, DetectionTool
 from .embedding import EmbeddingResult, EmbeddingTool
 from .email import EmailTool
 from .function_base import FunctionTool
+from .function_admin import (
+    AdminEvalRunTool,
+    AdminMemoryFlushTool,
+    AdminSkillsRefreshTool,
+    AdminUpdateRunTool,
+)
 from .citation import (
     BibtexListEntriesTool,
     BibtexRemoveEntryTool,
@@ -143,6 +149,10 @@ __all__ = [
     "EmbeddingTool",
     "EmailTool",
     "FunctionTool",
+    "AdminSkillsRefreshTool",
+    "AdminMemoryFlushTool",
+    "AdminEvalRunTool",
+    "AdminUpdateRunTool",
     "FunctionToolRegistry",
     "ReadFileTool",
     "WriteFileTool",

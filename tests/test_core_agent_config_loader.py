@@ -20,11 +20,19 @@ def test_agent_config_load_creates_default_template(tmp_path: Path) -> None:
     assert loaded.tools.calendar.enabled is False
     payload = json.loads(cfg_path.read_text(encoding="utf-8"))
     tools = payload.get("tools") or {}
+    skills = payload.get("skills") or {}
+    memory = payload.get("memory") or {}
+    update = payload.get("update") or {}
     calendar = tools.get("calendar") or {}
     email = tools.get("email") or {}
+    skill_load = skills.get("load") or {}
+    update_auto = update.get("auto") or {}
     assert "enabled" in calendar
     assert "provider" in calendar
     assert email.get("polling_interval", email.get("pollingInterval")) == 300
+    assert "watch" in skill_load
+    assert memory.get("mode") in {"semantic_keyword", "lexical"}
+    assert update_auto.get("channel") in {"stable", "beta", "dev"}
 
 
 def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
@@ -81,6 +89,15 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     cfg.tools.calendar.calendar_id = "primary"
     cfg.tools.calendar.timezone = "America/Los_Angeles"
     cfg.tools.calendar.default_event_duration_minutes = 45
+    cfg.skills.load.watch = True
+    cfg.skills.load.extra_dirs = [str(tmp_path / "extra-skills")]
+    cfg.memory.mode = "lexical"
+    cfg.update.auto.enabled = True
+    cfg.update.auto.channel = "beta"
+    cfg.update.auto.interval_seconds = 1800
+    cfg.update.auto.jitter_seconds = 120
+    cfg.update.auto.timeout_s = 7.5
+    cfg.update.auto.require_signature = True
 
     save_config(cfg, cfg_path)
     loaded = load_config(cfg_path)
@@ -131,6 +148,15 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     assert loaded.tools.calendar.calendar_id == "primary"
     assert loaded.tools.calendar.timezone == "America/Los_Angeles"
     assert loaded.tools.calendar.default_event_duration_minutes == 45
+    assert loaded.skills.load.watch is True
+    assert loaded.skills.load.extra_dirs == [str(tmp_path / "extra-skills")]
+    assert loaded.memory.mode == "lexical"
+    assert loaded.update.auto.enabled is True
+    assert loaded.update.auto.channel == "beta"
+    assert loaded.update.auto.interval_seconds == 1800
+    assert loaded.update.auto.jitter_seconds == 120
+    assert loaded.update.auto.timeout_s == 7.5
+    assert loaded.update.auto.require_signature is True
 
 
 def test_agent_config_migrates_legacy_restrict_to_workspace(tmp_path: Path) -> None:

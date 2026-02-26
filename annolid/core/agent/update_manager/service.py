@@ -175,7 +175,7 @@ class UpdateManagerService:
         now_epoch_s: Optional[float] = None,
         execute: bool = False,
     ) -> Dict[str, Any]:
-        pol = policy or AutoUpdatePolicy.from_env()
+        pol = policy or AutoUpdatePolicy.from_config_and_env()
         if not pol.enabled:
             return {"status": "disabled", "policy": pol.to_dict()}
         due = pol.is_due(

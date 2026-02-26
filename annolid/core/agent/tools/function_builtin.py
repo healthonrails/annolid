@@ -26,6 +26,12 @@ from .filesystem import (
     RenameFileTool,
     WriteFileTool,
 )
+from .function_admin import (
+    AdminEvalRunTool,
+    AdminMemoryFlushTool,
+    AdminSkillsRefreshTool,
+    AdminUpdateRunTool,
+)
 from .git import (
     GitDiffTool,
     GitHubPrChecksTool,
@@ -88,5 +94,9 @@ __all__ = [
     "CronTool",
     "AutomationSchedulerTool",
     "CameraSnapshotTool",
+    "AdminSkillsRefreshTool",
+    "AdminMemoryFlushTool",
+    "AdminEvalRunTool",
+    "AdminUpdateRunTool",
     "register_nanobot_style_tools",
 ]
