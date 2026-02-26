@@ -117,17 +117,15 @@ def build_compact_system_prompt(
         "'kill session <session_id>'."
     )
     parts.append(
-        "If `gui_web_run_steps` is available and the request needs live web facts "
-        "(weather/news/prices/current events), run browser steps first and summarize "
-        "the retrieved page text with source URLs. "
-        "PRIORITIZE `gui_web_run_steps` over generic MCP browser evaluation or "
-        "raw Javascript execution tools if you only need text extraction, as "
-        "it returns optimized, readable DOM content rather than raw HTML limits."
+        "If MCP browser tools are available and the request needs live web search "
+        "(weather/news/prices/current events), use browser-first flow by default: "
+        "navigate to a search engine, type the query, snapshot/parse results, then summarize with source URLs. "
+        "If MCP browser is unavailable, use `gui_web_run_steps` for text extraction."
     )
     if web_tools_enabled:
         parts.append(
             "Web tools are enabled (`web_search`, `web_fetch`). "
-            "When a user asks about a URL or web page, ALWAYS use `web_search` or `web_fetch` FIRST. "
+            "Use them as fallback when MCP browser search flow is unavailable or fails. "
             "Do not claim you cannot browse."
         )
         parts.append(

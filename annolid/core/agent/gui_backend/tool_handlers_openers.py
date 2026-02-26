@@ -40,6 +40,12 @@ async def open_url_tool(
     invoke_open_url: Callable[[str], bool],
 ) -> Dict[str, object]:
     raw_text = str(url or "").strip()
+    if raw_text.lower().startswith("file://"):
+        return {
+            "ok": False,
+            "error": "Only http(s) URLs or existing local files are supported. file:// URLs are blocked for safety.",
+            "url": raw_text,
+        }
     target_url = extract_first_web_url_fn(raw_text)
 
     candidate_url = target_url or raw_text
@@ -80,12 +86,12 @@ async def open_url_tool(
 
     lower_target = target_url.lower()
     if not (
-        lower_target.startswith(("http://", "https://", "file://"))
+        lower_target.startswith(("http://", "https://"))
         or Path(target_url).expanduser().is_file()
     ):
         return {
             "ok": False,
-            "error": "Only http(s) URLs or existing local files are supported.",
+            "error": "Only http(s) URLs or existing local files are supported. file:// URLs are blocked for safety.",
             "url": target_url,
         }
     if not invoke_open_url(target_url):

@@ -15,6 +15,56 @@ from .function_registry import FunctionToolRegistry
 # Global session and browser state for MCP browser tools
 _mcp_browser_session: Optional[Any] = None
 _mcp_browser_stack: Optional[Any] = None
+_BROWSER_SAFE_URL_SCHEMES = {"http", "https", "about"}
+
+
+def _validate_browser_url(url: str) -> tuple[str, str]:
+    value = str(url or "").strip()
+    if not value:
+        return "", "url is required"
+    lower = value.lower()
+    if lower == "about:blank":
+        return value, ""
+    if "://" not in value:
+        if any(
+            lower.startswith(prefix) for prefix in ("javascript:", "data:", "file:")
+        ):
+            return "", "Unsupported URL scheme"
+        value = f"https://{value}"
+    from urllib.parse import urlsplit
+
+    try:
+        parsed = urlsplit(value)
+    except Exception:
+        return "", "Invalid URL"
+    scheme = str(parsed.scheme or "").lower().strip()
+    if scheme not in _BROWSER_SAFE_URL_SCHEMES:
+        return "", f"Unsupported URL scheme: {scheme or '(none)'}"
+    if scheme in {"http", "https"} and not str(parsed.netloc or "").strip():
+        return "", "URL must include a hostname"
+    if scheme == "about" and lower != "about:blank":
+        return "", "Only about:blank is allowed for about: URLs"
+    return value, ""
+
+
+async def _call_mcp_tool(
+    session: Any, tool_name: str, args: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"ok": False}
+    try:
+        from mcp import types
+
+        result = await session.call_tool(tool_name, args or {})
+        texts: list[str] = []
+        for block in getattr(result, "content", []) or []:
+            if isinstance(block, types.TextContent):
+                texts.append(str(block.text or ""))
+        payload["ok"] = True
+        if texts:
+            payload["message"] = "\n".join(texts)
+    except Exception as exc:
+        payload["error"] = str(exc)
+    return payload
 
 
 async def _ensure_mcp_browser_session(mcp_servers: Dict[str, Any]) -> Optional[Any]:
@@ -118,28 +168,19 @@ class McpBrowserNavigateTool(FunctionTool):
         }
 
     async def execute(self, **kwargs: Any) -> str:
-        url = kwargs.get("url", "")
-        if not url:
-            return json.dumps({"error": "url is required"})
+        url, url_error = _validate_browser_url(kwargs.get("url", ""))
+        if url_error:
+            return json.dumps({"error": url_error})
 
         session = await _ensure_mcp_browser_session(self._mcp_servers)
         if session is None:
             return json.dumps({"error": "MCP browser session not available"})
 
-        try:
-            from mcp import types
-
-            result = await session.call_tool("browser_navigate", {"url": url})
-            parts = []
-            for block in getattr(result, "content", []) or []:
-                if isinstance(block, types.TextContent):
-                    parts.append(block.text)
-
-            if parts:
-                return json.dumps({"ok": True, "message": "\n".join(parts)})
-            return json.dumps({"ok": True, "url": url})
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+        payload = await _call_mcp_tool(session, "browser_navigate", {"url": url})
+        if not payload.get("ok"):
+            return json.dumps(payload)
+        payload["url"] = url
+        return json.dumps(payload)
 
 
 class McpBrowserClickTool(FunctionTool):
@@ -181,22 +222,12 @@ class McpBrowserClickTool(FunctionTool):
         if session is None:
             return json.dumps({"error": "MCP browser session not available"})
 
-        try:
-            from mcp import types
-
-            result = await session.call_tool(
-                "browser_click", {"ref": ref, "element": element}
-            )
-            parts = []
-            for block in getattr(result, "content", []) or []:
-                if isinstance(block, types.TextContent):
-                    parts.append(block.text)
-
-            if parts:
-                return json.dumps({"ok": True, "message": "\n".join(parts)})
-            return json.dumps({"ok": True})
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+        payload = await _call_mcp_tool(
+            session,
+            "browser_click",
+            {"ref": ref, "element": element},
+        )
+        return json.dumps(payload)
 
 
 class McpBrowserTypeTool(FunctionTool):
@@ -248,28 +279,17 @@ class McpBrowserTypeTool(FunctionTool):
         if session is None:
             return json.dumps({"error": "MCP browser session not available"})
 
-        try:
-            from mcp import types
-
-            result = await session.call_tool(
-                "browser_type",
-                {
-                    "ref": ref,
-                    "text": text,
-                    "submit": submit,
-                    "slowly": slowly,
-                },
-            )
-            parts = []
-            for block in getattr(result, "content", []) or []:
-                if isinstance(block, types.TextContent):
-                    parts.append(block.text)
-
-            if parts:
-                return json.dumps({"ok": True, "message": "\n".join(parts)})
-            return json.dumps({"ok": True})
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+        payload = await _call_mcp_tool(
+            session,
+            "browser_type",
+            {
+                "ref": ref,
+                "text": text,
+                "submit": submit,
+                "slowly": slowly,
+            },
+        )
+        return json.dumps(payload)
 
 
 class McpBrowserSnapshotTool(FunctionTool):
@@ -306,24 +326,13 @@ class McpBrowserSnapshotTool(FunctionTool):
         if session is None:
             return json.dumps({"error": "MCP browser session not available"})
 
-        try:
-            from mcp import types
-
-            args = {}
-            if filename:
-                args["filename"] = filename
-
-            result = await session.call_tool("browser_snapshot", args)
-            parts = []
-            for block in getattr(result, "content", []) or []:
-                if isinstance(block, types.TextContent):
-                    parts.append(block.text)
-
-            if parts:
-                return "\n".join(parts)
-            return "(no content)"
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+        args = {}
+        if filename:
+            args["filename"] = filename
+        payload = await _call_mcp_tool(session, "browser_snapshot", args)
+        if not payload.get("ok"):
+            return json.dumps(payload)
+        return str(payload.get("message") or "(no content)")
 
 
 class McpBrowserScreenshotTool(FunctionTool):
@@ -364,27 +373,16 @@ class McpBrowserScreenshotTool(FunctionTool):
         if session is None:
             return json.dumps({"error": "MCP browser session not available"})
 
-        try:
-            from mcp import types
-
-            result = await session.call_tool(
-                "browser_take_screenshot",
-                {
-                    "type": screenshot_type,
-                    "filename": filename,
-                    "fullPage": full_page,
-                },
-            )
-            parts = []
-            for block in getattr(result, "content", []) or []:
-                if isinstance(block, types.TextContent):
-                    parts.append(block.text)
-
-            if parts:
-                return json.dumps({"ok": True, "message": "\n".join(parts)})
-            return json.dumps({"ok": True})
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+        payload = await _call_mcp_tool(
+            session,
+            "browser_take_screenshot",
+            {
+                "type": screenshot_type,
+                "filename": filename,
+                "fullPage": full_page,
+            },
+        )
+        return json.dumps(payload)
 
 
 class McpBrowserScrollTool(FunctionTool):
@@ -422,21 +420,10 @@ class McpBrowserScrollTool(FunctionTool):
         if session is None:
             return json.dumps({"error": "MCP browser session not available"})
 
-        try:
-            from mcp import types
-
-            # Use PageDown key for scrolling
-            result = await session.call_tool("browser_press_key", {"key": "PageDown"})
-            parts = []
-            for block in getattr(result, "content", []) or []:
-                if isinstance(block, types.TextContent):
-                    parts.append(block.text)
-
-            if parts:
-                return json.dumps({"ok": True, "message": "\n".join(parts)})
-            return json.dumps({"ok": True})
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+        payload = await _call_mcp_tool(
+            session, "browser_press_key", {"key": "PageDown"}
+        )
+        return json.dumps(payload)
 
 
 class McpBrowserCloseTool(FunctionTool):
@@ -500,28 +487,173 @@ class McpBrowserWaitTool(FunctionTool):
         if session is None:
             return json.dumps({"error": "MCP browser session not available"})
 
-        try:
-            from mcp import types
+        args = {}
+        if text:
+            args["text"] = text
+        if text_gone:
+            args["textGone"] = text_gone
+        if wait_time:
+            args["time"] = wait_time
+        payload = await _call_mcp_tool(session, "browser_wait_for", args)
+        if not payload.get("ok"):
+            return json.dumps(payload)
+        return str(payload.get("message") or "(no content)")
 
-            args = {}
-            if text:
-                args["text"] = text
-            if text_gone:
-                args["textGone"] = text_gone
-            if wait_time:
-                args["time"] = wait_time
 
-            result = await session.call_tool("browser_wait_for", args)
-            parts = []
-            for block in getattr(result, "content", []) or []:
-                if isinstance(block, types.TextContent):
-                    parts.append(block.text)
+class McpBrowserTool(FunctionTool):
+    """Unified browser control tool with high-leverage actions."""
 
-            if parts:
-                return "\n".join(parts)
-            return "(no content)"
-        except Exception as e:
-            return json.dumps({"error": str(e)})
+    def __init__(self, mcp_servers: Optional[Dict[str, Any]] = None):
+        self._mcp_servers = mcp_servers or {}
+
+    @property
+    def name(self) -> str:
+        return "mcp_browser"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Unified browser control tool for status/start/stop/navigate/snapshot/"
+            "screenshot/act/wait operations through Playwright MCP."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "status",
+                        "start",
+                        "stop",
+                        "navigate",
+                        "snapshot",
+                        "screenshot",
+                        "act",
+                        "wait",
+                    ],
+                },
+                "url": {"type": "string"},
+                "filename": {"type": "string"},
+                "type": {"type": "string", "enum": ["png", "jpeg"]},
+                "fullPage": {"type": "boolean"},
+                "operation": {
+                    "type": "string",
+                    "enum": ["click", "type", "press_key"],
+                },
+                "ref": {"type": "string"},
+                "element": {"type": "string"},
+                "text": {"type": "string"},
+                "submit": {"type": "boolean"},
+                "slowly": {"type": "boolean"},
+                "key": {"type": "string"},
+                "textGone": {"type": "string"},
+                "time": {"type": "integer"},
+            },
+            "required": ["action"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        action = str(kwargs.get("action") or "").strip().lower()
+        if action == "status":
+            return json.dumps(
+                {
+                    "ok": True,
+                    "connected": _mcp_browser_session is not None,
+                    "message": (
+                        "MCP browser session connected"
+                        if _mcp_browser_session is not None
+                        else "MCP browser session not connected"
+                    ),
+                }
+            )
+        if action == "stop":
+            await _close_mcp_browser_session()
+            return json.dumps(
+                {"ok": True, "connected": False, "message": "Browser closed"}
+            )
+
+        session = await _ensure_mcp_browser_session(self._mcp_servers)
+        if session is None:
+            return json.dumps(
+                {"ok": False, "error": "MCP browser session not available"}
+            )
+
+        if action == "start":
+            return json.dumps(
+                {"ok": True, "connected": True, "message": "Browser ready"}
+            )
+        if action == "navigate":
+            url, url_error = _validate_browser_url(kwargs.get("url", ""))
+            if url_error:
+                return json.dumps({"ok": False, "error": url_error})
+            payload = await _call_mcp_tool(session, "browser_navigate", {"url": url})
+            payload["url"] = url
+            return json.dumps(payload)
+        if action == "snapshot":
+            args: Dict[str, Any] = {}
+            filename = str(kwargs.get("filename") or "").strip()
+            if filename:
+                args["filename"] = filename
+            return json.dumps(await _call_mcp_tool(session, "browser_snapshot", args))
+        if action == "screenshot":
+            return json.dumps(
+                await _call_mcp_tool(
+                    session,
+                    "browser_take_screenshot",
+                    {
+                        "type": str(kwargs.get("type") or "png"),
+                        "filename": str(kwargs.get("filename") or ""),
+                        "fullPage": bool(kwargs.get("fullPage", False)),
+                    },
+                )
+            )
+        if action == "act":
+            operation = str(kwargs.get("operation") or "").strip().lower()
+            if operation == "click":
+                return json.dumps(
+                    await _call_mcp_tool(
+                        session,
+                        "browser_click",
+                        {
+                            "ref": str(kwargs.get("ref") or ""),
+                            "element": str(kwargs.get("element") or ""),
+                        },
+                    )
+                )
+            if operation == "type":
+                return json.dumps(
+                    await _call_mcp_tool(
+                        session,
+                        "browser_type",
+                        {
+                            "ref": str(kwargs.get("ref") or ""),
+                            "text": str(kwargs.get("text") or ""),
+                            "submit": bool(kwargs.get("submit", False)),
+                            "slowly": bool(kwargs.get("slowly", False)),
+                        },
+                    )
+                )
+            if operation == "press_key":
+                key = str(kwargs.get("key") or "").strip() or "PageDown"
+                return json.dumps(
+                    await _call_mcp_tool(session, "browser_press_key", {"key": key})
+                )
+            return json.dumps({"ok": False, "error": "Unsupported act operation"})
+        if action == "wait":
+            wait_args: Dict[str, Any] = {}
+            if kwargs.get("text"):
+                wait_args["text"] = str(kwargs.get("text"))
+            if kwargs.get("textGone"):
+                wait_args["textGone"] = str(kwargs.get("textGone"))
+            if kwargs.get("time") is not None:
+                wait_args["time"] = int(kwargs.get("time") or 0)
+            return json.dumps(
+                await _call_mcp_tool(session, "browser_wait_for", wait_args)
+            )
+        return json.dumps({"ok": False, "error": "Unsupported action"})
 
 
 def register_mcp_browser_tools(
@@ -533,6 +665,7 @@ def register_mcp_browser_tools(
     These tools connect to a Playwright MCP server and provide browser
     automation capabilities without requiring the GUI to be running.
     """
+    registry.register(McpBrowserTool(mcp_servers=mcp_servers))
     registry.register(McpBrowserNavigateTool(mcp_servers=mcp_servers))
     registry.register(McpBrowserClickTool(mcp_servers=mcp_servers))
     registry.register(McpBrowserTypeTool(mcp_servers=mcp_servers))

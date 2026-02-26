@@ -2082,6 +2082,12 @@ class AgentLoop:
         }
     )
     _DEFAULT_TOOL_PRIORITY = (
+        "mcp_browser",
+        "mcp_browser_navigate",
+        "mcp_browser_snapshot",
+        "mcp_browser_type",
+        "mcp_browser_click",
+        "mcp_browser_wait",
         "gui_start_realtime_stream",
         "gui_stop_realtime_stream",
         "gui_label_behavior_segments",
@@ -2122,8 +2128,22 @@ class AgentLoop:
     _POST_TOOL_SYSTEM_GUIDANCE = (
         "Use the tool results to decide the next best action. "
         "Either call another tool with concrete arguments or provide a concise "
-        "final answer. For live web requests, prefer `gui_web_run_steps` before "
-        "claiming browsing limits. Do not reveal private chain-of-thought."
+        "final answer. For live web search requests, prefer MCP browser workflow "
+        "by default: navigate to a search engine, type the query, snapshot/parse "
+        "the results, then continue. For GUI web tasks, prefer `gui_web_run_steps` "
+        "before claiming browsing limits. Do not reveal private chain-of-thought."
+    )
+    _BROWSER_WORKFLOW_TOOL_NAMES = frozenset(
+        {
+            "mcp_browser",
+            "mcp_browser_navigate",
+            "mcp_browser_snapshot",
+            "mcp_browser_type",
+            "mcp_browser_click",
+            "mcp_browser_wait",
+            "mcp_browser_screenshot",
+            "mcp_browser_scroll",
+        }
     )
     _TOKENIZE_RE = re.compile(r"[a-zA-Z0-9_]+")
 
@@ -2273,10 +2293,12 @@ class AgentLoop:
         for entry in entries:
             score = self._score_tool_schema(entry, query_tokens)
             if self._browser_first_for_web and web_intent:
-                if "browser" in entry.name or "browser" in entry.desc:
+                if entry.name in self._BROWSER_WORKFLOW_TOOL_NAMES:
+                    score += 24
+                elif "browser" in entry.name or "browser" in entry.desc:
                     score += 12
-                if "mcp_" in entry.name and "browser" in entry.name:
-                    score += 8
+                if entry.name == "web_search":
+                    score = max(1, score - 6)
             if score > 0:
                 scored.append((score, entry.schema))
         if not scored:

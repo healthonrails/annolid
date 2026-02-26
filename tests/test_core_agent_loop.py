@@ -109,6 +109,45 @@ class _BrowserLikeTool(FunctionTool):
         return f"browser:{kwargs.get('url', '')}"
 
 
+class _BrowserSnapshotLikeTool(FunctionTool):
+    @property
+    def name(self) -> str:
+        return "mcp_browser_snapshot"
+
+    @property
+    def description(self) -> str:
+        return "Snapshot current browser page for parsing result refs/text."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs: Any) -> str:
+        del kwargs
+        return "snapshot:ok"
+
+
+class _BrowserTypeLikeTool(FunctionTool):
+    @property
+    def name(self) -> str:
+        return "mcp_browser_type"
+
+    @property
+    def description(self) -> str:
+        return "Type text into browser input fields using refs."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"ref": {"type": "string"}, "text": {"type": "string"}},
+            "required": ["ref", "text"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return f"type:{kwargs.get('text', '')}"
+
+
 class _SlowTool(FunctionTool):
     @property
     def name(self) -> str:
@@ -1171,6 +1210,38 @@ def test_agent_loop_can_disable_browser_first_for_web() -> None:
     _ = asyncio.run(loop.run("what is the weather today?"))
     assert observed["tool_names"]
     assert observed["tool_names"][0] == "web_search"
+
+
+def test_agent_loop_prefers_browser_search_workflow_tools_over_web_search() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_SearchLikeTool())
+    registry.register(_BrowserLikeTool())
+    registry.register(_BrowserTypeLikeTool())
+    registry.register(_BrowserSnapshotLikeTool())
+    observed = {"tool_names": []}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, model, on_token
+        observed["tool_names"] = [
+            str((t.get("function") or {}).get("name") or "") for t in tools
+        ]
+        return {"content": "ok"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    _ = asyncio.run(loop.run("search latest annolid paper results"))
+    assert observed["tool_names"]
+    assert observed["tool_names"][0] in {"mcp_browser_navigate", "mcp_browser"}
+    assert observed["tool_names"].index("mcp_browser_type") < observed[
+        "tool_names"
+    ].index("web_search")
+    assert observed["tool_names"].index("mcp_browser_snapshot") < observed[
+        "tool_names"
+    ].index("web_search")
 
 
 def test_agent_loop_inserts_post_tool_system_guidance() -> None:

@@ -128,6 +128,7 @@ from .utility import (
 )
 from .vector_index import NumpyEmbeddingIndex, SearchResult
 from .mcp_browser import (
+    McpBrowserTool,
     McpBrowserClickTool,
     McpBrowserCloseTool,
     McpBrowserNavigateTool,
@@ -262,6 +263,7 @@ __all__ = [
     "ToolError",
     "content_hash",
     "McpBrowserNavigateTool",
+    "McpBrowserTool",
     "McpBrowserClickTool",
     "McpBrowserTypeTool",
     "McpBrowserSnapshotTool",

@@ -150,6 +150,7 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "clawhub_search_skills",
         "clawhub_install_skill",
         # MCP browser tools (require Playwright MCP server configured)
+        "mcp_browser",
         "mcp_browser_navigate",
         "mcp_browser_click",
         "mcp_browser_type",

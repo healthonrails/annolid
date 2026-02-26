@@ -147,6 +147,20 @@ def test_policy_group_pdf_includes_open_and_extract_tools() -> None:
     }
 
 
+def test_policy_group_web_includes_unified_mcp_browser_tool() -> None:
+    cfg = ToolsConfig(profile="minimal", allow=["group:web"])
+    all_tools = ["web_search", "mcp_browser", "mcp_browser_navigate", "read_file"]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="ollama",
+        model="qwen3",
+    )
+    assert "web_search" in resolved.allowed_tools
+    assert "mcp_browser" in resolved.allowed_tools
+    assert "mcp_browser_navigate" in resolved.allowed_tools
+
+
 def test_policy_group_fs_includes_rename_file() -> None:
     cfg = ToolsConfig(
         profile="minimal",

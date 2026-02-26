@@ -983,6 +983,23 @@ def test_gui_open_url_queues_for_local_html_file(monkeypatch, tmp_path: Path) ->
     assert calls == ["bot_open_url"]
 
 
+def test_gui_open_url_blocks_file_scheme(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=None)
+    payload = asyncio.run(task._tool_gui_open_url("file:///etc/passwd"))
+    assert payload["ok"] is False
+    assert "file:// URLs are blocked for safety" in str(payload.get("error") or "")
+
+
 def test_gui_web_run_steps_executes_sequence(monkeypatch, tmp_path: Path) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
 
