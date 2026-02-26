@@ -448,14 +448,14 @@ class CutieCoreVideoProcessor:
 
     @staticmethod
     def discover_seed_frames(
-        video_name, results_folder: Optional[Path] = None
+        video_name, results_folder: Optional[Path] = None, *, force_refresh: bool = False
     ) -> List[SeedFrame]:
         """Discover seed frame pairs (PNG+JSON) within the video results folder."""
         results_dir = (
             Path(results_folder) if results_folder else Path(video_name).with_suffix("")
         )
         cache_key = str(results_dir.resolve())
-        cached = CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE.get(cache_key)
+        cached = None if force_refresh else CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE.get(cache_key)
         if cached is not None:
             logger.info(
                 "Using cached CUTIE seeds (%d) for %s", len(cached), results_dir
@@ -2197,7 +2197,7 @@ class CutieCoreVideoProcessor:
         self._recent_instance_masks.clear()
         self._recent_instance_mask_frames.clear()
         self._seed_frames = self.discover_seed_frames(
-            self.video_name, self.video_folder
+            self.video_name, self.video_folder, force_refresh=True
         )
         if not self._seed_frames:
             message = (

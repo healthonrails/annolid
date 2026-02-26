@@ -26,6 +26,29 @@ PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
 class PredictionExecutionMixin:
     """Prediction worker setup and completion handling."""
 
+    @staticmethod
+    def _resolve_cutie_start_frame_from_seed_state(
+        current_start_frame: int,
+        max_existing_frame: int,
+        manual_seed_max: int,
+    ) -> int:
+        """Resolve CUTIE restart frame using existing outputs + latest manual seed.
+
+        Priority:
+        1) Continue after latest existing output frame when available.
+        2) Otherwise continue after latest manual seed; keep frame-0 bootstrap when
+           frame 0 is the only seed.
+        3) Fall back to the caller-proposed current start frame.
+        """
+        start = max(0, int(current_start_frame))
+        if int(max_existing_frame) >= 0:
+            return max(start, int(max_existing_frame) + 1)
+        if int(manual_seed_max) > 0:
+            return max(start, int(manual_seed_max) + 1)
+        if int(manual_seed_max) == 0:
+            return 0
+        return start
+
     def _cutie_seed_paths(self, frame_index: int) -> tuple[Path, Path]:
         results_dir = Path(self.video_results_folder)
         stem = results_dir.name
@@ -598,18 +621,12 @@ class PredictionExecutionMixin:
                     # Refresh existing predicted marks before a resumed run so users
                     # can see completed sections immediately.
                     self._scan_prediction_folder(str(results_folder))
-                    manual_seed_min = None
                     manual_seed_max = -1
                     try:
                         for name in find_manual_labeled_json_files(str(results_folder)):
                             frame_idx = int(get_frame_number_from_json(name))
-                            if manual_seed_min is None:
-                                manual_seed_min = frame_idx
-                            else:
-                                manual_seed_min = min(manual_seed_min, frame_idx)
                             manual_seed_max = max(manual_seed_max, frame_idx)
                     except Exception:
-                        manual_seed_min = None
                         manual_seed_max = -1
 
                     max_existing = self._max_predicted_frame_index(
@@ -618,20 +635,14 @@ class PredictionExecutionMixin:
                     if self._is_cutie_tracking_model(model_name):
                         # CUTIE should not scan/predict before the first manual seed.
                         # Resume from existing predictions when available, otherwise
-                        # start from frame 0 when frame-0 is seeded, or right after
-                        # the first seed for non-zero seed starts.
-                        if max_existing >= 0:
-                            inference_start_frame = max(
-                                int(inference_start_frame), int(max_existing) + 1
+                        # continue after the latest manual seed (multi-seed safe).
+                        inference_start_frame = (
+                            self._resolve_cutie_start_frame_from_seed_state(
+                                int(inference_start_frame),
+                                int(max_existing),
+                                int(manual_seed_max),
                             )
-                        elif manual_seed_min is not None:
-                            if int(manual_seed_min) == 0:
-                                inference_start_frame = 0
-                            else:
-                                inference_start_frame = max(
-                                    int(inference_start_frame),
-                                    int(manual_seed_min) + 1,
-                                )
+                        )
                     elif manual_seed_max >= 0:
                         inference_start_frame = max(
                             int(inference_start_frame), int(manual_seed_max) + 1
