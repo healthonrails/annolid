@@ -241,6 +241,10 @@
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">memory/MEMORY.md</span></code> is injected as long-term facts.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">memory/HISTORY.md</span></code> is an append-only archive for recall/search (not auto-injected).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">memory/YYYY-MM-DD.md</span></code> stores daily notes; archived turns are flushed here before
+consolidation compacts session history.</p></li>
+<li><p>Retrieval is plugin-based in the workspace memory store; default plugin is
+lexical (<code class="docutils literal notranslate"><span class="pre">workspace_lexical_v1</span></code>) used by <code class="docutils literal notranslate"><span class="pre">memory_search</span></code>.</p></li>
 </ul>
 <p>Model name flexibility:</p>
 <ul class="simple">
@@ -260,6 +264,25 @@
 <h2>9. Validate your setup<a class="headerlink" href="#validate-your-setup" title="Link to this heading"></a></h2>
 <p>Run:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>annolid<span class="w"> </span>agent-security-check
+</pre></div>
+</div>
+<p>To check/apply agent updates:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>annolid-run<span class="w"> </span>agent-update<span class="w"> </span>--channel<span class="w"> </span>stable
+annolid-run<span class="w"> </span>agent-update<span class="w"> </span>--channel<span class="w"> </span>stable<span class="w"> </span>--apply<span class="w">          </span><span class="c1"># dry-run plan</span>
+annolid-run<span class="w"> </span>agent-update<span class="w"> </span>--channel<span class="w"> </span>stable<span class="w"> </span>--apply<span class="w"> </span>--execute
+annolid-run<span class="w"> </span>agent-update<span class="w"> </span>--channel<span class="w"> </span>stable<span class="w"> </span>--require-signature
+</pre></div>
+</div>
+<p>Update pipeline uses staged phases:
+<code class="docutils literal notranslate"><span class="pre">preflight</span> <span class="pre">-&gt;</span> <span class="pre">stage</span> <span class="pre">-&gt;</span> <span class="pre">verify</span> <span class="pre">-&gt;</span> <span class="pre">apply</span> <span class="pre">-&gt;</span> <span class="pre">restart</span> <span class="pre">-&gt;</span> <span class="pre">post_check</span></code>.
+If apply/post-check fails, a rollback plan is attached to the JSON report.</p>
+<p>To run evaluation/replay with regression gating:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>annolid-run<span class="w"> </span>agent-eval<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--traces<span class="w"> </span>./eval/traces.jsonl<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--baseline-responses<span class="w"> </span>./eval/baseline.jsonl<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--candidate-responses<span class="w"> </span>./eval/candidate.jsonl<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--out<span class="w"> </span>./eval/report.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--max-regressions<span class="w"> </span><span class="m">0</span>
 </pre></div>
 </div>
 <p>This reports:</p>

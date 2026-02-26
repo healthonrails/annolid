@@ -135,6 +135,10 @@ Memory behavior:
 
 - `memory/MEMORY.md` is injected as long-term facts.
 - `memory/HISTORY.md` is an append-only archive for recall/search (not auto-injected).
+- `memory/YYYY-MM-DD.md` stores daily notes; archived turns are flushed here before
+  consolidation compacts session history.
+- Retrieval is plugin-based in the workspace memory store; default plugin is
+  lexical (`workspace_lexical_v1`) used by `memory_search`.
 
 Model name flexibility:
 
@@ -157,6 +161,30 @@ Run:
 
 ```bash
 annolid agent-security-check
+```
+
+To check/apply agent updates:
+
+```bash
+annolid-run agent-update --channel stable
+annolid-run agent-update --channel stable --apply          # dry-run plan
+annolid-run agent-update --channel stable --apply --execute
+annolid-run agent-update --channel stable --require-signature
+```
+
+Update pipeline uses staged phases:
+`preflight -> stage -> verify -> apply -> restart -> post_check`.
+If apply/post-check fails, a rollback plan is attached to the JSON report.
+
+To run evaluation/replay with regression gating:
+
+```bash
+annolid-run agent-eval \
+  --traces ./eval/traces.jsonl \
+  --baseline-responses ./eval/baseline.jsonl \
+  --candidate-responses ./eval/candidate.jsonl \
+  --out ./eval/report.json \
+  --max-regressions 0
 ```
 
 This reports:

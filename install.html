@@ -52,6 +52,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#windows-pycocotools">Windows: pycocotools</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#linux-qt-xcb-plugin-error">Linux: Qt “xcb” plugin error</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#launch-annolid">Launch Annolid</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#agent-safety-defaults-and-rollback-operations">Agent Safety Defaults and Rollback Operations</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#install-detectron2-locally">Install Detectron2 locally</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#id2">Requirements</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#install-detectron2-dependencies">Install Detectron2 dependencies:</a></li>
@@ -167,6 +168,34 @@ annolid
 annolid<span class="w"> </span>--labels<span class="o">=</span>/path/to/labels_custom.txt
 </pre></div>
 </div>
+</section>
+<section id="agent-safety-defaults-and-rollback-operations">
+<h2>Agent Safety Defaults and Rollback Operations<a class="headerlink" href="#agent-safety-defaults-and-rollback-operations" title="Link to this heading"></a></h2>
+<p>Annolid agent update operations are conservative by default:</p>
+<ul class="simple">
+<li><p>Update commands are dry-run unless <code class="docutils literal notranslate"><span class="pre">--execute</span></code> is set.</p></li>
+<li><p>Signature enforcement is optional and explicit via <code class="docutils literal notranslate"><span class="pre">--require-signature</span></code>.</p></li>
+<li><p>Post-checks run by default after execute; disable only when needed with <code class="docutils literal notranslate"><span class="pre">--skip-post-check</span></code>.</p></li>
+<li><p>Rollback plans are always generated before apply.</p></li>
+</ul>
+<p>Common operator commands:</p>
+<ul class="simple">
+<li><p>Check staged update plan:
+<code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">update</span> <span class="pre">check</span> <span class="pre">--channel</span> <span class="pre">stable</span></code></p></li>
+<li><p>Stage update run (dry-run):
+<code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">update</span> <span class="pre">run</span> <span class="pre">--channel</span> <span class="pre">stable</span></code></p></li>
+<li><p>Execute update:
+<code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">update</span> <span class="pre">run</span> <span class="pre">--channel</span> <span class="pre">stable</span> <span class="pre">--execute</span></code></p></li>
+<li><p>Execute rollback:
+<code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">update</span> <span class="pre">rollback</span> <span class="pre">--install-mode</span> <span class="pre">package</span> <span class="pre">--previous-version</span> <span class="pre">1.2.3</span> <span class="pre">--execute</span></code></p></li>
+</ul>
+<p>Self-improving vs self-updating model:</p>
+<ul class="simple">
+<li><p>Self-improving:
+tune skills and memory (<code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">agent</span> <span class="pre">skills</span> <span class="pre">refresh</span></code>, <code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">agent</span> <span class="pre">memory</span> <span class="pre">flush</span></code>).</p></li>
+<li><p>Self-updating:
+change installed software with update manager and rollback controls.</p></li>
+</ul>
 </section>
 <section id="install-detectron2-locally">
 <h2>Install Detectron2 locally<a class="headerlink" href="#install-detectron2-locally" title="Link to this heading"></a></h2>
