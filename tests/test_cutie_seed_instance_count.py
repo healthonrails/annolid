@@ -163,7 +163,9 @@ def test_select_seed_frames_uses_nearest_prior_for_multi_seed_start() -> None:
     assert [seed.frame_index for seed in selected] == [300]
 
 
-def test_select_seed_frames_keeps_frame_zero_anchor_when_present() -> None:
+def test_select_seed_frames_prefers_nearest_prior_seed_without_frame_zero_anchor() -> (
+    None
+):
     processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
     processor._seed_frames = [_seed(0), _seed(100), _seed(200)]
     processor._seed_segment_lookup = {
@@ -194,7 +196,7 @@ def test_select_seed_frames_keeps_frame_zero_anchor_when_present() -> None:
     }
 
     selected = processor._select_seed_frames_for_start(start_frame=150)
-    assert [seed.frame_index for seed in selected] == [0, 100, 200]
+    assert [seed.frame_index for seed in selected] == [100, 200]
 
 
 def test_json_has_manual_seed_content_rejects_auto_motion_index(tmp_path) -> None:

@@ -422,7 +422,8 @@ class FileDockMixin:
         role_type = (
             selected.data(QtCore.Qt.UserRole + 1) if selected is not None else ""
         )
-        if role_type == "pdf":
+        is_pdf = str(path.suffix or "").lower() == ".pdf"
+        if str(role_type or "").lower() == "pdf" or is_pdf:
             try:
                 if hasattr(self, "_pdf_manager") and self._pdf_manager is not None:
                     self._pdf_manager.show_pdf_in_viewer(path_text)

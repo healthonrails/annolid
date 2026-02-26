@@ -93,6 +93,26 @@ def test_file_dock_open_file_and_pdf_dispatch(tmp_path: Path) -> None:
         window.close()
 
 
+def test_file_dock_open_file_dispatches_pdf_by_suffix_without_role(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+    window = _DummyFileDockWindow()
+    try:
+        pdf_path = tmp_path / "untagged.PDF"
+        pdf_path.write_bytes(b"%PDF-1.7\n")
+
+        pdf_item = QtWidgets.QListWidgetItem(str(pdf_path))
+        window.fileListWidget.addItem(pdf_item)
+        window.fileListWidget.setCurrentItem(pdf_item)
+        window._open_selected_file_from_dock()
+
+        assert window._pdf_manager.last_opened == str(pdf_path)
+        assert not window.loaded_paths
+    finally:
+        window.close()
+
+
 def test_file_dock_rename_selected_file(tmp_path: Path, monkeypatch) -> None:
     _ensure_qapp()
     window = _DummyFileDockWindow()

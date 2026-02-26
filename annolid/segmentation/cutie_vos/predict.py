@@ -2270,9 +2270,6 @@ class CutieCoreVideoProcessor:
         if not valid_seed_frames:
             return []
 
-        first_seed = valid_seed_frames[0]
-        anchor_seed = first_seed if int(first_seed.frame_index) == 0 else None
-
         prior_seeds = [
             seed for seed in valid_seed_frames if seed.frame_index < start_frame
         ]
@@ -2285,8 +2282,6 @@ class CutieCoreVideoProcessor:
         if prior_seeds:
             nearest_prior_seed = prior_seeds[-1]
             selected = [nearest_prior_seed, *later_seeds]
-            if anchor_seed is not None and anchor_seed.frame_index < nearest_prior_seed.frame_index:
-                selected.insert(0, anchor_seed)
             # Deduplicate while preserving order.
             deduped = []
             seen = set()
@@ -2303,8 +2298,6 @@ class CutieCoreVideoProcessor:
             return deduped
 
         if later_seeds:
-            if anchor_seed is not None and anchor_seed.frame_index < later_seeds[0].frame_index:
-                return [anchor_seed, *later_seeds]
             return later_seeds
 
         return []
