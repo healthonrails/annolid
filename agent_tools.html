@@ -162,6 +162,8 @@ supports manifest check, artifact staging/download, checksum verification, signa
 disabled by default; configurable interval+jitter schedule when enabled (<code class="docutils literal notranslate"><span class="pre">ANNOLID_AUTO_UPDATE_*</span></code> env settings).</p></li>
 <li><p>GUI controls:
 <code class="docutils literal notranslate"><span class="pre">AI</span> <span class="pre">Model</span> <span class="pre">Settings</span> <span class="pre">-&gt;</span> <span class="pre">Agent</span> <span class="pre">Runtime</span></code> includes auto-update enable/channel/check-now/rollback and bot settings for skill hot reload, memory mode, and skill source locations.</p></li>
+<li><p>Production safety policy:
+in production mode (<code class="docutils literal notranslate"><span class="pre">ANNOLID_PRODUCTION_MODE=1</span></code> or <code class="docutils literal notranslate"><span class="pre">ANNOLID_ENV=production</span></code>), signed update manifests and signed non-builtin skills are required.</p></li>
 </ul>
 </section>
 </section>
@@ -303,7 +305,12 @@ the service returns cached results without re-running the agent.</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">skills.refresh</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">memory.flush</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">eval.run</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">update.run</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">update.run</span></code></p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">update.run</span></code> requires explicit operator consent phrase for <code class="docutils literal notranslate"><span class="pre">execute=true</span></code>:
+<code class="docutils literal notranslate"><span class="pre">APPROVE_ANNOLID_CORE_UPDATE</span></code> (override with <code class="docutils literal notranslate"><span class="pre">ANNOLID_OPERATOR_UPDATE_CONSENT_PHRASE</span></code>).</p></li>
+</ul>
+</li>
 </ul>
 </section>
 </section>

@@ -174,7 +174,8 @@ annolid<span class="w"> </span>--labels<span class="o">=</span>/path/to/labels_c
 <p>Annolid agent update operations are conservative by default:</p>
 <ul class="simple">
 <li><p>Update commands are dry-run unless <code class="docutils literal notranslate"><span class="pre">--execute</span></code> is set.</p></li>
-<li><p>Signature enforcement is optional and explicit via <code class="docutils literal notranslate"><span class="pre">--require-signature</span></code>.</p></li>
+<li><p>Signature enforcement can be requested via <code class="docutils literal notranslate"><span class="pre">--require-signature</span></code> in any mode.</p></li>
+<li><p>In production mode (<code class="docutils literal notranslate"><span class="pre">ANNOLID_PRODUCTION_MODE=1</span></code> or <code class="docutils literal notranslate"><span class="pre">ANNOLID_ENV=production</span></code>), signature enforcement is automatic.</p></li>
 <li><p>Post-checks run by default after execute; disable only when needed with <code class="docutils literal notranslate"><span class="pre">--skip-post-check</span></code>.</p></li>
 <li><p>Rollback plans are always generated before apply.</p></li>
 </ul>
