@@ -113,6 +113,28 @@ def test_file_dock_open_file_dispatches_pdf_by_suffix_without_role(
         window.close()
 
 
+def test_file_dock_pdf_dispatch_uses_pdf_manager_attribute(tmp_path: Path) -> None:
+    _ensure_qapp()
+    window = _DummyFileDockWindow()
+    try:
+        pdf_path = tmp_path / "manager_only.pdf"
+        pdf_path.write_bytes(b"%PDF-1.7\n")
+
+        manager = _DummyPdfManager()
+        window.pdf_manager = manager  # real app attribute
+        window._pdf_manager = None
+
+        pdf_item = QtWidgets.QListWidgetItem(str(pdf_path))
+        window.fileListWidget.addItem(pdf_item)
+        window.fileListWidget.setCurrentItem(pdf_item)
+        window._open_selected_file_from_dock()
+
+        assert manager.last_opened == str(pdf_path)
+        assert not window.loaded_paths
+    finally:
+        window.close()
+
+
 def test_file_dock_rename_selected_file(tmp_path: Path, monkeypatch) -> None:
     _ensure_qapp()
     window = _DummyFileDockWindow()

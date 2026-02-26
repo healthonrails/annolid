@@ -82,9 +82,7 @@ async def apply_direct_gui_fallback(
     session_id: str,
     model: str,
 ) -> Tuple[str, bool, str]:
-    should_try = provider == "ollama" and (
-        tool_run_count == 0 or looks_like_local_access_refusal(text)
-    )
+    should_try = tool_run_count == 0 or looks_like_local_access_refusal(text)
     if not should_try:
         return text, False, ""
     direct_gui_text = await execute_direct_gui_command(prompt)

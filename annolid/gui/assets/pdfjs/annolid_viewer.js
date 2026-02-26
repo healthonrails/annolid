@@ -2314,6 +2314,14 @@
         }
       });
       let loadingTask = null;
+      const loadingConfig = {
+        // Keep rendering resilient for malformed PDFs; surface hard failures
+        // via promise rejection while avoiding noisy worker warnings.
+        stopAtErrors: false,
+        verbosity: (pdfjsLib.VerbosityLevel && typeof pdfjsLib.VerbosityLevel.ERRORS === "number")
+          ? pdfjsLib.VerbosityLevel.ERRORS
+          : 0,
+      };
       if (pdfBase64 && pdfBase64.length > 0) {
         const raw = atob(pdfBase64);
         const bytes = new Uint8Array(raw.length);
@@ -2321,10 +2329,12 @@
           bytes[i] = raw.charCodeAt(i) & 0xff;
         }
         loadingTask = pdfjsLib.getDocument({
+          ...loadingConfig,
           data: bytes,
         });
       } else {
         loadingTask = pdfjsLib.getDocument({
+          ...loadingConfig,
           url: pdfUrl,
         });
       }

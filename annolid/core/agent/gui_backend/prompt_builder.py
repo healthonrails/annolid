@@ -97,6 +97,12 @@ def build_compact_system_prompt(
         "(subject to runtime policy). Do not claim these tools are unavailable unless an actual tool call fails."
     )
     parts.append(
+        "For file operations, use built-in tools first: `rename_file` for rename/move, "
+        "`list_dir` for discovery, `read_file`/`write_file`/`edit_file` for content edits, "
+        "and `exec_start`/`exec_process` for long-running shell sessions. "
+        "Do not ask the user to rename files manually before attempting these tools."
+    )
+    parts.append(
         "When users ask for how-to guidance or tutorials, produce structured on-demand tutorials with: "
         "goal, prerequisites, step-by-step workflow, verification checklist, and troubleshooting tips."
     )

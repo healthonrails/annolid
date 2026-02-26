@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
@@ -14,6 +16,12 @@ from annolid.gui.window_base import AnnolidLabelListItem
 
 class LabelPanelMixin:
     """Label/file list synchronization and keypoint visibility controls."""
+
+    def _resolve_pdf_manager(self):
+        manager = getattr(self, "pdf_manager", None)
+        if manager is not None:
+            return manager
+        return getattr(self, "_pdf_manager", None)
 
     def _rebuild_unique_label_list(self) -> None:
         selected = set()
@@ -228,6 +236,19 @@ class LabelPanelMixin:
                 checked.append(item.text())
         return checked
 
+    def _try_open_pdf_from_file_list_path(self, path_text: str) -> bool:
+        path = Path(str(path_text or "").strip())
+        if str(path.suffix or "").lower() != ".pdf":
+            return False
+        try:
+            manager = self._resolve_pdf_manager()
+            if manager is not None:
+                manager.show_pdf_in_viewer(str(path))
+                return True
+        except Exception:
+            return False
+        return False
+
     def _set_current_file_item(self, path: str) -> None:
         if not path:
             return
@@ -289,6 +310,8 @@ class LabelPanelMixin:
                 del blocker
             return
 
+        if self._try_open_pdf_from_file_list_path(path):
+            return
         self.loadFile(path)
         if self.caption_widget is not None:
             self.caption_widget.set_image_path(self.filename)
@@ -310,10 +333,11 @@ class LabelPanelMixin:
                 )
                 if fallback_path:
                     self._set_current_file_item(fallback_path)
-                    self.loadFile(fallback_path)
-                    if self.caption_widget is not None:
-                        self.caption_widget.set_image_path(self.filename)
-                    self._update_frame_display_and_emit_update()
+                    if not self._try_open_pdf_from_file_list_path(fallback_path):
+                        self.loadFile(fallback_path)
+                        if self.caption_widget is not None:
+                            self.caption_widget.set_image_path(self.filename)
+                        self._update_frame_display_and_emit_update()
                 else:
                     self.resetState()
                     self.setWindowTitle("Annolid")
@@ -324,6 +348,8 @@ class LabelPanelMixin:
             and self.fileListWidget.currentItem() is item
         ):
             if not self.mayContinue():
+                return
+            if self._try_open_pdf_from_file_list_path(path):
                 return
             self.loadFile(path)
             if self.caption_widget is not None:

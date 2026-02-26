@@ -7,6 +7,7 @@ This module contains the full implementation and may be split further over time.
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -47,10 +48,26 @@ from annolid.gui.widgets.pdf_user_state import (
     save_pdf_state,
 )
 
+_PDFJS_BENIGN_CONSOLE_PATTERNS = (
+    'loadfont - translatefont failed: "formaterror: invalid font name"',
+    "error during font loading: invalid font name",
+)
+
+
+def _is_benign_pdfjs_console_message(message: str) -> bool:
+    value = str(message or "").strip().lower()
+    if not value:
+        return False
+    return any(pattern in value for pattern in _PDFJS_BENIGN_CONSOLE_PATTERNS)
+
 
 if _WEBENGINE_AVAILABLE:
     # type: ignore[misc]
     class _AnnolidWebEnginePage(QtWebEngineWidgets.QWebEnginePage):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self._console_seen: dict[str, int] = {}
+
         def _should_open_url_externally(self, url: QtCore.QUrl) -> bool:
             try:
                 if not url.isValid():
@@ -125,8 +142,35 @@ if _WEBENGINE_AVAILABLE:
             lineNumber: int,
             sourceID: str,
         ) -> None:
+            msg = str(message or "").strip()
+            if _is_benign_pdfjs_console_message(msg):
+                count = self._console_seen.get(msg, 0) + 1
+                self._console_seen[msg] = count
+                if count == 1:
+                    logger.info(
+                        "QtWebEngine js: benign PDF.js warning (suppressing repeats): %s (%s:%s)",
+                        msg,
+                        sourceID,
+                        lineNumber,
+                    )
+                return
             try:
-                logger.info(f"QtWebEngine js: {message} ({sourceID}:{lineNumber})")
+                info_level = getattr(
+                    QtWebEngineWidgets.QWebEnginePage, "InfoMessageLevel", None
+                )
+                warning_level = getattr(
+                    QtWebEngineWidgets.QWebEnginePage, "WarningMessageLevel", None
+                )
+                if warning_level is not None and level == warning_level:
+                    logger.warning(
+                        "QtWebEngine js: %s (%s:%s)", msg, sourceID, lineNumber
+                    )
+                elif info_level is not None and level == info_level:
+                    logger.info("QtWebEngine js: %s (%s:%s)", msg, sourceID, lineNumber)
+                else:
+                    logger.error(
+                        "QtWebEngine js: %s (%s:%s)", msg, sourceID, lineNumber
+                    )
             except Exception:
                 pass
 
@@ -185,6 +229,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._web_profile = None
         self._web_container = None
         self._web_loading_path: Optional[Path] = None
+        self._web_loading_source_path: Optional[Path] = None
         self._web_pdf_capable = False
         self._use_web_engine = False
         self._pdfjs_active = False
@@ -224,6 +269,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._web_channel = None
         self._reader_bridge = None
         self._reader_enabled = True
+        self._pdf_repair_attempted: set[str] = set()
         self._reader_state = "idle"
         self._reader_queue: list[str] = []
         self._reader_spans: list[list[int]] = []
@@ -377,18 +423,19 @@ class PdfViewerWidget(QtWidgets.QWidget):
 
     def load_pdf(self, pdf_path: str) -> None:
         """Load a PDF file and render the first page."""
-        path = Path(pdf_path)
-        if not path.exists():
+        source_path = Path(pdf_path)
+        if not source_path.exists():
             raise FileNotFoundError(f"PDF not found: {pdf_path}")
+        path = self._maybe_repair_pdf(source_path, reason="load")
 
         self._rotation = 0
-        self._pdf_path = path
+        self._pdf_path = source_path
         try:
-            self._pdf_key = pdf_state_key(path)
+            self._pdf_key = pdf_state_key(source_path)
         except Exception:
             self._pdf_key = ""
         try:
-            self._pdf_user_state = load_pdf_state(path)
+            self._pdf_user_state = load_pdf_state(source_path)
         except Exception:
             self._pdf_user_state = {}
         self._reading_log = []
@@ -408,7 +455,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._append_reading_log_event(
             {
                 "type": "open",
-                "label": f"Opened {path.name}",
+                "label": f"Opened {source_path.name}",
             }
         )
 
@@ -417,6 +464,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
             self._stack.setCurrentWidget(self._web_container)
             self._set_controls_for_web(True)
             self._web_loading_path = path
+            self._web_loading_source_path = source_path
             if self._web_pdf_capable and not self._force_pdfjs:
                 logger.info(f"Loading PDF with QtWebEngine plugin: {path}")
                 self._pdfjs_active = False
@@ -434,8 +482,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
                     self._use_web_engine = False
                     self._pdfjs_active = False
                     self._clear_bookmarks()
-                    self._open_with_pymupdf(path)
+                    self._open_with_pymupdf(path, source_path=source_path)
                     self._web_loading_path = None
+                    self._web_loading_source_path = None
                     return
                 self._clear_bookmarks()
                 self._emit_reader_availability()
@@ -448,7 +497,57 @@ class PdfViewerWidget(QtWidgets.QWidget):
         logger.info(f"Loading PDF with PyMuPDF fallback: {path}")
         self._pdfjs_active = False
         self._clear_bookmarks()
-        self._open_with_pymupdf(path)
+        self._open_with_pymupdf(path, source_path=source_path)
+
+    def _pdf_needs_repair_hint(self, path: Path) -> bool:
+        try:
+            with path.open("rb") as fh:
+                head = fh.read(8)
+                if b"%PDF-" not in head:
+                    return True
+                try:
+                    fh.seek(-4096, 2)
+                except OSError:
+                    fh.seek(0)
+                tail = fh.read()
+            return b"%%EOF" not in tail
+        except Exception:
+            return False
+
+    def _attempt_repair_pdf(self, path: Path, *, reason: str) -> Optional[Path]:
+        key = str(path.resolve())
+        if key in self._pdf_repair_attempted:
+            return None
+        self._pdf_repair_attempted.add(key)
+        try:
+            from pypdf import PdfReader, PdfWriter  # type: ignore[import]
+        except Exception:
+            return None
+        try:
+            reader = PdfReader(str(path), strict=False)
+            if len(reader.pages) <= 0:
+                return None
+            writer = PdfWriter()
+            for page in reader.pages:
+                writer.add_page(page)
+            tmp_dir = Path(tempfile.gettempdir()) / "annolid_pdf_repair"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            repaired = (
+                tmp_dir / f"{path.stem}.{int(path.stat().st_mtime_ns)}.repaired.pdf"
+            )
+            with repaired.open("wb") as out:
+                writer.write(out)
+            logger.warning("Repaired PDF via pypdf: %s (reason=%s)", repaired, reason)
+            return repaired
+        except Exception as exc:
+            logger.warning("PDF repair failed for %s (%s): %s", path, reason, exc)
+            return None
+
+    def _maybe_repair_pdf(self, path: Path, *, reason: str) -> Path:
+        if not self._pdf_needs_repair_hint(path):
+            return path
+        repaired = self._attempt_repair_pdf(path, reason=reason)
+        return repaired or path
 
     def _load_web_embed_pdf(self, path: Path) -> None:
         """Load a PDF in WebEngine via an HTML wrapper <embed>."""
@@ -473,7 +572,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
         """.strip()
         self._web_view.setHtml(html, base_url)
 
-    def _open_with_pymupdf(self, path: Path) -> None:
+    def _open_with_pymupdf(
+        self, path: Path, *, source_path: Optional[Path] = None
+    ) -> None:
         """Render PDF pages using PyMuPDF fallback."""
         try:
             import fitz  # type: ignore[import]
@@ -481,26 +582,54 @@ class PdfViewerWidget(QtWidgets.QWidget):
             raise RuntimeError(
                 "PyMuPDF (pymupdf) is required to view PDF files."
             ) from exc
+        try:
+            tools = getattr(fitz, "TOOLS", None)
+            if tools is not None:
+                disable_errors = getattr(tools, "mupdf_display_errors", None)
+                disable_warnings = getattr(tools, "mupdf_display_warnings", None)
+                if callable(disable_errors):
+                    disable_errors(False)
+                if callable(disable_warnings):
+                    disable_warnings(False)
+        except Exception:
+            pass
 
         if self._doc is not None:
             self._doc.close()
             self._doc = None
 
-        self._doc = fitz.open(str(path))
+        open_path = path
+        try:
+            self._doc = fitz.open(str(open_path))
+        except Exception as first_exc:
+            repair_base = source_path or path
+            repaired = self._attempt_repair_pdf(
+                repair_base, reason="pymupdf-open-failure"
+            )
+            if repaired is None:
+                raise RuntimeError(f"Unable to open PDF via PyMuPDF: {first_exc}")
+            open_path = repaired
+            try:
+                self._doc = fitz.open(str(open_path))
+            except Exception as second_exc:
+                raise RuntimeError(
+                    "Unable to open PDF via PyMuPDF after repair "
+                    f"(first={first_exc}; repaired={second_exc})"
+                )
         if self._doc.page_count == 0:
             self._doc.close()
             self._doc = None
             raise ValueError("The selected PDF does not contain any pages.")
 
-        self._pdf_path = path
+        self._pdf_path = source_path or path
         if not self._pdf_key:
             try:
-                self._pdf_key = pdf_state_key(path)
+                self._pdf_key = pdf_state_key(self._pdf_path)
             except Exception:
                 self._pdf_key = ""
         if not self._pdf_user_state:
             try:
-                self._pdf_user_state = load_pdf_state(path)
+                self._pdf_user_state = load_pdf_state(self._pdf_path)
             except Exception:
                 self._pdf_user_state = {}
 
@@ -555,11 +684,15 @@ class PdfViewerWidget(QtWidgets.QWidget):
     def _on_web_load_finished(self, ok: bool) -> None:
         """Check web load result; fallback to PyMuPDF on failure/blank page."""
         path = self._web_loading_path
+        source_path = self._web_loading_source_path or path
         if path is None:
             return
         if not ok and not self._pdfjs_active:
-            self._fallback_from_web(path, "loadFinished returned False")
+            self._fallback_from_web(
+                path, "loadFinished returned False", source_path=source_path
+            )
             self._web_loading_path = None
+            self._web_loading_source_path = None
             return
 
         if self._pdfjs_active:
@@ -599,7 +732,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
                         has_pdfjs = False
                         ready_state = ""
                     if err:
-                        self._fallback_from_web(path, f"PDF.js error: {err}")
+                        self._fallback_from_web(
+                            path, f"PDF.js error: {err}", source_path=source_path
+                        )
                         return
                     if not pdfjs_ready and attempts_left > 0:
                         QtCore.QTimer.singleShot(
@@ -611,6 +746,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
                             path,
                             "PDF.js bootstrap not running "
                             f"(readyState={ready_state!r} hasPdfjs={has_pdfjs})",
+                            source_path=source_path,
                         )
                         return
                     if not pdf_loaded and attempts_left > 0:
@@ -625,10 +761,12 @@ class PdfViewerWidget(QtWidgets.QWidget):
                             path,
                             "PDF.js did not load "
                             f"(readyState={ready_state!r} spans={spans} pages={rendered_pages})",
+                            source_path=source_path,
                         )
                         return
-                    self._pdf_path = path
+                    self._pdf_path = source_path
                     self._web_loading_path = None
+                    self._web_loading_source_path = None
                     logger.info(f"QtWebEngine PDF.js viewer active for {path}")
                     self._apply_reader_enabled_to_web()
                     self.fit_to_width()
@@ -649,7 +787,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
                         _after_pdfjs_probe,
                     )
                 except Exception:
-                    self._fallback_from_web(path, "PDF.js probe failed")
+                    self._fallback_from_web(
+                        path, "PDF.js probe failed", source_path=source_path
+                    )
 
             probe_pdfjs()
             return
@@ -670,10 +810,15 @@ class PdfViewerWidget(QtWidgets.QWidget):
             except Exception:
                 ok_result = False
             if not ok_result:
-                self._fallback_from_web(path, "PDF mimeType not available in WebEngine")
+                self._fallback_from_web(
+                    path,
+                    "PDF mimeType not available in WebEngine",
+                    source_path=source_path,
+                )
                 return
-            self._pdf_path = path
+            self._pdf_path = source_path
             self._web_loading_path = None
+            self._web_loading_source_path = None
             logger.info(f"QtWebEngine PDF plugin detected for {path}")
             self._emit_reader_availability()
 
@@ -688,10 +833,19 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 _after_probe,
             )
         except Exception:
-            self._fallback_from_web(path, "JS mimeType probe threw")
+            self._fallback_from_web(
+                path, "JS mimeType probe threw", source_path=source_path
+            )
 
-    def _fallback_from_web(self, path: Path, reason: str) -> None:
+    def _fallback_from_web(
+        self, path: Path, reason: str, *, source_path: Optional[Path] = None
+    ) -> None:
         """Switch from web view to PyMuPDF and log why."""
+        source_path = source_path or path
+        if "invalid pdf structure" in str(reason or "").lower():
+            repaired = self._attempt_repair_pdf(path, reason="pdfjs-invalid-structure")
+            if repaired is not None:
+                path = repaired
         # Try an in-place PDF.js viewer before giving up on the web engine.
         pdfjs_loaded = False
         if self._web_view is not None and not self._pdfjs_active:
@@ -700,8 +854,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 logger.warning(
                     f"QtWebEngine PDF plugin missing; using PDF.js viewer for {path} ({reason})"
                 )
-                self._pdf_path = path
+                self._pdf_path = source_path
                 self._web_loading_path = None
+                self._web_loading_source_path = None
                 self._use_web_engine = True
                 self._pdfjs_active = True
                 self._set_controls_for_web(True)
@@ -711,9 +866,23 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 return
         self._use_web_engine = False
         self._pdfjs_active = False
-        self._open_with_pymupdf(path)
-        self._web_loading_path = None
-        logger.warning(f"Falling back to PyMuPDF for {path} ({reason})")
+        try:
+            self._open_with_pymupdf(path, source_path=source_path)
+            logger.warning(f"Falling back to PyMuPDF for {path} ({reason})")
+        except Exception as exc:
+            self._stack.setCurrentIndex(0)
+            self._set_controls_for_web(False)
+            self.image_label.clear()
+            self.text_view.setPlainText("")
+            QtWidgets.QMessageBox.warning(
+                self,
+                "PDF Open Failed",
+                f"Unable to open PDF:\n{path.name}\n\nReason: {exc}",
+            )
+            logger.error("PyMuPDF fallback failed for %s: %s", path, exc)
+        finally:
+            self._web_loading_path = None
+            self._web_loading_source_path = None
 
     def _load_pdfjs_viewer(self, path: Path) -> bool:
         """Load a lightweight PDF.js viewer into the web view."""
@@ -2715,6 +2884,31 @@ class PdfViewerWidget(QtWidgets.QWidget):
         if self._doc is not None:
             self._doc.close()
         self._doc = None
+        try:
+            if self._web_view is not None:
+                self._web_view.stop()
+                page = self._web_view.page()
+                if page is not None:
+                    try:
+                        page.setWebChannel(None)
+                    except Exception:
+                        pass
+                    try:
+                        page.deleteLater()
+                    except Exception:
+                        pass
+                self._web_view.deleteLater()
+        except Exception:
+            pass
+        self._web_view = None
+        self._web_channel = None
+        self._reader_bridge = None
+        try:
+            if self._web_profile is not None:
+                self._web_profile.deleteLater()
+        except Exception:
+            pass
+        self._web_profile = None
         super().closeEvent(event)
 
     def _set_controls_for_web(self, web_mode: bool) -> None:

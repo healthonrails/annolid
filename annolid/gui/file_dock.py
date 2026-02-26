@@ -9,6 +9,12 @@ from qtpy import QtCore, QtGui, QtWidgets
 class FileDockMixin:
     """Files dock UI and file-management interactions."""
 
+    def _resolve_pdf_manager(self):
+        manager = getattr(self, "pdf_manager", None)
+        if manager is not None:
+            return manager
+        return getattr(self, "_pdf_manager", None)
+
     def _init_file_dock_ui(self) -> None:
         self._file_dock_pending_entries: list[tuple[str, str]] = []
         self._file_dock_batch_size = 200
@@ -425,8 +431,9 @@ class FileDockMixin:
         is_pdf = str(path.suffix or "").lower() == ".pdf"
         if str(role_type or "").lower() == "pdf" or is_pdf:
             try:
-                if hasattr(self, "_pdf_manager") and self._pdf_manager is not None:
-                    self._pdf_manager.show_pdf_in_viewer(path_text)
+                manager = self._resolve_pdf_manager()
+                if manager is not None:
+                    manager.show_pdf_in_viewer(path_text)
                     return
             except Exception:
                 pass

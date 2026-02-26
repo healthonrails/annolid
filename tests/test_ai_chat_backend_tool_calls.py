@@ -1276,6 +1276,12 @@ def test_local_access_refusal_heuristic() -> None:
         is True
     )
     assert (
+        StreamingChatTask._looks_like_local_access_refusal(
+            "I don't have file rename capabilities available."
+        )
+        is True
+    )
+    assert (
         StreamingChatTask._looks_like_local_access_refusal("Opened the video.") is False
     )
 
@@ -1394,6 +1400,29 @@ def test_finalize_agent_text_uses_direct_fallback_on_git_tool_refusal_with_tool_
     assert used_recovery is False
     assert used_direct_gui_fallback is True
     assert "## main" in text
+
+
+def test_finalize_agent_text_uses_direct_fallback_for_non_ollama_provider() -> None:
+    class _Result:
+        content = "I don't have file rename capabilities available."
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "rename this pdf to paper_v2.pdf",
+        widget=None,
+        enable_web_tools=False,
+        provider="openai",
+    )
+    task._execute_direct_gui_command = lambda _prompt: asyncio.sleep(
+        0, result="Renamed file: /tmp/paper.pdf -> /tmp/paper_v2.pdf"
+    )  # type: ignore[method-assign]
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=None,
+    )
+    assert used_recovery is False
+    assert used_direct_gui_fallback is True
+    assert "Renamed file:" in text
 
 
 def test_finalize_agent_text_uses_browser_search_fallback_on_knowledge_gap() -> None:
@@ -1917,6 +1946,15 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_rename_pdf["args"]["use_active_file"] is True
     assert (
         parsed_rename_pdf["args"]["new_name"]
+        == "A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf"
+    )
+    parsed_move_pdf = task._parse_direct_gui_command(
+        "move this pdf to A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf"
+    )
+    assert parsed_move_pdf["name"] == "rename_file"
+    assert parsed_move_pdf["args"]["use_active_file"] is True
+    assert (
+        parsed_move_pdf["args"]["new_name"]
         == "A_3_Dimensional_Digital_Atlas_of_the_Starling_Brain.pdf"
     )
 

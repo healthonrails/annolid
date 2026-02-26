@@ -17,6 +17,12 @@ _DIRECT_GUI_REFUSAL_HINTS = (
     "don't have access to git commands",
     "do not have access to git commands",
     "no git tools are currently available",
+    "don't have file rename capabilities available",
+    "do not have file rename capabilities available",
+    "don't have file operation capabilities available",
+    "do not have file operation capabilities available",
+    "don't have shell capabilities available",
+    "do not have shell capabilities available",
 )
 
 _ACTIVE_FILE_HINTS = {
@@ -215,7 +221,12 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         text,
         flags=re.IGNORECASE,
     )
-    rename_match = rename_with_title_match or rename_to_match
+    move_to_match = re.match(
+        r"\s*move\s+(?P<src>.+?)\s+(?:to|as|->)\s+(?P<dst>.+?)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    rename_match = rename_with_title_match or rename_to_match or move_to_match
     if rename_match:
         src_raw = _strip_wrapping_quotes(
             _strip_trailing_punctuation(rename_match.group("src") or "")
