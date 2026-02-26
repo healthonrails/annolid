@@ -136,6 +136,9 @@ class CutieCoreVideoProcessor:
         self.auto_missing_instance_recovery = kwargs.get(
             "auto_missing_instance_recovery", False
         )
+        self.auto_fill_missing_instances = bool(
+            kwargs.get("auto_fill_missing_instances", False)
+        )
         self.continue_on_missing_instances = bool(
             kwargs.get("continue_on_missing_instances", True)
         )
@@ -1954,10 +1957,9 @@ class CutieCoreVideoProcessor:
                         )
 
                     shape_notes_for_frame: Dict[str, str] = {}
-                    # CUTIE can occasionally omit a seeded object on the first step.
-                    # Backfill directly from the seed mask to keep expected instances
-                    # stable and prime fallback history for subsequent frames.
-                    if current_frame_index == segment.start_frame:
+                    # Optional compatibility path: historically we backfilled
+                    # missing instances from the seed on the first step.
+                    if bool(getattr(self, "auto_fill_missing_instances", False)) and current_frame_index == segment.start_frame:
                         seed_mask_dict = self._build_seed_mask_dict(
                             segment, instance_names
                         )
@@ -2020,7 +2022,14 @@ class CutieCoreVideoProcessor:
                                 if recovered_instances:
                                     mask_dict.update(recovered_instances)
                             missing_instances = instance_names - set(mask_dict.keys())
-                            if missing_instances:
+                            if (
+                                missing_instances
+                                and bool(
+                                    getattr(
+                                        self, "auto_fill_missing_instances", False
+                                    )
+                                )
+                            ):
                                 filled_instances, filled_notes = (
                                     self._fill_missing_instances_from_recent_masks(
                                         missing_instances

@@ -322,7 +322,7 @@ def test_discover_seed_frames_force_refresh_bypasses_cache(tmp_path) -> None:
         CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE.update(old_cache)
 
 
-def test_process_segment_backfills_missing_seed_instance_on_start_frame(
+def test_process_segment_does_not_backfill_missing_seed_instance_by_default(
     monkeypatch,
 ) -> None:
     class _DummyInferenceCore:
@@ -363,6 +363,7 @@ def test_process_segment_backfills_missing_seed_instance_on_start_frame(
     processor._global_label_names = {}
     processor.compute_optical_flow = False
     processor.auto_missing_instance_recovery = False
+    processor.auto_fill_missing_instances = False
     processor.continue_on_missing_instances = True
     processor.debug = False
     processor._optical_flow_kwargs = {}
@@ -416,8 +417,8 @@ def test_process_segment_backfills_missing_seed_instance_on_start_frame(
 
     assert should_halt is False
     assert message == "Stop at frame:\n#0"
-    assert saved_masks["labels"] == {"mouse", "teaball"}
-    assert saved_masks["notes"]["teaball"] == "filled_from_seed_mask(start_frame)"
+    assert saved_masks["labels"] == {"mouse"}
+    assert saved_masks["notes"] == {}
 
 
 def test_process_segment_suppresses_repetitive_missing_instance_logs(
