@@ -739,6 +739,11 @@ class PdfManager(QtCore.QObject):
             item.setData(Qt.UserRole + 1, "pdf")
             item.setToolTip(path)
             widget.addItem(item)
+        try:
+            if hasattr(self.window, "_apply_file_dock_sort"):
+                self.window._apply_file_dock_sort()
+        except Exception:
+            pass
         if widget.count() > 0:
             widget.setCurrentRow(widget.count() - 1)
 

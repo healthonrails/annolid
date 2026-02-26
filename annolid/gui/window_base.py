@@ -8,6 +8,7 @@ from typing import Iterable, Optional
 from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.configs import get_config
+from annolid.gui.file_dock import FileDockMixin
 from annolid.gui.label_file import LabelFile, LabelFileError
 from annolid.utils.annotation_compat import (
     AI_MODELS,
@@ -320,7 +321,7 @@ class AnnolidToolBar(QtWidgets.QToolBar):
         return self.addWidget(button)
 
 
-class AnnolidWindowBase(QtWidgets.QMainWindow):
+class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
     """In-tree replacement for the LabelMe MainWindow API used by Annolid."""
 
     FIT_WINDOW, FIT_WIDTH, MANUAL_ZOOM = 0, 1, 2
@@ -356,16 +357,11 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
         self._icons_dir = Path(__file__).resolve().parent / "icons"
 
         self._selectAiModelComboBox = QtWidgets.QComboBox()
+        self._suppress_unsaved_prompt = False
 
         self.labelList = AnnolidLabelListWidget()
         self.uniqLabelList = AnnolidUniqLabelListWidget()
-        self.fileListWidget = QtWidgets.QListWidget()
-        self.fileSearchWidget = QtWidgets.QLineEdit()
-        self.fileSearchWidget.setClearButtonEnabled(True)
-        self.fileSearchWidget.setPlaceholderText(self.tr("Search files..."))
-        self.fileSearchWidget.textChanged.connect(
-            lambda _text: self._apply_file_search_filter()
-        )
+        self._init_file_dock_ui()
 
         self.tools = AnnolidToolBar(self.tr("Tools"))
         self.tools.setObjectName("mainTools")
@@ -393,16 +389,6 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
         self.shape_dock = QtWidgets.QDockWidget(self.tr("Label Instances"), self)
         self.shape_dock.setObjectName("shapeDock")
         self.shape_dock.setWidget(self.labelList)
-
-        self.file_dock = QtWidgets.QDockWidget(self.tr("Files"), self)
-        self.file_dock.setObjectName("fileDock")
-        file_container = QtWidgets.QWidget(self.file_dock)
-        file_layout = QtWidgets.QVBoxLayout(file_container)
-        file_layout.setContentsMargins(6, 6, 6, 6)
-        file_layout.setSpacing(4)
-        file_layout.addWidget(self.fileSearchWidget)
-        file_layout.addWidget(self.fileListWidget)
-        self.file_dock.setWidget(file_container)
 
         # Add flag_dock first (top position), then tabify file_dock with it
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.flag_dock)
@@ -434,25 +420,6 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
         self.actions = SimpleNamespace()
         self._init_actions()
         self.toggleActions(False)
-
-    def _apply_file_search_filter(self) -> None:
-        """Filter file dock list items based on the current search text."""
-        try:
-            query = str(self.fileSearchWidget.text() or "").strip().lower()
-        except Exception:
-            query = ""
-        for idx in range(self.fileListWidget.count()):
-            item = self.fileListWidget.item(idx)
-            if item is None:
-                continue
-            if not query:
-                item.setHidden(False)
-                continue
-            try:
-                hay = str(item.text() or "").lower()
-            except Exception:
-                hay = ""
-            item.setHidden(query not in hay)
 
     def _mk_action(
         self,
@@ -712,6 +679,8 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
         return bool(label_file and osp.exists(label_file))
 
     def mayContinue(self) -> bool:
+        if bool(getattr(self, "_suppress_unsaved_prompt", False)):
+            return True
         if not self.dirty:
             return True
         response = QtWidgets.QMessageBox.warning(
@@ -756,7 +725,12 @@ class AnnolidWindowBase(QtWidgets.QMainWindow):
         except Exception:
             target = None
         if target and hasattr(self, "_saveFile"):
-            self._saveFile(target)
+            prev = bool(getattr(self, "_suppress_unsaved_prompt", False))
+            self._suppress_unsaved_prompt = True
+            try:
+                self._saveFile(target)
+            finally:
+                self._suppress_unsaved_prompt = prev
 
     def setScroll(self, orientation, value: int) -> None:
         bars = getattr(self, "scrollBars", None)

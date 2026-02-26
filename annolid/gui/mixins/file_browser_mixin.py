@@ -45,7 +45,7 @@ class FileBrowserMixin:
         images.sort(key=lambda x: x.lower())
         return images
 
-    def _addItem(self, filename, label_file):
+    def _addItem(self, filename, label_file, *, apply_updates=True):
         item = QtWidgets.QListWidgetItem(filename)
         item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
         has_label = False
@@ -61,10 +61,16 @@ class FileBrowserMixin:
             item.setForeground(QtGui.QBrush(QtGui.QColor(160, 160, 160)))
         if not self.fileListWidget.findItems(filename, Qt.MatchExactly):
             self.fileListWidget.addItem(item)
-            try:
-                self._apply_file_search_filter()
-            except Exception:
-                pass
+            if apply_updates:
+                try:
+                    self._apply_file_search_filter()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self, "_apply_file_dock_sort"):
+                        self._apply_file_dock_sort()
+                except Exception:
+                    pass
 
     def _getLabelFile(self, filename):
         label_file = osp.splitext(filename)[0] + ".json"
@@ -91,6 +97,7 @@ class FileBrowserMixin:
         if not self.mayContinue() or not dirpath:
             return
 
+        self._cancel_import_dir_scan()
         self.lastOpenDir = dirpath
         self.annotation_dir = dirpath
         self.filename = None
@@ -98,14 +105,122 @@ class FileBrowserMixin:
         blocker = QtCore.QSignalBlocker(self.fileListWidget)
         try:
             self.fileListWidget.clear()
-            for filename in self.scanAllImages(dirpath):
-                if pattern and pattern not in filename:
-                    continue
-                label_file = self._getLabelFile(filename)
-
-                if not filename.endswith(".json") or self.only_json_files:
-                    self.imageList.append(filename)
-                    self._addItem(filename, label_file)
+            if hasattr(self, "_reset_file_dock_incremental_state"):
+                self._reset_file_dock_incremental_state()
         finally:
             del blocker
-        self.openNextImg(load=load)
+        self._start_import_dir_scan(dirpath, pattern=pattern, load=load)
+
+    def _cancel_import_dir_scan(self) -> None:
+        current = int(getattr(self, "_dir_scan_token", 0))
+        had_active_scan = getattr(self, "_dir_scan_file_iter", None) is not None
+        self._dir_scan_token = current + 1
+        self._dir_scan_file_iter = None
+        self._dir_scan_load = False
+        self._dir_scan_first_loaded = False
+        if had_active_scan and hasattr(self, "_set_file_scan_status"):
+            self._set_file_scan_status(self.tr("Scan canceled"), visible=True)
+
+    def _start_import_dir_scan(self, dirpath, *, pattern=None, load=True) -> None:
+        extensions = [
+            ".%s" % fmt.data().decode().lower()
+            for fmt in QtGui.QImageReader.supportedImageFormats()
+        ]
+        extensions.append(".json")
+        self.only_json_files = True
+        self._dir_scan_extensions = tuple(extensions)
+        self._dir_scan_pattern = str(pattern) if pattern else ""
+        self._dir_scan_load = bool(load)
+        self._dir_scan_first_loaded = False
+        self._dir_scan_loaded_count = 0
+        self._dir_scan_file_iter = (
+            osp.join(root, file)
+            for root, _dirs, files in os.walk(dirpath)
+            for file in files
+            if file.lower().endswith(self._dir_scan_extensions)
+        )
+        self._dir_scan_token = int(getattr(self, "_dir_scan_token", 0)) + 1
+        if hasattr(self, "_set_file_scan_status"):
+            self._set_file_scan_status(self.tr("Scanning..."), visible=True)
+        token = self._dir_scan_token
+        QtCore.QTimer.singleShot(0, lambda: self._process_import_dir_scan_chunk(token))
+
+    def _process_import_dir_scan_chunk(self, token: int) -> None:
+        if token != int(getattr(self, "_dir_scan_token", 0)):
+            return
+        file_iter = getattr(self, "_dir_scan_file_iter", None)
+        if file_iter is None:
+            return
+        batch_limit = 1500
+        loaded_entries = []
+        processed = 0
+        for _ in range(batch_limit):
+            try:
+                filename = next(file_iter)
+            except StopIteration:
+                self._dir_scan_file_iter = None
+                break
+            processed += 1
+            if self.only_json_files and not str(filename).lower().endswith(".json"):
+                self.only_json_files = False
+                # Match previous behavior: if the folder has real images, do not
+                # keep JSON files in the dock list.
+                self.imageList = [
+                    path
+                    for path in self.imageList
+                    if not str(path).lower().endswith(".json")
+                ]
+                if hasattr(self, "_remove_json_items_from_file_dock"):
+                    self._remove_json_items_from_file_dock()
+                loaded_entries = [
+                    (path, label)
+                    for path, label in loaded_entries
+                    if not str(path).lower().endswith(".json")
+                ]
+
+            pattern = str(getattr(self, "_dir_scan_pattern", "") or "")
+            if pattern and pattern not in filename:
+                continue
+            if str(filename).lower().endswith(".json") and not self.only_json_files:
+                continue
+
+            label_file = self._getLabelFile(filename)
+            self.imageList.append(filename)
+            loaded_entries.append((filename, label_file))
+
+        if loaded_entries:
+            if hasattr(self, "_append_file_dock_entries"):
+                self._append_file_dock_entries(loaded_entries)
+            else:
+                for filename, label_file in loaded_entries:
+                    self._addItem(filename, label_file)
+        self._dir_scan_loaded_count = int(
+            getattr(self, "_dir_scan_loaded_count", 0)
+        ) + len(loaded_entries)
+        if hasattr(self, "_update_file_scan_progress"):
+            self._update_file_scan_progress(
+                int(getattr(self, "_dir_scan_loaded_count", 0))
+            )
+
+        if (
+            bool(getattr(self, "_dir_scan_load", False))
+            and not bool(getattr(self, "_dir_scan_first_loaded", False))
+            and self.imageList
+        ):
+            self._dir_scan_first_loaded = True
+            self.openNextImg(load=True)
+
+        if getattr(self, "_dir_scan_file_iter", None) is not None:
+            QtCore.QTimer.singleShot(
+                0, lambda: self._process_import_dir_scan_chunk(token)
+            )
+        else:
+            count = len(self.imageList)
+            if hasattr(self, "_set_file_scan_idle"):
+                self._set_file_scan_idle(count=count, hide=False)
+            self.statusBar().showMessage(
+                self.tr("Loaded %1 files from %2")
+                .replace("%1", str(count))
+                .replace("%2", str(self.lastOpenDir or "")),
+                2500,
+            )
