@@ -16,6 +16,10 @@ from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.gui.label_file import LabelFile, LabelFileError
 from annolid.gui.window_base import PY2, utils
 from annolid.utils.annotation_store import AnnotationStore
+from annolid.utils.files import (
+    find_manual_labeled_json_files,
+    get_frame_number_from_json,
+)
 from annolid.utils.logger import logger
 
 
@@ -429,6 +433,20 @@ class PersistenceLifecycleMixin:
 
     def _collect_seed_frames(self, prediction_folder: Path) -> Set[int]:
         seed_frames: Set[int] = set()
+        # Reuse manual-label discovery so seed ranges match tracking restart logic.
+        try:
+            for name in find_manual_labeled_json_files(str(prediction_folder)):
+                try:
+                    seed_frames.add(int(get_frame_number_from_json(name)))
+                except Exception:
+                    continue
+        except Exception:
+            seed_frames = set()
+        if seed_frames:
+            return seed_frames
+
+        # Fallback for legacy layouts where manual labels may only be represented
+        # by sidecar images in the results folder.
         pattern = re.compile(r"(\d+)(?=\.(png|jpg|jpeg)$)", re.IGNORECASE)
         for path in prediction_folder.iterdir():
             if not path.is_file():
@@ -546,6 +564,11 @@ class PersistenceLifecycleMixin:
                 logger.debug(
                     "Failed to rescan prediction folder after deletion: %s", exc
                 )
+            # Hint the next prediction run to restart from this seed frame.
+            try:
+                self._prediction_forced_start_frame = int(current_seed)
+            except Exception:
+                self._prediction_forced_start_frame = None
         else:
             logger.info(
                 "No predicted files required removal for the current seed range."

@@ -579,13 +579,20 @@ class PredictionExecutionMixin:
             inference_start_frame = max(0, int(self.frame_number or 0) + 1)
             inference_end_frame = None
             inference_skip_existing = True
+            forced_start_frame = getattr(self, "_prediction_forced_start_frame", None)
+            has_forced_start = forced_start_frame is not None
+            if has_forced_start:
+                try:
+                    inference_start_frame = max(0, int(forced_start_frame))
+                except Exception:
+                    has_forced_start = False
             is_point_tracking_model = bool(
                 self._is_cotracker_model(model_name, model_weight)
                 or self._is_cowtracker_model(model_name, model_weight)
                 or self._is_dino_kpseg_tracker_model(model_name, model_weight)
                 or self._is_dino_keypoint_model(model_name, model_weight)
             )
-            if self.video_results_folder:
+            if self.video_results_folder and not has_forced_start:
                 try:
                     results_folder = Path(self.video_results_folder)
                     # Refresh existing predicted marks before a resumed run so users
@@ -639,6 +646,11 @@ class PredictionExecutionMixin:
                             inference_start_frame = int(max_existing) + 1
                 except Exception:
                     pass
+            elif has_forced_start:
+                logger.info(
+                    "Prediction restart forced from seed frame: %s",
+                    int(inference_start_frame),
+                )
             if self.num_frames and int(inference_start_frame) >= int(self.num_frames):
                 try:
                     self.frame_number = int(self.num_frames) - 1
@@ -828,6 +840,8 @@ class PredictionExecutionMixin:
                     logger.debug(
                         "Failed to start prediction progress watcher.", exc_info=True
                     )
+            # Forced restart is a one-shot hint set by prediction cleanup actions.
+            self._prediction_forced_start_frame = None
             logger.info("Prediction started from frame: %s", int(watch_start_frame))
             self.stepSizeWidget.predict_button.setText("Stop")
             self.stepSizeWidget.predict_button.setStyleSheet(
