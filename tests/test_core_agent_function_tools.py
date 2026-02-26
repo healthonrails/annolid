@@ -799,6 +799,24 @@ def test_git_cli_blocks_mutating_commands_without_explicit_allow(
     assert "Blocked mutating git command" in payload["error"]
 
 
+def test_git_cli_accepts_command_string_for_read_only_invocation(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("git") is None:
+        pytest.skip("git is not available in this environment")
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+
+    tool = GitCliTool(allowed_dir=repo)
+    result = asyncio.run(
+        tool.execute(repo_path=str(repo), command="git status --short --branch")
+    )
+    payload = json.loads(result)
+    assert int(payload.get("exit_code", 1)) == 0
+    assert "## " in str(payload.get("output", ""))
+
+
 def test_gh_cli_blocks_unknown_or_mutating_commands_without_explicit_allow(
     tmp_path: Path,
 ) -> None:
@@ -808,6 +826,16 @@ def test_gh_cli_blocks_unknown_or_mutating_commands_without_explicit_allow(
     )
     payload = json.loads(result)
     assert "Blocked mutating gh command" in payload["error"]
+
+
+def test_gh_cli_accepts_command_string_and_strips_prefix(tmp_path: Path) -> None:
+    tool = GitHubCliTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(repo_path=str(tmp_path), command="gh pr comment 123")
+    )
+    payload = json.loads(result)
+    assert "Blocked mutating gh command" in str(payload.get("error", ""))
+    assert payload.get("command") == ["gh", "pr", "comment", "123"]
 
 
 def test_register_nanobot_style_tools(tmp_path: Path) -> None:

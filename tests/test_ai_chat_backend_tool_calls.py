@@ -1270,6 +1270,12 @@ def test_local_access_refusal_heuristic() -> None:
         is True
     )
     assert (
+        StreamingChatTask._looks_like_local_access_refusal(
+            "No git tools are currently available in this environment."
+        )
+        is True
+    )
+    assert (
         StreamingChatTask._looks_like_local_access_refusal("Opened the video.") is False
     )
 
@@ -1363,6 +1369,31 @@ def test_finalize_agent_text_uses_web_fetch_fallback_on_refusal() -> None:
         "Source: https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
         in text
     )
+
+
+def test_finalize_agent_text_uses_direct_fallback_on_git_tool_refusal_with_tool_runs() -> (
+    None
+):
+    class _Result:
+        content = "No git tools are currently available in this environment."
+        tool_runs = ({"name": "git_diff"},)
+
+    task = StreamingChatTask(
+        "check unstaged changes",
+        widget=None,
+        enable_web_tools=False,
+        provider="ollama",
+    )
+    task._execute_direct_gui_command = lambda _prompt: asyncio.sleep(
+        0, result="## main\n M a.txt"
+    )  # type: ignore[method-assign]
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=None,
+    )
+    assert used_recovery is False
+    assert used_direct_gui_fallback is True
+    assert "## main" in text
 
 
 def test_finalize_agent_text_uses_browser_search_fallback_on_knowledge_gap() -> None:
@@ -1971,24 +2002,33 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_exec_bang["args"]["command"] == "echo hello"
 
     parsed_git_changes = task._parse_direct_gui_command("check git changes")
-    assert parsed_git_changes["name"] == "exec_command"
-    assert parsed_git_changes["args"]["command"] == "git status --short --branch"
+    assert parsed_git_changes["name"] == "git_status"
+    assert parsed_git_changes["args"]["short"] is True
 
     parsed_git_diff = task._parse_direct_gui_command("git diff")
-    assert parsed_git_diff["name"] == "exec_command"
-    assert parsed_git_diff["args"]["command"] == "git diff --stat"
+    assert parsed_git_diff["name"] == "git_diff"
+    assert parsed_git_diff["args"] == {}
+
+    parsed_git_staged = task._parse_direct_gui_command("show staged changes")
+    assert parsed_git_staged["name"] == "git_diff"
+    assert parsed_git_staged["args"]["cached"] is True
+
+    parsed_git_unstaged = task._parse_direct_gui_command("check unstaged changes")
+    assert parsed_git_unstaged["name"] == "git_diff"
+    assert parsed_git_unstaged["args"]["cached"] is False
 
     parsed_git_log = task._parse_direct_gui_command("show recent commits")
-    assert parsed_git_log["name"] == "exec_command"
-    assert parsed_git_log["args"]["command"] == "git log --oneline -n 20"
+    assert parsed_git_log["name"] == "git_log"
+    assert parsed_git_log["args"]["max_count"] == 20
+    assert parsed_git_log["args"]["oneline"] is True
 
     parsed_gh_status = task._parse_direct_gui_command("github pr status")
-    assert parsed_gh_status["name"] == "exec_command"
-    assert parsed_gh_status["args"]["command"] == "gh pr status"
+    assert parsed_gh_status["name"] == "github_pr_status"
+    assert parsed_gh_status["args"] == {}
 
     parsed_gh_checks = task._parse_direct_gui_command("github pr checks")
-    assert parsed_gh_checks["name"] == "exec_command"
-    assert parsed_gh_checks["args"]["command"] == "gh pr checks"
+    assert parsed_gh_checks["name"] == "github_pr_checks"
+    assert parsed_gh_checks["args"] == {}
 
     parsed_exec_start = task._parse_direct_gui_command(
         "start shell session for python -V"
@@ -2251,6 +2291,26 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         "sessions": [{"session_id": "sh_abc123def456", "status": "running"}],
         "text": "session-log-line",
     }
+    task._tool_gui_git_status = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "result": "## main\n M tracked.txt",
+    }
+    task._tool_gui_git_diff = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "result": "diff --git a/tracked.txt b/tracked.txt",
+    }
+    task._tool_gui_git_log = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "result": "abc1234 Initial commit",
+    }
+    task._tool_gui_github_pr_status = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "result": "Relevant pull requests in chenyang/annolid",
+    }
+    task._tool_gui_github_pr_checks = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "result": "All checks passed",
+    }
 
     out_pdf = asyncio.run(task._execute_direct_gui_command("open pdf"))
     assert "Opened PDF in Annolid:" in out_pdf
@@ -2408,6 +2468,21 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         task._execute_direct_gui_command("kill session sh_abc123def456")
     )
     assert out_exec_kill == "Killed session sh_abc123def456"
+
+    out_git_status = asyncio.run(task._execute_direct_gui_command("check git changes"))
+    assert "## main" in out_git_status
+
+    out_git_diff = asyncio.run(task._execute_direct_gui_command("show staged changes"))
+    assert "diff --git" in out_git_diff
+
+    out_git_log = asyncio.run(task._execute_direct_gui_command("show recent commits"))
+    assert "Initial commit" in out_git_log
+
+    out_pr_status = asyncio.run(task._execute_direct_gui_command("github pr status"))
+    assert "pull requests" in out_pr_status
+
+    out_pr_checks = asyncio.run(task._execute_direct_gui_command("github pr checks"))
+    assert "checks passed" in out_pr_checks
 
     out_tutorial = asyncio.run(
         task._execute_direct_gui_command(

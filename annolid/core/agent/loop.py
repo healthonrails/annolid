@@ -2073,6 +2073,36 @@ class AgentLoop:
             "url",
         }
     )
+    _VCS_INTENT_TOKENS = frozenset(
+        {
+            "git",
+            "github",
+            "gh",
+            "commit",
+            "commits",
+            "branch",
+            "branches",
+            "diff",
+            "staged",
+            "unstaged",
+            "pull",
+            "request",
+            "requests",
+            "pr",
+            "merge",
+            "rebase",
+            "checkout",
+        }
+    )
+    _VCS_TOOL_NAMES = (
+        "git_status",
+        "git_diff",
+        "git_log",
+        "github_pr_status",
+        "github_pr_checks",
+        "git_cli",
+        "gh_cli",
+    )
     _DEFAULT_TOOL_PRIORITY = (
         "mcp_browser",
         "mcp_browser_navigate",
@@ -2283,6 +2313,7 @@ class AgentLoop:
         entries = list(tool_index) or self._compile_tool_index(tools)
         web_intent = bool(self._WEB_INTENT_TOKENS.intersection(query_tokens))
         weather_intent = bool(WEATHER_INTENT_TOKENS.intersection(query_tokens))
+        vcs_intent = bool(self._VCS_INTENT_TOKENS.intersection(query_tokens))
         for entry in entries:
             score = self._score_tool_schema(entry, query_tokens)
             if self._browser_first_for_web and web_intent:
@@ -2325,6 +2356,42 @@ class AgentLoop:
                 elif len(selected) < max_tools:
                     selected.append(read_file_schema)
                     selected_names.add("read_file")
+        if vcs_intent:
+            tool_by_name = {
+                str((schema.get("function") or {}).get("name") or ""): schema
+                for schema in tools
+            }
+            preferred_vcs: List[str] = ["git_status", "git_diff"]
+            if "github" in query_tokens or "gh" in query_tokens or "pr" in query_tokens:
+                preferred_vcs.extend(["github_pr_status", "github_pr_checks"])
+            for name in self._VCS_TOOL_NAMES:
+                if name in tool_by_name and name not in preferred_vcs:
+                    preferred_vcs.append(name)
+            for name in preferred_vcs:
+                schema = tool_by_name.get(name)
+                if schema is None:
+                    continue
+                if name in selected_names:
+                    continue
+                if len(selected) < max_tools:
+                    selected.append(schema)
+                    selected_names.add(name)
+                    continue
+                replace_idx = len(selected) - 1
+                while replace_idx >= 0:
+                    existing_name = str(
+                        (selected[replace_idx].get("function") or {}).get("name") or ""
+                    )
+                    if existing_name not in {"read_file"}:
+                        break
+                    replace_idx -= 1
+                if replace_idx < 0:
+                    break
+                selected[replace_idx] = schema
+                selected_names = {
+                    str((entry.get("function") or {}).get("name") or "")
+                    for entry in selected
+                }
         return selected or [dict(t) for t in default_tool_definitions]
 
     @classmethod

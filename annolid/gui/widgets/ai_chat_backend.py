@@ -1536,6 +1536,16 @@ class StreamingChatTask(QRunnable):
             read_roots_cfg = []
         return build_pdf_search_roots(workspace, read_roots_cfg)
 
+    def _vcs_read_roots(self) -> List[str]:
+        workspace = get_agent_workspace_path()
+        try:
+            cfg = load_config()
+            read_roots_cfg = list(getattr(cfg.tools, "allowed_read_roots", []) or [])
+        except Exception:
+            read_roots_cfg = []
+        roots = build_workspace_roots(workspace, read_roots_cfg)
+        return [str(p) for p in roots]
+
     def _list_available_pdfs(
         self, *, limit: int = 8, max_scan: int = 40000
     ) -> List[Path]:
@@ -1788,6 +1798,11 @@ class StreamingChatTask(QRunnable):
             "get_realtime_status": self._tool_gui_get_realtime_status,
             "list_realtime_models": self._tool_gui_list_realtime_models,
             "list_realtime_logs": self._tool_gui_list_realtime_logs,
+            "git_status": self._tool_gui_git_status,
+            "git_diff": self._tool_gui_git_diff,
+            "git_log": self._tool_gui_git_log,
+            "github_pr_status": self._tool_gui_github_pr_status,
+            "github_pr_checks": self._tool_gui_github_pr_checks,
             "list_logs": self._tool_gui_list_logs,
             "open_log_folder": self._tool_gui_open_log_folder,
             "remove_log_folder": self._tool_gui_remove_log_folder,
@@ -3054,6 +3069,140 @@ class StreamingChatTask(QRunnable):
         if res.startswith("Error:") and "timed out" not in res:
             return {"ok": False, "error": res}
         return {"ok": True, "result": res}
+
+    async def _tool_gui_git_status(
+        self, repo_path: str = ".", short: bool = True
+    ) -> Dict[str, Any]:
+        from annolid.core.agent.tools.git import GitStatusTool
+
+        workspace = get_agent_workspace_path()
+        tool = GitStatusTool(
+            allowed_dir=workspace,
+            allowed_read_roots=self._vcs_read_roots(),
+        )
+        raw = await tool.execute(repo_path=repo_path, short=short)
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"error": str(raw or "invalid_git_status_result")}
+        if not isinstance(payload, dict):
+            return {"ok": False, "error": "invalid_git_status_result"}
+        if payload.get("error"):
+            return {"ok": False, "error": str(payload.get("error"))}
+        return {
+            "ok": True,
+            "result": str(payload.get("output") or "").strip(),
+            "raw": payload,
+        }
+
+    async def _tool_gui_git_diff(
+        self,
+        repo_path: str = ".",
+        cached: bool = False,
+        target: Optional[str] = None,
+        name_only: bool = False,
+    ) -> Dict[str, Any]:
+        from annolid.core.agent.tools.git import GitDiffTool
+
+        workspace = get_agent_workspace_path()
+        tool = GitDiffTool(
+            allowed_dir=workspace,
+            allowed_read_roots=self._vcs_read_roots(),
+        )
+        raw = await tool.execute(
+            repo_path=repo_path,
+            cached=cached,
+            target=target,
+            name_only=name_only,
+        )
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"error": str(raw or "invalid_git_diff_result")}
+        if not isinstance(payload, dict):
+            return {"ok": False, "error": "invalid_git_diff_result"}
+        if payload.get("error"):
+            return {"ok": False, "error": str(payload.get("error"))}
+        return {
+            "ok": True,
+            "result": str(payload.get("output") or "").strip(),
+            "raw": payload,
+        }
+
+    async def _tool_gui_git_log(
+        self, repo_path: str = ".", max_count: int = 20, oneline: bool = True
+    ) -> Dict[str, Any]:
+        from annolid.core.agent.tools.git import GitLogTool
+
+        workspace = get_agent_workspace_path()
+        tool = GitLogTool(
+            allowed_dir=workspace,
+            allowed_read_roots=self._vcs_read_roots(),
+        )
+        raw = await tool.execute(
+            repo_path=repo_path,
+            max_count=max_count,
+            oneline=oneline,
+        )
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"error": str(raw or "invalid_git_log_result")}
+        if not isinstance(payload, dict):
+            return {"ok": False, "error": "invalid_git_log_result"}
+        if payload.get("error"):
+            return {"ok": False, "error": str(payload.get("error"))}
+        return {
+            "ok": True,
+            "result": str(payload.get("output") or "").strip(),
+            "raw": payload,
+        }
+
+    async def _tool_gui_github_pr_status(self, repo_path: str = ".") -> Dict[str, Any]:
+        from annolid.core.agent.tools.git import GitHubPrStatusTool
+
+        workspace = get_agent_workspace_path()
+        tool = GitHubPrStatusTool(
+            allowed_dir=workspace,
+            allowed_read_roots=self._vcs_read_roots(),
+        )
+        raw = await tool.execute(repo_path=repo_path)
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"error": str(raw or "invalid_github_pr_status_result")}
+        if not isinstance(payload, dict):
+            return {"ok": False, "error": "invalid_github_pr_status_result"}
+        if payload.get("error"):
+            return {"ok": False, "error": str(payload.get("error"))}
+        return {
+            "ok": True,
+            "result": str(payload.get("output") or "").strip(),
+            "raw": payload,
+        }
+
+    async def _tool_gui_github_pr_checks(self, repo_path: str = ".") -> Dict[str, Any]:
+        from annolid.core.agent.tools.git import GitHubPrChecksTool
+
+        workspace = get_agent_workspace_path()
+        tool = GitHubPrChecksTool(
+            allowed_dir=workspace,
+            allowed_read_roots=self._vcs_read_roots(),
+        )
+        raw = await tool.execute(repo_path=repo_path)
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"error": str(raw or "invalid_github_pr_checks_result")}
+        if not isinstance(payload, dict):
+            return {"ok": False, "error": "invalid_github_pr_checks_result"}
+        if payload.get("error"):
+            return {"ok": False, "error": str(payload.get("error"))}
+        return {
+            "ok": True,
+            "result": str(payload.get("output") or "").strip(),
+            "raw": payload,
+        }
 
     async def _tool_gui_exec_start(
         self,

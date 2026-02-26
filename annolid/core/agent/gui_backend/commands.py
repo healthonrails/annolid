@@ -16,6 +16,7 @@ _DIRECT_GUI_REFUSAL_HINTS = (
     "do not have access to shell execution tools",
     "don't have access to git commands",
     "do not have access to git commands",
+    "no git tools are currently available",
 )
 
 _ACTIVE_FILE_HINTS = {
@@ -1081,31 +1082,34 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             "args": {"command": exec_match.group("cmd").strip()},
         }
 
-    # Git/GitHub quick-action aliases: map natural language into safe, read-only CLI probes.
+    # Git/GitHub quick-action aliases: map natural language into dedicated
+    # VCS tools first (avoid relying on generic shell-exec availability).
     if re.search(r"\bgit\s+status\b", lower) or re.search(
         r"\bcheck\b[\s\S]*\bgit\b[\s\S]*\bchanges?\b", lower
     ):
-        return {
-            "name": "exec_command",
-            "args": {"command": "git status --short --branch"},
-        }
+        return {"name": "git_status", "args": {"short": True}}
+    if re.search(
+        r"\b(?:check|show|list)\b[\s\S]*\bunstaged\b[\s\S]*\bchanges?\b", lower
+    ):
+        return {"name": "git_diff", "args": {"cached": False}}
+    if re.search(r"\bstaged\b[\s\S]*\bchanges?\b", lower) or re.search(
+        r"\bgit\s+diff\s+--cached\b", lower
+    ):
+        return {"name": "git_diff", "args": {"cached": True}}
     if re.search(r"\bgit\s+diff\b", lower):
-        return {"name": "exec_command", "args": {"command": "git diff --stat"}}
+        return {"name": "git_diff", "args": {}}
     if re.search(r"\bgit\s+log\b", lower) or re.search(
         r"\brecent\b[\s\S]*\bcommits?\b", lower
     ):
-        return {
-            "name": "exec_command",
-            "args": {"command": "git log --oneline -n 20"},
-        }
+        return {"name": "git_log", "args": {"max_count": 20, "oneline": True}}
     if re.search(r"\bgh\s+pr\s+status\b", lower) or re.search(
         r"\bgithub\b[\s\S]*\bpr\b[\s\S]*\bstatus\b", lower
     ):
-        return {"name": "exec_command", "args": {"command": "gh pr status"}}
+        return {"name": "github_pr_status", "args": {}}
     if re.search(r"\bgh\s+pr\s+checks\b", lower) or re.search(
         r"\bgithub\b[\s\S]*\bpr\b[\s\S]*\bchecks?\b", lower
     ):
-        return {"name": "exec_command", "args": {"command": "gh pr checks"}}
+        return {"name": "github_pr_checks", "args": {}}
 
     return {}
 
@@ -1130,6 +1134,14 @@ def prompt_may_need_tools(prompt: str) -> bool:
         "cat",
         "exec",
         "shell",
+        "git",
+        "github",
+        "gh",
+        "commit",
+        "diff",
+        "staged",
+        "unstaged",
+        "pr",
         "session",
         "command",
         "pwd",

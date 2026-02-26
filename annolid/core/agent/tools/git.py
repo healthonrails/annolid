@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -118,7 +119,8 @@ class GitCliTool(_RepoCliTool):
     def description(self) -> str:
         return (
             "Run git CLI arguments in a repository. "
-            "Mutating operations require allow_mutation=true."
+            "Mutating operations require allow_mutation=true. "
+            "Accepts either args=[...] or command='git ...'."
         )
 
     @property
@@ -133,10 +135,32 @@ class GitCliTool(_RepoCliTool):
                     "minItems": 1,
                     "maxItems": 32,
                 },
+                "command": {"type": "string", "minLength": 1},
                 "allow_mutation": {"type": "boolean"},
             },
-            "required": ["args"],
+            "required": [],
         }
+
+    @staticmethod
+    def _normalize_args(
+        *,
+        args: list[str] | None,
+        command: str | None,
+    ) -> list[str]:
+        normalized = [
+            str(a or "").strip() for a in list(args or []) if str(a or "").strip()
+        ]
+        if normalized:
+            return normalized
+        cmd_text = str(command or "").strip()
+        if not cmd_text:
+            return []
+        parsed = [
+            str(a or "").strip() for a in shlex.split(cmd_text) if str(a or "").strip()
+        ]
+        if parsed and parsed[0].lower() == "git":
+            parsed = parsed[1:]
+        return parsed
 
     @classmethod
     def _is_read_only(cls, args: Sequence[str]) -> bool:
@@ -154,7 +178,8 @@ class GitCliTool(_RepoCliTool):
 
     async def execute(
         self,
-        args: list[str],
+        args: list[str] | None = None,
+        command: str | None = None,
         repo_path: str = ".",
         allow_mutation: bool = False,
         **kwargs: Any,
@@ -164,12 +189,13 @@ class GitCliTool(_RepoCliTool):
             repo = self._resolve_repo_path(repo_path)
         except PermissionError as exc:
             return json.dumps({"error": str(exc), "repo_path": str(repo_path)})
-        normalized = [
-            str(a or "").strip() for a in list(args or []) if str(a or "").strip()
-        ]
+        normalized = self._normalize_args(args=args, command=command)
         if not normalized:
             return json.dumps(
-                {"error": "args must not be empty", "repo_path": str(repo)}
+                {
+                    "error": "Provide non-empty git args or command.",
+                    "repo_path": str(repo),
+                }
             )
         if not self._is_read_only(normalized) and not bool(allow_mutation):
             return json.dumps(
@@ -219,7 +245,8 @@ class GitHubCliTool(_RepoCliTool):
     def description(self) -> str:
         return (
             "Run gh CLI arguments in a repository. "
-            "Mutating operations require allow_mutation=true."
+            "Mutating operations require allow_mutation=true. "
+            "Accepts either args=[...] or command='gh ...'."
         )
 
     @property
@@ -234,10 +261,32 @@ class GitHubCliTool(_RepoCliTool):
                     "minItems": 1,
                     "maxItems": 40,
                 },
+                "command": {"type": "string", "minLength": 1},
                 "allow_mutation": {"type": "boolean"},
             },
-            "required": ["args"],
+            "required": [],
         }
+
+    @staticmethod
+    def _normalize_args(
+        *,
+        args: list[str] | None,
+        command: str | None,
+    ) -> list[str]:
+        normalized = [
+            str(a or "").strip() for a in list(args or []) if str(a or "").strip()
+        ]
+        if normalized:
+            return normalized
+        cmd_text = str(command or "").strip()
+        if not cmd_text:
+            return []
+        parsed = [
+            str(a or "").strip() for a in shlex.split(cmd_text) if str(a or "").strip()
+        ]
+        if parsed and parsed[0].lower() == "gh":
+            parsed = parsed[1:]
+        return parsed
 
     @classmethod
     def _is_read_only(cls, args: Sequence[str]) -> bool:
@@ -255,7 +304,8 @@ class GitHubCliTool(_RepoCliTool):
 
     async def execute(
         self,
-        args: list[str],
+        args: list[str] | None = None,
+        command: str | None = None,
         repo_path: str = ".",
         allow_mutation: bool = False,
         **kwargs: Any,
@@ -265,12 +315,13 @@ class GitHubCliTool(_RepoCliTool):
             repo = self._resolve_repo_path(repo_path)
         except PermissionError as exc:
             return json.dumps({"error": str(exc), "repo_path": str(repo_path)})
-        normalized = [
-            str(a or "").strip() for a in list(args or []) if str(a or "").strip()
-        ]
+        normalized = self._normalize_args(args=args, command=command)
         if not normalized:
             return json.dumps(
-                {"error": "args must not be empty", "repo_path": str(repo)}
+                {
+                    "error": "Provide non-empty gh args or command.",
+                    "repo_path": str(repo),
+                }
             )
         if not self._is_read_only(normalized) and not bool(allow_mutation):
             return json.dumps(

@@ -61,6 +61,11 @@ async def execute_direct_gui_command(
     get_realtime_status: Callable[[], Any],
     list_realtime_models: Callable[[], Any],
     list_realtime_logs: Callable[[], Any],
+    git_status: Callable[..., Any],
+    git_diff: Callable[..., Any],
+    git_log: Callable[..., Any],
+    github_pr_status: Callable[..., Any],
+    github_pr_checks: Callable[..., Any],
     list_logs: Callable[[], Any],
     open_log_folder: Callable[[str], Any],
     remove_log_folder: Callable[[str], Any],
@@ -298,6 +303,76 @@ async def execute_direct_gui_command(
                 lines.append(f"- bot-events: {bot_events}")
             return "\n".join(lines)
         return str(payload.get("error") or "Failed to list realtime logs.")
+
+    if name == "git_status":
+        payload = await _run(
+            git_status,
+            repo_path=str(args.get("repo_path") or "."),
+            short=bool(args.get("short", True)),
+        )
+        if payload.get("ok"):
+            return (
+                str(payload.get("result") or "").strip()
+                or "Git status returned no output."
+            )
+        return str(payload.get("error") or "Failed to get git status.")
+
+    if name == "git_diff":
+        payload = await _run(
+            git_diff,
+            repo_path=str(args.get("repo_path") or "."),
+            cached=bool(args.get("cached", False)),
+            target=(
+                str(args.get("target")).strip()
+                if args.get("target") not in (None, "")
+                else None
+            ),
+            name_only=bool(args.get("name_only", False)),
+        )
+        if payload.get("ok"):
+            return (
+                str(payload.get("result") or "").strip()
+                or "Git diff returned no output."
+            )
+        return str(payload.get("error") or "Failed to get git diff.")
+
+    if name == "git_log":
+        payload = await _run(
+            git_log,
+            repo_path=str(args.get("repo_path") or "."),
+            max_count=int(args.get("max_count") or 20),
+            oneline=bool(args.get("oneline", True)),
+        )
+        if payload.get("ok"):
+            return (
+                str(payload.get("result") or "").strip()
+                or "Git log returned no output."
+            )
+        return str(payload.get("error") or "Failed to get git log.")
+
+    if name == "github_pr_status":
+        payload = await _run(
+            github_pr_status,
+            repo_path=str(args.get("repo_path") or "."),
+        )
+        if payload.get("ok"):
+            return (
+                str(payload.get("result") or "").strip()
+                or "GitHub PR status returned no output."
+            )
+        return str(payload.get("error") or "Failed to get GitHub PR status.")
+
+    if name == "github_pr_checks":
+        payload = await _run(
+            github_pr_checks,
+            repo_path=str(args.get("repo_path") or "."),
+        )
+        if payload.get("ok"):
+            return (
+                str(payload.get("result") or "").strip()
+                or "GitHub PR checks returned no output."
+            )
+        return str(payload.get("error") or "Failed to get GitHub PR checks.")
 
     if name == "list_logs":
         payload = await _run(list_logs)
