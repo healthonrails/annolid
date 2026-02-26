@@ -22,6 +22,7 @@ from annolid.gui.widgets.bot_explain import _resolve_chat_widget
 from annolid.gui.workers import PerceptionProcessWorker, RealtimeSubscriberWorker
 from annolid.gui.shape import Shape, MaskShape
 from annolid.utils.logger import logger
+from annolid.utils.log_paths import resolve_annolid_realtime_logs_root
 
 if TYPE_CHECKING:
     from annolid.realtime.config import Config as RealtimeConfig
@@ -370,9 +371,7 @@ class RealtimeManager(QtCore.QObject):
             if path.is_dir() or not path.suffix:
                 path = path / f"realtime_{timestamp}.ndjson"
         else:
-            path = (
-                Path.home() / "annolid_realtime_logs" / f"realtime_{timestamp}.ndjson"
-            )
+            path = resolve_annolid_realtime_logs_root() / f"realtime_{timestamp}.ndjson"
         return path.resolve()
 
     def _resolve_tcp_endpoint(self, address: str) -> Tuple[str, int]:
@@ -674,8 +673,7 @@ class RealtimeManager(QtCore.QObject):
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = (
-                Path.home()
-                / "annolid_realtime_logs"
+                resolve_annolid_realtime_logs_root()
                 / f"realtime_bot_events_{timestamp}.ndjson"
             ).resolve()
             path.parent.mkdir(parents=True, exist_ok=True)

@@ -132,11 +132,14 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 else:
                     resolved = (root_dir / entry_path).resolve()
                     if allow_annolid_logs and not resolved.exists():
-                        candidate = (
-                            root_dir / DEFAULT_LABEL_INDEX_DIRNAME / entry_path.name
-                        )
-                        if candidate.exists():
-                            resolved = candidate.resolve()
+                        candidates = [
+                            root_dir / DEFAULT_LABEL_INDEX_DIRNAME / entry_path.name,
+                            root_dir / "annolid_logs" / entry_path.name,
+                        ]
+                        for candidate in candidates:
+                            if candidate.exists():
+                                resolved = candidate.resolve()
+                                break
                 return str(resolved)
             if isinstance(entry, (list, tuple)):
                 return [resolve_entry(item) for item in entry]

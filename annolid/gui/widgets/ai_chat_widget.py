@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import csv
 import ipaddress
+import fnmatch
 from collections import OrderedDict
 import os
 import tempfile
@@ -13,6 +14,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 import re
+import shutil
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 from qtpy import QtCore, QtGui, QtWidgets
@@ -24,6 +26,7 @@ from annolid.core.agent.session_manager import (
     PersistentSessionStore,
 )
 from annolid.core.agent.utils import get_agent_workspace_path
+from annolid.datasets.labelme_collection import default_label_index_path
 from annolid.gui.realtime_launch import (
     build_realtime_launch_payload,
     resolve_realtime_model_weight,
@@ -49,6 +52,11 @@ from annolid.gui.widgets.provider_registry import ProviderRegistry
 from annolid.gui.widgets.provider_runtime_sync import (
     refresh_runtime_llm_settings as refresh_runtime_provider_settings,
 )
+from annolid.utils.log_paths import (
+    resolve_annolid_logs_root,
+    resolve_annolid_realtime_logs_root,
+)
+from annolid.utils.runs import shared_runs_root
 from annolid.utils.llm_settings import (
     has_provider_api_key,
     load_llm_settings,
@@ -103,6 +111,66 @@ def _safe_stream_source_for_bot(source: str) -> str:
     return urlunsplit(
         (parts.scheme, replacement, parts.path, parts.query, parts.fragment)
     )
+
+
+def _log_targets_for_bot() -> Dict[str, Path]:
+    logs_root = resolve_annolid_logs_root()
+    return {
+        "logs": logs_root,
+        "realtime": resolve_annolid_realtime_logs_root(),
+        "runs": shared_runs_root(),
+        "label_index": default_label_index_path().parent,
+        "app": logs_root / "app",
+    }
+
+
+def _is_path_within_root(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _is_probably_binary_file(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            chunk = handle.read(4096)
+    except Exception:
+        return True
+    return b"\x00" in chunk
+
+
+def _tail_text_from_file(
+    path: Path, *, tail_lines: int, max_chars: int
+) -> tuple[str, bool]:
+    file_size = int(path.stat().st_size)
+    if file_size <= 0:
+        return "", False
+    chunk_size = 8192
+    max_bytes_soft = max(16384, int(max_chars) * 4)
+    max_bytes_hard = min(max(max_bytes_soft, int(max_chars) * 8), 8 * 1024 * 1024)
+    cursor = file_size
+    data = b""
+    with path.open("rb") as handle:
+        while cursor > 0:
+            read_size = min(chunk_size, cursor)
+            cursor -= read_size
+            handle.seek(cursor)
+            data = handle.read(read_size) + data
+            if data.count(b"\n") >= int(tail_lines) and len(data) >= max_bytes_soft:
+                break
+            if len(data) >= max_bytes_hard:
+                break
+            if chunk_size < 65536:
+                chunk_size *= 2
+    truncated = bool(cursor > 0 or len(data) >= max_bytes_hard)
+    text = data.decode("utf-8", errors="replace")
+    tail_text = "\n".join(text.splitlines()[-int(tail_lines) :])
+    if len(tail_text) > int(max_chars):
+        tail_text = tail_text[-int(max_chars) :]
+        truncated = True
+    return tail_text, truncated
 
 
 class _ChatBubble(QtWidgets.QFrame):
@@ -3341,6 +3409,367 @@ class AIChatWidget(QtWidgets.QWidget):
                 "detections_log_path": detections,
                 "bot_event_log_path": bot_events,
                 "available": bool(detections or bot_events),
+            },
+        )
+
+    @QtCore.Slot()
+    def bot_list_logs(self) -> None:
+        entries = []
+        for name, path in _log_targets_for_bot().items():
+            resolved = Path(path).expanduser().resolve()
+            exists = resolved.exists()
+            entries.append(
+                {
+                    "target": name,
+                    "path": str(resolved),
+                    "exists": bool(exists),
+                    "is_dir": bool(exists and resolved.is_dir()),
+                }
+            )
+        self._set_bot_action_result(
+            "list_logs",
+            {"ok": True, "count": len(entries), "logs": entries},
+        )
+
+    @QtCore.Slot(str)
+    def bot_open_log_folder(self, target: str) -> None:
+        key = str(target or "").strip().lower()
+        path = _log_targets_for_bot().get(key)
+        if path is None:
+            self._set_bot_action_result(
+                "open_log_folder",
+                {"ok": False, "error": f"Unsupported log target: {target}"},
+            )
+            return
+        folder = Path(path).expanduser().resolve()
+        folder.mkdir(parents=True, exist_ok=True)
+        ok = bool(
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(folder)))
+        )
+        self._set_bot_action_result(
+            "open_log_folder",
+            {"ok": ok, "target": key, "path": str(folder)},
+        )
+
+    @QtCore.Slot(str)
+    def bot_remove_log_folder(self, target: str) -> None:
+        key = str(target or "").strip().lower()
+        path = _log_targets_for_bot().get(key)
+        if path is None:
+            self._set_bot_action_result(
+                "remove_log_folder",
+                {"ok": False, "error": f"Unsupported log target: {target}"},
+            )
+            return
+        folder = Path(path).expanduser().resolve()
+        if not folder.exists():
+            self._set_bot_action_result(
+                "remove_log_folder",
+                {"ok": True, "target": key, "path": str(folder), "removed": False},
+            )
+            return
+        try:
+            shutil.rmtree(folder)
+        except Exception as exc:
+            self._set_bot_action_result(
+                "remove_log_folder",
+                {
+                    "ok": False,
+                    "target": key,
+                    "path": str(folder),
+                    "error": str(exc),
+                },
+            )
+            return
+        self._set_bot_action_result(
+            "remove_log_folder",
+            {"ok": True, "target": key, "path": str(folder), "removed": True},
+        )
+
+    @QtCore.Slot(str, str, int, bool, str, bool)
+    def bot_list_log_files(
+        self,
+        target: str,
+        pattern: str,
+        limit: int,
+        recursive: bool,
+        sort_by: str,
+        descending: bool,
+    ) -> None:
+        key = str(target or "").strip().lower()
+        roots = _log_targets_for_bot()
+        root = roots.get(key)
+        if root is None:
+            self._set_bot_action_result(
+                "list_log_files",
+                {"ok": False, "error": f"Unsupported log target: {target}"},
+            )
+            return
+        path = Path(root).expanduser().resolve()
+        if not path.exists():
+            self._set_bot_action_result(
+                "list_log_files",
+                {"ok": True, "target": key, "root": str(path), "count": 0, "files": []},
+            )
+            return
+        safe_pattern = str(pattern or "*").strip() or "*"
+        max_items = max(1, min(5000, int(limit or 200)))
+        do_recursive = bool(recursive)
+        sort_key = str(sort_by or "name").strip().lower()
+        if sort_key not in {"name", "mtime", "size"}:
+            sort_key = "name"
+        reverse_order = bool(descending)
+        max_scan = 50000
+        files = []
+        scanned = 0
+        truncated_scan = False
+        if do_recursive:
+            candidate_iter = (
+                Path(dirpath) / filename
+                for dirpath, _, filenames in os.walk(path)
+                for filename in filenames
+            )
+        else:
+            candidate_iter = (
+                Path(entry.path) for entry in os.scandir(path) if entry.is_file()
+            )
+        for fp in candidate_iter:
+            scanned += 1
+            if scanned > max_scan:
+                truncated_scan = True
+                break
+            try:
+                rel = fp.resolve().relative_to(path)
+                rel_text = str(rel)
+                if not (
+                    fnmatch.fnmatch(fp.name, safe_pattern)
+                    or fnmatch.fnmatch(rel_text, safe_pattern)
+                ):
+                    continue
+                st = fp.stat()
+                files.append(
+                    {
+                        "path": str(fp.resolve()),
+                        "relative_path": rel_text,
+                        "size": int(st.st_size),
+                        "mtime_ns": int(st.st_mtime_ns),
+                    }
+                )
+            except Exception:
+                continue
+        if sort_key == "mtime":
+            files.sort(
+                key=lambda item: int(item.get("mtime_ns", 0)), reverse=reverse_order
+            )
+        elif sort_key == "size":
+            files.sort(key=lambda item: int(item.get("size", 0)), reverse=reverse_order)
+        else:
+            files.sort(
+                key=lambda item: str(item.get("relative_path", "")).lower(),
+                reverse=reverse_order,
+            )
+        limited = len(files) > max_items
+        if limited:
+            files = files[:max_items]
+        self._set_bot_action_result(
+            "list_log_files",
+            {
+                "ok": True,
+                "target": key,
+                "root": str(path),
+                "count": len(files),
+                "files": files,
+                "pattern": safe_pattern,
+                "limit": max_items,
+                "recursive": do_recursive,
+                "sort_by": sort_key,
+                "descending": reverse_order,
+                "scanned_files": scanned,
+                "truncated_scan": truncated_scan,
+                "limited": limited,
+            },
+        )
+
+    @QtCore.Slot(str, int, int)
+    def bot_read_log_file(self, path: str, max_chars: int, tail_lines: int) -> None:
+        raw_path = str(path or "").strip()
+        if not raw_path:
+            self._set_bot_action_result(
+                "read_log_file", {"ok": False, "error": "path is required"}
+            )
+            return
+        target_path = Path(raw_path).expanduser().resolve()
+        roots = [
+            Path(p).expanduser().resolve() for p in _log_targets_for_bot().values()
+        ]
+        if not any(_is_path_within_root(target_path, root) for root in roots):
+            self._set_bot_action_result(
+                "read_log_file",
+                {"ok": False, "error": "path must be under Annolid log roots"},
+            )
+            return
+        if not target_path.exists() or not target_path.is_file():
+            self._set_bot_action_result(
+                "read_log_file",
+                {"ok": False, "error": f"log file not found: {target_path}"},
+            )
+            return
+        cap_chars = max(200, min(200000, int(max_chars or 12000)))
+        cap_lines = max(1, min(100000, int(tail_lines or 200)))
+        if _is_probably_binary_file(target_path):
+            self._set_bot_action_result(
+                "read_log_file",
+                {
+                    "ok": False,
+                    "error": "file appears to be binary",
+                    "path": str(target_path),
+                },
+            )
+            return
+        try:
+            tail_text, truncated = _tail_text_from_file(
+                target_path,
+                tail_lines=cap_lines,
+                max_chars=cap_chars,
+            )
+        except Exception as exc:
+            self._set_bot_action_result(
+                "read_log_file",
+                {"ok": False, "error": str(exc), "path": str(target_path)},
+            )
+            return
+        returned_line_count = tail_text.count("\n") + (1 if tail_text else 0)
+        self._set_bot_action_result(
+            "read_log_file",
+            {
+                "ok": True,
+                "path": str(target_path),
+                "tail_lines": cap_lines,
+                "max_chars": cap_chars,
+                "line_count": returned_line_count,
+                "truncated": bool(truncated),
+                "file_size": int(target_path.stat().st_size),
+                "content": tail_text,
+            },
+        )
+
+    @QtCore.Slot(str, str, str, bool, bool, int, int)
+    def bot_search_logs(
+        self,
+        query: str,
+        target: str,
+        pattern: str,
+        case_sensitive: bool,
+        use_regex: bool,
+        max_matches: int,
+        max_files: int,
+    ) -> None:
+        term = str(query or "").strip()
+        if not term:
+            self._set_bot_action_result(
+                "search_logs", {"ok": False, "error": "query is required"}
+            )
+            return
+        key = str(target or "logs").strip().lower() or "logs"
+        roots = _log_targets_for_bot()
+        root = roots.get(key)
+        if root is None:
+            self._set_bot_action_result(
+                "search_logs",
+                {"ok": False, "error": f"Unsupported log target: {target}"},
+            )
+            return
+        base = Path(root).expanduser().resolve()
+        if not base.exists():
+            self._set_bot_action_result(
+                "search_logs",
+                {
+                    "ok": True,
+                    "target": key,
+                    "root": str(base),
+                    "matches": [],
+                    "match_count": 0,
+                    "scanned_files": 0,
+                },
+            )
+            return
+        safe_pattern = str(pattern or "*").strip() or "*"
+        use_case_sensitive = bool(case_sensitive)
+        use_re = bool(use_regex)
+        max_m = max(1, min(5000, int(max_matches or 100)))
+        max_f = max(1, min(2000, int(max_files or 50)))
+        matcher = None
+        if use_re:
+            try:
+                flags = 0 if use_case_sensitive else re.IGNORECASE
+                matcher = re.compile(term, flags)
+            except re.error as exc:
+                self._set_bot_action_result(
+                    "search_logs", {"ok": False, "error": f"invalid regex: {exc}"}
+                )
+                return
+        matches = []
+        scanned = 0
+        max_bytes_per_file = 2 * 1024 * 1024
+        for fp in sorted(base.rglob("*")):
+            if not fp.is_file():
+                continue
+            rel = str(fp.resolve().relative_to(base))
+            if not (
+                fnmatch.fnmatch(fp.name, safe_pattern)
+                or fnmatch.fnmatch(rel, safe_pattern)
+            ):
+                continue
+            if _is_probably_binary_file(fp):
+                continue
+            scanned += 1
+            if scanned > max_f:
+                break
+            try:
+                consumed = 0
+                with fp.open("r", encoding="utf-8", errors="replace") as handle:
+                    for idx, line in enumerate(handle, start=1):
+                        consumed += len(line.encode("utf-8", errors="ignore"))
+                        if consumed > max_bytes_per_file:
+                            break
+                        candidate = line.rstrip("\n")
+                        if matcher is not None:
+                            found = matcher.search(candidate) is not None
+                        elif use_case_sensitive:
+                            found = term in candidate
+                        else:
+                            found = term.lower() in candidate.lower()
+                        if not found:
+                            continue
+                        matches.append(
+                            {
+                                "path": str(fp.resolve()),
+                                "relative_path": rel,
+                                "line": int(idx),
+                                "text": str(candidate[:500]),
+                            }
+                        )
+                        if len(matches) >= max_m:
+                            break
+            except Exception:
+                continue
+            if len(matches) >= max_m:
+                break
+        self._set_bot_action_result(
+            "search_logs",
+            {
+                "ok": True,
+                "target": key,
+                "root": str(base),
+                "query": term,
+                "pattern": safe_pattern,
+                "case_sensitive": use_case_sensitive,
+                "use_regex": use_re,
+                "match_count": len(matches),
+                "scanned_files": min(scanned, max_f),
+                "matches": matches,
+                "max_matches": max_m,
+                "max_files": max_f,
             },
         )
 

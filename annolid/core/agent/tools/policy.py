@@ -30,6 +30,12 @@ _CAPABILITY_REALTIME: Set[str] = {
     "gui_check_stream_source",
     "gui_list_realtime_models",
     "gui_list_realtime_logs",
+    "gui_list_logs",
+    "gui_open_log_folder",
+    "gui_remove_log_folder",
+    "gui_list_log_files",
+    "gui_read_log_file",
+    "gui_search_logs",
 }
 _CAPABILITY_GUI: Set[str] = {
     "gui_context",
@@ -61,6 +67,12 @@ _CAPABILITY_GUI: Set[str] = {
     "gui_label_behavior_segments",
     "gui_save_citation",
     "gui_generate_annolid_tutorial",
+    "gui_list_logs",
+    "gui_open_log_folder",
+    "gui_remove_log_folder",
+    "gui_list_log_files",
+    "gui_read_log_file",
+    "gui_search_logs",
 }
 
 
@@ -193,6 +205,12 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "gui_get_realtime_status",
         "gui_list_realtime_models",
         "gui_list_realtime_logs",
+        "gui_list_logs",
+        "gui_open_log_folder",
+        "gui_remove_log_folder",
+        "gui_list_log_files",
+        "gui_read_log_file",
+        "gui_search_logs",
         "gui_check_stream_source",
         "gui_save_citation",
         "gui_generate_annolid_tutorial",

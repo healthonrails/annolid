@@ -6,6 +6,12 @@ from annolid.core.agent.gui_backend.tool_handlers_filesystem import rename_file_
 from annolid.core.agent.gui_backend.tool_handlers_realtime import (
     check_stream_source_tool,
     get_realtime_status_tool,
+    list_logs_tool,
+    list_log_files_tool,
+    read_log_file_tool,
+    search_logs_tool,
+    open_log_folder_tool,
+    remove_log_folder_tool,
     list_realtime_logs_tool,
     list_realtime_models_tool,
     start_realtime_stream_tool,
@@ -86,6 +92,77 @@ def test_realtime_status_and_inventory_tools_proxy_widget_payloads() -> None:
         }
     )
     assert str(logs["detections_log_path"]).endswith(".ndjson")
+
+    app_logs = list_logs_tool(
+        invoke_widget_json_slot=lambda *_a, **_k: {
+            "ok": True,
+            "count": 3,
+            "logs": [{"target": "logs", "path": "/tmp/logs"}],
+        }
+    )
+    assert app_logs["ok"] is True
+    opened = open_log_folder_tool(
+        target="logs",
+        invoke_widget_json_slot=lambda *_a, **_k: {
+            "ok": True,
+            "target": "logs",
+            "path": "/tmp/logs",
+        },
+    )
+    assert opened["ok"] is True
+    removed = remove_log_folder_tool(
+        target="realtime",
+        invoke_widget_json_slot=lambda *_a, **_k: {
+            "ok": True,
+            "target": "realtime",
+            "removed": True,
+        },
+    )
+    assert removed["ok"] is True
+
+    files = list_log_files_tool(
+        target="logs",
+        pattern="*.log",
+        limit=20,
+        recursive=True,
+        sort_by="mtime",
+        descending=True,
+        invoke_widget_json_slot=lambda *_a, **_k: {
+            "ok": True,
+            "target": "logs",
+            "count": 1,
+            "files": [{"path": "/tmp/logs/app/a.log"}],
+        },
+    )
+    assert files["ok"] is True
+
+    content = read_log_file_tool(
+        path="/tmp/logs/app/a.log",
+        max_chars=2000,
+        tail_lines=50,
+        invoke_widget_json_slot=lambda *_a, **_k: {
+            "ok": True,
+            "path": "/tmp/logs/app/a.log",
+            "content": "hello",
+        },
+    )
+    assert content["ok"] is True
+
+    search = search_logs_tool(
+        query="error",
+        target="logs",
+        pattern="*.log",
+        case_sensitive=False,
+        use_regex=False,
+        max_matches=10,
+        max_files=5,
+        invoke_widget_json_slot=lambda *_a, **_k: {
+            "ok": True,
+            "match_count": 1,
+            "matches": [{"path": "/tmp/logs/app/a.log", "line": 1, "text": "error"}],
+        },
+    )
+    assert search["ok"] is True
 
 
 def test_check_stream_source_tool_normalizes_probe_args() -> None:

@@ -47,6 +47,7 @@ Best practices:
 - `gui_segment_track_video`, `gui_label_behavior_segments`
 - `gui_start_realtime_stream`, `gui_stop_realtime_stream`
 - `gui_get_realtime_status`, `gui_list_realtime_models`, `gui_list_realtime_logs`
+- `gui_list_logs`, `gui_open_log_folder`, `gui_remove_log_folder`
 - `gui_check_stream_source`
 
 Best practices:

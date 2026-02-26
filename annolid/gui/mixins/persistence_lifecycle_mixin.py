@@ -211,22 +211,52 @@ class PersistenceLifecycleMixin:
             index_file = (self.config or {}).get(
                 "label_index_file"
             ) or self.settings.value("dataset/label_index_file", "", type=str)
-        if not index_file:
-            dataset_root = (
-                os.environ.get("ANNOLID_LABEL_COLLECTION_DIR")
-                or (self.config or {}).get("label_collection_dir")
-                or self.settings.value("dataset/label_collection_dir", "", type=str)
+        dataset_root = (
+            os.environ.get("ANNOLID_LABEL_COLLECTION_DIR")
+            or (self.config or {}).get("label_collection_dir")
+            or self.settings.value("dataset/label_collection_dir", "", type=str)
+        )
+        dataset_root_path = Path(dataset_root).expanduser() if dataset_root else None
+        try:
+            from annolid.datasets.labelme_collection import (
+                default_label_index_path,
+                resolve_label_index_path,
             )
-            if not dataset_root:
-                return
-            try:
-                from annolid.datasets.labelme_collection import default_label_index_path
-            except Exception:
-                index_file = str(
-                    Path(dataset_root) / "annolid_logs" / "annolid_dataset.jsonl"
-                )
+        except Exception:
+            if not index_file:
+                if dataset_root_path is not None:
+                    index_file = str(
+                        (
+                            dataset_root_path.resolve()
+                            / "logs"
+                            / "label_index"
+                            / "annolid_dataset.jsonl"
+                        )
+                    )
+                else:
+                    index_file = str(
+                        (
+                            Path.home()
+                            / ".annolid"
+                            / "logs"
+                            / "label_index"
+                            / "annolid_dataset.jsonl"
+                        )
+                        .expanduser()
+                        .resolve()
+                    )
+            elif (
+                dataset_root_path is not None
+                and not Path(index_file).expanduser().is_absolute()
+            ):
+                index_file = str((dataset_root_path.resolve() / index_file).resolve())
+        else:
+            if not index_file:
+                index_file = str(default_label_index_path(dataset_root_path))
             else:
-                index_file = str(default_label_index_path(Path(dataset_root)))
+                index_file = str(
+                    resolve_label_index_path(Path(index_file), dataset_root_path)
+                )
 
         include_empty_value = (
             os.environ.get("ANNOLID_LABEL_INDEX_INCLUDE_EMPTY", "0").strip().lower()

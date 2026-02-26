@@ -32,6 +32,12 @@ from .function_gui_threejs import (
 from .function_gui_video import (
     GuiCheckStreamSourceTool,
     GuiGetRealtimeStatusTool,
+    GuiListLogsTool,
+    GuiOpenLogFolderTool,
+    GuiRemoveLogFolderTool,
+    GuiListLogFilesTool,
+    GuiReadLogFileTool,
+    GuiSearchLogsTool,
     GuiListRealtimeLogsTool,
     GuiListRealtimeModelsTool,
     GuiOpenVideoTool,
@@ -93,6 +99,12 @@ def register_annolid_gui_tools(
     get_realtime_status_callback: Optional[ActionCallback] = None,
     list_realtime_models_callback: Optional[ActionCallback] = None,
     list_realtime_logs_callback: Optional[ActionCallback] = None,
+    list_logs_callback: Optional[ActionCallback] = None,
+    open_log_folder_callback: Optional[ActionCallback] = None,
+    remove_log_folder_callback: Optional[ActionCallback] = None,
+    list_log_files_callback: Optional[ActionCallback] = None,
+    read_log_file_callback: Optional[ActionCallback] = None,
+    search_logs_callback: Optional[ActionCallback] = None,
     check_stream_source_callback: Optional[ActionCallback] = None,
 ) -> None:
     """Register GUI-only tools for Annolid Bot sessions."""
@@ -186,6 +198,18 @@ def register_annolid_gui_tools(
     registry.register(
         GuiListRealtimeLogsTool(list_realtime_logs_callback=list_realtime_logs_callback)
     )
+    registry.register(GuiListLogsTool(list_logs_callback=list_logs_callback))
+    registry.register(
+        GuiOpenLogFolderTool(open_log_folder_callback=open_log_folder_callback)
+    )
+    registry.register(
+        GuiRemoveLogFolderTool(remove_log_folder_callback=remove_log_folder_callback)
+    )
+    registry.register(
+        GuiListLogFilesTool(list_log_files_callback=list_log_files_callback)
+    )
+    registry.register(GuiReadLogFileTool(read_log_file_callback=read_log_file_callback))
+    registry.register(GuiSearchLogsTool(search_logs_callback=search_logs_callback))
     registry.register(
         GuiCheckStreamSourceTool(
             check_stream_source_callback=check_stream_source_callback

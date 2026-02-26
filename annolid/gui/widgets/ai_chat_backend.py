@@ -168,6 +168,12 @@ from annolid.core.agent.gui_backend.tool_handlers_filesystem import (
 from annolid.core.agent.gui_backend.tool_handlers_realtime import (
     check_stream_source_tool as gui_check_stream_source_tool,
     get_realtime_status_tool as gui_get_realtime_status_tool,
+    list_logs_tool as gui_list_logs_tool,
+    list_log_files_tool as gui_list_log_files_tool,
+    read_log_file_tool as gui_read_log_file_tool,
+    search_logs_tool as gui_search_logs_tool,
+    open_log_folder_tool as gui_open_log_folder_tool,
+    remove_log_folder_tool as gui_remove_log_folder_tool,
     list_realtime_logs_tool as gui_list_realtime_logs_tool,
     list_realtime_models_tool as gui_list_realtime_models_tool,
     start_realtime_stream_tool as gui_start_realtime_stream_tool,
@@ -1206,6 +1212,12 @@ class StreamingChatTask(QRunnable):
                 "get_realtime_status": self._tool_gui_get_realtime_status,
                 "list_realtime_models": self._tool_gui_list_realtime_models,
                 "list_realtime_logs": self._tool_gui_list_realtime_logs,
+                "list_logs": self._tool_gui_list_logs,
+                "open_log_folder": self._tool_gui_open_log_folder,
+                "remove_log_folder": self._tool_gui_remove_log_folder,
+                "list_log_files": self._tool_gui_list_log_files,
+                "read_log_file": self._tool_gui_read_log_file,
+                "search_logs": self._tool_gui_search_logs,
                 "check_stream_source": self._tool_gui_check_stream_source,
                 "arxiv_search": self._tool_gui_arxiv_search,
                 "list_pdfs": self._tool_gui_list_pdfs,
@@ -1776,6 +1788,12 @@ class StreamingChatTask(QRunnable):
             "get_realtime_status": self._tool_gui_get_realtime_status,
             "list_realtime_models": self._tool_gui_list_realtime_models,
             "list_realtime_logs": self._tool_gui_list_realtime_logs,
+            "list_logs": self._tool_gui_list_logs,
+            "open_log_folder": self._tool_gui_open_log_folder,
+            "remove_log_folder": self._tool_gui_remove_log_folder,
+            "list_log_files": self._tool_gui_list_log_files,
+            "read_log_file": self._tool_gui_read_log_file,
+            "search_logs": self._tool_gui_search_logs,
             "check_stream_source": self._tool_gui_check_stream_source,
             "list_pdfs": self._tool_gui_list_pdfs,
             "clawhub_search_skills": self._tool_clawhub_search_skills,
@@ -2284,6 +2302,115 @@ class StreamingChatTask(QRunnable):
     def _tool_gui_list_realtime_logs(self) -> Dict[str, Any]:
         return gui_list_realtime_logs_tool(
             invoke_widget_json_slot=self._invoke_widget_json_slot
+        )
+
+    def _tool_gui_list_logs(self) -> Dict[str, Any]:
+        return gui_list_logs_tool(invoke_widget_json_slot=self._invoke_widget_json_slot)
+
+    def _tool_gui_open_log_folder(self, target: str) -> Dict[str, Any]:
+        return gui_open_log_folder_tool(
+            target=target,
+            invoke_widget_json_slot=lambda slot_name,
+            raw_target: self._invoke_widget_json_slot(
+                slot_name, QtCore.Q_ARG(str, str(raw_target))
+            ),
+        )
+
+    def _tool_gui_remove_log_folder(self, target: str) -> Dict[str, Any]:
+        return gui_remove_log_folder_tool(
+            target=target,
+            invoke_widget_json_slot=lambda slot_name,
+            raw_target: self._invoke_widget_json_slot(
+                slot_name, QtCore.Q_ARG(str, str(raw_target))
+            ),
+        )
+
+    def _tool_gui_list_log_files(
+        self,
+        target: str,
+        pattern: str = "*",
+        limit: int = 200,
+        recursive: bool = True,
+        sort_by: str = "name",
+        descending: bool = False,
+    ) -> Dict[str, Any]:
+        return gui_list_log_files_tool(
+            target=target,
+            pattern=pattern,
+            limit=limit,
+            recursive=recursive,
+            sort_by=sort_by,
+            descending=descending,
+            invoke_widget_json_slot=lambda slot_name,
+            raw_target,
+            raw_pattern,
+            raw_limit,
+            raw_recursive,
+            raw_sort_by,
+            raw_descending: self._invoke_widget_json_slot(
+                slot_name,
+                QtCore.Q_ARG(str, str(raw_target)),
+                QtCore.Q_ARG(str, str(raw_pattern)),
+                QtCore.Q_ARG(int, int(raw_limit)),
+                QtCore.Q_ARG(bool, bool(raw_recursive)),
+                QtCore.Q_ARG(str, str(raw_sort_by)),
+                QtCore.Q_ARG(bool, bool(raw_descending)),
+            ),
+        )
+
+    def _tool_gui_read_log_file(
+        self, path: str, max_chars: int = 12000, tail_lines: int = 200
+    ) -> Dict[str, Any]:
+        return gui_read_log_file_tool(
+            path=path,
+            max_chars=max_chars,
+            tail_lines=tail_lines,
+            invoke_widget_json_slot=lambda slot_name,
+            raw_path,
+            raw_max_chars,
+            raw_tail_lines: self._invoke_widget_json_slot(
+                slot_name,
+                QtCore.Q_ARG(str, str(raw_path)),
+                QtCore.Q_ARG(int, int(raw_max_chars)),
+                QtCore.Q_ARG(int, int(raw_tail_lines)),
+            ),
+        )
+
+    def _tool_gui_search_logs(
+        self,
+        query: str,
+        target: str = "logs",
+        pattern: str = "*",
+        case_sensitive: bool = False,
+        use_regex: bool = False,
+        max_matches: int = 100,
+        max_files: int = 50,
+    ) -> Dict[str, Any]:
+        return gui_search_logs_tool(
+            query=query,
+            target=target,
+            pattern=pattern,
+            case_sensitive=case_sensitive,
+            use_regex=use_regex,
+            max_matches=max_matches,
+            max_files=max_files,
+            invoke_widget_json_slot=lambda slot_name,
+            raw_query,
+            raw_target,
+            raw_pattern,
+            raw_case_sensitive,
+            raw_use_regex,
+            raw_max_matches,
+            raw_max_files: self._invoke_widget_json_slot(
+                slot_name,
+                QtCore.Q_ARG(str, str(raw_query)),
+                QtCore.Q_ARG(str, str(raw_target)),
+                QtCore.Q_ARG(str, str(raw_pattern)),
+                QtCore.Q_ARG(bool, bool(raw_case_sensitive)),
+                QtCore.Q_ARG(bool, bool(raw_use_regex)),
+                QtCore.Q_ARG(int, int(raw_max_matches)),
+                QtCore.Q_ARG(int, int(raw_max_files)),
+            ),
         )
 
     async def _tool_gui_check_stream_source(

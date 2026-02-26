@@ -14,15 +14,21 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 import yaml
 from annolid.utils.annotation_store import load_labelme_json
 from annolid.utils.logger import logger
+from annolid.utils.log_paths import (
+    APP_LABEL_INDEX_SUBDIR,
+    APP_LOGS_DIRNAME,
+    ANNOLID_LOGS_DIRNAME,
+    resolve_annolid_logs_root,
+)
 
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
-DEFAULT_LABEL_INDEX_DIRNAME = "annolid_logs"
+DEFAULT_LABEL_INDEX_DIRNAME = f"{APP_LOGS_DIRNAME}/{APP_LABEL_INDEX_SUBDIR}"
 DEFAULT_LABEL_INDEX_NAME = "annolid_dataset.jsonl"
 _SPLIT_NAME_PATTERN = re.compile(
     r"^(train(?:ing)?|val|valid(?:ation)?|test)(?:[_-].+)?$",
@@ -30,9 +36,42 @@ _SPLIT_NAME_PATTERN = re.compile(
 )
 
 
-def default_label_index_path(dataset_root: Path) -> Path:
-    dataset_root = Path(dataset_root).expanduser().resolve()
-    return dataset_root / DEFAULT_LABEL_INDEX_DIRNAME / DEFAULT_LABEL_INDEX_NAME
+def default_annolid_logs_root(dataset_root: Optional[Path] = None) -> Path:
+    """Resolve the annolid_logs root with bot-workspace fallback."""
+    return resolve_annolid_logs_root(dataset_root)
+
+
+def default_label_index_path(dataset_root: Optional[Path] = None) -> Path:
+    logs_root = default_annolid_logs_root(dataset_root)
+    return logs_root / APP_LABEL_INDEX_SUBDIR / DEFAULT_LABEL_INDEX_NAME
+
+
+def resolve_label_index_path(
+    index_file: Path, dataset_root: Optional[Path] = None
+) -> Path:
+    """Resolve index file path, anchoring relative paths to dataset_root/logs.
+
+    When dataset_root is missing, relative paths are anchored to the bot workspace
+    logs directory.
+    """
+    candidate = Path(index_file).expanduser()
+    if candidate.is_absolute():
+        return candidate.resolve()
+    logs_root = default_annolid_logs_root(dataset_root)
+    parts = [p for p in candidate.parts if p not in (".", "")]
+    if not parts:
+        return (logs_root / DEFAULT_LABEL_INDEX_NAME).resolve()
+    if parts[0] in {ANNOLID_LOGS_DIRNAME, APP_LOGS_DIRNAME}:
+        parts = parts[1:]
+    if not parts:
+        return (logs_root / APP_LABEL_INDEX_SUBDIR / DEFAULT_LABEL_INDEX_NAME).resolve()
+    resolved = logs_root.joinpath(*parts)
+    if resolved.suffix:
+        # Plain filename should default under logs/label_index
+        if len(parts) == 1:
+            return (logs_root / APP_LABEL_INDEX_SUBDIR / parts[0]).resolve()
+        return resolved.resolve()
+    return (resolved / DEFAULT_LABEL_INDEX_NAME).resolve()
 
 
 def normalize_labelme_sources(
@@ -74,18 +113,33 @@ def _find_sidecar_image(json_path: Path) -> Optional[Path]:
     return None
 
 
-def resolve_image_path(json_path: Path) -> Optional[Path]:
+def _load_labelme_payload(json_path: Path) -> Optional[Dict[str, object]]:
+    try:
+        payload = load_labelme_json(json_path)
+    except Exception:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def resolve_image_path(
+    json_path: Path,
+    *,
+    payload: Optional[Dict[str, object]] = None,
+) -> Optional[Path]:
     """Resolve the image corresponding to a LabelMe JSON file."""
     sidecar = _find_sidecar_image(json_path)
     if sidecar is not None:
         return sidecar
 
-    try:
-        payload = load_labelme_json(json_path)
-    except Exception:
+    resolved_payload = (
+        payload if isinstance(payload, dict) else _load_labelme_payload(json_path)
+    )
+    if not isinstance(resolved_payload, dict):
         return None
 
-    image_path = payload.get("imagePath")
+    image_path = resolved_payload.get("imagePath")
     if not image_path:
         return None
 
@@ -104,13 +158,18 @@ def resolve_image_path(json_path: Path) -> Optional[Path]:
     return None
 
 
-def is_labeled_labelme_json(json_path: Path) -> bool:
+def is_labeled_labelme_json(
+    json_path: Path,
+    *,
+    payload: Optional[Dict[str, object]] = None,
+) -> bool:
     """Return True when the JSON contains at least one shape."""
-    try:
-        payload = load_labelme_json(json_path)
-    except Exception:
+    resolved_payload = (
+        payload if isinstance(payload, dict) else _load_labelme_payload(json_path)
+    )
+    if not isinstance(resolved_payload, dict):
         return False
-    shapes = payload.get("shapes", [])
+    shapes = resolved_payload.get("shapes", [])
     return bool(isinstance(shapes, list) and len(shapes) > 0)
 
 
@@ -119,6 +178,7 @@ def build_label_index_record(
     image_path: Path,
     json_path: Optional[Path],
     source: str,
+    payload: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
     record: Dict[str, object] = {
         "record_version": 1,
@@ -129,12 +189,13 @@ def build_label_index_record(
     }
 
     if json_path and Path(json_path).exists():
-        try:
-            payload = load_labelme_json(json_path)
-        except Exception:
-            payload = None
-        if isinstance(payload, dict):
-            shapes = payload.get("shapes", [])
+        payload_data = (
+            payload
+            if isinstance(payload, dict)
+            else _load_labelme_payload(Path(json_path))
+        )
+        if isinstance(payload_data, dict):
+            shapes = payload_data.get("shapes", [])
             if isinstance(shapes, list):
                 record["shapes_count"] = len(shapes)
                 record["labels"] = sorted(
@@ -145,8 +206,8 @@ def build_label_index_record(
                     }
                 )
             for key in ("imageHeight", "imageWidth", "imagePath"):
-                if key in payload:
-                    record[key] = payload.get(key)
+                if key in payload_data:
+                    record[key] = payload_data.get(key)
 
         try:
             stat = Path(json_path).stat()
@@ -225,10 +286,16 @@ def index_labelme_pair(
     if not json_path.exists():
         return None
 
-    if not include_empty and not is_labeled_labelme_json(json_path):
+    payload = _load_labelme_payload(json_path)
+
+    if not include_empty and not is_labeled_labelme_json(json_path, payload=payload):
         return None
 
-    resolved_image = Path(image_path) if image_path else resolve_image_path(json_path)
+    resolved_image = (
+        Path(image_path)
+        if image_path
+        else resolve_image_path(json_path, payload=payload)
+    )
     if resolved_image is None or not resolved_image.exists():
         return None
 
@@ -236,6 +303,7 @@ def index_labelme_pair(
         image_path=resolved_image,
         json_path=json_path,
         source=source,
+        payload=payload,
     )
     append_label_index_record(index_file, record)
     return record
@@ -822,43 +890,141 @@ def index_labelme_dataset(
     include_empty: bool = False,
     dedupe: bool = True,
     source: str = "annolid_cli",
-) -> Dict[str, int]:
-    """Scan sources and append labeled image/json absolute paths to an index file."""
+    progress_callback: Optional[Callable[[Dict[str, object]], None]] = None,
+    stop_event=None,
+    event_sample_limit: int = 25,
+) -> Dict[str, object]:
+    """Scan sources and append labeled image/json absolute paths to an index file.
+
+    Returns:
+        Backward-compatible counters plus bot-friendly structured fields:
+        - total_json, processed, stopped
+        - skip_reasons: per-reason counts
+        - events_sample: bounded list of processed/skipped examples
+    """
     appended = 0
     skipped = 0
     missing_image = 0
+    processed = 0
+    stopped = False
+    limit = max(0, int(event_sample_limit))
+    skip_reasons: Dict[str, int] = {
+        "duplicate_image": 0,
+        "empty_labels": 0,
+        "missing_image": 0,
+        "invalid_json": 0,
+    }
+    events_sample: List[Dict[str, object]] = []
 
     indexed_images: Set[str] = set()
     if dedupe:
         indexed_images = load_indexed_image_paths(index_file)
 
-    for src in sources:
-        for json_path in iter_labelme_json_files(Path(src), recursive=recursive):
-            image_path = resolve_image_path(json_path)
-            if image_path is None:
-                missing_image += 1
-                continue
+    def _safe_abs(path: Path) -> str:
+        candidate = Path(path).expanduser()
+        try:
+            return str(candidate.resolve())
+        except OSError:
+            return str(candidate)
+
+    source_paths = [Path(src) for src in sources]
+    all_json_files: List[Path] = []
+    for src in source_paths:
+        all_json_files.extend(
+            list(iter_labelme_json_files(Path(src), recursive=recursive))
+        )
+    all_json_files = sorted(
+        all_json_files, key=lambda p: str(Path(p).expanduser()).lower()
+    )
+    total_json = len(all_json_files)
+
+    for json_path in all_json_files:
+        if stop_event is not None and stop_event.is_set():
+            stopped = True
+            break
+        processed += 1
+        payload: Optional[Dict[str, object]] = None
+        sidecar_image = _find_sidecar_image(json_path)
+        if (not include_empty) or sidecar_image is None:
+            payload = _load_labelme_payload(json_path)
+        image_path = (
+            sidecar_image
+            if sidecar_image is not None
+            else resolve_image_path(json_path, payload=payload)
+        )
+        event: Dict[str, object] = {
+            "json_path": _safe_abs(Path(json_path)),
+            "status": "skipped",
+        }
+        if image_path is not None:
+            event["image_path"] = _safe_abs(Path(image_path))
+        else:
+            event["image_path"] = None
+
+        reason = ""
+        if image_path is None:
+            reason = "missing_image"
+            missing_image += 1
+            skipped += 1
+            skip_reasons[reason] += 1
+        else:
             image_abs = str(Path(image_path).expanduser().resolve())
             if dedupe and image_abs in indexed_images:
+                reason = "duplicate_image"
                 skipped += 1
-                continue
-
-            record = index_labelme_pair(
-                json_path=Path(json_path),
-                index_file=Path(index_file),
-                image_path=Path(image_path),
-                include_empty=include_empty,
-                source=source,
-            )
-            if record is None:
+                skip_reasons[reason] += 1
+            elif (not include_empty) and payload is None:
+                reason = "invalid_json"
                 skipped += 1
-                continue
+                skip_reasons[reason] += 1
+            elif (not include_empty) and (
+                not is_labeled_labelme_json(json_path, payload=payload)
+            ):
+                reason = "empty_labels"
+                skipped += 1
+                skip_reasons[reason] += 1
+            else:
+                record = build_label_index_record(
+                    image_path=Path(image_path),
+                    json_path=Path(json_path),
+                    source=source,
+                    payload=payload,
+                )
+                append_label_index_record(Path(index_file), record)
+                appended += 1
+                event["status"] = "appended"
+                if dedupe:
+                    indexed_images.add(image_abs)
 
-            appended += 1
-            if dedupe:
-                indexed_images.add(image_abs)
+        if reason:
+            event["reason"] = reason
 
-    return {"appended": appended, "skipped": skipped, "missing_image": missing_image}
+        if len(events_sample) < limit:
+            events_sample.append(event)
+
+        if progress_callback is not None and total_json > 0:
+            progress_payload = {
+                "total_json": total_json,
+                "processed": processed,
+                "appended": appended,
+                "skipped": skipped,
+                "missing_image": missing_image,
+                "skip_reasons": dict(skip_reasons),
+                "percent": int(round((processed / total_json) * 100)),
+            }
+            progress_callback(progress_payload)
+
+    summary: Dict[str, object] = {
+        "appended": appended,
+        "skipped": skipped,
+        "missing_image": missing_image,
+        "total_json": total_json,
+        "processed": processed,
+        "stopped": stopped,
+        "skip_reasons": skip_reasons,
+        "events_sample": events_sample,
+    }
+    return summary
 
 
 def _build_argparser() -> argparse.ArgumentParser:
@@ -907,10 +1073,10 @@ def _build_argparser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _build_argparser().parse_args(list(argv) if argv is not None else None)
-    dataset_root = Path(args.dataset_root)
-    index_file = Path(args.index_file)
-    if not index_file.is_absolute():
-        index_file = dataset_root / index_file
+    dataset_root = Path(args.dataset_root).expanduser().resolve()
+    index_file = resolve_label_index_path(
+        Path(args.index_file), dataset_root=dataset_root
+    )
 
     summary = index_labelme_dataset(
         [Path(p) for p in args.source],

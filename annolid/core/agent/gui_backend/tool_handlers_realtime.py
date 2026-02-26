@@ -279,6 +279,103 @@ def list_realtime_logs_tool(
     return payload
 
 
+def list_logs_tool(
+    *,
+    invoke_widget_json_slot: Callable[..., Dict[str, Any]],
+) -> Dict[str, Any]:
+    payload = invoke_widget_json_slot("bot_list_logs")
+    if "ok" not in payload:
+        payload["ok"] = True
+    return payload
+
+
+def open_log_folder_tool(
+    *,
+    target: str,
+    invoke_widget_json_slot: Callable[..., Dict[str, Any]],
+) -> Dict[str, Any]:
+    payload = invoke_widget_json_slot("bot_open_log_folder", target)
+    if "ok" not in payload:
+        payload["ok"] = True
+    return payload
+
+
+def remove_log_folder_tool(
+    *,
+    target: str,
+    invoke_widget_json_slot: Callable[..., Dict[str, Any]],
+) -> Dict[str, Any]:
+    payload = invoke_widget_json_slot("bot_remove_log_folder", target)
+    if "ok" not in payload:
+        payload["ok"] = True
+    return payload
+
+
+def list_log_files_tool(
+    *,
+    target: str = "logs",
+    pattern: str = "*",
+    limit: int = 200,
+    recursive: bool = True,
+    sort_by: str = "name",
+    descending: bool = False,
+    invoke_widget_json_slot: Callable[..., Dict[str, Any]],
+) -> Dict[str, Any]:
+    payload = invoke_widget_json_slot(
+        "bot_list_log_files",
+        str(target),
+        str(pattern),
+        int(limit),
+        bool(recursive),
+        str(sort_by),
+        bool(descending),
+    )
+    if "ok" not in payload:
+        payload["ok"] = True
+    return payload
+
+
+def read_log_file_tool(
+    *,
+    path: str,
+    max_chars: int = 12000,
+    tail_lines: int = 200,
+    invoke_widget_json_slot: Callable[..., Dict[str, Any]],
+) -> Dict[str, Any]:
+    payload = invoke_widget_json_slot(
+        "bot_read_log_file", str(path), int(max_chars), int(tail_lines)
+    )
+    if "ok" not in payload:
+        payload["ok"] = True
+    return payload
+
+
+def search_logs_tool(
+    *,
+    query: str,
+    target: str = "logs",
+    pattern: str = "*",
+    case_sensitive: bool = False,
+    use_regex: bool = False,
+    max_matches: int = 100,
+    max_files: int = 50,
+    invoke_widget_json_slot: Callable[..., Dict[str, Any]],
+) -> Dict[str, Any]:
+    payload = invoke_widget_json_slot(
+        "bot_search_logs",
+        str(query),
+        str(target),
+        str(pattern),
+        bool(case_sensitive),
+        bool(use_regex),
+        int(max_matches),
+        int(max_files),
+    )
+    if "ok" not in payload:
+        payload["ok"] = True
+    return payload
+
+
 def check_stream_source_tool(
     *,
     camera_source: str,

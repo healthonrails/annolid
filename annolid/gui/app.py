@@ -520,6 +520,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self._setup_canvas_screenshot_action()
         self._setup_open_pdf_action()
         self._setup_label_collection_action()
+        self._setup_log_manager_action()
 
         self.populateModeActions()
         QtCore.QTimer.singleShot(0, self._startup_annolid_bot)
@@ -596,7 +597,10 @@ def main(argv=None, *, config=None):
         print(__version__)
         return 0
 
-    configure_logging()
+    try:
+        configure_logging(enable_file_logging=True)
+    except TypeError:
+        configure_logging()
 
     # OpenCV may reset Qt plugin env vars during import; sanitize again right
     # before QApplication is constructed so Qt does not resolve cv2 plugins.

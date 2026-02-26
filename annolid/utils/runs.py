@@ -6,8 +6,10 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from annolid.utils.log_paths import APP_RUNS_SUBDIR, resolve_annolid_logs_root
 
-DEFAULT_RUNS_DIRNAME = "annolid_logs/runs"
+
+DEFAULT_RUNS_DIRNAME = f"logs/{APP_RUNS_SUBDIR}"
 _ALLOCATE_MAX_TRIES = 10
 
 
@@ -24,19 +26,25 @@ def shared_runs_root(*, base_dir: Optional[Path] = None) -> Path:
     Precedence:
       1) ANNOLID_RUNS_ROOT
       2) ANNOLID_LOG_ROOT / ANNOLID_LOG_DIR
-      3) base_dir/annolid_logs/runs (when base_dir is provided)
-      4) ~/annolid_logs/runs
+      3) base_dir/logs/runs (when base_dir is provided)
+      4) <annolid-data>/logs/runs
     """
-    for key in ("ANNOLID_RUNS_ROOT", "ANNOLID_LOG_ROOT", "ANNOLID_LOG_DIR"):
-        raw = os.environ.get(key)
-        if raw:
-            return Path(raw).expanduser().resolve()
+    runs_root = os.environ.get("ANNOLID_RUNS_ROOT", "").strip()
+    if runs_root:
+        return Path(runs_root).expanduser().resolve()
+
+    log_root = os.environ.get("ANNOLID_LOG_ROOT", "").strip()
+    log_dir = os.environ.get("ANNOLID_LOG_DIR", "").strip()
+    if log_root:
+        root = Path(log_root).expanduser()
+        return (root / (log_dir or "runs")).resolve()
+    if log_dir:
+        return Path(log_dir).expanduser().resolve()
 
     if base_dir is not None:
-        base_dir = Path(base_dir).expanduser().resolve()
-        return (base_dir / "annolid_logs" / "runs").resolve()
+        return (resolve_annolid_logs_root(Path(base_dir)) / APP_RUNS_SUBDIR).resolve()
 
-    return (Path.home() / "annolid_logs" / "runs").resolve()
+    return (resolve_annolid_logs_root() / APP_RUNS_SUBDIR).resolve()
 
 
 def new_run_dir(

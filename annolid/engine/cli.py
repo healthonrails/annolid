@@ -183,15 +183,17 @@ def _cmd_collect_labels(args: argparse.Namespace) -> int:
         generate_labelme_spec_and_splits,
         index_labelme_dataset,
         normalize_labelme_sources,
+        resolve_label_index_path,
     )
 
     dataset_root = Path(args.dataset_root).expanduser().resolve()
     index_file_default = str(
         Path(DEFAULT_LABEL_INDEX_DIRNAME) / DEFAULT_LABEL_INDEX_NAME
     )
-    index_file = Path(getattr(args, "index_file", index_file_default))
-    if not index_file.is_absolute():
-        index_file = dataset_root / index_file
+    index_file = resolve_label_index_path(
+        Path(getattr(args, "index_file", index_file_default)),
+        dataset_root=dataset_root,
+    )
 
     sources, missing_sources = normalize_labelme_sources([Path(p) for p in args.source])
     if missing_sources:
@@ -1596,8 +1598,8 @@ def _build_root_parser() -> argparse.ArgumentParser:
     )
     collect_p.add_argument(
         "--index-file",
-        default="annolid_logs/annolid_dataset.jsonl",
-        help="Index file path relative to --dataset-root (default: annolid_logs/annolid_dataset.jsonl).",
+        default="logs/label_index/annolid_dataset.jsonl",
+        help="Index file path relative to --dataset-root (default: logs/label_index/annolid_dataset.jsonl).",
     )
     collect_p.add_argument(
         "--allow-duplicates",
@@ -1626,7 +1628,7 @@ def _build_root_parser() -> argparse.ArgumentParser:
     collect_p.add_argument("--group-regex", default=None)
     collect_p.add_argument(
         "--split-dir",
-        default="annolid_logs",
+        default="logs/label_index",
         help="Directory (relative to dataset root) to store split JSONL files.",
     )
     collect_p.add_argument(
@@ -1747,8 +1749,8 @@ def _build_root_parser() -> argparse.ArgumentParser:
     )
     imp_p.add_argument(
         "--index-file",
-        default="annolid_logs/annolid_dataset.jsonl",
-        help="Index file path relative to --source-dir (default: annolid_logs/annolid_dataset.jsonl).",
+        default="logs/label_index/annolid_dataset.jsonl",
+        help="Index file path relative to --source-dir (default: logs/label_index/annolid_dataset.jsonl).",
     )
     imp_p.add_argument(
         "--no-index",
@@ -2135,7 +2137,10 @@ def _dispatch_model_subcommand(
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    configure_logging()
+    try:
+        configure_logging(enable_file_logging=True)
+    except TypeError:
+        configure_logging()
     argv = list(sys.argv[1:] if argv is None else argv)
     operator_rc = _dispatch_operator_commands(argv)
     if operator_rc is not None:

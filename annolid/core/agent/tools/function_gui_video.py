@@ -359,6 +359,187 @@ class GuiListRealtimeLogsTool(FunctionTool):
         return await _run_callback(self._list_realtime_logs_callback)
 
 
+class GuiListLogsTool(FunctionTool):
+    def __init__(self, list_logs_callback: Optional[ActionCallback] = None):
+        self._list_logs_callback = list_logs_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_list_logs"
+
+    @property
+    def description(self) -> str:
+        return (
+            "List Annolid log folders (logs/app/realtime/runs/label_index) and paths."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs: Any) -> str:
+        del kwargs
+        return await _run_callback(self._list_logs_callback)
+
+
+class GuiOpenLogFolderTool(FunctionTool):
+    def __init__(self, open_log_folder_callback: Optional[ActionCallback] = None):
+        self._open_log_folder_callback = open_log_folder_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_open_log_folder"
+
+    @property
+    def description(self) -> str:
+        return "Open a log folder in the system file browser."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "enum": ["logs", "realtime", "runs", "label_index", "app"],
+                }
+            },
+            "required": ["target"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._open_log_folder_callback, **kwargs)
+
+
+class GuiRemoveLogFolderTool(FunctionTool):
+    def __init__(self, remove_log_folder_callback: Optional[ActionCallback] = None):
+        self._remove_log_folder_callback = remove_log_folder_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_remove_log_folder"
+
+    @property
+    def description(self) -> str:
+        return "Delete a log folder recursively."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "enum": ["logs", "realtime", "runs", "label_index", "app"],
+                }
+            },
+            "required": ["target"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._remove_log_folder_callback, **kwargs)
+
+
+class GuiListLogFilesTool(FunctionTool):
+    def __init__(self, list_log_files_callback: Optional[ActionCallback] = None):
+        self._list_log_files_callback = list_log_files_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_list_log_files"
+
+    @property
+    def description(self) -> str:
+        return "List files within an Annolid log target with sorting controls."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "enum": ["logs", "realtime", "runs", "label_index", "app"],
+                },
+                "pattern": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+                "recursive": {"type": "boolean"},
+                "sort_by": {"type": "string", "enum": ["name", "mtime", "size"]},
+                "descending": {"type": "boolean"},
+            },
+            "required": ["target"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._list_log_files_callback, **kwargs)
+
+
+class GuiReadLogFileTool(FunctionTool):
+    def __init__(self, read_log_file_callback: Optional[ActionCallback] = None):
+        self._read_log_file_callback = read_log_file_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_read_log_file"
+
+    @property
+    def description(self) -> str:
+        return "Read log file content (tail-friendly) from allowed Annolid log roots."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "minLength": 1},
+                "max_chars": {"type": "integer", "minimum": 200, "maximum": 200000},
+                "tail_lines": {"type": "integer", "minimum": 1, "maximum": 100000},
+            },
+            "required": ["path"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._read_log_file_callback, **kwargs)
+
+
+class GuiSearchLogsTool(FunctionTool):
+    def __init__(self, search_logs_callback: Optional[ActionCallback] = None):
+        self._search_logs_callback = search_logs_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_search_logs"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Search text across Annolid log files and return matched lines with "
+            "optional regex and case-sensitivity."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "minLength": 1},
+                "target": {
+                    "type": "string",
+                    "enum": ["logs", "realtime", "runs", "label_index", "app"],
+                },
+                "pattern": {"type": "string"},
+                "case_sensitive": {"type": "boolean"},
+                "use_regex": {"type": "boolean"},
+                "max_matches": {"type": "integer", "minimum": 1, "maximum": 2000},
+                "max_files": {"type": "integer", "minimum": 1, "maximum": 1000},
+            },
+            "required": ["query"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._search_logs_callback, **kwargs)
+
+
 class GuiCheckStreamSourceTool(FunctionTool):
     def __init__(self, check_stream_source_callback: Optional[ActionCallback] = None):
         self._check_stream_source_callback = check_stream_source_callback

@@ -416,6 +416,7 @@ class Labelme2YOLO:
             "YOLO_dataset",
             "YOLO_pose_vis",
             "annolid_logs",
+            "logs",
         }
 
         def should_ignore(path: Path) -> bool:
@@ -483,16 +484,16 @@ class Labelme2YOLO:
 
         root = Path(json_dir).expanduser()
         candidates = sorted(root.rglob("*.json"))
-        # Avoid scanning YOLO outputs (which can contain JSON metadata) and annolid logs
-        # within the provided root directory (but allow roots that live inside those dirs,
-        # e.g. staging folders under annolid_logs).
+        # Avoid scanning YOLO outputs (which can contain JSON metadata) and app log
+        # folders within the provided root directory (but allow roots that live inside
+        # those dirs, e.g. staging folders under logs/ or annolid_logs/).
 
         def should_ignore(path: Path) -> bool:
             try:
                 parts = set(path.relative_to(root).parts)
             except Exception:
                 parts = set(path.parts)
-            if "annolid_logs" in parts:
+            if "annolid_logs" in parts or "logs" in parts:
                 return True
             for name in ("YOLO_dataset", "YOLO_pose_vis"):
                 if name in parts:

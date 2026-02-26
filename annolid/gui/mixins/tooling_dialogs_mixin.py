@@ -12,7 +12,11 @@ from annolid.core.behavior.spec import (
     default_behavior_spec,
     save_behavior_spec,
 )
-from annolid.gui.widgets import LabelCollectionDialog, SystemInfoDialog
+from annolid.gui.widgets import (
+    LabelCollectionDialog,
+    LogManagerDialog,
+    SystemInfoDialog,
+)
 from annolid.gui.widgets.convert_deeplabcut_dialog import ConvertDLCDialog
 from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
 from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
@@ -77,8 +81,26 @@ class ToolingDialogsMixin:
         if file_menu is not None:
             file_menu.addAction(self.collect_labels_action)
 
+    def _setup_log_manager_action(self) -> None:
+        action = functools.partial(newAction, self)
+        self.manage_logs_action = action(
+            self.tr("Manage &Logs..."),
+            self._open_log_manager_dialog,
+            None,
+            "open",
+            self.tr("Open Annolid logs manager."),
+            enabled=True,
+        )
+        file_menu = getattr(self.menus, "file", None)
+        if file_menu is not None:
+            file_menu.addAction(self.manage_logs_action)
+
     def _open_label_collection_dialog(self) -> None:
         dlg = LabelCollectionDialog(settings=self.settings, parent=self)
+        dlg.exec_()
+
+    def _open_log_manager_dialog(self) -> None:
+        dlg = LogManagerDialog(parent=self)
         dlg.exec_()
 
     def _set_active_view(self, mode: str = "canvas") -> None:

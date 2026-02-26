@@ -61,6 +61,12 @@ async def execute_direct_gui_command(
     get_realtime_status: Callable[[], Any],
     list_realtime_models: Callable[[], Any],
     list_realtime_logs: Callable[[], Any],
+    list_logs: Callable[[], Any],
+    open_log_folder: Callable[[str], Any],
+    remove_log_folder: Callable[[str], Any],
+    list_log_files: Callable[..., Any],
+    read_log_file: Callable[..., Any],
+    search_logs: Callable[..., Any],
     check_stream_source: Callable[..., Any],
     list_pdfs: Callable[..., Any],
     clawhub_search_skills: Callable[..., Any],
@@ -292,6 +298,106 @@ async def execute_direct_gui_command(
                 lines.append(f"- bot-events: {bot_events}")
             return "\n".join(lines)
         return str(payload.get("error") or "Failed to list realtime logs.")
+
+    if name == "list_logs":
+        payload = await _run(list_logs)
+        if payload.get("ok"):
+            rows = payload.get("logs", [])
+            if not isinstance(rows, list) or not rows:
+                return "No Annolid log targets found."
+            lines = ["Annolid log targets:"]
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                target = str(item.get("target") or "").strip()
+                path = str(item.get("path") or "").strip()
+                exists = bool(item.get("exists", False))
+                suffix = "" if exists else " (missing)"
+                if target and path:
+                    lines.append(f"- {target}: {path}{suffix}")
+            return "\n".join(lines)
+        return str(payload.get("error") or "Failed to list Annolid logs.")
+
+    if name == "open_log_folder":
+        payload = await _run(open_log_folder, str(args.get("target") or ""))
+        if payload.get("ok"):
+            target = str(payload.get("target") or "").strip()
+            path = str(payload.get("path") or "").strip()
+            if target and path:
+                return f"Opened log folder '{target}': {path}"
+            if path:
+                return f"Opened log folder: {path}"
+            return "Opened log folder."
+        return str(payload.get("error") or "Failed to open log folder.")
+
+    if name == "remove_log_folder":
+        payload = await _run(remove_log_folder, str(args.get("target") or ""))
+        if payload.get("ok"):
+            target = str(payload.get("target") or "").strip()
+            removed = bool(payload.get("removed"))
+            if target:
+                return (
+                    f"Removed log folder '{target}'."
+                    if removed
+                    else f"Log folder '{target}' was already absent."
+                )
+            return (
+                "Removed log folder." if removed else "Log folder was already absent."
+            )
+        return str(payload.get("error") or "Failed to remove log folder.")
+
+    if name == "list_log_files":
+        payload = await _run(
+            list_log_files,
+            target=str(args.get("target") or "logs"),
+            pattern=str(args.get("pattern") or "*"),
+            limit=int(args.get("limit") or 200),
+            recursive=bool(args.get("recursive", True)),
+            sort_by=str(args.get("sort_by") or "name"),
+            descending=bool(args.get("descending", False)),
+        )
+        if payload.get("ok"):
+            files = payload.get("files", [])
+            count = int(payload.get("count") or len(files or []))
+            target = str(payload.get("target") or "").strip()
+            return f"Found {count} log file(s)" + (
+                f" in '{target}'." if target else "."
+            )
+        return str(payload.get("error") or "Failed to list log files.")
+
+    if name == "read_log_file":
+        payload = await _run(
+            read_log_file,
+            path=str(args.get("path") or ""),
+            max_chars=int(args.get("max_chars") or 12000),
+            tail_lines=int(args.get("tail_lines") or 200),
+        )
+        if payload.get("ok"):
+            content = str(payload.get("content") or "").strip()
+            if content:
+                return content
+            path = str(payload.get("path") or "").strip()
+            return f"Log file is empty: {path}" if path else "Log file is empty."
+        return str(payload.get("error") or "Failed to read log file.")
+
+    if name == "search_logs":
+        payload = await _run(
+            search_logs,
+            query=str(args.get("query") or ""),
+            target=str(args.get("target") or "logs"),
+            pattern=str(args.get("pattern") or "*"),
+            case_sensitive=bool(args.get("case_sensitive", False)),
+            use_regex=bool(args.get("use_regex", False)),
+            max_matches=int(args.get("max_matches") or 100),
+            max_files=int(args.get("max_files") or 50),
+        )
+        if payload.get("ok"):
+            match_count = int(payload.get("match_count") or 0)
+            target = str(payload.get("target") or "").strip()
+            return f"Found {match_count} matching line(s)" + (
+                f" in '{target}' logs." if target else "."
+            )
+        return str(payload.get("error") or "Failed to search logs.")
 
     if name == "check_stream_source":
         payload = await _run(

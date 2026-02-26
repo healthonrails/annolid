@@ -3525,12 +3525,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument(
         "--output",
         default=None,
-        help="Run output directory (if omitted, creates a new run under ANNOLID_RUNS_ROOT/~/annolid_logs/runs).",
+        help="Run output directory (if omitted, creates a new run under ANNOLID_RUNS_ROOT/<annolid-data>/logs/runs).",
     )
     p.add_argument(
         "--runs-root",
         default=None,
-        help="Runs root (overrides ANNOLID_RUNS_ROOT/~/annolid_logs/runs)",
+        help="Runs root (overrides ANNOLID_RUNS_ROOT/<annolid-data>/logs/runs)",
     )
     p.add_argument(
         "--run-name", default=None, help="Optional run name (default: timestamp)"

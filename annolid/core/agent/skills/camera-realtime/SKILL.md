@@ -14,6 +14,9 @@ Use these tools for camera/video stream setup and realtime inference automation 
 - `gui_start_realtime_stream`: Start realtime stream with source/model/transport and optional bot-report settings.
 - `gui_get_realtime_status`: Verify stream is running and inspect active source/model/viewer.
 - `gui_list_realtime_logs`: Retrieve detection and bot-event log file paths.
+- `gui_list_logs`: Inspect top-level Annolid log targets (logs/realtime/runs/label_index/app).
+- `gui_open_log_folder`: Open a log target in file browser.
+- `gui_remove_log_folder`: Remove a log target recursively (explicit user request only).
 - `gui_stop_realtime_stream`: Stop stream cleanly when done.
 - `camera_snapshot`: Non-GUI camera probe + snapshot saver for chat/email channels.
 

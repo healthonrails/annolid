@@ -1505,6 +1505,47 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         get_realtime_status_callback=lambda: _mark("get_realtime_status"),
         list_realtime_models_callback=lambda: _mark("list_realtime_models"),
         list_realtime_logs_callback=lambda: _mark("list_realtime_logs"),
+        list_logs_callback=lambda: _mark("list_logs"),
+        open_log_folder_callback=lambda target: _mark("open_log_folder", target),
+        remove_log_folder_callback=lambda target: _mark("remove_log_folder", target),
+        list_log_files_callback=lambda target,
+        pattern="*",
+        limit=200,
+        recursive=True,
+        sort_by="name",
+        descending=False: _mark(
+            "list_log_files",
+            {
+                "target": target,
+                "pattern": pattern,
+                "limit": int(limit),
+                "recursive": bool(recursive),
+                "sort_by": str(sort_by),
+                "descending": bool(descending),
+            },
+        ),
+        read_log_file_callback=lambda path, max_chars=12000, tail_lines=200: _mark(
+            "read_log_file",
+            {"path": path, "max_chars": int(max_chars), "tail_lines": int(tail_lines)},
+        ),
+        search_logs_callback=lambda query,
+        target="logs",
+        pattern="*",
+        case_sensitive=False,
+        use_regex=False,
+        max_matches=100,
+        max_files=50: _mark(
+            "search_logs",
+            {
+                "query": query,
+                "target": target,
+                "pattern": pattern,
+                "case_sensitive": bool(case_sensitive),
+                "use_regex": bool(use_regex),
+                "max_matches": int(max_matches),
+                "max_files": int(max_files),
+            },
+        ),
         save_citation_callback=lambda **kwargs: _mark("save_citation", kwargs),
         generate_annolid_tutorial_callback=lambda **kwargs: _mark(
             "generate_annolid_tutorial", kwargs
@@ -1542,6 +1583,12 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_get_realtime_status")
     assert registry.has("gui_list_realtime_models")
     assert registry.has("gui_list_realtime_logs")
+    assert registry.has("gui_list_logs")
+    assert registry.has("gui_open_log_folder")
+    assert registry.has("gui_remove_log_folder")
+    assert registry.has("gui_list_log_files")
+    assert registry.has("gui_read_log_file")
+    assert registry.has("gui_search_logs")
     assert registry.has("gui_save_citation")
     assert registry.has("gui_generate_annolid_tutorial")
     ctx = asyncio.run(registry.execute("gui_context", {}))
@@ -1677,6 +1724,52 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     asyncio.run(registry.execute("gui_get_realtime_status", {}))
     asyncio.run(registry.execute("gui_list_realtime_models", {}))
     asyncio.run(registry.execute("gui_list_realtime_logs", {}))
+    asyncio.run(registry.execute("gui_list_logs", {}))
+    asyncio.run(
+        registry.execute(
+            "gui_open_log_folder",
+            {"target": "logs"},
+        )
+    )
+    asyncio.run(
+        registry.execute(
+            "gui_remove_log_folder",
+            {"target": "realtime"},
+        )
+    )
+    asyncio.run(
+        registry.execute(
+            "gui_list_log_files",
+            {
+                "target": "logs",
+                "pattern": "*.log",
+                "limit": 20,
+                "recursive": True,
+                "sort_by": "mtime",
+                "descending": True,
+            },
+        )
+    )
+    asyncio.run(
+        registry.execute(
+            "gui_read_log_file",
+            {"path": "/tmp/logs/app/annolid.log", "max_chars": 2000, "tail_lines": 50},
+        )
+    )
+    asyncio.run(
+        registry.execute(
+            "gui_search_logs",
+            {
+                "query": "error",
+                "target": "logs",
+                "pattern": "*.log",
+                "case_sensitive": False,
+                "use_regex": False,
+                "max_matches": 10,
+                "max_files": 5,
+            },
+        )
+    )
     asyncio.run(
         registry.execute(
             "gui_save_citation",
@@ -1759,6 +1852,36 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         ("get_realtime_status", None),
         ("list_realtime_models", None),
         ("list_realtime_logs", None),
+        ("list_logs", None),
+        ("open_log_folder", "logs"),
+        ("remove_log_folder", "realtime"),
+        (
+            "list_log_files",
+            {
+                "target": "logs",
+                "pattern": "*.log",
+                "limit": 20,
+                "recursive": True,
+                "sort_by": "mtime",
+                "descending": True,
+            },
+        ),
+        (
+            "read_log_file",
+            {"path": "/tmp/logs/app/annolid.log", "max_chars": 2000, "tail_lines": 50},
+        ),
+        (
+            "search_logs",
+            {
+                "query": "error",
+                "target": "logs",
+                "pattern": "*.log",
+                "case_sensitive": False,
+                "use_regex": False,
+                "max_matches": 10,
+                "max_files": 5,
+            },
+        ),
         (
             "save_citation",
             {"key": "annolid2024", "bib_file": "references.bib", "source": "pdf"},

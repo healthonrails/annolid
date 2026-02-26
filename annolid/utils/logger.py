@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Union
 
+from annolid.utils.log_paths import resolve_annolid_logs_root
+
 __appname__ = "annolid"
 
 try:
@@ -25,7 +27,7 @@ def _bool_from_env(value: str) -> bool:
 def _default_log_file_path() -> Path:
     current_date = datetime.datetime.now().strftime("%Y-%m-%d")
     log_file_name = f"{__appname__}_{current_date}.log"
-    return resolve_path(Path.home() / f"{__appname__}_logs" / log_file_name)
+    return resolve_path(resolve_annolid_logs_root() / "app" / log_file_name)
 
 
 def _init_windows_colorama() -> None:

@@ -37,7 +37,10 @@ def main(argv: Optional[Sequence[str]] = None) -> Any:
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     sanitize_qt_plugin_env(os.environ)
 
-    configure_logging()
+    try:
+        configure_logging(enable_file_logging=True)
+    except TypeError:
+        configure_logging()
 
     # Import heavy dependencies only when actually launching the GUI.
     try:

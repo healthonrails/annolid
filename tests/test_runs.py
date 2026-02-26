@@ -1,5 +1,4 @@
-from pathlib import Path
-
+from annolid.utils.log_paths import resolve_annolid_logs_root
 from annolid.utils.runs import allocate_run_dir, new_run_dir, shared_runs_root
 
 
@@ -8,13 +7,21 @@ def test_shared_runs_root_defaults_to_home(tmp_path, monkeypatch):
     monkeypatch.delenv("ANNOLID_LOG_ROOT", raising=False)
     monkeypatch.delenv("ANNOLID_LOG_DIR", raising=False)
     root = shared_runs_root()
-    assert root == (Path.home() / "annolid_logs" / "runs").resolve()
+    assert root == (resolve_annolid_logs_root() / "runs").resolve()
 
 
 def test_shared_runs_root_env_override(tmp_path, monkeypatch):
     monkeypatch.setenv("ANNOLID_RUNS_ROOT", str(tmp_path / "runs"))
     root = shared_runs_root()
     assert root == (tmp_path / "runs").resolve()
+
+
+def test_shared_runs_root_log_root_and_dir_override(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANNOLID_RUNS_ROOT", raising=False)
+    monkeypatch.setenv("ANNOLID_LOG_ROOT", str(tmp_path / "logs_root"))
+    monkeypatch.setenv("ANNOLID_LOG_DIR", "runs_alt")
+    root = shared_runs_root()
+    assert root == (tmp_path / "logs_root" / "runs_alt").resolve()
 
 
 def test_new_run_dir_is_under_root(tmp_path):

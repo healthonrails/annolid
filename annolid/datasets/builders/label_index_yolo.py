@@ -203,7 +203,7 @@ def build_yolo_from_label_index(
         # Prefer pose when any keypoints exist to avoid producing mixed-format datasets.
         effective_task = "pose" if dataset_has_points else "segmentation"
 
-    staging_root = output_dir / "annolid_logs"
+    staging_root = output_dir / "logs"
     staging_root.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix="index_staging_", dir=str(staging_root)))
 

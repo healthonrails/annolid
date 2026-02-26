@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,17 +11,46 @@ from qtpy import QtCore, QtGui, QtWidgets
 from annolid.datasets.labelme_collection import (
     DEFAULT_LABEL_INDEX_DIRNAME,
     DEFAULT_LABEL_INDEX_NAME,
+    default_annolid_logs_root,
     default_label_index_path,
     generate_labelme_spec_and_splits,
-    index_labelme_pair,
+    index_labelme_dataset,
     iter_labelme_json_files,
-    load_indexed_image_paths,
     normalize_labelme_sources,
     resolve_image_path,
 )
 from annolid.gui.workers import FlexibleWorker
 from annolid.datasets.builders.label_index_yolo import build_yolo_from_label_index
 from annolid.gui.widgets.file_audit_widget import FileAuditWidget
+
+
+def _resolve_agent_workspace_root() -> Path:
+    """Resolve the Annolid bot workspace root from shared log path helpers."""
+    logs_root = default_annolid_logs_root()
+    return logs_root.parent
+
+
+def _build_bot_report_payload(result: object) -> Optional[dict]:
+    """Build a compact, bot-friendly JSON payload from a job result."""
+    if not isinstance(result, dict):
+        return None
+    keys = (
+        "index_file",
+        "dataset_root",
+        "sources",
+        "total_json",
+        "processed",
+        "appended",
+        "skipped",
+        "missing_image",
+        "skip_reasons",
+        "events_sample",
+        "stopped",
+        "spec_path",
+        "split_counts",
+    )
+    payload = {k: result.get(k) for k in keys if k in result}
+    return payload or None
 
 
 @dataclass(frozen=True)
@@ -59,57 +89,31 @@ def _run_index_job(job: LabelIndexJob, *, pred_worker=None, stop_event=None) -> 
     sources = [Path(p).expanduser().resolve() for p in job.sources]
     dataset_root = Path(job.dataset_root).expanduser().resolve()
 
-    json_files = _build_json_list(sources, recursive=job.recursive)
-    total = len(json_files)
+    def _emit_progress(payload: dict) -> None:
+        if pred_worker is None:
+            return
+        pct = int(payload.get("percent", 0))
+        pred_worker.progress_signal.emit(max(0, min(100, pct)))
+        pred_worker.preview_signal.emit(
+            {
+                "processed": payload.get("processed", 0),
+                "total": payload.get("total_json", 0),
+                "appended": payload.get("appended", 0),
+                "skipped": payload.get("skipped", 0),
+                "missing_image": payload.get("missing_image", 0),
+            }
+        )
 
-    indexed_images = set()
-    if not job.allow_duplicates:
-        indexed_images = load_indexed_image_paths(index_file)
-
-    appended = 0
-    skipped = 0
-    missing_image = 0
-
-    for i, json_path in enumerate(json_files, start=1):
-        if stop_event is not None and stop_event.is_set():
-            break
-
-        image_path = resolve_image_path(json_path)
-        if image_path is None:
-            missing_image += 1
-            skipped += 1
-        else:
-            image_abs = str(Path(image_path).expanduser().resolve())
-            if (not job.allow_duplicates) and image_abs in indexed_images:
-                skipped += 1
-            else:
-                record = index_labelme_pair(
-                    json_path=json_path,
-                    index_file=index_file,
-                    image_path=image_path,
-                    include_empty=job.include_empty,
-                    source="annolid_gui_dialog",
-                )
-                if record is None:
-                    skipped += 1
-                else:
-                    appended += 1
-                    if not job.allow_duplicates:
-                        indexed_images.add(image_abs)
-
-        if pred_worker is not None and total > 0:
-            pct = int(round((i / total) * 100))
-            pred_worker.progress_signal.emit(max(0, min(100, pct)))
-            pred_worker.preview_signal.emit(
-                {
-                    "processed": i,
-                    "total": total,
-                    "appended": appended,
-                    "skipped": skipped,
-                    "missing_image": missing_image,
-                }
-            )
-
+    summary = index_labelme_dataset(
+        sources=sources,
+        index_file=index_file,
+        recursive=bool(job.recursive),
+        include_empty=bool(job.include_empty),
+        dedupe=not bool(job.allow_duplicates),
+        source="annolid_gui_dialog",
+        progress_callback=_emit_progress,
+        stop_event=stop_event,
+    )
     result: dict = {
         "index_file": str(index_file),
         "sources": [str(p) for p in sources],
@@ -117,11 +121,8 @@ def _run_index_job(job: LabelIndexJob, *, pred_worker=None, stop_event=None) -> 
         "recursive": bool(job.recursive),
         "include_empty": bool(job.include_empty),
         "allow_duplicates": bool(job.allow_duplicates),
-        "total_json": total,
-        "appended": appended,
-        "skipped": skipped,
-        "missing_image": missing_image,
     }
+    result.update(summary)
 
     if job.write_spec:
         spec_result = generate_labelme_spec_and_splits(
@@ -163,6 +164,7 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         self._settings = settings
         self._thread: Optional[QtCore.QThread] = None
         self._worker: Optional[FlexibleWorker] = None
+        self._last_result: Optional[dict] = None
 
         self._build_ui()
         self._load_settings()
@@ -249,6 +251,17 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         )
         self.export_btn.clicked.connect(self._start_yolo_job)
 
+        self.copy_report_btn = buttons.addButton(
+            "Copy Report", QtWidgets.QDialogButtonBox.ActionRole
+        )
+        self.copy_report_btn.clicked.connect(self._copy_last_report_to_clipboard)
+        self.copy_report_btn.setEnabled(False)
+        self.save_report_btn = buttons.addButton(
+            "Save Report", QtWidgets.QDialogButtonBox.ActionRole
+        )
+        self.save_report_btn.clicked.connect(self._save_last_report_to_workspace)
+        self.save_report_btn.setEnabled(False)
+
         self.cancel_btn = buttons.addButton(
             "Cancel", QtWidgets.QDialogButtonBox.DestructiveRole
         )
@@ -277,6 +290,9 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         root_row = QtWidgets.QHBoxLayout()
         root_row.addWidget(self.dataset_root_edit, 1)
         root_row.addWidget(self.dataset_root_btn)
+        self.bot_workspace_btn = QtWidgets.QPushButton("Use Bot Workspace")
+        self.bot_workspace_btn.clicked.connect(self._use_bot_workspace_defaults)
+        root_row.addWidget(self.bot_workspace_btn)
         form.addRow("Dataset root:", root_row)
 
         self.index_file_edit = QtWidgets.QLineEdit()
@@ -577,6 +593,17 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         self.dataset_root_edit.setText(root)
         self._on_dataset_root_changed()
 
+    def _use_bot_workspace_defaults(self) -> None:
+        workspace_root = _resolve_agent_workspace_root()
+        self.dataset_root_edit.setText(str(workspace_root))
+        self.index_file_edit.setText(str(default_label_index_path(workspace_root)))
+        if not self.yolo_output_dir_edit.text().strip():
+            self.yolo_output_dir_edit.setText(str(workspace_root))
+        self.auto_enable.setChecked(True)
+        self._save_settings()
+        self._refresh_index_preview()
+        self.status_label.setText(f"Using bot workspace: {workspace_root}")
+
     def _browse_index_file(self) -> None:
         current = self.index_file_edit.text().strip()
         start_dir = str(Path(current).parent) if current else str(Path.home())
@@ -681,6 +708,13 @@ class LabelCollectionDialog(QtWidgets.QDialog):
             if not index_file:
                 self.index_file_edit.setText(
                     str(default_label_index_path(Path(dataset_root)))
+                )
+        else:
+            workspace_root = _resolve_agent_workspace_root()
+            self.dataset_root_edit.setText(str(workspace_root))
+            if not index_file:
+                self.index_file_edit.setText(
+                    str(default_label_index_path(workspace_root))
                 )
 
         self.sources_list.clear()
@@ -807,6 +841,8 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         self.remove_source_btn.setEnabled(not running)
         self.clear_sources_btn.setEnabled(not running)
         self.export_btn.setEnabled(not running)
+        self.copy_report_btn.setEnabled((not running) and bool(self._last_result))
+        self.save_report_btn.setEnabled((not running) and bool(self._last_result))
         self.yolo_output_dir_btn.setEnabled(not running)
 
     def _request_stop(self) -> None:
@@ -825,6 +861,9 @@ class LabelCollectionDialog(QtWidgets.QDialog):
     def _start_backfill_job(self) -> None:
         if self._worker is not None or self._thread is not None:
             return
+        self._last_result = None
+        self.copy_report_btn.setEnabled(False)
+        self.save_report_btn.setEnabled(False)
 
         index_file_text = self.index_file_edit.text().strip()
 
@@ -960,6 +999,9 @@ class LabelCollectionDialog(QtWidgets.QDialog):
     def _start_yolo_job(self) -> None:
         if self._worker is not None or self._thread is not None:
             return
+        self._last_result = None
+        self.copy_report_btn.setEnabled(False)
+        self.save_report_btn.setEnabled(False)
 
         index_file_text = self.index_file_edit.text().strip()
         if not index_file_text:
@@ -1056,6 +1098,10 @@ class LabelCollectionDialog(QtWidgets.QDialog):
             if isinstance(result, Exception):
                 self._append_log(f"Error: {result}")
             else:
+                if isinstance(result, dict):
+                    self._last_result = dict(result)
+                    self.copy_report_btn.setEnabled(True)
+                    self.save_report_btn.setEnabled(True)
                 if isinstance(result, dict) and result.get("dataset_dir"):
                     self._append_log(f"YOLO dataset: {result.get('dataset_dir')}")
                     self.progress.setValue(100)
@@ -1092,6 +1138,37 @@ class LabelCollectionDialog(QtWidgets.QDialog):
                 self._thread.deleteLater()
             self._worker = None
             self._thread = None
+
+    def _copy_last_report_to_clipboard(self) -> None:
+        payload = _build_bot_report_payload(self._last_result)
+        if not payload:
+            QtWidgets.QMessageBox.information(
+                self, "No report", "Run collection/export first to create a report."
+            )
+            return
+        text = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True)
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            return
+        app.clipboard().setText(text)
+        self.status_label.setText("Copied bot-friendly report JSON to clipboard.")
+
+    def _save_last_report_to_workspace(self) -> None:
+        payload = _build_bot_report_payload(self._last_result)
+        if not payload:
+            QtWidgets.QMessageBox.information(
+                self, "No report", "Run collection/export first to create a report."
+            )
+            return
+        report_dir = default_annolid_logs_root()
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_file = report_dir / "label_collection_report.json"
+        report_file.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        self._append_log(f"Saved report: {report_file}")
+        self.status_label.setText(f"Saved report to {report_file}")
 
     def _scan_sources(self) -> None:
         """Scan selected sources and populate audit widget."""
