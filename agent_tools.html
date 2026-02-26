@@ -64,6 +64,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#caching-semantics">Caching semantics</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#citation-management-tools">Citation management tools</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#operator-commands">Operator Commands</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#improvement-quality-loop">Improvement Quality Loop</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#governance-and-audit">Governance and Audit</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#three-js-bot-tools">Three.js bot tools</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#annolid-code-docs-q-a-and-tutorials">Annolid code/docs Q&amp;A and tutorials</a></li>
@@ -150,6 +151,8 @@ default is local semantic ranking with keyword fallback (<code class="docutils l
 <code class="docutils literal notranslate"><span class="pre">preflight</span> <span class="pre">-&gt;</span> <span class="pre">stage</span> <span class="pre">-&gt;</span> <span class="pre">verify</span> <span class="pre">-&gt;</span> <span class="pre">apply</span> <span class="pre">-&gt;</span> <span class="pre">restart</span> <span class="pre">marker</span> <span class="pre">-&gt;</span> <span class="pre">post-check</span></code>.</p></li>
 <li><p>Rollback:
 rollback plan is generated for each run and executed on apply/post-check failures.</p></li>
+<li><p>Canary policy:
+rollout can enforce rollback thresholds using sample count, failure-rate, and regression limits.</p></li>
 </ul>
 </section>
 </section>
@@ -277,9 +280,26 @@ the service returns cached results without re-running the agent.</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">agent</span> <span class="pre">memory</span> <span class="pre">flush</span> <span class="pre">[--workspace</span> <span class="pre">&lt;path&gt;]</span> <span class="pre">[--session-id</span> <span class="pre">&lt;id&gt;]</span> <span class="pre">[--note</span> <span class="pre">&lt;text&gt;]</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">agent</span> <span class="pre">memory</span> <span class="pre">inspect</span> <span class="pre">[--workspace</span> <span class="pre">&lt;path&gt;]</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">agent</span> <span class="pre">eval</span> <span class="pre">run</span> <span class="pre">--traces</span> <span class="pre">&lt;jsonl&gt;</span> <span class="pre">--candidate-responses</span> <span class="pre">&lt;jsonl&gt;</span> <span class="pre">--out</span> <span class="pre">&lt;report.json&gt;</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">agent</span> <span class="pre">eval</span> <span class="pre">build-regression</span> <span class="pre">--workspace</span> <span class="pre">&lt;path&gt;</span> <span class="pre">--out</span> <span class="pre">&lt;traces.jsonl&gt;</span> <span class="pre">[--min-abs-rating</span> <span class="pre">1]</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">agent</span> <span class="pre">eval</span> <span class="pre">gate</span> <span class="pre">--changed-files</span> <span class="pre">&lt;files.txt&gt;</span> <span class="pre">--report</span> <span class="pre">&lt;report.json&gt;</span> <span class="pre">[--max-regressions</span> <span class="pre">0]</span> <span class="pre">[--min-pass-rate</span> <span class="pre">0.0]</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">agent</span> <span class="pre">feedback</span> <span class="pre">add</span> <span class="pre">--workspace</span> <span class="pre">&lt;path&gt;</span> <span class="pre">--rating</span> <span class="pre">-1|0|1</span> <span class="pre">[--trace-id</span> <span class="pre">&lt;id&gt;]</span> <span class="pre">[--comment</span> <span class="pre">&lt;text&gt;]</span> <span class="pre">[--expected-substring</span> <span class="pre">&lt;text&gt;]</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">update</span> <span class="pre">check</span> <span class="pre">--channel</span> <span class="pre">stable|beta|dev</span> <span class="pre">[--require-signature]</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">update</span> <span class="pre">run</span> <span class="pre">--channel</span> <span class="pre">stable|beta|dev</span> <span class="pre">[--execute]</span> <span class="pre">[--require-signature]</span> <span class="pre">[--skip-post-check]</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">update</span> <span class="pre">run</span> <span class="pre">--channel</span> <span class="pre">stable|beta|dev</span> <span class="pre">[--execute]</span> <span class="pre">[--require-signature]</span> <span class="pre">[--skip-post-check]</span> <span class="pre">[--canary-metrics</span> <span class="pre">&lt;json&gt;]</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">update</span> <span class="pre">rollback</span> <span class="pre">--install-mode</span> <span class="pre">package|source</span> <span class="pre">--previous-version</span> <span class="pre">&lt;X.Y.Z&gt;</span> <span class="pre">[--execute]</span></code></p></li>
+</ul>
+</section>
+<section id="improvement-quality-loop">
+<h2>Improvement Quality Loop<a class="headerlink" href="#improvement-quality-loop" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Anonymized run traces:
+<code class="docutils literal notranslate"><span class="pre">workspace/eval/run_traces.ndjson</span></code> captures hashed session/channel/chat IDs and redacted text previews.</p></li>
+<li><p>Explicit user feedback:
+<code class="docutils literal notranslate"><span class="pre">workspace/eval/feedback.ndjson</span></code> stores rating/comment/optional expected substring for promotion signals.</p></li>
+<li><p>Regression dataset build:
+combines traces + feedback into eval traces for CI and pre-promotion checks.</p></li>
+<li><p>Shadow mode:
+enable <code class="docutils literal notranslate"><span class="pre">ANNOLID_AGENT_SHADOW_MODE=1</span></code> to log alternative routing decisions to <code class="docutils literal notranslate"><span class="pre">workspace/eval/shadow_routing.ndjson</span></code>.
+use <code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">agent</span> <span class="pre">skills</span> <span class="pre">shadow</span> <span class="pre">--candidate-pack</span> <span class="pre">&lt;dir&gt;</span></code> to compare candidate skill packs before promotion.</p></li>
 </ul>
 </section>
 <section id="governance-and-audit">

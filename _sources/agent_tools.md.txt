@@ -34,6 +34,8 @@ Annolid agent operations are split into two layers:
   `preflight -> stage -> verify -> apply -> restart marker -> post-check`.
 - Rollback:
   rollback plan is generated for each run and executed on apply/post-check failures.
+- Canary policy:
+  rollout can enforce rollback thresholds using sample count, failure-rate, and regression limits.
 
 ## How to add a tool
 
@@ -145,9 +147,24 @@ Use `annolid-run` commands for routine operations:
 - `annolid-run agent memory flush [--workspace <path>] [--session-id <id>] [--note <text>]`
 - `annolid-run agent memory inspect [--workspace <path>]`
 - `annolid-run agent eval run --traces <jsonl> --candidate-responses <jsonl> --out <report.json>`
+- `annolid-run agent eval build-regression --workspace <path> --out <traces.jsonl> [--min-abs-rating 1]`
+- `annolid-run agent eval gate --changed-files <files.txt> --report <report.json> [--max-regressions 0] [--min-pass-rate 0.0]`
+- `annolid-run agent feedback add --workspace <path> --rating -1|0|1 [--trace-id <id>] [--comment <text>] [--expected-substring <text>]`
 - `annolid-run update check --channel stable|beta|dev [--require-signature]`
-- `annolid-run update run --channel stable|beta|dev [--execute] [--require-signature] [--skip-post-check]`
+- `annolid-run update run --channel stable|beta|dev [--execute] [--require-signature] [--skip-post-check] [--canary-metrics <json>]`
 - `annolid-run update rollback --install-mode package|source --previous-version <X.Y.Z> [--execute]`
+
+## Improvement Quality Loop
+
+- Anonymized run traces:
+  `workspace/eval/run_traces.ndjson` captures hashed session/channel/chat IDs and redacted text previews.
+- Explicit user feedback:
+  `workspace/eval/feedback.ndjson` stores rating/comment/optional expected substring for promotion signals.
+- Regression dataset build:
+  combines traces + feedback into eval traces for CI and pre-promotion checks.
+- Shadow mode:
+  enable `ANNOLID_AGENT_SHADOW_MODE=1` to log alternative routing decisions to `workspace/eval/shadow_routing.ndjson`.
+  use `annolid-run agent skills shadow --candidate-pack <dir>` to compare candidate skill packs before promotion.
 
 ## Governance and Audit
 
