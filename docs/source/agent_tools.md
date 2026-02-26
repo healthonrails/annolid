@@ -42,6 +42,8 @@ Annolid agent operations are split into two layers:
   disabled by default; configurable interval+jitter schedule when enabled (`ANNOLID_AUTO_UPDATE_*` env settings).
 - GUI controls:
   `AI Model Settings -> Agent Runtime` includes auto-update enable/channel/check-now/rollback and bot settings for skill hot reload, memory mode, and skill source locations.
+- Production safety policy:
+  in production mode (`ANNOLID_PRODUCTION_MODE=1` or `ANNOLID_ENV=production`), signed update manifests and signed non-builtin skills are required.
 
 ## How to add a tool
 
@@ -168,6 +170,8 @@ The agent runtime also exposes operator-style function tools:
 - `memory.flush`
 - `eval.run`
 - `update.run`
+  - `update.run` requires explicit operator consent phrase for `execute=true`:
+    `APPROVE_ANNOLID_CORE_UPDATE` (override with `ANNOLID_OPERATOR_UPDATE_CONSENT_PHRASE`).
 
 ## Improvement Quality Loop
 

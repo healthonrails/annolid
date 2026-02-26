@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from annolid.core.agent.observability import emit_governance_event
+from annolid.core.agent.security_policy import require_signed_skills
 
 from .schema import SkillLoadConfig, SkillRecord, validate_skill_manifest
 from .watcher import SkillRegistryWatcher
@@ -90,7 +91,14 @@ class SkillRegistry:
                     continue
                 path_str = str(skill_file)
                 meta = self._read_frontmatter_from_path(path_str)
-                manifest = validate_skill_manifest(meta)
+                enforce_signature = bool(
+                    require_signed_skills() and source != "builtin"
+                )
+                manifest = validate_skill_manifest(
+                    meta,
+                    skill_path=skill_file,
+                    require_signature=enforce_signature,
+                )
                 parsed_meta = self._parse_meta(meta)
                 parsed_meta["__manifest_valid"] = bool(manifest.valid)
                 parsed_meta["__manifest_errors"] = list(manifest.errors)

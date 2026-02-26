@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List
@@ -121,7 +124,67 @@ class SkillManifestValidation:
     errors: List[str]
 
 
-def validate_skill_manifest(frontmatter: Dict[str, Any]) -> SkillManifestValidation:
+def _extract_signature_fields(frontmatter: Dict[str, Any]) -> tuple[str, str]:
+    payload = dict(frontmatter or {})
+    signature = str(payload.get("signature") or "").strip()
+    signature_alg = str(
+        payload.get("signature_alg") or payload.get("signatureAlg") or "none"
+    ).strip()
+    return signature, signature_alg
+
+
+def _strip_frontmatter(content: str) -> str:
+    text = str(content or "")
+    if not text.startswith("---"):
+        return text
+    match = re.match(r"^---\n.*?\n---\n?", text, re.DOTALL)
+    if match:
+        return text[match.end() :]
+    return text
+
+
+def _verify_skill_signature(
+    *,
+    frontmatter: Dict[str, Any],
+    skill_path: Path | None,
+    require_signature: bool,
+) -> List[str]:
+    errors: List[str] = []
+    signature, signature_alg = _extract_signature_fields(frontmatter)
+    has_signature = bool(signature)
+    if require_signature and not has_signature:
+        errors.append("signature is required in production mode")
+        return errors
+    if not has_signature:
+        return errors
+    if str(signature_alg or "").strip().lower() not in {"hmac-sha256", "hmac_sha256"}:
+        errors.append("unsupported signature_alg (expected hmac-sha256)")
+        return errors
+    if skill_path is None:
+        errors.append("skill_path is required to verify signature")
+        return errors
+    secret = str(os.getenv("ANNOLID_SKILL_SIGNING_KEY") or "").strip()
+    if not secret:
+        errors.append("missing ANNOLID_SKILL_SIGNING_KEY for signature verification")
+        return errors
+    try:
+        body = _strip_frontmatter(skill_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        errors.append(f"failed to read skill file for signature verification: {exc}")
+        return errors
+    message = body.replace("\r\n", "\n").encode("utf-8")
+    digest = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(digest, signature):
+        errors.append("skill signature verification failed")
+    return errors
+
+
+def validate_skill_manifest(
+    frontmatter: Dict[str, Any],
+    *,
+    skill_path: Path | None = None,
+    require_signature: bool = False,
+) -> SkillManifestValidation:
     payload = dict(frontmatter or {})
     errors: List[str] = []
 
@@ -171,5 +234,13 @@ def validate_skill_manifest(frontmatter: Dict[str, Any]) -> SkillManifestValidat
     requires = payload.get("requires")
     if requires is not None and not isinstance(requires, dict):
         errors.append("requires must be an object when provided")
+
+    errors.extend(
+        _verify_skill_signature(
+            frontmatter=payload,
+            skill_path=skill_path,
+            require_signature=bool(require_signature),
+        )
+    )
 
     return SkillManifestValidation(valid=len(errors) == 0, errors=errors)

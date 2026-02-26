@@ -12,6 +12,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from annolid.core.agent.observability import emit_governance_event
+
 from .function_base import FunctionTool
 
 
@@ -232,6 +234,18 @@ async def clawhub_install_skill(
             _safe_extract_zip(zip_path, extract_dir)
             source_root = _locate_skill_root(extract_dir)
             if source_root is None:
+                emit_governance_event(
+                    event_type="skills",
+                    action="install",
+                    outcome="failed",
+                    actor="operator",
+                    details={
+                        "workspace": str(ws),
+                        "slug": slug_text,
+                        "reason": "missing_skill_md",
+                        "source": "clawhub",
+                    },
+                )
                 return {
                     "ok": False,
                     "error": "Downloaded package did not contain SKILL.md.",
@@ -240,10 +254,24 @@ async def clawhub_install_skill(
                     "source": "clawhub",
                 }
             target_dir = skills_dir / slug_text
+            replaced = target_dir.exists()
             if target_dir.exists():
                 shutil.rmtree(target_dir)
             shutil.copytree(source_root, target_dir)
     except Exception as exc:
+        emit_governance_event(
+            event_type="skills",
+            action="install",
+            outcome="failed",
+            actor="operator",
+            details={
+                "workspace": str(ws),
+                "slug": slug_text,
+                "reason": "install_exception",
+                "error": str(exc),
+                "source": "clawhub",
+            },
+        )
         return {
             "ok": False,
             "error": f"Failed to install skill package: {exc}",
@@ -252,7 +280,7 @@ async def clawhub_install_skill(
             "source": "clawhub",
         }
 
-    return {
+    payload = {
         "ok": True,
         "slug": slug_text,
         "workspace": str(ws),
@@ -261,7 +289,22 @@ async def clawhub_install_skill(
         "source": "clawhub",
         "url": download_url,
         "restart_hint": "Start a new Annolid Bot session to load newly installed skills.",
+        "replaced": bool(replaced),
     }
+    emit_governance_event(
+        event_type="skills",
+        action="install",
+        outcome="ok",
+        actor="operator",
+        details={
+            "workspace": str(ws),
+            "slug": slug_text,
+            "installed_path": payload["installed_path"],
+            "source": "clawhub",
+            "replaced": bool(replaced),
+        },
+    )
+    return payload
 
 
 class ClawHubSearchSkillsTool(FunctionTool):

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from annolid.core.agent.observability import emit_governance_event
+from annolid.core.agent.security_policy import require_signed_updates
 from annolid.version import get_version
 
 from .canary import CanaryPolicy, evaluate_canary
@@ -141,6 +142,9 @@ class SignedUpdateManager:
         timeout_s: float = 4.0,
         require_signature: bool = False,
     ) -> SignedUpdatePlan:
+        effective_require_signature = bool(
+            require_signature or require_signed_updates()
+        )
         preflight = self.preflight()
         source_root = Path(str(preflight["source_root"]))
         install_mode = str(preflight["install_mode"])
@@ -149,7 +153,10 @@ class SignedUpdateManager:
             channel=channel,
             timeout_s=timeout_s,
         )
-        verification = verify_manifest(manifest, require_signature=require_signature)
+        verification = verify_manifest(
+            manifest,
+            require_signature=effective_require_signature,
+        )
         commands = _build_apply_commands(
             install_mode=install_mode,
             channel=manifest.channel,
@@ -175,7 +182,8 @@ class SignedUpdateManager:
                 "channel": manifest.channel,
                 "current_version": plan.current_version,
                 "target_version": manifest.version,
-                "require_signature": bool(require_signature),
+                "require_signature": bool(effective_require_signature),
+                "require_signature_requested": bool(require_signature),
                 "verification_reason": verification.reason,
                 "install_mode": install_mode,
             },

@@ -59,7 +59,8 @@ annolid --labels=/path/to/labels_custom.txt
 Annolid agent update operations are conservative by default:
 
 - Update commands are dry-run unless `--execute` is set.
-- Signature enforcement is optional and explicit via `--require-signature`.
+- Signature enforcement can be requested via `--require-signature` in any mode.
+- In production mode (`ANNOLID_PRODUCTION_MODE=1` or `ANNOLID_ENV=production`), signature enforcement is automatic.
 - Post-checks run by default after execute; disable only when needed with `--skip-post-check`.
 - Rollback plans are always generated before apply.
 

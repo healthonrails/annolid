@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from annolid.core.agent.update_manager.manager import (
     SignedUpdateManager,
     SignedUpdatePlan,
@@ -71,3 +73,34 @@ def test_signed_update_manager_rolls_back_on_canary_threshold() -> None:
     )
     assert payload["status"] == "failed_canary"
     assert isinstance(payload.get("rollback"), dict)
+
+
+def test_stage_enforces_signature_in_production(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import annolid.core.agent.update_manager.manager as manager_mod
+
+    manifest = UpdateManifest(
+        project="annolid",
+        channel="stable",
+        version="9.9.9",
+        release_date="",
+        artifact_url="https://example.invalid/a.whl",
+        artifact_sha256="abc123",
+        signature="",
+        signature_alg="none",
+        source="https://example.invalid/manifest.json",
+    )
+
+    monkeypatch.setenv("ANNOLID_PRODUCTION_MODE", "1")
+    monkeypatch.setattr(manager_mod, "_find_source_root", lambda: tmp_path)
+    monkeypatch.setattr(manager_mod, "_detect_install_mode", lambda _root: "package")
+    monkeypatch.setattr(
+        manager_mod, "fetch_channel_manifest", lambda **_kwargs: manifest
+    )
+
+    manager = SignedUpdateManager(project="annolid")
+    plan = manager.stage(channel="stable", require_signature=False)
+    assert plan.verification.ok is False
+    assert plan.verification.reason == "signature_required_missing"

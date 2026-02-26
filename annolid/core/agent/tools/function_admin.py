@@ -9,6 +9,12 @@ from annolid.core.agent.eval.gate import evaluate_report_gate
 from annolid.core.agent.eval.run_agent_eval import run_eval
 from annolid.core.agent.memory import AgentMemoryStore
 from annolid.core.agent.observability import emit_governance_event
+from annolid.core.agent.security_policy import (
+    bot_update_requires_operator_consent,
+    has_operator_consent,
+    operator_consent_phrase,
+    require_signed_updates,
+)
 from annolid.core.agent.skills import AgentSkillsLoader
 from annolid.core.agent.update_manager.rollback import (
     build_rollback_plan,
@@ -225,6 +231,7 @@ class AdminUpdateRunTool(FunctionTool):
                 "run_post_check": {"type": "boolean"},
                 "previous_version": {"type": "string"},
                 "rollback": {"type": "boolean"},
+                "operator_consent": {"type": "string"},
             },
             "additionalProperties": False,
         }
@@ -238,10 +245,35 @@ class AdminUpdateRunTool(FunctionTool):
         run_post_check: bool = True,
         previous_version: str = "",
         rollback: bool = False,
+        operator_consent: str = "",
     ) -> str:
         channel_name = str(channel or "stable").strip().lower()
         if channel_name not in {"stable", "beta", "dev"}:
             channel_name = "stable"
+        effective_require_signature = bool(
+            bool(require_signature) or require_signed_updates()
+        )
+
+        if bool(execute) and bot_update_requires_operator_consent():
+            if not has_operator_consent(operator_consent):
+                payload = {
+                    "ok": False,
+                    "status": "blocked",
+                    "reason": "operator_consent_required",
+                    "required_phrase": operator_consent_phrase(),
+                }
+                emit_governance_event(
+                    event_type="update",
+                    action="run_blocked",
+                    outcome="blocked",
+                    actor="bot",
+                    details={
+                        "channel": channel_name,
+                        "execute": True,
+                        "reason": "operator_consent_required",
+                    },
+                )
+                return json.dumps(payload, ensure_ascii=False)
 
         if bool(rollback):
             prev = str(previous_version or "").strip()
@@ -269,7 +301,7 @@ class AdminUpdateRunTool(FunctionTool):
         tx = service.run_transaction(
             channel=channel_name,
             timeout_s=max(1.0, float(timeout_s)),
-            require_signature=bool(require_signature),
+            require_signature=effective_require_signature,
             execute=bool(execute),
             run_post_check=bool(run_post_check),
         )
@@ -279,4 +311,5 @@ class AdminUpdateRunTool(FunctionTool):
             "failed_stage_artifact",
             "failed_canary",
         }
+        tx["require_signature"] = bool(effective_require_signature)
         return json.dumps(tx, ensure_ascii=False)

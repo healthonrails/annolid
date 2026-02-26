@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import platform
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -177,6 +179,58 @@ def test_skills_loader_validates_manifest_at_load_time(tmp_path: Path) -> None:
 
     available = loader.list_skills(filter_unavailable=True)
     assert not any(s["name"] == "invalid_manifest" for s in available)
+
+
+def test_skills_loader_requires_signature_in_production(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_dir = tmp_path / "skills" / "unsigned"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\ndescription: unsigned\n---\nUnsigned body\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANNOLID_PRODUCTION_MODE", "1")
+    loader = AgentSkillsLoader(tmp_path, builtin_skills_dir=tmp_path / "builtin")
+    row = next(
+        s
+        for s in loader.list_skills(filter_unavailable=False)
+        if s["name"] == "unsigned"
+    )
+    assert row["manifest_valid"] is False
+    assert any("signature is required" in e for e in row["manifest_errors"])
+
+
+def test_skills_loader_accepts_valid_signature_in_production(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "skill-secret"
+    body = "Signed body\n"
+    digest = hmac.new(
+        secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    skill_dir = tmp_path / "skills" / "signed"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "description: signed\n"
+            f"signature: {digest}\n"
+            "signature_alg: hmac-sha256\n"
+            "---\n"
+            f"{body}"
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANNOLID_PRODUCTION_MODE", "1")
+    monkeypatch.setenv("ANNOLID_SKILL_SIGNING_KEY", secret)
+    loader = AgentSkillsLoader(tmp_path, builtin_skills_dir=tmp_path / "builtin")
+    row = next(
+        s for s in loader.list_skills(filter_unavailable=False) if s["name"] == "signed"
+    )
+    assert row["manifest_valid"] is True
 
 
 def test_context_builder_builds_user_media_payload(tmp_path: Path) -> None:

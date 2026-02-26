@@ -132,3 +132,48 @@ def test_admin_update_run_tool_dry_run(monkeypatch) -> None:
     )
     assert payload["status"] == "staged"
     assert payload["ok"] is True
+
+
+def test_admin_update_run_tool_blocks_execute_without_consent(monkeypatch) -> None:
+    import annolid.core.agent.tools.function_admin as admin_mod
+
+    class _FakeService:
+        def __init__(self, project: str = "annolid") -> None:
+            self.project = project
+
+        def run_transaction(self, **_kwargs):
+            raise AssertionError("run_transaction should not be called without consent")
+
+    monkeypatch.setattr(admin_mod, "UpdateManagerService", _FakeService)
+    monkeypatch.setenv("ANNOLID_BOT_UPDATE_REQUIRE_CONSENT", "1")
+    tool = AdminUpdateRunTool(project="annolid")
+    payload = json.loads(asyncio.run(tool.execute(channel="stable", execute=True)))
+    assert payload["ok"] is False
+    assert payload["reason"] == "operator_consent_required"
+
+
+def test_admin_update_run_tool_execute_with_consent(monkeypatch) -> None:
+    import annolid.core.agent.tools.function_admin as admin_mod
+
+    class _FakeService:
+        def __init__(self, project: str = "annolid") -> None:
+            self.project = project
+
+        def run_transaction(self, **_kwargs):
+            return {"status": "updated", "steps": []}
+
+    monkeypatch.setattr(admin_mod, "UpdateManagerService", _FakeService)
+    monkeypatch.setenv("ANNOLID_BOT_UPDATE_REQUIRE_CONSENT", "1")
+    monkeypatch.setenv("ANNOLID_OPERATOR_UPDATE_CONSENT_PHRASE", "YES_UPDATE")
+    tool = AdminUpdateRunTool(project="annolid")
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                channel="stable",
+                execute=True,
+                operator_consent="YES_UPDATE",
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["status"] == "updated"
