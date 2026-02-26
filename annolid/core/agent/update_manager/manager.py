@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from annolid.core.agent.observability import emit_governance_event
 from annolid.version import get_version
 
+from .canary import CanaryPolicy, evaluate_canary
 from .manifest import UpdateManifest, fetch_channel_manifest
 from .rollback import build_rollback_plan, execute_rollback
 from .verify import VerificationResult, verify_manifest
@@ -187,6 +188,8 @@ class SignedUpdateManager:
         *,
         execute: bool = False,
         run_post_check: bool = True,
+        canary_metrics: Dict[str, Any] | None = None,
+        canary_policy: CanaryPolicy | None = None,
     ) -> Dict[str, Any]:
         payload = plan.to_dict()
         payload["status"] = "ok" if plan.update_available else "blocked"
@@ -194,6 +197,7 @@ class SignedUpdateManager:
         payload["pipeline"] = []
         payload["rollback"] = None
         payload["restart_required"] = False
+        payload["canary"] = None
 
         if not plan.update_available:
             payload["reason"] = plan.verification.reason
@@ -286,6 +290,27 @@ class SignedUpdateManager:
                         },
                     )
                     return payload
+
+        if canary_metrics is not None:
+            policy = canary_policy or CanaryPolicy()
+            canary = evaluate_canary(canary_metrics, policy=policy)
+            payload["canary"] = canary.to_dict()
+            if execute and not canary.passed:
+                payload["status"] = "failed_canary"
+                payload["rollback"] = execute_rollback(rollback_plan, execute=execute)
+                emit_governance_event(
+                    event_type="update",
+                    action="canary",
+                    outcome="failed",
+                    actor="operator",
+                    details={
+                        "project": plan.project,
+                        "channel": plan.channel,
+                        "rollback_triggered": True,
+                        "reason": canary.reason,
+                    },
+                )
+                return payload
 
         payload["status"] = "updated" if execute else "staged"
         payload["updated"] = bool(execute)

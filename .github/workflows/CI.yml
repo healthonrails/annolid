@@ -55,6 +55,33 @@ jobs:
           tests/test_agent_memory_flush.py \
           tests/test_update_manager_flow.py \
           tests/test_update_rollback.py
+    - name: Agent eval gate (skills/routing/prompt changes)
+      run: |
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.sha }}" > /tmp/changed_files.txt
+        else
+          git diff --name-only HEAD~1 HEAD > /tmp/changed_files.txt || true
+        fi
+        cat > /tmp/agent_eval_traces.jsonl <<'JSONL'
+        {"trace_id":"t1","user_message":"hello","expected_substring":"ok"}
+        JSONL
+        cat > /tmp/agent_eval_baseline.jsonl <<'JSONL'
+        {"trace_id":"t1","content":"ok"}
+        JSONL
+        cat > /tmp/agent_eval_candidate.jsonl <<'JSONL'
+        {"trace_id":"t1","content":"ok"}
+        JSONL
+        annolid-run agent eval run \
+          --traces /tmp/agent_eval_traces.jsonl \
+          --baseline-responses /tmp/agent_eval_baseline.jsonl \
+          --candidate-responses /tmp/agent_eval_candidate.jsonl \
+          --out /tmp/agent_eval_report.json \
+          --max-regressions 0
+        annolid-run agent eval gate \
+          --changed-files /tmp/changed_files.txt \
+          --report /tmp/agent_eval_report.json \
+          --max-regressions 0 \
+          --min-pass-rate 0.0
     - uses: ammaraskar/sphinx-action@0.4
       with:
         docs-folder: "docs/"

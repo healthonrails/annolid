@@ -4,6 +4,7 @@ import asyncio
 from contextlib import AsyncExitStack
 import inspect
 import json
+import os
 from annolid.utils.logger import logger
 import re
 import time
@@ -28,6 +29,7 @@ from typing import (
 from annolid.utils.llm_settings import resolve_agent_runtime_config, resolve_llm_config
 
 from .context import AgentContextBuilder
+from .eval.telemetry import RunTraceStore
 from .memory import AgentMemoryStore
 from .memory_store.flush import append_pre_compaction_flush
 from .providers import LiteLLMProvider, OpenAICompatProvider, resolve_openai_compat
@@ -261,6 +263,13 @@ class AgentLoop:
         self._browser_first_for_web = bool(browser_first_for_web)
         self._strict_runtime_tool_guard = bool(strict_runtime_tool_guard)
         self._provider_impl: Optional[Any] = None
+        self._shadow_mode_enabled = str(
+            os.getenv("ANNOLID_AGENT_SHADOW_MODE", "0")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self._shadow_routing_policy = (
+            str(os.getenv("ANNOLID_AGENT_SHADOW_ROUTING_POLICY", "default")).strip()
+            or "default"
+        )
 
         self._provider = provider
         self._model_override = model
@@ -382,6 +391,18 @@ class AgentLoop:
                     user_message_text=user_message_text,
                     messages=messages,
                 )
+                if self._shadow_mode_enabled:
+                    candidate = (
+                        default_tools
+                        if self._shadow_routing_policy == "default"
+                        else all_tool_definitions
+                    )
+                    self._capture_shadow_routing(
+                        session_id=session_id,
+                        primary=tool_definitions,
+                        candidate=candidate,
+                        iteration=iteration,
+                    )
                 active_node_id = "planner"
                 if session_id and session_id.startswith("swarm:"):
                     active_node_id = session_id.split(":", 1)[1].lower()
@@ -636,7 +657,7 @@ class AgentLoop:
                     turn_id=turn_id,
                     payload={"text": str(final_content or "")},
                 )
-                return AgentLoopResult(
+                result = AgentLoopResult(
                     content=final_content,
                     messages=messages,
                     iterations=iteration,
@@ -644,6 +665,15 @@ class AgentLoop:
                     media=tuple(messages_media),
                     stopped_reason=stopped_reason,
                 )
+                self._capture_anonymized_run_trace(
+                    session_id=session_id,
+                    channel=channel,
+                    chat_id=chat_id,
+                    user_message_text=user_message_text,
+                    result=result,
+                    turn_id=turn_id,
+                )
+                return result
 
             if stopped_reason == "done":
                 stopped_reason = "max_iterations"
@@ -722,6 +752,14 @@ class AgentLoop:
                 kind="assistant",
                 turn_id=turn_id,
                 payload={"text": str(final_content or "")},
+            )
+            self._capture_anonymized_run_trace(
+                session_id=session_id,
+                channel=channel,
+                chat_id=chat_id,
+                user_message_text=user_message_text,
+                result=result,
+                turn_id=turn_id,
             )
             return result
         finally:
@@ -1048,6 +1086,38 @@ class AgentLoop:
         tool_index = self._get_cached_tool_index(all_tool_definitions, tool_signature)
         default_tools = self._get_cached_default_tools(tool_index, tool_signature)
         return all_tool_definitions, tool_signature, tool_index, default_tools
+
+    def _capture_shadow_routing(
+        self,
+        *,
+        session_id: str,
+        primary: Sequence[Mapping[str, Any]],
+        candidate: Sequence[Mapping[str, Any]],
+        iteration: int,
+    ) -> None:
+        if not self._shadow_mode_enabled or not self._workspace:
+            return
+        try:
+            store = RunTraceStore(Path(self._workspace))
+            primary_names = [
+                str((row.get("function") or {}).get("name") or "")
+                for row in primary
+                if isinstance(row, Mapping)
+            ]
+            candidate_names = [
+                str((row.get("function") or {}).get("name") or "")
+                for row in candidate
+                if isinstance(row, Mapping)
+            ]
+            store.capture_shadow_routing(
+                session_id=session_id,
+                primary_tools=primary_names,
+                candidate_tools=candidate_names,
+                policy_name=self._shadow_routing_policy,
+                metadata={"iteration": int(iteration)},
+            )
+        except Exception:
+            return
 
     @classmethod
     def _has_explicit_high_risk_intent(
@@ -1577,6 +1647,36 @@ class AgentLoop:
                 turn_id=str(turn_id or "").strip(),
                 event_id=str(event_id or "").strip(),
                 idempotency_key=str(idempotency_key or "").strip(),
+            )
+        except Exception:
+            return
+
+    def _capture_anonymized_run_trace(
+        self,
+        *,
+        session_id: str,
+        channel: Optional[str],
+        chat_id: Optional[str],
+        user_message_text: str,
+        result: AgentLoopResult,
+        turn_id: str,
+    ) -> None:
+        if not self._workspace:
+            return
+        try:
+            store = RunTraceStore(Path(self._workspace))
+            store.capture_run(
+                session_id=session_id,
+                channel=channel,
+                chat_id=chat_id,
+                user_message=user_message_text,
+                assistant_response=str(result.content or ""),
+                tool_names=[run.name for run in result.tool_runs],
+                metadata={
+                    "turn_id": str(turn_id or ""),
+                    "iterations": int(result.iterations),
+                    "stopped_reason": str(result.stopped_reason or ""),
+                },
             )
         except Exception:
             return

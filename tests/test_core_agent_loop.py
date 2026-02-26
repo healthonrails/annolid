@@ -1361,3 +1361,59 @@ def test_agent_loop_records_inbound_outbound_events_for_replay(tmp_path: Path) -
     directions = {str(item.get("direction") or "") for item in rows}
     assert "inbound" in directions
     assert "outbound" in directions
+
+
+def test_agent_loop_captures_anonymized_run_trace(tmp_path: Path) -> None:
+    registry = FunctionToolRegistry()
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        return {"content": "done", "tool_calls": []}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+    )
+    result = asyncio.run(loop.run("hello user@example.com", session_id="s1"))
+    assert result.content == "done"
+    trace_path = tmp_path / "eval" / "run_traces.ndjson"
+    assert trace_path.exists()
+    payload = trace_path.read_text(encoding="utf-8")
+    assert "trace_id" in payload
+    assert "user@example.com" not in payload
+
+
+def test_agent_loop_shadow_routing_mode_writes_shadow_log(
+    tmp_path: Path, monkeypatch
+) -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_SearchLikeTool())
+    registry.register(_MathLikeTool())
+    monkeypatch.setenv("ANNOLID_AGENT_SHADOW_MODE", "1")
+    monkeypatch.setenv("ANNOLID_AGENT_SHADOW_ROUTING_POLICY", "default")
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        return {"content": "done", "tool_calls": []}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+    )
+    _ = asyncio.run(loop.run("search web", session_id="s-shadow"))
+    shadow_path = tmp_path / "eval" / "shadow_routing.ndjson"
+    assert shadow_path.exists()

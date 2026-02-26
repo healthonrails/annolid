@@ -855,6 +855,77 @@ def _cmd_agent_eval(args: argparse.Namespace) -> int:
     return 0 if gate_passed else 1
 
 
+def _cmd_agent_eval_build_regression(args: argparse.Namespace) -> int:
+    from annolid.core.agent.eval.telemetry import (
+        RunTraceStore,
+        build_regression_eval_rows,
+    )
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
+    store = RunTraceStore(workspace)
+    rows = build_regression_eval_rows(
+        trace_rows=store.load_traces(),
+        feedback_rows=store.load_feedback(),
+        min_abs_rating=int(args.min_abs_rating),
+    )
+    out_path = Path(args.out).expanduser().resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_text = "\n".join(json.dumps(row, ensure_ascii=True) for row in rows)
+    out_path.write_text((out_text + "\n") if out_text else "", encoding="utf-8")
+    payload = {
+        "workspace": str(workspace),
+        "out": str(out_path),
+        "count": len(rows),
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_agent_eval_gate(args: argparse.Namespace) -> int:
+    from annolid.core.agent.eval.gate import (
+        eval_gate_required,
+        evaluate_report_gate,
+        load_changed_files,
+    )
+
+    changed_files: list[str] = []
+    if args.changed_files:
+        changed_files = load_changed_files(Path(args.changed_files))
+    required = eval_gate_required(changed_files)
+
+    report_payload: dict = {}
+    if args.report:
+        report_payload = json.loads(
+            Path(args.report).expanduser().resolve().read_text(encoding="utf-8")
+        )
+
+    if report_payload:
+        gate = evaluate_report_gate(
+            report_payload,
+            max_regressions=int(args.max_regressions),
+            min_pass_rate=float(args.min_pass_rate),
+        )
+    else:
+        gate = {
+            "passed": not required,
+            "max_regressions": int(args.max_regressions),
+            "regression_count": 0,
+            "min_pass_rate": float(args.min_pass_rate),
+            "pass_rate": 0.0,
+        }
+        if required:
+            gate["reason"] = "eval_required_report_missing"
+
+    payload = {
+        "required": bool(required),
+        "changed_files_count": len(changed_files),
+        "gate": gate,
+    }
+    print(json.dumps(payload, indent=2))
+    return 0 if bool(gate.get("passed", False)) else 1
+
+
 def _cmd_agent_skills_refresh(args: argparse.Namespace) -> int:
     from annolid.core.agent.observability import emit_governance_event
     from annolid.core.agent.skills import AgentSkillsLoader
@@ -918,6 +989,48 @@ def _cmd_agent_skills_inspect(args: argparse.Namespace) -> int:
         "workspace_skill_count": len(workspace_skills),
         "invalid_manifest_count": len(invalid),
         "invalid_skills": invalid,
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_agent_skills_shadow(args: argparse.Namespace) -> int:
+    from annolid.core.agent.skill_registry import (
+        compare_skill_pack_shadow,
+        flatten_skills_by_name,
+    )
+    from annolid.core.agent.skills import AgentSkillsLoader
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
+    loader = AgentSkillsLoader(workspace=workspace)
+    active = flatten_skills_by_name(loader.list_skills(filter_unavailable=False))
+    payload = compare_skill_pack_shadow(
+        active_skills=active,
+        candidate_pack_dir=Path(args.candidate_pack),
+    )
+    payload["workspace"] = str(workspace)
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_agent_feedback_add(args: argparse.Namespace) -> int:
+    from annolid.core.agent.eval.telemetry import RunTraceStore
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
+    store = RunTraceStore(workspace)
+    row = store.capture_feedback(
+        session_id=str(getattr(args, "session_id", "") or "default"),
+        rating=int(args.rating),
+        comment=str(getattr(args, "comment", "") or ""),
+        trace_id=str(getattr(args, "trace_id", "") or ""),
+        expected_substring=str(getattr(args, "expected_substring", "") or ""),
+    )
+    payload = {
+        "workspace": str(workspace),
+        "saved": bool(row),
+        "feedback": row,
     }
     print(json.dumps(payload, indent=2))
     return 0
@@ -994,6 +1107,7 @@ def _cmd_update_check(args: argparse.Namespace) -> int:
 
 
 def _cmd_update_run(args: argparse.Namespace) -> int:
+    from annolid.core.agent.update_manager.canary import CanaryPolicy
     from annolid.core.agent.update_manager.manager import SignedUpdateManager
 
     manager = SignedUpdateManager(project=str(args.project or "annolid"))
@@ -1002,10 +1116,22 @@ def _cmd_update_run(args: argparse.Namespace) -> int:
         timeout_s=float(args.timeout_s),
         require_signature=bool(args.require_signature),
     )
+    canary_metrics = None
+    if args.canary_metrics:
+        canary_metrics = json.loads(
+            Path(args.canary_metrics).expanduser().resolve().read_text(encoding="utf-8")
+        )
+    canary_policy = CanaryPolicy(
+        min_samples=int(args.canary_min_samples),
+        max_failure_rate=float(args.canary_max_failure_rate),
+        max_regressions=int(args.canary_max_regressions),
+    )
     payload = manager.run(
         plan,
         execute=bool(args.execute),
         run_post_check=not bool(args.skip_post_check),
+        canary_metrics=canary_metrics,
+        canary_policy=canary_policy,
     )
     print(json.dumps(payload, indent=2))
     status = str(payload.get("status") or "").strip().lower()
@@ -1056,6 +1182,19 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
         args = p.parse_args(argv[3:])
         return _cmd_agent_skills_inspect(args)
 
+    # annolid-run agent skills shadow
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "skills"
+        and argv[2] == "shadow"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent skills shadow")
+        p.add_argument("--workspace", default=None)
+        p.add_argument("--candidate-pack", required=True)
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_skills_shadow(args)
+
     # annolid-run agent memory flush
     if (
         len(argv) >= 3
@@ -1093,6 +1232,52 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
         args = p.parse_args(argv[3:])
         return _cmd_agent_eval(args)
 
+    # annolid-run agent eval build-regression
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "eval"
+        and argv[2] == "build-regression"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent eval build-regression")
+        p.add_argument("--workspace", default=None)
+        p.add_argument("--out", required=True)
+        p.add_argument("--min-abs-rating", type=int, default=1)
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_eval_build_regression(args)
+
+    # annolid-run agent eval gate
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "eval"
+        and argv[2] == "gate"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent eval gate")
+        p.add_argument("--report", default=None)
+        p.add_argument("--changed-files", default=None)
+        p.add_argument("--max-regressions", type=int, default=0)
+        p.add_argument("--min-pass-rate", type=float, default=0.0)
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_eval_gate(args)
+
+    # annolid-run agent feedback add
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "feedback"
+        and argv[2] == "add"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent feedback add")
+        p.add_argument("--workspace", default=None)
+        p.add_argument("--session-id", default="default")
+        p.add_argument("--trace-id", default=None)
+        p.add_argument("--rating", type=int, choices=(-1, 0, 1), required=True)
+        p.add_argument("--comment", default="")
+        p.add_argument("--expected-substring", default="")
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_feedback_add(args)
+
     # annolid-run update check|run|rollback
     if len(argv) >= 2 and argv[0] == "update":
         action = argv[1]
@@ -1116,6 +1301,10 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
             p.add_argument("--require-signature", action="store_true")
             p.add_argument("--execute", action="store_true")
             p.add_argument("--skip-post-check", action="store_true")
+            p.add_argument("--canary-metrics", default=None)
+            p.add_argument("--canary-min-samples", type=int, default=20)
+            p.add_argument("--canary-max-failure-rate", type=float, default=0.05)
+            p.add_argument("--canary-max-regressions", type=int, default=0)
             args = p.parse_args(argv[2:])
             return _cmd_update_run(args)
         if action == "rollback":

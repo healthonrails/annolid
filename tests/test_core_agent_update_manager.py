@@ -4,6 +4,7 @@ from annolid.core.agent.update_manager.manager import (
     SignedUpdateManager,
     SignedUpdatePlan,
 )
+from annolid.core.agent.update_manager.canary import CanaryPolicy
 from annolid.core.agent.update_manager.manifest import UpdateManifest
 from annolid.core.agent.update_manager.verify import VerificationResult
 
@@ -53,4 +54,20 @@ def test_signed_update_manager_rolls_back_on_apply_failure() -> None:
     )
     payload = manager.run(plan, execute=True, run_post_check=False)
     assert payload["status"] == "failed"
+    assert isinstance(payload.get("rollback"), dict)
+
+
+def test_signed_update_manager_rolls_back_on_canary_threshold() -> None:
+    manager = SignedUpdateManager(project="annolid")
+    plan = _plan(commands=[], install_mode="source")
+    payload = manager.run(
+        plan,
+        execute=True,
+        run_post_check=False,
+        canary_metrics={"sample_count": 100, "failure_count": 20, "regressions": 0},
+        canary_policy=CanaryPolicy(
+            min_samples=20, max_failure_rate=0.05, max_regressions=0
+        ),
+    )
+    assert payload["status"] == "failed_canary"
     assert isinstance(payload.get("rollback"), dict)

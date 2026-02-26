@@ -5,6 +5,7 @@ from .schema import (
     SkillRecord,
     validate_skill_manifest,
 )
+from .shadow import compare_skill_pack_shadow, flatten_skills_by_name
 from .watcher import SkillRegistryWatcher
 
 __all__ = [
@@ -13,5 +14,7 @@ __all__ = [
     "SkillManifestValidation",
     "SkillRecord",
     "validate_skill_manifest",
+    "compare_skill_pack_shadow",
+    "flatten_skills_by_name",
     "SkillRegistryWatcher",
 ]

@@ -307,6 +307,39 @@ def test_agent_skills_inspect_reports_invalid_manifest(tmp_path: Path, capsys) -
     assert payload["invalid_skills"][0]["name"] == "bad"
 
 
+def test_agent_skills_shadow_operator_command(tmp_path: Path, capsys) -> None:
+    workspace = tmp_path / "workspace"
+    active = workspace / "skills" / "demo"
+    active.mkdir(parents=True, exist_ok=True)
+    (active / "SKILL.md").write_text("---\ndescription: demo\n---\n", encoding="utf-8")
+    candidate_pack = tmp_path / "candidate_pack"
+    candidate_demo = candidate_pack / "demo"
+    candidate_new = candidate_pack / "new_skill"
+    candidate_demo.mkdir(parents=True, exist_ok=True)
+    candidate_new.mkdir(parents=True, exist_ok=True)
+    (candidate_demo / "SKILL.md").write_text(
+        "---\ndescription: demo v2\n---\n", encoding="utf-8"
+    )
+    (candidate_new / "SKILL.md").write_text(
+        "---\ndescription: new\n---\n", encoding="utf-8"
+    )
+    rc = annolid_run(
+        [
+            "agent",
+            "skills",
+            "shadow",
+            "--workspace",
+            str(workspace),
+            "--candidate-pack",
+            str(candidate_pack),
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "new_skill" in payload["added"]
+    assert "demo" in payload["overridden"]
+
+
 def test_agent_memory_flush_operator_command(tmp_path: Path, capsys) -> None:
     workspace = tmp_path / "workspace"
     rc = annolid_run(
@@ -374,6 +407,96 @@ def test_agent_eval_run_operator_command(tmp_path: Path, capsys) -> None:
     _payload = json.loads(capsys.readouterr().out)
     report = json.loads(out.read_text(encoding="utf-8"))
     assert report["regression_gate"]["passed"] is False
+
+
+def test_agent_feedback_add_and_build_regression_dataset(
+    tmp_path: Path, capsys
+) -> None:
+    workspace = tmp_path / "workspace"
+    # Create trace by running a flush/inspect cycle and explicit feedback.
+    rc_feedback = annolid_run(
+        [
+            "agent",
+            "feedback",
+            "add",
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            "s1",
+            "--trace-id",
+            "trace-manual",
+            "--rating",
+            "1",
+            "--comment",
+            "good",
+            "--expected-substring",
+            "ok",
+        ]
+    )
+    assert rc_feedback == 0
+    payload_feedback = json.loads(capsys.readouterr().out)
+    assert payload_feedback["saved"] is True
+
+    # write synthetic trace directly to enable dataset builder row.
+    trace_path = workspace / "eval" / "run_traces.ndjson"
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    trace_path.write_text(
+        json.dumps(
+            {
+                "trace_id": "trace-manual",
+                "user_message_preview": "u",
+                "assistant_response_preview": "ok",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "regression.jsonl"
+    rc_build = annolid_run(
+        [
+            "agent",
+            "eval",
+            "build-regression",
+            "--workspace",
+            str(workspace),
+            "--out",
+            str(out),
+        ]
+    )
+    assert rc_build == 0
+    payload_build = json.loads(capsys.readouterr().out)
+    assert payload_build["count"] >= 1
+    assert out.exists()
+
+
+def test_agent_eval_gate_operator_command(tmp_path: Path, capsys) -> None:
+    changed = tmp_path / "changed.txt"
+    changed.write_text("annolid/core/agent/skills.py\n", encoding="utf-8")
+    report = tmp_path / "report.json"
+    report.write_text(
+        json.dumps({"regressions": [], "candidate": {"pass_rate": 1.0}}),
+        encoding="utf-8",
+    )
+    rc = annolid_run(
+        [
+            "agent",
+            "eval",
+            "gate",
+            "--changed-files",
+            str(changed),
+            "--report",
+            str(report),
+            "--max-regressions",
+            "0",
+            "--min-pass-rate",
+            "0.8",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["required"] is True
+    assert payload["gate"]["passed"] is True
 
 
 def test_update_check_run_rollback_operator_commands(monkeypatch, capsys) -> None:
