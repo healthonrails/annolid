@@ -40,6 +40,8 @@ Annolid agent operations are split into two layers:
   supports manifest check, artifact staging/download, checksum verification, signature verification, and transaction reporting.
 - Auto-update:
   disabled by default; configurable interval+jitter schedule when enabled (`ANNOLID_AUTO_UPDATE_*` env settings).
+- GUI controls:
+  `AI Model Settings -> Agent Runtime` includes auto-update enable/channel/check-now/rollback and bot settings for skill hot reload, memory mode, and skill source locations.
 
 ## How to add a tool
 
@@ -157,6 +159,15 @@ Use `annolid-run` commands for routine operations:
 - `annolid-run update check --channel stable|beta|dev [--require-signature]`
 - `annolid-run update run --channel stable|beta|dev [--execute] [--require-signature] [--skip-post-check] [--canary-metrics <json>]`
 - `annolid-run update rollback --install-mode package|source --previous-version <X.Y.Z> [--execute]`
+
+### Admin Function APIs
+
+The agent runtime also exposes operator-style function tools:
+
+- `skills.refresh`
+- `memory.flush`
+- `eval.run`
+- `update.run`
 
 ## Improvement Quality Loop
 

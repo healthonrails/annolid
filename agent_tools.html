@@ -63,7 +63,10 @@
 <li class="toctree-l2"><a class="reference internal" href="#artifact-layout">Artifact layout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#caching-semantics">Caching semantics</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#citation-management-tools">Citation management tools</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#operator-commands">Operator Commands</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#operator-commands">Operator Commands</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#admin-function-apis">Admin Function APIs</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#improvement-quality-loop">Improvement Quality Loop</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#governance-and-audit">Governance and Audit</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#three-js-bot-tools">Three.js bot tools</a></li>
@@ -157,6 +160,8 @@ rollout can enforce rollback thresholds using sample count, failure-rate, and re
 supports manifest check, artifact staging/download, checksum verification, signature verification, and transaction reporting.</p></li>
 <li><p>Auto-update:
 disabled by default; configurable interval+jitter schedule when enabled (<code class="docutils literal notranslate"><span class="pre">ANNOLID_AUTO_UPDATE_*</span></code> env settings).</p></li>
+<li><p>GUI controls:
+<code class="docutils literal notranslate"><span class="pre">AI</span> <span class="pre">Model</span> <span class="pre">Settings</span> <span class="pre">-&gt;</span> <span class="pre">Agent</span> <span class="pre">Runtime</span></code> includes auto-update enable/channel/check-now/rollback and bot settings for skill hot reload, memory mode, and skill source locations.</p></li>
 </ul>
 </section>
 </section>
@@ -291,6 +296,16 @@ the service returns cached results without re-running the agent.</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">update</span> <span class="pre">run</span> <span class="pre">--channel</span> <span class="pre">stable|beta|dev</span> <span class="pre">[--execute]</span> <span class="pre">[--require-signature]</span> <span class="pre">[--skip-post-check]</span> <span class="pre">[--canary-metrics</span> <span class="pre">&lt;json&gt;]</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">annolid-run</span> <span class="pre">update</span> <span class="pre">rollback</span> <span class="pre">--install-mode</span> <span class="pre">package|source</span> <span class="pre">--previous-version</span> <span class="pre">&lt;X.Y.Z&gt;</span> <span class="pre">[--execute]</span></code></p></li>
 </ul>
+<section id="admin-function-apis">
+<h3>Admin Function APIs<a class="headerlink" href="#admin-function-apis" title="Link to this heading"></a></h3>
+<p>The agent runtime also exposes operator-style function tools:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">skills.refresh</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">memory.flush</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">eval.run</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">update.run</span></code></p></li>
+</ul>
+</section>
 </section>
 <section id="improvement-quality-loop">
 <h2>Improvement Quality Loop<a class="headerlink" href="#improvement-quality-loop" title="Link to this heading"></a></h2>
