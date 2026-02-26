@@ -64,3 +64,36 @@ def test_memory_get_guards_path_scope(tmp_path: Path) -> None:
     history_payload = store.memory_get("memory/HISTORY.md")
     assert history_payload["path"] == "memory/HISTORY.md"
     assert "line range test" in history_payload["content"]
+
+
+def test_memory_store_supports_custom_retrieval_plugin(tmp_path: Path) -> None:
+    class _FakePlugin:
+        name = "fake_retrieval_v1"
+
+        def search(
+            self, store, query: str, *, top_k: int = 5, max_snippet_chars: int = 700
+        ):
+            del store, query, top_k, max_snippet_chars
+            return [{"path": "memory/MEMORY.md", "score": 1.0, "snippet": "fake"}]
+
+    store = AgentMemoryStore(tmp_path, retrieval_plugin=_FakePlugin())
+    results = store.memory_search("anything")
+    assert store.retrieval_plugin_name == "fake_retrieval_v1"
+    assert len(results) == 1
+    assert results[0]["snippet"] == "fake"
+
+
+def test_memory_store_defaults_to_semantic_keyword_plugin(tmp_path: Path) -> None:
+    store = AgentMemoryStore(tmp_path)
+    assert store.retrieval_plugin_name == "workspace_semantic_keyword_v1"
+
+
+def test_memory_search_falls_back_to_keyword_when_semantic_empty(
+    tmp_path: Path,
+) -> None:
+    store = AgentMemoryStore(tmp_path)
+    store.write_long_term("Annolid install guide and setup steps.")
+    store.memory_search_semantic = lambda *a, **k: []  # type: ignore[method-assign]
+    results = store.memory_search("install setup", top_k=3)
+    assert len(results) >= 1
+    assert "install" in results[0]["snippet"].lower()

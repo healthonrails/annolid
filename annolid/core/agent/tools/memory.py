@@ -59,6 +59,7 @@ class MemorySearchTool(FunctionTool):
             {
                 "query": str(query or ""),
                 "count": len(results),
+                "retrieval_plugin": self._memory.retrieval_plugin_name,
                 "results": results,
             }
         )

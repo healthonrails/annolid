@@ -29,6 +29,7 @@ from annolid.utils.llm_settings import resolve_agent_runtime_config, resolve_llm
 
 from .context import AgentContextBuilder
 from .memory import AgentMemoryStore
+from .memory_store.flush import append_pre_compaction_flush
 from .providers import LiteLLMProvider, OpenAICompatProvider, resolve_openai_compat
 from .tools import FunctionToolRegistry
 from .tools.function_builtin import (
@@ -1252,8 +1253,8 @@ class AgentLoop:
             )
             return keep
 
-        self._replace_session_history(session_id, keep)
         if not self._workspace:
+            self._replace_session_history(session_id, keep)
             self._set_last_consolidated_cursor(session_id=session_id, value=0)
             outcome = "no_workspace"
             self._logger.info(
@@ -1268,10 +1269,16 @@ class AgentLoop:
             )
             return keep
 
+        transcript = self._format_consolidation_transcript(archive)
         try:
             memory = AgentMemoryStore(Path(self._workspace))
+            self._flush_archive_to_daily_log(
+                memory=memory,
+                session_id=session_id,
+                transcript=transcript,
+                archive_len=len(archive),
+            )
             old_long_term = memory.read_long_term()
-            transcript = self._format_consolidation_transcript(archive)
             if self._should_skip_memory_consolidation_llm(transcript=transcript):
                 history_entry = self._fallback_history_entry(transcript)
                 if history_entry:
@@ -1297,6 +1304,7 @@ class AgentLoop:
                     len(transcript),
                     (time.perf_counter() - started) * 1000.0,
                 )
+                self._replace_session_history(session_id, keep)
                 return keep
             payload = await self._request_memory_consolidation(
                 transcript=transcript,
@@ -1319,9 +1327,12 @@ class AgentLoop:
                         before=old_long_term,
                         after=updated_memory,
                     )
+            self._replace_session_history(session_id, keep)
             self._set_last_consolidated_cursor(session_id=session_id, value=0)
             outcome = "llm_consolidated"
         except Exception as exc:
+            self._replace_session_history(session_id, keep)
+            self._set_last_consolidated_cursor(session_id=session_id, value=0)
             outcome = "failed"
             self._logger.warning(
                 "memory consolidation failed for session=%s: %s", session_id, exc
@@ -1345,6 +1356,22 @@ class AgentLoop:
             elapsed_ms=(time.perf_counter() - started) * 1000.0,
         )
         return keep
+
+    def _flush_archive_to_daily_log(
+        self,
+        *,
+        memory: AgentMemoryStore,
+        session_id: str,
+        transcript: str,
+        archive_len: int,
+    ) -> None:
+        _ = append_pre_compaction_flush(
+            store=memory,
+            session_id=session_id,
+            transcript=transcript,
+            archive_len=archive_len,
+            max_chars=6000,
+        )
 
     def _should_consolidate_memory(
         self,

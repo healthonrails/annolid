@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
@@ -915,6 +916,56 @@ def test_agent_loop_consolidation_skips_llm_for_short_transcript(
     assert history_path.exists()
     history_text = history_path.read_text(encoding="utf-8")
     assert "USER: a" in history_text or "Session history consolidated." in history_text
+
+
+def test_agent_loop_consolidation_flushes_archive_to_daily_memory_before_compaction(
+    tmp_path: Path,
+) -> None:
+    registry = FunctionToolRegistry()
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del tools, model, on_token
+        if (
+            len(messages) == 1
+            and messages[0].get("role") == "system"
+            and "Consolidate the archived chat transcript"
+            in str(messages[0].get("content") or "")
+        ):
+            raise RuntimeError("forced consolidation failure")
+        return {"content": "ok"}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+        memory_config=AgentMemoryConfig(
+            enabled=True,
+            max_history_messages=64,
+            memory_window=4,
+            include_facts_in_system_prompt=True,
+        ),
+    )
+    history = [
+        {"role": "user", "content": "alpha"},
+        {"role": "assistant", "content": "beta"},
+        {"role": "user", "content": "gamma"},
+        {"role": "assistant", "content": "delta"},
+        {"role": "user", "content": "epsilon"},
+    ]
+    kept = asyncio.run(loop._consolidate_memory(session_id="flush-1", history=history))
+    assert len(kept) == 2
+
+    today_file = tmp_path / "memory" / f"{date.today().strftime('%Y-%m-%d')}.md"
+    assert today_file.exists()
+    daily_text = today_file.read_text(encoding="utf-8")
+    assert "Pre-compaction Memory Flush" in daily_text
+    assert "USER: alpha" in daily_text
 
 
 def test_agent_loop_persists_tools_used_metadata() -> None:

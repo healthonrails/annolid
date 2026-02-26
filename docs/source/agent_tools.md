@@ -3,6 +3,38 @@
 This guide covers how to add a new agent tool, how artifacts are laid out on disk,
 and how caching works for agent runs.
 
+## Operational Model
+
+Annolid agent operations are split into two layers:
+
+- Self-improving:
+  skills and memory evolve behavior without replacing installed code.
+- Self-updating:
+  signed update workflow stages and applies software updates with rollback plans.
+
+### Self-improving
+
+- Skills:
+  loaded with precedence `workspace -> managed (~/.annolid/skills) -> bundled`.
+- Hot reload:
+  controlled by `skills.load.watch` and `skills.load.pollSeconds`.
+- Skill manifest validation:
+  frontmatter is validated at load time; invalid manifests are marked unavailable.
+- Workspace memory:
+  daily notes in `memory/YYYY-MM-DD.md` and curated long-term notes in `memory/MEMORY.md`.
+- Pre-compaction flush:
+  transcript snapshot can be appended before compaction via memory flush helpers.
+- Memory retrieval plugin:
+  default is local semantic ranking with keyword fallback (`workspace_semantic_keyword_v1`).
+
+### Self-updating
+
+- Channel-aware update manager supports `stable`, `beta`, and `dev`.
+- Pipeline:
+  `preflight -> stage -> verify -> apply -> restart marker -> post-check`.
+- Rollback:
+  rollback plan is generated for each run and executed on apply/post-check failures.
+
 ## How to add a tool
 
 1. **Define the tool** by extending the base class in `annolid/core/agent/tools/base.py`:
@@ -103,6 +135,32 @@ GUI workflow:
 - Manage a `.bib` file, save citations from active PDF/web context, choose auto-validation or strict mode, view/edit a `Source` column (URL or PDF path), edit rows inline with year/DOI checks, and remove selected entries.
 
 See also: `docs/source/citations_tutorial.md` for a full user tutorial.
+
+## Operator Commands
+
+Use `annolid-run` commands for routine operations:
+
+- `annolid-run agent skills refresh [--workspace <path>]`
+- `annolid-run agent skills inspect [--workspace <path>]`
+- `annolid-run agent memory flush [--workspace <path>] [--session-id <id>] [--note <text>]`
+- `annolid-run agent memory inspect [--workspace <path>]`
+- `annolid-run agent eval run --traces <jsonl> --candidate-responses <jsonl> --out <report.json>`
+- `annolid-run update check --channel stable|beta|dev [--require-signature]`
+- `annolid-run update run --channel stable|beta|dev [--execute] [--require-signature] [--skip-post-check]`
+- `annolid-run update rollback --install-mode package|source --previous-version <X.Y.Z> [--execute]`
+
+## Governance and Audit
+
+Governance events are stored as NDJSON with default path:
+
+- `~/.annolid/governance/events.ndjson`
+
+You can override it with:
+
+- `ANNOLID_GOVERNANCE_EVENTS_PATH=/custom/path/events.ndjson`
+
+Audited event categories include skill snapshot/refresh changes, memory writes/flushes,
+update stage/run actions, and rollback outcomes.
 
 ## Three.js bot tools
 

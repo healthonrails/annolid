@@ -9,6 +9,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from annolid.core.agent.config.loader import get_config_path, load_config
+from annolid.core.agent.skill_registry.registry import (
+    SkillRegistry as RuntimeSkillRegistry,
+)
+from annolid.core.agent.skill_registry.schema import (
+    SkillLoadConfig,
+    validate_skill_manifest,
+)
 from annolid.core.agent.utils.helpers import get_agent_data_path
 
 try:  # pragma: no cover - optional dependency
@@ -28,6 +35,8 @@ class AgentSkillsLoader:
         workspace: Path,
         builtin_skills_dir: Optional[Path] = None,
         managed_skills_dir: Optional[Path] = None,
+        watch: Optional[bool] = None,
+        watch_poll_seconds: Optional[float] = None,
     ):
         self.workspace = Path(workspace)
         self.workspace_skills = self.workspace / "skills"
@@ -41,17 +50,24 @@ class AgentSkillsLoader:
             if managed_skills_dir is not None
             else MANAGED_SKILLS_DIR
         )
-        self._snapshot: Optional[List[Dict[str, Any]]] = None
+        self.registry = RuntimeSkillRegistry(
+            workspace=self.workspace,
+            builtin_skills_dir=self.builtin_skills,
+            managed_skills_dir=self.managed_skills,
+            parse_meta=self._parse_skill_meta,
+            read_frontmatter_from_path=self._read_frontmatter_from_path,
+            get_config_path=get_config_path,
+            watch=watch,
+            watch_poll_seconds=watch_poll_seconds,
+        )
         self._config_dict_cache: Optional[Dict[str, Any]] = None
 
     def refresh_snapshot(self) -> None:
-        self._snapshot = self._build_skill_snapshot()
+        self.registry.refresh()
         self._config_dict_cache = None
 
     def list_skills(self, filter_unavailable: bool = True) -> List[Dict[str, Any]]:
-        if self._snapshot is None:
-            self.refresh_snapshot()
-        skills = list(self._snapshot or [])
+        skills = self.registry.list_skills()
         if filter_unavailable:
             return [
                 s
@@ -172,7 +188,50 @@ class AgentSkillsLoader:
                 merged.update(candidate)
         return merged or parsed
 
+    @classmethod
+    def _parse_skill_meta(cls, frontmatter: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = cls._parse_agent_metadata(frontmatter.get("metadata", {}))
+        out: Dict[str, Any] = dict(metadata)
+        for key in (
+            "always",
+            "os",
+            "requires",
+            "user-invocable",
+            "user_invocable",
+            "disable-model-invocation",
+            "disable_model_invocation",
+            "command-dispatch",
+            "command_dispatch",
+            "command-tool",
+            "command_tool",
+            "command-arg-mode",
+            "command_arg_mode",
+        ):
+            if key in frontmatter:
+                out[key] = frontmatter[key]
+        out["user_invocable"] = bool(
+            out.get("user_invocable", out.get("user-invocable", True))
+        )
+        out["disable_model_invocation"] = bool(
+            out.get(
+                "disable_model_invocation",
+                out.get("disable-model-invocation", False),
+            )
+        )
+        out["command_dispatch"] = str(
+            out.get("command_dispatch", out.get("command-dispatch", ""))
+        ).strip()
+        out["command_tool"] = str(
+            out.get("command_tool", out.get("command-tool", ""))
+        ).strip()
+        out["command_arg_mode"] = str(
+            out.get("command_arg_mode", out.get("command-arg-mode", ""))
+        ).strip()
+        return out
+
     def _check_requirements(self, skill_meta: dict) -> bool:
+        if not bool(skill_meta.get("__manifest_valid", True)):
+            return False
         if bool(skill_meta.get("always")):
             return True
         allowed_os = skill_meta.get("os", [])
@@ -215,47 +274,17 @@ class AgentSkillsLoader:
 
     def _get_skill_meta_by_path(self, path: str) -> dict:
         meta = self._get_frontmatter(path) or {}
-        metadata = self._parse_agent_metadata(meta.get("metadata", {}))
-        out: Dict[str, Any] = dict(metadata)
-        for key in (
-            "always",
-            "os",
-            "requires",
-            "user-invocable",
-            "user_invocable",
-            "disable-model-invocation",
-            "disable_model_invocation",
-            "command-dispatch",
-            "command_dispatch",
-            "command-tool",
-            "command_tool",
-            "command-arg-mode",
-            "command_arg_mode",
-        ):
-            if key in meta:
-                out[key] = meta[key]
-        out["user_invocable"] = bool(
-            out.get("user_invocable", out.get("user-invocable", True))
-        )
-        out["disable_model_invocation"] = bool(
-            out.get(
-                "disable_model_invocation",
-                out.get("disable-model-invocation", False),
-            )
-        )
-        out["command_dispatch"] = str(
-            out.get("command_dispatch", out.get("command-dispatch", ""))
-        ).strip()
-        out["command_tool"] = str(
-            out.get("command_tool", out.get("command-tool", ""))
-        ).strip()
-        out["command_arg_mode"] = str(
-            out.get("command_arg_mode", out.get("command-arg-mode", ""))
-        ).strip()
-        return out
+        parsed = self._parse_skill_meta(meta)
+        manifest = validate_skill_manifest(meta)
+        parsed["__manifest_valid"] = bool(manifest.valid)
+        parsed["__manifest_errors"] = list(manifest.errors)
+        return parsed
 
     def _get_missing_requirements(self, skill_meta: dict) -> str:
         missing: List[str] = []
+        manifest_errors = skill_meta.get("__manifest_errors")
+        if isinstance(manifest_errors, list) and manifest_errors:
+            missing.append("MANIFEST: " + "; ".join(str(e) for e in manifest_errors))
         requires = skill_meta.get("requires", {})
         bins = requires.get("bins", [])
         if isinstance(bins, str):
@@ -285,90 +314,6 @@ class AgentSkillsLoader:
                     missing.append(f"CONFIG: {key_path}")
         return ", ".join(missing)
 
-    def _build_skill_snapshot(self) -> List[Dict[str, Any]]:
-        by_name: Dict[str, Dict[str, Any]] = {}
-        for source, root in self._iter_skill_roots_by_precedence():
-            if not root.exists():
-                continue
-            for skill_dir in root.iterdir():
-                if not skill_dir.is_dir():
-                    continue
-                skill_file = skill_dir / "SKILL.md"
-                if not skill_file.exists():
-                    continue
-                name = skill_dir.name
-                if name in by_name:
-                    continue
-
-                path_str = str(skill_file)
-                meta = self._get_frontmatter(path_str) or {}
-                fallback_desc = name
-                description = str(meta.get("description") or fallback_desc)
-
-                metadata = self._parse_agent_metadata(meta.get("metadata", {}))
-                parsed_meta: Dict[str, Any] = dict(metadata)
-                for key in (
-                    "always",
-                    "os",
-                    "requires",
-                    "user-invocable",
-                    "user_invocable",
-                    "disable-model-invocation",
-                    "disable_model_invocation",
-                    "command-dispatch",
-                    "command_dispatch",
-                    "command-tool",
-                    "command_tool",
-                    "command-arg-mode",
-                    "command_arg_mode",
-                ):
-                    if key in meta:
-                        parsed_meta[key] = meta[key]
-                parsed_meta["user_invocable"] = bool(
-                    parsed_meta.get(
-                        "user_invocable", parsed_meta.get("user-invocable", True)
-                    )
-                )
-                parsed_meta["disable_model_invocation"] = bool(
-                    parsed_meta.get(
-                        "disable_model_invocation",
-                        parsed_meta.get("disable-model-invocation", False),
-                    )
-                )
-                parsed_meta["command_dispatch"] = str(
-                    parsed_meta.get(
-                        "command_dispatch", parsed_meta.get("command-dispatch", "")
-                    )
-                ).strip()
-                parsed_meta["command_tool"] = str(
-                    parsed_meta.get("command_tool", parsed_meta.get("command-tool", ""))
-                ).strip()
-                parsed_meta["command_arg_mode"] = str(
-                    parsed_meta.get(
-                        "command_arg_mode", parsed_meta.get("command-arg-mode", "")
-                    )
-                ).strip()
-
-                by_name[name] = {
-                    "name": name,
-                    "path": path_str,
-                    "source": source,
-                    "description": description,
-                    "parsed_meta": parsed_meta,
-                    "raw_meta": meta,
-                }
-        return [by_name[k] for k in sorted(by_name.keys())]
-
-    def _iter_skill_roots_by_precedence(self) -> List[tuple[str, Path]]:
-        roots: List[tuple[str, Path]] = [
-            ("workspace", self.workspace_skills),
-            ("managed", self.managed_skills),
-            ("builtin", self.builtin_skills),
-        ]
-        for idx, path in enumerate(self._load_extra_skill_dirs()):
-            roots.append((f"extra:{idx}", path))
-        return roots
-
     @staticmethod
     def _read_frontmatter(content: str) -> Dict[str, Any]:
         if not content.startswith("---"):
@@ -392,7 +337,8 @@ class AgentSkillsLoader:
             meta[key.strip()] = value.strip().strip("\"'")
         return meta
 
-    def _get_frontmatter(self, path: str) -> Dict[str, Any]:
+    @classmethod
+    def _read_frontmatter_from_path(cls, path: str) -> Dict[str, Any]:
         p = Path(path)
         if not p.exists():
             return {}
@@ -400,45 +346,15 @@ class AgentSkillsLoader:
             content = p.read_text(encoding="utf-8")
         except OSError:
             return {}
-        return self._read_frontmatter(content)
+        return cls._read_frontmatter(content)
+
+    def _get_frontmatter(self, path: str) -> Dict[str, Any]:
+        return self._read_frontmatter_from_path(path)
 
     @staticmethod
     def _load_extra_skill_dirs() -> List[Path]:
-        extras: List[Path] = []
-        env_raw = str(os.getenv("ANNOLID_SKILLS_EXTRA_DIRS") or "").strip()
-        if env_raw:
-            for part in env_raw.split(os.pathsep):
-                entry = str(part or "").strip()
-                if entry:
-                    extras.append(Path(entry).expanduser())
-
-        try:
-            cfg_path = get_config_path()
-            if cfg_path.exists():
-                payload = json.loads(cfg_path.read_text(encoding="utf-8"))
-                if isinstance(payload, dict):
-                    skills = payload.get("skills") or {}
-                    load = skills.get("load") if isinstance(skills, dict) else {}
-                    extra_dirs = (
-                        load.get("extraDirs") if isinstance(load, dict) else None
-                    ) or (load.get("extra_dirs") if isinstance(load, dict) else None)
-                    if isinstance(extra_dirs, list):
-                        for item in extra_dirs:
-                            entry = str(item or "").strip()
-                            if entry:
-                                extras.append(Path(entry).expanduser())
-        except Exception:
-            pass
-
-        out: List[Path] = []
-        seen: set[str] = set()
-        for path in extras:
-            key = str(path)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(path)
-        return out
+        cfg = SkillLoadConfig.from_sources(get_config_path=get_config_path)
+        return list(cfg.extra_dirs)
 
     def _get_runtime_config_dict(self) -> Dict[str, Any]:
         if self._config_dict_cache is not None:

@@ -48,6 +48,13 @@ jobs:
     - name: Test with pytest
       run: |
         pytest
+    - name: Agent/update integration smoke tests
+      run: |
+        pytest -q \
+          tests/test_agent_skill_precedence.py \
+          tests/test_agent_memory_flush.py \
+          tests/test_update_manager_flow.py \
+          tests/test_update_rollback.py
     - uses: ammaraskar/sphinx-action@0.4
       with:
         docs-folder: "docs/"

@@ -797,6 +797,342 @@ def _cmd_agent_security_check(_: argparse.Namespace) -> int:
     return 0 if status == "ok" else 1
 
 
+def _cmd_agent_update(args: argparse.Namespace) -> int:
+    from annolid.core.agent.updater import apply_update, check_for_updates
+
+    channel = str(args.channel or "stable").strip().lower()
+    timeout_s = float(args.timeout_s)
+    execute = bool(args.execute and args.apply)
+    require_signature = bool(args.require_signature)
+    report = check_for_updates(
+        channel=channel,
+        timeout_s=timeout_s,
+        require_signature=require_signature,
+    )
+    payload = report.to_dict()
+    if bool(args.apply):
+        payload = apply_update(
+            report,
+            execute=execute,
+            run_doctor=not bool(args.skip_doctor),
+        )
+    print(json.dumps(payload, indent=2))
+    if bool(args.apply) and execute:
+        steps = payload.get("steps")
+        if isinstance(steps, list):
+            for item in steps:
+                if isinstance(item, dict) and not bool(item.get("ok", True)):
+                    return 1
+    return 0
+
+
+def _cmd_agent_eval(args: argparse.Namespace) -> int:
+    from annolid.core.agent.eval.run_agent_eval import run_eval
+
+    report = run_eval(
+        traces_path=Path(args.traces).expanduser().resolve(),
+        candidate_responses_path=Path(args.candidate_responses).expanduser().resolve(),
+        baseline_responses_path=(
+            Path(args.baseline_responses).expanduser().resolve()
+            if args.baseline_responses
+            else None
+        ),
+    )
+    out_path = Path(args.out).expanduser().resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    regressions = report.get("regressions")
+    regression_count = len(regressions) if isinstance(regressions, list) else 0
+    gate_limit = int(args.max_regressions)
+    gate_passed = regression_count <= gate_limit
+    if isinstance(report, dict):
+        report["regression_gate"] = {
+            "max_regressions": gate_limit,
+            "regression_count": regression_count,
+            "passed": gate_passed,
+        }
+    out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps({"out": str(out_path), "report": report}, indent=2))
+    return 0 if gate_passed else 1
+
+
+def _cmd_agent_skills_refresh(args: argparse.Namespace) -> int:
+    from annolid.core.agent.observability import emit_governance_event
+    from annolid.core.agent.skills import AgentSkillsLoader
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
+    loader = AgentSkillsLoader(workspace=workspace)
+    before = loader.list_skills(filter_unavailable=False)
+    before_names = sorted(str(s.get("name") or "") for s in before)
+    loader.refresh_snapshot()
+    skills = loader.list_skills(filter_unavailable=False)
+    after_names = sorted(str(s.get("name") or "") for s in skills)
+    added = [name for name in after_names if name not in set(before_names)]
+    removed = [name for name in before_names if name not in set(after_names)]
+    payload = {
+        "workspace": str(workspace),
+        "refreshed": True,
+        "count": len(skills),
+        "names": [str(s.get("name") or "") for s in skills],
+        "added": added,
+        "removed": removed,
+    }
+    emit_governance_event(
+        event_type="skills",
+        action="refresh",
+        outcome="ok",
+        actor="operator",
+        details={
+            "workspace": str(workspace),
+            "count_before": len(before_names),
+            "count_after": len(after_names),
+            "added": added,
+            "removed": removed,
+        },
+    )
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_agent_skills_inspect(args: argparse.Namespace) -> int:
+    from annolid.core.agent.skills import AgentSkillsLoader
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
+    loader = AgentSkillsLoader(workspace=workspace)
+    skills = loader.list_skills(filter_unavailable=False)
+    workspace_skills = [s for s in skills if str(s.get("source") or "") == "workspace"]
+    invalid = []
+    for row in workspace_skills:
+        if bool(row.get("manifest_valid", True)):
+            continue
+        invalid.append(
+            {
+                "name": str(row.get("name") or ""),
+                "path": str(row.get("path") or ""),
+                "manifest_errors": list(row.get("manifest_errors") or []),
+            }
+        )
+    payload = {
+        "workspace": str(workspace),
+        "workspace_skill_count": len(workspace_skills),
+        "invalid_manifest_count": len(invalid),
+        "invalid_skills": invalid,
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_agent_memory_flush(args: argparse.Namespace) -> int:
+    from annolid.core.agent.observability import emit_governance_event
+    from annolid.core.agent.memory import AgentMemoryStore
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
+    store = AgentMemoryStore(workspace)
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    note = str(getattr(args, "note", "") or "").strip() or "operator memory flush"
+    session_id = str(getattr(args, "session_id", "") or "").strip()
+    entry = (
+        f"[{stamp}] {note}"
+        if not session_id
+        else f"[{stamp}] {note} (session_id={session_id})"
+    )
+    store.append_today(entry)
+    store.append_history(entry)
+    payload = {
+        "workspace": str(workspace),
+        "flushed": True,
+        "today_file": str(store.get_today_file()),
+        "history_file": str(store.history_file),
+        "entry": entry,
+    }
+    emit_governance_event(
+        event_type="memory",
+        action="operator_flush",
+        outcome="ok",
+        actor="operator",
+        details={
+            "workspace": str(workspace),
+            "session_id": session_id,
+            "entry_chars": len(entry),
+        },
+    )
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_agent_memory_inspect(args: argparse.Namespace) -> int:
+    from annolid.core.agent.memory import AgentMemoryStore
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
+    store = AgentMemoryStore(workspace)
+    payload = {
+        "workspace": str(workspace),
+        "memory_dir": str(store.memory_dir),
+        "retrieval_plugin": store.retrieval_plugin_name,
+        "today_file": str(store.get_today_file()),
+        "long_term_file": str(store.memory_file),
+        "history_file": str(store.history_file),
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_update_check(args: argparse.Namespace) -> int:
+    from annolid.core.agent.update_manager.manager import SignedUpdateManager
+
+    manager = SignedUpdateManager(project=str(args.project or "annolid"))
+    plan = manager.stage(
+        channel=str(args.channel or "stable"),
+        timeout_s=float(args.timeout_s),
+        require_signature=bool(args.require_signature),
+    )
+    print(json.dumps(plan.to_dict(), indent=2))
+    return 0
+
+
+def _cmd_update_run(args: argparse.Namespace) -> int:
+    from annolid.core.agent.update_manager.manager import SignedUpdateManager
+
+    manager = SignedUpdateManager(project=str(args.project or "annolid"))
+    plan = manager.stage(
+        channel=str(args.channel or "stable"),
+        timeout_s=float(args.timeout_s),
+        require_signature=bool(args.require_signature),
+    )
+    payload = manager.run(
+        plan,
+        execute=bool(args.execute),
+        run_post_check=not bool(args.skip_post_check),
+    )
+    print(json.dumps(payload, indent=2))
+    status = str(payload.get("status") or "").strip().lower()
+    return 0 if status in {"staged", "updated"} else 1
+
+
+def _cmd_update_rollback(args: argparse.Namespace) -> int:
+    from annolid.core.agent.update_manager.rollback import (
+        build_rollback_plan,
+        execute_rollback,
+    )
+
+    plan = build_rollback_plan(
+        install_mode=str(args.install_mode or "package"),
+        project=str(args.project or "annolid"),
+        previous_version=str(args.previous_version or ""),
+    )
+    payload = execute_rollback(plan, execute=bool(args.execute))
+    print(json.dumps(payload, indent=2))
+    return 0 if bool(payload.get("ok", False)) else 1
+
+
+def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
+    if not argv:
+        return None
+
+    # annolid-run agent skills refresh
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "skills"
+        and argv[2] == "refresh"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent skills refresh")
+        p.add_argument("--workspace", default=None)
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_skills_refresh(args)
+
+    # annolid-run agent skills inspect
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "skills"
+        and argv[2] == "inspect"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent skills inspect")
+        p.add_argument("--workspace", default=None)
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_skills_inspect(args)
+
+    # annolid-run agent memory flush
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "memory"
+        and argv[2] == "flush"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent memory flush")
+        p.add_argument("--workspace", default=None)
+        p.add_argument("--session-id", default=None)
+        p.add_argument("--note", default=None)
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_memory_flush(args)
+
+    # annolid-run agent memory inspect
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "memory"
+        and argv[2] == "inspect"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent memory inspect")
+        p.add_argument("--workspace", default=None)
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_memory_inspect(args)
+
+    # annolid-run agent eval run
+    if len(argv) >= 3 and argv[0] == "agent" and argv[1] == "eval" and argv[2] == "run":
+        p = argparse.ArgumentParser(prog="annolid-run agent eval run")
+        p.add_argument("--traces", required=True)
+        p.add_argument("--candidate-responses", required=True)
+        p.add_argument("--baseline-responses", default=None)
+        p.add_argument("--out", required=True)
+        p.add_argument("--max-regressions", type=int, default=0)
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_eval(args)
+
+    # annolid-run update check|run|rollback
+    if len(argv) >= 2 and argv[0] == "update":
+        action = argv[1]
+        if action == "check":
+            p = argparse.ArgumentParser(prog="annolid-run update check")
+            p.add_argument("--project", default="annolid")
+            p.add_argument(
+                "--channel", choices=("stable", "beta", "dev"), default="stable"
+            )
+            p.add_argument("--timeout-s", type=float, default=4.0)
+            p.add_argument("--require-signature", action="store_true")
+            args = p.parse_args(argv[2:])
+            return _cmd_update_check(args)
+        if action == "run":
+            p = argparse.ArgumentParser(prog="annolid-run update run")
+            p.add_argument("--project", default="annolid")
+            p.add_argument(
+                "--channel", choices=("stable", "beta", "dev"), default="stable"
+            )
+            p.add_argument("--timeout-s", type=float, default=4.0)
+            p.add_argument("--require-signature", action="store_true")
+            p.add_argument("--execute", action="store_true")
+            p.add_argument("--skip-post-check", action="store_true")
+            args = p.parse_args(argv[2:])
+            return _cmd_update_run(args)
+        if action == "rollback":
+            p = argparse.ArgumentParser(prog="annolid-run update rollback")
+            p.add_argument("--project", default="annolid")
+            p.add_argument(
+                "--install-mode", choices=("package", "source"), default="package"
+            )
+            p.add_argument("--previous-version", required=True)
+            p.add_argument("--execute", action="store_true")
+            args = p.parse_args(argv[2:])
+            return _cmd_update_rollback(args)
+        raise SystemExit(f"Unknown update action: {action}")
+
+    return None
+
+
 def _cmd_agent_cron_list(args: argparse.Namespace) -> int:
     from annolid.core.agent.cron import CronService
 
@@ -1435,6 +1771,68 @@ def _build_root_parser() -> argparse.ArgumentParser:
     )
     security_check_p.set_defaults(_handler=_cmd_agent_security_check)
 
+    update_p = sub.add_parser(
+        "agent-update",
+        help="Check for agent updates and optionally apply them.",
+    )
+    update_p.add_argument(
+        "--channel",
+        choices=("stable", "beta", "dev"),
+        default="stable",
+        help="Update channel policy (default: stable).",
+    )
+    update_p.add_argument(
+        "--timeout-s",
+        type=float,
+        default=4.0,
+        help="PyPI metadata request timeout in seconds (default: 4.0).",
+    )
+    update_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Prepare an update run (dry-run unless --execute is also set).",
+    )
+    update_p.add_argument(
+        "--execute",
+        action="store_true",
+        help="Execute update commands (only used with --apply).",
+    )
+    update_p.add_argument(
+        "--skip-doctor",
+        action="store_true",
+        help="Skip post-update validation commands.",
+    )
+    update_p.add_argument(
+        "--require-signature",
+        action="store_true",
+        help="Require a valid signed update manifest before staging/apply.",
+    )
+    update_p.set_defaults(_handler=_cmd_agent_update)
+
+    eval_p = sub.add_parser(
+        "agent-eval",
+        help="Replay traces, score outcomes, compare baseline vs candidate.",
+    )
+    eval_p.add_argument("--traces", required=True, help="Eval traces (.json/.jsonl).")
+    eval_p.add_argument(
+        "--candidate-responses",
+        required=True,
+        help="Candidate responses (.json/.jsonl).",
+    )
+    eval_p.add_argument(
+        "--baseline-responses",
+        default=None,
+        help="Optional baseline responses (.json/.jsonl).",
+    )
+    eval_p.add_argument("--out", required=True, help="Output report JSON path.")
+    eval_p.add_argument(
+        "--max-regressions",
+        type=int,
+        default=0,
+        help="Fail if regressions exceed this threshold (default: 0).",
+    )
+    eval_p.set_defaults(_handler=_cmd_agent_eval)
+
     cron_list_p = sub.add_parser(
         "agent-cron-list", help="List scheduled Annolid agent cron jobs."
     )
@@ -1550,6 +1948,9 @@ def _dispatch_model_subcommand(
 def main(argv: Optional[list[str]] = None) -> int:
     configure_logging()
     argv = list(sys.argv[1:] if argv is None else argv)
+    operator_rc = _dispatch_operator_commands(argv)
+    if operator_rc is not None:
+        return int(operator_rc)
     p = _build_root_parser()
     args, rest = p.parse_known_args(argv)
 

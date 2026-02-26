@@ -54,6 +54,33 @@ annolid
 annolid --labels=/path/to/labels_custom.txt
 ```
 
+## Agent Safety Defaults and Rollback Operations
+
+Annolid agent update operations are conservative by default:
+
+- Update commands are dry-run unless `--execute` is set.
+- Signature enforcement is optional and explicit via `--require-signature`.
+- Post-checks run by default after execute; disable only when needed with `--skip-post-check`.
+- Rollback plans are always generated before apply.
+
+Common operator commands:
+
+- Check staged update plan:
+  `annolid-run update check --channel stable`
+- Stage update run (dry-run):
+  `annolid-run update run --channel stable`
+- Execute update:
+  `annolid-run update run --channel stable --execute`
+- Execute rollback:
+  `annolid-run update rollback --install-mode package --previous-version 1.2.3 --execute`
+
+Self-improving vs self-updating model:
+
+- Self-improving:
+  tune skills and memory (`annolid-run agent skills refresh`, `annolid-run agent memory flush`).
+- Self-updating:
+  change installed software with update manager and rollback controls.
+
 ## Install Detectron2 locally
 
 **Note**: if you intend to process your tagged videos using Google Colab (which you should do unless you are using a workstation with a higher-end GPU), then **you do not need to install Detectron2 on your local machine**, and you can ignore the following steps.

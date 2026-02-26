@@ -9,6 +9,7 @@ import pytest
 
 from annolid.core.agent.context import AgentContextBuilder
 from annolid.core.agent.loop import AgentLoop
+from annolid.core.agent import skills as skills_module
 from annolid.core.agent.skills import AgentSkillsLoader
 from annolid.core.agent.subagent import SubagentManager, build_subagent_tools_registry
 from annolid.core.agent.tools.function_base import FunctionTool
@@ -109,6 +110,73 @@ def test_skills_loader_honors_os_requirement(tmp_path: Path) -> None:
     loader = AgentSkillsLoader(tmp_path, builtin_skills_dir=tmp_path / "builtin")
     skills = loader.list_skills(filter_unavailable=True)
     assert not any(s["name"] == "linux_only" for s in skills)
+
+
+def test_skills_loader_watch_reload_detects_skill_updates(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "demo"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(
+        "---\ndescription: first\n---\nv1\n",
+        encoding="utf-8",
+    )
+    loader = AgentSkillsLoader(
+        tmp_path,
+        builtin_skills_dir=tmp_path / "builtin",
+        managed_skills_dir=tmp_path / "managed",
+        watch=True,
+        watch_poll_seconds=0.0,
+    )
+    initial = next(
+        s for s in loader.list_skills(filter_unavailable=False) if s["name"] == "demo"
+    )
+    assert initial["description"] == "first"
+
+    skill_file.write_text(
+        "---\ndescription: second\n---\nv2\n",
+        encoding="utf-8",
+    )
+    updated = next(
+        s for s in loader.list_skills(filter_unavailable=False) if s["name"] == "demo"
+    )
+    assert updated["description"] == "second"
+
+
+def test_skills_loader_watch_defaults_from_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        '{"skills": {"load": {"watch": true, "pollSeconds": 0.0}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(skills_module, "get_config_path", lambda: cfg)
+    loader = AgentSkillsLoader(
+        tmp_path,
+        builtin_skills_dir=tmp_path / "builtin",
+        managed_skills_dir=tmp_path / "managed",
+    )
+    assert loader.registry.watch_enabled is True
+    assert loader.registry.watch_poll_seconds == 0.0
+
+
+def test_skills_loader_validates_manifest_at_load_time(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "invalid_manifest"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        '---\ndescription: invalid manifest\nalways: "sometimes"\n---\nbad\n',
+        encoding="utf-8",
+    )
+    loader = AgentSkillsLoader(tmp_path, builtin_skills_dir=tmp_path / "builtin")
+
+    all_skills = loader.list_skills(filter_unavailable=False)
+    row = next(s for s in all_skills if s["name"] == "invalid_manifest")
+    assert row["manifest_valid"] is False
+    assert any("always must be a boolean" in e for e in row["manifest_errors"])
+
+    available = loader.list_skills(filter_unavailable=True)
+    assert not any(s["name"] == "invalid_manifest" for s in available)
 
 
 def test_context_builder_builds_user_media_payload(tmp_path: Path) -> None:

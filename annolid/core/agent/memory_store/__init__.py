@@ -1,23 +1,14 @@
-from __future__ import annotations
-
-from annolid.core.agent.memory_store import (
+from .flush import append_pre_compaction_flush, build_pre_compaction_flush_entry
+from .memory_core import (
     MemoryRetrievalPlugin,
     WorkspaceLexicalRetrievalPlugin,
     WorkspaceSemanticKeywordRetrievalPlugin,
-    WorkspaceMemoryStore,
-    append_pre_compaction_flush,
-    build_pre_compaction_flush_entry,
     get_memory_retrieval_plugin,
     set_memory_retrieval_plugin,
 )
-
-
-class AgentMemoryStore(WorkspaceMemoryStore):
-    """Backward-compatible alias for the workspace memory store."""
-
+from .store import WorkspaceMemoryStore
 
 __all__ = [
-    "AgentMemoryStore",
     "WorkspaceMemoryStore",
     "MemoryRetrievalPlugin",
     "WorkspaceLexicalRetrievalPlugin",

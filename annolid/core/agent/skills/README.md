@@ -33,6 +33,17 @@ Skills are discovered from:
 
 When names conflict, higher precedence wins.
 
+## Hot Reload
+
+Skill discovery supports optional mtime-based refresh checks between turns.
+
+- Enable with env: `ANNOLID_SKILLS_LOAD_WATCH=1` (or `ANNOLID_SKILLS_WATCH=1`)
+- Configure in `~/.annolid/config.json`:
+  - `skills.load.watch: true`
+  - `skills.load.pollSeconds: 1.0`
+- Optional env override for polling interval:
+  - `ANNOLID_SKILLS_WATCH_POLL_SECONDS=0.5`
+
 Example:
 
 ```yaml
