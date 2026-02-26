@@ -564,9 +564,10 @@ class PersistenceLifecycleMixin:
                 logger.debug(
                     "Failed to rescan prediction folder after deletion: %s", exc
                 )
-            # Hint the next prediction run to restart from this seed frame.
+            # Hint the next prediction run to restart from the frame after this
+            # seed so tracking uses the updated seed as context.
             try:
-                self._prediction_forced_start_frame = int(current_seed)
+                self._prediction_forced_start_frame = max(0, int(current_seed) + 1)
             except Exception:
                 self._prediction_forced_start_frame = None
         else:

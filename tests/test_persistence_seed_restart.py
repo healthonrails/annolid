@@ -89,7 +89,7 @@ def test_delete_predictions_from_seed_sets_forced_restart_hint(
     assert removed is True
     assert current_seed == 10
     assert next_seed == 20
-    assert window._prediction_forced_start_frame == 10
+    assert window._prediction_forced_start_frame == 11
     assert (folder / "video_results_000000011.json").exists() is False
     assert (folder / "video_results_000000012.json").exists() is False
     assert (folder / "video_results_000000010.json").exists() is True
