@@ -67,6 +67,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#admin-function-apis">Admin Function APIs</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="#shell-session-tools">Shell Session Tools</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#improvement-quality-loop">Improvement Quality Loop</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#governance-and-audit">Governance and Audit</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#three-js-bot-tools">Three.js bot tools</a></li>
@@ -313,6 +314,24 @@ the service returns cached results without re-running the agent.</p>
 </li>
 </ul>
 </section>
+</section>
+<section id="shell-session-tools">
+<h2>Shell Session Tools<a class="headerlink" href="#shell-session-tools" title="Link to this heading"></a></h2>
+<p>For OpenClaw-style shell lifecycle workflows, Annolid now provides session tools:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">exec_start(command,</span> <span class="pre">working_dir?,</span> <span class="pre">background?,</span> <span class="pre">timeout_s?,</span> <span class="pre">pty?)</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">exec_process(action,</span> <span class="pre">session_id?,</span> <span class="pre">wait_ms?,</span> <span class="pre">tail_lines?,</span> <span class="pre">text?,</span> <span class="pre">submit?)</span></code></p></li>
+</ul>
+<p>Supported <code class="docutils literal notranslate"><span class="pre">exec_process.action</span></code> values:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">list</span></code>, <code class="docutils literal notranslate"><span class="pre">poll</span></code>, <code class="docutils literal notranslate"><span class="pre">log</span></code>, <code class="docutils literal notranslate"><span class="pre">write</span></code>, <code class="docutils literal notranslate"><span class="pre">submit</span></code>, <code class="docutils literal notranslate"><span class="pre">kill</span></code></p></li>
+</ul>
+<p>Notes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">pty</span></code> is accepted but currently not enabled (<code class="docutils literal notranslate"><span class="pre">pty_supported=false</span></code> in responses).</p></li>
+<li><p>Basic dangerous command patterns are blocked at start time.</p></li>
+<li><p>Runtime policy group <code class="docutils literal notranslate"><span class="pre">group:runtime</span></code> now includes <code class="docutils literal notranslate"><span class="pre">exec</span></code>, <code class="docutils literal notranslate"><span class="pre">exec_start</span></code>, and <code class="docutils literal notranslate"><span class="pre">exec_process</span></code>.</p></li>
+</ul>
 </section>
 <section id="improvement-quality-loop">
 <h2>Improvement Quality Loop<a class="headerlink" href="#improvement-quality-loop" title="Link to this heading"></a></h2>

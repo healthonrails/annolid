@@ -72,8 +72,10 @@ In **Annolid Bot**, Annolid Bot can inspect and modify your local Annolid worksp
 - `code_search(...)` to find where behavior, flags, or APIs are implemented.
 - `code_explain(...)` to summarize Python modules/classes/functions and calls.
 - `read_file(...)`, `write_file(...)`, `edit_file(...)` for targeted updates.
-- `git_status(...)`, `git_diff(...)`, `git_log(...)` for local git workflow context.
-- `github_pr_status(...)`, `github_pr_checks(...)` for GitHub PR context via `gh`.
+- `git_status(...)`, `git_diff(...)`, `git_log(...)` for quick local git workflow context.
+- `git_cli(args=[...], allow_mutation?)` for advanced git CLI flows.
+- `github_pr_status(...)`, `github_pr_checks(...)` for quick GitHub PR context via `gh`.
+- `gh_cli(args=[...], allow_mutation?)` for advanced GitHub CLI flows.
 
 For safer edits, ask the bot to:
 
