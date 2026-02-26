@@ -514,7 +514,15 @@ def test_update_check_run_rollback_operator_commands(monkeypatch, capsys) -> Non
         cli_mod,
         "_cmd_update_run",
         lambda args: (
-            print(json.dumps({"action": "run", "execute": bool(args.execute)})),
+            print(
+                json.dumps(
+                    {
+                        "action": "run",
+                        "execute": bool(args.execute),
+                        "canary_metrics": args.canary_metrics,
+                    }
+                )
+            ),
             0,
         )[1],
     )
@@ -536,11 +544,14 @@ def test_update_check_run_rollback_operator_commands(monkeypatch, capsys) -> Non
     payload_check = json.loads(capsys.readouterr().out)
     assert payload_check["action"] == "check"
 
-    rc_run = annolid_run(["update", "run", "--execute"])
+    rc_run = annolid_run(
+        ["update", "run", "--execute", "--canary-metrics", "/tmp/metrics.json"]
+    )
     assert rc_run == 0
     payload_run = json.loads(capsys.readouterr().out)
     assert payload_run["action"] == "run"
     assert payload_run["execute"] is True
+    assert payload_run["canary_metrics"] == "/tmp/metrics.json"
 
     rc_rb = annolid_run(["update", "rollback", "--previous-version", "1.0.0"])
     assert rc_rb == 0
