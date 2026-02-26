@@ -231,6 +231,20 @@ Annolid Bot supports direct Three.js viewer control in GUI sessions.
 
 The bot recognizes natural-language commands such as `open threejs example ...`.
 
+## Browser Automation Safety
+
+Annolid supports MCP browser automation with both granular tools and a unified tool:
+
+- `mcp_browser` (single control surface with actions:
+  `status|start|stop|navigate|snapshot|screenshot|act|wait`)
+- `mcp_browser_navigate`, `mcp_browser_click`, `mcp_browser_type`, etc.
+
+Navigation hardening:
+
+- browser navigation allows `http://`, `https://`, and `about:blank` only.
+- unsafe schemes such as `file://`, `javascript:`, and `data:` are blocked.
+- GUI `open_url` also blocks `file://`; use an explicit local file path instead.
+
 ## Annolid code/docs Q&A and tutorials
 
 Annolid Bot is optimized to answer Annolid-specific questions from local docs and code context.
