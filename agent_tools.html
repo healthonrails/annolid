@@ -153,6 +153,10 @@ default is local semantic ranking with keyword fallback (<code class="docutils l
 rollback plan is generated for each run and executed on apply/post-check failures.</p></li>
 <li><p>Canary policy:
 rollout can enforce rollback thresholds using sample count, failure-rate, and regression limits.</p></li>
+<li><p>Safe update service:
+supports manifest check, artifact staging/download, checksum verification, signature verification, and transaction reporting.</p></li>
+<li><p>Auto-update:
+disabled by default; configurable interval+jitter schedule when enabled (<code class="docutils literal notranslate"><span class="pre">ANNOLID_AUTO_UPDATE_*</span></code> env settings).</p></li>
 </ul>
 </section>
 </section>

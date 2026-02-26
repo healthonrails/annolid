@@ -36,6 +36,10 @@ Annolid agent operations are split into two layers:
   rollback plan is generated for each run and executed on apply/post-check failures.
 - Canary policy:
   rollout can enforce rollback thresholds using sample count, failure-rate, and regression limits.
+- Safe update service:
+  supports manifest check, artifact staging/download, checksum verification, signature verification, and transaction reporting.
+- Auto-update:
+  disabled by default; configurable interval+jitter schedule when enabled (`ANNOLID_AUTO_UPDATE_*` env settings).
 
 ## How to add a tool
 
