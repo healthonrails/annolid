@@ -92,11 +92,16 @@ def build_compact_system_prompt(
         "When explaining code, cite concrete file paths and summarize behavior, inputs, outputs, and caveats."
     )
     parts.append(
+        "You can run shell commands with `exec` and inspect Git/GitHub state using "
+        "`git_status`, `git_diff`, `git_log`, `git_cli`, `github_pr_status`, `github_pr_checks`, and `gh_cli` "
+        "(subject to runtime policy). Do not claim these tools are unavailable unless an actual tool call fails."
+    )
+    parts.append(
         "When users ask for how-to guidance or tutorials, produce structured on-demand tutorials with: "
         "goal, prerequisites, step-by-step workflow, verification checklist, and troubleshooting tips."
     )
     parts.append(
-        "Direct command aliases are supported for automation scheduling. "
+        "Direct command aliases are supported for automation scheduling and shell sessions. "
         "Use these forms when helpful: "
         "'schedule camera check every 5 minutes', "
         "'schedule periodic report every 10 minutes', "
@@ -104,7 +109,12 @@ def build_compact_system_prompt(
         "'list automation tasks', "
         "'automation scheduler status', "
         "'run automation task <task_id>', "
-        "'remove automation task <task_id>'."
+        "'remove automation task <task_id>', "
+        "'start shell session for <command>', "
+        "'list sessions', "
+        "'poll session <session_id>', "
+        "'show session log <session_id>', "
+        "'kill session <session_id>'."
     )
     parts.append(
         "If `gui_web_run_steps` is available and the request needs live web facts "

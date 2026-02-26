@@ -1218,6 +1218,12 @@ def test_local_access_refusal_heuristic() -> None:
         is True
     )
     assert (
+        StreamingChatTask._looks_like_local_access_refusal(
+            "I don't have access to shell execution tools to run git commands directly."
+        )
+        is True
+    )
+    assert (
         StreamingChatTask._looks_like_local_access_refusal("Opened the video.") is False
     )
 
@@ -1918,6 +1924,63 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_exec_bang["name"] == "exec_command"
     assert parsed_exec_bang["args"]["command"] == "echo hello"
 
+    parsed_git_changes = task._parse_direct_gui_command("check git changes")
+    assert parsed_git_changes["name"] == "exec_command"
+    assert parsed_git_changes["args"]["command"] == "git status --short --branch"
+
+    parsed_git_diff = task._parse_direct_gui_command("git diff")
+    assert parsed_git_diff["name"] == "exec_command"
+    assert parsed_git_diff["args"]["command"] == "git diff --stat"
+
+    parsed_git_log = task._parse_direct_gui_command("show recent commits")
+    assert parsed_git_log["name"] == "exec_command"
+    assert parsed_git_log["args"]["command"] == "git log --oneline -n 20"
+
+    parsed_gh_status = task._parse_direct_gui_command("github pr status")
+    assert parsed_gh_status["name"] == "exec_command"
+    assert parsed_gh_status["args"]["command"] == "gh pr status"
+
+    parsed_gh_checks = task._parse_direct_gui_command("github pr checks")
+    assert parsed_gh_checks["name"] == "exec_command"
+    assert parsed_gh_checks["args"]["command"] == "gh pr checks"
+
+    parsed_exec_start = task._parse_direct_gui_command(
+        "start shell session for python -V"
+    )
+    assert parsed_exec_start["name"] == "exec_start"
+    assert parsed_exec_start["args"]["command"] == "python -V"
+    assert parsed_exec_start["args"]["background"] is True
+
+    parsed_exec_sessions = task._parse_direct_gui_command("list sessions")
+    assert parsed_exec_sessions["name"] == "exec_process"
+    assert parsed_exec_sessions["args"]["action"] == "list"
+
+    parsed_exec_poll = task._parse_direct_gui_command("poll session sh_abc123def456")
+    assert parsed_exec_poll["name"] == "exec_process"
+    assert parsed_exec_poll["args"]["action"] == "poll"
+    assert parsed_exec_poll["args"]["session_id"] == "sh_abc123def456"
+
+    parsed_exec_log = task._parse_direct_gui_command(
+        "show last 50 lines of session log sh_abc123def456"
+    )
+    assert parsed_exec_log["name"] == "exec_process"
+    assert parsed_exec_log["args"]["action"] == "log"
+    assert parsed_exec_log["args"]["session_id"] == "sh_abc123def456"
+    assert parsed_exec_log["args"]["tail_lines"] == 50
+
+    parsed_exec_submit = task._parse_direct_gui_command(
+        "submit to session sh_abc123def456: continue"
+    )
+    assert parsed_exec_submit["name"] == "exec_process"
+    assert parsed_exec_submit["args"]["action"] == "submit"
+    assert parsed_exec_submit["args"]["session_id"] == "sh_abc123def456"
+    assert parsed_exec_submit["args"]["text"] == "continue"
+
+    parsed_exec_kill = task._parse_direct_gui_command("kill session sh_abc123def456")
+    assert parsed_exec_kill["name"] == "exec_process"
+    assert parsed_exec_kill["args"]["action"] == "kill"
+    assert parsed_exec_kill["args"]["session_id"] == "sh_abc123def456"
+
     parsed_threejs_example = task._parse_direct_gui_command(
         "open threejs example two mice"
     )
@@ -2125,6 +2188,23 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         ),
         "output_path": "",
     }
+    task._tool_gui_exec_start = lambda *args, **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "session_id": "sh_abc123def456",
+        "background": True,
+        "status": "running",
+        "args": args,
+        "kwargs": kwargs,
+    }
+    task._tool_gui_exec_process = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "action": kwargs.get("action"),
+        "session_id": kwargs.get("session_id", "sh_abc123def456"),
+        "status": "running",
+        "return_code": None,
+        "sessions": [{"session_id": "sh_abc123def456", "status": "running"}],
+        "text": "session-log-line",
+    }
 
     out_pdf = asyncio.run(task._execute_direct_gui_command("open pdf"))
     assert "Opened PDF in Annolid:" in out_pdf
@@ -2257,6 +2337,31 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         task._execute_direct_gui_command("remove automation task task_abc123")
     )
     assert "Removed task task_abc123" == out_schedule_remove
+
+    out_exec_start = asyncio.run(
+        task._execute_direct_gui_command("start shell session for python -V")
+    )
+    assert out_exec_start == "Started shell session: sh_abc123def456"
+
+    out_exec_list = asyncio.run(task._execute_direct_gui_command("list sessions"))
+    assert "Shell sessions:" in out_exec_list
+    assert "sh_abc123def456" in out_exec_list
+
+    out_exec_poll = asyncio.run(
+        task._execute_direct_gui_command("poll session sh_abc123def456")
+    )
+    assert "Session sh_abc123def456: running" in out_exec_poll
+
+    out_exec_log = asyncio.run(
+        task._execute_direct_gui_command("show session log sh_abc123def456")
+    )
+    assert "Session log (sh_abc123def456):" in out_exec_log
+    assert "session-log-line" in out_exec_log
+
+    out_exec_kill = asyncio.run(
+        task._execute_direct_gui_command("kill session sh_abc123def456")
+    )
+    assert out_exec_kill == "Killed session sh_abc123def456"
 
     out_tutorial = asyncio.run(
         task._execute_direct_gui_command(

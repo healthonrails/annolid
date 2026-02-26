@@ -75,6 +75,8 @@ async def execute_direct_gui_command(
     list_dir: Callable[..., Any],
     read_file: Callable[..., Any],
     exec_command: Callable[..., Any],
+    exec_start: Callable[..., Any],
+    exec_process: Callable[..., Any],
 ) -> Dict[str, Any]:
     if not command:
         return {"message": "", "payload": {}}
@@ -613,5 +615,68 @@ async def execute_direct_gui_command(
                 f"Command output:\n{res}" if res else "Command executed with no output."
             )
         return str(payload.get("error") or "Failed to execute command.")
+
+    if name == "exec_start":
+        payload = await _run(
+            exec_start,
+            command=str(args.get("command") or ""),
+            working_dir=str(args.get("working_dir") or ""),
+            background=bool(args.get("background", True)),
+            timeout_s=float(args.get("timeout_s") or 0.0),
+            pty=bool(args.get("pty", False)),
+        )
+        if not payload.get("ok"):
+            return str(payload.get("error") or "Failed to start shell session.")
+        sid = str(payload.get("session_id") or "").strip()
+        if bool(args.get("background", True)):
+            if sid:
+                return f"Started shell session: {sid}"
+            return "Started shell session."
+        out = str(payload.get("output") or "").strip()
+        return f"Command output:\n{out}" if out else "Command completed."
+
+    if name == "exec_process":
+        payload = await _run(
+            exec_process,
+            action=str(args.get("action") or ""),
+            session_id=str(args.get("session_id") or ""),
+            wait_ms=int(args.get("wait_ms") or 0),
+            tail_lines=int(args.get("tail_lines") or 200),
+            text=str(args.get("text") or ""),
+            submit=bool(args.get("submit", False)),
+        )
+        if not payload.get("ok"):
+            return str(payload.get("error") or "Failed to manage shell session.")
+        action = str(args.get("action") or "").strip().lower()
+        if action == "list":
+            sessions = payload.get("sessions") or []
+            if not sessions:
+                return "No shell sessions found."
+            lines = ["Shell sessions:"]
+            for row in sessions[:20]:
+                lines.append(f"- {row.get('session_id')} [{row.get('status')}]")
+            return "\n".join(lines)
+        if action == "poll":
+            return (
+                f"Session {payload.get('session_id')}: "
+                f"{payload.get('status')} (return_code={payload.get('return_code')})"
+            )
+        if action == "log":
+            text_out = str(payload.get("text") or "").strip()
+            sid = str(payload.get("session_id") or "").strip()
+            return (
+                f"Session log ({sid}):\n{text_out}"
+                if text_out
+                else f"Session log ({sid}) is empty."
+            )
+        if action in {"write", "submit"}:
+            return (
+                f"Sent input to session {payload.get('session_id')}"
+                if payload.get("ok")
+                else "Failed to write to session."
+            )
+        if action == "kill":
+            return f"Killed session {payload.get('session_id')}"
+        return "Shell session command completed."
 
     return ""

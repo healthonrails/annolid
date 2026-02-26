@@ -8,7 +8,14 @@ Use this skill when tasks involve GitHub issues, PRs, checks, releases, or comme
 
 Workflow:
 
-1. Verify `gh auth status` before mutating operations.
-2. Inspect repo/PR context (`gh pr view`, `gh pr checks`, `gh issue view`).
-3. Prefer targeted actions over broad automation.
-4. Summarize outcome with concrete IDs/URLs and next actions.
+1. Verify repository context and auth first:
+   - `git_cli(args=["status","--short","--branch"])`
+   - `gh_cli(args=["auth","status"])`
+2. Inspect context before changing anything:
+   - `gh_cli(args=["pr","status"])`
+   - `gh_cli(args=["pr","checks"])`
+   - `gh_cli(args=["pr","view"])`
+3. For mutating operations, require explicit intent and set `allow_mutation=true`:
+   - Example: `gh_cli(args=["pr","comment","123","--body","..."], allow_mutation=true)`
+4. Prefer targeted actions over broad automation.
+5. Summarize outcome with concrete IDs/URLs and next actions.

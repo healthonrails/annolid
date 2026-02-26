@@ -82,6 +82,210 @@ class _RepoCliTool(FunctionTool):
         return json.dumps(payload)
 
 
+class GitCliTool(_RepoCliTool):
+    _READ_ONLY_PREFIXES: tuple[tuple[str, ...], ...] = (
+        ("status",),
+        ("diff",),
+        ("log",),
+        ("show",),
+        ("branch", "--show-current"),
+        ("rev-parse",),
+        ("remote", "-v"),
+    )
+    _MUTATING_SUBCOMMANDS: set[str] = {
+        "add",
+        "commit",
+        "push",
+        "pull",
+        "merge",
+        "rebase",
+        "reset",
+        "clean",
+        "checkout",
+        "switch",
+        "cherry-pick",
+        "revert",
+        "tag",
+        "fetch",
+        "stash",
+    }
+
+    @property
+    def name(self) -> str:
+        return "git_cli"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Run git CLI arguments in a repository. "
+            "Mutating operations require allow_mutation=true."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "repo_path": {"type": "string"},
+                "args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 32,
+                },
+                "allow_mutation": {"type": "boolean"},
+            },
+            "required": ["args"],
+        }
+
+    @classmethod
+    def _is_read_only(cls, args: Sequence[str]) -> bool:
+        norm = tuple(str(a or "").strip() for a in args if str(a or "").strip())
+        if not norm:
+            return False
+        for prefix in cls._READ_ONLY_PREFIXES:
+            if len(norm) >= len(prefix) and norm[: len(prefix)] == prefix:
+                return True
+        sub = norm[0].lower()
+        if sub not in cls._MUTATING_SUBCOMMANDS:
+            # Unknown commands default to read-only unless explicitly listed as mutating.
+            return True
+        return False
+
+    async def execute(
+        self,
+        args: list[str],
+        repo_path: str = ".",
+        allow_mutation: bool = False,
+        **kwargs: Any,
+    ) -> str:
+        del kwargs
+        try:
+            repo = self._resolve_repo_path(repo_path)
+        except PermissionError as exc:
+            return json.dumps({"error": str(exc), "repo_path": str(repo_path)})
+        normalized = [
+            str(a or "").strip() for a in list(args or []) if str(a or "").strip()
+        ]
+        if not normalized:
+            return json.dumps(
+                {"error": "args must not be empty", "repo_path": str(repo)}
+            )
+        if not self._is_read_only(normalized) and not bool(allow_mutation):
+            return json.dumps(
+                {
+                    "error": (
+                        "Blocked mutating git command. "
+                        "Set allow_mutation=true for explicit operator-approved writes."
+                    ),
+                    "repo_path": str(repo),
+                    "command": ["git", *normalized],
+                }
+            )
+        return await self._run_command(["git", *normalized], repo_path=repo)
+
+
+class GitHubCliTool(_RepoCliTool):
+    _READ_ONLY_PREFIXES: tuple[tuple[str, ...], ...] = (
+        ("auth", "status"),
+        ("pr", "status"),
+        ("pr", "checks"),
+        ("pr", "view"),
+        ("pr", "list"),
+        ("issue", "view"),
+        ("issue", "list"),
+        ("repo", "view"),
+        ("run", "list"),
+        ("run", "view"),
+    )
+    _MUTATING_PREFIXES: tuple[tuple[str, ...], ...] = (
+        ("pr", "create"),
+        ("pr", "merge"),
+        ("pr", "close"),
+        ("pr", "comment"),
+        ("issue", "create"),
+        ("issue", "edit"),
+        ("issue", "comment"),
+        ("release", "create"),
+        ("release", "delete"),
+        ("workflow", "run"),
+    )
+
+    @property
+    def name(self) -> str:
+        return "gh_cli"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Run gh CLI arguments in a repository. "
+            "Mutating operations require allow_mutation=true."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "repo_path": {"type": "string"},
+                "args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 40,
+                },
+                "allow_mutation": {"type": "boolean"},
+            },
+            "required": ["args"],
+        }
+
+    @classmethod
+    def _is_read_only(cls, args: Sequence[str]) -> bool:
+        norm = tuple(str(a or "").strip() for a in args if str(a or "").strip())
+        if not norm:
+            return False
+        for prefix in cls._READ_ONLY_PREFIXES:
+            if len(norm) >= len(prefix) and norm[: len(prefix)] == prefix:
+                return True
+        for prefix in cls._MUTATING_PREFIXES:
+            if len(norm) >= len(prefix) and norm[: len(prefix)] == prefix:
+                return False
+        # Conservative default for unknown gh command groups.
+        return False
+
+    async def execute(
+        self,
+        args: list[str],
+        repo_path: str = ".",
+        allow_mutation: bool = False,
+        **kwargs: Any,
+    ) -> str:
+        del kwargs
+        try:
+            repo = self._resolve_repo_path(repo_path)
+        except PermissionError as exc:
+            return json.dumps({"error": str(exc), "repo_path": str(repo_path)})
+        normalized = [
+            str(a or "").strip() for a in list(args or []) if str(a or "").strip()
+        ]
+        if not normalized:
+            return json.dumps(
+                {"error": "args must not be empty", "repo_path": str(repo)}
+            )
+        if not self._is_read_only(normalized) and not bool(allow_mutation):
+            return json.dumps(
+                {
+                    "error": (
+                        "Blocked mutating gh command. "
+                        "Set allow_mutation=true for explicit operator-approved writes."
+                    ),
+                    "repo_path": str(repo),
+                    "command": ["gh", *normalized],
+                }
+            )
+        return await self._run_command(["gh", *normalized], repo_path=repo)
+
+
 class GitStatusTool(_RepoCliTool):
     @property
     def name(self) -> str:
@@ -256,6 +460,8 @@ class GitHubPrChecksTool(_RepoCliTool):
 
 __all__ = [
     "_RepoCliTool",
+    "GitCliTool",
+    "GitHubCliTool",
     "GitStatusTool",
     "GitDiffTool",
     "GitLogTool",

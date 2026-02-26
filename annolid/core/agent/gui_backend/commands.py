@@ -10,6 +10,10 @@ _DIRECT_GUI_REFUSAL_HINTS = (
     "can't access your local file system",
     "i cannot open applications",
     "i can't open applications",
+    "don't have access to shell execution tools",
+    "do not have access to shell execution tools",
+    "don't have access to git commands",
+    "do not have access to git commands",
 )
 
 _ACTIVE_FILE_HINTS = {
@@ -989,6 +993,81 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             },
         }
 
+    exec_start_match = re.match(
+        r"\s*(?:start|run|open|launch)\s+(?:a\s+)?(?:shell|bash|terminal)\s+"
+        r"(?:session\s+)?(?:for\s+)?(?P<cmd>.+?)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    ) or re.match(
+        r"\s*(?:run|start)\s+(?:in\s+)?background\s*[: ]\s*(?P<cmd>.+?)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if exec_start_match:
+        return {
+            "name": "exec_start",
+            "args": {
+                "command": exec_start_match.group("cmd").strip(),
+                "background": True,
+            },
+        }
+
+    if re.search(r"\b(?:list|show)\b[\s\S]*\bsessions\b", lower) or re.search(
+        r"\bsessions\b\s+(?:list|show)\b", lower
+    ):
+        return {"name": "exec_process", "args": {"action": "list"}}
+
+    sid_match = re.search(r"\b(sh_[a-z0-9]{6,64})\b", lower, flags=re.IGNORECASE)
+    session_id = sid_match.group(1) if sid_match else ""
+    if session_id and re.search(r"\b(?:poll|check|status)\b[\s\S]*\bsession\b", lower):
+        return {
+            "name": "exec_process",
+            "args": {"action": "poll", "session_id": session_id, "wait_ms": 1500},
+        }
+    if (
+        session_id
+        and "session" in lower
+        and re.search(r"\b(?:log|logs|tail|output)\b", lower)
+    ):
+        tail_match = re.search(r"\b(?:last|tail)\s+(\d+)\s+lines?\b", lower)
+        return {
+            "name": "exec_process",
+            "args": {
+                "action": "log",
+                "session_id": session_id,
+                "tail_lines": int(tail_match.group(1)) if tail_match else 200,
+            },
+        }
+    if session_id and re.search(
+        r"\b(?:kill|stop|terminate|cancel)\b[\s\S]*\bsession\b", lower
+    ):
+        return {
+            "name": "exec_process",
+            "args": {"action": "kill", "session_id": session_id},
+        }
+
+    write_match = re.match(
+        r"\s*(?:write|send|type|submit)\s+(?:to\s+)?session\s+"
+        r"(?P<sid>sh_[a-z0-9]{6,64})\s*(?::|\s)\s*(?P<txt>.+?)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if write_match:
+        action = (
+            "submit"
+            if re.match(r"^\s*submit\b", text, flags=re.IGNORECASE)
+            else "write"
+        )
+        return {
+            "name": "exec_process",
+            "args": {
+                "action": action,
+                "session_id": write_match.group("sid").strip(),
+                "text": write_match.group("txt").strip(),
+                "submit": action == "submit",
+            },
+        }
+
     exec_match = re.match(
         r"\s*(?:run\s+command|exec|!)\s*(?P<cmd>.+?)\s*$",
         text,
@@ -999,6 +1078,32 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             "name": "exec_command",
             "args": {"command": exec_match.group("cmd").strip()},
         }
+
+    # Git/GitHub quick-action aliases: map natural language into safe, read-only CLI probes.
+    if re.search(r"\bgit\s+status\b", lower) or re.search(
+        r"\bcheck\b[\s\S]*\bgit\b[\s\S]*\bchanges?\b", lower
+    ):
+        return {
+            "name": "exec_command",
+            "args": {"command": "git status --short --branch"},
+        }
+    if re.search(r"\bgit\s+diff\b", lower):
+        return {"name": "exec_command", "args": {"command": "git diff --stat"}}
+    if re.search(r"\bgit\s+log\b", lower) or re.search(
+        r"\brecent\b[\s\S]*\bcommits?\b", lower
+    ):
+        return {
+            "name": "exec_command",
+            "args": {"command": "git log --oneline -n 20"},
+        }
+    if re.search(r"\bgh\s+pr\s+status\b", lower) or re.search(
+        r"\bgithub\b[\s\S]*\bpr\b[\s\S]*\bstatus\b", lower
+    ):
+        return {"name": "exec_command", "args": {"command": "gh pr status"}}
+    if re.search(r"\bgh\s+pr\s+checks\b", lower) or re.search(
+        r"\bgithub\b[\s\S]*\bpr\b[\s\S]*\bchecks?\b", lower
+    ):
+        return {"name": "exec_command", "args": {"command": "gh pr checks"}}
 
     return {}
 
@@ -1022,6 +1127,8 @@ def prompt_may_need_tools(prompt: str) -> bool:
         "dir",
         "cat",
         "exec",
+        "shell",
+        "session",
         "command",
         "pwd",
         "open",

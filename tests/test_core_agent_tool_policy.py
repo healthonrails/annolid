@@ -97,9 +97,11 @@ def test_policy_group_vcs_allows_git_and_github_tools() -> None:
     )
     all_tools = [
         "git_status",
+        "git_cli",
         "git_diff",
         "git_log",
         "github_pr_status",
+        "gh_cli",
         "github_pr_checks",
         "exec",
     ]
@@ -111,9 +113,11 @@ def test_policy_group_vcs_allows_git_and_github_tools() -> None:
     )
     assert resolved.allowed_tools == {
         "git_status",
+        "git_cli",
         "git_diff",
         "git_log",
         "github_pr_status",
+        "gh_cli",
         "github_pr_checks",
     }
 
@@ -169,6 +173,18 @@ def test_policy_group_fs_includes_rename_file() -> None:
         "rename_file",
         "list_dir",
     }
+
+
+def test_policy_group_runtime_includes_session_exec_tools() -> None:
+    cfg = ToolsConfig(profile="minimal", allow=["group:runtime"])
+    all_tools = ["exec", "exec_start", "exec_process", "read_file"]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="ollama",
+        model="qwen3",
+    )
+    assert resolved.allowed_tools == {"exec", "exec_start", "exec_process"}
 
 
 def test_policy_coding_profile_includes_google_calendar() -> None:
@@ -322,3 +338,26 @@ def test_policy_allows_high_risk_combo_with_explicit_intent_marker() -> None:
     )
     assert "email" in resolved.allowed_tools
     assert "read_file" in resolved.allowed_tools
+
+
+def test_policy_denies_runtime_exec_with_messaging_without_explicit_intent() -> None:
+    cfg = ToolsConfig(
+        profile="minimal",
+        allow=["exec_start", "exec_process", "message"],
+    )
+    all_tools = [
+        "gui_context",
+        "gui_shared_image_path",
+        "exec_start",
+        "exec_process",
+        "message",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="ollama",
+        model="qwen3",
+    )
+    assert "message" in resolved.allowed_tools
+    assert "exec_start" not in resolved.allowed_tools
+    assert "exec_process" not in resolved.allowed_tools

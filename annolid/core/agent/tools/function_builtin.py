@@ -33,7 +33,9 @@ from .function_admin import (
     AdminUpdateRunTool,
 )
 from .git import (
+    GitCliTool,
     GitDiffTool,
+    GitHubCliTool,
     GitHubPrChecksTool,
     GitHubPrStatusTool,
     GitLogTool,
@@ -46,6 +48,12 @@ from .swarm_tool import SwarmTool
 from .nanobot import register_nanobot_style_tools
 from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
 from .sandboxed_shell import SandboxedExecTool
+from .shell_sessions import (
+    ExecProcessTool,
+    ExecStartTool,
+    ShellSessionManager,
+    get_shell_session_manager,
+)
 from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
 
 __all__ = [
@@ -74,11 +82,17 @@ __all__ = [
     "MemorySetTool",
     "_RepoCliTool",
     "GitStatusTool",
+    "GitCliTool",
     "GitDiffTool",
     "GitLogTool",
     "GitHubPrStatusTool",
+    "GitHubCliTool",
     "GitHubPrChecksTool",
     "SandboxedExecTool",
+    "ShellSessionManager",
+    "get_shell_session_manager",
+    "ExecStartTool",
+    "ExecProcessTool",
     "WebSearchTool",
     "WebFetchTool",
     "DownloadUrlTool",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -26,10 +27,14 @@ from annolid.core.agent.tools.function_builtin import (
     DownloadPdfTool,
     DownloadUrlTool,
     EditFileTool,
+    ExecProcessTool,
+    ExecStartTool,
     SandboxedExecTool,
     ExtractPdfImagesTool,
     ExtractPdfTextTool,
+    GitCliTool,
     GitDiffTool,
+    GitHubCliTool,
     GitHubPrChecksTool,
     GitHubPrStatusTool,
     GitLogTool,
@@ -491,6 +496,76 @@ def test_sandboxed_exec_tool_can_enable_writable_host_mount(tmp_path: Path) -> N
     assert f"-v {tmp_path.resolve()}:{tmp_path.resolve()}:ro" not in joined
 
 
+def test_exec_start_foreground_returns_output(tmp_path: Path) -> None:
+    tool = ExecStartTool()
+    cmd = f"{shlex.quote(sys.executable)} -c \"print('annolid-shell-ok')\""
+    result = asyncio.run(
+        tool.execute(command=cmd, working_dir=str(tmp_path), background=False)
+    )
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["status"] == "completed"
+    assert payload["return_code"] == 0
+    assert "annolid-shell-ok" in payload["output"]
+
+
+def test_exec_process_write_poll_log_and_kill(tmp_path: Path) -> None:
+    async def _run() -> None:
+        start = ExecStartTool()
+        proc = ExecProcessTool()
+
+        # Session that expects stdin and then exits.
+        stdin_cmd = (
+            f"{shlex.quote(sys.executable)} -u -c "
+            "'import sys; print(sys.stdin.readline().strip())'"
+        )
+        started = json.loads(
+            await start.execute(command=stdin_cmd, working_dir=str(tmp_path))
+        )
+        assert started["ok"] is True
+        sid = started["session_id"]
+
+        wrote = json.loads(
+            await proc.execute(
+                action="submit",
+                session_id=sid,
+                text="hello-shell",
+            )
+        )
+        assert wrote["ok"] is True
+
+        polled = {"ok": False, "status": "running"}
+        for _ in range(12):
+            polled = json.loads(
+                await proc.execute(action="poll", session_id=sid, wait_ms=250)
+            )
+            if polled.get("status") != "running":
+                break
+        assert polled["ok"] is True
+        assert polled["status"] in {"completed", "failed"}
+
+        logs = json.loads(
+            await proc.execute(action="log", session_id=sid, tail_lines=50)
+        )
+        assert logs["ok"] is True
+        assert "hello-shell" in logs["text"]
+
+        listed = json.loads(await proc.execute(action="list"))
+        assert listed["ok"] is True
+        assert any(item["session_id"] == sid for item in listed["sessions"])
+
+        # Independent long-running session to verify kill path.
+        sleep_cmd = f'{shlex.quote(sys.executable)} -c "import time; time.sleep(5)"'
+        started_sleep = json.loads(
+            await start.execute(command=sleep_cmd, working_dir=str(tmp_path))
+        )
+        sid_sleep = started_sleep["session_id"]
+        killed = json.loads(await proc.execute(action="kill", session_id=sid_sleep))
+        assert killed["ok"] is True
+
+    asyncio.run(_run())
+
+
 def test_web_search_tool_without_key_reports_config_error() -> None:
     tool = WebSearchTool(api_key="")
     result = asyncio.run(tool.execute(query="annolid"))
@@ -713,6 +788,28 @@ def test_github_tools_report_missing_gh_cli(tmp_path: Path, monkeypatch) -> None
     assert "Command not found: gh" in checks_payload["error"]
 
 
+def test_git_cli_blocks_mutating_commands_without_explicit_allow(
+    tmp_path: Path,
+) -> None:
+    tool = GitCliTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(repo_path=str(tmp_path), args=["commit", "-m", "x"])
+    )
+    payload = json.loads(result)
+    assert "Blocked mutating git command" in payload["error"]
+
+
+def test_gh_cli_blocks_unknown_or_mutating_commands_without_explicit_allow(
+    tmp_path: Path,
+) -> None:
+    tool = GitHubCliTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(repo_path=str(tmp_path), args=["pr", "comment", "123"])
+    )
+    payload = json.loads(result)
+    assert "Blocked mutating gh command" in payload["error"]
+
+
 def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     registry = FunctionToolRegistry()
     asyncio.run(register_nanobot_style_tools(registry, allowed_dir=tmp_path))
@@ -721,9 +818,11 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("code_search")
     assert registry.has("code_explain")
     assert registry.has("git_status")
+    assert registry.has("git_cli")
     assert registry.has("git_diff")
     assert registry.has("git_log")
     assert registry.has("github_pr_status")
+    assert registry.has("gh_cli")
     assert registry.has("github_pr_checks")
     assert registry.has("memory_search")
     assert registry.has("memory_get")
@@ -738,6 +837,8 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("camera_snapshot")
     assert registry.has("automation_schedule")
     assert registry.has("exec")
+    assert registry.has("exec_start")
+    assert registry.has("exec_process")
     assert registry.has("cron")
     assert registry.has("download_url")
     assert registry.has("download_pdf")

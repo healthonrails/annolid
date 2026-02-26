@@ -79,11 +79,15 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
     "coding": {
         *_CAPABILITY_FILESYSTEM,
         "git_status",
+        "git_cli",
         "git_diff",
         "git_log",
         "github_pr_status",
+        "gh_cli",
         "github_pr_checks",
         "exec",
+        "exec_start",
+        "exec_process",
         "video_info",
         "video_sample_frames",
         "video_segment",
@@ -119,7 +123,7 @@ _CAPABILITY_PROFILE_MAP: Mapping[str, Set[str]] = {
 
 
 TOOL_GROUPS: Mapping[str, Set[str]] = {
-    "group:runtime": {"exec"},
+    "group:runtime": {"exec", "exec_start", "exec_process"},
     "group:fs": {
         "read_file",
         "write_file",
@@ -131,9 +135,11 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
     },
     "group:vcs": {
         "git_status",
+        "git_cli",
         "git_diff",
         "git_log",
         "github_pr_status",
+        "gh_cli",
         "github_pr_checks",
     },
     "group:web": {
@@ -263,8 +269,11 @@ def _apply_high_risk_guards(
         "spawn",
     }
     # Deny-by-default for process execution mixed with messaging/automation primitives.
-    if "exec" in resolved and any(t in resolved for t in automation_or_messaging):
-        resolved.discard("exec")
+    runtime_exec = {"exec", "exec_start", "exec_process"}
+    if any(t in resolved for t in runtime_exec) and any(
+        t in resolved for t in automation_or_messaging
+    ):
+        resolved.difference_update(runtime_exec)
     # Deny-by-default for automated file exfiltration chains.
     if (
         "read_file" in resolved

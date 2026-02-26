@@ -173,6 +173,23 @@ The agent runtime also exposes operator-style function tools:
   - `update.run` requires explicit operator consent phrase for `execute=true`:
     `APPROVE_ANNOLID_CORE_UPDATE` (override with `ANNOLID_OPERATOR_UPDATE_CONSENT_PHRASE`).
 
+## Shell Session Tools
+
+For OpenClaw-style shell lifecycle workflows, Annolid now provides session tools:
+
+- `exec_start(command, working_dir?, background?, timeout_s?, pty?)`
+- `exec_process(action, session_id?, wait_ms?, tail_lines?, text?, submit?)`
+
+Supported `exec_process.action` values:
+
+- `list`, `poll`, `log`, `write`, `submit`, `kill`
+
+Notes:
+
+- `pty` is accepted but currently not enabled (`pty_supported=false` in responses).
+- Basic dangerous command patterns are blocked at start time.
+- Runtime policy group `group:runtime` now includes `exec`, `exec_start`, and `exec_process`.
+
 ## Improvement Quality Loop
 
 - Anonymized run traces:

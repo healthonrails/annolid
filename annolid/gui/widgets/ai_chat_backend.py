@@ -1768,6 +1768,8 @@ class StreamingChatTask(QRunnable):
             "list_dir": self._tool_gui_list_dir,
             "read_file": self._tool_gui_read_file,
             "exec_command": self._tool_gui_exec_command,
+            "exec_start": self._tool_gui_exec_start,
+            "exec_process": self._tool_gui_exec_process,
         }
 
     @staticmethod
@@ -2903,6 +2905,64 @@ class StreamingChatTask(QRunnable):
         if res.startswith("Error:") and "timed out" not in res:
             return {"ok": False, "error": res}
         return {"ok": True, "result": res}
+
+    async def _tool_gui_exec_start(
+        self,
+        command: str,
+        working_dir: str = "",
+        background: bool = True,
+        timeout_s: float = 0.0,
+        pty: bool = False,
+    ) -> Dict[str, Any]:
+        from annolid.core.agent.tools.shell_sessions import ExecStartTool
+
+        tool = ExecStartTool()
+        raw = await tool.execute(
+            command=str(command or ""),
+            working_dir=str(working_dir or ""),
+            background=bool(background),
+            timeout_s=float(timeout_s or 0.0),
+            pty=bool(pty),
+        )
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"ok": False, "error": str(raw or "invalid_exec_start_result")}
+        return (
+            payload
+            if isinstance(payload, dict)
+            else {"ok": False, "error": "invalid_exec_start_result"}
+        )
+
+    async def _tool_gui_exec_process(
+        self,
+        action: str,
+        session_id: str = "",
+        wait_ms: int = 0,
+        tail_lines: int = 200,
+        text: str = "",
+        submit: bool = False,
+    ) -> Dict[str, Any]:
+        from annolid.core.agent.tools.shell_sessions import ExecProcessTool
+
+        tool = ExecProcessTool()
+        raw = await tool.execute(
+            action=str(action or ""),
+            session_id=str(session_id or ""),
+            wait_ms=int(wait_ms or 0),
+            tail_lines=int(tail_lines or 200),
+            text=str(text or ""),
+            submit=bool(submit),
+        )
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"ok": False, "error": str(raw or "invalid_exec_process_result")}
+        return (
+            payload
+            if isinstance(payload, dict)
+            else {"ok": False, "error": "invalid_exec_process_result"}
+        )
 
     def _tool_gui_rename_file(
         self,

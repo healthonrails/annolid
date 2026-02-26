@@ -20,19 +20,24 @@ This workspace is intended for the Annolid agent tool stack.
 ## Execution
 
 - `exec(command, working_dir?)`
+- `exec_start(command, working_dir?, background?, timeout_s?, pty?)`
+- `exec_process(action, session_id?, wait_ms?, tail_lines?, text?, submit?)`
 
 Safety notes:
 
 - Prefer non-destructive commands.
 - Keep command scope limited to relevant directories.
 - Treat external downloads and scripts as untrusted until verified.
+- For multi-step shell workflows, prefer `exec_start` + `exec_process` instead of chaining large one-shot shell commands.
 
 ## Git and GitHub
 
 - `git_status(repo_path?, short?)`
+- `git_cli(args, repo_path?, allow_mutation?)`
 - `git_diff(repo_path?, cached?, target?, name_only?)`
 - `git_log(repo_path?, max_count?, oneline?)`
 - `github_pr_status(repo_path?)`
+- `gh_cli(args, repo_path?, allow_mutation?)`
 - `github_pr_checks(repo_path?)`
 
 ## Web
