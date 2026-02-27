@@ -20,6 +20,7 @@ def test_runtime_registry_uses_configured_model_path_defaults(tmp_path: Path) ->
                 "model_path_defaults": {
                     "dino_kpseg": str(weight_path),
                     "dino_kpseg_tracker": str(weight_path),
+                    "videomt": str(weight_path),
                 }
             }
         }
@@ -28,6 +29,7 @@ def test_runtime_registry_uses_configured_model_path_defaults(tmp_path: Path) ->
     by_id = {cfg.identifier: cfg for cfg in registry}
     assert by_id["dino_kpseg"].weight_file == str(weight_path)
     assert by_id["dino_kpseg_tracker"].weight_file == str(weight_path)
+    assert by_id["videomt"].weight_file == str(weight_path)
 
 
 def test_validate_model_registry_entries_warns_for_missing_local_weights() -> None:
@@ -86,3 +88,33 @@ def test_settings_override_takes_precedence_over_config_override(
     )
     by_id = {cfg.identifier: cfg for cfg in registry}
     assert by_id["dino_kpseg"].weight_file == str(settings_weight)
+
+
+def test_videomt_resolves_workspace_downloads_when_relative_path_exists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fake_home = tmp_path / "home"
+    expected = (
+        fake_home
+        / ".annolid"
+        / "workspace"
+        / "downloads"
+        / "videomt_yt_2019_vit_small_52.8.onnx"
+    )
+    expected.parent.mkdir(parents=True, exist_ok=True)
+    expected.write_bytes(b"onnx")
+
+    monkeypatch.setattr("annolid.gui.models_registry.Path.home", lambda: fake_home)
+
+    registry = get_runtime_model_registry(
+        config={
+            "ai": {
+                "model_path_defaults": {
+                    "videomt": "downloads/videomt_yt_2019_vit_small_52.8.onnx"
+                }
+            }
+        }
+    )
+    by_id = {cfg.identifier: cfg for cfg in registry}
+    assert by_id["videomt"].weight_file == str(expected)
+    assert get_model_unavailable_reason(by_id["videomt"]) is None

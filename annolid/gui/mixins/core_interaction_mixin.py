@@ -141,6 +141,24 @@ class CoreInteractionMixin:
         advanced_params_dialog.follow_prediction_progress_checkbox.setChecked(
             bool(getattr(self, "_follow_prediction_progress", True))
         )
+        advanced_params_dialog.videomt_mask_threshold_spinbox.setValue(
+            float(getattr(self, "videomt_mask_threshold", 0.5))
+        )
+        advanced_params_dialog.videomt_logit_threshold_spinbox.setValue(
+            float(getattr(self, "videomt_logit_threshold", -2.0))
+        )
+        advanced_params_dialog.videomt_seed_iou_threshold_spinbox.setValue(
+            float(getattr(self, "videomt_seed_iou_threshold", 0.01))
+        )
+        advanced_params_dialog.videomt_window_spinbox.setValue(
+            int(getattr(self, "videomt_window", 8))
+        )
+        advanced_params_dialog.videomt_input_height_spinbox.setValue(
+            int(getattr(self, "videomt_input_height", 0))
+        )
+        advanced_params_dialog.videomt_input_width_spinbox.setValue(
+            int(getattr(self, "videomt_input_width", 0))
+        )
         if advanced_params_dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
 
@@ -164,6 +182,19 @@ class CoreInteractionMixin:
         self._follow_prediction_progress = (
             advanced_params_dialog.is_follow_prediction_progress_enabled()
         )
+        videomt_settings = advanced_params_dialog.get_videomt_settings()
+        self.videomt_mask_threshold = float(
+            videomt_settings.get("videomt_mask_threshold", 0.5)
+        )
+        self.videomt_logit_threshold = float(
+            videomt_settings.get("videomt_logit_threshold", -2.0)
+        )
+        self.videomt_seed_iou_threshold = float(
+            videomt_settings.get("videomt_seed_iou_threshold", 0.01)
+        )
+        self.videomt_window = int(videomt_settings.get("videomt_window", 8))
+        self.videomt_input_height = int(videomt_settings.get("videomt_input_height", 0))
+        self.videomt_input_width = int(videomt_settings.get("videomt_input_width", 0))
 
         tracker_settings = advanced_params_dialog.get_tracker_settings()
         for key, value in tracker_settings.items():

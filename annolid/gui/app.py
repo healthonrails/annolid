@@ -246,6 +246,12 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.use_cpu_only = False
         self.save_video_with_color_mask = False
         self.auto_recovery_missing_instances = False
+        self.videomt_mask_threshold = 0.5
+        self.videomt_logit_threshold = -2.0
+        self.videomt_seed_iou_threshold = 0.01
+        self.videomt_window = 8
+        self.videomt_input_height = 0
+        self.videomt_input_width = 0
         self.playButton = None
         self.saveButton = None
         # Create progress bar

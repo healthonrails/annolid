@@ -560,16 +560,42 @@ class PredictionExecutionMixin:
                     use_cpu_only=self.use_cpu_only,
                     auto_recovery_missing_instances=self.auto_recovery_missing_instances,
                     save_video_with_color_mask=self.save_video_with_color_mask,
+                    videomt_mask_threshold=float(
+                        getattr(self, "videomt_mask_threshold", 0.5)
+                    ),
+                    videomt_logit_threshold=float(
+                        getattr(self, "videomt_logit_threshold", -2.0)
+                    ),
+                    videomt_seed_iou_threshold=float(
+                        getattr(self, "videomt_seed_iou_threshold", 0.01)
+                    ),
+                    videomt_window=int(getattr(self, "videomt_window", 8)),
+                    videomt_input_height=int(getattr(self, "videomt_input_height", 0)),
+                    videomt_input_width=int(getattr(self, "videomt_input_width", 0)),
                     **flow_settings,
                     results_folder=str(self.video_results_folder)
                     if self.video_results_folder
                     else None,
                 )
-                self.video_processor = build_tracking_video_processor(
-                    video_path=self.video_file,
-                    model_name=model_name,
-                    **processor_kwargs,
-                )
+                try:
+                    self.video_processor = build_tracking_video_processor(
+                        video_path=self.video_file,
+                        model_name=model_name,
+                        **processor_kwargs,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to initialize tracking model '%s': %s",
+                        model_name,
+                        exc,
+                        exc_info=True,
+                    )
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        self.tr("Tracking Model Initialization Failed"),
+                        self.tr(f"Failed to load tracking model:\n{exc}"),
+                    )
+                    return
                 if self._is_cowtracker_model(model_name, model_weight):
                     # In the predict-next workflow, advance CowTracker windows one
                     # frame at a time to reduce temporal jumps.

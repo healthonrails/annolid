@@ -128,6 +128,7 @@ class ModelIdentityMixin:
             "efficientvit",
             "mediapipe",
             "maskrcnn",
+            "videomt",
         )
         if any(keyword in identifier for keyword in non_yolo_keywords):
             return False

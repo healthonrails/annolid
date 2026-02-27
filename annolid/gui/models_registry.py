@@ -21,6 +21,11 @@ MODEL_REGISTRY = [
     ModelConfig("Cutie", "Cutie", "Cutie.pt"),
     ModelConfig("CoTracker", "CoTracker", "CoTracker.pt"),
     ModelConfig("CoWTracker", "CoWTracker", "facebook/cowtracker"),
+    ModelConfig(
+        "VideoMT ViT-S (ONNX)",
+        "videomt",
+        "downloads/videomt_yt_2019_vit_small_52.8.onnx",
+    ),
     ModelConfig("sam2_hiera_s", "sam2_hiera_s", "sam2_hiera_s.pt"),
     ModelConfig("sam2_hiera_l", "sam2_hiera_l", "sam2_hiera_l.pt"),
     ModelConfig("SAM3", "sam3", "sam3"),
@@ -109,7 +114,44 @@ PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
 MODEL_PATH_DEFAULTS: Dict[str, str] = {
     "dino_kpseg": "runs/dino_kpseg/train/weights/best.pt",
     "dino_kpseg_tracker": "runs/dino_kpseg/train/weights/best.pt",
+    "videomt": "downloads/videomt_yt_2019_vit_small_52.8.onnx",
 }
+
+
+def _candidate_model_paths(path_value: str) -> List[Path]:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return []
+    path = Path(raw).expanduser()
+    candidates: List[Path] = [path]
+    if not path.is_absolute():
+        # Annolid often runs with cwd different from project root; prefer
+        # workspace-local model assets when present.
+        candidates.append(Path.home() / ".annolid" / "workspace" / path)
+        try:
+            candidates.append((Path.cwd() / path).resolve())
+        except Exception:
+            candidates.append(Path.cwd() / path)
+
+    deduped: List[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _resolve_existing_model_path(path_value: str) -> Optional[Path]:
+    for candidate in _candidate_model_paths(path_value):
+        try:
+            if candidate.exists():
+                return candidate
+        except Exception:
+            continue
+    return None
 
 
 def _config_override_path(
@@ -154,6 +196,9 @@ def resolve_model_weight_path(
     if not override:
         override = MODEL_PATH_DEFAULTS.get(identifier)
     if override:
+        existing = _resolve_existing_model_path(str(override))
+        if existing is not None:
+            return str(existing)
         return str(override)
     return str(model.weight_file)
 
@@ -210,10 +255,11 @@ def validate_model_registry_entries(
                 seen_ids[lowered] = identifier
 
         if identifier in MODEL_PATH_DEFAULTS:
-            resolved = Path(weight_file).expanduser()
-            if not resolved.exists():
+            resolved = _resolve_existing_model_path(weight_file)
+            if resolved is None:
+                preferred = _candidate_model_paths(weight_file)[0]
                 warnings.append(
-                    f"Model '{display}' currently unavailable: expected local weights at '{resolved}'."
+                    f"Model '{display}' currently unavailable: expected local weights at '{preferred}'."
                 )
 
     return len(errors) == 0, errors, warnings
@@ -226,7 +272,8 @@ def get_model_unavailable_reason(model: ModelConfig) -> Optional[str]:
     identifier = str(model.identifier)
     if identifier not in MODEL_PATH_DEFAULTS:
         return None
-    resolved = Path(str(model.weight_file)).expanduser()
-    if resolved.exists():
+    resolved = _resolve_existing_model_path(str(model.weight_file))
+    if resolved is not None:
         return None
-    return f"Missing local weights: {resolved}"
+    preferred = _candidate_model_paths(str(model.weight_file))[0]
+    return f"Missing local weights: {preferred}"

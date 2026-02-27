@@ -47,6 +47,13 @@ class AdvancedParametersDialog(QDialog):
         self.compute_optical_flow = True
         self.follow_prediction_progress = True
         self.optical_flow_backend = "farneback"
+        # VideoMT ONNX runtime controls
+        self.videomt_mask_threshold = 0.5
+        self.videomt_logit_threshold = -2.0
+        self.videomt_seed_iou_threshold = 0.01
+        self.videomt_window = 8
+        self.videomt_input_height = 0
+        self.videomt_input_width = 0
         self.sam3_score_threshold_detection = float(
             sam3_runtime.get("score_threshold_detection") or 0.35
         )
@@ -539,6 +546,79 @@ class AdvancedParametersDialog(QDialog):
                 "Penalty relief driven by optical flow confidence.",
             ),
         )
+        self.videomt_mask_threshold_spinbox = QDoubleSpinBox()
+        self.videomt_mask_threshold_spinbox.setRange(0.01, 0.99)
+        self.videomt_mask_threshold_spinbox.setSingleStep(0.01)
+        self.videomt_mask_threshold_spinbox.setValue(self.videomt_mask_threshold)
+
+        self.videomt_logit_threshold_spinbox = QDoubleSpinBox()
+        self.videomt_logit_threshold_spinbox.setRange(-20.0, 20.0)
+        self.videomt_logit_threshold_spinbox.setSingleStep(0.1)
+        self.videomt_logit_threshold_spinbox.setValue(self.videomt_logit_threshold)
+
+        self.videomt_seed_iou_threshold_spinbox = QDoubleSpinBox()
+        self.videomt_seed_iou_threshold_spinbox.setRange(0.0, 1.0)
+        self.videomt_seed_iou_threshold_spinbox.setSingleStep(0.01)
+        self.videomt_seed_iou_threshold_spinbox.setValue(
+            self.videomt_seed_iou_threshold
+        )
+
+        self.videomt_window_spinbox = QSpinBox()
+        self.videomt_window_spinbox.setRange(1, 256)
+        self.videomt_window_spinbox.setValue(int(self.videomt_window))
+
+        self.videomt_input_height_spinbox = QSpinBox()
+        self.videomt_input_height_spinbox.setRange(0, 4096)
+        self.videomt_input_height_spinbox.setSpecialValueText("auto")
+        self.videomt_input_height_spinbox.setValue(int(self.videomt_input_height))
+
+        self.videomt_input_width_spinbox = QSpinBox()
+        self.videomt_input_width_spinbox.setRange(0, 4096)
+        self.videomt_input_width_spinbox.setSpecialValueText("auto")
+        self.videomt_input_width_spinbox.setValue(int(self.videomt_input_width))
+
+        tracker_form.addRow(
+            "VideoMT mask threshold",
+            self._wrap_with_hint(
+                self.videomt_mask_threshold_spinbox,
+                "Binary mask threshold for VideoMT ONNX predictions (default 0.50).",
+            ),
+        )
+        tracker_form.addRow(
+            "VideoMT logit threshold",
+            self._wrap_with_hint(
+                self.videomt_logit_threshold_spinbox,
+                "Minimum query foreground-vs-background score to accept (default -2.0).",
+            ),
+        )
+        tracker_form.addRow(
+            "VideoMT seed IoU threshold",
+            self._wrap_with_hint(
+                self.videomt_seed_iou_threshold_spinbox,
+                "Minimum IoU to map model queries to your seed labels (default 0.01).",
+            ),
+        )
+        tracker_form.addRow(
+            "VideoMT window (5D models)",
+            self._wrap_with_hint(
+                self.videomt_window_spinbox,
+                "Temporal clip length for [1,3,T,H,W] VideoMT models when T is dynamic.",
+            ),
+        )
+        tracker_form.addRow(
+            "VideoMT input height (0=auto)",
+            self._wrap_with_hint(
+                self.videomt_input_height_spinbox,
+                "Force resize height before inference. Keep auto unless required by the model.",
+            ),
+        )
+        tracker_form.addRow(
+            "VideoMT input width (0=auto)",
+            self._wrap_with_hint(
+                self.videomt_input_width_spinbox,
+                "Force resize width before inference. Keep auto unless required by the model.",
+            ),
+        )
 
         tracker_layout.addLayout(tracker_form)
         tracker_layout.addStretch(1)
@@ -880,6 +960,14 @@ class AdvancedParametersDialog(QDialog):
             "motion_prior_miss_relief": self.motion_prior_miss_relief_spinbox.value(),
             "motion_prior_flow_relief": self.motion_prior_flow_relief_spinbox.value(),
         }
+        self.videomt_mask_threshold = self.videomt_mask_threshold_spinbox.value()
+        self.videomt_logit_threshold = self.videomt_logit_threshold_spinbox.value()
+        self.videomt_seed_iou_threshold = (
+            self.videomt_seed_iou_threshold_spinbox.value()
+        )
+        self.videomt_window = int(self.videomt_window_spinbox.value())
+        self.videomt_input_height = int(self.videomt_input_height_spinbox.value())
+        self.videomt_input_width = int(self.videomt_input_width_spinbox.value())
         self.sam3_score_threshold_detection = self.sam3_score_thresh_spinbox.value()
         self.sam3_new_det_thresh = self.sam3_new_det_thresh_spinbox.value()
         self.sam3_propagation_direction = str(self.sam3_direction_combo.currentText())
@@ -944,6 +1032,16 @@ class AdvancedParametersDialog(QDialog):
 
     def get_tracker_settings(self) -> Dict[str, object]:
         return dict(self._tracker_settings)
+
+    def get_videomt_settings(self) -> Dict[str, object]:
+        return {
+            "videomt_mask_threshold": float(self.videomt_mask_threshold),
+            "videomt_logit_threshold": float(self.videomt_logit_threshold),
+            "videomt_seed_iou_threshold": float(self.videomt_seed_iou_threshold),
+            "videomt_window": int(self.videomt_window),
+            "videomt_input_height": int(self.videomt_input_height),
+            "videomt_input_width": int(self.videomt_input_width),
+        }
 
     def get_sam3_thresholds(self) -> Dict[str, float]:
         return {
