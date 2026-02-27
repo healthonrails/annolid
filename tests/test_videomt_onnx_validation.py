@@ -100,3 +100,24 @@ def test_build_query_label_map_recovers_unmatched_seed_labels() -> None:
 
     out = proc._build_query_label_map(binary_masks, scores, seeds, seed_timestep=0)
     assert set(out.values()) == {"a", "b"}
+
+
+def test_resolve_model_path_downloads_videomt_when_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    proc = VideoMTOnnxVideoProcessor.__new__(VideoMTOnnxVideoProcessor)
+    cached = tmp_path / "downloads" / "videomt_yt_2019_vit_small_52.8.onnx"
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_bytes(b"onnx")
+
+    monkeypatch.setattr(
+        "annolid.segmentation.videomt_onnx.resolve_existing_model_path",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "annolid.segmentation.videomt_onnx.ensure_cached_model_asset",
+        lambda **_kwargs: cached,
+    )
+
+    path = proc._resolve_model_path({})
+    assert path == cached

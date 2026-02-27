@@ -1,5 +1,6 @@
 import os
-import gdown
+
+from annolid.utils.model_assets import ensure_cached_model_asset
 
 
 class WeightDownloader:
@@ -16,9 +17,14 @@ class WeightDownloader:
         # Define the weight file path
         weight_file_path = os.path.join(self.weights_dir, weight_file_name)
 
-        # Download weights with gdown and display progress bar
-        if not os.path.exists(weight_file_path):
-            gdown.cached_download(weight_url, weight_file_path, md5=expected_checksum)
+        ensure_cached_model_asset(
+            file_name=weight_file_name,
+            url=weight_url,
+            expected_md5=expected_checksum,
+            cache_dir=self.weights_dir,
+            quiet=False,
+            fuzzy=True,
+        )
 
         # Check if the file exists and has been downloaded successfully
         if os.path.exists(weight_file_path):

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from annolid.utils.model_assets import (
+    candidate_model_paths,
+    resolve_existing_model_path,
+)
 
 
 @dataclass
@@ -118,42 +122,6 @@ MODEL_PATH_DEFAULTS: Dict[str, str] = {
 }
 
 
-def _candidate_model_paths(path_value: str) -> List[Path]:
-    raw = str(path_value or "").strip()
-    if not raw:
-        return []
-    path = Path(raw).expanduser()
-    candidates: List[Path] = [path]
-    if not path.is_absolute():
-        # Annolid often runs with cwd different from project root; prefer
-        # workspace-local model assets when present.
-        candidates.append(Path.home() / ".annolid" / "workspace" / path)
-        try:
-            candidates.append((Path.cwd() / path).resolve())
-        except Exception:
-            candidates.append(Path.cwd() / path)
-
-    deduped: List[Path] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = str(candidate)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(candidate)
-    return deduped
-
-
-def _resolve_existing_model_path(path_value: str) -> Optional[Path]:
-    for candidate in _candidate_model_paths(path_value):
-        try:
-            if candidate.exists():
-                return candidate
-        except Exception:
-            continue
-    return None
-
-
 def _config_override_path(
     config: Optional[Dict[str, Any]], identifier: str
 ) -> Optional[str]:
@@ -196,7 +164,7 @@ def resolve_model_weight_path(
     if not override:
         override = MODEL_PATH_DEFAULTS.get(identifier)
     if override:
-        existing = _resolve_existing_model_path(str(override))
+        existing = resolve_existing_model_path(str(override))
         if existing is not None:
             return str(existing)
         return str(override)
@@ -255,9 +223,9 @@ def validate_model_registry_entries(
                 seen_ids[lowered] = identifier
 
         if identifier in MODEL_PATH_DEFAULTS:
-            resolved = _resolve_existing_model_path(weight_file)
+            resolved = resolve_existing_model_path(weight_file)
             if resolved is None:
-                preferred = _candidate_model_paths(weight_file)[0]
+                preferred = candidate_model_paths(weight_file)[0]
                 warnings.append(
                     f"Model '{display}' currently unavailable: expected local weights at '{preferred}'."
                 )
@@ -272,8 +240,8 @@ def get_model_unavailable_reason(model: ModelConfig) -> Optional[str]:
     identifier = str(model.identifier)
     if identifier not in MODEL_PATH_DEFAULTS:
         return None
-    resolved = _resolve_existing_model_path(str(model.weight_file))
+    resolved = resolve_existing_model_path(str(model.weight_file))
     if resolved is not None:
         return None
-    preferred = _candidate_model_paths(str(model.weight_file))[0]
+    preferred = candidate_model_paths(str(model.weight_file))[0]
     return f"Missing local weights: {preferred}"

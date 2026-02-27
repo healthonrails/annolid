@@ -104,7 +104,7 @@ def test_videomt_resolves_workspace_downloads_when_relative_path_exists(
     expected.parent.mkdir(parents=True, exist_ok=True)
     expected.write_bytes(b"onnx")
 
-    monkeypatch.setattr("annolid.gui.models_registry.Path.home", lambda: fake_home)
+    monkeypatch.setattr("annolid.utils.model_assets.Path.home", lambda: fake_home)
 
     registry = get_runtime_model_registry(
         config={

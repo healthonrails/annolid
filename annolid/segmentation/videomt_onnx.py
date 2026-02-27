@@ -5,7 +5,7 @@ https://github.com/tue-mps/videomt
 
 Citation:
 @inproceedings{norouzi2026videomt,
-  author     = {Norouzi, Narges and Zulfikar, Idil and Cavagnero, Niccol\`{o}
+  author     = {Norouzi, Narges and Zulfikar, Idil and Cavagnero, Niccol\\`{o}
                 and Kerssies, Tommie and Leibe, Bastian and Dubbelman, Gijs
                 and {de Geus}, Daan},
   title      = {{VidEoMT: Your ViT is Secretly Also a Video Segmentation Model}},
@@ -34,6 +34,19 @@ from annolid.utils.files import (
     get_frame_number_from_json,
 )
 from annolid.utils.logger import logger
+from annolid.utils.model_assets import (
+    ensure_cached_model_asset,
+    resolve_existing_model_path,
+)
+
+
+VIDEOMT_ONNX_FILE_NAME = "videomt_yt_2019_vit_small_52.8.onnx"
+VIDEOMT_ONNX_RELATIVE_PATH = f"downloads/{VIDEOMT_ONNX_FILE_NAME}"
+VIDEOMT_ONNX_URL = (
+    "https://github.com/healthonrails/annolid/releases/download/v1.6.1/"
+    "videomt_yt_2019_vit_small_52.8.onnx"
+)
+VIDEOMT_ONNX_SHA256 = "c1188db0999f2b0aaecd9f37b57c04cb82b1bb796e8c8765a0e67cc641486839"
 
 
 def _choose_seed_frame(requested_frame: int, available_frames: list[int]) -> int | None:
@@ -280,26 +293,31 @@ class VideoMTOnnxVideoProcessor:
             if value and value.lower().endswith(".onnx"):
                 candidates.append(value)
 
-        candidates.extend(
-            [
-                "downloads/videomt_yt_2019_vit_small_52.8.onnx",
-                str(
-                    Path.home()
-                    / ".annolid/workspace/downloads/videomt_yt_2019_vit_small_52.8.onnx"
-                ),
-            ]
-        )
+        candidates.append(VIDEOMT_ONNX_RELATIVE_PATH)
 
         for candidate in candidates:
-            path = Path(candidate).expanduser()
-            if not path.is_absolute():
-                path = (Path.cwd() / path).resolve()
-            if path.exists():
-                return path
-        raise FileNotFoundError(
-            "VideoMT ONNX model not found. Expected e.g. "
-            "'downloads/videomt_yt_2019_vit_small_52.8.onnx'."
-        )
+            resolved = resolve_existing_model_path(candidate)
+            if resolved is not None:
+                return resolved
+
+        try:
+            cached = ensure_cached_model_asset(
+                file_name=VIDEOMT_ONNX_FILE_NAME,
+                url=VIDEOMT_ONNX_URL,
+                expected_sha256=VIDEOMT_ONNX_SHA256,
+            )
+            logger.info(
+                "VideoMT ONNX model downloaded and cached at %s from %s",
+                cached,
+                VIDEOMT_ONNX_URL,
+            )
+            return cached
+        except Exception as exc:
+            raise FileNotFoundError(
+                "VideoMT ONNX model not found locally and auto-download failed. "
+                f"Tried candidates: {candidates}. Download URL: {VIDEOMT_ONNX_URL}. "
+                f"Error: {exc}"
+            ) from exc
 
     def _build_session(self, model_path: Path):
         ort = _require_onnxruntime()
