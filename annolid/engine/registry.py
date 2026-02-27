@@ -117,9 +117,20 @@ def list_models(*, load_builtins: bool = True) -> List[ModelInfo]:
 
 
 def get_model(name: str, *, load_builtins: bool = True) -> ModelPluginBase:
-    if load_builtins:
-        load_builtin_models()
     key = str(name or "").strip()
+    if load_builtins and key not in _REGISTRY:
+        # Fast path: import only the likely matching module for the requested
+        # plugin name (e.g. "image-edit" -> "annolid.engine.models.image_edit")
+        # so lightweight CLI subcommands avoid importing all heavy model stacks.
+        candidate_module = key.replace("-", "_")
+        if candidate_module:
+            try:
+                importlib.import_module(f"annolid.engine.models.{candidate_module}")
+            except Exception:
+                # Fall back to global builtin import below.
+                pass
+    if load_builtins and key not in _REGISTRY:
+        load_builtin_models()
     if key not in _REGISTRY:
         available = ", ".join(sorted(_REGISTRY.keys())) or "(none)"
         raise KeyError(f"Unknown model {key!r}. Available: {available}")

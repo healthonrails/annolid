@@ -11,7 +11,10 @@ from annolid.core.behavior.spec import (
     save_behavior_spec,
 )
 from annolid.segmentation.dino_kpseg import defaults as dino_defaults
-from annolid.gui.widgets import TrainingDashboardDialog
+from annolid.gui.widgets import (
+    LabelingProgressDashboardDialog,
+    TrainingDashboardDialog,
+)
 from annolid.utils.logger import logger
 
 
@@ -221,6 +224,53 @@ class ProjectWorkflowMixin:
             QtWidgets.QApplication.processEvents()
         except Exception as e:
             logger.debug(f"Could not open training dashboard: {e}")
+
+    def open_labeling_progress_dashboard(self) -> None:
+        """Open the labeling progress dashboard (project stats + gamification)."""
+        try:
+            dialog = getattr(self, "_labeling_progress_dashboard_dialog", None)
+            if dialog is None:
+                project_root = self.project_controller.get_current_project_path()
+                annotation_root = None
+                try:
+                    annotation_root = self.project_controller.get_project_directory(
+                        "annotations"
+                    )
+                except Exception:
+                    annotation_root = None
+                if project_root is None and getattr(self, "video_results_folder", None):
+                    project_root = Path(self.video_results_folder).resolve()
+                if annotation_root is None and getattr(self, "annotation_dir", None):
+                    annotation_root = Path(self.annotation_dir).resolve()
+                if project_root is None:
+                    project_root = Path.cwd()
+                if annotation_root is None:
+                    annotation_root = project_root
+
+                dialog = LabelingProgressDashboardDialog(
+                    initial_project_root=project_root,
+                    initial_annotation_root=annotation_root,
+                    parent=self,
+                )
+                dialog.finished.connect(
+                    lambda *_: setattr(
+                        self, "_labeling_progress_dashboard_dialog", None
+                    )
+                )
+                dialog.destroyed.connect(
+                    lambda *_: setattr(
+                        self, "_labeling_progress_dashboard_dialog", None
+                    )
+                )
+                self._labeling_progress_dashboard_dialog = dialog
+
+            dialog.show()
+            dialog.setWindowState(dialog.windowState() & ~QtCore.Qt.WindowMinimized)
+            dialog.raise_()
+            dialog.activateWindow()
+            QtWidgets.QApplication.processEvents()
+        except Exception as exc:
+            logger.debug("Could not open labeling progress dashboard: %s", exc)
 
     def open_inference_wizard(self) -> None:
         """Open the inference wizard for running model predictions."""

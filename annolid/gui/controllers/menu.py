@@ -315,6 +315,14 @@ class MenuController:
                 "tip": w.tr("Summarise recorded behavior events"),
             },
             {
+                "name": "labeling_progress_dashboard",
+                "text": w.tr("Labeling &Progress Dashboard…"),
+                "slot": w.open_labeling_progress_dashboard,
+                "tip": w.tr(
+                    "Show labeling stats, activity, and gamified project progress"
+                ),
+            },
+            {
                 "name": "run_agent",
                 "text": w.tr("Run &Agent Analysis…"),
                 "slot": w.open_agent_run_dialog,
@@ -884,6 +892,10 @@ class MenuController:
                 actions["open_3d"],
                 actions["open_caption"],
             ),
+            (
+                w.actions.save,
+                w.actions.saveAuto,
+            ),
             (actions["open_audio"],),
             (
                 actions["save_labels"],
@@ -944,6 +956,7 @@ class MenuController:
         # ============================================================
         analysis_sections = [
             (
+                actions["labeling_progress_dashboard"],
                 actions["tracking_reports"],
                 actions["behavior_time_budget"],
                 actions["run_agent"],

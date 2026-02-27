@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections import deque
 from pathlib import Path
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -256,7 +257,7 @@ def test_file_dock_incremental_queue_loads_in_batches(tmp_path: Path) -> None:
         # Re-test with manual bounded chunk.
         window.fileListWidget.clear()
         window._reset_file_dock_incremental_state()
-        window._file_dock_pending_entries = list(entries)
+        window._file_dock_pending_entries = deque(entries)
         window._load_more_file_dock_items(batch_size=2)
         assert window.fileListWidget.count() == 2
         assert len(window._file_dock_pending_entries) == 3

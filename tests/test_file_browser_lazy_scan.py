@@ -65,10 +65,10 @@ def test_import_dir_images_scans_asynchronously_and_keeps_image_mode(tmp_path: P
 
         for _ in range(200):
             app.processEvents()
-            if getattr(window, "_dir_scan_file_iter", None) is None:
+            if not bool(getattr(window, "_dir_scan_running", False)):
                 break
 
-        assert getattr(window, "_dir_scan_file_iter", None) is None
+        assert not bool(getattr(window, "_dir_scan_running", False))
         assert len(window.imageList) == 4
         assert all(path.endswith(".png") for path in window.imageList)
         assert window._open_next_calls == 1

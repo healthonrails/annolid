@@ -26,6 +26,46 @@ from annolid.utils.logger import logger
 class PersistenceLifecycleMixin:
     """Label persistence, title/state updates, and prediction cleanup helpers."""
 
+    _autosave_timer: QtCore.QTimer | None = None
+
+    def _is_auto_save_enabled(self) -> bool:
+        action = getattr(getattr(self, "actions", None), "saveAuto", None)
+        if action is not None:
+            try:
+                return bool(action.isChecked())
+            except Exception:
+                pass
+        return bool((self._config or {}).get("auto_save", False))
+
+    def _ensure_autosave_timer(self) -> QtCore.QTimer:
+        timer = getattr(self, "_autosave_timer", None)
+        if timer is None:
+            timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._run_auto_save)
+            self._autosave_timer = timer
+        return timer
+
+    def _schedule_auto_save(self) -> None:
+        if not self.filename:
+            return
+        timer = self._ensure_autosave_timer()
+        # Debounce shape edits so drag/move operations do not spam disk writes.
+        timer.start(700)
+
+    def _run_auto_save(self) -> None:
+        if not self._is_auto_save_enabled() or not self.filename or not self.dirty:
+            return
+        try:
+            self.saveFile()
+        except Exception as exc:
+            logger.debug("Auto-save failed: %s", exc)
+
+    def _cancel_auto_save(self) -> None:
+        timer = getattr(self, "_autosave_timer", None)
+        if timer is not None:
+            timer.stop()
+
     def _get_pil_image_from_state(self) -> Image.Image | None:
         if self.imageData is None:
             return None
@@ -188,7 +228,8 @@ class PersistenceLifecycleMixin:
                 _ = self.saveLabels(str(changed_filename))
                 _ = self._saveImageFile(str(changed_filename).replace(".json", ".png"))
             image_filename = self._saveImageFile(filename)
-            self._auto_collect_labelme_pair(filename, image_filename)
+            index_file = self._auto_collect_labelme_pair(filename, image_filename)
+            self._update_label_stats_from_index(index_file=index_file)
             self._save_ai_mask_renders(image_filename)
             self.imageList.append(image_filename)
             self.addRecentFile(filename)
@@ -209,7 +250,7 @@ class PersistenceLifecycleMixin:
 
             self.setClean()
 
-    def _auto_collect_labelme_pair(self, json_path: str, image_path: str) -> None:
+    def _resolve_label_index_file(self) -> str:
         index_file = os.environ.get("ANNOLID_LABEL_INDEX_FILE", "").strip()
         if not index_file:
             index_file = (self.config or {}).get(
@@ -261,6 +302,10 @@ class PersistenceLifecycleMixin:
                 index_file = str(
                     resolve_label_index_path(Path(index_file), dataset_root_path)
                 )
+        return index_file
+
+    def _auto_collect_labelme_pair(self, json_path: str, image_path: str) -> str | None:
+        index_file = self._resolve_label_index_file()
 
         include_empty_value = (
             os.environ.get("ANNOLID_LABEL_INDEX_INCLUDE_EMPTY", "0").strip().lower()
@@ -277,8 +322,49 @@ class PersistenceLifecycleMixin:
                 include_empty=include_empty,
                 source="annolid_gui",
             )
+            return index_file
         except Exception as exc:
             logger.warning("Auto label indexing failed for %s: %s", json_path, exc)
+            return None
+
+    def _update_label_stats_from_index(self, *, index_file: str | None) -> None:
+        if not index_file:
+            return
+
+        project_root = None
+        try:
+            current_project = self.project_controller.get_current_project_path()
+            if current_project:
+                project_root = Path(current_project).expanduser().resolve()
+        except Exception:
+            project_root = None
+
+        try:
+            from annolid.datasets.label_index_stats import update_label_stats_snapshot
+
+            stats = update_label_stats_snapshot(
+                index_file=Path(index_file),
+                project_root=project_root,
+            )
+            self.label_stats[str(Path(index_file).expanduser().resolve())] = stats
+        except Exception as exc:
+            logger.debug("Failed to update label stats snapshot from index: %s", exc)
+            stats = None
+
+        try:
+            dialog = getattr(self, "_labeling_progress_dashboard_dialog", None)
+            dashboard = getattr(dialog, "dashboard", None)
+            if dashboard is not None:
+                if isinstance(stats, dict) and hasattr(
+                    dashboard, "apply_index_stats_snapshot"
+                ):
+                    dashboard.apply_index_stats_snapshot(stats)
+                else:
+                    dashboard.refresh_stats()
+        except Exception:
+            logger.debug(
+                "Failed to refresh labeling dashboard after save.", exc_info=True
+            )
 
     def getLabelFile(self):
         if str(self.filename).lower().endswith(".json"):
@@ -296,21 +382,14 @@ class PersistenceLifecycleMixin:
 
     def setDirty(self):
         self.actions.undo.setEnabled(self.canvas.isShapeRestorable)
-        if self._config["auto_save"] or self.actions.saveAuto.isChecked():
-            if self.filename:
-                label_file = osp.splitext(self.filename)[0] + ".json"
-                if self.output_dir:
-                    label_file_without_path = osp.basename(label_file)
-                    label_file = osp.join(self.output_dir, label_file_without_path)
-                self.saveLabels(label_file)
-                self.saveFile()
-                return
         self.dirty = True
         self.actions.save.setEnabled(True)
         title = "Annolid"
         if self.filename is not None:
             title = self.getTitle(clean=False)
         self.setWindowTitle(title)
+        if self._is_auto_save_enabled():
+            self._schedule_auto_save()
 
     def getTitle(self, clean=True):
         title = "Annolid"
@@ -632,6 +711,7 @@ class PersistenceLifecycleMixin:
                 self.resetState()
 
     def setClean(self):
+        self._cancel_auto_save()
         self.dirty = False
         self.actions.save.setEnabled(False)
         self.actions.createMode.setEnabled(True)
@@ -649,6 +729,19 @@ class PersistenceLifecycleMixin:
             self.actions.deleteFile.setEnabled(True)
         else:
             self.actions.deleteFile.setEnabled(False)
+
+    def _on_auto_save_toggled(self, enabled: bool) -> None:
+        self._config["auto_save"] = bool(enabled)
+        try:
+            self.settings.setValue("app/auto_save", bool(enabled))
+        except Exception:
+            pass
+        if bool(enabled):
+            self._schedule_auto_save()
+            self.statusBar().showMessage("Auto Save enabled", 2500)
+        else:
+            self._cancel_auto_save()
+            self.statusBar().showMessage("Auto Save disabled", 2500)
 
     def save_labels(self):
         file_name, extension = QtWidgets.QFileDialog.getSaveFileName(

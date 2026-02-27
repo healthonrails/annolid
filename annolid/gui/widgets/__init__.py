@@ -33,6 +33,10 @@ from annolid.gui.widgets.training_dashboard import (
     TrainingDashboardDialog,
     TrainingDashboardWidget,
 )
+from annolid.gui.widgets.labeling_progress_dashboard import (
+    LabelingProgressDashboardDialog,
+    LabelingProgressDashboardWidget,
+)
 from annolid.gui.widgets.agent_run_dialog import AgentRunDialog
 from annolid.gui.widgets.embedding_search_widget import EmbeddingSearchWidget
 
@@ -64,6 +68,8 @@ __all__ = [
     "LogManagerDialog",
     "TrainingDashboardDialog",
     "TrainingDashboardWidget",
+    "LabelingProgressDashboardDialog",
+    "LabelingProgressDashboardWidget",
     "AgentRunDialog",
     "EmbeddingSearchWidget",
     "ProjectWizard",

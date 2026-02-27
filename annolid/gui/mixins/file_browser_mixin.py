@@ -10,6 +10,58 @@ from annolid.gui.label_file import LabelFile
 from annolid.gui.window_base import AnnolidToolBar, utils
 
 
+class _ImportDirScanWorker(QtCore.QObject):
+    batchReady = QtCore.Signal(int, object)
+    finished = QtCore.Signal(int)
+    failed = QtCore.Signal(int, str)
+
+    def __init__(
+        self,
+        *,
+        token: int,
+        dirpath: str,
+        extensions: tuple[str, ...],
+        pattern: str = "",
+        batch_size: int = 300,
+    ) -> None:
+        super().__init__()
+        self._token = int(token)
+        self._dirpath = str(dirpath)
+        self._extensions = tuple(extensions)
+        self._pattern = str(pattern or "")
+        self._batch_size = max(50, int(batch_size))
+        self._stopped = False
+
+    @QtCore.Slot()
+    def stop(self) -> None:
+        self._stopped = True
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        try:
+            batch: list[str] = []
+            for root, _dirs, files in os.walk(self._dirpath):
+                if self._stopped:
+                    break
+                for file in files:
+                    if self._stopped:
+                        break
+                    if not file.lower().endswith(self._extensions):
+                        continue
+                    filename = osp.join(root, file)
+                    if self._pattern and self._pattern not in filename:
+                        continue
+                    batch.append(filename)
+                    if len(batch) >= self._batch_size:
+                        self.batchReady.emit(self._token, list(batch))
+                        batch = []
+            if batch and not self._stopped:
+                self.batchReady.emit(self._token, list(batch))
+            self.finished.emit(self._token)
+        except Exception as exc:
+            self.failed.emit(self._token, str(exc))
+
+
 class FileBrowserMixin:
     """Toolbar creation and directory/image list workflows."""
 
@@ -46,6 +98,13 @@ class FileBrowserMixin:
         return images
 
     def _addItem(self, filename, label_file, *, apply_updates=True):
+        known_paths = getattr(self, "_known_file_paths", None)
+        if known_paths is None:
+            known_paths = set()
+            self._known_file_paths = known_paths
+        if filename in known_paths:
+            return
+
         item = QtWidgets.QListWidgetItem(filename)
         item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
         has_label = False
@@ -59,18 +118,20 @@ class FileBrowserMixin:
         item.setData(Qt.UserRole, bool(has_label))
         if not has_label:
             item.setForeground(QtGui.QBrush(QtGui.QColor(160, 160, 160)))
-        if not self.fileListWidget.findItems(filename, Qt.MatchExactly):
-            self.fileListWidget.addItem(item)
-            if apply_updates:
-                try:
-                    self._apply_file_search_filter()
-                except Exception:
-                    pass
-                try:
-                    if hasattr(self, "_apply_file_dock_sort"):
-                        self._apply_file_dock_sort()
-                except Exception:
-                    pass
+        self.fileListWidget.addItem(item)
+        known_paths.add(filename)
+        if apply_updates:
+            try:
+                self._apply_file_search_filter()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "_apply_file_dock_sort") and bool(
+                    getattr(self, "_file_dock_sort_enabled", False)
+                ):
+                    self._apply_file_dock_sort()
+            except Exception:
+                pass
 
     def _getLabelFile(self, filename):
         label_file = osp.splitext(filename)[0] + ".json"
@@ -102,6 +163,7 @@ class FileBrowserMixin:
         self.annotation_dir = dirpath
         self.filename = None
         self.imageList = []
+        self._known_file_paths = set()
         blocker = QtCore.QSignalBlocker(self.fileListWidget)
         try:
             self.fileListWidget.clear()
@@ -109,15 +171,18 @@ class FileBrowserMixin:
                 self._reset_file_dock_incremental_state()
         finally:
             del blocker
+        if hasattr(self, "_update_file_selection_counter"):
+            self._update_file_selection_counter()
         self._start_import_dir_scan(dirpath, pattern=pattern, load=load)
 
     def _cancel_import_dir_scan(self) -> None:
         current = int(getattr(self, "_dir_scan_token", 0))
-        had_active_scan = getattr(self, "_dir_scan_file_iter", None) is not None
+        had_active_scan = bool(getattr(self, "_dir_scan_running", False))
         self._dir_scan_token = current + 1
-        self._dir_scan_file_iter = None
+        self._stop_import_dir_scan_worker()
         self._dir_scan_load = False
         self._dir_scan_first_loaded = False
+        self._dir_scan_running = False
         if had_active_scan and hasattr(self, "_set_file_scan_status"):
             self._set_file_scan_status(self.tr("Scan canceled"), visible=True)
 
@@ -133,38 +198,104 @@ class FileBrowserMixin:
         self._dir_scan_load = bool(load)
         self._dir_scan_first_loaded = False
         self._dir_scan_loaded_count = 0
-        self._dir_scan_file_iter = (
-            osp.join(root, file)
-            for root, _dirs, files in os.walk(dirpath)
-            for file in files
-            if file.lower().endswith(self._dir_scan_extensions)
-        )
+        self._dir_scan_running = True
         self._dir_scan_token = int(getattr(self, "_dir_scan_token", 0)) + 1
         if hasattr(self, "_set_file_scan_status"):
             self._set_file_scan_status(self.tr("Scanning..."), visible=True)
-        token = self._dir_scan_token
-        QtCore.QTimer.singleShot(0, lambda: self._process_import_dir_scan_chunk(token))
+        self._start_import_dir_scan_worker(dirpath)
 
-    def _process_import_dir_scan_chunk(self, token: int) -> None:
+    def _start_import_dir_scan_worker(self, dirpath: str) -> None:
+        self._stop_import_dir_scan_worker()
+        token = int(getattr(self, "_dir_scan_token", 0))
+        worker = _ImportDirScanWorker(
+            token=token,
+            dirpath=dirpath,
+            extensions=tuple(getattr(self, "_dir_scan_extensions", ()) or ()),
+            pattern=str(getattr(self, "_dir_scan_pattern", "") or ""),
+            batch_size=320,
+        )
+        thread = QtCore.QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.batchReady.connect(self._on_import_dir_scan_batch)
+        worker.finished.connect(self._on_import_dir_scan_finished)
+        worker.failed.connect(self._on_import_dir_scan_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._dir_scan_worker = worker
+        self._dir_scan_thread = thread
+        thread.start()
+
+    def _stop_import_dir_scan_worker(self) -> None:
+        worker = getattr(self, "_dir_scan_worker", None)
+        thread = getattr(self, "_dir_scan_thread", None)
+        if worker is not None:
+            try:
+                worker.stop()
+            except Exception:
+                pass
+        if thread is not None:
+            try:
+                thread.quit()
+                thread.wait(250)
+            except Exception:
+                pass
+        self._dir_scan_worker = None
+        self._dir_scan_thread = None
+
+    @QtCore.Slot(int, object)
+    def _on_import_dir_scan_batch(self, token: int, paths_obj: object) -> None:
         if token != int(getattr(self, "_dir_scan_token", 0)):
             return
-        file_iter = getattr(self, "_dir_scan_file_iter", None)
-        if file_iter is None:
+        if not bool(getattr(self, "_dir_scan_running", False)):
             return
-        batch_limit = 1500
+        if not isinstance(paths_obj, list):
+            return
+        self._consume_import_dir_scan_paths(paths_obj)
+
+    @QtCore.Slot(int)
+    def _on_import_dir_scan_finished(self, token: int) -> None:
+        if token != int(getattr(self, "_dir_scan_token", 0)):
+            return
+        self._dir_scan_running = False
+        self._dir_scan_worker = None
+        self._dir_scan_thread = None
+        count = len(self.imageList)
+        if hasattr(self, "_set_file_scan_idle"):
+            self._set_file_scan_idle(count=count, hide=False)
+        self.statusBar().showMessage(
+            self.tr("Loaded %1 files from %2")
+            .replace("%1", str(count))
+            .replace("%2", str(self.lastOpenDir or "")),
+            2500,
+        )
+
+    @QtCore.Slot(int, str)
+    def _on_import_dir_scan_failed(self, token: int, error_text: str) -> None:
+        if token != int(getattr(self, "_dir_scan_token", 0)):
+            return
+        self._dir_scan_running = False
+        self._dir_scan_worker = None
+        self._dir_scan_thread = None
+        if hasattr(self, "_set_file_scan_status"):
+            self._set_file_scan_status(
+                self.tr("Scan error: %1").replace("%1", str(error_text or "unknown")),
+                visible=True,
+            )
+        self.statusBar().showMessage(
+            self.tr("Directory scan failed: %1").replace(
+                "%1", str(error_text or "unknown")
+            ),
+            4000,
+        )
+
+    def _consume_import_dir_scan_paths(self, paths: list[str]) -> None:
         loaded_entries = []
-        processed = 0
-        for _ in range(batch_limit):
-            try:
-                filename = next(file_iter)
-            except StopIteration:
-                self._dir_scan_file_iter = None
-                break
-            processed += 1
+        for filename in paths:
             if self.only_json_files and not str(filename).lower().endswith(".json"):
                 self.only_json_files = False
-                # Match previous behavior: if the folder has real images, do not
-                # keep JSON files in the dock list.
                 self.imageList = [
                     path
                     for path in self.imageList
@@ -178,9 +309,6 @@ class FileBrowserMixin:
                     if not str(path).lower().endswith(".json")
                 ]
 
-            pattern = str(getattr(self, "_dir_scan_pattern", "") or "")
-            if pattern and pattern not in filename:
-                continue
             if str(filename).lower().endswith(".json") and not self.only_json_files:
                 continue
 
@@ -209,18 +337,3 @@ class FileBrowserMixin:
         ):
             self._dir_scan_first_loaded = True
             self.openNextImg(load=True)
-
-        if getattr(self, "_dir_scan_file_iter", None) is not None:
-            QtCore.QTimer.singleShot(
-                0, lambda: self._process_import_dir_scan_chunk(token)
-            )
-        else:
-            count = len(self.imageList)
-            if hasattr(self, "_set_file_scan_idle"):
-                self._set_file_scan_idle(count=count, hide=False)
-            self.statusBar().showMessage(
-                self.tr("Loaded %1 files from %2")
-                .replace("%1", str(count))
-                .replace("%2", str(self.lastOpenDir or "")),
-                2500,
-            )

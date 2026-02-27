@@ -487,13 +487,23 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.actions.save.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.SP_DialogSaveButton)
         )
-        self.actions.saveAs = self._mk_action(self.tr("Save As"))
+        self.actions.saveAs = self._mk_action(
+            self.tr("Save As"),
+            getattr(self, "saveFileAs", None),
+            shortcut=self._shortcut("save_as"),
+        )
         self.actions.saveAuto = self._mk_action(
             self.tr("Auto Save"),
             checkable=True,
             checked=bool(self._config.get("auto_save", True)),
             enabled=True,
+            shortcut=self._shortcut("toggle_auto_save"),
         )
+        if hasattr(self, "_on_auto_save_toggled"):
+            try:
+                self.actions.saveAuto.toggled.connect(self._on_auto_save_toggled)
+            except Exception:
+                pass
         self.actions.keepPrevMode = self._mk_action(
             self.tr("Keep Prev"),
             self.toggleKeepPrevMode,
@@ -658,7 +668,17 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
 
     def _shortcut(self, key: str):
         shortcuts = self._config.get("shortcuts", {}) or {}
-        return shortcuts.get(key)
+        if key in shortcuts and shortcuts.get(key):
+            return shortcuts.get(key)
+        defaults = {
+            # Qt handles Ctrl/Cmd platform mapping for standard Save.
+            "save": QtGui.QKeySequence.Save,
+            "save_as": QtGui.QKeySequence.SaveAs,
+            "toggle_auto_save": "Ctrl+Shift+A",
+            "delete_polygon": "Delete",
+            "duplicate_polygon": "Ctrl+D",
+        }
+        return defaults.get(key)
 
     def _icon(self, filename: str) -> QtGui.QIcon:
         path = self._icons_dir / filename

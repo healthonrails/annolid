@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -16,9 +17,12 @@ class FileDockMixin:
         return getattr(self, "_pdf_manager", None)
 
     def _init_file_dock_ui(self) -> None:
-        self._file_dock_pending_entries: list[tuple[str, str]] = []
+        self._file_dock_pending_entries = deque()
         self._file_dock_batch_size = 200
         self._file_dock_loading = False
+        self._file_dock_flush_scheduled = False
+        self._file_dock_filter_counter = 0
+        self._file_dock_sort_enabled = False
         self.fileListWidget = QtWidgets.QListWidget()
         self.fileListWidget.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.fileSearchWidget = QtWidgets.QLineEdit()
@@ -33,9 +37,7 @@ class FileDockMixin:
         self.fileSortCombo.addItem(self.tr("Size"), "size")
         self.fileSortCombo.addItem(self.tr("Type"), "type")
         self.fileSortCombo.setToolTip(self.tr("Sort files by selected field"))
-        self.fileSortCombo.currentIndexChanged.connect(
-            lambda _idx: self._apply_file_dock_sort()
-        )
+        self.fileSortCombo.currentIndexChanged.connect(self._on_file_sort_mode_changed)
         self.fileSortOrderButton = QtWidgets.QToolButton()
         self.fileSortOrderButton.setCheckable(True)
         self.fileSortOrderButton.setChecked(False)
@@ -46,6 +48,9 @@ class FileDockMixin:
         self.fileScanStatusLabel.setObjectName("fileScanStatusLabel")
         self.fileScanStatusLabel.setStyleSheet("color: rgb(140, 140, 140);")
         self.fileScanStatusLabel.setVisible(False)
+        self.fileSelectionLabel = QtWidgets.QLabel("0/0")
+        self.fileSelectionLabel.setObjectName("fileSelectionLabel")
+        self.fileSelectionLabel.setStyleSheet("color: rgb(100, 100, 100);")
 
         self.file_dock = QtWidgets.QDockWidget(self.tr("Files"), self)
         self.file_dock.setObjectName("fileDock")
@@ -59,6 +64,7 @@ class FileDockMixin:
         search_row.addWidget(self.fileSearchWidget, 1)
         search_row.addWidget(self.fileSortCombo, 0)
         search_row.addWidget(self.fileSortOrderButton, 0)
+        search_row.addWidget(self.fileSelectionLabel, 0)
         search_row.addWidget(self.fileScanStatusLabel, 0)
         file_layout.addLayout(search_row)
         file_actions_row = QtWidgets.QHBoxLayout()
@@ -102,10 +108,14 @@ class FileDockMixin:
         self.fileListWidget.itemDoubleClicked.connect(
             self._on_file_dock_item_double_clicked
         )
+        self.fileListWidget.currentItemChanged.connect(
+            lambda *_: self._update_file_selection_counter()
+        )
         self.fileListWidget.verticalScrollBar().valueChanged.connect(
             self._on_file_list_scroll_value_changed
         )
         self._setup_file_dock_shortcuts()
+        self._update_file_selection_counter()
 
     def _set_file_scan_status(self, text: str, *, visible: bool = True) -> None:
         label = getattr(self, "fileScanStatusLabel", None)
@@ -113,6 +123,22 @@ class FileDockMixin:
             return
         label.setText(str(text or ""))
         label.setVisible(bool(visible))
+
+    def _apply_search_visibility_to_item(self, item) -> None:
+        if item is None:
+            return
+        try:
+            query = str(self.fileSearchWidget.text() or "").strip().lower()
+        except Exception:
+            query = ""
+        if not query:
+            item.setHidden(False)
+            return
+        try:
+            hay = str(item.text() or "").lower()
+        except Exception:
+            hay = ""
+        item.setHidden(query not in hay)
 
     def _set_file_scan_idle(
         self, *, count: Optional[int] = None, hide: bool = False
@@ -133,6 +159,21 @@ class FileDockMixin:
             self.tr("Scanning: %1").replace("%1", str(int(max(0, loaded_count)))),
             visible=True,
         )
+        self._update_file_selection_counter()
+
+    def _update_file_selection_counter(self) -> None:
+        label = getattr(self, "fileSelectionLabel", None)
+        widget = getattr(self, "fileListWidget", None)
+        if label is None or widget is None:
+            return
+        total = int(widget.count()) + len(
+            getattr(self, "_file_dock_pending_entries", []) or []
+        )
+        current = (
+            int(widget.currentRow()) + 1 if widget.currentItem() is not None else 0
+        )
+        current = max(0, min(current, total))
+        label.setText(f"{current}/{total}")
 
     def _setup_file_dock_shortcuts(self) -> None:
         # Scoped to the Files dock widget so they do not conflict with canvas/label
@@ -170,8 +211,13 @@ class FileDockMixin:
                 hay = ""
             item.setHidden(query not in hay)
 
+    def _on_file_sort_mode_changed(self, _idx: int) -> None:
+        self._file_dock_sort_enabled = True
+        self._apply_file_dock_sort()
+
     def _on_file_sort_order_toggled(self, checked: bool) -> None:
         self.fileSortOrderButton.setText(self.tr("Desc") if checked else self.tr("Asc"))
+        self._file_dock_sort_enabled = True
         self._apply_file_dock_sort()
 
     def _file_sort_mode(self) -> str:
@@ -233,12 +279,14 @@ class FileDockMixin:
         mode = self._file_sort_mode()
         descending = bool(self.fileSortOrderButton.isChecked())
         if self._file_dock_pending_entries:
-            self._file_dock_pending_entries.sort(
+            pending_sorted = sorted(
+                list(self._file_dock_pending_entries),
                 key=lambda entry: self._path_sort_key(
                     Path(entry[0]).expanduser(), mode, entry[0]
                 ),
                 reverse=descending,
             )
+            self._file_dock_pending_entries = deque(pending_sorted)
         count = self.fileListWidget.count()
         if count <= 1:
             self._apply_file_search_filter()
@@ -261,16 +309,36 @@ class FileDockMixin:
         self._apply_file_search_filter()
 
     def _reset_file_dock_incremental_state(self) -> None:
-        self._file_dock_pending_entries = []
+        self._file_dock_pending_entries = deque()
         self._file_dock_loading = False
+        self._file_dock_flush_scheduled = False
+        self._file_dock_filter_counter = 0
+        self._known_file_paths = set()
+        self._update_file_selection_counter()
 
     def _append_file_dock_entries(self, entries: list[tuple[str, str]]) -> None:
         if not entries:
             return
-        self._file_dock_pending_entries.extend(list(entries))
-        self._apply_file_dock_sort()
-        if self.fileListWidget.count() == 0:
-            self._load_more_file_dock_items()
+        self._file_dock_pending_entries.extend(entries)
+        self._schedule_file_dock_flush()
+
+    def _schedule_file_dock_flush(self) -> None:
+        if self._file_dock_flush_scheduled:
+            return
+        self._file_dock_flush_scheduled = True
+        QtCore.QTimer.singleShot(0, self._flush_file_dock_pending)
+
+    def _flush_file_dock_pending(self) -> None:
+        self._file_dock_flush_scheduled = False
+        if self._file_dock_loading:
+            return
+        if not self._file_dock_pending_entries:
+            return
+        self._load_more_file_dock_items(
+            batch_size=max(60, self._file_dock_batch_size // 2)
+        )
+        if self._file_dock_pending_entries:
+            self._schedule_file_dock_flush()
 
     def _remove_json_items_from_file_dock(self) -> None:
         # Used when a directory contains real images: remove JSON-only entries.
@@ -283,17 +351,26 @@ class FileDockMixin:
                 continue
             removed = self.fileListWidget.takeItem(idx)
             if removed is not None:
+                try:
+                    text = str(removed.text() or "")
+                    known_paths = getattr(self, "_known_file_paths", None)
+                    if isinstance(known_paths, set):
+                        known_paths.discard(text)
+                except Exception:
+                    pass
                 del removed
         if self._file_dock_pending_entries:
-            self._file_dock_pending_entries = [
+            kept = [
                 (filename, label_file)
                 for filename, label_file in self._file_dock_pending_entries
                 if Path(filename).suffix.lower() != ".json"
             ]
+            self._file_dock_pending_entries = deque(kept)
+        self._update_file_selection_counter()
 
     def _queue_file_dock_entries(self, entries: list[tuple[str, str]]) -> None:
         self._reset_file_dock_incremental_state()
-        self._file_dock_pending_entries = list(entries or [])
+        self._file_dock_pending_entries = deque(entries or [])
         self._apply_file_dock_sort()
         self._load_more_file_dock_items(batch_size=max(self._file_dock_batch_size, 300))
 
@@ -307,11 +384,18 @@ class FileDockMixin:
             limit = max(1, int(batch_size or self._file_dock_batch_size))
             loaded = 0
             while self._file_dock_pending_entries and loaded < limit:
-                filename, label_file = self._file_dock_pending_entries.pop(0)
+                filename, label_file = self._file_dock_pending_entries.popleft()
                 if hasattr(self, "_addItem"):
                     self._addItem(filename, label_file, apply_updates=False)
+                    item = self.fileListWidget.item(self.fileListWidget.count() - 1)
+                    self._apply_search_visibility_to_item(item)
                 loaded += 1
-            self._apply_file_search_filter()
+            self._file_dock_filter_counter = (
+                int(getattr(self, "_file_dock_filter_counter", 0)) + 1
+            )
+            # Avoid O(n) full-list refilter every small batch during import.
+            if self._file_dock_filter_counter % 8 == 0:
+                self._apply_file_search_filter()
         finally:
             self._file_dock_loading = False
 
@@ -330,6 +414,7 @@ class FileDockMixin:
                 ),
                 1500,
             )
+        self._update_file_selection_counter()
 
     def _on_file_list_scroll_value_changed(self, value: int) -> None:
         if not self._file_dock_pending_entries:
@@ -486,10 +571,15 @@ class FileDockMixin:
             else:
                 selected.setText(str(target))
                 selected.setToolTip(str(target))
-        self._apply_file_dock_sort()
+        if bool(getattr(self, "_file_dock_sort_enabled", False)):
+            self._apply_file_dock_sort()
         old_text = str(path)
         new_text = str(target)
         self.imageList = [new_text if p == old_text else p for p in self.imageList]
+        known_paths = getattr(self, "_known_file_paths", None)
+        if isinstance(known_paths, set):
+            known_paths.discard(old_text)
+            known_paths.add(new_text)
         if self.filename == old_text:
             self.filename = new_text
             self.setWindowTitle(f"Annolid - {Path(self.filename).name}")
@@ -526,7 +616,15 @@ class FileDockMixin:
         if selected is not None and row >= 0:
             removed = self.fileListWidget.takeItem(row)
             if removed is not None:
+                try:
+                    text = str(removed.text() or "")
+                    known_paths = getattr(self, "_known_file_paths", None)
+                    if isinstance(known_paths, set):
+                        known_paths.discard(text)
+                except Exception:
+                    pass
                 del removed
+        self._update_file_selection_counter()
         path_text = str(path)
         self.imageList = [p for p in self.imageList if p != path_text]
         if deleting_current:
@@ -534,7 +632,8 @@ class FileDockMixin:
             self.filename = None
             self.imagePath = None
             self.setWindowTitle("Annolid")
-        self._apply_file_dock_sort()
+        # Deleting one row preserves current ordering; avoid full-list re-sort for large docks.
+        self._apply_file_search_filter()
         self.statusBar().showMessage(self.tr("Deleted: %s") % path.name, 3000)
 
     def _reveal_selected_file_in_folder(self, item=None) -> None:
@@ -552,7 +651,6 @@ class FileDockMixin:
             return
         current = self.filename
         self.importDirImages(self.lastOpenDir, load=False)
-        self._apply_file_dock_sort()
         if current:
             matches = self.fileListWidget.findItems(current, QtCore.Qt.MatchExactly)
             if matches:
