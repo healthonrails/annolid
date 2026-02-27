@@ -12,6 +12,10 @@ import yaml
 from qtpy import QtCore, QtWidgets
 
 from annolid.gui.workers import FlexibleWorker
+from annolid.segmentation.dino_kpseg.data import (
+    load_coco_pose_spec,
+    materialize_coco_pose_as_yolo,
+)
 from annolid.utils.logger import logger
 from annolid.utils.runs import allocate_run_dir, shared_runs_root
 
@@ -31,6 +35,7 @@ class YOLOTrainingManager(QtCore.QObject):
         super().__init__(parent=window)
         self._window = window
         self._temp_configs: List[Path] = []
+        self._temp_dataset_dirs: List[Path] = []
         self._active_jobs: List[Tuple[QtCore.QThread, FlexibleWorker, str]] = []
         self._training_running = False
         self._start_dialog: Optional[QtWidgets.QMessageBox] = None
@@ -40,7 +45,7 @@ class YOLOTrainingManager(QtCore.QObject):
     # Public API
     # ------------------------------------------------------------------ #
     def prepare_data_config(self, config_file: str) -> Optional[str]:
-        """Resolve relative paths in a YOLO data.yaml and persist to a temp file."""
+        """Resolve training data config and persist a YOLO-compatible temp YAML."""
         config_path = Path(config_file).expanduser().resolve()
         if not config_path.exists():
             QtWidgets.QMessageBox.warning(
@@ -49,6 +54,12 @@ class YOLOTrainingManager(QtCore.QObject):
                 f"Dataset configuration file not found:\n{config_path}",
             )
             return None
+
+        if config_path.is_dir():
+            prepared = self._prepare_from_coco_annotations_dir(config_path)
+            if prepared is None:
+                return None
+            config_path = prepared
 
         try:
             with config_path.open("r", encoding="utf-8") as stream:
@@ -62,10 +73,39 @@ class YOLOTrainingManager(QtCore.QObject):
             )
             return None
 
+        if self._looks_like_coco_spec(data_cfg):
+            prepared = self._materialize_coco_spec(config_path)
+            if prepared is None:
+                return None
+            config_path = prepared
+            try:
+                with config_path.open("r", encoding="utf-8") as stream:
+                    data_cfg = yaml.safe_load(stream) or {}
+            except Exception as exc:
+                logger.exception(
+                    "Failed to load staged YOLO dataset config: %s", config_path
+                )
+                QtWidgets.QMessageBox.critical(
+                    self._window,
+                    "Dataset Error",
+                    f"Could not read staged YOLO dataset config:\n{config_path}\n\n{exc}",
+                )
+                return None
+
         base_dir = config_path.parent
 
         def is_remote(path_str: str) -> bool:
             return path_str.startswith(("http://", "https://", "rtsp://", "rtmp://"))
+
+        root_dir = base_dir
+        if data_cfg.get("path"):
+            root_candidate = Path(str(data_cfg["path"])).expanduser()
+            if not root_candidate.is_absolute():
+                root_candidate = (base_dir / root_candidate).resolve()
+            root_dir = root_candidate
+            data_cfg["path"] = str(root_dir)
+        else:
+            data_cfg["path"] = str(base_dir)
 
         def resolve_entry(entry: Any) -> Any:
             if isinstance(entry, str):
@@ -75,7 +115,7 @@ class YOLOTrainingManager(QtCore.QObject):
                     return entry
                 entry_path = Path(entry).expanduser()
                 resolved = (
-                    entry_path if entry_path.is_absolute() else base_dir / entry_path
+                    entry_path if entry_path.is_absolute() else root_dir / entry_path
                 )
                 return str(resolved.resolve())
             if isinstance(entry, (list, tuple)):
@@ -85,12 +125,6 @@ class YOLOTrainingManager(QtCore.QObject):
         for split in ("train", "val", "test"):
             if split in data_cfg and data_cfg[split]:
                 data_cfg[split] = resolve_entry(data_cfg[split])
-
-        if "path" in data_cfg:
-            if data_cfg["path"]:
-                data_cfg["path"] = resolve_entry(data_cfg["path"])
-        else:
-            data_cfg["path"] = str(base_dir)
 
         missing_paths: List[str] = []
         for split in ("train", "val", "test"):
@@ -183,6 +217,95 @@ class YOLOTrainingManager(QtCore.QObject):
         if len(flip_idx) != nkpt:
             return None
         return flip_idx
+
+    def _looks_like_coco_spec(self, data_cfg: Dict[str, Any]) -> bool:
+        fmt = str(data_cfg.get("format") or data_cfg.get("type") or "").strip().lower()
+        if fmt in {"coco", "coco_pose", "coco_keypoints"}:
+            return True
+
+        # Heuristic: any split path pointing to a JSON annotation file.
+        for split in ("train", "val", "test"):
+            value = data_cfg.get(split)
+            entries = value if isinstance(value, (list, tuple)) else [value]
+            for entry in entries:
+                if isinstance(entry, str) and entry.strip().lower().endswith(".json"):
+                    return True
+        return False
+
+    def _prepare_from_coco_annotations_dir(
+        self, annotations_dir: Path
+    ) -> Optional[Path]:
+        if not annotations_dir.is_dir():
+            return None
+
+        train_json = annotations_dir / "train.json"
+        val_json = annotations_dir / "val.json"
+        test_json = annotations_dir / "test.json"
+        if not train_json.exists() and not val_json.exists():
+            QtWidgets.QMessageBox.warning(
+                self._window,
+                "Invalid COCO Folder",
+                "Expected train.json or val.json in the selected COCO folder.",
+            )
+            return None
+
+        root_path = annotations_dir
+        image_root = "."
+        if (annotations_dir / "images").exists():
+            image_root = "images"
+        elif (annotations_dir.parent / "images").exists():
+            root_path = annotations_dir.parent
+            image_root = "images"
+
+        payload: Dict[str, Any] = {
+            "format": "coco",
+            "path": str(root_path),
+            "image_root": image_root,
+        }
+        if train_json.exists():
+            payload["train"] = str(train_json.resolve().relative_to(root_path))
+        if val_json.exists():
+            payload["val"] = str(val_json.resolve().relative_to(root_path))
+        if test_json.exists():
+            payload["test"] = str(test_json.resolve().relative_to(root_path))
+
+        cfg_stub = annotations_dir / "coco_pose_spec.yaml"
+        temp_spec = Path(self._write_temp_config(payload, cfg_stub))
+        return temp_spec
+
+    def _materialize_coco_spec(self, config_path: Path) -> Optional[Path]:
+        try:
+            spec = load_coco_pose_spec(config_path)
+        except Exception as exc:
+            logger.exception("Failed to load COCO pose spec: %s", config_path)
+            QtWidgets.QMessageBox.critical(
+                self._window,
+                "Dataset Error",
+                f"Could not parse COCO pose spec:\n{config_path}\n\n{exc}",
+            )
+            return None
+
+        try:
+            stage_dir = Path(
+                tempfile.mkdtemp(
+                    prefix=f"{config_path.stem}_coco_yolo_",
+                )
+            ).resolve()
+            self._temp_dataset_dirs.append(stage_dir)
+            staged_yaml = materialize_coco_pose_as_yolo(
+                spec=spec,
+                output_dir=stage_dir,
+                link_mode="hardlink",
+            )
+            return staged_yaml
+        except Exception as exc:
+            logger.exception("Failed to convert COCO spec to YOLO pose dataset.")
+            QtWidgets.QMessageBox.critical(
+                self._window,
+                "Dataset Error",
+                f"Failed to convert COCO annotations into a YOLO pose dataset.\n\n{exc}",
+            )
+            return None
 
     def start_training(
         self,
@@ -537,6 +660,7 @@ class YOLOTrainingManager(QtCore.QObject):
                 self._release_temp_config(temp_config)
         self._close_start_notification()
         self._cleanup_temp_configs()
+        self._cleanup_temp_dataset_dirs()
 
     def _stop_thread(self, thread: QtCore.QThread, label: str) -> None:
         """Attempt graceful thread shutdown; terminate as a last resort."""
@@ -685,3 +809,20 @@ class YOLOTrainingManager(QtCore.QObject):
                 continue
             except Exception:
                 logger.debug("Could not remove temporary YOLO config: %s", temp_path)
+
+    def _cleanup_temp_dataset_dirs(self) -> None:
+        while self._temp_dataset_dirs:
+            dataset_dir = self._temp_dataset_dirs.pop()
+            try:
+                for child in sorted(dataset_dir.rglob("*"), reverse=True):
+                    if child.is_file() or child.is_symlink():
+                        child.unlink(missing_ok=True)
+                    elif child.is_dir():
+                        child.rmdir()
+                dataset_dir.rmdir()
+            except FileNotFoundError:
+                continue
+            except Exception:
+                logger.debug(
+                    "Could not remove temporary YOLO dataset dir: %s", dataset_dir
+                )
