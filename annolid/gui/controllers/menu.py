@@ -392,6 +392,14 @@ class MenuController:
                 "tip": w.tr("Convert Labelme to YOLO format"),
             },
             {
+                "name": "batch_rename_labels",
+                "text": w.tr("&Batch Rename Shape Labels..."),
+                "slot": w.batch_rename_shape_labels,
+                "tip": w.tr(
+                    "Rename shape labels across LabelMe JSON and AnnotationStore files"
+                ),
+            },
+            {
                 "name": "pose_schema",
                 "text": w.tr("Pose &Schema (Keypoints)"),
                 "slot": w.open_pose_schema_dialog,
@@ -1001,6 +1009,7 @@ class MenuController:
                 actions["coco"],
                 actions["coco_to_labelme"],
             ),
+            (actions["batch_rename_labels"],),
             (
                 actions["convert_deeplabcut"],
                 actions["convert_sleap"],

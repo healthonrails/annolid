@@ -13,6 +13,7 @@ from annolid.core.behavior.spec import (
     save_behavior_spec,
 )
 from annolid.gui.widgets import (
+    BatchRelabelDialog,
     LabelCollectionDialog,
     LogManagerDialog,
     SystemInfoDialog,
@@ -270,6 +271,26 @@ class ToolingDialogsMixin:
 
         convert_labelme2yolo_widget = convert_labelme2yolo.YOLOConverterWidget()
         convert_labelme2yolo_widget.exec_()
+
+    def batch_rename_shape_labels(self) -> None:
+        start_dir = (
+            getattr(self, "annotation_dir", None)
+            or getattr(self, "lastOpenDir", None)
+            or str(Path.cwd())
+        )
+        dlg = BatchRelabelDialog(initial_root=start_dir, parent=self)
+        dlg.exec_()
+
+        # If dashboard is open, refresh to reflect bulk relabel updates.
+        try:
+            dialog = getattr(self, "_labeling_progress_dashboard_dialog", None)
+            dashboard = getattr(dialog, "dashboard", None)
+            if dashboard is not None:
+                dashboard.refresh_stats()
+        except Exception:
+            logger.debug(
+                "Failed to refresh dashboard after batch relabel.", exc_info=True
+            )
 
     def open_pose_schema_dialog(self):
         from annolid.gui.widgets.pose_schema_dialog import PoseSchemaDialog
