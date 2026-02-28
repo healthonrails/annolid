@@ -253,6 +253,9 @@ class LabelPanelMixin:
         blocker = QtCore.QSignalBlocker(self.fileListWidget)
         try:
             self.fileListWidget.setCurrentItem(matches[0])
+            self.fileListWidget.scrollToItem(
+                matches[0], QtWidgets.QAbstractItemView.PositionAtCenter
+            )
         finally:
             del blocker
         try:

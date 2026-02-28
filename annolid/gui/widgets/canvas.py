@@ -2267,15 +2267,19 @@ class Canvas(QtWidgets.QWidget):
     def keyPressEvent(self, ev):
         modifiers = ev.modifiers()
         key = ev.key()
+        handled = False
         if self.drawing():
             if key == QtCore.Qt.Key_Escape and self.current:
                 self.current = None
                 self.drawingPolygon.emit(False)
                 self.update()
+                handled = True
             elif key == QtCore.Qt.Key_Return and self.canCloseShape():
                 self.finalise()
+                handled = True
             elif modifiers == QtCore.Qt.AltModifier:
                 self.snapping = False
+                handled = True
         elif self.editing():
             if key in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
                 if self.selectedVertex() and self.removeSelectedPoint():
@@ -2283,16 +2287,59 @@ class Canvas(QtWidgets.QWidget):
                     self.shapeMoved.emit()
                     self.movingShape = False
                     self.update()
-                ev.accept()
-                return
+                    handled = True
+                elif self._trigger_delete_selected_shapes():
+                    handled = True
             elif key == QtCore.Qt.Key_Up:
                 self.moveByKeyboard(QtCore.QPointF(0.0, -MOVE_SPEED))
+                handled = True
             elif key == QtCore.Qt.Key_Down:
                 self.moveByKeyboard(QtCore.QPointF(0.0, MOVE_SPEED))
+                handled = True
             elif key == QtCore.Qt.Key_Left:
                 self.moveByKeyboard(QtCore.QPointF(-MOVE_SPEED, 0.0))
+                handled = True
             elif key == QtCore.Qt.Key_Right:
                 self.moveByKeyboard(QtCore.QPointF(MOVE_SPEED, 0.0))
+                handled = True
+        if handled:
+            ev.accept()
+            return
+        super(Canvas, self).keyPressEvent(ev)
+
+    def _trigger_delete_selected_shapes(self) -> bool:
+        if not self.selectedShapes:
+            fallback_shape = self.hShape if self.hShape is not None else self.prevhShape
+            if fallback_shape is not None and any(
+                shape is fallback_shape for shape in self.shapes
+            ):
+                try:
+                    self.selectShapes([fallback_shape])
+                except Exception:
+                    pass
+        if not self.selectedShapes:
+            return False
+        host = self.window()
+        if host is None:
+            return False
+        try:
+            actions = getattr(host, "actions", None)
+            delete_action = (
+                getattr(actions, "deleteShapes", None) if actions is not None else None
+            )
+            if delete_action is not None and delete_action.isEnabled():
+                delete_action.trigger()
+                return True
+        except Exception:
+            pass
+        try:
+            delete_fn = getattr(host, "deleteSelectedShapes", None)
+            if callable(delete_fn):
+                delete_fn()
+                return True
+        except Exception:
+            return False
+        return False
 
     def keyReleaseEvent(self, ev):
         modifiers = ev.modifiers()

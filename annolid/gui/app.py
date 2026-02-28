@@ -663,12 +663,11 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
             logger.warning("Failed to auto-start Annolid Bot: %s", exc)
 
     def _restore_last_worked_file_if_available(self) -> None:
-        """Restore last worked file from settings on startup."""
+        """Cache last worked file from settings; restore only after opening its folder."""
         # Keep automated tests deterministic; avoid opening user files in CI/test runs.
         if os.environ.get("PYTEST_CURRENT_TEST"):
             return
-        if getattr(self, "filename", None):
-            return
+        self._pending_last_worked_file = ""
         try:
             enabled = bool(
                 self.settings.value("session/restore_last_worked_file", True, type=bool)
@@ -688,11 +687,26 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         last_path = Path(last_file).expanduser()
         if not last_path.exists() or not last_path.is_file():
             return
+        self._pending_last_worked_file = str(last_path)
+
+    def _pending_last_worked_file_for_directory(self, directory: str) -> str:
+        """Return pending restore file if it is contained by the opened directory."""
+        pending = str(getattr(self, "_pending_last_worked_file", "") or "").strip()
+        if not pending:
+            return ""
+        pending_path = Path(pending).expanduser()
+        if not pending_path.exists() or not pending_path.is_file():
+            self._pending_last_worked_file = ""
+            return ""
         try:
-            self.lastOpenDir = str(last_path.parent)
-            self.loadFile(str(last_path))
-        except Exception as exc:
-            logger.debug("Failed to restore last worked file '%s': %s", last_file, exc)
+            dir_path = Path(directory).expanduser().resolve()
+            pending_path.resolve().relative_to(dir_path)
+        except Exception:
+            return ""
+        return str(pending_path)
+
+    def _clear_pending_last_worked_file(self) -> None:
+        self._pending_last_worked_file = ""
 
     def keyReleaseEvent(self, event: QtGui.QKeyEvent):
         return super().keyReleaseEvent(event)

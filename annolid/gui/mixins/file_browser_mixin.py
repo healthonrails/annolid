@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import os.path as osp
+from pathlib import Path
 
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
@@ -133,6 +134,38 @@ class FileBrowserMixin:
             except Exception:
                 pass
 
+    @staticmethod
+    def _resolve_pending_restore_candidate(
+        pending_path: str, available_paths: list[str]
+    ) -> str:
+        pending = str(pending_path or "").strip()
+        if not pending or not available_paths:
+            return ""
+        if pending in available_paths:
+            return pending
+
+        try:
+            pending_obj = Path(pending)
+            pending_stem = pending_obj.stem.lower()
+            pending_suffix = pending_obj.suffix.lower()
+        except Exception:
+            return ""
+
+        stem_matches = [
+            p for p in available_paths if Path(p).stem.lower() == pending_stem
+        ]
+        if not stem_matches:
+            return ""
+        if pending_suffix == ".json":
+            for path in stem_matches:
+                if Path(path).suffix.lower() != ".json":
+                    return path
+        else:
+            for path in stem_matches:
+                if Path(path).suffix.lower() == ".json":
+                    return path
+        return stem_matches[0]
+
     def _getLabelFile(self, filename):
         label_file = osp.splitext(filename)[0] + ".json"
         if self.output_dir:
@@ -182,6 +215,8 @@ class FileBrowserMixin:
         self._stop_import_dir_scan_worker()
         self._dir_scan_load = False
         self._dir_scan_first_loaded = False
+        self._dir_scan_pending_restore = ""
+        self._dir_scan_wait_for_pending_restore = False
         self._dir_scan_running = False
         if had_active_scan and hasattr(self, "_set_file_scan_status"):
             self._set_file_scan_status(self.tr("Scan canceled"), visible=True)
@@ -199,6 +234,17 @@ class FileBrowserMixin:
         self._dir_scan_first_loaded = False
         self._dir_scan_loaded_count = 0
         self._dir_scan_running = True
+        self._dir_scan_pending_restore = ""
+        self._dir_scan_wait_for_pending_restore = False
+        if bool(load):
+            resolver = getattr(self, "_pending_last_worked_file_for_directory", None)
+            if callable(resolver):
+                try:
+                    pending = str(resolver(str(dirpath or "")) or "")
+                except Exception:
+                    pending = ""
+                self._dir_scan_pending_restore = pending
+                self._dir_scan_wait_for_pending_restore = bool(pending)
         self._dir_scan_token = int(getattr(self, "_dir_scan_token", 0)) + 1
         if hasattr(self, "_set_file_scan_status"):
             self._set_file_scan_status(self.tr("Scanning..."), visible=True)
@@ -259,9 +305,18 @@ class FileBrowserMixin:
     def _on_import_dir_scan_finished(self, token: int) -> None:
         if token != int(getattr(self, "_dir_scan_token", 0)):
             return
+        if (
+            bool(getattr(self, "_dir_scan_load", False))
+            and not bool(getattr(self, "_dir_scan_first_loaded", False))
+            and self.imageList
+        ):
+            self._dir_scan_first_loaded = True
+            self.openNextImg(load=True)
         self._dir_scan_running = False
         self._dir_scan_worker = None
         self._dir_scan_thread = None
+        self._dir_scan_pending_restore = ""
+        self._dir_scan_wait_for_pending_restore = False
         count = len(self.imageList)
         if hasattr(self, "_set_file_scan_idle"):
             self._set_file_scan_idle(count=count, hide=False)
@@ -279,6 +334,8 @@ class FileBrowserMixin:
         self._dir_scan_running = False
         self._dir_scan_worker = None
         self._dir_scan_thread = None
+        self._dir_scan_pending_restore = ""
+        self._dir_scan_wait_for_pending_restore = False
         if hasattr(self, "_set_file_scan_status"):
             self._set_file_scan_status(
                 self.tr("Scan error: %1").replace("%1", str(error_text or "unknown")),
@@ -335,5 +392,26 @@ class FileBrowserMixin:
             and not bool(getattr(self, "_dir_scan_first_loaded", False))
             and self.imageList
         ):
+            pending_for_dir = str(getattr(self, "_dir_scan_pending_restore", "") or "")
+            restore_candidate = self._resolve_pending_restore_candidate(
+                pending_for_dir, self.imageList
+            )
+            if restore_candidate:
+                self._dir_scan_first_loaded = True
+                self._dir_scan_pending_restore = ""
+                self._dir_scan_wait_for_pending_restore = False
+                self.loadFile(restore_candidate)
+                self._set_current_file_item(restore_candidate)
+                if self.caption_widget is not None:
+                    self.caption_widget.set_image_path(restore_candidate)
+                clear_pending = getattr(self, "_clear_pending_last_worked_file", None)
+                if callable(clear_pending):
+                    try:
+                        clear_pending()
+                    except Exception:
+                        pass
+                return
+            if bool(getattr(self, "_dir_scan_wait_for_pending_restore", False)):
+                return
             self._dir_scan_first_loaded = True
             self.openNextImg(load=True)
