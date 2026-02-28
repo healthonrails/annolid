@@ -12,6 +12,10 @@ from annolid.core.behavior.spec import (
     default_behavior_spec,
     save_behavior_spec,
 )
+from annolid.gui.keypoint_catalog import (
+    extract_labels_from_uniq_label_list,
+    merge_keypoint_lists,
+)
 from annolid.gui.widgets import (
     BatchRelabelDialog,
     LabelCollectionDialog,
@@ -293,25 +297,23 @@ class ToolingDialogsMixin:
             )
 
     def open_pose_schema_dialog(self):
-        from annolid.gui.widgets.pose_schema_dialog import PoseSchemaDialog
-
-        keypoints = sorted(
-            {
-                getattr(shape, "label", None)
-                for shape in getattr(self.canvas, "shapes", []) or []
-                if str(getattr(shape, "shape_type", "")).lower() == "point"
-                and getattr(shape, "label", None)
-            }
+        point_labels = [
+            getattr(shape, "label", None)
+            for shape in getattr(self.canvas, "shapes", []) or []
+            if str(getattr(shape, "shape_type", "")).lower() == "point"
+            and getattr(shape, "label", None)
+        ]
+        uniq_labels = extract_labels_from_uniq_label_list(
+            getattr(self, "uniqLabelList", None)
         )
-        if not keypoints:
-            try:
-                keypoints = [
-                    self.uniqLabelList.item(i).text().strip()
-                    for i in range(self.uniqLabelList.count())
-                    if self.uniqLabelList.item(i).text().strip()
-                ]
-            except Exception:
-                keypoints = []
+        seq_labels = []
+        try:
+            widget = getattr(self, "keypoint_sequence_widget", None)
+            if widget is not None:
+                seq_labels = list(getattr(widget, "keypoint_order", lambda: [])() or [])
+        except Exception:
+            seq_labels = []
+        keypoints = merge_keypoint_lists(seq_labels, point_labels, uniq_labels)
 
         start_dir = (
             str(self.video_results_folder)
@@ -329,6 +331,15 @@ class ToolingDialogsMixin:
                 break
         if default_path is None:
             default_path = str(Path(start_dir) / "pose_schema.json")
+        widget = getattr(self, "keypoint_sequence_widget", None)
+        dock = getattr(self, "keypoint_sequence_dock", None)
+        if widget is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Pose Manager Unavailable",
+                "Keypoint sequencer dock is not available in this window.",
+            )
+            return
 
         schema = self._pose_schema
         if (
@@ -341,38 +352,21 @@ class ToolingDialogsMixin:
             except Exception:
                 schema = None
 
-        dlg = PoseSchemaDialog(
-            keypoints=keypoints or None,
-            schema=schema,
-            schema_path=default_path,
-            parent=self,
-        )
-        if not dlg.exec_():
-            return
-
-        try:
-            path = dlg.schema_path or default_path
-            if not path:
-                path = str(Path(start_dir) / "pose_schema.json")
-            dlg.schema.save(path)
-            self._pose_schema_path = path
-            self._pose_schema = dlg.schema
-            self._persist_pose_schema_to_project_schema(dlg.schema, path)
+        schema_path = getattr(self, "_pose_schema_path", None) or default_path
+        widget.set_pose_schema(schema, schema_path)
+        widget.load_keypoints_from_labels(keypoints)
+        if schema is None and schema_path:
             try:
-                self.canvas.setPoseSchema(self._pose_schema)
+                widget.load_schema_from_path(str(schema_path), quiet=True)
             except Exception:
                 pass
-            QtWidgets.QMessageBox.information(
-                self,
-                "Pose Schema Saved",
-                f"Pose schema saved to:\n{path}\n\n"
-                "Use this file in LabelMe→YOLO conversion to generate flip_idx.",
-            )
-        except Exception as exc:
-            logger.error("Failed to save pose schema: %s", exc, exc_info=True)
-            QtWidgets.QMessageBox.critical(
-                self, "Save Failed", f"Failed to save pose schema:\n{exc}"
-            )
+
+        if dock is not None:
+            try:
+                dock.show()
+                dock.raise_()
+            except Exception:
+                pass
 
     def _persist_pose_schema_to_project_schema(
         self, schema: PoseSchema, schema_path: str

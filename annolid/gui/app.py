@@ -76,6 +76,8 @@ from annolid.gui.behavior_controller import BehaviorController
 from annolid.gui.widgets.behavior_log import BehaviorEventLogWidget
 from annolid.gui.widgets.embedding_search_widget import EmbeddingSearchWidget
 from annolid.gui.widgets.timeline_panel import TimelinePanel
+from annolid.gui.widgets.keypoint_sequencer import KeypointSequencerWidget
+from annolid.gui.keypoint_catalog import extract_labels_from_uniq_label_list
 from annolid.gui.yolo_training_manager import YOLOTrainingManager
 from annolid.gui.dino_kpseg_training_manager import DinoKPSEGTrainingManager
 from annolid.gui.cli import parse_cli
@@ -328,6 +330,21 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self._setup_label_list_connections()
         self._setup_file_list_connections()
 
+        self.keypoint_sequence_widget = KeypointSequencerWidget(self)
+        self.keypoint_sequence_dock = QtWidgets.QDockWidget(
+            self.tr("Keypoint Sequencer"), self
+        )
+        self.keypoint_sequence_dock.setObjectName("keypointSequencerDock")
+        self.keypoint_sequence_dock.setWidget(self.keypoint_sequence_widget)
+        self.keypoint_sequence_widget.poseSchemaChanged.connect(
+            self._on_keypoint_sequence_schema_changed
+        )
+        self.addDockWidget(Qt.RightDockWidgetArea, self.keypoint_sequence_dock)
+        self.tabifyDockWidget(self.shape_dock, self.keypoint_sequence_dock)
+        self.keypoint_sequence_dock.setVisible(False)
+        self._setup_keypoint_sequence_quick_toggle()
+        self._setup_keypoint_sequence_label_sync()
+
         # Ensure all drawing/edit mode actions work without relying on LabelMe.
         self._setup_drawing_mode_actions()
 
@@ -529,7 +546,95 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self._setup_log_manager_action()
 
         self.populateModeActions()
+        QtCore.QTimer.singleShot(0, self._restore_last_worked_file_if_available)
         QtCore.QTimer.singleShot(0, self._startup_annolid_bot)
+
+    def _setup_keypoint_sequence_quick_toggle(self) -> None:
+        """Add quick toggle action (toolbar + shortcut) for keypoint sequencing."""
+        shortcut = self._shortcut("toggle_keypoint_sequence") or "Ctrl+Shift+K"
+        action = QtWidgets.QAction(self.tr("Keypoint Sequence"), self)
+        action.setCheckable(True)
+        action.setChecked(
+            bool(self.keypoint_sequence_widget.enable_checkbox.isChecked())
+        )
+        action.setShortcut(QtGui.QKeySequence(shortcut))
+        action.setStatusTip(
+            self.tr("Enable/disable sequential keypoint labeling for point clicks")
+        )
+        action.setToolTip(
+            self.tr("Toggle keypoint sequencer on/off (shortcut: %s)") % shortcut
+        )
+        action.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_DialogApplyButton))
+
+        action.toggled.connect(self.keypoint_sequence_widget.enable_checkbox.setChecked)
+        self.keypoint_sequence_widget.enable_checkbox.toggled.connect(action.setChecked)
+
+        self.toggle_keypoint_sequence_action = action
+        try:
+            self.menus.view.addAction(action)
+        except Exception:
+            pass
+        try:
+            self.tools.add_stacked_action(
+                action,
+                "Keypoint\nSequence",
+                width=58,
+                min_height=68,
+                icon_size=QtCore.QSize(32, 32),
+            )
+        except Exception:
+            self.tools.addAction(action)
+
+    def _setup_keypoint_sequence_label_sync(self) -> None:
+        """Keep sequencer keypoints merged with Labels dock entries."""
+        uniq = getattr(self, "uniqLabelList", None)
+        if uniq is None:
+            return
+        try:
+            model = uniq.model()
+        except Exception:
+            model = None
+        if model is not None:
+            try:
+                model.rowsInserted.connect(
+                    self._sync_keypoint_sequencer_from_labels_dock
+                )
+                model.rowsRemoved.connect(
+                    self._sync_keypoint_sequencer_from_labels_dock
+                )
+                model.modelReset.connect(self._sync_keypoint_sequencer_from_labels_dock)
+            except Exception:
+                pass
+        try:
+            self._sync_keypoint_sequencer_from_labels_dock()
+        except Exception:
+            pass
+
+    def _sync_keypoint_sequencer_from_labels_dock(self, *args) -> None:
+        _ = args
+        widget = getattr(self, "keypoint_sequence_widget", None)
+        uniq = getattr(self, "uniqLabelList", None)
+        if widget is None or uniq is None:
+            return
+        labels = extract_labels_from_uniq_label_list(uniq)
+        if labels:
+            widget.load_keypoints_from_labels(labels)
+
+    def _on_keypoint_sequence_schema_changed(self, schema, schema_path: str) -> None:
+        if schema is None:
+            return
+        self._pose_schema = schema
+        if schema_path:
+            self._pose_schema_path = str(schema_path)
+        try:
+            self.canvas.setPoseSchema(schema)
+        except Exception:
+            pass
+        if schema_path:
+            try:
+                self._persist_pose_schema_to_project_schema(schema, str(schema_path))
+            except Exception:
+                pass
 
     def _validate_model_registry_startup(self) -> None:
         try:
@@ -556,6 +661,38 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
             self.statusBar().showMessage(self.tr("Annolid Bot ready."), 3000)
         except Exception as exc:
             logger.warning("Failed to auto-start Annolid Bot: %s", exc)
+
+    def _restore_last_worked_file_if_available(self) -> None:
+        """Restore last worked file from settings on startup."""
+        # Keep automated tests deterministic; avoid opening user files in CI/test runs.
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+        if getattr(self, "filename", None):
+            return
+        try:
+            enabled = bool(
+                self.settings.value("session/restore_last_worked_file", True, type=bool)
+            )
+        except Exception:
+            enabled = True
+        if not enabled:
+            return
+        try:
+            last_file = str(
+                self.settings.value("session/last_worked_file", "", type=str) or ""
+            ).strip()
+        except Exception:
+            last_file = ""
+        if not last_file:
+            return
+        last_path = Path(last_file).expanduser()
+        if not last_path.exists() or not last_path.is_file():
+            return
+        try:
+            self.lastOpenDir = str(last_path.parent)
+            self.loadFile(str(last_path))
+        except Exception as exc:
+            logger.debug("Failed to restore last worked file '%s': %s", last_file, exc)
 
     def keyReleaseEvent(self, event: QtGui.QKeyEvent):
         return super().keyReleaseEvent(event)

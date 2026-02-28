@@ -160,3 +160,25 @@ def test_switching_ai_models_closes_previous_instance(monkeypatch):
         assert isinstance(w.canvas._ai_model, NewAiModel)
     finally:
         w.close()
+
+
+def test_keypoint_sequence_toolbar_action_syncs_with_checkbox():
+    _ensure_qapp()
+
+    from annolid.gui.app import AnnolidWindow
+
+    w = AnnolidWindow(config={})
+    try:
+        action = getattr(w, "toggle_keypoint_sequence_action", None)
+        assert action is not None
+        assert action.shortcut().toString() in {"Ctrl+Shift+K", "Meta+Shift+K"}
+
+        # Action -> checkbox
+        action.setChecked(True)
+        assert w.keypoint_sequence_widget.enable_checkbox.isChecked() is True
+
+        # Checkbox -> action
+        w.keypoint_sequence_widget.enable_checkbox.setChecked(False)
+        assert action.isChecked() is False
+    finally:
+        w.close()

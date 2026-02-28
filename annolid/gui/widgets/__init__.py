@@ -40,6 +40,7 @@ from annolid.gui.widgets.labeling_progress_dashboard import (
 from annolid.gui.widgets.agent_run_dialog import AgentRunDialog
 from annolid.gui.widgets.embedding_search_widget import EmbeddingSearchWidget
 from annolid.gui.widgets.batch_relabel_dialog import BatchRelabelDialog
+from annolid.gui.widgets.keypoint_sequencer import KeypointSequencerWidget
 
 # New streamlined wizards
 from annolid.gui.widgets.project_wizard import ProjectWizard
@@ -74,6 +75,7 @@ __all__ = [
     "AgentRunDialog",
     "EmbeddingSearchWidget",
     "BatchRelabelDialog",
+    "KeypointSequencerWidget",
     "ProjectWizard",
     "DashboardWidget",
     "DatasetExportWizard",

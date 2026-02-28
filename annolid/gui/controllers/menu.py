@@ -401,9 +401,11 @@ class MenuController:
             },
             {
                 "name": "pose_schema",
-                "text": w.tr("Pose &Schema (Keypoints)"),
+                "text": w.tr("Pose && Keypoint &Manager"),
                 "slot": w.open_pose_schema_dialog,
-                "tip": w.tr("Define keypoint order, symmetry, and edges"),
+                "tip": w.tr(
+                    "Open unified pose/keypoint manager (schema path, order, sequencing)"
+                ),
             },
             {
                 "name": "place_preference",

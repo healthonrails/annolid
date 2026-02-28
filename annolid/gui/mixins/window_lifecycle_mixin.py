@@ -262,6 +262,12 @@ class WindowLifecycleMixin:
                 "Error stopping realtime inference on exit: %s", exc, exc_info=True
             )
         try:
+            current_file = str(getattr(self, "filename", "") or "").strip()
+            if current_file:
+                self.settings.setValue("session/last_worked_file", current_file)
+        except Exception as exc:
+            logger.debug("Failed to persist last worked file on close: %s", exc)
+        try:
             self._persist_window_geometry(force=True)
         except (AttributeError, RuntimeError, TypeError) as exc:
             logger.debug("Failed persisting window geometry on close: %s", exc)

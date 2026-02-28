@@ -210,18 +210,10 @@ class LabelPanelMixin:
             return
         self._file_list_connections_setup = True
 
-        try:
-            self.fileListWidget.currentItemChanged.disconnect()
-        except Exception:
-            pass
         self.fileListWidget.currentItemChanged.connect(
             self._on_file_list_current_item_changed
         )
 
-        try:
-            self.fileListWidget.itemChanged.disconnect()
-        except Exception:
-            pass
         self.fileListWidget.itemChanged.connect(self._on_file_list_item_changed)
 
     def _checked_file_paths(self) -> list[str]:
@@ -263,6 +255,11 @@ class LabelPanelMixin:
             self.fileListWidget.setCurrentItem(matches[0])
         finally:
             del blocker
+        try:
+            if hasattr(self, "_update_file_selection_counter"):
+                self._update_file_selection_counter()
+        except Exception:
+            pass
 
     def _nearest_checked_file_path(self, row: int) -> str | None:
         count = self.fileListWidget.count()
@@ -280,6 +277,11 @@ class LabelPanelMixin:
         return None
 
     def _on_file_list_current_item_changed(self, current, previous) -> None:
+        try:
+            if hasattr(self, "_update_file_selection_counter"):
+                self._update_file_selection_counter()
+        except Exception:
+            pass
         if current is None:
             return
         if self.video_loader is not None:

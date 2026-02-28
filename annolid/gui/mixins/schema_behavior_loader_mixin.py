@@ -69,6 +69,14 @@ class SchemaBehaviorLoaderMixin:
             self.canvas.setPoseSchema(self._pose_schema)
         except Exception:
             pass
+        try:
+            widget = getattr(self, "keypoint_sequence_widget", None)
+            if widget is not None:
+                widget.set_pose_schema(
+                    self._pose_schema, getattr(self, "_pose_schema_path", None)
+                )
+        except Exception:
+            pass
 
     def _load_behavior(self, behavior_csv_file: str) -> None:
         """Load behavior events from CSV and populate the slider timeline."""

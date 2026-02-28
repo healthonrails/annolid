@@ -6,6 +6,7 @@ from collections import deque
 from qtpy import QtCore, QtWidgets
 
 from annolid.gui.file_dock import FileDockMixin
+from annolid.gui.mixins.label_panel_mixin import LabelPanelMixin
 
 
 os.environ.setdefault("QT_QPA_PLATFORM", "minimal")
@@ -23,6 +24,28 @@ def _ensure_qapp():
 
 
 class _FileDockProbe(QtWidgets.QMainWindow, FileDockMixin):
+    def __init__(self) -> None:
+        super().__init__()
+        self._known_file_paths = set()
+        self._init_file_dock_ui()
+
+    def _addItem(self, filename, _label_file, *, apply_updates=True):
+        if filename in self._known_file_paths:
+            return
+        item = QtWidgets.QListWidgetItem(filename)
+        item.setFlags(
+            QtCore.Qt.ItemIsEnabled
+            | QtCore.Qt.ItemIsSelectable
+            | QtCore.Qt.ItemIsUserCheckable
+        )
+        item.setCheckState(QtCore.Qt.Checked)
+        self.fileListWidget.addItem(item)
+        self._known_file_paths.add(filename)
+        if apply_updates:
+            self._apply_file_search_filter()
+
+
+class _FileDockSelectionProbe(QtWidgets.QMainWindow, FileDockMixin, LabelPanelMixin):
     def __init__(self) -> None:
         super().__init__()
         self._known_file_paths = set()
@@ -81,5 +104,21 @@ def test_file_selection_counter_includes_pending_items() -> None:
         probe.fileListWidget.setCurrentRow(0)
         probe._update_file_selection_counter()
         assert probe.fileSelectionLabel.text() == "1/3"
+    finally:
+        probe.close()
+
+
+def test_set_current_file_item_updates_selection_counter() -> None:
+    _ensure_qapp()
+    probe = _FileDockSelectionProbe()
+    try:
+        probe._addItem("/tmp/f1.png", "/tmp/f1.json")
+        probe._addItem("/tmp/f2.png", "/tmp/f2.json")
+        probe.fileListWidget.setCurrentRow(0)
+        probe._update_file_selection_counter()
+        assert probe.fileSelectionLabel.text() == "1/2"
+
+        probe._set_current_file_item("/tmp/f2.png")
+        assert probe.fileSelectionLabel.text() == "2/2"
     finally:
         probe.close()

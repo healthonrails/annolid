@@ -70,6 +70,8 @@ class ShapeEditingMixin:
             self.actions.undo.setEnabled(True)
             self.setDirty()
         else:
+            if self._try_apply_keypoint_sequence_labeling():
+                return
             items = self.uniqLabelList.selectedItems()
             text = None
             if items:
@@ -104,3 +106,37 @@ class ShapeEditingMixin:
             else:
                 self.canvas.undoLastLine()
                 self.canvas.shapesBackups.pop()
+
+    def _try_apply_keypoint_sequence_labeling(self) -> bool:
+        canvas = getattr(self, "canvas", None)
+        if canvas is None or getattr(canvas, "createMode", None) != "point":
+            return False
+
+        sequencer = getattr(self, "keypoint_sequence_widget", None)
+        if sequencer is None or not bool(
+            getattr(sequencer, "is_sequence_enabled", lambda: False)()
+        ):
+            return False
+
+        next_label = getattr(sequencer, "consume_next_label", lambda: None)()
+        if not next_label:
+            return False
+
+        self.labelList.clearSelection()
+        shapes = self.canvas.setLastLabel(next_label, {})
+        for shape in shapes:
+            self.addLabel(shape)
+        self.actions.editMode.setEnabled(True)
+        self.actions.undoLastPoint.setEnabled(False)
+        self.actions.undo.setEnabled(True)
+        self.setDirty()
+
+        should_auto_save = bool(
+            getattr(sequencer, "auto_save_on_click", lambda: False)()
+        )
+        if should_auto_save and getattr(self, "filename", None):
+            try:
+                self.saveFile()
+            except Exception:
+                pass
+        return True

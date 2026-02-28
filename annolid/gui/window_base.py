@@ -675,6 +675,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             "save": QtGui.QKeySequence.Save,
             "save_as": QtGui.QKeySequence.SaveAs,
             "toggle_auto_save": "Ctrl+Shift+A",
+            "toggle_keypoint_sequence": "Ctrl+Shift+K",
             "delete_polygon": "Delete",
             "duplicate_polygon": "Ctrl+D",
         }
