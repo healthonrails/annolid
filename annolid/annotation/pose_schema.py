@@ -42,6 +42,7 @@ class PoseSchema:
     flip_idx: Optional[List[int]] = None
     instances: List[str] = field(default_factory=list)
     instance_separator: str = "_"
+    sequencer: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PoseSchema":
@@ -72,6 +73,8 @@ class PoseSchema:
                 instances.append(name.rstrip("_"))
 
         instance_separator = _clean_name(data.get("instance_separator")) or "_"
+        sequencer_raw = data.get("sequencer")
+        sequencer = dict(sequencer_raw) if isinstance(sequencer_raw, dict) else {}
 
         return cls(
             version=str(data.get("version") or "1.0"),
@@ -81,10 +84,11 @@ class PoseSchema:
             flip_idx=flip_idx,
             instances=instances,
             instance_separator=instance_separator,
+            sequencer=sequencer,
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "version": self.version,
             "keypoints": list(self.keypoints),
             "edges": [[a, b] for a, b in self.edges],
@@ -93,6 +97,9 @@ class PoseSchema:
             "instances": list(self.instances),
             "instance_separator": self.instance_separator,
         }
+        if isinstance(self.sequencer, dict) and self.sequencer:
+            payload["sequencer"] = dict(self.sequencer)
+        return payload
 
     def instance_prefix(self, instance: str) -> str:
         sep = self.instance_separator or "_"

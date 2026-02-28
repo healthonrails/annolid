@@ -203,6 +203,47 @@ def test_keypoint_sequencer_loads_and_saves_pose_schema(tmp_path: Path):
         widget.close()
 
 
+def test_keypoint_sequencer_persists_locked_and_user_settings_in_schema_json(
+    tmp_path: Path,
+):
+    _ensure_qapp()
+    widget = KeypointSequencerWidget()
+    try:
+        schema = PoseSchema.from_dict(
+            {
+                "keypoints": ["nose", "left_ear", "right_ear"],
+                "instances": ["resident", "intruder"],
+            }
+        )
+        widget.set_pose_schema(schema)
+        widget.set_active_keypoints(["nose", "right_ear"])
+        for name in ["nose", "right_ear"]:
+            row = widget.keypoint_order().index(name)
+            widget.keypoint_list.item(row).setSelected(True)
+        widget._lock_selected_keypoints()  # noqa: SLF001 - targeted behavior
+        widget.autosave_checkbox.setChecked(False)
+        widget.instance_combo.setCurrentIndex(
+            widget.instance_combo.findData("intruder")
+        )
+        widget.enable_checkbox.setChecked(True)
+
+        schema_path = tmp_path / "sequencer_state_schema.json"
+        assert widget.save_schema_to_path(str(schema_path), quiet=True) is True
+    finally:
+        widget.close()
+
+    reloaded = KeypointSequencerWidget()
+    try:
+        assert reloaded.load_schema_from_path(str(schema_path), quiet=True) is True
+        assert reloaded.locked_keypoints() == ["nose", "right_ear"]
+        assert reloaded.active_keypoints() == ["nose", "right_ear"]
+        assert reloaded.autosave_checkbox.isChecked() is False
+        assert reloaded.enable_checkbox.isChecked() is True
+        assert reloaded.instance_combo.currentData() == "intruder"
+    finally:
+        reloaded.close()
+
+
 def test_keypoint_sequencer_preview_clicks_toggle_edges():
     _ensure_qapp()
     widget = KeypointSequencerWidget()
@@ -439,5 +480,29 @@ def test_keypoint_sequencer_locked_order_persists_across_schema_switch():
         assert widget.consume_next_label() == "nose"
         assert widget.consume_next_label() == "left_ear"
         assert widget.consume_next_label() == "tail_base"
+    finally:
+        widget.close()
+
+
+def test_keypoint_sequencer_reenable_starts_from_beginning_of_locked_sequence():
+    _ensure_qapp()
+    widget = KeypointSequencerWidget()
+    try:
+        schema = PoseSchema.from_dict({"keypoints": ["nose", "left_ear", "right_ear"]})
+        widget.set_pose_schema(schema)
+        widget.set_active_keypoints(["nose", "left_ear", "right_ear"])
+
+        for name in ["nose", "left_ear"]:
+            row = widget.keypoint_order().index(name)
+            widget.keypoint_list.item(row).setSelected(True)
+        widget._lock_selected_keypoints()  # noqa: SLF001 - targeted behavior
+
+        widget.enable_checkbox.setChecked(True)
+        assert widget.consume_next_label() == "nose"
+        assert widget.consume_next_label() == "left_ear"
+
+        widget.enable_checkbox.setChecked(False)
+        widget.enable_checkbox.setChecked(True)
+        assert widget.consume_next_label() == "nose"
     finally:
         widget.close()

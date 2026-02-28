@@ -182,3 +182,24 @@ def test_keypoint_sequence_toolbar_action_syncs_with_checkbox():
         assert action.isChecked() is False
     finally:
         w.close()
+
+
+def test_draw_mode_actions_expose_mode_switch_shortcuts():
+    _ensure_qapp()
+
+    from annolid.gui.app import AnnolidWindow
+
+    w = AnnolidWindow(config={})
+    try:
+        create_keys = set(w.actions.createMode.shortcuts())
+        point_keys = set(w.actions.createPointMode.shortcuts())
+        edit_keys = set(w.actions.editMode.shortcuts())
+        create_texts = {seq.toString() for seq in create_keys}
+        point_texts = {seq.toString() for seq in point_keys}
+        edit_texts = {seq.toString() for seq in edit_keys}
+
+        assert create_texts & {"Ctrl+N", "Meta+N"}
+        assert point_texts & {"Ctrl+I", "Meta+I"}
+        assert edit_texts & {"Ctrl+J", "Meta+J"}
+    finally:
+        w.close()

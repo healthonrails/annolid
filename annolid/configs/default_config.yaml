@@ -134,7 +134,7 @@ shortcuts:
   create_rectangle: Ctrl+R
   create_circle: null
   create_line: null
-  create_point: null
+  create_point: Ctrl+I
   create_linestrip: null
   edit_polygon: Ctrl+J
   delete_polygon: Delete

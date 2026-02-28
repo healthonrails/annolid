@@ -235,7 +235,7 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
             "Enable click-to-label keypoint sequence"
         )
         self.enable_checkbox.setChecked(False)
-        self.enable_checkbox.toggled.connect(self._update_status_text)
+        self.enable_checkbox.toggled.connect(self._on_sequence_mode_toggled)
         layout.addWidget(self.enable_checkbox)
 
         self.autosave_checkbox = QtWidgets.QCheckBox("Auto-save after each point click")
@@ -401,6 +401,7 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
             self.enable_checkbox.setEnabled(False)
         else:
             self.enable_checkbox.setEnabled(True)
+        self._apply_sequencer_settings_from_schema(schema)
         self.reset_sequence()
         if emit_change:
             self._emit_schema_changed()
@@ -502,6 +503,67 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
     def reset_sequence(self) -> None:
         self._next_index = 0
         self._update_status_text()
+
+    def _on_sequence_mode_toggled(self, enabled: bool) -> None:
+        if bool(enabled):
+            self.reset_sequence()
+            return
+        self._update_status_text()
+
+    @staticmethod
+    def _clean_saved_keypoint_list(value: object) -> List[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(k).strip() for k in value if str(k).strip()]
+
+    def _apply_sequencer_settings_from_schema(
+        self, schema: Optional[PoseSchema]
+    ) -> None:
+        if schema is None:
+            return
+        raw = getattr(schema, "sequencer", None)
+        if not isinstance(raw, dict) or not raw:
+            return
+
+        valid = {str(k).strip() for k in self._keypoint_order if str(k).strip()}
+        saved_locked = self._clean_saved_keypoint_list(raw.get("locked_keypoints"))
+        if saved_locked:
+            self._locked_keypoint_order = [k for k in saved_locked if k in valid]
+            self._refresh_lock_icons()
+
+        saved_active = self._clean_saved_keypoint_list(raw.get("active_keypoints"))
+        if saved_active:
+            self.set_active_keypoints(saved_active)
+
+        if "auto_save_on_click" in raw:
+            try:
+                self.autosave_checkbox.setChecked(bool(raw.get("auto_save_on_click")))
+            except Exception:
+                pass
+
+        if "selected_instance" in raw:
+            selected_instance = raw.get("selected_instance")
+            if selected_instance in (None, ""):
+                self.instance_combo.setCurrentIndex(0)
+            else:
+                idx = self.instance_combo.findData(str(selected_instance))
+                if idx >= 0:
+                    self.instance_combo.setCurrentIndex(idx)
+
+        if "enabled" in raw and self.enable_checkbox.isEnabled():
+            self.enable_checkbox.setChecked(bool(raw.get("enabled")))
+
+    def _capture_sequencer_settings(self) -> dict:
+        selected_instance = self.instance_combo.currentData()
+        return {
+            "locked_keypoints": list(self._locked_keypoint_order),
+            "active_keypoints": self.active_keypoints(),
+            "enabled": bool(self.enable_checkbox.isChecked()),
+            "auto_save_on_click": bool(self.autosave_checkbox.isChecked()),
+            "selected_instance": (
+                str(selected_instance).strip() if selected_instance else None
+            ),
+        }
 
     def _compose_label(self, keypoint: str) -> str:
         schema = self._schema
@@ -1135,6 +1197,7 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         schema = self._schema or PoseSchema()
         self._schema = schema
         self._sync_schema_keypoints_from_order()
+        schema.sequencer = self._capture_sequencer_settings()
         schema_path = Path(path_text).expanduser()
         try:
             schema.save(schema_path)

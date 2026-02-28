@@ -579,7 +579,9 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.actions.undoLastPoint = self._mk_action(self.tr("Undo Last Point"))
 
         self.actions.createMode = self._mk_action(
-            self.tr("Create Polygons"), checkable=True
+            self.tr("Create Polygons"),
+            checkable=True,
+            shortcut=self._shortcut("create_polygon"),
         )
         self.actions.createMode.setIcon(self._icon("create_polygons.svg"))
         self.actions.createRectangleMode = self._mk_action(
@@ -598,7 +600,11 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.actions.createLineMode.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.SP_ArrowRight)
         )
-        self.actions.createPointMode = self._mk_action(self.tr("Point"), checkable=True)
+        self.actions.createPointMode = self._mk_action(
+            self.tr("Point"),
+            checkable=True,
+            shortcut=self._shortcut("create_point"),
+        )
         self.actions.createPointMode.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.SP_DialogApplyButton)
         )
@@ -617,7 +623,9 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         )
         self.actions.createAiMaskMode.setIcon(self._icon("ai_polygons.svg"))
         self.actions.editMode = self._mk_action(
-            self.tr("Edit Polygons"), checkable=True
+            self.tr("Edit Polygons"),
+            checkable=True,
+            shortcut=self._shortcut("edit_polygon"),
         )
         self.actions.editMode.setIcon(self._icon("edit_polygons.svg"))
         self.actions.editMode.setChecked(True)
@@ -676,6 +684,9 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             "save_as": QtGui.QKeySequence.SaveAs,
             "toggle_auto_save": "Ctrl+Shift+A",
             "toggle_keypoint_sequence": "Ctrl+Shift+K",
+            "create_polygon": "Ctrl+N",
+            "create_point": "Ctrl+I",
+            "edit_polygon": "Ctrl+J",
             "delete_polygon": "Delete",
             "duplicate_polygon": "Ctrl+D",
         }
