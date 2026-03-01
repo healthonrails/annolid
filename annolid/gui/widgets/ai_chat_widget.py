@@ -2728,6 +2728,253 @@ class AIChatWidget(QtWidgets.QWidget):
         except Exception as exc:
             self.status_label.setText(f"Bot action failed: {exc}")
 
+    @QtCore.Slot(str, str, bool, int)
+    def bot_list_shapes(
+        self,
+        label_contains: str = "",
+        shape_type: str = "",
+        selected_only: bool = False,
+        max_results: int = 200,
+    ) -> None:
+        host = self.host_window_widget or self.window()
+        canvas = getattr(host, "canvas", None)
+        shapes = list(getattr(canvas, "shapes", []) or [])
+        selected = list(getattr(canvas, "selectedShapes", []) or [])
+        selected_ids = {id(shape) for shape in selected}
+        text_filter = str(label_contains or "").strip().lower()
+        type_filter = str(shape_type or "").strip().lower()
+        limit = max(1, min(int(max_results), 500))
+
+        entries: List[Dict[str, Any]] = []
+        for idx, shape in enumerate(shapes):
+            label = str(getattr(shape, "label", "") or "").strip()
+            shape_type_name = (
+                str(getattr(shape, "shape_type", "") or "").strip().lower()
+            )
+            is_selected = id(shape) in selected_ids
+            if selected_only and not is_selected:
+                continue
+            if text_filter and text_filter not in label.lower():
+                continue
+            if type_filter and type_filter != shape_type_name:
+                continue
+            points = list(getattr(shape, "points", []) or [])
+            entries.append(
+                {
+                    "index": int(idx),
+                    "label": label,
+                    "shape_type": shape_type_name,
+                    "selected": bool(is_selected),
+                    "visible": bool(getattr(shape, "visible", True)),
+                    "num_points": int(len(points)),
+                }
+            )
+            if len(entries) >= limit:
+                break
+
+        payload = {
+            "ok": True,
+            "total_shapes": int(len(shapes)),
+            "selected_count": int(len(selected_ids)),
+            "returned_count": int(len(entries)),
+            "shapes": entries,
+            "label_contains": str(label_contains or ""),
+            "shape_type": str(shape_type or ""),
+            "selected_only": bool(selected_only),
+        }
+        self._set_bot_action_result("list_shapes", payload)
+        self.status_label.setText(f"Listed {len(entries)} shape(s).")
+
+    @QtCore.Slot(str, str, int, bool)
+    def bot_select_shapes(
+        self,
+        label_contains: str = "",
+        shape_type: str = "",
+        max_select: int = 20,
+        clear_existing: bool = True,
+    ) -> None:
+        host = self.host_window_widget or self.window()
+        canvas = getattr(host, "canvas", None)
+        if canvas is None:
+            payload = {"ok": False, "error": "Canvas is unavailable."}
+            self._set_bot_action_result("select_shapes", payload)
+            self.status_label.setText("Bot action failed: canvas unavailable.")
+            return
+
+        shapes = list(getattr(canvas, "shapes", []) or [])
+        text_filter = str(label_contains or "").strip().lower()
+        type_filter = str(shape_type or "").strip().lower()
+        limit = max(1, min(int(max_select), 200))
+        matched: List[Any] = []
+        for shape in shapes:
+            label = str(getattr(shape, "label", "") or "").strip()
+            shape_type_name = (
+                str(getattr(shape, "shape_type", "") or "").strip().lower()
+            )
+            if text_filter and text_filter not in label.lower():
+                continue
+            if type_filter and type_filter != shape_type_name:
+                continue
+            matched.append(shape)
+            if len(matched) >= limit:
+                break
+
+        if not matched:
+            payload = {
+                "ok": False,
+                "error": "No matching shapes found.",
+                "label_contains": str(label_contains or ""),
+                "shape_type": str(shape_type or ""),
+            }
+            self._set_bot_action_result("select_shapes", payload)
+            self.status_label.setText("No matching shapes found.")
+            return
+
+        selected = matched
+        if not bool(clear_existing):
+            current = list(getattr(canvas, "selectedShapes", []) or [])
+            merged: List[Any] = []
+            seen: set[int] = set()
+            for shape in [*current, *matched]:
+                shape_id = id(shape)
+                if shape_id in seen:
+                    continue
+                seen.add(shape_id)
+                merged.append(shape)
+            selected = merged
+
+        try:
+            canvas.selectShapes(selected)
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+            self._set_bot_action_result("select_shapes", payload)
+            self.status_label.setText(f"Bot action failed: {exc}")
+            return
+
+        sync_selection = getattr(host, "shapeSelectionChanged", None)
+        if callable(sync_selection):
+            try:
+                sync_selection(selected)
+            except Exception:
+                pass
+
+        set_view = getattr(host, "_set_active_view", None)
+        if callable(set_view):
+            try:
+                set_view("canvas")
+            except Exception:
+                pass
+
+        payload = {
+            "ok": True,
+            "selected_count": int(len(selected)),
+            "selected_labels": [
+                str(getattr(shape, "label", "") or "").strip() for shape in selected
+            ],
+            "label_contains": str(label_contains or ""),
+            "shape_type": str(shape_type or ""),
+            "clear_existing": bool(clear_existing),
+        }
+        self._set_bot_action_result("select_shapes", payload)
+        self.status_label.setText(f"Selected {len(selected)} shape(s).")
+
+    @QtCore.Slot(str)
+    def bot_set_selected_shape_label(self, new_label: str) -> None:
+        host = self.host_window_widget or self.window()
+        canvas = getattr(host, "canvas", None)
+        selected = list(getattr(canvas, "selectedShapes", []) or [])
+        label_text = str(new_label or "").strip()
+        if not label_text:
+            payload = {"ok": False, "error": "new_label is required."}
+            self._set_bot_action_result("set_selected_shape_label", payload)
+            self.status_label.setText("Bot action failed: empty label.")
+            return
+        if not selected:
+            payload = {"ok": False, "error": "No selected shapes to relabel."}
+            self._set_bot_action_result("set_selected_shape_label", payload)
+            self.status_label.setText("Bot action failed: no selected shapes.")
+            return
+
+        updated = 0
+        for shape in selected:
+            try:
+                setattr(shape, "label", label_text)
+                updated += 1
+            except Exception:
+                continue
+
+        refresh_items = getattr(host, "_refresh_label_list_items_for_shapes", None)
+        if callable(refresh_items):
+            try:
+                refresh_items(selected)
+            except Exception:
+                pass
+
+        rebuild_unique = getattr(host, "_rebuild_unique_label_list", None)
+        if callable(rebuild_unique):
+            try:
+                rebuild_unique()
+            except Exception:
+                pass
+
+        set_dirty = getattr(host, "setDirty", None)
+        if callable(set_dirty):
+            try:
+                set_dirty()
+            except Exception:
+                pass
+
+        if canvas is not None:
+            try:
+                canvas.update()
+            except Exception:
+                pass
+
+        payload = {
+            "ok": bool(updated > 0),
+            "updated_count": int(updated),
+            "new_label": label_text,
+        }
+        self._set_bot_action_result("set_selected_shape_label", payload)
+        if updated > 0:
+            self.status_label.setText(
+                f"Updated label to '{label_text}' for {updated} shape(s)."
+            )
+        else:
+            self.status_label.setText("Bot action failed: no shapes were updated.")
+
+    @QtCore.Slot()
+    def bot_delete_selected_shapes(self) -> None:
+        host = self.host_window_widget or self.window()
+        canvas = getattr(host, "canvas", None)
+        selected = list(getattr(canvas, "selectedShapes", []) or [])
+        if not selected:
+            payload = {"ok": False, "error": "No selected shapes to delete."}
+            self._set_bot_action_result("delete_selected_shapes", payload)
+            self.status_label.setText("Bot action failed: no selected shapes.")
+            return
+
+        delete_selected = getattr(host, "deleteSelectedShapes", None)
+        if not callable(delete_selected):
+            payload = {"ok": False, "error": "Shape deletion is unavailable."}
+            self._set_bot_action_result("delete_selected_shapes", payload)
+            self.status_label.setText("Bot action failed: delete action unavailable.")
+            return
+
+        before = int(len(getattr(canvas, "shapes", []) or []))
+        try:
+            delete_selected()
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+            self._set_bot_action_result("delete_selected_shapes", payload)
+            self.status_label.setText(f"Bot action failed: {exc}")
+            return
+        after = int(len(getattr(canvas, "shapes", []) or []))
+        deleted_count = max(0, before - after)
+        payload = {"ok": True, "deleted_count": int(deleted_count)}
+        self._set_bot_action_result("delete_selected_shapes", payload)
+        self.status_label.setText(f"Deleted {deleted_count} shape(s).")
+
     @QtCore.Slot(str, bool)
     def bot_set_ai_text_prompt(self, text: str, use_countgd: bool = False) -> None:
         host = self.host_window_widget or self.window()

@@ -428,6 +428,116 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
     ]
 
 
+def test_gui_shape_tool_callbacks_validate_and_queue(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+
+    def _invoke_json(slot_name: str, *args):
+        calls.append(slot_name)
+        return {"ok": True, "slot": slot_name, "args_count": len(args)}
+
+    task._invoke_widget_json_slot = _invoke_json  # type: ignore[method-assign]
+
+    list_payload = task._tool_gui_list_shapes(
+        label_contains="nose",
+        shape_type="point",
+        selected_only=True,
+        max_results=8,
+    )
+    assert list_payload["ok"] is True
+    assert list_payload["slot"] == "bot_list_shapes"
+
+    select_payload = task._tool_gui_select_shapes(
+        label_contains="mouse",
+        shape_type="polygon",
+        max_select=3,
+        clear_existing=False,
+    )
+    assert select_payload["ok"] is True
+    assert select_payload["slot"] == "bot_select_shapes"
+
+    relabel_payload = task._tool_gui_set_selected_shape_label("animal")
+    assert relabel_payload["ok"] is True
+    assert relabel_payload["slot"] == "bot_set_selected_shape_label"
+
+    delete_payload = task._tool_gui_delete_selected_shapes()
+    assert delete_payload["ok"] is True
+    assert delete_payload["slot"] == "bot_delete_selected_shapes"
+
+    bad_payload = task._tool_gui_select_shapes(shape_type="triangle")
+    assert bad_payload["ok"] is False
+
+    assert calls == [
+        "bot_list_shapes",
+        "bot_select_shapes",
+        "bot_set_selected_shape_label",
+        "bot_delete_selected_shapes",
+    ]
+
+
+def test_gui_shape_file_tools_handle_json_annotations(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    ann_path = tmp_path / "frame_00001.json"
+    ann_path.write_text(
+        json.dumps(
+            {
+                "version": "5.0",
+                "imagePath": "frame_00001.png",
+                "imageHeight": 100,
+                "imageWidth": 120,
+                "shapes": [
+                    {"label": "nose", "shape_type": "point", "points": [[1, 2]]},
+                    {"label": "tail", "shape_type": "point", "points": [[3, 4]]},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    task = StreamingChatTask("hi", widget=None)
+    listed = task._tool_gui_list_shapes_in_annotation(path=str(ann_path))
+    assert listed["ok"] is True
+    assert listed["total_shapes"] == 2
+
+    relabeled = task._tool_gui_relabel_shapes_in_annotation(
+        path=str(ann_path),
+        old_label="nose",
+        new_label="snout",
+    )
+    assert relabeled["ok"] is True
+    assert relabeled["changed_shapes"] == 1
+
+    deleted = task._tool_gui_delete_shapes_in_annotation(
+        path=str(ann_path),
+        exact_label="tail",
+    )
+    assert deleted["ok"] is True
+    assert deleted["deleted_shapes"] == 1
+
+
 def test_start_realtime_stream_prefers_remembered_network_source(monkeypatch) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
 

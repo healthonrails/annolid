@@ -103,6 +103,12 @@ def build_compact_system_prompt(
         "Do not ask the user to rename files manually before attempting these tools."
     )
     parts.append(
+        "For shape operations, do not claim you lack live canvas access. "
+        "If the request references JSON/NDJSON annotations, use file-backed shape tools "
+        "(`gui_list_shapes_in_annotation`, `gui_relabel_shapes_in_annotation`, "
+        "`gui_delete_shapes_in_annotation`) on paths under allowed directories."
+    )
+    parts.append(
         "When users ask for how-to guidance or tutorials, produce structured on-demand tutorials with: "
         "goal, prerequisites, step-by-step workflow, verification checklist, and troubleshooting tips."
     )

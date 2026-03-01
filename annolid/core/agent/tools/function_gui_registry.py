@@ -58,6 +58,15 @@ from .function_gui_pdf import (
     GuiArxivSearchTool,
     GuiListPdfsTool,
 )
+from .function_gui_shapes import (
+    GuiDeleteShapesInAnnotationTool,
+    GuiDeleteSelectedShapesTool,
+    GuiListShapesInAnnotationTool,
+    GuiListShapesTool,
+    GuiRelabelShapesInAnnotationTool,
+    GuiSelectShapesTool,
+    GuiSetSelectedShapeLabelTool,
+)
 
 
 def register_annolid_gui_tools(
@@ -106,6 +115,13 @@ def register_annolid_gui_tools(
     read_log_file_callback: Optional[ActionCallback] = None,
     search_logs_callback: Optional[ActionCallback] = None,
     check_stream_source_callback: Optional[ActionCallback] = None,
+    list_shapes_callback: Optional[ActionCallback] = None,
+    select_shapes_callback: Optional[ActionCallback] = None,
+    set_selected_shape_label_callback: Optional[ActionCallback] = None,
+    delete_selected_shapes_callback: Optional[ActionCallback] = None,
+    list_shapes_in_annotation_callback: Optional[ActionCallback] = None,
+    relabel_shapes_in_annotation_callback: Optional[ActionCallback] = None,
+    delete_shapes_in_annotation_callback: Optional[ActionCallback] = None,
 ) -> None:
     """Register GUI-only tools for Annolid Bot sessions."""
     registry.register(GuiContextTool(context_callback=context_callback))
@@ -213,5 +229,34 @@ def register_annolid_gui_tools(
     registry.register(
         GuiCheckStreamSourceTool(
             check_stream_source_callback=check_stream_source_callback
+        )
+    )
+    registry.register(GuiListShapesTool(list_shapes_callback=list_shapes_callback))
+    registry.register(
+        GuiSelectShapesTool(select_shapes_callback=select_shapes_callback)
+    )
+    registry.register(
+        GuiSetSelectedShapeLabelTool(
+            set_selected_shape_label_callback=set_selected_shape_label_callback
+        )
+    )
+    registry.register(
+        GuiDeleteSelectedShapesTool(
+            delete_selected_shapes_callback=delete_selected_shapes_callback
+        )
+    )
+    registry.register(
+        GuiListShapesInAnnotationTool(
+            list_shapes_in_annotation_callback=list_shapes_in_annotation_callback
+        )
+    )
+    registry.register(
+        GuiRelabelShapesInAnnotationTool(
+            relabel_shapes_in_annotation_callback=relabel_shapes_in_annotation_callback
+        )
+    )
+    registry.register(
+        GuiDeleteShapesInAnnotationTool(
+            delete_shapes_in_annotation_callback=delete_shapes_in_annotation_callback
         )
     )

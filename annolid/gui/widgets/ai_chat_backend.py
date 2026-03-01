@@ -179,6 +179,17 @@ from annolid.core.agent.gui_backend.tool_handlers_realtime import (
     start_realtime_stream_tool as gui_start_realtime_stream_tool,
     stop_realtime_stream_tool as gui_stop_realtime_stream_tool,
 )
+from annolid.core.agent.gui_backend.tool_handlers_shapes import (
+    delete_selected_shapes_tool as gui_delete_selected_shapes_tool,
+    list_shapes_tool as gui_list_shapes_tool,
+    select_shapes_tool as gui_select_shapes_tool,
+    set_selected_shape_label_tool as gui_set_selected_shape_label_tool,
+)
+from annolid.core.agent.gui_backend.tool_handlers_shape_files import (
+    delete_shapes_in_annotation_tool as gui_delete_shapes_in_annotation_tool,
+    list_shapes_in_annotation_tool as gui_list_shapes_in_annotation_tool,
+    relabel_shapes_in_annotation_tool as gui_relabel_shapes_in_annotation_tool,
+)
 from annolid.core.agent.gui_backend.session_io import (
     emit_chunk as gui_emit_chunk,
     emit_final as gui_emit_final,
@@ -1219,6 +1230,13 @@ class StreamingChatTask(QRunnable):
                 "read_log_file": self._tool_gui_read_log_file,
                 "search_logs": self._tool_gui_search_logs,
                 "check_stream_source": self._tool_gui_check_stream_source,
+                "list_shapes": self._tool_gui_list_shapes,
+                "select_shapes": self._tool_gui_select_shapes,
+                "set_selected_shape_label": self._tool_gui_set_selected_shape_label,
+                "delete_selected_shapes": self._tool_gui_delete_selected_shapes,
+                "list_shapes_in_annotation": self._tool_gui_list_shapes_in_annotation,
+                "relabel_shapes_in_annotation": self._tool_gui_relabel_shapes_in_annotation,
+                "delete_shapes_in_annotation": self._tool_gui_delete_shapes_in_annotation,
                 "arxiv_search": self._tool_gui_arxiv_search,
                 "list_pdfs": self._tool_gui_list_pdfs,
                 "save_citation": self._tool_gui_save_citation,
@@ -1964,6 +1982,143 @@ class StreamingChatTask(QRunnable):
             invoke_track_next_frames=lambda frame: self._invoke_widget_slot(
                 "bot_track_next_frames", QtCore.Q_ARG(int, frame)
             ),
+        )
+
+    def _tool_gui_list_shapes(
+        self,
+        label_contains: str = "",
+        shape_type: str = "",
+        selected_only: bool = False,
+        max_results: int = 200,
+    ) -> Dict[str, Any]:
+        return gui_list_shapes_tool(
+            label_contains=label_contains,
+            shape_type=shape_type,
+            selected_only=selected_only,
+            max_results=max_results,
+            invoke_widget_json_slot=lambda slot_name,
+            raw_label_contains,
+            raw_shape_type,
+            raw_selected_only,
+            raw_max_results: self._invoke_widget_json_slot(
+                slot_name,
+                QtCore.Q_ARG(str, str(raw_label_contains)),
+                QtCore.Q_ARG(str, str(raw_shape_type)),
+                QtCore.Q_ARG(bool, bool(raw_selected_only)),
+                QtCore.Q_ARG(int, int(raw_max_results)),
+            ),
+        )
+
+    def _tool_gui_select_shapes(
+        self,
+        label_contains: str = "",
+        shape_type: str = "",
+        max_select: int = 20,
+        clear_existing: bool = True,
+    ) -> Dict[str, Any]:
+        return gui_select_shapes_tool(
+            label_contains=label_contains,
+            shape_type=shape_type,
+            max_select=max_select,
+            clear_existing=clear_existing,
+            invoke_widget_json_slot=lambda slot_name,
+            raw_label_contains,
+            raw_shape_type,
+            raw_max_select,
+            raw_clear_existing: self._invoke_widget_json_slot(
+                slot_name,
+                QtCore.Q_ARG(str, str(raw_label_contains)),
+                QtCore.Q_ARG(str, str(raw_shape_type)),
+                QtCore.Q_ARG(int, int(raw_max_select)),
+                QtCore.Q_ARG(bool, bool(raw_clear_existing)),
+            ),
+        )
+
+    def _tool_gui_set_selected_shape_label(self, new_label: str) -> Dict[str, Any]:
+        return gui_set_selected_shape_label_tool(
+            new_label=new_label,
+            invoke_widget_json_slot=lambda slot_name,
+            raw_label: self._invoke_widget_json_slot(
+                slot_name,
+                QtCore.Q_ARG(str, str(raw_label)),
+            ),
+        )
+
+    def _tool_gui_delete_selected_shapes(self) -> Dict[str, Any]:
+        return gui_delete_selected_shapes_tool(
+            invoke_widget_json_slot=lambda slot_name: self._invoke_widget_json_slot(
+                slot_name
+            ),
+        )
+
+    def _tool_gui_list_shapes_in_annotation(
+        self,
+        path: str,
+        frame: Optional[int] = None,
+        label_contains: str = "",
+        exact_label: str = "",
+        shape_type: str = "",
+        max_results: int = 200,
+        include_points: bool = False,
+    ) -> Dict[str, Any]:
+        return gui_list_shapes_in_annotation_tool(
+            path=path,
+            frame=frame,
+            label_contains=label_contains,
+            exact_label=exact_label,
+            shape_type=shape_type,
+            max_results=max_results,
+            include_points=include_points,
+            workspace=Path(self.workspace),
+            allowed_roots=self._vcs_read_roots(),
+        )
+
+    def _tool_gui_relabel_shapes_in_annotation(
+        self,
+        path: str,
+        old_label: str,
+        new_label: str,
+        frame: Optional[int] = None,
+        shape_type: str = "",
+        apply_all_frames: bool = False,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        return gui_relabel_shapes_in_annotation_tool(
+            path=path,
+            old_label=old_label,
+            new_label=new_label,
+            frame=frame,
+            shape_type=shape_type,
+            apply_all_frames=apply_all_frames,
+            dry_run=dry_run,
+            workspace=Path(self.workspace),
+            allowed_roots=self._vcs_read_roots(),
+        )
+
+    def _tool_gui_delete_shapes_in_annotation(
+        self,
+        path: str,
+        frame: Optional[int] = None,
+        label_contains: str = "",
+        exact_label: str = "",
+        shape_type: str = "",
+        max_delete: int = 100000,
+        apply_all_frames: bool = False,
+        delete_all: bool = False,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        return gui_delete_shapes_in_annotation_tool(
+            path=path,
+            frame=frame,
+            label_contains=label_contains,
+            exact_label=exact_label,
+            shape_type=shape_type,
+            max_delete=max_delete,
+            apply_all_frames=apply_all_frames,
+            delete_all=delete_all,
+            dry_run=dry_run,
+            workspace=Path(self.workspace),
+            allowed_roots=self._vcs_read_roots(),
         )
 
     def _tool_gui_set_ai_text_prompt(
