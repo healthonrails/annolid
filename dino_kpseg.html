@@ -65,7 +65,11 @@
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#inference-cli">Inference (CLI)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#inference-gui">Inference (GUI)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#evaluation">Evaluation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#training-wizard-gui">Training Wizard (GUI)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#evaluation">Evaluation</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#paper-ready-metric-reports">Paper-ready Metric Reports</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#labelme-to-coco-gui">LabelMe to COCO (GUI)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#coco-to-labelme-gui">COCO to LabelMe (GUI)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#running-inference-gui">Running Inference (GUI)</a></li>
@@ -306,6 +310,10 @@ python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.din
 <li><p><code class="docutils literal notranslate"><span class="pre">DataLoader</span> <span class="pre">workers</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">Max</span> <span class="pre">CPU</span> <span class="pre">threads</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">Max</span> <span class="pre">interop</span> <span class="pre">threads</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Auto-run</span> <span class="pre">evaluation</span> <span class="pre">report</span> <span class="pre">after</span> <span class="pre">training</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Auto-report</span> <span class="pre">split</span></code> (supports <code class="docutils literal notranslate"><span class="pre">test</span></code>, with optional fallback to <code class="docutils literal notranslate"><span class="pre">val</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Auto-report</span> <span class="pre">PCK</span> <span class="pre">thresholds</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Generate</span> <span class="pre">paper</span> <span class="pre">artifacts</span> <span class="pre">(JSON/MD/CSV/LaTeX)</span></code></p></li>
 </ul>
 <p>Equivalent <code class="docutils literal notranslate"><span class="pre">annolid-run</span></code> training flags are also supported (for example
 <code class="docutils literal notranslate"><span class="pre">--schedule-profile</span></code>, <code class="docutils literal notranslate"><span class="pre">--batch</span></code>, <code class="docutils literal notranslate"><span class="pre">--cos-lr</span></code>, <code class="docutils literal notranslate"><span class="pre">--warmup-epochs</span></code>,
@@ -395,6 +403,17 @@ from query embeddings and refined spatial features via
 <p>These settings are persisted in <code class="docutils literal notranslate"><span class="pre">QSettings</span></code> and are also applied in the standard
 GUI prediction workflow (not only wizard runs).</p>
 </section>
+<section id="training-wizard-gui">
+<h2>Training Wizard (GUI)<a class="headerlink" href="#training-wizard-gui" title="Link to this heading"></a></h2>
+<p>In <strong>Training Wizard</strong> with backend <strong>DINO KPSEG</strong>, the Configure page now includes:</p>
+<ul class="simple">
+<li><p>Head selection (<code class="docutils literal notranslate"><span class="pre">relational</span></code>, <code class="docutils literal notranslate"><span class="pre">conv</span></code>, <code class="docutils literal notranslate"><span class="pre">multitask</span></code>)</p></li>
+<li><p>Relational head controls (<code class="docutils literal notranslate"><span class="pre">heads</span></code>, <code class="docutils literal notranslate"><span class="pre">layers</span></code>)</p></li>
+<li><p>Multitask loss weights (<code class="docutils literal notranslate"><span class="pre">objectness</span></code>, <code class="docutils literal notranslate"><span class="pre">box</span></code>, <code class="docutils literal notranslate"><span class="pre">instance</span></code>) and aux warmup</p></li>
+<li><p>Loss controls (<code class="docutils literal notranslate"><span class="pre">threshold</span></code>, <code class="docutils literal notranslate"><span class="pre">BCE</span> <span class="pre">type</span></code>, focal alpha/gamma)</p></li>
+<li><p>Backbone controls (<code class="docutils literal notranslate"><span class="pre">short</span> <span class="pre">side</span></code>, <code class="docutils literal notranslate"><span class="pre">layers</span></code>, <code class="docutils literal notranslate"><span class="pre">hidden</span> <span class="pre">dim</span></code>)</p></li>
+</ul>
+</section>
 <section id="evaluation">
 <h2>Evaluation<a class="headerlink" href="#evaluation" title="Link to this heading"></a></h2>
 <p>Run evaluation on the train/val split and report mean pixel error, PCK, and left/right swap rate:</p>
@@ -402,6 +421,14 @@ GUI prediction workflow (not only wizard runs).</p>
 <span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--weights<span class="w"> </span>/path/to/dino_kpseg/weights/best.pt<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--split<span class="w"> </span>val<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thresholds<span class="w"> </span><span class="m">4</span>,8,16
+</pre></div>
+</div>
+<p>You can also evaluate a <code class="docutils literal notranslate"><span class="pre">test</span></code> split (if your dataset YAML includes <code class="docutils literal notranslate"><span class="pre">test</span></code>):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.eval<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--weights<span class="w"> </span>/path/to/dino_kpseg/weights/best.pt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--split<span class="w"> </span><span class="nb">test</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--thresholds<span class="w"> </span><span class="m">4</span>,8,16
 </pre></div>
 </div>
@@ -415,6 +442,29 @@ GUI prediction workflow (not only wizard runs).</p>
 </div>
 <p>For COCO keypoints datasets, pass the COCO spec YAML and set <code class="docutils literal notranslate"><span class="pre">--data-format</span> <span class="pre">coco</span></code>.
 Annolid will stage a temporary YOLO-pose view internally before evaluation.</p>
+<section id="paper-ready-metric-reports">
+<h3>Paper-ready Metric Reports<a class="headerlink" href="#paper-ready-metric-reports" title="Link to this heading"></a></h3>
+<p>For paper tables, generate normalized summary artifacts (JSON + Markdown + CSV + LaTeX):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.eval<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--weights<span class="w"> </span>/path/to/dino_kpseg/weights/best.pt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--split<span class="w"> </span><span class="nb">test</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thresholds<span class="w"> </span><span class="m">4</span>,8,16<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--paper-report<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--dataset-name<span class="w"> </span><span class="s2">&quot;MousePoseBench&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-name<span class="w"> </span><span class="s2">&quot;DINO-KPSEG (best.pt)&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--report-dir<span class="w"> </span>/path/to/reports<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--report-basename<span class="w"> </span>mouseposebench_test
+</pre></div>
+</div>
+<p>This writes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">mouseposebench_test.json</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mouseposebench_test.md</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mouseposebench_test.csv</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">mouseposebench_test.tex</span></code></p></li>
+</ul>
+</section>
 </section>
 <section id="labelme-to-coco-gui">
 <h2>LabelMe to COCO (GUI)<a class="headerlink" href="#labelme-to-coco-gui" title="Link to this heading"></a></h2>
