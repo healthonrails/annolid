@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import argparse
+import asyncio
 import json
 import contextlib
+import shlex
+import sys
 from pathlib import Path
 from typing import Any, List, Sequence
 
@@ -633,3 +637,348 @@ class VideoProcessSegmentsTool(FunctionTool):
             return json.dumps({"error": str(exc), "path": path})
         except Exception as exc:
             return json.dumps({"error": str(exc), "path": path})
+
+
+def _find_optional_flag(parser: argparse.ArgumentParser, dest: str) -> str | None:
+    for action in getattr(parser, "_actions", []):
+        if str(getattr(action, "dest", "")).strip() != str(dest):
+            continue
+        option_strings = list(getattr(action, "option_strings", []) or [])
+        for opt in option_strings:
+            if isinstance(opt, str) and opt.startswith("--"):
+                return opt
+    return None
+
+
+def _has_flag(args: Sequence[str], flag: str) -> bool:
+    target = str(flag or "").strip()
+    if not target:
+        return False
+    prefix = f"{target}="
+    for token in args:
+        raw = str(token)
+        if raw == target or raw.startswith(prefix):
+            return True
+    return False
+
+
+def _infer_predict_flags(
+    model: str,
+) -> tuple[list[str], list[str], bool, str | None]:
+    from annolid.engine.registry import get_model
+
+    plugin = get_model(model)
+    if not plugin.__class__.supports_predict():
+        return [], [], False, f"Model {model!r} does not support inference."
+
+    parser = argparse.ArgumentParser(
+        prog=f"annolid-run predict {model}", add_help=False
+    )
+    plugin.add_predict_args(parser)
+
+    input_dest_candidates = (
+        "source",
+        "video",
+        "video_path",
+        "input",
+        "input_video",
+        "path",
+        "video_folder",
+    )
+    output_dest_candidates = (
+        "output_dir",
+        "project",
+        "output",
+        "out",
+        "save_dir",
+    )
+    input_flags = [
+        flag
+        for flag in (
+            _find_optional_flag(parser, dest) for dest in input_dest_candidates
+        )
+        if flag
+    ]
+    output_flags = [
+        flag
+        for flag in (
+            _find_optional_flag(parser, dest) for dest in output_dest_candidates
+        )
+        if flag
+    ]
+    has_positional_path = any(
+        (not getattr(action, "option_strings", []))
+        and str(getattr(action, "dest", "")).strip() in input_dest_candidates
+        for action in getattr(parser, "_actions", [])
+    )
+    help_text = parser.format_help()
+    return input_flags, output_flags, has_positional_path, help_text
+
+
+class VideoListInferenceModelsTool(FunctionTool):
+    def __init__(
+        self,
+        allowed_dir: Path | None = None,
+        allowed_read_roots: Sequence[str | Path] | None = None,
+    ):
+        del allowed_dir, allowed_read_roots
+
+    @property
+    def name(self) -> str:
+        return "video_list_inference_models"
+
+    @property
+    def description(self) -> str:
+        return (
+            "List Annolid predict models and indicate whether each can be invoked "
+            "for video inference with standard input/output flags."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "video_only": {"type": "boolean"},
+            },
+        }
+
+    async def execute(self, video_only: bool = True, **kwargs: Any) -> str:
+        del kwargs
+        from annolid.engine.registry import list_models
+
+        models = list_models(load_builtins=True)
+        items: list[dict[str, Any]] = []
+        for info in models:
+            if not bool(getattr(info, "supports_predict", False)):
+                continue
+            input_flags, output_flags, has_positional_path, _ = _infer_predict_flags(
+                str(info.name)
+            )
+            video_compatible = bool(input_flags or has_positional_path)
+            if video_only and not video_compatible:
+                continue
+            items.append(
+                {
+                    "name": str(info.name),
+                    "description": str(getattr(info, "description", "") or ""),
+                    "video_compatible": video_compatible,
+                    "input_flags": input_flags,
+                    "output_flags": output_flags,
+                }
+            )
+        return json.dumps(
+            {
+                "count": len(items),
+                "video_only": bool(video_only),
+                "models": items,
+            }
+        )
+
+
+class VideoRunModelInferenceTool(FunctionTool):
+    def __init__(
+        self,
+        allowed_dir: Path | None = None,
+        allowed_read_roots: Sequence[str | Path] | None = None,
+    ):
+        self._allowed_dir = allowed_dir
+        self._allowed_read_roots = tuple(allowed_read_roots or ())
+
+    @property
+    def name(self) -> str:
+        return "video_run_model_inference"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Run annolid-run predict for a model on a video path. "
+            "Supports automatic input/output flag inference plus optional extra args."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "model": {"type": "string"},
+                "video_path": {"type": "string"},
+                "output_dir": {"type": "string"},
+                "extra_args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "input_flag": {"type": "string"},
+                "output_flag": {"type": "string"},
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+                "dry_run": {"type": "boolean"},
+            },
+            "required": ["model", "video_path"],
+        }
+
+    async def execute(
+        self,
+        model: str,
+        video_path: str,
+        output_dir: str | None = None,
+        extra_args: list[str] | None = None,
+        input_flag: str | None = None,
+        output_flag: str | None = None,
+        timeout_seconds: int = 3600,
+        dry_run: bool = False,
+        **kwargs: Any,
+    ) -> str:
+        del kwargs
+        try:
+            resolved_video = _resolve_read_path(
+                video_path,
+                allowed_dir=self._allowed_dir,
+                allowed_read_roots=self._allowed_read_roots,
+            )
+            if not resolved_video.exists():
+                return json.dumps(
+                    {"error": f"File not found: {video_path}", "video_path": video_path}
+                )
+            if not resolved_video.is_file():
+                return json.dumps(
+                    {"error": f"Not a file: {video_path}", "video_path": video_path}
+                )
+
+            resolved_output_dir: Path | None = None
+            if output_dir:
+                resolved_output_dir = _resolve_write_path(
+                    output_dir, allowed_dir=self._allowed_dir
+                )
+                resolved_output_dir.mkdir(parents=True, exist_ok=True)
+
+            (
+                inferred_input_flags,
+                inferred_output_flags,
+                has_positional_path,
+                help_text,
+            ) = _infer_predict_flags(str(model))
+            if help_text is None:
+                help_text = ""
+            if not inferred_input_flags and not has_positional_path and not input_flag:
+                return json.dumps(
+                    {
+                        "error": (
+                            f"Cannot infer a video input argument for model {model!r}. "
+                            "Pass input_flag explicitly and/or include proper args in extra_args."
+                        ),
+                        "model": str(model),
+                        "help": help_text,
+                    }
+                )
+
+            rendered_args = [str(arg) for arg in list(extra_args or [])]
+            rendered_args = [
+                arg.replace("{video_path}", str(resolved_video)).replace(
+                    "{output_dir}",
+                    str(resolved_output_dir) if resolved_output_dir else "",
+                )
+                for arg in rendered_args
+            ]
+
+            chosen_input_flag = str(input_flag).strip() if input_flag else None
+            if chosen_input_flag and not chosen_input_flag.startswith("-"):
+                chosen_input_flag = f"--{chosen_input_flag.lstrip('-')}"
+            if not chosen_input_flag and inferred_input_flags:
+                chosen_input_flag = inferred_input_flags[0]
+
+            if chosen_input_flag and not _has_flag(rendered_args, chosen_input_flag):
+                rendered_args.extend([chosen_input_flag, str(resolved_video)])
+            elif not chosen_input_flag and has_positional_path:
+                rendered_args.append(str(resolved_video))
+
+            chosen_output_flag = str(output_flag).strip() if output_flag else None
+            if chosen_output_flag and not chosen_output_flag.startswith("-"):
+                chosen_output_flag = f"--{chosen_output_flag.lstrip('-')}"
+            if not chosen_output_flag and inferred_output_flags:
+                chosen_output_flag = inferred_output_flags[0]
+
+            if (
+                resolved_output_dir is not None
+                and chosen_output_flag is not None
+                and not _has_flag(rendered_args, chosen_output_flag)
+            ):
+                rendered_args.extend([chosen_output_flag, str(resolved_output_dir)])
+
+            cmd = [
+                str(sys.executable),
+                "-m",
+                "annolid.engine.cli",
+                "predict",
+                str(model),
+                *rendered_args,
+            ]
+
+            if dry_run:
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "dry_run": True,
+                        "model": str(model),
+                        "video_path": str(resolved_video),
+                        "output_dir": str(resolved_output_dir)
+                        if resolved_output_dir is not None
+                        else None,
+                        "input_flag": chosen_input_flag,
+                        "output_flag": chosen_output_flag,
+                        "command": cmd,
+                        "shell_command": " ".join(shlex.quote(part) for part in cmd),
+                    }
+                )
+
+            cwd = (
+                str(Path(self._allowed_dir).expanduser().resolve())
+                if self._allowed_dir is not None
+                else None
+            )
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(), timeout=float(timeout_seconds)
+                )
+            except asyncio.TimeoutError:
+                with contextlib.suppress(Exception):
+                    proc.kill()
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error": f"Inference timed out after {int(timeout_seconds)} seconds.",
+                        "model": str(model),
+                        "video_path": str(resolved_video),
+                        "command": cmd,
+                    }
+                )
+
+            stdout_text = (stdout_bytes or b"").decode("utf-8", errors="replace")
+            stderr_text = (stderr_bytes or b"").decode("utf-8", errors="replace")
+            return json.dumps(
+                {
+                    "ok": int(proc.returncode or 0) == 0,
+                    "exit_code": int(proc.returncode or 0),
+                    "model": str(model),
+                    "video_path": str(resolved_video),
+                    "output_dir": str(resolved_output_dir)
+                    if resolved_output_dir is not None
+                    else None,
+                    "input_flag": chosen_input_flag,
+                    "output_flag": chosen_output_flag,
+                    "command": cmd,
+                    "stdout": stdout_text,
+                    "stderr": stderr_text,
+                }
+            )
+        except PermissionError as exc:
+            return json.dumps({"error": str(exc), "video_path": video_path})
+        except Exception as exc:
+            return json.dumps(
+                {"error": str(exc), "model": str(model), "video_path": video_path}
+            )

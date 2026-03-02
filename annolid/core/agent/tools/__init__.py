@@ -107,7 +107,9 @@ from .function_gui_pdf import (
 from .function_gui_registry import register_annolid_gui_tools
 from .function_video import (
     VideoInfoTool,
+    VideoListInferenceModelsTool,
     VideoProcessSegmentsTool,
+    VideoRunModelInferenceTool,
     VideoSampleFramesTool,
     VideoSegmentTool,
 )
@@ -184,9 +186,11 @@ __all__ = [
     "OpenPdfTool",
     "ExtractPdfImagesTool",
     "VideoInfoTool",
+    "VideoListInferenceModelsTool",
     "VideoSampleFramesTool",
     "VideoSegmentTool",
     "VideoProcessSegmentsTool",
+    "VideoRunModelInferenceTool",
     "ResolvedToolPolicy",
     "resolve_allowed_tools",
     "GuiContextTool",

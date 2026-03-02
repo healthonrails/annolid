@@ -101,6 +101,8 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
         "exec_start",
         "exec_process",
         "video_info",
+        "video_list_inference_models",
+        "video_run_model_inference",
         "video_sample_frames",
         "video_segment",
         "video_process_segments",
@@ -233,6 +235,8 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
     },
     "group:video": {
         "video_info",
+        "video_list_inference_models",
+        "video_run_model_inference",
         "video_sample_frames",
         "video_segment",
         "video_process_segments",

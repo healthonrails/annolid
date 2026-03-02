@@ -52,7 +52,9 @@ from annolid.core.agent.tools.function_builtin import (
 )
 from annolid.core.agent.tools.function_video import (
     VideoInfoTool,
+    VideoListInferenceModelsTool,
     VideoProcessSegmentsTool,
+    VideoRunModelInferenceTool,
     VideoSampleFramesTool,
     VideoSegmentTool,
 )
@@ -459,6 +461,162 @@ def test_video_tools_allow_external_read_root_but_write_to_workspace(
         assert str(image_path).startswith(str(workspace))
 
 
+def test_video_list_inference_models_tool_reports_video_compatible_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from annolid.engine.registry import ModelInfo
+
+    class _PredictPlugin:
+        @classmethod
+        def supports_predict(cls) -> bool:
+            return True
+
+        def add_predict_args(self, parser):  # noqa: ANN001
+            parser.add_argument("--source", required=True)
+            parser.add_argument("--output-dir", default=None)
+
+    class _NoVideoPlugin:
+        @classmethod
+        def supports_predict(cls) -> bool:
+            return True
+
+        def add_predict_args(self, parser):  # noqa: ANN001
+            parser.add_argument("--weights", default="model.pt")
+
+    monkeypatch.setattr(
+        "annolid.engine.registry.list_models",
+        lambda load_builtins=True: [  # noqa: ARG005
+            ModelInfo(
+                name="video_model",
+                description="video",
+                supports_train=False,
+                supports_predict=True,
+            ),
+            ModelInfo(
+                name="non_video_model",
+                description="non-video",
+                supports_train=False,
+                supports_predict=True,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "annolid.engine.registry.get_model",
+        lambda name: _PredictPlugin() if name == "video_model" else _NoVideoPlugin(),
+    )
+
+    tool = VideoListInferenceModelsTool()
+    result = asyncio.run(tool.execute(video_only=True))
+    payload = json.loads(result)
+    assert payload["count"] == 1
+    assert payload["models"][0]["name"] == "video_model"
+    assert payload["models"][0]["video_compatible"] is True
+
+    all_result = asyncio.run(tool.execute(video_only=False))
+    all_payload = json.loads(all_result)
+    assert all_payload["count"] == 2
+    assert {m["name"] for m in all_payload["models"]} == {
+        "video_model",
+        "non_video_model",
+    }
+
+
+def test_video_run_model_inference_tool_infers_flags_and_executes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video_path = tmp_path / "tiny.avi"
+    _write_test_video(video_path, fps=8.0, frames=6)
+    output_dir = tmp_path / "predictions"
+
+    class _PredictPlugin:
+        @classmethod
+        def supports_predict(cls) -> bool:
+            return True
+
+        def add_predict_args(self, parser):  # noqa: ANN001
+            parser.add_argument("--source", required=True)
+            parser.add_argument("--output-dir", default=None)
+            parser.add_argument("--weights", default="model.pt")
+
+    captured: dict[str, object] = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return (b"prediction completed", b"")
+
+    async def _fake_create_subprocess_exec(*cmd, **kwargs):  # noqa: ANN001
+        captured["cmd"] = list(cmd)
+        captured["cwd"] = kwargs.get("cwd")
+        return _FakeProc()
+
+    monkeypatch.setattr(
+        "annolid.engine.registry.get_model", lambda name: _PredictPlugin()
+    )
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        _fake_create_subprocess_exec,
+    )
+
+    tool = VideoRunModelInferenceTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(
+            model="fake_video_model",
+            video_path=str(video_path),
+            output_dir=str(output_dir),
+            extra_args=["--weights", "custom.pt"],
+        )
+    )
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["exit_code"] == 0
+    assert payload["input_flag"] == "--source"
+    assert payload["output_flag"] == "--output-dir"
+    assert "prediction completed" in payload["stdout"]
+
+    cmd = list(captured["cmd"])
+    assert cmd[:5] == [
+        sys.executable,
+        "-m",
+        "annolid.engine.cli",
+        "predict",
+        "fake_video_model",
+    ]
+    assert "--source" in cmd
+    assert str(video_path.resolve()) in cmd
+    assert "--output-dir" in cmd
+    assert str(output_dir.resolve()) in cmd
+
+
+def test_video_run_model_inference_tool_reports_when_input_flag_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video_path = tmp_path / "tiny.avi"
+    _write_test_video(video_path, fps=8.0, frames=6)
+
+    class _PredictPlugin:
+        @classmethod
+        def supports_predict(cls) -> bool:
+            return True
+
+        def add_predict_args(self, parser):  # noqa: ANN001
+            parser.add_argument("--weights", default="model.pt")
+
+    monkeypatch.setattr(
+        "annolid.engine.registry.get_model", lambda name: _PredictPlugin()
+    )
+
+    tool = VideoRunModelInferenceTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(model="fake_video_model", video_path=str(video_path))
+    )
+    payload = json.loads(result)
+    assert "Cannot infer a video input argument" in payload["error"]
+    assert "annolid-run predict fake_video_model" in payload["help"]
+
+
 def test_exec_tool_guard_blocks_dangerous() -> None:
     tool = SandboxedExecTool()
     result = asyncio.run(tool.execute(command="rm -rf /tmp/foo"))
@@ -859,6 +1017,8 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("open_pdf")
     assert registry.has("extract_pdf_images")
     assert registry.has("video_info")
+    assert registry.has("video_list_inference_models")
+    assert registry.has("video_run_model_inference")
     assert registry.has("video_sample_frames")
     assert registry.has("video_segment")
     assert registry.has("video_process_segments")

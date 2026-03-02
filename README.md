@@ -114,6 +114,7 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
 - To show or hide intermediate tool/planning updates while Annolid Bot is thinking, open Annolid Bot settings and toggle `Agent Runtime → Enable intermediate progress stream`.
 - To cap slow tool calls in the agent loop, tune `Agent Runtime → Agent tool timeout` (seconds).
 - To force browser-first web handling, keep `Agent Runtime → Prefer MCP browser for web tasks` enabled.
+- Annolid Bot can now run model inference directly on videos via tools: use `video_list_inference_models` to discover compatible `predict` plugins, then `video_run_model_inference` to execute `annolid-run predict <model>` against a video path.
 - **ClawHub Skills**: Search and install agent skills from ClawHub directly in Annolid Bot. See the [ClawHub Skills Tutorial](docs/source/agent_clawhub_tutorial.md).
 - **Model Context Protocol (MCP)**: Extend Annolid Bot with external tools and data sources. See the [MCP Configuration and Usage Tutorial](docs/mcp.md) for details.
 - **Annolid Bot Extras Bundle**: Install common Annolid Bot optional integrations (WhatsApp + Google Calendar + MCP) with `pip install "annolid[annolid_bot]"`.

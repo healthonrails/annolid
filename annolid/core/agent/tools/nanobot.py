@@ -24,7 +24,9 @@ from .filesystem import (
 from .function_registry import FunctionToolRegistry
 from .function_video import (
     VideoInfoTool,
+    VideoListInferenceModelsTool,
     VideoProcessSegmentsTool,
+    VideoRunModelInferenceTool,
     VideoSampleFramesTool,
     VideoSegmentTool,
 )
@@ -168,6 +170,18 @@ async def register_nanobot_style_tools(
     )
     registry.register(
         VideoProcessSegmentsTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        VideoListInferenceModelsTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        VideoRunModelInferenceTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
