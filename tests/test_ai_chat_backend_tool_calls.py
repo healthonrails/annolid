@@ -192,6 +192,41 @@ def test_ollama_llm_callable_fast_retries_without_tools_on_empty(monkeypatch) ->
     assert backend._OLLAMA_TOOL_SUPPORT_CACHE.get("m") is False
 
 
+def test_ollama_llm_callable_accepts_on_token_callback(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    backend._OLLAMA_TOOL_SUPPORT_CACHE.clear()
+
+    class DummyOllama:
+        def chat(self, *, model, messages, tools=None, stream=True):
+            del model, messages, tools
+            assert stream is True
+            return iter(
+                [
+                    {"message": {"content": "hello "}},
+                    {"done_reason": "stop", "message": {"content": "world"}},
+                ]
+            )
+
+    monkeypatch.setattr(backend.importlib, "import_module", lambda name: DummyOllama())
+
+    task = StreamingChatTask(
+        "hi", widget=None, settings={"ollama": {}}, provider="ollama"
+    )
+    llm = task._build_ollama_llm_callable()
+    chunks: list[str] = []
+    resp = asyncio.run(
+        llm(
+            [{"role": "user", "content": "hi"}],
+            [{"fake": "tool"}],
+            "m",
+            lambda text: chunks.append(text),
+        )
+    )
+    assert resp["content"] == "hello world"
+    assert chunks == ["hello ", "world"]
+
+
 def test_compact_system_prompt_includes_allowed_read_roots(tmp_path: Path) -> None:
     task = StreamingChatTask("hi", widget=None)
     prompt = task._build_compact_system_prompt(
@@ -231,6 +266,17 @@ def test_non_ollama_empty_output_message_does_not_suggest_ollama_switch() -> Non
     assert "Provider=nvidia, model=m." in text
     assert "switch to another Ollama model" not in text
     assert "Please retry" in text
+
+
+def test_ollama_empty_output_message_prefers_retry_and_timeout_guidance() -> None:
+    task = StreamingChatTask(
+        "check weather", widget=None, provider="ollama", model="qwen3.5:0.8b"
+    )
+    text = task._ensure_non_empty_final_text("")
+    assert "Provider=ollama, model=qwen3.5:0.8b." in text
+    assert "switch to another Ollama model" not in text
+    assert "Please retry once." in text
+    assert "increase Ollama timeout values in AI Model Settings" in text
 
 
 def test_build_agent_context_disables_web_tools_by_default(monkeypatch) -> None:

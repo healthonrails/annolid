@@ -25,6 +25,34 @@ from annolid.agents.pocket_tts import (
 )
 
 
+def _extract_ollama_model_names(response: Any) -> List[str]:
+    """Normalize Ollama list() responses into unique model names."""
+    raw_models = None
+    if isinstance(response, dict):
+        raw_models = response.get("models")
+    else:
+        raw_models = getattr(response, "models", None)
+
+    if not isinstance(raw_models, list):
+        return []
+
+    names: List[str] = []
+    seen = set()
+    for item in raw_models:
+        name = ""
+        if isinstance(item, dict):
+            name = str(item.get("name") or item.get("model") or "").strip()
+        else:
+            name = str(
+                getattr(item, "name", None) or getattr(item, "model", None) or ""
+            ).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
 class LLMSettingsDialog(QtWidgets.QDialog):
     """
     Dialog for configuring Large Language Model providers.
@@ -146,10 +174,29 @@ class LLMSettingsDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------------ #
     # Tab builders
     # ------------------------------------------------------------------ #
+    def _create_scrollable_form_tab(
+        self,
+    ) -> tuple[QtWidgets.QScrollArea, QtWidgets.QWidget, QtWidgets.QFormLayout]:
+        content_widget = QtWidgets.QWidget()
+        content_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum
+        )
+        layout = QtWidgets.QFormLayout(content_widget)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+        layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        scroll.setWidget(content_widget)
+        return scroll, content_widget, layout
+
     def _build_ollama_tab(self) -> None:
-        widget = QtWidgets.QWidget()
-        self._ollama_tab_widget = widget
-        layout = QtWidgets.QFormLayout(widget)
+        tab_widget, _content_widget, layout = self._create_scrollable_form_tab()
+        self._ollama_tab_widget = tab_widget
         spec = self._provider_specs.get("ollama", {})
         ollama_cfg = dict(self._settings.get("ollama", {}) or {})
         default_host = str(spec.get("host_default") or "http://localhost:11434")
@@ -172,7 +219,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         refresh_button.clicked.connect(self._refresh_ollama_models)
         layout.addRow(refresh_button)
 
-        self._tabs.addTab(widget, str(spec.get("label") or "Ollama"))
+        self._tabs.addTab(tab_widget, str(spec.get("label") or "Ollama"))
 
     def _build_openai_tab(self) -> None:
         self._build_provider_tab("openai")
@@ -187,11 +234,10 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         spec = self._provider_specs.get(provider)
         if not spec:
             return
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QFormLayout(widget)
+        tab_widget, _content_widget, layout = self._create_scrollable_form_tab()
         provider_cfg = dict(self._settings.get(provider, {}) or {})
         kind = str(spec.get("kind") or "openai_compat").strip().lower()
-        self._provider_widgets.setdefault(provider, {})["tab_widget"] = widget
+        self._provider_widgets.setdefault(provider, {})["tab_widget"] = tab_widget
         key_edit = self._add_api_key_controls(
             layout,
             provider=provider,
@@ -230,11 +276,10 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             )
             layout.addRow(remove_button)
 
-        self._tabs.addTab(widget, str(spec.get("label") or provider.title()))
+        self._tabs.addTab(tab_widget, str(spec.get("label") or provider.title()))
 
     def _build_tts_tab(self) -> None:
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QFormLayout(widget)
+        tab_widget, _content_widget, layout = self._create_scrollable_form_tab()
 
         info_label = QtWidgets.QLabel(
             "Text-to-speech settings are stored in ~/.annolid/tts_settings.json."
@@ -380,11 +425,10 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         )
         layout.addRow("Speed:", self.tts_speed_spin)
 
-        self._tabs.addTab(widget, "Text-to-Speech")
+        self._tabs.addTab(tab_widget, "Text-to-Speech")
 
     def _build_agent_runtime_tab(self) -> None:
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QFormLayout(widget)
+        tab_widget, content_widget, layout = self._create_scrollable_form_tab()
 
         agent_cfg = dict(self._settings.get("agent") or {})
 
@@ -395,7 +439,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         layout.addRow(note)
 
         self.enable_progress_stream_checkbox = QtWidgets.QCheckBox(
-            "Enable intermediate progress stream", widget
+            "Enable intermediate progress stream", content_widget
         )
         self.enable_progress_stream_checkbox.setChecked(
             bool(agent_cfg.get("enable_progress_stream", True))
@@ -403,7 +447,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         layout.addRow(self.enable_progress_stream_checkbox)
 
         self.browser_first_for_web_checkbox = QtWidgets.QCheckBox(
-            "Prefer MCP browser for web tasks", widget
+            "Prefer MCP browser for web tasks", content_widget
         )
         self.browser_first_for_web_checkbox.setChecked(
             bool(agent_cfg.get("browser_first_for_web", True))
@@ -418,7 +462,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             step: float = 1.0,
             decimals: int = 0,
         ) -> QtWidgets.QDoubleSpinBox:
-            spin = QtWidgets.QDoubleSpinBox(widget)
+            spin = QtWidgets.QDoubleSpinBox(content_widget)
             spin.setRange(minimum, maximum)
             spin.setSingleStep(step)
             spin.setDecimals(decimals)
@@ -464,21 +508,21 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         layout.addRow("Agent tool timeout:", self.loop_tool_timeout_spin)
 
         self.ollama_tool_timeout_spin = _make_spin(
-            agent_cfg.get("ollama_tool_timeout_seconds", 45),
+            agent_cfg.get("ollama_tool_timeout_seconds", 360),
             minimum=5.0,
-            maximum=180.0,
+            maximum=600.0,
         )
         layout.addRow("Ollama tool request timeout:", self.ollama_tool_timeout_spin)
 
         self.ollama_plain_timeout_spin = _make_spin(
-            agent_cfg.get("ollama_plain_timeout_seconds", 25),
+            agent_cfg.get("ollama_plain_timeout_seconds", 90),
             minimum=5.0,
-            maximum=180.0,
+            maximum=600.0,
         )
         layout.addRow("Ollama plain request timeout:", self.ollama_plain_timeout_spin)
 
         self.ollama_plain_recovery_timeout_spin = _make_spin(
-            agent_cfg.get("ollama_plain_recovery_timeout_seconds", 12),
+            agent_cfg.get("ollama_plain_recovery_timeout_seconds", 45),
             minimum=3.0,
             maximum=90.0,
         )
@@ -488,7 +532,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         )
 
         self.ollama_plain_recovery_nudge_timeout_spin = _make_spin(
-            agent_cfg.get("ollama_plain_recovery_nudge_timeout_seconds", 8),
+            agent_cfg.get("ollama_plain_recovery_nudge_timeout_seconds", 20),
             minimum=2.0,
             maximum=90.0,
         )
@@ -510,7 +554,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
                 current_poll = int(self._agent_config.tools.email.polling_interval)
         except Exception:
             current_poll = 300
-        self.email_poll_interval_spin = QtWidgets.QSpinBox(widget)
+        self.email_poll_interval_spin = QtWidgets.QSpinBox(content_widget)
         self.email_poll_interval_spin.setRange(10, 3600)
         self.email_poll_interval_spin.setSingleStep(10)
         self.email_poll_interval_spin.setValue(max(10, current_poll))
@@ -551,12 +595,12 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             )
 
         self.skills_hot_reload_checkbox = QtWidgets.QCheckBox(
-            "Enable skill hot reload (skills.load.watch)", widget
+            "Enable skill hot reload (skills.load.watch)", content_widget
         )
         self.skills_hot_reload_checkbox.setChecked(bool(skills_watch_default))
         layout.addRow(self.skills_hot_reload_checkbox)
 
-        self.memory_mode_combo = QtWidgets.QComboBox(widget)
+        self.memory_mode_combo = QtWidgets.QComboBox(content_widget)
         self.memory_mode_combo.addItem(
             "Semantic + keyword fallback", "semantic_keyword"
         )
@@ -567,7 +611,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         self.memory_mode_combo.setCurrentIndex(mode_index)
         layout.addRow("Memory mode:", self.memory_mode_combo)
 
-        self.skill_source_locations_edit = QtWidgets.QLineEdit(widget)
+        self.skill_source_locations_edit = QtWidgets.QLineEdit(content_widget)
         self.skill_source_locations_edit.setPlaceholderText(
             "Extra skill dirs (colon-separated)"
         )
@@ -612,12 +656,12 @@ class LLMSettingsDialog(QtWidgets.QDialog):
                 )
 
         self.auto_update_enabled_checkbox = QtWidgets.QCheckBox(
-            "Enable auto-update", widget
+            "Enable auto-update", content_widget
         )
         self.auto_update_enabled_checkbox.setChecked(bool(update_auto_default))
         layout.addRow(self.auto_update_enabled_checkbox)
 
-        self.auto_update_channel_combo = QtWidgets.QComboBox(widget)
+        self.auto_update_channel_combo = QtWidgets.QComboBox(content_widget)
         self.auto_update_channel_combo.addItem("Stable", "stable")
         self.auto_update_channel_combo.addItem("Beta", "beta")
         self.auto_update_channel_combo.addItem("Dev", "dev")
@@ -627,21 +671,21 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         self.auto_update_channel_combo.setCurrentIndex(channel_index)
         layout.addRow("Update channel:", self.auto_update_channel_combo)
 
-        self.auto_update_interval_spin = QtWidgets.QSpinBox(widget)
+        self.auto_update_interval_spin = QtWidgets.QSpinBox(content_widget)
         self.auto_update_interval_spin.setRange(300, 7 * 24 * 3600)
         self.auto_update_interval_spin.setSingleStep(300)
         self.auto_update_interval_spin.setValue(max(300, int(update_interval_default)))
         self.auto_update_interval_spin.setSuffix(" s")
         layout.addRow("Auto-update interval:", self.auto_update_interval_spin)
 
-        self.auto_update_jitter_spin = QtWidgets.QSpinBox(widget)
+        self.auto_update_jitter_spin = QtWidgets.QSpinBox(content_widget)
         self.auto_update_jitter_spin.setRange(0, 3600)
         self.auto_update_jitter_spin.setSingleStep(60)
         self.auto_update_jitter_spin.setValue(max(0, int(update_jitter_default)))
         self.auto_update_jitter_spin.setSuffix(" s")
         layout.addRow("Auto-update jitter:", self.auto_update_jitter_spin)
 
-        self.auto_update_timeout_spin = QtWidgets.QDoubleSpinBox(widget)
+        self.auto_update_timeout_spin = QtWidgets.QDoubleSpinBox(content_widget)
         self.auto_update_timeout_spin.setRange(1.0, 120.0)
         self.auto_update_timeout_spin.setSingleStep(0.5)
         self.auto_update_timeout_spin.setDecimals(1)
@@ -650,14 +694,14 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         layout.addRow("Update timeout:", self.auto_update_timeout_spin)
 
         self.auto_update_require_sig_checkbox = QtWidgets.QCheckBox(
-            "Require signed manifest", widget
+            "Require signed manifest", content_widget
         )
         self.auto_update_require_sig_checkbox.setChecked(
             bool(update_require_sig_default)
         )
         layout.addRow(self.auto_update_require_sig_checkbox)
 
-        update_actions = QtWidgets.QWidget(widget)
+        update_actions = QtWidgets.QWidget(content_widget)
         update_actions_layout = QtWidgets.QHBoxLayout(update_actions)
         update_actions_layout.setContentsMargins(0, 0, 0, 0)
         update_actions_layout.setSpacing(6)
@@ -672,7 +716,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         update_actions_layout.addStretch(1)
         layout.addRow("Update actions:", update_actions)
 
-        self._tabs.addTab(widget, "Agent Runtime")
+        self._tabs.addTab(tab_widget, "Agent Runtime")
 
     def _check_now_update(self) -> None:
         try:
@@ -1004,9 +1048,12 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         self, initial_models, *, placeholder: str
     ) -> Dict[str, QtWidgets.QWidget]:
         container = QtWidgets.QWidget(self)
+        container.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum
+        )
         root = QtWidgets.QVBoxLayout(container)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(6)
+        root.setSpacing(4)
 
         row = QtWidgets.QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -1020,14 +1067,19 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         models_list = QtWidgets.QListWidget(container)
         models_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         models_list.setAlternatingRowColors(True)
-        models_list.setMinimumHeight(120)
-        root.addWidget(models_list, 1)
+        models_list.setUniformItemSizes(True)
+        models_list.setMinimumHeight(84)
+        models_list.setMaximumHeight(132)
+        models_list.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+        )
+        root.addWidget(models_list)
 
         controls_row = QtWidgets.QHBoxLayout()
         controls_row.setContentsMargins(0, 0, 0, 0)
         remove_button = QtWidgets.QPushButton("Remove", container)
-        up_button = QtWidgets.QPushButton("Move Up", container)
-        down_button = QtWidgets.QPushButton("Move Down", container)
+        up_button = QtWidgets.QPushButton("Up", container)
+        down_button = QtWidgets.QPushButton("Down", container)
         clear_button = QtWidgets.QPushButton("Clear", container)
         controls_row.addWidget(remove_button)
         controls_row.addWidget(up_button)
@@ -1177,13 +1229,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
                     else:
                         os.environ.pop("OLLAMA_HOST", None)
 
-            models = []
-            if isinstance(response, dict):
-                models = [
-                    model.get("name", "")
-                    for model in response.get("models", [])
-                    if isinstance(model, dict)
-                ]
+            models = _extract_ollama_model_names(response)
             if not models:
                 QtWidgets.QMessageBox.information(
                     self,
@@ -1193,6 +1239,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
                 return
 
             self._set_models_list(self.ollama_models_list["list"], models)
+            self._settings.setdefault("ollama", {})["preferred_models"] = list(models)
         except Exception as exc:  # pragma: no cover - defensive UI
             QtWidgets.QMessageBox.critical(
                 self,

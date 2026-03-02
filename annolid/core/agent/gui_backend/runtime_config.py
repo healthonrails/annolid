@@ -38,13 +38,13 @@ def agent_loop_llm_timeout_seconds(
 
 def ollama_agent_tool_timeout_seconds(settings: Dict[str, Any]) -> float:
     agent_cfg = settings.get("agent", {})
-    raw = 120.0
+    raw = 360.0
     if isinstance(agent_cfg, dict):
         raw = agent_cfg.get("ollama_tool_timeout_seconds", raw)
     try:
         value = float(raw)
     except (TypeError, ValueError):
-        value = 45.0
+        value = 360.0
     return max(5.0, min(600.0, value))
 
 
@@ -73,37 +73,37 @@ def browser_first_for_web(settings: Dict[str, Any]) -> bool:
 
 def ollama_agent_plain_timeout_seconds(settings: Dict[str, Any]) -> float:
     agent_cfg = settings.get("agent", {})
-    raw = 25.0
+    raw = 90.0
     if isinstance(agent_cfg, dict):
         raw = agent_cfg.get("ollama_plain_timeout_seconds", raw)
     try:
         value = float(raw)
     except (TypeError, ValueError):
-        value = 25.0
+        value = 90.0
     return max(5.0, min(600.0, value))
 
 
 def ollama_plain_recovery_timeout_seconds(settings: Dict[str, Any]) -> float:
     agent_cfg = settings.get("agent", {})
-    raw = 12.0
+    raw = 45.0
     if isinstance(agent_cfg, dict):
         raw = agent_cfg.get("ollama_plain_recovery_timeout_seconds", raw)
     try:
         value = float(raw)
     except (TypeError, ValueError):
-        value = 12.0
+        value = 45.0
     return max(3.0, min(90.0, value))
 
 
 def ollama_plain_recovery_nudge_timeout_seconds(settings: Dict[str, Any]) -> float:
     agent_cfg = settings.get("agent", {})
-    raw = 8.0
+    raw = 20.0
     if isinstance(agent_cfg, dict):
         raw = agent_cfg.get("ollama_plain_recovery_nudge_timeout_seconds", raw)
     try:
         value = float(raw)
     except (TypeError, ValueError):
-        value = 8.0
+        value = 20.0
     return max(2.0, min(90.0, value))
 
 

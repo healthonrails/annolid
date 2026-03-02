@@ -59,11 +59,15 @@ def ensure_non_empty_final_text(text: str, *, provider: str, model: str) -> str:
     if text:
         return text
     provider_name = str(provider or "").strip().lower()
-    suggestion = (
-        "Please switch to another Ollama model for Annolid Bot."
-        if provider_name == "ollama"
-        else "Please retry, then try a different model/provider if this persists."
-    )
+    if provider_name == "ollama":
+        suggestion = (
+            "Please retry once. If this persists, increase Ollama timeout values in "
+            "AI Model Settings and verify the local Ollama server is responsive."
+        )
+    else:
+        suggestion = (
+            "Please retry, then try a different model/provider if this persists."
+        )
     return (
         "Model returned empty output after multiple attempts. "
         f"Provider={provider}, model={model}. " + suggestion

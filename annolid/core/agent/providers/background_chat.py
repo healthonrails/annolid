@@ -378,7 +378,13 @@ def build_ollama_llm_callable(
     tool_request_timeout_s: float = 45.0,
     plain_request_timeout_s: float = 25.0,
 ) -> Callable[
-    [List[Dict[str, Any]], List[Dict[str, Any]], str], Awaitable[Dict[str, Any]]
+    [
+        List[Dict[str, Any]],
+        List[Dict[str, Any]],
+        str,
+        Optional[Callable[[str], None]],
+    ],
+    Awaitable[Dict[str, Any]],
 ]:
     host = str(settings.get("ollama", {}).get("host") or "").strip()
     import_fn = import_module or importlib.import_module
@@ -402,6 +408,7 @@ def build_ollama_llm_callable(
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         model_id: str,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         tool_timeout = max(5.0, float(tool_request_timeout_s))
         plain_timeout = max(5.0, float(plain_request_timeout_s))
@@ -451,6 +458,11 @@ def build_ollama_llm_callable(
                         content = msg.get("content")
                         if isinstance(content, str) and content:
                             chunks.append(content)
+                            if callable(on_token):
+                                try:
+                                    on_token(content)
+                                except Exception:
+                                    pass
                         raw_tool_calls = msg.get("tool_calls")
                         if raw_tool_calls:
                             for call in parse_tool_calls(raw_tool_calls):

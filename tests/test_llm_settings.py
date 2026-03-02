@@ -81,10 +81,10 @@ def test_default_settings_include_agent_runtime_timeout_keys() -> None:
     assert agent.get("fallback_retry_timeout_seconds") == 20
     assert agent.get("loop_llm_timeout_seconds") == 600
     assert agent.get("loop_llm_timeout_seconds_no_tools") == 180
-    assert agent.get("ollama_tool_timeout_seconds") == 300
-    assert agent.get("ollama_plain_timeout_seconds") == 60
-    assert agent.get("ollama_plain_recovery_timeout_seconds") == 30
-    assert agent.get("ollama_plain_recovery_nudge_timeout_seconds") == 15
+    assert agent.get("ollama_tool_timeout_seconds") == 360
+    assert agent.get("ollama_plain_timeout_seconds") == 90
+    assert agent.get("ollama_plain_recovery_timeout_seconds") == 45
+    assert agent.get("ollama_plain_recovery_nudge_timeout_seconds") == 20
 
 
 def test_save_llm_settings_scrubs_nested_secrets(tmp_path: Path, monkeypatch) -> None:
