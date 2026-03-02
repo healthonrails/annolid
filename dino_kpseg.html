@@ -59,7 +59,8 @@
 <li class="toctree-l3"><a class="reference internal" href="#one-command-aggressive-schedule-launch-config">One-command aggressive schedule launch config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#single-stage-multitask-head-step-3">Single-stage Multitask Head (Step 3)</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#training-schedule-hardening-step-4">Training Schedule Hardening (Step 4)</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#relational-attention-head">Relational (Attention) Head</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#runtime-safety-mode">Runtime Safety Mode</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#unified-attention-head">Unified Attention Head</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#inference-cli">Inference (CLI)</a></li>
@@ -111,7 +112,7 @@
 <p>Annolid includes an experimental keypoint-centric segmentation model that:</p>
 <ul class="simple">
 <li><p>Extracts <strong>frozen DINOv3 dense features</strong> (ViT patch grid).</p></li>
-<li><p>Trains a <strong>small convolutional head</strong> to predict per-keypoint masks.</p></li>
+<li><p>Trains a <strong>configurable head</strong> (<code class="docutils literal notranslate"><span class="pre">conv</span></code>, <code class="docutils literal notranslate"><span class="pre">multitask</span></code>, or unified attention <code class="docutils literal notranslate"><span class="pre">relational</span></code>).</p></li>
 <li><p>Uses <strong>Gaussian keypoint heatmaps</strong> (or circular masks) as supervision.</p></li>
 <li><p>Runs inference via the same prediction pipeline used for YOLO, saving results as LabelMe JSON.</p></li>
 </ul>
@@ -283,20 +284,44 @@ python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.din
 <li><p>Auxiliary multitask losses warmed up over early epochs.</p></li>
 <li><p>Non-finite loss batches are skipped defensively.</p></li>
 </ul>
+</section>
+<section id="runtime-safety-mode">
+<h3>Runtime Safety Mode<a class="headerlink" href="#runtime-safety-mode" title="Link to this heading"></a></h3>
+<p>For long runs on shared desktops/laptops, enable conservative runtime caps:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--auto-safe-mode
+</pre></div>
+</div>
+<p>This mode applies safer limits to batch size, image short-side, workers, and torch CPU thread usage, and disables expensive TensorBoard graph/projector exports.</p>
+<p>Manual runtime controls are also available:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--workers</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--max-cpu-threads</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--max-interop-threads</span></code></p></li>
+</ul>
+<p>In the GUI (<code class="docutils literal notranslate"><span class="pre">Train</span> <span class="pre">Models</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">DINO</span> <span class="pre">KPSEG</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">Advanced</span></code>), use:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Auto</span> <span class="pre">safe</span> <span class="pre">mode</span> <span class="pre">(recommended</span> <span class="pre">for</span> <span class="pre">GUI</span> <span class="pre">responsiveness)</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DataLoader</span> <span class="pre">workers</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Max</span> <span class="pre">CPU</span> <span class="pre">threads</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Max</span> <span class="pre">interop</span> <span class="pre">threads</span></code></p></li>
+</ul>
 <p>Equivalent <code class="docutils literal notranslate"><span class="pre">annolid-run</span></code> training flags are also supported (for example
 <code class="docutils literal notranslate"><span class="pre">--schedule-profile</span></code>, <code class="docutils literal notranslate"><span class="pre">--batch</span></code>, <code class="docutils literal notranslate"><span class="pre">--cos-lr</span></code>, <code class="docutils literal notranslate"><span class="pre">--warmup-epochs</span></code>,
 <code class="docutils literal notranslate"><span class="pre">--best-metric</span></code>, and augmentation epoch windows).</p>
 </section>
-<section id="relational-attention-head">
-<h3>Relational (Attention) Head<a class="headerlink" href="#relational-attention-head" title="Link to this heading"></a></h3>
-<p>For better left/right consistency on symmetric keypoints (e.g., ears), you can enable the attention head.
-When <code class="docutils literal notranslate"><span class="pre">kpt_names</span></code> are available, DinoKPSEG will automatically treat asymmetric keypoints (e.g. <code class="docutils literal notranslate"><span class="pre">nose</span></code>, <code class="docutils literal notranslate"><span class="pre">head</span></code>, <code class="docutils literal notranslate"><span class="pre">tailbase</span></code>)
-as orientation anchors and inject them into other keypoints via cross-attention.</p>
+<section id="unified-attention-head">
+<h3>Unified Attention Head<a class="headerlink" href="#unified-attention-head" title="Link to this heading"></a></h3>
+<p>DinoKPSEG now uses a single canonical attention architecture (<code class="docutils literal notranslate"><span class="pre">relational</span></code>) for
+attention-based training. It keeps attention queries over keypoints and decodes masks
+from query embeddings and refined spatial features via
+<code class="docutils literal notranslate"><span class="pre">einsum(mask_embed,</span> <span class="pre">spatial_features)</span></code>.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--head-type<span class="w"> </span>attn<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--attn-heads<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--attn-layers<span class="w"> </span><span class="m">2</span>
+<span class="w">  </span>--head-type<span class="w"> </span>relational<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--relational-heads<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--relational-layers<span class="w"> </span><span class="m">2</span>
 </pre></div>
 </div>
 <p>Optional symmetric-pair regularizers (requires <code class="docutils literal notranslate"><span class="pre">flip_idx</span></code> or inferable keypoint names):</p>
@@ -306,6 +331,13 @@ as orientation anchors and inject them into other keypoints via cross-attention.
 <span class="w">  </span>--lr-pair-margin-px<span class="w"> </span><span class="m">8</span>
 </pre></div>
 </div>
+<p>Note:</p>
+<ul class="simple">
+<li><p>For YOLO pose datasets with very high left/right ambiguity, DinoKPSEG now auto-disables default LR regularizer weights to avoid destabilizing training. Explicit non-default values still override this behavior.</p></li>
+<li><p>For high-ambiguity datasets, DinoKPSEG also auto-reduces geometry-heavy augmentation (disables hflip, and for ambiguous small datasets disables rotation/translate/scale) to reduce swap drift.</p></li>
+<li><p>For very small training sets (<code class="docutils literal notranslate"><span class="pre">&lt;=64</span></code> images), DinoKPSEG applies a conservative small-data profile when defaults are used: <code class="docutils literal notranslate"><span class="pre">head_type</span></code> becomes <code class="docutils literal notranslate"><span class="pre">conv</span></code>, <code class="docutils literal notranslate"><span class="pre">feature_align_dim</span></code> becomes <code class="docutils literal notranslate"><span class="pre">auto</span></code>, <code class="docutils literal notranslate"><span class="pre">lr</span></code> becomes <code class="docutils literal notranslate"><span class="pre">1e-4</span></code>, and <code class="docutils literal notranslate"><span class="pre">early_stop_patience</span></code> is capped at <code class="docutils literal notranslate"><span class="pre">12</span></code>.</p></li>
+<li><p>For small/high-ambiguity datasets with orientation anchors (for example <code class="docutils literal notranslate"><span class="pre">nose</span></code> + <code class="docutils literal notranslate"><span class="pre">tailbase</span></code>), DinoKPSEG can auto-canonicalize left/right supervision to reduce persistent identity inversion. Override with <code class="docutils literal notranslate"><span class="pre">--lr-canonicalize</span></code> or <code class="docutils literal notranslate"><span class="pre">--no-lr-canonicalize</span></code>.</p></li>
+</ul>
 <p>Optional left/right side-consistency (uses asymmetric anchors like <code class="docutils literal notranslate"><span class="pre">nose</span></code>/<code class="docutils literal notranslate"><span class="pre">tailbase</span></code> to define an axis):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>annolid.segmentation.dino_kpseg.train<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--data<span class="w"> </span>/path/to/YOLO_dataset/data.yaml<span class="w"> </span><span class="se">\</span>
