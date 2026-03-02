@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Callable, List, Optional, Set
+from typing import Callable, List, Optional, Set, Tuple
 
 from annolid.utils.annotation_compat import AI_MODELS as MODELS
 from qtpy import QtCore, QtWidgets
@@ -33,9 +33,10 @@ class AIModelManager(QtCore.QObject):
         self._config = base_config or {}
         self._canvas_getter = canvas_getter
 
-        self._browse_custom_label = parent.tr("Browse Custom YOLO…")
+        self._browse_custom_label = parent.tr("Browse Custom Model…")
         self._missing_custom_weights_logged: Set[str] = set()
         self._custom_model_configs: List[ModelConfig] = self._load_custom_models()
+        self._auto_discovered_configs: List[ModelConfig] = []
         self._runtime_registry: List[ModelConfig] = get_runtime_model_registry(
             config=self._config,
             settings=self._settings,
@@ -80,11 +81,17 @@ class AIModelManager(QtCore.QObject):
 
     @property
     def custom_model_names(self) -> List[str]:
-        return [cfg.display_name for cfg in self._available_custom_models]
+        return [cfg.display_name for cfg in self._available_custom_models] + [
+            cfg.display_name for cfg in self._auto_discovered_configs
+        ]
 
     @property
     def all_model_configs(self) -> List[ModelConfig]:
-        return [*self._runtime_registry, *self._available_custom_models]
+        return [
+            *self._runtime_registry,
+            *self._auto_discovered_configs,
+            *self._available_custom_models,
+        ]
 
     def refresh(self, target_selection: Optional[str] = None) -> None:
         """Rebuild the combo box while preserving or applying a selection."""
@@ -109,6 +116,7 @@ class AIModelManager(QtCore.QObject):
         self._refresh_in_progress = True
         combo = self._combo
         self._prune_missing_custom_models()
+        self._discover_recent_runs()
         preserve = (
             target_selection
             or self._last_selection
@@ -143,6 +151,27 @@ class AIModelManager(QtCore.QObject):
                         combo.setItemData(idx, "", QtCore.Qt.ToolTipRole)
                         if item is not None:
                             item.setEnabled(True)
+
+            existing_weights = set()
+            for cfg in self._runtime_registry:
+                if cfg.weight_file:
+                    try:
+                        existing_weights.add(str(Path(cfg.weight_file).resolve()))
+                    except Exception:
+                        existing_weights.add(str(cfg.weight_file))
+
+            for cfg in self._auto_discovered_configs:
+                try:
+                    resolved_weight = str(Path(cfg.weight_file).resolve())
+                except Exception:
+                    resolved_weight = str(cfg.weight_file)
+
+                if resolved_weight in existing_weights:
+                    continue
+
+                name = cfg.display_name
+                if combo.findText(name) == -1:
+                    combo.addItem(name)
 
             for name in self.custom_model_names:
                 if combo.findText(name) == -1:
@@ -229,11 +258,11 @@ class AIModelManager(QtCore.QObject):
         dialog.setFileMode(QtWidgets.QFileDialog.ExistingFile)
         dialog.setNameFilters(
             [
-                self.tr("YOLO Models (*.pt *.pth *.onnx *.engine *.mlpackage)"),
+                self.tr("Models (*.pt *.pth *.onnx *.engine *.mlpackage)"),
                 self.tr("All Files (*)"),
             ]
         )
-        dialog.setWindowTitle(self.tr("Select YOLO Model"))
+        dialog.setWindowTitle(self.tr("Select Model"))
 
         if not dialog.exec_():
             return
@@ -354,7 +383,7 @@ class AIModelManager(QtCore.QObject):
                 parent_widget,
                 self.tr("Custom model weights not found"),
                 self.tr(
-                    'The custom YOLO weights for "{name}" were not found at:\n'
+                    'The custom weights for "{name}" were not found at:\n'
                     "{path}\n"
                     "Please reconnect the storage location or choose a different model."
                 ).format(name=model.display_name, path=resolved_str),
@@ -390,7 +419,11 @@ class AIModelManager(QtCore.QObject):
         return None
 
     def _load_custom_models(self) -> List[ModelConfig]:
-        stored = self._settings.value("ai/custom_yolo_models", [])
+        stored = self._settings.value("ai/custom_models", None)
+        if stored is None:
+            # Fallback to old key for backward compatibility
+            stored = self._settings.value("ai/custom_yolo_models", [])
+
         entries: List[ModelConfig] = []
 
         if isinstance(stored, str):
@@ -435,4 +468,40 @@ class AIModelManager(QtCore.QObject):
             }
             for cfg in self._custom_model_configs
         ]
-        self._settings.setValue("ai/custom_yolo_models", json.dumps(payload))
+        self._settings.setValue("ai/custom_models", json.dumps(payload))
+
+    def _discover_recent_runs(self) -> None:
+        """Scan the runs directory for recently trained YOLO and DINO KPSEG models."""
+        from annolid.utils.runs import shared_runs_root
+
+        root = shared_runs_root()
+        if not root.exists():
+            self._auto_discovered_configs = []
+            return
+
+        candidates: List[Tuple[float, ModelConfig]] = []
+
+        def _scan_dir(parent_dir: Path, prefix: str):
+            if not parent_dir.exists():
+                return
+            for run_dir in parent_dir.iterdir():
+                if not run_dir.is_dir():
+                    continue
+                weight_file = run_dir / "weights" / "best.pt"
+                if weight_file.exists():
+                    mtime = weight_file.stat().st_mtime
+                    cfg = ModelConfig(
+                        display_name=f"{prefix}: {run_dir.name}",
+                        identifier=str(weight_file),
+                        weight_file=str(weight_file),
+                    )
+                    candidates.append((mtime, cfg))
+
+        # YOLO runs are typically in root / "train"
+        _scan_dir(root / "train", "YOLO")
+        # DINO runs are typically in root / "dino_kpseg" / "train"
+        _scan_dir(root / "dino_kpseg" / "train", "DINO KPSEG")
+
+        # Sort by modification time descending and keep top 5
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        self._auto_discovered_configs = [cfg for _, cfg in candidates[:5]]

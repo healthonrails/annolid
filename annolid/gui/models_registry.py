@@ -158,15 +158,28 @@ def resolve_model_weight_path(
 ) -> str:
     """Resolve runtime weight path for models with configurable local defaults."""
     identifier = str(model.identifier)
-    override = _settings_override_path(settings, identifier)
-    if not override:
-        override = _config_override_path(config, identifier)
-    if not override:
-        override = MODEL_PATH_DEFAULTS.get(identifier)
+    settings_override = _settings_override_path(settings, identifier)
+    config_override = _config_override_path(config, identifier)
+    default_override = MODEL_PATH_DEFAULTS.get(identifier)
+
+    override = settings_override or config_override or default_override
     if override:
         existing = resolve_existing_model_path(str(override))
         if existing is not None:
             return str(existing)
+
+        # Respect explicit user/project overrides even when they are missing.
+        # Auto-discovery fallback should only apply to built-in defaults.
+        explicit_override = settings_override or config_override
+        if not explicit_override and identifier in ("dino_kpseg", "dino_kpseg_tracker"):
+            from annolid.utils.runs import find_latest_checkpoint
+
+            latest = find_latest_checkpoint(
+                task="dino_kpseg", model="train", filename="best.pt"
+            )
+            if latest is not None and latest.exists():
+                return str(latest)
+
         return str(override)
     return str(model.weight_file)
 
