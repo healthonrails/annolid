@@ -214,3 +214,34 @@ def test_import_dir_images_waits_for_pending_restore_across_scan_batches(
         assert window._pending_last_worked_file == ""
     finally:
         window.close()
+
+
+def test_import_dir_images_handles_finished_before_batch_signal_order(
+    tmp_path: Path,
+):
+    app = _ensure_qapp()
+    window = _DummyFileBrowserWindow()
+    try:
+        target_png = tmp_path / "target.png"
+        target_json = tmp_path / "target.json"
+        target_png.write_bytes(b"\x89PNG\r\n\x1a\n")
+        target_json.write_text("{}", encoding="utf-8")
+
+        window._pending_last_worked_file = str(target_json)
+        window._start_import_dir_scan_worker = lambda _dir: None
+        window.importDirImages(str(tmp_path), load=True)
+
+        token = int(getattr(window, "_dir_scan_token", 0))
+        # Simulate finished arriving before a queued final batch.
+        window._on_import_dir_scan_finished(token)
+        window._on_import_dir_scan_batch(token, [str(target_png)])
+
+        for _ in range(50):
+            app.processEvents()
+
+        assert window._loaded_files == [str(target_png)]
+        assert window._selected_file_items == [str(target_png)]
+        assert window._open_next_calls == 0
+        assert window._pending_last_worked_file == ""
+    finally:
+        window.close()

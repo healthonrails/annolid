@@ -305,6 +305,15 @@ class FileBrowserMixin:
     def _on_import_dir_scan_finished(self, token: int) -> None:
         if token != int(getattr(self, "_dir_scan_token", 0)):
             return
+        # Defer finalization by one event-loop turn so any already-queued
+        # batchReady signals are handled before scan state is closed.
+        QtCore.QTimer.singleShot(0, lambda t=token: self._finalize_import_dir_scan(t))
+
+    def _finalize_import_dir_scan(self, token: int) -> None:
+        if token != int(getattr(self, "_dir_scan_token", 0)):
+            return
+        if not bool(getattr(self, "_dir_scan_running", False)):
+            return
         if (
             bool(getattr(self, "_dir_scan_load", False))
             and not bool(getattr(self, "_dir_scan_first_loaded", False))
