@@ -320,7 +320,8 @@ GUI prediction workflow (not only wizard runs).
 
 In **Training Wizard** with backend **DINO KPSEG**, the Configure page now includes:
 
-- Head selection (`relational`, `conv`, `multitask`)
+- Multiple tabs (`Core`, `Head Type`, `Loss`, `Runtime`) for clearer navigation
+- Head selection (`relational`, `conv`, `multitask`) with dedicated per-head detail tabs
 - Relational head controls (`heads`, `layers`)
 - Multitask loss weights (`objectness`, `box`, `instance`) and aux warmup
 - Loss controls (`threshold`, `BCE type`, focal alpha/gamma)
