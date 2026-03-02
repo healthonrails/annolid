@@ -180,17 +180,17 @@ def test_data_aware_augmentation_small_ambiguous_dataset_disables_geometry() -> 
     )
     # hflip is suppressed for ambiguous datasets
     assert out.hflip_prob == pytest.approx(0.0)
-    # Geometric augmentation is preserved (critical for small datasets)
-    assert out.degrees == pytest.approx(cfg.degrees)
-    assert out.translate == pytest.approx(cfg.translate)
-    assert out.scale == pytest.approx(cfg.scale)
-    assert out.brightness == pytest.approx(cfg.brightness)
-    assert out.contrast == pytest.approx(cfg.contrast)
-    assert out.saturation == pytest.approx(cfg.saturation)
+    # Augmentation is BOOSTED for small datasets to combat overfitting
+    assert out.degrees == pytest.approx(15.0)
+    assert out.translate == pytest.approx(0.05)
+    assert out.scale == pytest.approx(0.10)
+    assert out.brightness == pytest.approx(0.10)
+    assert out.contrast == pytest.approx(0.10)
+    assert out.saturation == pytest.approx(0.05)
 
 
 def test_small_data_profile_adjusts_only_defaults() -> None:
-    head, feat_align, lr, patience = _apply_data_aware_small_data_profile(
+    head, feat_align, lr, patience, coord_warmup = _apply_data_aware_small_data_profile(
         num_train_images=42,
         ambiguous_frac=0.59,
         head_type=str(dino_defaults.HEAD_TYPE),
@@ -204,8 +204,10 @@ def test_small_data_profile_adjusts_only_defaults() -> None:
     # LR is preserved (no longer reduced for small datasets)
     assert lr == pytest.approx(3e-4)
     assert patience == 12
+    # Coord warmup is set to 0 for small datasets
+    assert coord_warmup == 0
 
-    custom_head, custom_feat_align, custom_lr, custom_patience = (
+    custom_head, custom_feat_align, custom_lr, custom_patience, custom_cw = (
         _apply_data_aware_small_data_profile(
             num_train_images=42,
             ambiguous_frac=0.59,
@@ -219,6 +221,7 @@ def test_small_data_profile_adjusts_only_defaults() -> None:
     assert int(custom_feat_align) == 128
     assert custom_lr == pytest.approx(2e-4)
     assert custom_patience == 8
+    assert custom_cw == 0
 
 
 def test_should_enable_lr_canonicalize_auto_and_overrides() -> None:

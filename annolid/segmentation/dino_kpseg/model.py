@@ -72,6 +72,278 @@ class DinoKPSEGHead(nn.Module):
         return self.net(feats_bchw)
 
 
+class _HRNetConvBlock(nn.Module):
+    """Depthwise-separable conv block with residual for HRNet branches.
+
+    Supports dilated convolutions (inspired by DEKR) to increase receptive
+    field in lower-resolution branches without extra parameters.
+    """
+
+    def __init__(self, dim: int, dilation: int = 1) -> None:
+        super().__init__()
+        self.dw = nn.Conv2d(
+            int(dim),
+            int(dim),
+            kernel_size=3,
+            padding=int(dilation),
+            dilation=int(dilation),
+            groups=int(dim),
+            bias=False,
+        )
+        self.pw = nn.Conv2d(int(dim), int(dim), kernel_size=1)
+        self.norm = nn.GroupNorm(
+            num_groups=_groupnorm_groups(int(dim), max_groups=8),
+            num_channels=int(dim),
+        )
+        self.act = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        x = self.dw(x)
+        x = self.act(x)
+        x = self.pw(x)
+        x = self.norm(x)
+        return x + residual
+
+
+class _HRNetFusionModule(nn.Module):
+    """Cross-scale fusion: exchange information between resolution branches.
+
+    Uses ConvTranspose2d (learned upsampling, inspired by DeepLabCut's
+    DeconvModule) instead of bilinear interpolation for sharper feature fusion.
+    """
+
+    def __init__(self, dims: list[int], scale_factors: list[int]) -> None:
+        super().__init__()
+        n = len(dims)
+        self.projs = nn.ModuleList()
+        self.upsamplers = nn.ModuleList()
+        self.norms = nn.ModuleList()
+        for i in range(n):
+            row = nn.ModuleList()
+            up_row = nn.ModuleList()
+            for j in range(n):
+                # Projection: 1×1 conv to match channel dims
+                if dims[j] != dims[i]:
+                    row.append(nn.Conv2d(dims[j], dims[i], kernel_size=1, bias=False))
+                else:
+                    row.append(nn.Identity())
+                # Upsampler: ConvTranspose2d when source is lower-res than target
+                src_scale = scale_factors[j]
+                tgt_scale = scale_factors[i]
+                if src_scale > tgt_scale:
+                    # Need to upsample: ratio = src_scale / tgt_scale
+                    ratio = src_scale // tgt_scale
+                    layers: list[nn.Module] = []
+                    current_dim = dims[i]
+                    while ratio > 1:
+                        layers.append(
+                            nn.ConvTranspose2d(
+                                current_dim,
+                                current_dim,
+                                kernel_size=4,
+                                stride=2,
+                                padding=1,
+                                bias=False,
+                            )
+                        )
+                        layers.append(nn.GELU())
+                        ratio //= 2
+                    up_row.append(nn.Sequential(*layers) if layers else nn.Identity())
+                else:
+                    up_row.append(nn.Identity())
+            self.projs.append(row)
+            self.upsamplers.append(up_row)
+            self.norms.append(
+                nn.GroupNorm(
+                    num_groups=_groupnorm_groups(dims[i], max_groups=8),
+                    num_channels=dims[i],
+                )
+            )
+        self.act = nn.GELU()
+        self.n = n
+        self.scale_factors = scale_factors
+
+    def forward(self, branches: list[torch.Tensor]) -> list[torch.Tensor]:
+        target_sizes = [(int(b.shape[2]), int(b.shape[3])) for b in branches]
+        out = []
+        for i in range(self.n):
+            fused = torch.zeros_like(branches[i])
+            for j in range(self.n):
+                src = self.projs[i][j](branches[j])
+                src_scale = self.scale_factors[j]
+                tgt_scale = self.scale_factors[i]
+                if src_scale > tgt_scale:
+                    # Upsample with learned ConvTranspose2d
+                    src = self.upsamplers[i][j](src)
+                    # Trim if needed (ConvTranspose2d may produce slightly different size)
+                    if src.shape[2:] != branches[i].shape[2:]:
+                        src = src[:, :, : target_sizes[i][0], : target_sizes[i][1]]
+                elif src_scale < tgt_scale:
+                    # Downsample with adaptive avg pool
+                    src = F.adaptive_avg_pool2d(src, target_sizes[i])
+                fused = fused + src
+            out.append(self.act(self.norms[i](fused)))
+        return out
+
+
+class DinoKPSEGHRNetHead(nn.Module):
+    """HRNet-style multi-resolution head for pose estimation.
+
+    Inspired by DeepLabCut's SOTA animal pose estimation architecture:
+    - Multi-resolution branches (1×, ½×, ¼×) with cross-scale fusion
+    - Dilated convolutions in lower-res branches (from DEKR)
+    - Learned upsampling via ConvTranspose2d (from DeconvModule)
+    - Iterative heatmap refinement (from DLCRNet)
+
+    Constructor signature matches DinoKPSEGHead for drop-in replacement.
+    """
+
+    def __init__(
+        self,
+        *,
+        in_dim: int,
+        hidden_dim: int,
+        num_parts: int,
+        num_stages: int = 2,
+        blocks_per_branch: int = 2,
+    ) -> None:
+        super().__init__()
+        self.in_dim = int(in_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.num_parts = int(num_parts)
+        self.num_stages = int(num_stages)
+
+        dim = self.hidden_dim
+        # Input projection: in_dim → hidden_dim at 1× resolution
+        self.stem = nn.Sequential(
+            nn.Conv2d(self.in_dim, dim, kernel_size=1),
+            nn.GELU(),
+            nn.GroupNorm(
+                num_groups=_groupnorm_groups(dim, max_groups=8),
+                num_channels=dim,
+            ),
+        )
+
+        # Create branch heads for ½× and ¼× via strided convolutions
+        self.down_half = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.GELU(),
+            nn.GroupNorm(
+                num_groups=_groupnorm_groups(dim, max_groups=8),
+                num_channels=dim,
+            ),
+        )
+        self.down_quarter = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.GELU(),
+            nn.GroupNorm(
+                num_groups=_groupnorm_groups(dim, max_groups=8),
+                num_channels=dim,
+            ),
+        )
+
+        # Per-stage processing: conv blocks + fusion
+        # Branch 1 (1×): dilation=1, Branch 2 (½×): dilation=2, Branch 3 (¼×): dilation=2
+        branch_dilations = [1, 2, 2]
+        self.stage_blocks = nn.ModuleList()
+        self.stage_fusions = nn.ModuleList()
+        for _ in range(self.num_stages):
+            stage = nn.ModuleList()
+            for br_idx in range(3):
+                branch = nn.Sequential(
+                    *[
+                        _HRNetConvBlock(dim, dilation=branch_dilations[br_idx])
+                        for _ in range(blocks_per_branch)
+                    ]
+                )
+                stage.append(branch)
+            self.stage_blocks.append(stage)
+            # scale_factors: 1× = 1, ½× = 2, ¼× = 4
+            self.stage_fusions.append(
+                _HRNetFusionModule([dim, dim, dim], scale_factors=[1, 2, 4])
+            )
+
+        # Learned upsampling for final concat (½→1×, ¼→1×)
+        self.up_half_to_full = nn.Sequential(
+            nn.ConvTranspose2d(
+                dim, dim, kernel_size=4, stride=2, padding=1, bias=False
+            ),
+            nn.GELU(),
+        )
+        self.up_quarter_to_full = nn.Sequential(
+            nn.ConvTranspose2d(
+                dim, dim, kernel_size=4, stride=2, padding=1, bias=False
+            ),
+            nn.GELU(),
+            nn.ConvTranspose2d(
+                dim, dim, kernel_size=4, stride=2, padding=1, bias=False
+            ),
+            nn.GELU(),
+        )
+
+        # Initial heatmap projection
+        self.initial_proj = nn.Sequential(
+            nn.Conv2d(dim * 3, dim, kernel_size=1),
+            nn.GELU(),
+            nn.GroupNorm(
+                num_groups=_groupnorm_groups(dim, max_groups=8),
+                num_channels=dim,
+            ),
+            nn.Conv2d(dim, self.num_parts, kernel_size=1),
+        )
+
+        # Iterative refinement (inspired by DLCRNet): concat initial logits
+        # with fused features, refine with residual connection
+        self.refine_conv = nn.Sequential(
+            nn.Conv2d(dim * 3 + self.num_parts, dim, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.GroupNorm(
+                num_groups=_groupnorm_groups(dim, max_groups=8),
+                num_channels=dim,
+            ),
+            nn.Conv2d(dim, self.num_parts, kernel_size=1),
+        )
+
+    def forward(self, feats_bchw: torch.Tensor) -> torch.Tensor:
+        if feats_bchw.ndim != 4:
+            raise ValueError("Expected feats in BCHW format")
+
+        # Stem → 1× features
+        x1 = self.stem(feats_bchw)
+        # Create ½× and ¼× branches
+        x2 = self.down_half(x1)
+        x4 = self.down_quarter(x2)
+
+        branches = [x1, x2, x4]
+
+        # Multi-stage processing with cross-scale fusion
+        for stage_idx in range(self.num_stages):
+            blocks = self.stage_blocks[stage_idx]
+            branches = [blocks[i](branches[i]) for i in range(3)]
+            branches = self.stage_fusions[stage_idx](branches)
+
+        # Upsample all branches to 1× using learned ConvTranspose2d
+        target_h, target_w = int(branches[0].shape[2]), int(branches[0].shape[3])
+        br_half = self.up_half_to_full(branches[1])
+        br_quarter = self.up_quarter_to_full(branches[2])
+        # Trim if needed
+        br_half = br_half[:, :, :target_h, :target_w]
+        br_quarter = br_quarter[:, :, :target_h, :target_w]
+
+        fused = torch.cat([branches[0], br_half, br_quarter], dim=1)
+
+        # Initial heatmap prediction
+        initial_logits = self.initial_proj(fused)
+
+        # DLCRNet-style iterative refinement: concat initial logits with
+        # fused features and refine with residual connection
+        refine_input = torch.cat([fused, initial_logits], dim=1)
+        refined_logits = self.refine_conv(refine_input) + initial_logits
+
+        return refined_logits
+
+
 def _positional_encoding_2d_sincos(
     *,
     h: int,
@@ -972,11 +1244,24 @@ def checkpoint_unpack(
             num_parts=meta.num_parts,
         )
     else:
-        head = DinoKPSEGHead(
-            in_dim=int(core_in_dim),
-            hidden_dim=meta.hidden_dim,
-            num_parts=meta.num_parts,
+        # Auto-detect old conv head vs new HRNet head from checkpoint keys.
+        state = payload.get("state_dict") or {}
+        _is_hrnet = any(
+            "stem." in str(k) or "stage_blocks." in str(k)
+            for k in (state if isinstance(state, dict) else {})
         )
+        if _is_hrnet:
+            head = DinoKPSEGHRNetHead(
+                in_dim=int(core_in_dim),
+                hidden_dim=meta.hidden_dim,
+                num_parts=meta.num_parts,
+            )
+        else:
+            head = DinoKPSEGHead(
+                in_dim=int(core_in_dim),
+                hidden_dim=meta.hidden_dim,
+                num_parts=meta.num_parts,
+            )
     if int(meta.feature_align_dim) > 0 and int(meta.feature_align_dim) != int(
         meta.in_dim
     ):

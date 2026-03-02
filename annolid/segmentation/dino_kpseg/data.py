@@ -583,7 +583,10 @@ def _build_keypoint_targets(
         if heatmap_sigma_px is not None and float(heatmap_sigma_px) > 0:
             sigma_res = float(heatmap_sigma_px) * float(scale)
         else:
-            sigma_res = radius_res / 2.0
+            # Use full radius as sigma so early-training targets are broad
+            # enough for the model to match before the radius schedule
+            # sharpens them.
+            sigma_res = radius_res
         sigma_res = max(1.0, float(sigma_res))
         denom = 2.0 * sigma_res * sigma_res
 

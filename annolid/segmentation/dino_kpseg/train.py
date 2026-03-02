@@ -33,7 +33,7 @@ from annolid.segmentation.dino_kpseg.dataset_resolution import (
 )
 from annolid.segmentation.dino_kpseg.model import (
     DinoKPSEGCheckpointMeta,
-    DinoKPSEGHead,
+    DinoKPSEGHRNetHead,
     DinoKPSEGRelationalHead,
     DinoKPSEGAlignedHead,
     DinoKPSEGMultiTaskHead,
@@ -392,10 +392,8 @@ def _stack_chw_images_with_padding(
 def _overlay_keypoints(
     image: torch.Tensor,
     *,
-    pred_xy: Sequence[Tuple[float, float]],
-    gt_xy: Sequence[Tuple[float, float]],
-    pred_color: Tuple[int, int, int] = (230, 50, 50),
-    gt_color: Tuple[int, int, int] = (50, 230, 50),
+    pred_idx_xy: Sequence[Tuple[int, float, float]],
+    gt_idx_xy: Sequence[Tuple[int, float, float]],
     radius: int = 3,
 ) -> torch.Tensor:
     if image.ndim != 3 or int(image.shape[0]) != 3:
@@ -404,30 +402,54 @@ def _overlay_keypoints(
     arr = (img.permute(1, 2, 0).numpy() * 255.0).astype(np.uint8, copy=True)
     height, width = int(arr.shape[0]), int(arr.shape[1])
 
-    def _draw(
-        points: Sequence[Tuple[float, float]], color: Tuple[int, int, int]
-    ) -> None:
-        for x, y in points:
+    colors = [
+        (255, 0, 0),  # Red
+        (0, 255, 0),  # Green
+        (0, 0, 255),  # Blue
+        (255, 255, 0),  # Yellow
+        (255, 0, 255),  # Magenta
+        (0, 255, 255),  # Cyan
+        (255, 165, 0),  # Orange
+        (128, 0, 128),  # Purple
+        (0, 128, 128),  # Teal
+        (128, 128, 0),  # Olive
+    ]
+
+    def _draw(points: Sequence[Tuple[int, float, float]], is_gt: bool) -> None:
+        for idx, x, y in points:
             if not np.isfinite(x) or not np.isfinite(y):
                 continue
             cx = int(round(float(x)))
             cy = int(round(float(y)))
             if cx < 0 or cy < 0 or cx >= width or cy >= height:
                 continue
-            for dy in range(-radius, radius + 1):
+
+            base_color = colors[int(idx) % len(colors)]
+            if is_gt:
+                # Dim the GT color and draw a hollow circle (or small cross)
+                color = (base_color[0] // 2, base_color[1] // 2, base_color[2] // 2)
+                draw_r = radius - 1
+            else:
+                color = base_color
+                draw_r = radius
+
+            for dy in range(-draw_r, draw_r + 1):
                 yy = cy + dy
                 if yy < 0 or yy >= height:
                     continue
-                for dx in range(-radius, radius + 1):
+                for dx in range(-draw_r, draw_r + 1):
                     xx = cx + dx
                     if xx < 0 or xx >= width:
+                        continue
+                    # For GT, make it a cross or diamond pattern
+                    if is_gt and abs(dx) + abs(dy) > draw_r:
                         continue
                     arr[yy, xx, 0] = int(color[0])
                     arr[yy, xx, 1] = int(color[1])
                     arr[yy, xx, 2] = int(color[2])
 
-    _draw(gt_xy, gt_color)
-    _draw(pred_xy, pred_color)
+    _draw(gt_idx_xy, is_gt=True)
+    _draw(pred_idx_xy, is_gt=False)
     out = torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0
     return out
 
@@ -686,7 +708,7 @@ def _argmax_coords_batched(
 ) -> torch.Tensor:
     if probs_bkhw.ndim != 4:
         raise ValueError("Expected probs in BKHW format")
-    b, k, _, w_p = (
+    b, k, h_p, w_p = (
         int(probs_bkhw.shape[0]),
         int(probs_bkhw.shape[1]),
         int(probs_bkhw.shape[2]),
@@ -703,10 +725,40 @@ def _argmax_coords_batched(
             raise ValueError("valid_mask_b1hw shape must match probs spatial shape")
         probs = probs_bkhw.masked_fill(~valid_mask_b1hw.to(dtype=torch.bool), -1.0)
     flat_idx = probs.view(b, k, -1).argmax(dim=2)
-    y = (flat_idx // max(1, int(w_p))).to(dtype=probs_bkhw.dtype)
-    x = (flat_idx % max(1, int(w_p))).to(dtype=probs_bkhw.dtype)
+    yi = (flat_idx // max(1, int(w_p))).to(dtype=probs_bkhw.dtype)
+    xi = (flat_idx % max(1, int(w_p))).to(dtype=probs_bkhw.dtype)
+
+    # Sub-pixel parabolic refinement using 3-point Taylor expansion.
+    # For each keypoint, fit a parabola along x and y through the peak
+    # and its two neighbours to get a sub-pixel offset in [-0.5, +0.5].
+    dx = torch.zeros_like(xi)
+    dy = torch.zeros_like(yi)
+    for bi in range(b):
+        for ki in range(k):
+            yc = int(yi[bi, ki].item())
+            xc = int(xi[bi, ki].item())
+            p = probs[bi, ki]  # [H, W]
+            # X-axis refinement
+            if 0 < xc < w_p - 1:
+                left = float(p[yc, xc - 1].item())
+                center = float(p[yc, xc].item())
+                right = float(p[yc, xc + 1].item())
+                denom_x = 2.0 * (2.0 * center - left - right)
+                if abs(denom_x) > 1e-6:
+                    offset_x = (right - left) / denom_x
+                    dx[bi, ki] = max(-0.5, min(0.5, offset_x))
+            # Y-axis refinement
+            if 0 < yc < h_p - 1:
+                top = float(p[yc - 1, xc].item())
+                center = float(p[yc, xc].item())
+                bottom = float(p[yc + 1, xc].item())
+                denom_y = 2.0 * (2.0 * center - top - bottom)
+                if abs(denom_y) > 1e-6:
+                    offset_y = (bottom - top) / denom_y
+                    dy[bi, ki] = max(-0.5, min(0.5, offset_y))
+
     scale = float(patch_size)
-    out = torch.stack([(x + 0.5) * scale, (y + 0.5) * scale], dim=2)
+    out = torch.stack([(xi + dx + 0.5) * scale, (yi + dy + 0.5) * scale], dim=2)
     if out.shape != (b, k, 2):
         raise RuntimeError("Unexpected argmax decode output shape")
     return out
@@ -1040,7 +1092,7 @@ def _compute_supervised_losses(
             coord_mask.reshape(-1),
             mode=coord_loss_type,
             normalizer_px=float(max(1, int(patch_size))),
-            clip_delta_px=float(max(1, int(patch_size) * 4)),
+            clip_delta_px=float(max(1, int(patch_size) * 8)),
         )
         loss_total = loss_total + float(coord_weight) * coord_loss
 
@@ -1630,6 +1682,50 @@ def _apply_data_aware_augmentation_defaults(
     # Rotation/translate/scale augmentation is preserved even for
     # high-ambiguity small datasets -- these geometric augmentations
     # are essential to prevent overfitting when training data is scarce.
+
+    # For small datasets, BOOST augmentation strength to combat overfitting.
+    n_train = max(0, int(num_train_images))
+    if n_train <= 64:
+        min_degrees = 15.0
+        min_translate = 0.05
+        min_scale = 0.10
+        min_brightness = 0.10
+        min_contrast = 0.10
+        min_saturation = 0.05
+        boosted = False
+        new_degrees = max(float(out.degrees), min_degrees)
+        new_translate = max(float(out.translate), min_translate)
+        new_scale = max(float(out.scale), min_scale)
+        new_brightness = max(float(out.brightness), min_brightness)
+        new_contrast = max(float(out.contrast), min_contrast)
+        new_saturation = max(float(out.saturation), min_saturation)
+        if (
+            new_degrees != float(out.degrees)
+            or new_translate != float(out.translate)
+            or new_scale != float(out.scale)
+            or new_brightness != float(out.brightness)
+            or new_contrast != float(out.contrast)
+            or new_saturation != float(out.saturation)
+        ):
+            boosted = True
+        if boosted:
+            out = DinoKPSEGAugmentConfig(
+                enabled=out.enabled,
+                hflip_prob=float(out.hflip_prob),
+                degrees=new_degrees,
+                translate=new_translate,
+                scale=new_scale,
+                brightness=new_brightness,
+                contrast=new_contrast,
+                saturation=new_saturation,
+                seed=out.seed,
+            )
+            changed.append(
+                f"degrees={new_degrees:.0f}/translate={new_translate:.2f}"
+                f"/scale={new_scale:.2f}/brightness={new_brightness:.2f}"
+                f"/contrast={new_contrast:.2f}/saturation={new_saturation:.2f}"
+            )
+
     if changed:
         logger.warning(
             "High left/right ambiguity detected (ambiguous_frac=%.3f). "
@@ -1648,7 +1744,7 @@ def _apply_data_aware_small_data_profile(
     feature_align_dim: object,
     lr: float,
     early_stop_patience: int,
-) -> tuple[str, object, float, int]:
+) -> tuple[str, object, float, int, Optional[int]]:
     train_n = max(0, int(num_train_images))
     amb = (
         float(ambiguous_frac)
@@ -1661,7 +1757,7 @@ def _apply_data_aware_small_data_profile(
     patience_out = int(early_stop_patience)
 
     if train_n > 64:
-        return head_out, feat_align_out, lr_out, patience_out
+        return head_out, feat_align_out, lr_out, patience_out, None
 
     changed: List[str] = []
     # NOTE: The relational head is intentionally kept for small datasets.
@@ -1693,7 +1789,7 @@ def _apply_data_aware_small_data_profile(
             ", ".join(changed),
         )
 
-    return head_out, feat_align_out, float(lr_out), int(patience_out)
+    return head_out, feat_align_out, float(lr_out), int(patience_out), 0
 
 
 def _canonicalize_head_type(head_type: str) -> str:
@@ -1907,7 +2003,7 @@ def train(
             lr_side_loss_weight=float(lr_side_loss_weight),
         )
     )
-    head_type, feature_align_dim, lr, early_stop_patience = (
+    head_type, feature_align_dim, lr, early_stop_patience, coord_warmup_override = (
         _apply_data_aware_small_data_profile(
             num_train_images=len(train_images),
             ambiguous_frac=swap_ambiguity_frac,
@@ -1917,6 +2013,8 @@ def train(
             early_stop_patience=int(early_stop_patience),
         )
     )
+    if coord_warmup_override is not None:
+        coord_warmup_epochs = int(coord_warmup_override)
 
     if data_format_norm == "labelme":
         summary_lm = summarize_labelme_pose_labels(
@@ -2138,7 +2236,7 @@ def train(
             in_dim=int(core_in_dim), hidden_dim=hidden_dim, num_parts=kpt_count
         )
     else:
-        core_head = DinoKPSEGHead(
+        core_head = DinoKPSEGHRNetHead(
             in_dim=int(core_in_dim), hidden_dim=hidden_dim, num_parts=kpt_count
         )
     if int(feature_align_dim) > 0 and int(feature_align_dim) != int(in_dim):
@@ -2160,7 +2258,7 @@ def train(
             p.requires_grad_(False)
 
     base_lr = float(lr)
-    opt = torch.optim.AdamW(head.parameters(), lr=base_lr)
+    opt = torch.optim.AdamW(head.parameters(), lr=base_lr, weight_decay=1e-4)
     scheduler = None
     warmup_epochs = max(0, int(warmup_epochs))
     lr_decay_start_epoch = max(int(warmup_epochs) + 1, int(flat_epoch) + 1)
@@ -3769,13 +3867,25 @@ def train(
                                     for x, y in pred_xy_resized
                                 ]
                                 # Build comparable overlay pairs:
-                                # - one GT point per keypoint index (nearest candidate)
-                                # - predicted point shown only when that keypoint has GT
-                                overlay_pred_resized: List[Tuple[float, float]] = []
-                                overlay_gt_resized: List[Tuple[float, float]] = []
+                                # - Always draw the predicted point for every keypoint index.
+                                # - Draw the GT point (the nearest candidate) if present.
+                                overlay_pred_resized: List[
+                                    Tuple[int, float, float]
+                                ] = []
+                                overlay_gt_resized: List[Tuple[int, float, float]] = []
                                 for kpt_idx in range(int(kpt_count)):
                                     if kpt_idx >= len(pred_xy_orig):
                                         break
+                                    pred_x_o, pred_y_o = pred_xy_orig[kpt_idx]
+                                    overlay_pred_resized.append(
+                                        (
+                                            int(kpt_idx),
+                                            float(pred_x_o)
+                                            * (float(resized_w) / float(orig_w)),
+                                            float(pred_y_o)
+                                            * (float(resized_h) / float(orig_h)),
+                                        )
+                                    )
                                     candidates = _collect_gt_candidates(
                                         gt_instances_eval,
                                         kpt_idx=kpt_idx,
@@ -3783,7 +3893,6 @@ def train(
                                     )
                                     if not candidates:
                                         continue
-                                    pred_x_o, pred_y_o = pred_xy_orig[kpt_idx]
                                     gt_x_o, gt_y_o = min(
                                         candidates,
                                         key=lambda pt: (
@@ -3791,16 +3900,9 @@ def train(
                                             + (float(pt[1]) - float(pred_y_o)) ** 2
                                         ),
                                     )
-                                    overlay_pred_resized.append(
-                                        (
-                                            float(pred_x_o)
-                                            * (float(resized_w) / float(orig_w)),
-                                            float(pred_y_o)
-                                            * (float(resized_h) / float(orig_h)),
-                                        )
-                                    )
                                     overlay_gt_resized.append(
                                         (
+                                            int(kpt_idx),
                                             float(gt_x_o)
                                             * (float(resized_w) / float(orig_w)),
                                             float(gt_y_o)
@@ -3820,8 +3922,8 @@ def train(
                                     pred_overlays.append(
                                         _overlay_keypoints(
                                             img,
-                                            pred_xy=overlay_pred_resized,
-                                            gt_xy=overlay_gt_resized,
+                                            pred_idx_xy=overlay_pred_resized,
+                                            gt_idx_xy=overlay_gt_resized,
                                         )
                                     )
                                 if gt_instances_eval:
@@ -3859,8 +3961,8 @@ def train(
                                     )
                                     overlay = _overlay_keypoints(
                                         img,
-                                        pred_xy=overlay_pred_resized,
-                                        gt_xy=overlay_gt_resized,
+                                        pred_idx_xy=overlay_pred_resized,
+                                        gt_idx_xy=overlay_gt_resized,
                                     )
                                     if len(error_samples) < int(error_max):
                                         error_samples.append((mean_err, overlay))
