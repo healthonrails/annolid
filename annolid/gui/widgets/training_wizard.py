@@ -949,6 +949,26 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         layout = QtWidgets.QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
+        tabs = QtWidgets.QTabWidget()
+        tabs.setDocumentMode(True)
+        tabs.setToolTip(
+            "Core: backbone/training basics\n"
+            "Head Type: choose relational/conv/multitask\n"
+            "Loss: mask loss setup\n"
+            "Runtime: execution guidance"
+        )
+
+        # ---------------- Core tab ----------------
+        core_tab = QtWidgets.QWidget()
+        core_layout = QtWidgets.QVBoxLayout(core_tab)
+        core_layout.setContentsMargins(8, 8, 8, 8)
+        core_layout.setSpacing(12)
+        core_hint = QtWidgets.QLabel(
+            "Set backbone and core optimization settings used in most runs."
+        )
+        core_hint.setWordWrap(True)
+        core_hint.setProperty("muted", True)
+        core_layout.addWidget(core_hint)
 
         model_group = QtWidgets.QGroupBox("DINO Backbone")
         model_layout = QtWidgets.QFormLayout(model_group)
@@ -970,8 +990,7 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         self.dino_layers_edit.setPlaceholderText("-1 or -2,-1")
         self.dino_layers_edit.setText(str(dino_defaults.LAYERS))
         model_layout.addRow("Layers:", self.dino_layers_edit)
-
-        layout.addWidget(model_group)
+        core_layout.addWidget(model_group)
 
         train_group = QtWidgets.QGroupBox("Training Parameters")
         train_layout = QtWidgets.QFormLayout(train_group)
@@ -996,10 +1015,23 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         self.dino_radius_spin.setRange(1.0, 30.0)
         self.dino_radius_spin.setValue(float(dino_defaults.RADIUS_PX))
         train_layout.addRow("Keypoint radius (px):", self.dino_radius_spin)
+        core_layout.addWidget(train_group)
+        core_layout.addStretch()
 
-        layout.addWidget(train_group)
+        # ---------------- Head tab ----------------
+        head_tab = QtWidgets.QWidget()
+        head_layout_root = QtWidgets.QVBoxLayout(head_tab)
+        head_layout_root.setContentsMargins(8, 8, 8, 8)
+        head_layout_root.setSpacing(12)
+        head_hint = QtWidgets.QLabel(
+            "Pick a head type first. Use Relational for strongest pose modeling, "
+            "Conv for speed, Multitask when you need auxiliary object/box/mask heads."
+        )
+        head_hint.setWordWrap(True)
+        head_hint.setProperty("muted", True)
+        head_layout_root.addWidget(head_hint)
 
-        head_group = QtWidgets.QGroupBox("Head & Losses")
+        head_group = QtWidgets.QGroupBox("Head Type")
         head_layout = QtWidgets.QFormLayout(head_group)
         controls = create_dino_head_loss_controls(
             head_group,
@@ -1019,34 +1051,70 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
 
         self.dino_head_type_combo = controls.head_type_combo
         self.dino_head_type_combo.currentIndexChanged.connect(
-            self._update_dino_head_controls
+            self._on_dino_head_type_changed
         )
         head_layout.addRow("Head type:", self.dino_head_type_combo)
+        head_layout_root.addWidget(head_group)
 
-        self.dino_attn_heads_spin = controls.attn_heads_spin
-        head_layout.addRow("Relational heads:", self.dino_attn_heads_spin)
-
-        self.dino_attn_layers_spin = controls.attn_layers_spin
-        head_layout.addRow("Relational layers:", self.dino_attn_layers_spin)
-
-        self.dino_hidden_dim_spin = controls.hidden_dim_spin
-        head_layout.addRow("Hidden dim:", self.dino_hidden_dim_spin)
-
-        self.dino_obj_loss_weight_spin = controls.obj_loss_weight_spin
-        head_layout.addRow("Objectness loss weight:", self.dino_obj_loss_weight_spin)
-
-        self.dino_box_loss_weight_spin = controls.box_loss_weight_spin
-        head_layout.addRow("Box loss weight:", self.dino_box_loss_weight_spin)
-
-        self.dino_inst_loss_weight_spin = controls.inst_loss_weight_spin
-        head_layout.addRow("Instance loss weight:", self.dino_inst_loss_weight_spin)
-
-        self.dino_multitask_aux_warmup_spin = controls.multitask_aux_warmup_spin
-        head_layout.addRow(
-            "Multitask aux warmup (epochs):", self.dino_multitask_aux_warmup_spin
+        self.dino_head_detail_tabs = QtWidgets.QTabWidget()
+        self.dino_head_detail_tabs.setDocumentMode(True)
+        self.dino_head_detail_tabs.setToolTip(
+            "Relational: attention-based keypoint reasoning\n"
+            "Conv: fastest/simple option\n"
+            "Multitask: adds object/box/instance auxiliary losses"
         )
 
-        layout.addWidget(head_group)
+        relational_tab = QtWidgets.QWidget()
+        relational_form = QtWidgets.QFormLayout(relational_tab)
+        relational_tab.setToolTip(
+            "Best default when left-right relationships and long-range context matter."
+        )
+        self.dino_attn_heads_spin = controls.attn_heads_spin
+        relational_form.addRow("Relational heads:", self.dino_attn_heads_spin)
+        self.dino_attn_layers_spin = controls.attn_layers_spin
+        relational_form.addRow("Relational layers:", self.dino_attn_layers_spin)
+        self.dino_head_detail_tabs.addTab(relational_tab, "Relational")
+
+        conv_tab = QtWidgets.QWidget()
+        conv_tab.setToolTip(
+            "Fastest head for lightweight experiments and quick iteration."
+        )
+        conv_layout = QtWidgets.QVBoxLayout(conv_tab)
+        conv_hint = QtWidgets.QLabel(
+            "Conv head is faster and simpler. No extra relational or multitask settings."
+        )
+        conv_hint.setWordWrap(True)
+        conv_hint.setProperty("muted", True)
+        conv_layout.addWidget(conv_hint)
+        conv_layout.addStretch()
+        self.dino_head_detail_tabs.addTab(conv_tab, "Conv")
+
+        multitask_tab = QtWidgets.QWidget()
+        multitask_tab.setToolTip(
+            "Use when you want auxiliary objectness/box/instance losses."
+        )
+        multitask_form = QtWidgets.QFormLayout(multitask_tab)
+        self.dino_hidden_dim_spin = controls.hidden_dim_spin
+        multitask_form.addRow("Hidden dim:", self.dino_hidden_dim_spin)
+
+        self.dino_obj_loss_weight_spin = controls.obj_loss_weight_spin
+        multitask_form.addRow("Objectness loss weight:", self.dino_obj_loss_weight_spin)
+
+        self.dino_box_loss_weight_spin = controls.box_loss_weight_spin
+        multitask_form.addRow("Box loss weight:", self.dino_box_loss_weight_spin)
+
+        self.dino_inst_loss_weight_spin = controls.inst_loss_weight_spin
+        multitask_form.addRow("Instance loss weight:", self.dino_inst_loss_weight_spin)
+
+        self.dino_multitask_aux_warmup_spin = controls.multitask_aux_warmup_spin
+        multitask_form.addRow(
+            "Multitask aux warmup (epochs):", self.dino_multitask_aux_warmup_spin
+        )
+        self.dino_head_detail_tabs.addTab(multitask_tab, "Multitask")
+
+        head_layout_root.addWidget(self.dino_head_detail_tabs)
+        head_layout_root.addStretch()
+
         self._dino_multitask_controls = [
             self.dino_obj_loss_weight_spin,
             self.dino_box_loss_weight_spin,
@@ -1054,9 +1122,19 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
             self.dino_multitask_aux_warmup_spin,
         ]
 
+        # ---------------- Loss tab ----------------
+        loss_tab = QtWidgets.QWidget()
+        loss_layout_root = QtWidgets.QVBoxLayout(loss_tab)
+        loss_layout_root.setContentsMargins(8, 8, 8, 8)
+        loss_layout_root.setSpacing(12)
+        loss_hint = QtWidgets.QLabel(
+            "Tune mask decision threshold and BCE/focal loss behavior."
+        )
+        loss_hint.setWordWrap(True)
+        loss_hint.setProperty("muted", True)
+        loss_layout_root.addWidget(loss_hint)
+
         advanced_group = QtWidgets.QGroupBox("Advanced")
-        advanced_group.setCheckable(True)
-        advanced_group.setChecked(False)
         advanced_layout = QtWidgets.QFormLayout(advanced_group)
 
         self.dino_threshold_spin = controls.threshold_spin
@@ -1081,11 +1159,67 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         self.dino_cache_features_check.setChecked(True)
         advanced_layout.addRow("", self.dino_cache_features_check)
 
-        layout.addWidget(advanced_group)
+        loss_layout_root.addWidget(advanced_group)
+        loss_layout_root.addStretch()
+
+        # ---------------- Runtime tab ----------------
+        runtime_tab = QtWidgets.QWidget()
+        runtime_layout = QtWidgets.QVBoxLayout(runtime_tab)
+        runtime_layout.setContentsMargins(8, 8, 8, 8)
+        runtime_layout.setSpacing(12)
+        runtime_hint_top = QtWidgets.QLabel(
+            "Wizard keeps runtime options simple; use Train Models dialog for full controls."
+        )
+        runtime_hint_top.setWordWrap(True)
+        runtime_hint_top.setProperty("muted", True)
+        runtime_layout.addWidget(runtime_hint_top)
+
+        runtime_group = QtWidgets.QGroupBox("Runtime Guidance")
+        runtime_form = QtWidgets.QFormLayout(runtime_group)
+        runtime_hint = QtWidgets.QLabel(
+            "Use Train Models dialog for full runtime controls:\n"
+            "- Auto safe mode\n"
+            "- CPU/DataLoader thread tuning\n"
+            "- TensorBoard projector options\n"
+            "- Post-training report automation"
+        )
+        runtime_hint.setWordWrap(True)
+        runtime_hint.setProperty("muted", True)
+        runtime_form.addRow(runtime_hint)
+        runtime_layout.addWidget(runtime_group)
+        runtime_layout.addStretch()
+
+        tabs.addTab(core_tab, "Core")
+        tabs.addTab(head_tab, "Head Type")
+        tabs.addTab(loss_tab, "Loss")
+        tabs.addTab(runtime_tab, "Runtime")
+        layout.addWidget(tabs)
+
+        self._sync_dino_head_detail_tab()
         self._update_dino_head_controls()
         self._update_dino_focal_controls()
-        layout.addStretch()
         return widget
+
+    def _on_dino_head_type_changed(self) -> None:
+        self._sync_dino_head_detail_tab()
+        self._update_dino_head_controls()
+
+    def _sync_dino_head_detail_tab(self) -> None:
+        tabs = getattr(self, "dino_head_detail_tabs", None)
+        combo = getattr(self, "dino_head_type_combo", None)
+        if tabs is None or combo is None:
+            return
+        head_type = str(combo.currentData() or "").strip().lower()
+        index_by_type = {
+            "relational": 0,
+            "conv": 1,
+            "multitask": 2,
+        }
+        idx = index_by_type.get(head_type, 0)
+        try:
+            tabs.setCurrentIndex(int(idx))
+        except Exception:
+            pass
 
     def _update_dino_head_controls(self) -> None:
         head_type = str(self.dino_head_type_combo.currentData() or "").strip().lower()
