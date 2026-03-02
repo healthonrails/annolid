@@ -3,7 +3,7 @@
 Annolid includes an experimental keypoint-centric segmentation model that:
 
 - Extracts **frozen DINOv3 dense features** (ViT patch grid).
-- Trains a **small convolutional head** to predict per-keypoint masks.
+- Trains a **configurable head** (`conv`, `multitask`, or unified attention `relational`).
 - Uses **Gaussian keypoint heatmaps** (or circular masks) as supervision.
 - Runs inference via the same prediction pipeline used for YOLO, saving results as LabelMe JSON.
 
@@ -201,22 +201,46 @@ What this adds:
 - Auxiliary multitask losses warmed up over early epochs.
 - Non-finite loss batches are skipped defensively.
 
-Equivalent `annolid-run` training flags are also supported (for example
-`--schedule-profile`, `--batch`, `--cos-lr`, `--warmup-epochs`,
-`--best-metric`, and augmentation epoch windows).
+### Runtime Safety Mode
 
-### Relational (Attention) Head
-
-For better left/right consistency on symmetric keypoints (e.g., ears), you can enable the attention head.
-When `kpt_names` are available, DinoKPSEG will automatically treat asymmetric keypoints (e.g. `nose`, `head`, `tailbase`)
-as orientation anchors and inject them into other keypoints via cross-attention.
+For long runs on shared desktops/laptops, enable conservative runtime caps:
 
 ```bash
 python -m annolid.segmentation.dino_kpseg.train \
   --data /path/to/YOLO_dataset/data.yaml \
-  --head-type attn \
-  --attn-heads 4 \
-  --attn-layers 2
+  --auto-safe-mode
+```
+
+This mode applies safer limits to batch size, image short-side, workers, and torch CPU thread usage, and disables expensive TensorBoard graph/projector exports.
+
+Manual runtime controls are also available:
+- `--workers`
+- `--max-cpu-threads`
+- `--max-interop-threads`
+
+In the GUI (`Train Models` -> `DINO KPSEG` -> `Advanced`), use:
+- `Auto safe mode (recommended for GUI responsiveness)`
+- `DataLoader workers`
+- `Max CPU threads`
+- `Max interop threads`
+
+Equivalent `annolid-run` training flags are also supported (for example
+`--schedule-profile`, `--batch`, `--cos-lr`, `--warmup-epochs`,
+`--best-metric`, and augmentation epoch windows).
+
+### Unified Attention Head
+
+DinoKPSEG now uses a single canonical attention architecture (`relational`) for
+attention-based training. It keeps attention queries over keypoints and decodes masks
+from query embeddings and refined spatial features via
+`einsum(mask_embed, spatial_features)`.
+
+```bash
+python -m annolid.segmentation.dino_kpseg.train \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --head-type relational \
+  --relational-heads 4 \
+  --relational-layers 2
 ```
 
 Optional symmetric-pair regularizers (requires `flip_idx` or inferable keypoint names):
@@ -227,6 +251,12 @@ python -m annolid.segmentation.dino_kpseg.train \
   --lr-pair-loss-weight 0.05 \
   --lr-pair-margin-px 8
 ```
+
+Note:
+- For YOLO pose datasets with very high left/right ambiguity, DinoKPSEG now auto-disables default LR regularizer weights to avoid destabilizing training. Explicit non-default values still override this behavior.
+- For high-ambiguity datasets, DinoKPSEG also auto-reduces geometry-heavy augmentation (disables hflip, and for ambiguous small datasets disables rotation/translate/scale) to reduce swap drift.
+- For very small training sets (`<=64` images), DinoKPSEG applies a conservative small-data profile when defaults are used: `head_type` becomes `conv`, `feature_align_dim` becomes `auto`, `lr` becomes `1e-4`, and `early_stop_patience` is capped at `12`.
+- For small/high-ambiguity datasets with orientation anchors (for example `nose` + `tailbase`), DinoKPSEG can auto-canonicalize left/right supervision to reduce persistent identity inversion. Override with `--lr-canonicalize` or `--no-lr-canonicalize`.
 
 Optional left/right side-consistency (uses asymmetric anchors like `nose`/`tailbase` to define an axis):
 

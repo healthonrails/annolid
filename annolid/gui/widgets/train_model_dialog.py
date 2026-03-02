@@ -73,6 +73,12 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.dino_lr_pair_margin_px = float(dino_defaults.LR_PAIR_MARGIN_PX)
         self.dino_lr_side_loss_weight = float(dino_defaults.LR_SIDE_LOSS_WEIGHT)
         self.dino_lr_side_loss_margin = float(dino_defaults.LR_SIDE_LOSS_MARGIN)
+        self.dino_obj_loss_weight = float(dino_defaults.OBJ_LOSS_WEIGHT)
+        self.dino_box_loss_weight = float(dino_defaults.BOX_LOSS_WEIGHT)
+        self.dino_inst_loss_weight = float(dino_defaults.INST_LOSS_WEIGHT)
+        self.dino_multitask_aux_warmup_epochs = int(
+            dino_defaults.MULTITASK_AUX_WARMUP_EPOCHS
+        )
         self.dino_lr = float(dino_defaults.LR)
         self.dino_threshold = float(dino_defaults.THRESHOLD)
         self.dino_bce_type = str(dino_defaults.BCE_TYPE)
@@ -123,6 +129,10 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.dino_tb_projector_negatives_per_image = int(
             dino_defaults.TB_PROJECTOR_NEGATIVES_PER_IMAGE
         )
+        self.dino_auto_safe_mode = True
+        self.dino_workers = 0
+        self.dino_max_cpu_threads = 8
+        self.dino_max_interop_threads = 1
 
         # YOLO hyperparams (Advanced tab)
         self.yolo_lr0 = 0.01
@@ -822,12 +832,15 @@ class TrainModelDialog(QtWidgets.QDialog):
         form.setLabelAlignment(QtCore.Qt.AlignRight)
 
         head_type = QtWidgets.QComboBox(box)
+        head_type.addItem("Relational attention head", userData="relational")
         head_type.addItem("Conv head (fast)", userData="conv")
-        head_type.addItem("Attention head (relational)", userData="attn")
-        head_type.addItem("Hybrid head (conv + attn)", userData="hybrid")
-        head_default_idx = head_type.findData(
-            str(getattr(self, "dino_head_type", dino_defaults.HEAD_TYPE))
+        head_type.addItem("Multitask head", userData="multitask")
+        saved_head_type = (
+            str(getattr(self, "dino_head_type", dino_defaults.HEAD_TYPE) or "")
+            .strip()
+            .lower()
         )
+        head_default_idx = head_type.findData(saved_head_type)
         if head_default_idx >= 0:
             head_type.setCurrentIndex(head_default_idx)
 
@@ -885,6 +898,36 @@ class TrainModelDialog(QtWidgets.QDialog):
         side_margin.setValue(float(getattr(self, "dino_lr_side_loss_margin", 0.0)))
         self._bind_spin_float(side_margin, "dino_lr_side_loss_margin")
         self._dino_side_loss_margin = side_margin
+
+        obj_w = QtWidgets.QDoubleSpinBox(box)
+        obj_w.setDecimals(6)
+        obj_w.setRange(0.0, 10.0)
+        obj_w.setSingleStep(0.01)
+        obj_w.setValue(float(getattr(self, "dino_obj_loss_weight", 0.0)))
+        self._bind_spin_float(obj_w, "dino_obj_loss_weight")
+
+        box_w = QtWidgets.QDoubleSpinBox(box)
+        box_w.setDecimals(6)
+        box_w.setRange(0.0, 10.0)
+        box_w.setSingleStep(0.01)
+        box_w.setValue(float(getattr(self, "dino_box_loss_weight", 0.0)))
+        self._bind_spin_float(box_w, "dino_box_loss_weight")
+
+        inst_w = QtWidgets.QDoubleSpinBox(box)
+        inst_w.setDecimals(6)
+        inst_w.setRange(0.0, 10.0)
+        inst_w.setSingleStep(0.01)
+        inst_w.setValue(float(getattr(self, "dino_inst_loss_weight", 0.0)))
+        self._bind_spin_float(inst_w, "dino_inst_loss_weight")
+
+        multitask_aux_warmup = QtWidgets.QSpinBox(box)
+        multitask_aux_warmup.setRange(0, 1000)
+        multitask_aux_warmup.setValue(
+            int(getattr(self, "dino_multitask_aux_warmup_epochs", 0))
+        )
+        self._bind_spin_int(multitask_aux_warmup, "dino_multitask_aux_warmup_epochs")
+
+        self._dino_multitask_controls = [obj_w, box_w, inst_w, multitask_aux_warmup]
 
         lr = QtWidgets.QDoubleSpinBox(box)
         lr.setDecimals(6)
@@ -1005,6 +1048,42 @@ class TrainModelDialog(QtWidgets.QDialog):
             "Debug mode: use N training images and mirror into validation."
         )
         self._bind_spin_int(overfit_n, "dino_overfit_n")
+
+        auto_safe_mode = QtWidgets.QCheckBox(
+            "Auto safe mode (recommended for GUI responsiveness)", box
+        )
+        auto_safe_mode.setChecked(bool(getattr(self, "dino_auto_safe_mode", True)))
+
+        def _on_auto_safe_mode_changed(_=None) -> None:
+            setattr(self, "dino_auto_safe_mode", bool(auto_safe_mode.isChecked()))
+            self._update_dino_resource_controls()
+
+        auto_safe_mode.stateChanged.connect(_on_auto_safe_mode_changed)
+
+        workers = QtWidgets.QSpinBox(box)
+        workers.setRange(0, 16)
+        workers.setValue(int(getattr(self, "dino_workers", 0)))
+        workers.setToolTip("DataLoader workers. 0 keeps loading in the main process.")
+        self._bind_spin_int(workers, "dino_workers")
+
+        max_cpu_threads = QtWidgets.QSpinBox(box)
+        max_cpu_threads.setRange(1, 64)
+        max_cpu_threads.setValue(int(getattr(self, "dino_max_cpu_threads", 8)))
+        max_cpu_threads.setToolTip(
+            "Upper bound for torch CPU threads to keep the machine responsive."
+        )
+        self._bind_spin_int(max_cpu_threads, "dino_max_cpu_threads")
+
+        max_interop_threads = QtWidgets.QSpinBox(box)
+        max_interop_threads.setRange(1, 16)
+        max_interop_threads.setValue(int(getattr(self, "dino_max_interop_threads", 1)))
+        self._bind_spin_int(max_interop_threads, "dino_max_interop_threads")
+
+        self._dino_resource_controls = [
+            workers,
+            max_cpu_threads,
+            max_interop_threads,
+        ]
 
         cache = QtWidgets.QCheckBox("Cache frozen DINO features to disk", box)
         cache.setChecked(bool(self.dino_cache_features))
@@ -1274,12 +1353,16 @@ class TrainModelDialog(QtWidgets.QDialog):
 
         # Form rows
         form.addRow("Head type", head_type)
-        form.addRow("Attn heads", attn_heads)
-        form.addRow("Attn layers", attn_layers)
+        form.addRow("Relational heads", attn_heads)
+        form.addRow("Relational layers", attn_layers)
         form.addRow("Pair loss weight", pair_w)
         form.addRow("Pair margin (px)", pair_margin)
         form.addRow("LR side loss weight", side_w)
         form.addRow("LR side loss margin", side_margin)
+        form.addRow("Multitask objectness weight", obj_w)
+        form.addRow("Multitask box weight", box_w)
+        form.addRow("Multitask instance-mask weight", inst_w)
+        form.addRow("Multitask aux warmup (epochs)", multitask_aux_warmup)
         form.addRow("Learning rate", lr)
         form.addRow("Circle radius (px)", radius)
         form.addRow("Radius schedule", radius_schedule)
@@ -1292,6 +1375,10 @@ class TrainModelDialog(QtWidgets.QDialog):
         form.addRow("Focal gamma", focal_gamma)
         form.addRow("Coord warmup (epochs)", coord_warmup)
         form.addRow("Overfit N (debug)", overfit_n)
+        form.addRow("", auto_safe_mode)
+        form.addRow("DataLoader workers", workers)
+        form.addRow("Max CPU threads", max_cpu_threads)
+        form.addRow("Max interop threads", max_interop_threads)
         form.addRow("Best checkpoint metric", best_metric)
         form.addRow("Early stop metric", early_stop_metric)
         form.addRow("Weighted PCK weights", pck_weights)
@@ -1317,6 +1404,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self._update_dino_focal_controls()
         self._update_dino_radius_schedule_controls()
         self._update_dino_model_selection_controls()
+        self._update_dino_resource_controls()
         return box
 
     def _update_dino_model_selection_controls(self) -> None:
@@ -1339,13 +1427,23 @@ class TrainModelDialog(QtWidgets.QDialog):
             .strip()
             .lower()
         )
-        attn_enabled = head_type in {"attn", "hybrid"}
+        attn_enabled = head_type == "relational"
+        multitask_enabled = head_type == "multitask"
         for w in (
             getattr(self, "_dino_attn_heads_spin", None),
             getattr(self, "_dino_attn_layers_spin", None),
+            getattr(self, "_dino_pair_loss_weight", None),
+            getattr(self, "_dino_pair_margin_px", None),
+            getattr(self, "_dino_side_loss_weight", None),
+            getattr(self, "_dino_side_loss_margin", None),
         ):
             if w is not None:
                 w.setEnabled(attn_enabled)
+        for w in getattr(self, "_dino_multitask_controls", []) or []:
+            try:
+                w.setEnabled(multitask_enabled)
+            except Exception:
+                pass
 
     def _update_dino_projector_enabled_state(self) -> None:
         enabled = bool(getattr(self, "dino_tb_projector", dino_defaults.TB_PROJECTOR))
@@ -1385,6 +1483,18 @@ class TrainModelDialog(QtWidgets.QDialog):
         controls = getattr(self, "_dino_radius_controls", None)
         if not controls:
             return
+        for widget in controls:
+            try:
+                widget.setEnabled(enabled)
+            except Exception:
+                pass
+
+    def _update_dino_resource_controls(self) -> None:
+        auto_safe = bool(getattr(self, "dino_auto_safe_mode", True))
+        controls = getattr(self, "_dino_resource_controls", None)
+        if not controls:
+            return
+        enabled = not auto_safe
         for widget in controls:
             try:
                 widget.setEnabled(enabled)

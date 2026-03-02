@@ -14,7 +14,13 @@ from annolid.gui.shape import Shape
 from annolid.utils.logger import logger
 from annolid.annotation.pose_schema import PoseSchema
 from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
-from annolid.utils.annotation_store import AnnotationStore, load_labelme_json
+from annolid.utils.annotation_store import AnnotationStore
+from annolid.segmentation.dino_kpseg.inference_bridge import (
+    extract_results as extract_dino_kpseg_results,
+    instance_masks_from_shapes,
+    load_prompt_shapes as load_dino_kpseg_prompt_shapes,
+    sanitize_inference_config as sanitize_dino_kpseg_inference_config,
+)
 
 
 class InferenceProcessor:
@@ -53,6 +59,9 @@ class InferenceProcessor:
         self.prompt_class_names: Optional[list] = [
             str(c).strip() for c in (prompt_class_names or []) if str(c).strip()
         ] or None
+        self._dino_kpseg_inference_config = self._sanitize_dino_kpseg_inference_config(
+            dino_kpseg_inference_config
+        )
         self.model = self._load_model(class_names)
         self._apply_prompt_names_to_model()
         self.frame_count: int = 0
@@ -64,30 +73,12 @@ class InferenceProcessor:
             pose_schema_path=pose_schema_path,
         )
         self.persist_json: bool = bool(persist_json)
-        self._dino_kpseg_inference_config = self._sanitize_dino_kpseg_inference_config(
-            dino_kpseg_inference_config
-        )
 
     @staticmethod
     def _sanitize_dino_kpseg_inference_config(
         cfg: Optional[dict],
     ) -> Dict[str, object]:
-        payload = dict(cfg or {})
-        tta_merge = str(payload.get("tta_merge", "mean") or "mean").strip().lower()
-        if tta_merge not in {"mean", "max"}:
-            tta_merge = "mean"
-        try:
-            min_score = float(payload.get("min_keypoint_score", 0.0))
-        except Exception:
-            min_score = 0.0
-        if not np.isfinite(min_score) or min_score < 0:
-            min_score = 0.0
-        return {
-            "tta_hflip": bool(payload.get("tta_hflip", False)),
-            "tta_merge": str(tta_merge),
-            "min_keypoint_score": float(min_score),
-            "stabilize_lr": bool(payload.get("stabilize_lr", True)),
-        }
+        return sanitize_dino_kpseg_inference_config(cfg)
 
     def set_dino_kpseg_inference_config(self, cfg: Optional[dict]) -> None:
         self._dino_kpseg_inference_config = self._sanitize_dino_kpseg_inference_config(
@@ -119,38 +110,6 @@ class InferenceProcessor:
                 setattr(target, "names", mapping)
             except Exception:
                 pass
-
-    @staticmethod
-    def _clean_instance_label(value: object) -> str:
-        if value is None:
-            return ""
-        text = str(value).strip()
-        if not text:
-            return ""
-        return text.rstrip("_-:|")
-
-    @staticmethod
-    def _normalize_group_id(value: object) -> Optional[int]:
-        if value is None:
-            return None
-        if isinstance(value, bool):  # bool is also int
-            return int(value)
-        if isinstance(value, int):
-            return int(value)
-        if isinstance(value, float) and np.isfinite(value):
-            return int(value)
-        if isinstance(value, str):
-            raw = value.strip()
-            if raw.isdigit():
-                return int(raw)
-        return None
-
-    @staticmethod
-    def _next_group_id(used: set[int]) -> int:
-        candidate = max(used) + 1 if used else 0
-        while candidate in used:
-            candidate += 1
-        return candidate
 
     def _resolve_keypoint_names(
         self,
@@ -1037,35 +996,12 @@ class InferenceProcessor:
         *,
         frame_index: int,
     ) -> List[Dict[str, object]]:
-        """Load existing shapes to drive per-instance DinoKPSEG inference.
-
-        Preference order:
-        1) Per-frame LabelMe JSON (if present)
-        2) AnnotationStore record for the frame (NDJSON)
-        """
-        frame_index = int(frame_index)
-        candidates = (
-            self._labelme_json_path(output_directory, frame_index=frame_index),
-            self._legacy_labelme_json_path(output_directory, frame_index=frame_index),
+        return load_dino_kpseg_prompt_shapes(
+            output_directory,
+            frame_index=int(frame_index),
+            labelme_json_path=self._labelme_json_path,
+            legacy_labelme_json_path=self._legacy_labelme_json_path,
         )
-        for path in candidates:
-            try:
-                if path.exists() and path.stat().st_size > 0:
-                    payload = load_labelme_json(path)
-                    shapes = payload.get("shapes") or []
-                    if isinstance(shapes, list):
-                        return [s for s in shapes if isinstance(s, dict)]
-            except Exception:
-                continue
-
-        store = AnnotationStore.for_frame_path(
-            self._labelme_json_path(output_directory, frame_index=frame_index)
-        )
-        record = store.get_frame(frame_index)
-        shapes = record.get("shapes") if isinstance(record, dict) else None
-        if isinstance(shapes, list):
-            return [s for s in shapes if isinstance(s, dict)]
-        return []
 
     def _instance_masks_from_shapes(
         self,
@@ -1073,128 +1009,12 @@ class InferenceProcessor:
         *,
         frame_hw: Tuple[int, int],
     ) -> List[Tuple[int, np.ndarray]]:
-        """Build (instance_id, mask) pairs from existing polygon-like shapes."""
-        try:
-            import cv2  # type: ignore
-        except Exception:
-            return []
-
-        height, width = int(frame_hw[0]), int(frame_hw[1])
-        if height <= 0 or width <= 0:
-            return []
-
-        schema_instances: Dict[str, int] = {}
-        if self.pose_schema and getattr(self.pose_schema, "instances", None):
-            for idx, name in enumerate(self.pose_schema.instances):
-                clean = self._clean_instance_label(name)
-                if clean and clean.lower() not in schema_instances:
-                    schema_instances[clean.lower()] = int(idx)
-
-        polygon_like = []
-        for shape in shapes:
-            shape_type = str(shape.get("shape_type") or "").strip().lower()
-            if shape_type in ("polygon", "rectangle", "circle"):
-                polygon_like.append(shape)
-
-        label_counts: Dict[str, int] = {}
-        for shape in polygon_like:
-            clean = self._clean_instance_label(shape.get("label"))
-            if not clean:
-                continue
-            key = clean.lower()
-            label_counts[key] = int(label_counts.get(key, 0)) + 1
-
-        instance_masks: List[Tuple[int, np.ndarray]] = []
-        used_gids: set[int] = set()
-        for shape in polygon_like:
-            shape_type = str(shape.get("shape_type") or "").strip().lower()
-            points = shape.get("points") or []
-            if not isinstance(points, list) or not points:
-                continue
-
-            flags = shape.get("flags") if isinstance(shape.get("flags"), dict) else {}
-            gid = self._normalize_group_id(shape.get("group_id"))
-            if gid is None:
-                gid = self._normalize_group_id(shape.get("instance_id"))
-            if gid is None and flags:
-                gid = self._normalize_group_id(flags.get("instance_id"))
-
-            label = self._clean_instance_label(shape.get("label"))
-            if gid is None and label:
-                by_schema = schema_instances.get(label.lower())
-                if by_schema is not None:
-                    gid = int(by_schema)
-            # Reuse label->gid only for labels that are unique in this frame.
-            if gid is None and label and int(label_counts.get(label.lower(), 0)) == 1:
-                existing = self._instance_label_to_gid.get(label.lower())
-                if existing is not None:
-                    gid = int(existing)
-            if gid is None:
-                gid = self._next_group_id(used_gids)
-            elif int(gid) in used_gids:
-                # Avoid collapsing multiple polygons onto the same identity.
-                gid = self._next_group_id(used_gids)
-            used_gids.add(int(gid))
-            if label and int(label_counts.get(label.lower(), 0)) == 1:
-                self._instance_label_to_gid[label.lower()] = int(gid)
-
-            mask = np.zeros((height, width), dtype=np.uint8)
-            if shape_type == "polygon":
-                poly = []
-                for pt in points:
-                    if not isinstance(pt, (list, tuple)) or len(pt) < 2:
-                        continue
-                    poly.append((float(pt[0]), float(pt[1])))
-                if len(poly) < 3:
-                    continue
-                poly_arr = np.rint(np.array(poly, dtype=np.float32)).astype(np.int32)
-                cv2.fillPoly(mask, [poly_arr], 1)
-            elif shape_type == "rectangle":
-                if len(points) < 2:
-                    continue
-                a, b = points[0], points[1]
-                if (
-                    not isinstance(a, (list, tuple))
-                    or not isinstance(b, (list, tuple))
-                    or len(a) < 2
-                    or len(b) < 2
-                ):
-                    continue
-                x1 = int(round(min(float(a[0]), float(b[0]))))
-                y1 = int(round(min(float(a[1]), float(b[1]))))
-                x2 = int(round(max(float(a[0]), float(b[0]))))
-                y2 = int(round(max(float(a[1]), float(b[1]))))
-                x1 = max(0, min(width - 1, x1))
-                x2 = max(0, min(width, x2))
-                y1 = max(0, min(height - 1, y1))
-                y2 = max(0, min(height, y2))
-                if x2 - x1 < 2 or y2 - y1 < 2:
-                    continue
-                cv2.rectangle(mask, (x1, y1), (x2, y2), 1, thickness=-1)
-            elif shape_type == "circle":
-                if len(points) < 2:
-                    continue
-                c, e = points[0], points[1]
-                if (
-                    not isinstance(c, (list, tuple))
-                    or not isinstance(e, (list, tuple))
-                    or len(c) < 2
-                    or len(e) < 2
-                ):
-                    continue
-                cx, cy = float(c[0]), float(c[1])
-                ex, ey = float(e[0]), float(e[1])
-                r = int(round(((cx - ex) ** 2 + (cy - ey) ** 2) ** 0.5))
-                if r <= 0:
-                    continue
-                cv2.circle(mask, (int(round(cx)), int(round(cy))), r, 1, thickness=-1)
-
-            if not np.any(mask):
-                continue
-            instance_masks.append((int(gid), mask.astype(bool)))
-
-        instance_masks.sort(key=lambda item: int(item[0]))
-        return instance_masks
+        return instance_masks_from_shapes(
+            shapes,
+            frame_hw=(int(frame_hw[0]), int(frame_hw[1])),
+            pose_schema=getattr(self, "pose_schema", None),
+            instance_label_to_gid=getattr(self, "_instance_label_to_gid", {}),
+        )
 
     def extract_dino_kpseg_results(
         self,
@@ -1204,124 +1024,18 @@ class InferenceProcessor:
         instance_masks: Optional[Sequence[Tuple[int, np.ndarray]]] = None,
         instance_ids: Optional[Sequence[object]] = None,
     ) -> list:
-        annotations = []
-        dino_cfg = dict(getattr(self, "_dino_kpseg_inference_config", {}) or {})
-        tta_hflip = bool(dino_cfg.get("tta_hflip", False))
-        tta_merge = str(dino_cfg.get("tta_merge", "mean") or "mean")
-        min_keypoint_score = float(dino_cfg.get("min_keypoint_score", 0.0))
-        stabilize_lr = bool(dino_cfg.get("stabilize_lr", True))
-        try:
-            if instance_masks:
-                from annolid.segmentation.dino_kpseg.inference_utils import (
-                    build_instance_crops,
-                    predict_on_instance_crops,
-                )
-
-                crops = build_instance_crops(
-                    frame_bgr,
-                    list(instance_masks),
-                    pad_px=8,
-                    use_mask_gate=True,
-                )
-                predictions = predict_on_instance_crops(
-                    self.model,
-                    crops,
-                    return_patch_masks=False,
-                    stabilize_lr=bool(stabilize_lr),
-                    tta_hflip=bool(tta_hflip),
-                    tta_merge=str(tta_merge),
-                )
-            elif bboxes is not None and len(bboxes) > 0:
-                predictions = self.model.predict_instances(
-                    frame_bgr,
-                    bboxes_xyxy=bboxes,
-                    instance_ids=instance_ids,
-                    return_patch_masks=False,
-                    stabilize_lr=bool(stabilize_lr),
-                    tta_hflip=bool(tta_hflip),
-                    tta_merge=str(tta_merge),
-                )
-            else:
-                # No prompts (no polygons / boxes). Fall back to multi-peak decoding
-                # so a single frame can contain multiple "nose" points, etc.
-                peaks = self.model.predict_multi_peaks(
-                    frame_bgr,
-                    threshold=None,
-                    topk=5,
-                    nms_radius_px=12.0,
-                    tta_hflip=bool(tta_hflip),
-                    tta_merge=str(tta_merge),
-                )
-                predictions = [
-                    (
-                        None,
-                        self.model.predict(
-                            frame_bgr,
-                            return_patch_masks=False,
-                            stabilize_lr=bool(stabilize_lr),
-                            tta_hflip=bool(tta_hflip),
-                            tta_merge=str(tta_merge),
-                        ),
-                    )
-                ]
-        except Exception as exc:
-            logger.error("DinoKPSEG inference failed: %s", exc, exc_info=True)
-            return annotations
-
-        kp_names = self.keypoint_names or getattr(self.model, "keypoint_names", None)
-        if not kp_names and predictions:
-            first_pred = predictions[0][1]
-            kp_names = [str(i) for i in range(len(first_pred.keypoints_xy))]
-
-        # Emit multi-peak points only when no instance separation signals were present.
-        if (bboxes is None or len(bboxes) == 0) and not instance_masks:
-            emitted_peaks = 0
-            if kp_names:
-                for kpt_id, channel_peaks in enumerate(peaks):
-                    label = kp_names[kpt_id] if kpt_id < len(kp_names) else str(kpt_id)
-                    for rank, (x, y, score) in enumerate(channel_peaks):
-                        if float(score) < float(min_keypoint_score):
-                            continue
-                        point_shape = Shape(
-                            label,
-                            shape_type="point",
-                            description=self.model_type,
-                            flags={},
-                            group_id=None,
-                        )
-                        point_shape.points = [[float(x), float(y)]]
-                        point_shape.other_data["score"] = float(score)
-                        point_shape.other_data["peak_rank"] = int(rank)
-                        point_shape.other_data["multi_peak"] = True
-                        annotations.append(point_shape)
-                        emitted_peaks += 1
-                if emitted_peaks > 0:
-                    return annotations
-
-        for instance_id, prediction in predictions:
-            group_id = int(instance_id) if instance_id is not None else None
-            for kpt_id, (xy, score) in enumerate(
-                zip(prediction.keypoints_xy, prediction.keypoint_scores)
-            ):
-                if float(score) < float(min_keypoint_score):
-                    continue
-                label = kp_names[kpt_id] if kpt_id < len(kp_names) else str(kpt_id)
-                x, y = float(xy[0]), float(xy[1])
-
-                point_shape = Shape(
-                    label,
-                    shape_type="point",
-                    description=self.model_type,
-                    flags={},
-                    group_id=group_id,
-                )
-                point_shape.points = [[x, y]]
-                point_shape.other_data["score"] = float(score)
-                if group_id is not None:
-                    point_shape.other_data["instance_id"] = int(group_id)
-                annotations.append(point_shape)
-
-        return annotations
+        return extract_dino_kpseg_results(
+            frame_bgr=frame_bgr,
+            model=self.model,
+            model_type=self.model_type,
+            keypoint_names=self.keypoint_names,
+            inference_config=getattr(self, "_dino_kpseg_inference_config", {}),
+            bboxes=bboxes,
+            instance_masks=instance_masks,
+            instance_ids=instance_ids,
+            shape_factory=Shape,
+            log=logger,
+        )
 
     def extract_yolo_results(
         self, detection_result, save_bbox: bool = False, save_track: bool = False

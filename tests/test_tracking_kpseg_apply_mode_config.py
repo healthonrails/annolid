@@ -27,3 +27,16 @@ def test_kpseg_gate_params_normalize():
     assert cfg.kpseg_min_reliable_frames >= 1
     assert 0.0 <= cfg.kpseg_reliable_ratio <= 1.0
     assert cfg.kpseg_disable_patience >= 1
+
+
+def test_kpseg_temporal_fusion_params_normalize() -> None:
+    cfg = CutieDinoTrackerConfig(
+        kpseg_temporal_fusion_enable=1,
+        kpseg_temporal_fusion_alpha=9.0,
+        kpseg_temporal_fusion_low_conf_threshold=-4.0,
+        kpseg_temporal_fusion_max_instances=0,
+    )
+    assert cfg.kpseg_temporal_fusion_enable is True
+    assert 0.0 <= cfg.kpseg_temporal_fusion_alpha <= 0.95
+    assert 0.0 <= cfg.kpseg_temporal_fusion_low_conf_threshold <= 1.0
+    assert cfg.kpseg_temporal_fusion_max_instances >= 1

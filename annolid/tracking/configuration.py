@@ -141,6 +141,10 @@ class CutieDinoTrackerConfig:
     kpseg_one_euro_d_cutoff: float = 1.0
     kpseg_kalman_process_noise: float = 1e-2
     kpseg_kalman_measurement_noise: float = 1e-1
+    kpseg_temporal_fusion_enable: bool = False
+    kpseg_temporal_fusion_alpha: float = 0.25
+    kpseg_temporal_fusion_low_conf_threshold: float = 0.35
+    kpseg_temporal_fusion_max_instances: int = 64
     # Multi-animal tracking configuration (Phase 6)
     tracking_enable: bool = False
     tracking_matcher_algorithm: str = "greedy"  # greedy|hungarian
@@ -250,6 +254,16 @@ class CutieDinoTrackerConfig:
         )
         self.kpseg_kalman_measurement_noise = max(
             1e-8, float(self.kpseg_kalman_measurement_noise)
+        )
+        self.kpseg_temporal_fusion_enable = bool(self.kpseg_temporal_fusion_enable)
+        self.kpseg_temporal_fusion_alpha = float(
+            min(0.95, max(0.0, float(self.kpseg_temporal_fusion_alpha)))
+        )
+        self.kpseg_temporal_fusion_low_conf_threshold = float(
+            min(1.0, max(0.0, float(self.kpseg_temporal_fusion_low_conf_threshold)))
+        )
+        self.kpseg_temporal_fusion_max_instances = max(
+            1, int(self.kpseg_temporal_fusion_max_instances)
         )
         self.part_shared_weight = max(0.0, min(1.0, float(self.part_shared_weight)))
         self.part_shared_momentum = max(0.0, min(1.0, float(self.part_shared_momentum)))

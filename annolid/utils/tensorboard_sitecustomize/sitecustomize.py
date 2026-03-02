@@ -11,6 +11,8 @@ protobuf runtime.
 from __future__ import annotations
 
 import inspect
+import sys
+import types
 
 
 def _patch_protobuf_json_format() -> None:
@@ -50,3 +52,36 @@ def _patch_protobuf_json_format() -> None:
 
 
 _patch_protobuf_json_format()
+
+
+def _ensure_pkg_resources_stub() -> None:
+    """Provide a tiny pkg_resources shim when setuptools is unavailable.
+
+    TensorBoard imports ``pkg_resources`` to discover entry-point plugins.
+    On minimal Python environments this module may be absent, causing startup
+    to fail before TensorBoard can serve logs.
+    """
+    try:
+        import pkg_resources  # type: ignore  # noqa: F401
+
+        return
+    except Exception:
+        pass
+
+    stub = types.ModuleType("pkg_resources")
+
+    def _iter_entry_points(*_args, **_kwargs):
+        return []
+
+    try:
+        from packaging.version import parse as _parse_version  # type: ignore
+    except Exception:
+        _parse_version = None
+
+    stub.iter_entry_points = _iter_entry_points  # type: ignore[attr-defined]
+    if _parse_version is not None:
+        stub.parse_version = _parse_version  # type: ignore[attr-defined]
+    sys.modules["pkg_resources"] = stub
+
+
+_ensure_pkg_resources_stub()

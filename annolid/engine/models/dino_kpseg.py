@@ -187,21 +187,25 @@ class DinoKPSEGPlugin(ModelPluginBase):
         )
         parser.add_argument(
             "--head-type",
-            choices=("conv", "attn", "hybrid", "multitask"),
+            choices=("conv", "relational", "multitask"),
             default=dino_defaults.HEAD_TYPE,
-            help="Head architecture",
+            help="Head architecture.",
         )
         parser.add_argument(
+            "--relational-heads",
             "--attn-heads",
+            dest="attn_heads",
             type=int,
             default=dino_defaults.ATTN_HEADS,
-            help="Attention heads (attn head only)",
+            help="Relational attention heads (legacy alias: --attn-heads).",
         )
         parser.add_argument(
+            "--relational-layers",
             "--attn-layers",
+            dest="attn_layers",
             type=int,
             default=dino_defaults.ATTN_LAYERS,
-            help="Attention layers (attn head only)",
+            help="Relational attention layers (legacy alias: --attn-layers).",
         )
         parser.add_argument(
             "--lr-pair-loss-weight",

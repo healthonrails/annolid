@@ -20,6 +20,7 @@ from annolid.annotation.keypoint_visibility import (
 )
 from annolid.features import Dinov3Config, Dinov3FeatureExtractor
 from annolid.segmentation.dino_kpseg.keypoints import infer_flip_idx_from_names
+from annolid.utils.logger import logger
 
 
 _IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
@@ -69,9 +70,50 @@ def _yolo_list_images(images_root: Path) -> List[Path]:
                     out.append(p)
             return out
     paths: List[Path] = []
-    for suffix in _IMAGE_SUFFIXES:
-        paths.extend(sorted(images_root.rglob(f"*{suffix}")))
+    for candidate in sorted(images_root.rglob("*")):
+        if not candidate.is_file():
+            continue
+        if candidate.suffix.lower() in _IMAGE_SUFFIXES:
+            paths.append(candidate)
     return paths
+
+
+def _resolve_split_images(
+    split_value: object,
+    *,
+    yaml_path: Path,
+    root_path: Optional[Path],
+) -> List[Path]:
+    """Resolve YOLO split value to image paths.
+
+    Supports both scalar and list-valued split entries used by YOLO data.yaml.
+    """
+    values: List[str] = []
+    if isinstance(split_value, (list, tuple)):
+        for item in split_value:
+            token = str(item or "").strip()
+            if token:
+                values.append(token)
+    else:
+        token = str(split_value or "").strip()
+        if token:
+            values.append(token)
+
+    out: List[Path] = []
+    seen: set[str] = set()
+    for raw in values:
+        split_path = _resolve_dataset_path(
+            raw,
+            yaml_path=yaml_path,
+            root_path=root_path,
+        )
+        for image_path in _yolo_list_images(split_path):
+            key = str(image_path.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(image_path)
+    return out
 
 
 def _image_to_label_path(image_path: Path) -> Path:
@@ -608,12 +650,11 @@ def load_yolo_pose_spec(data_yaml: Path) -> YoloPoseDatasetSpec:
         if not split_value:
             train_val[split] = []
             continue
-        split_path = _resolve_dataset_path(
-            str(split_value),
+        train_val[split] = _resolve_split_images(
+            split_value,
             yaml_path=data_yaml,
             root_path=root_path,
         )
-        train_val[split] = _yolo_list_images(split_path)
 
     kpt_shape = payload.get("kpt_shape") or []
     if not isinstance(kpt_shape, (list, tuple)) or len(kpt_shape) < 2:
@@ -1723,6 +1764,8 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         if self.cache_dir is not None:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
+        self._getitem_error_count = 0
+
         if self.instance_mode == "per_instance":
             self._build_instance_records()
 
@@ -2065,6 +2108,41 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         except Exception:
             return False
 
+    def _expected_feature_channels(self) -> int:
+        expected = getattr(getattr(self.extractor, "model", None), "config", None)
+        expected_dim = int(getattr(expected, "hidden_size", 0) or 0)
+        if expected_dim <= 0:
+            return 1
+        if self.feature_merge == "concat":
+            layers = getattr(getattr(self.extractor, "cfg", None), "layers", None)
+            if layers is not None:
+                try:
+                    layer_count = len(list(layers))
+                except Exception:
+                    layer_count = 1
+            else:
+                layer_count = 1
+            return max(1, int(expected_dim) * int(layer_count))
+        return max(1, int(expected_dim))
+
+    def _fallback_sample(self) -> Dict[str, torch.Tensor]:
+        ch = int(self._expected_feature_channels())
+        h_p = 1
+        w_p = 1
+        sample: Dict[str, torch.Tensor] = {
+            "feats": torch.zeros((ch, h_p, w_p), dtype=torch.float32),
+            "masks": torch.zeros((self.kpt_count, h_p, w_p), dtype=torch.float32),
+            "coords": torch.zeros((self.kpt_count, 2), dtype=torch.float32),
+            "coord_mask": torch.zeros((self.kpt_count,), dtype=torch.float32),
+        }
+        if self.return_keypoints:
+            sample["gt_instances"] = []
+            sample["image_hw"] = (0, 0)
+        if self.return_images:
+            patch = max(1, int(getattr(self.extractor, "patch_size", 16)))
+            sample["image"] = torch.zeros((3, patch, patch), dtype=torch.float32)
+        return sample
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         if self.instance_mode == "per_instance":
             record = self._instance_records[idx]
@@ -2077,8 +2155,21 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
             instance_kpts = None
             cache_salt = None
 
-        pil = Image.open(image_path)
-        pil = ImageOps.exif_transpose(pil.convert("RGB"))
+        try:
+            pil = Image.open(image_path)
+            pil = ImageOps.exif_transpose(pil.convert("RGB"))
+        except Exception as exc:
+            self._getitem_error_count += 1
+            if self._getitem_error_count <= 5 or self._getitem_error_count % 50 == 0:
+                logger.warning(
+                    "DinoKPSEGPoseDataset failed to load image idx=%d path=%s (%s: %s); "
+                    "using fallback sample.",
+                    int(idx),
+                    str(image_path),
+                    type(exc).__name__,
+                    exc,
+                )
+            return self._fallback_sample()
         width, height = pil.size
 
         keypoint_instances: List[np.ndarray] = []
@@ -2138,7 +2229,22 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         )
         width, height = pil.size
 
-        feats = self._load_or_compute_features(image_path, pil, cache_salt=cache_salt)
+        try:
+            feats = self._load_or_compute_features(
+                image_path, pil, cache_salt=cache_salt
+            )
+        except Exception as exc:
+            self._getitem_error_count += 1
+            if self._getitem_error_count <= 5 or self._getitem_error_count % 50 == 0:
+                logger.warning(
+                    "DinoKPSEGPoseDataset feature extraction failed idx=%d path=%s (%s: %s); "
+                    "using fallback sample.",
+                    int(idx),
+                    str(image_path),
+                    type(exc).__name__,
+                    exc,
+                )
+            return self._fallback_sample()
         _, h_p, w_p = feats.shape
         resized_h = int(h_p) * int(self.extractor.patch_size)
         resized_w = int(w_p) * int(self.extractor.patch_size)
@@ -2148,16 +2254,32 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
             coords = torch.zeros((self.kpt_count, 2), dtype=torch.float32)
             coord_mask = torch.zeros((self.kpt_count,), dtype=torch.float32)
         else:
-            masks, coords, coord_mask = _build_keypoint_targets(
-                keypoint_instances,
-                grid_hw=(h_p, w_p),
-                patch_size=int(self.extractor.patch_size),
-                resized_hw_px=(resized_h, resized_w),
-                radius_px=self.radius_px,
-                original_hw_px=(height, width),
-                mask_type=self.mask_type,
-                heatmap_sigma_px=self.heatmap_sigma_px,
-            )
+            try:
+                masks, coords, coord_mask = _build_keypoint_targets(
+                    keypoint_instances,
+                    grid_hw=(h_p, w_p),
+                    patch_size=int(self.extractor.patch_size),
+                    resized_hw_px=(resized_h, resized_w),
+                    radius_px=self.radius_px,
+                    original_hw_px=(height, width),
+                    mask_type=self.mask_type,
+                    heatmap_sigma_px=self.heatmap_sigma_px,
+                )
+            except Exception as exc:
+                self._getitem_error_count += 1
+                if (
+                    self._getitem_error_count <= 5
+                    or self._getitem_error_count % 50 == 0
+                ):
+                    logger.warning(
+                        "DinoKPSEGPoseDataset target build failed idx=%d path=%s (%s: %s); "
+                        "using fallback sample.",
+                        int(idx),
+                        str(image_path),
+                        type(exc).__name__,
+                        exc,
+                    )
+                return self._fallback_sample()
 
         sample = {
             "feats": feats.to(dtype=torch.float32),

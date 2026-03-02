@@ -37,3 +37,23 @@ def test_auto_falls_back_to_yolo() -> None:
     payload = {"train": "images/train", "val": "images/val"}
     fmt = normalize_dino_kpseg_data_format(payload, data_format="auto")
     assert fmt == "yolo"
+
+
+def test_auto_detect_with_yolo_kpt_names_stays_yolo() -> None:
+    payload = {
+        "train": "images/train",
+        "val": "images/val",
+        "kpt_names": {0: ["nose", "tail"]},
+    }
+    fmt = normalize_dino_kpseg_data_format(payload, data_format="auto")
+    assert fmt == "yolo"
+
+
+def test_auto_detect_with_keypoint_names_stays_yolo() -> None:
+    payload = {
+        "train": "images/train",
+        "val": "images/val",
+        "keypoint_names": ["nose", "tail"],
+    }
+    fmt = normalize_dino_kpseg_data_format(payload, data_format="auto")
+    assert fmt == "yolo"

@@ -4,12 +4,10 @@ import argparse
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-import tempfile
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
-import yaml
 from PIL import Image, ImageOps
 
 from annolid.segmentation.dino_kpseg.cli_utils import normalize_device
@@ -19,12 +17,9 @@ from annolid.segmentation.dino_kpseg.data import (
     _labelme_keypoint_instances_from_payload,
     _parse_yolo_pose_line,
     build_extractor,
-    load_coco_pose_spec,
-    load_labelme_pose_spec,
-    load_yolo_pose_spec,
-    materialize_coco_pose_as_yolo,
     merge_feature_layers,
 )
+from annolid.segmentation.dino_kpseg.dataset_resolution import resolve_pose_dataset
 from annolid.segmentation.dino_kpseg.keypoints import (
     infer_left_right_pairs,
     symmetric_pairs_from_flip_idx,
@@ -360,17 +355,15 @@ def _predict_keypoints(
 ) -> List[Tuple[float, float]]:
     if probs.ndim != 3:
         raise ValueError("Expected probs in KHW format")
-    h_p, w_p = int(probs.shape[1]), int(probs.shape[2])
-    norm = probs.sum(dim=(1, 2), keepdim=False).clamp(min=1e-6)
-    xs = (torch.arange(w_p, device=probs.device, dtype=probs.dtype) + 0.5) * float(
-        patch_size
-    )
-    ys = (torch.arange(h_p, device=probs.device, dtype=probs.dtype) + 0.5) * float(
-        patch_size
-    )
-    x_exp = (probs.sum(dim=1) * xs[None, :]).sum(dim=1) / norm
-    y_exp = (probs.sum(dim=2) * ys[None, :]).sum(dim=1) / norm
-    return [(float(x), float(y)) for x, y in zip(x_exp.tolist(), y_exp.tolist())]
+    _, w_p = int(probs.shape[1]), int(probs.shape[2])
+    flat = probs.view(int(probs.shape[0]), -1)
+    best_idx = torch.argmax(flat, dim=1)
+    y = (best_idx // max(1, int(w_p))).to(dtype=probs.dtype)
+    x = (best_idx % max(1, int(w_p))).to(dtype=probs.dtype)
+    scale = float(patch_size)
+    x = (x + 0.5) * scale
+    y = (y + 0.5) * scale
+    return [(float(x_i), float(y_i)) for x_i, y_i in zip(x.tolist(), y.tolist())]
 
 
 def _predict_keypoints_and_scores(
@@ -436,56 +429,28 @@ def evaluate(
     max_images: Optional[int] = None,
     include_per_keypoint: bool = False,
 ) -> Dict[str, object]:
-    data_format_norm = str(data_format or "auto").strip().lower()
-    if data_format_norm not in {"auto", "yolo", "labelme", "coco"}:
-        raise ValueError(f"Unsupported data_format: {data_format_norm!r}")
-    if data_format_norm == "auto":
-        payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
-        fmt_token = ""
-        if isinstance(payload, dict):
-            fmt_token = (
-                str(payload.get("format") or payload.get("type") or "").strip().lower()
-            )
-        if "labelme" in fmt_token:
-            data_format_norm = "labelme"
-        elif "coco" in fmt_token:
-            data_format_norm = "coco"
-        else:
-            data_format_norm = "yolo"
-
-    source_yaml = Path(data_yaml)
-    label_format = str(data_format_norm)
-    if data_format_norm == "coco":
-        coco_spec = load_coco_pose_spec(data_yaml)
-        staged_root = Path(
-            tempfile.mkdtemp(prefix="dino_kpseg_eval_coco_", dir=tempfile.gettempdir())
-        )
-        source_yaml = materialize_coco_pose_as_yolo(
-            spec=coco_spec,
-            output_dir=staged_root,
-        )
-        label_format = "yolo"
-
-    if label_format == "labelme":
-        spec_lm = load_labelme_pose_spec(source_yaml)
-        kpt_count = int(spec_lm.kpt_count)
-        kpt_dims = int(spec_lm.kpt_dims)
-        keypoint_names = list(spec_lm.keypoint_names)
-        train_images = list(spec_lm.train_images)
-        val_images = list(spec_lm.val_images)
-        train_labels = list(spec_lm.train_json)
-        val_labels = list(spec_lm.val_json)
-        flip_idx = spec_lm.flip_idx
-    else:
-        spec = load_yolo_pose_spec(source_yaml)
-        kpt_count = int(spec.kpt_count)
-        kpt_dims = int(spec.kpt_dims)
-        keypoint_names = list(spec.keypoint_names or [])
-        train_images = list(spec.train_images)
-        val_images = list(spec.val_images)
-        train_labels = None
-        val_labels = None
-        flip_idx = spec.flip_idx
+    dataset_spec = resolve_pose_dataset(
+        data_yaml=Path(data_yaml),
+        data_format=str(data_format or "auto"),
+        coco_temp_prefix="dino_kpseg_eval_coco_",
+    )
+    label_format = str(dataset_spec.label_format)
+    kpt_count = int(dataset_spec.kpt_count)
+    kpt_dims = int(dataset_spec.kpt_dims)
+    keypoint_names = list(dataset_spec.keypoint_names or [])
+    train_images = list(dataset_spec.train_images)
+    val_images = list(dataset_spec.val_images)
+    train_labels = (
+        list(dataset_spec.train_label_paths)
+        if dataset_spec.train_label_paths is not None
+        else None
+    )
+    val_labels = (
+        list(dataset_spec.val_label_paths)
+        if dataset_spec.val_label_paths is not None
+        else None
+    )
+    flip_idx = dataset_spec.flip_idx
     if split not in ("train", "val"):
         raise ValueError("split must be 'train' or 'val'")
     image_paths = train_images if split == "train" else val_images
@@ -613,56 +578,27 @@ def calibrate_thresholds(
     max_images: Optional[int] = None,
     per_keypoint: bool = False,
 ) -> Dict[str, object]:
-    data_format_norm = str(data_format or "auto").strip().lower()
-    if data_format_norm not in {"auto", "yolo", "labelme", "coco"}:
-        raise ValueError(f"Unsupported data_format: {data_format_norm!r}")
-    if data_format_norm == "auto":
-        payload = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
-        fmt_token = ""
-        if isinstance(payload, dict):
-            fmt_token = (
-                str(payload.get("format") or payload.get("type") or "").strip().lower()
-            )
-        if "labelme" in fmt_token:
-            data_format_norm = "labelme"
-        elif "coco" in fmt_token:
-            data_format_norm = "coco"
-        else:
-            data_format_norm = "yolo"
-
-    source_yaml = Path(data_yaml)
-    label_format = str(data_format_norm)
-    if data_format_norm == "coco":
-        coco_spec = load_coco_pose_spec(data_yaml)
-        staged_root = Path(
-            tempfile.mkdtemp(
-                prefix="dino_kpseg_calibrate_coco_", dir=tempfile.gettempdir()
-            )
-        )
-        source_yaml = materialize_coco_pose_as_yolo(
-            spec=coco_spec,
-            output_dir=staged_root,
-        )
-        label_format = "yolo"
-
-    if label_format == "labelme":
-        spec_lm = load_labelme_pose_spec(source_yaml)
-        kpt_count = int(spec_lm.kpt_count)
-        kpt_dims = int(spec_lm.kpt_dims)
-        keypoint_names = list(spec_lm.keypoint_names)
-        train_images = list(spec_lm.train_images)
-        val_images = list(spec_lm.val_images)
-        train_labels = list(spec_lm.train_json)
-        val_labels = list(spec_lm.val_json)
-    else:
-        spec = load_yolo_pose_spec(source_yaml)
-        kpt_count = int(spec.kpt_count)
-        kpt_dims = int(spec.kpt_dims)
-        keypoint_names = list(spec.keypoint_names or [])
-        train_images = list(spec.train_images)
-        val_images = list(spec.val_images)
-        train_labels = None
-        val_labels = None
+    dataset_spec = resolve_pose_dataset(
+        data_yaml=Path(data_yaml),
+        data_format=str(data_format or "auto"),
+        coco_temp_prefix="dino_kpseg_calibrate_coco_",
+    )
+    label_format = str(dataset_spec.label_format)
+    kpt_count = int(dataset_spec.kpt_count)
+    kpt_dims = int(dataset_spec.kpt_dims)
+    keypoint_names = list(dataset_spec.keypoint_names or [])
+    train_images = list(dataset_spec.train_images)
+    val_images = list(dataset_spec.val_images)
+    train_labels = (
+        list(dataset_spec.train_label_paths)
+        if dataset_spec.train_label_paths is not None
+        else None
+    )
+    val_labels = (
+        list(dataset_spec.val_label_paths)
+        if dataset_spec.val_label_paths is not None
+        else None
+    )
     if split not in ("train", "val"):
         raise ValueError("split must be 'train' or 'val'")
     image_paths = train_images if split == "train" else val_images

@@ -299,6 +299,10 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         lr_pair_margin_px: float = dino_defaults.LR_PAIR_MARGIN_PX,
         lr_side_loss_weight: float = dino_defaults.LR_SIDE_LOSS_WEIGHT,
         lr_side_loss_margin: float = dino_defaults.LR_SIDE_LOSS_MARGIN,
+        obj_loss_weight: float = dino_defaults.OBJ_LOSS_WEIGHT,
+        box_loss_weight: float = dino_defaults.BOX_LOSS_WEIGHT,
+        inst_loss_weight: float = dino_defaults.INST_LOSS_WEIGHT,
+        multitask_aux_warmup_epochs: int = dino_defaults.MULTITASK_AUX_WARMUP_EPOCHS,
         early_stop_patience: int = dino_defaults.EARLY_STOP_PATIENCE,
         early_stop_min_delta: float = dino_defaults.EARLY_STOP_MIN_DELTA,
         early_stop_min_epochs: int = dino_defaults.EARLY_STOP_MIN_EPOCHS,
@@ -326,6 +330,10 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         tb_projector_add_negatives: bool = dino_defaults.TB_PROJECTOR_ADD_NEGATIVES,
         tb_projector_neg_threshold: float = dino_defaults.TB_PROJECTOR_NEG_THRESHOLD,
         tb_projector_negatives_per_image: int = dino_defaults.TB_PROJECTOR_NEGATIVES_PER_IMAGE,
+        auto_safe_mode: bool = True,
+        workers: int = 0,
+        max_cpu_threads: int = 8,
+        max_interop_threads: int = 1,
     ) -> bool:
         if self._training_running:
             QtWidgets.QMessageBox.warning(
@@ -430,6 +438,12 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 str(int(epochs)),
                 "--batch",
                 str(int(batch_size)),
+                "--workers",
+                str(int(workers)),
+                "--max-cpu-threads",
+                str(int(max_cpu_threads)),
+                "--max-interop-threads",
+                str(int(max_interop_threads)),
                 "--threshold",
                 str(float(threshold)),
                 "--bce-type",
@@ -450,9 +464,9 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 str(int(overfit_n)),
                 "--head-type",
                 str(head_type or dino_defaults.HEAD_TYPE),
-                "--attn-heads",
+                "--relational-heads",
                 str(int(attn_heads)),
-                "--attn-layers",
+                "--relational-layers",
                 str(int(attn_layers)),
                 "--lr-pair-loss-weight",
                 str(float(lr_pair_loss_weight)),
@@ -462,6 +476,14 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 str(float(lr_side_loss_weight)),
                 "--lr-side-loss-margin",
                 str(float(lr_side_loss_margin)),
+                "--obj-loss-weight",
+                str(float(obj_loss_weight)),
+                "--box-loss-weight",
+                str(float(box_loss_weight)),
+                "--inst-loss-weight",
+                str(float(inst_loss_weight)),
+                "--multitask-aux-warmup-epochs",
+                str(int(multitask_aux_warmup_epochs)),
                 "--early-stop-patience",
                 str(int(early_stop_patience)),
                 "--early-stop-min-delta",
@@ -528,6 +550,8 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 cmd += ["--saturation", str(float(saturation))]
             if seed is not None:
                 cmd += ["--seed", str(int(seed))]
+            if bool(auto_safe_mode):
+                cmd.append("--auto-safe-mode")
 
             env = dict(os.environ)
             env.setdefault("PYTHONUNBUFFERED", "1")

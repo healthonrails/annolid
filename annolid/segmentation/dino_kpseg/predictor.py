@@ -33,11 +33,68 @@ class DinoKPSEGPrediction:
     patch_size: int
 
 
+@dataclass
+class _KeypointTrackState:
+    keypoints_xy: List[Tuple[float, float]]
+    keypoint_scores: List[float]
+
+
+class _KeypointTrackStateStore:
+    def __init__(self) -> None:
+        self._global: Optional[_KeypointTrackState] = None
+        self._by_instance: dict[int, _KeypointTrackState] = {}
+
+    def reset(self) -> None:
+        self._global = None
+        self._by_instance = {}
+
+    def get(
+        self,
+        *,
+        instance_id: Optional[int],
+    ) -> Tuple[Optional[List[Tuple[float, float]]], Optional[List[float]]]:
+        if instance_id is None:
+            state = self._global
+        else:
+            state = self._by_instance.get(int(instance_id))
+        if state is None:
+            return None, None
+        return list(state.keypoints_xy), list(state.keypoint_scores)
+
+    def set(
+        self,
+        *,
+        instance_id: Optional[int],
+        keypoints_xy: Sequence[Sequence[float]],
+        keypoint_scores: Sequence[float],
+    ) -> None:
+        state = _KeypointTrackState(
+            keypoints_xy=[(float(x), float(y)) for x, y in keypoints_xy],
+            keypoint_scores=[float(v) for v in keypoint_scores],
+        )
+        if instance_id is None:
+            self._global = state
+        else:
+            self._by_instance[int(instance_id)] = state
+
+    def prune_to_max_instances(self, *, max_instances: int) -> None:
+        cap = max(1, int(max_instances))
+        if len(self._by_instance) <= cap:
+            return
+        overflow = len(self._by_instance) - cap
+        for key in list(self._by_instance.keys())[:overflow]:
+            self._by_instance.pop(key, None)
+
+
 class DinoKPSEGPredictor:
     """Run keypoint mask segmentation using frozen DINOv3 features."""
 
     def __init__(
-        self, weight_path: str | Path, *, device: Optional[str] = None
+        self,
+        weight_path: str | Path,
+        *,
+        device: Optional[str] = None,
+        temporal_fusion: Optional[object] = None,
     ) -> None:
         weight_path = self._resolve_checkpoint_path(weight_path)
         payload = torch.load(weight_path, map_location="cpu")
@@ -62,11 +119,11 @@ class DinoKPSEGPredictor:
             symmetric_pairs_from_flip_idx(self.flip_idx) if self.flip_idx else []
         )
 
-        self._prev_keypoints_xy: Optional[List[Tuple[float, float]]] = None
-        self._prev_keypoint_scores: Optional[List[float]] = None
-        self._prev_by_instance: dict[
-            int, Tuple[List[Tuple[float, float]], List[float]]
-        ] = {}
+        self._track_state = _KeypointTrackStateStore()
+        self._max_track_instances = 256
+        if temporal_fusion is not None:
+            # Backward compatibility: temporal fusion is retired and ignored.
+            _ = temporal_fusion
 
         device_norm = normalize_device(device)
         self.device = torch.device(device_norm)
@@ -243,6 +300,24 @@ class DinoKPSEGPredictor:
         return [(float(x), float(y)) for x, y in zip(x_exp.tolist(), y_exp.tolist())]
 
     @staticmethod
+    def _argmax_coords(
+        probs: torch.Tensor,
+        *,
+        patch_size: int,
+    ) -> List[Tuple[float, float]]:
+        if probs.ndim != 3:
+            raise ValueError("Expected probs in KHW format")
+        _, w_p = int(probs.shape[1]), int(probs.shape[2])
+        flat = probs.view(int(probs.shape[0]), -1)
+        best_idx = torch.argmax(flat, dim=1)
+        y = (best_idx // max(1, int(w_p))).to(dtype=probs.dtype)
+        x = (best_idx % max(1, int(w_p))).to(dtype=probs.dtype)
+        scale = float(patch_size)
+        x = (x + 0.5) * scale
+        y = (y + 0.5) * scale
+        return [(float(x_i), float(y_i)) for x_i, y_i in zip(x.tolist(), y.tolist())]
+
+    @staticmethod
     def _resolve_checkpoint_path(weight_path: str | Path) -> Path:
         p = Path(weight_path).expanduser()
         if p.is_dir():
@@ -262,10 +337,12 @@ class DinoKPSEGPredictor:
         return resolved
 
     def reset_state(self) -> None:
-        """Reset any temporal stabilization state."""
-        self._prev_keypoints_xy = None
-        self._prev_keypoint_scores = None
-        self._prev_by_instance = {}
+        """Reset any left/right stabilization state."""
+        self._track_state.reset()
+
+    def set_temporal_fusion_config(self, config: Optional[object]) -> None:
+        """Backward-compatible no-op: temporal fusion was removed."""
+        _ = config
 
     @staticmethod
     def _local_peaks_2d(
@@ -484,7 +561,11 @@ class DinoKPSEGPredictor:
             scores = [float(s) for s in keypoint_scores]
         if len(scores) != len(coords):
             raise ValueError("keypoint_scores must match keypoints_xy length")
-        self._prev_by_instance[instance_id_int] = (coords, scores)
+        self._track_state.set(
+            instance_id=instance_id_int,
+            keypoints_xy=coords,
+            keypoint_scores=scores,
+        )
 
     @torch.inference_mode()
     def predict_from_features(
@@ -501,22 +582,16 @@ class DinoKPSEGPredictor:
         tta_hflip: bool = False,
         tta_merge: str = "mean",
     ) -> DinoKPSEGPrediction:
-        prev_xy = self._prev_keypoints_xy
-        prev_scores = self._prev_keypoint_scores
-        if instance_id is not None:
-            cached = self._prev_by_instance.get(int(instance_id))
-            if cached is not None:
-                prev_xy, prev_scores = cached
-            else:
-                prev_xy, prev_scores = None, None
+        prev_xy, prev_scores = self._track_state.get(instance_id=instance_id)
 
-        probs, (resized_h, resized_w), patch_size = self._compute_probs(
+        probs_raw, (resized_h, resized_w), patch_size = self._compute_probs(
             feats,
             frame_shape=frame_shape,
             mask=mask,
             tta_hflip=bool(tta_hflip),
             tta_merge=str(tta_merge),
         )
+        probs = probs_raw
 
         thr = self._sanitize_threshold(
             float(threshold) if threshold is not None else float(self.meta.threshold)
@@ -527,8 +602,8 @@ class DinoKPSEGPredictor:
             masks_t = probs >= thr
             masks = masks_t.numpy().astype(np.uint8, copy=False)
 
-        # Soft-argmax per keypoint channel for sub-patch localization.
-        coords_resized = self._soft_argmax_coords(
+        # Decode by peak location to avoid global-center drift on diffuse maps.
+        coords_resized = self._argmax_coords(
             probs.to(dtype=torch.float32), patch_size=patch_size
         )
 
@@ -559,14 +634,14 @@ class DinoKPSEGPredictor:
                 cfg=stabilize_cfg,
             )
 
-        if instance_id is not None:
-            self._prev_by_instance[int(instance_id)] = (
-                list(keypoints_xy),
-                [float(s) for s in scores],
-            )
-        else:
-            self._prev_keypoints_xy = list(keypoints_xy)
-            self._prev_keypoint_scores = [float(s) for s in scores]
+        self._track_state.set(
+            instance_id=instance_id,
+            keypoints_xy=keypoints_xy,
+            keypoint_scores=[float(s) for s in scores],
+        )
+        self._track_state.prune_to_max_instances(
+            max_instances=int(self._max_track_instances)
+        )
 
         return DinoKPSEGPrediction(
             keypoints_xy=keypoints_xy,

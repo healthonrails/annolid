@@ -126,6 +126,267 @@ class _FFN(nn.Module):
         return self.net(x)
 
 
+class _VideoMTScaleRefineBlock(nn.Module):
+    """Lightweight depthwise refinement block inspired by VideoMT scale blocks."""
+
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.dw = nn.Conv2d(
+            int(dim),
+            int(dim),
+            kernel_size=3,
+            padding=1,
+            groups=int(dim),
+            bias=False,
+        )
+        self.act = nn.GELU()
+        self.pw = nn.Conv2d(int(dim), int(dim), kernel_size=1)
+        self.norm = nn.GroupNorm(
+            num_groups=_groupnorm_groups(int(dim), max_groups=8),
+            num_channels=int(dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        x = self.dw(x)
+        x = self.act(x)
+        x = self.pw(x)
+        x = self.norm(x)
+        return x + residual
+
+
+class DinoKPSEGVideoMTHead(nn.Module):
+    """VideoMT-inspired query-to-mask head for keypoint segmentation.
+
+    Design goals:
+      - Query tokens model keypoint relations via cross/self-attention.
+      - Mask logits are decoded via einsum(mask_embed, spatial_features).
+      - Spatial features are refined with lightweight depthwise blocks.
+    """
+
+    def __init__(
+        self,
+        *,
+        in_dim: int,
+        hidden_dim: int,
+        num_parts: int,
+        num_heads: int = 4,
+        num_layers: int = 1,
+        orientation_anchor_idx: Optional[list[int]] = None,
+        dropout: float = 0.0,
+        pos_scale: float = 0.2,
+        token_norm: bool = True,
+        proj_norm: bool = True,
+        anchor_kv_norm: bool = True,
+        anchor_gate_init: float = -4.0,
+        refine_blocks: int = 1,
+    ) -> None:
+        super().__init__()
+        self.in_dim = int(in_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.num_parts = int(num_parts)
+        self.num_heads = int(num_heads)
+        self.num_layers = int(num_layers)
+        self.dropout = float(dropout)
+        self.pos_scale = float(pos_scale)
+        self.token_norm = bool(token_norm)
+        self.proj_norm = bool(proj_norm)
+        self.anchor_kv_norm = bool(anchor_kv_norm)
+
+        if self.hidden_dim % max(1, self.num_heads) != 0:
+            raise ValueError("hidden_dim must be divisible by num_heads")
+        if self.hidden_dim % 4 != 0:
+            raise ValueError(
+                "hidden_dim must be divisible by 4 for sin/cos positional encoding"
+            )
+
+        self.spatial_proj = nn.Conv2d(self.in_dim, self.hidden_dim, kernel_size=1)
+        self.spatial_act = nn.GELU()
+        self.spatial_norm = nn.GroupNorm(
+            num_groups=_groupnorm_groups(self.hidden_dim, max_groups=8),
+            num_channels=self.hidden_dim,
+            affine=False,
+        )
+        self.refine = nn.Sequential(
+            *[
+                _VideoMTScaleRefineBlock(self.hidden_dim)
+                for _ in range(max(1, int(refine_blocks)))
+            ]
+        )
+
+        self.query_embed = nn.Parameter(
+            torch.randn(self.num_parts, self.hidden_dim) * 0.02
+        )
+        self.query_updater = nn.Linear(self.hidden_dim, self.hidden_dim)
+
+        self.cross_attn = nn.ModuleList(
+            [
+                nn.MultiheadAttention(
+                    self.hidden_dim,
+                    self.num_heads,
+                    dropout=float(dropout),
+                    batch_first=True,
+                )
+                for _ in range(self.num_layers)
+            ]
+        )
+        self.self_attn = nn.ModuleList(
+            [
+                nn.MultiheadAttention(
+                    self.hidden_dim,
+                    self.num_heads,
+                    dropout=float(dropout),
+                    batch_first=True,
+                )
+                for _ in range(self.num_layers)
+            ]
+        )
+        self.norm_q1 = nn.ModuleList(
+            [nn.LayerNorm(self.hidden_dim) for _ in range(self.num_layers)]
+        )
+        self.norm_q2 = nn.ModuleList(
+            [nn.LayerNorm(self.hidden_dim) for _ in range(self.num_layers)]
+        )
+        self.norm_q3 = nn.ModuleList(
+            [nn.LayerNorm(self.hidden_dim) for _ in range(self.num_layers)]
+        )
+        self.ffn = nn.ModuleList(
+            [
+                _FFN(self.hidden_dim, dropout=float(dropout))
+                for _ in range(self.num_layers)
+            ]
+        )
+
+        anchors: list[int] = []
+        if orientation_anchor_idx:
+            for idx in orientation_anchor_idx:
+                try:
+                    idx_i = int(idx)
+                except Exception:
+                    continue
+                if 0 <= idx_i < self.num_parts and idx_i not in anchors:
+                    anchors.append(idx_i)
+        self.orientation_anchor_idx = anchors
+
+        self.anchor_attn = nn.ModuleList(
+            [
+                nn.MultiheadAttention(
+                    self.hidden_dim,
+                    self.num_heads,
+                    dropout=float(dropout),
+                    batch_first=True,
+                )
+                for _ in range(self.num_layers)
+            ]
+        )
+        self.norm_q_anchor = nn.ModuleList(
+            [nn.LayerNorm(self.hidden_dim) for _ in range(self.num_layers)]
+        )
+        self.anchor_gate = nn.Parameter(
+            torch.full((self.num_layers,), float(anchor_gate_init), dtype=torch.float32)
+        )
+
+        self.mask_head = nn.Sequential(
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+        )
+        self.logit_scale = nn.Parameter(torch.tensor(0.0))
+
+    def forward(
+        self,
+        feats_bchw: torch.Tensor,
+        *,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if feats_bchw.ndim != 4:
+            raise ValueError("Expected feats in BCHW format")
+        b, _, h, w = feats_bchw.shape
+        if key_padding_mask is not None:
+            if not isinstance(key_padding_mask, torch.Tensor):
+                raise ValueError("key_padding_mask must be a torch.Tensor")
+            key_padding_mask = key_padding_mask.to(dtype=torch.bool)
+            if (
+                key_padding_mask.ndim != 2
+                or key_padding_mask.shape[0] != b
+                or key_padding_mask.shape[1] != (h * w)
+            ):
+                raise ValueError("key_padding_mask must be shaped [B, H*W]")
+
+        spatial = self.spatial_proj(feats_bchw)
+        if self.proj_norm:
+            spatial = self.spatial_act(spatial)
+            spatial = self.spatial_norm(spatial)
+        spatial = self.refine(spatial)
+
+        tokens = spatial.flatten(2).transpose(1, 2)  # [B, HW, D]
+        if self.pos_scale != 0.0:
+            tokens = tokens + _positional_encoding_2d_sincos(
+                h=h, w=w, dim=self.hidden_dim, device=tokens.device, dtype=tokens.dtype
+            ) * float(self.pos_scale)
+        if self.token_norm:
+            tokens = F.layer_norm(tokens, (self.hidden_dim,))
+
+        q = self.query_embed[None, :, :].expand(b, -1, -1)  # [B, K, D]
+        context = tokens.mean(dim=1, keepdim=True)  # [B, 1, D]
+        q = q + self.query_updater(context).expand(-1, self.num_parts, -1)
+
+        for layer in range(self.num_layers):
+            q_norm = self.norm_q1[layer](q)
+            attn_out, _ = self.cross_attn[layer](
+                q_norm,
+                tokens,
+                tokens,
+                key_padding_mask=key_padding_mask,
+                need_weights=False,
+            )
+            q = q + attn_out
+
+            if self.orientation_anchor_idx:
+                q_anchor = self.norm_q_anchor[layer](q)
+                if self.anchor_kv_norm:
+                    anchors = q_anchor[:, self.orientation_anchor_idx, :]
+                else:
+                    anchors = q[:, self.orientation_anchor_idx, :]
+                anchor_out, _ = self.anchor_attn[layer](
+                    q_anchor, anchors, anchors, need_weights=False
+                )
+                gate = torch.sigmoid(self.anchor_gate[layer]).to(dtype=q.dtype)
+                q = q + anchor_out * gate
+
+            q_norm = self.norm_q2[layer](q)
+            attn_out, _ = self.self_attn[layer](
+                q_norm, q_norm, q_norm, need_weights=False
+            )
+            q = q + attn_out
+
+            q_norm = self.norm_q3[layer](q)
+            q = q + self.ffn[layer](q_norm)
+
+        q = F.layer_norm(q, (self.hidden_dim,))
+        mask_embed = self.mask_head(q)
+        mask_embed = F.layer_norm(mask_embed, (self.hidden_dim,))
+
+        scale = torch.clamp(self.logit_scale.exp(), 0.1, 10.0)
+        logits = torch.einsum("bkc,bchw->bkhw", mask_embed, spatial) * (
+            scale / (self.hidden_dim**0.5)
+        )
+        if key_padding_mask is not None:
+            mask_hw = key_padding_mask.view(b, h, w)
+            logits = logits.masked_fill(mask_hw[:, None, :, :], -20.0)
+        # Guard against rare non-finite values to keep training stable.
+        logits = torch.nan_to_num(logits, nan=-20.0, posinf=20.0, neginf=-20.0)
+        return logits
+
+
+class DinoKPSEGRelationalHead(DinoKPSEGVideoMTHead):
+    """Canonical relational attention head (alias of VideoMT-inspired implementation)."""
+
+
 class DinoKPSEGAttentionHead(nn.Module):
     """Attention-based head that models keypoint relationships."""
 
@@ -587,7 +848,9 @@ def checkpoint_unpack(
         .strip()
         .lower()
     )
-    if head_type not in ("conv", "attn", "hybrid", "multitask"):
+    if head_type in {"attn", "hybrid", "videomt"}:
+        head_type = "relational"
+    if head_type not in ("conv", "multitask", "relational"):
         head_type = "conv"
 
     try:
@@ -688,22 +951,8 @@ def checkpoint_unpack(
     ):
         core_in_dim = int(meta.feature_align_dim)
 
-    if meta.head_type == "attn":
-        head: nn.Module = DinoKPSEGAttentionHead(
-            in_dim=int(core_in_dim),
-            hidden_dim=meta.hidden_dim,
-            num_parts=meta.num_parts,
-            num_heads=int(meta.attn_heads),
-            num_layers=int(meta.attn_layers),
-            orientation_anchor_idx=meta.orientation_anchor_idx,
-            dropout=float(meta.attn_dropout),
-            pos_scale=float(meta.attn_pos_scale),
-            token_norm=bool(meta.attn_token_norm),
-            proj_norm=bool(meta.attn_proj_norm),
-            anchor_kv_norm=bool(meta.attn_anchor_kv_norm),
-        )
-    elif meta.head_type == "hybrid":
-        head = DinoKPSEGHybridHead(
+    if meta.head_type == "relational":
+        head = DinoKPSEGRelationalHead(
             in_dim=int(core_in_dim),
             hidden_dim=meta.hidden_dim,
             num_parts=meta.num_parts,

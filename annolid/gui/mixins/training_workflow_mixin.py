@@ -133,6 +133,20 @@ class TrainingWorkflowMixin:
             dino_lr_side_loss_margin = getattr(
                 dlg, "dino_lr_side_loss_margin", dino_defaults.LR_SIDE_LOSS_MARGIN
             )
+            dino_obj_loss_weight = getattr(
+                dlg, "dino_obj_loss_weight", dino_defaults.OBJ_LOSS_WEIGHT
+            )
+            dino_box_loss_weight = getattr(
+                dlg, "dino_box_loss_weight", dino_defaults.BOX_LOSS_WEIGHT
+            )
+            dino_inst_loss_weight = getattr(
+                dlg, "dino_inst_loss_weight", dino_defaults.INST_LOSS_WEIGHT
+            )
+            dino_multitask_aux_warmup_epochs = getattr(
+                dlg,
+                "dino_multitask_aux_warmup_epochs",
+                dino_defaults.MULTITASK_AUX_WARMUP_EPOCHS,
+            )
             dino_lr = getattr(dlg, "dino_lr", dino_defaults.LR)
             dino_threshold = getattr(dlg, "dino_threshold", dino_defaults.THRESHOLD)
             dino_bce_type = getattr(dlg, "dino_bce_type", dino_defaults.BCE_TYPE)
@@ -235,6 +249,10 @@ class TrainingWorkflowMixin:
                 "dino_tb_projector_negatives_per_image",
                 dino_defaults.TB_PROJECTOR_NEGATIVES_PER_IMAGE,
             )
+            dino_auto_safe_mode = getattr(dlg, "dino_auto_safe_mode", True)
+            dino_workers = getattr(dlg, "dino_workers", 0)
+            dino_max_cpu_threads = getattr(dlg, "dino_max_cpu_threads", 8)
+            dino_max_interop_threads = getattr(dlg, "dino_max_interop_threads", 1)
 
         if config_file is None:
             return
@@ -294,6 +312,10 @@ class TrainingWorkflowMixin:
                 lr_pair_margin_px=float(dino_lr_pair_margin_px),
                 lr_side_loss_weight=float(dino_lr_side_loss_weight),
                 lr_side_loss_margin=float(dino_lr_side_loss_margin),
+                obj_loss_weight=float(dino_obj_loss_weight),
+                box_loss_weight=float(dino_box_loss_weight),
+                inst_loss_weight=float(dino_inst_loss_weight),
+                multitask_aux_warmup_epochs=int(dino_multitask_aux_warmup_epochs),
                 early_stop_patience=int(dino_patience),
                 early_stop_min_delta=float(dino_min_delta),
                 early_stop_min_epochs=int(dino_min_epochs),
@@ -331,6 +353,10 @@ class TrainingWorkflowMixin:
                 tb_projector_negatives_per_image=int(
                     dino_tb_projector_negatives_per_image
                 ),
+                auto_safe_mode=bool(dino_auto_safe_mode),
+                workers=int(dino_workers),
+                max_cpu_threads=int(dino_max_cpu_threads),
+                max_interop_threads=int(dino_max_interop_threads),
             )
 
         elif algo == "YOLACT":

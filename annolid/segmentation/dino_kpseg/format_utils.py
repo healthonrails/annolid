@@ -40,9 +40,6 @@ def normalize_dino_kpseg_data_format(
     if any(_looks_like_labelme_index_path(v) for v in split_entries):
         return "labelme"
 
-    if data_cfg.get("keypoint_names") or data_cfg.get("kpt_names"):
-        return "labelme"
-
     return "yolo"
 
 

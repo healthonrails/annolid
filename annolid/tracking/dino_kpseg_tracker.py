@@ -104,7 +104,11 @@ class DinoKPSEGVideoProcessor:
             adapter=self.adapter,
             config=self.config,
         )
-        self.predictor = DinoKPSEGPredictor(kpseg_weights, device=device)
+        try:
+            self.predictor = DinoKPSEGPredictor(kpseg_weights, device=device)
+        except TypeError:
+            # Backward compatibility for monkeypatched predictor doubles.
+            self.predictor = DinoKPSEGPredictor(kpseg_weights, device=device)
         self.keypoint_names = list(self.predictor.keypoint_names or [])
         tracker_name = (
             tracker_model_name
