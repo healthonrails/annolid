@@ -223,6 +223,10 @@ In the GUI (`Train Models` -> `DINO KPSEG` -> `Advanced`), use:
 - `DataLoader workers`
 - `Max CPU threads`
 - `Max interop threads`
+- `Auto-run evaluation report after training`
+- `Auto-report split` (supports `test`, with optional fallback to `val`)
+- `Auto-report PCK thresholds`
+- `Generate paper artifacts (JSON/MD/CSV/LaTeX)`
 
 Equivalent `annolid-run` training flags are also supported (for example
 `--schedule-profile`, `--batch`, `--cos-lr`, `--warmup-epochs`,
@@ -312,6 +316,16 @@ In **Inference Wizard** with model type **DINO KPSEG**, the Configure page now e
 These settings are persisted in `QSettings` and are also applied in the standard
 GUI prediction workflow (not only wizard runs).
 
+## Training Wizard (GUI)
+
+In **Training Wizard** with backend **DINO KPSEG**, the Configure page now includes:
+
+- Head selection (`relational`, `conv`, `multitask`)
+- Relational head controls (`heads`, `layers`)
+- Multitask loss weights (`objectness`, `box`, `instance`) and aux warmup
+- Loss controls (`threshold`, `BCE type`, focal alpha/gamma)
+- Backbone controls (`short side`, `layers`, `hidden dim`)
+
 ## Evaluation
 
 Run evaluation on the train/val split and report mean pixel error, PCK, and left/right swap rate:
@@ -321,6 +335,16 @@ python -m annolid.segmentation.dino_kpseg.eval \
   --data /path/to/YOLO_dataset/data.yaml \
   --weights /path/to/dino_kpseg/weights/best.pt \
   --split val \
+  --thresholds 4,8,16
+```
+
+You can also evaluate a `test` split (if your dataset YAML includes `test`):
+
+```bash
+python -m annolid.segmentation.dino_kpseg.eval \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --weights /path/to/dino_kpseg/weights/best.pt \
+  --split test \
   --thresholds 4,8,16
 ```
 
@@ -336,6 +360,30 @@ python -m annolid.segmentation.dino_kpseg.eval \
 
 For COCO keypoints datasets, pass the COCO spec YAML and set `--data-format coco`.
 Annolid will stage a temporary YOLO-pose view internally before evaluation.
+
+### Paper-ready Metric Reports
+
+For paper tables, generate normalized summary artifacts (JSON + Markdown + CSV + LaTeX):
+
+```bash
+python -m annolid.segmentation.dino_kpseg.eval \
+  --data /path/to/YOLO_dataset/data.yaml \
+  --weights /path/to/dino_kpseg/weights/best.pt \
+  --split test \
+  --thresholds 4,8,16 \
+  --paper-report \
+  --dataset-name "MousePoseBench" \
+  --model-name "DINO-KPSEG (best.pt)" \
+  --report-dir /path/to/reports \
+  --report-basename mouseposebench_test
+```
+
+This writes:
+
+- `mouseposebench_test.json`
+- `mouseposebench_test.md`
+- `mouseposebench_test.csv`
+- `mouseposebench_test.tex`
 
 ## LabelMe to COCO (GUI)
 

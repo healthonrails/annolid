@@ -253,6 +253,18 @@ class TrainingWorkflowMixin:
             dino_workers = getattr(dlg, "dino_workers", 0)
             dino_max_cpu_threads = getattr(dlg, "dino_max_cpu_threads", 8)
             dino_max_interop_threads = getattr(dlg, "dino_max_interop_threads", 1)
+            dino_auto_report_enabled = getattr(dlg, "dino_auto_report_enabled", True)
+            dino_auto_report_split = getattr(dlg, "dino_auto_report_split", "test")
+            dino_auto_report_fallback_to_val = getattr(
+                dlg, "dino_auto_report_fallback_to_val", True
+            )
+            dino_auto_report_thresholds = getattr(
+                dlg, "dino_auto_report_thresholds", "4,8,16"
+            )
+            dino_auto_report_per_keypoint = getattr(
+                dlg, "dino_auto_report_per_keypoint", False
+            )
+            dino_auto_report_paper = getattr(dlg, "dino_auto_report_paper", True)
 
         if config_file is None:
             return
@@ -357,6 +369,12 @@ class TrainingWorkflowMixin:
                 workers=int(dino_workers),
                 max_cpu_threads=int(dino_max_cpu_threads),
                 max_interop_threads=int(dino_max_interop_threads),
+                auto_report_enabled=bool(dino_auto_report_enabled),
+                auto_report_split=str(dino_auto_report_split or "test"),
+                auto_report_fallback_to_val=bool(dino_auto_report_fallback_to_val),
+                auto_report_thresholds=str(dino_auto_report_thresholds or "4,8,16"),
+                auto_report_per_keypoint=bool(dino_auto_report_per_keypoint),
+                auto_report_paper=bool(dino_auto_report_paper),
             )
 
         elif algo == "YOLACT":

@@ -21,7 +21,13 @@ from typing import Any, Dict, List, Optional
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt, Signal
 
-from annolid.gui.models_registry import MODEL_REGISTRY, PATCH_SIMILARITY_MODELS
+from annolid.gui.models_registry import MODEL_REGISTRY
+from annolid.gui.widgets.dino_training_ui_shared import (
+    apply_dino_bce_control_state,
+    apply_dino_head_control_state,
+    configure_dino_model_combo,
+    create_dino_head_loss_controls,
+)
 from annolid.segmentation.dino_kpseg import defaults as dino_defaults
 
 
@@ -948,8 +954,10 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         model_layout = QtWidgets.QFormLayout(model_group)
 
         self.dino_model_combo = QtWidgets.QComboBox()
-        for cfg in PATCH_SIMILARITY_MODELS:
-            self.dino_model_combo.addItem(cfg.display_name, cfg.identifier)
+        configure_dino_model_combo(
+            self.dino_model_combo,
+            default_identifier=str(dino_defaults.MODEL_NAME),
+        )
         model_layout.addRow("Model:", self.dino_model_combo)
 
         self.dino_short_side_spin = QtWidgets.QSpinBox()
@@ -957,6 +965,11 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         self.dino_short_side_spin.setSingleStep(32)
         self.dino_short_side_spin.setValue(int(dino_defaults.SHORT_SIDE))
         model_layout.addRow("Short side:", self.dino_short_side_spin)
+
+        self.dino_layers_edit = QtWidgets.QLineEdit()
+        self.dino_layers_edit.setPlaceholderText("-1 or -2,-1")
+        self.dino_layers_edit.setText(str(dino_defaults.LAYERS))
+        model_layout.addRow("Layers:", self.dino_layers_edit)
 
         layout.addWidget(model_group)
 
@@ -985,8 +998,113 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         train_layout.addRow("Keypoint radius (px):", self.dino_radius_spin)
 
         layout.addWidget(train_group)
+
+        head_group = QtWidgets.QGroupBox("Head & Losses")
+        head_layout = QtWidgets.QFormLayout(head_group)
+        controls = create_dino_head_loss_controls(
+            head_group,
+            head_type=str(dino_defaults.HEAD_TYPE),
+            attn_heads=int(dino_defaults.ATTN_HEADS),
+            attn_layers=int(dino_defaults.ATTN_LAYERS),
+            hidden_dim=int(dino_defaults.HIDDEN_DIM),
+            threshold=float(dino_defaults.THRESHOLD),
+            bce_type=str(dino_defaults.BCE_TYPE),
+            focal_alpha=float(dino_defaults.FOCAL_ALPHA),
+            focal_gamma=float(dino_defaults.FOCAL_GAMMA),
+            obj_loss_weight=float(dino_defaults.OBJ_LOSS_WEIGHT),
+            box_loss_weight=float(dino_defaults.BOX_LOSS_WEIGHT),
+            inst_loss_weight=float(dino_defaults.INST_LOSS_WEIGHT),
+            multitask_aux_warmup_epochs=int(dino_defaults.MULTITASK_AUX_WARMUP_EPOCHS),
+        )
+
+        self.dino_head_type_combo = controls.head_type_combo
+        self.dino_head_type_combo.currentIndexChanged.connect(
+            self._update_dino_head_controls
+        )
+        head_layout.addRow("Head type:", self.dino_head_type_combo)
+
+        self.dino_attn_heads_spin = controls.attn_heads_spin
+        head_layout.addRow("Relational heads:", self.dino_attn_heads_spin)
+
+        self.dino_attn_layers_spin = controls.attn_layers_spin
+        head_layout.addRow("Relational layers:", self.dino_attn_layers_spin)
+
+        self.dino_hidden_dim_spin = controls.hidden_dim_spin
+        head_layout.addRow("Hidden dim:", self.dino_hidden_dim_spin)
+
+        self.dino_obj_loss_weight_spin = controls.obj_loss_weight_spin
+        head_layout.addRow("Objectness loss weight:", self.dino_obj_loss_weight_spin)
+
+        self.dino_box_loss_weight_spin = controls.box_loss_weight_spin
+        head_layout.addRow("Box loss weight:", self.dino_box_loss_weight_spin)
+
+        self.dino_inst_loss_weight_spin = controls.inst_loss_weight_spin
+        head_layout.addRow("Instance loss weight:", self.dino_inst_loss_weight_spin)
+
+        self.dino_multitask_aux_warmup_spin = controls.multitask_aux_warmup_spin
+        head_layout.addRow(
+            "Multitask aux warmup (epochs):", self.dino_multitask_aux_warmup_spin
+        )
+
+        layout.addWidget(head_group)
+        self._dino_multitask_controls = [
+            self.dino_obj_loss_weight_spin,
+            self.dino_box_loss_weight_spin,
+            self.dino_inst_loss_weight_spin,
+            self.dino_multitask_aux_warmup_spin,
+        ]
+
+        advanced_group = QtWidgets.QGroupBox("Advanced")
+        advanced_group.setCheckable(True)
+        advanced_group.setChecked(False)
+        advanced_layout = QtWidgets.QFormLayout(advanced_group)
+
+        self.dino_threshold_spin = controls.threshold_spin
+        advanced_layout.addRow("Mask threshold:", self.dino_threshold_spin)
+
+        self.dino_bce_type_combo = controls.bce_type_combo
+        self.dino_bce_type_combo.currentIndexChanged.connect(
+            self._update_dino_focal_controls
+        )
+        advanced_layout.addRow("Mask BCE type:", self.dino_bce_type_combo)
+
+        self.dino_focal_alpha_spin = controls.focal_alpha_spin
+        advanced_layout.addRow("Focal alpha:", self.dino_focal_alpha_spin)
+
+        self.dino_focal_gamma_spin = controls.focal_gamma_spin
+        advanced_layout.addRow("Focal gamma:", self.dino_focal_gamma_spin)
+        self._dino_focal_controls = list(controls.focal_controls)
+
+        self.dino_cache_features_check = QtWidgets.QCheckBox(
+            "Cache frozen DINO features to disk"
+        )
+        self.dino_cache_features_check.setChecked(True)
+        advanced_layout.addRow("", self.dino_cache_features_check)
+
+        layout.addWidget(advanced_group)
+        self._update_dino_head_controls()
+        self._update_dino_focal_controls()
         layout.addStretch()
         return widget
+
+    def _update_dino_head_controls(self) -> None:
+        head_type = str(self.dino_head_type_combo.currentData() or "").strip().lower()
+        relational_controls = [
+            self.dino_attn_heads_spin,
+            self.dino_attn_layers_spin,
+        ]
+        apply_dino_head_control_state(
+            head_type=head_type,
+            relational_controls=relational_controls,
+            multitask_controls=list(getattr(self, "_dino_multitask_controls", [])),
+        )
+
+    def _update_dino_focal_controls(self) -> None:
+        bce_type = str(self.dino_bce_type_combo.currentData() or "bce").strip().lower()
+        apply_dino_bce_control_state(
+            bce_type=bce_type,
+            focal_controls=list(getattr(self, "_dino_focal_controls", [])),
+        )
 
     # ---- Mask R-CNN ----
 
@@ -1155,15 +1273,35 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
 
         elif backend == "dino_kpseg":
             dataset_type = wizard.select_dataset_page.get_dataset_type()
-            data_format = "labelme" if dataset_type == "labelme" else "yolo"
+            if dataset_type == "labelme":
+                data_format = "labelme"
+            elif dataset_type == "coco":
+                data_format = "coco"
+            else:
+                data_format = "yolo"
             config.update(
                 {
                     "model": self.dino_model_combo.currentData(),
                     "epochs": self.dino_epochs_spin.value(),
                     "batch": self.dino_batch_spin.value(),
                     "short_side": self.dino_short_side_spin.value(),
+                    "layers": self.dino_layers_edit.text().strip()
+                    or str(dino_defaults.LAYERS),
                     "lr": self.dino_lr_spin.value(),
                     "radius_px": self.dino_radius_spin.value(),
+                    "hidden_dim": self.dino_hidden_dim_spin.value(),
+                    "head_type": str(self.dino_head_type_combo.currentData() or ""),
+                    "attn_heads": self.dino_attn_heads_spin.value(),
+                    "attn_layers": self.dino_attn_layers_spin.value(),
+                    "threshold": self.dino_threshold_spin.value(),
+                    "bce_type": str(self.dino_bce_type_combo.currentData() or "bce"),
+                    "focal_alpha": self.dino_focal_alpha_spin.value(),
+                    "focal_gamma": self.dino_focal_gamma_spin.value(),
+                    "cache_features": self.dino_cache_features_check.isChecked(),
+                    "obj_loss_weight": self.dino_obj_loss_weight_spin.value(),
+                    "box_loss_weight": self.dino_box_loss_weight_spin.value(),
+                    "inst_loss_weight": self.dino_inst_loss_weight_spin.value(),
+                    "multitask_aux_warmup_epochs": self.dino_multitask_aux_warmup_spin.value(),
                     "data_format": data_format,
                 }
             )
@@ -1293,8 +1431,19 @@ class TrainingSummaryPage(QtWidgets.QWizardPage):
                     "Short side",
                     str(config.get("short_side", dino_defaults.SHORT_SIDE)),
                 ),
+                row("Layers", str(config.get("layers", dino_defaults.LAYERS))),
                 row("LR", str(config.get("lr", dino_defaults.LR))),
                 row("Radius (px)", str(config.get("radius_px", 6.0))),
+                row("Head type", str(config.get("head_type", dino_defaults.HEAD_TYPE))),
+                row(
+                    "Relational heads",
+                    str(config.get("attn_heads", dino_defaults.ATTN_HEADS)),
+                ),
+                row(
+                    "Relational layers",
+                    str(config.get("attn_layers", dino_defaults.ATTN_LAYERS)),
+                ),
+                row("BCE type", str(config.get("bce_type", dino_defaults.BCE_TYPE))),
                 row("Dataset format", str(config.get("data_format", "auto"))),
             ]
         else:

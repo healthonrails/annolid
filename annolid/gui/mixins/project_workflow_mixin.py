@@ -182,8 +182,27 @@ class ProjectWorkflowMixin:
                 epochs=config.get("epochs", dino_defaults.EPOCHS),
                 batch_size=config.get("batch", dino_defaults.BATCH),
                 threshold=config.get("threshold", dino_defaults.THRESHOLD),
+                bce_type=config.get("bce_type", dino_defaults.BCE_TYPE),
+                focal_alpha=config.get("focal_alpha", dino_defaults.FOCAL_ALPHA),
+                focal_gamma=config.get("focal_gamma", dino_defaults.FOCAL_GAMMA),
                 device=config.get("device", ""),
                 cache_features=config.get("cache_features", True),
+                head_type=config.get("head_type", dino_defaults.HEAD_TYPE),
+                attn_heads=config.get("attn_heads", dino_defaults.ATTN_HEADS),
+                attn_layers=config.get("attn_layers", dino_defaults.ATTN_LAYERS),
+                obj_loss_weight=config.get(
+                    "obj_loss_weight", dino_defaults.OBJ_LOSS_WEIGHT
+                ),
+                box_loss_weight=config.get(
+                    "box_loss_weight", dino_defaults.BOX_LOSS_WEIGHT
+                ),
+                inst_loss_weight=config.get(
+                    "inst_loss_weight", dino_defaults.INST_LOSS_WEIGHT
+                ),
+                multitask_aux_warmup_epochs=config.get(
+                    "multitask_aux_warmup_epochs",
+                    dino_defaults.MULTITASK_AUX_WARMUP_EPOCHS,
+                ),
             )
             self.statusBar().showMessage(self.tr("DINO KPSEG training started"), 3000)
         except Exception as e:

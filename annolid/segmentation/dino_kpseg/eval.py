@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import csv
+from datetime import datetime, timezone
 import json
 from dataclasses import dataclass, field
+from io import StringIO
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -189,8 +192,12 @@ class DinoKPSEGEvalAccumulator:
             "images_used": self.images_used,
             "instances_total": self.instances_total,
             "keypoints_visible_total": self.keypoints_visible_total,
+            "thresholds_px": [float(v) for v in self.thresholds_px],
             "mean_error_px": mean_error,
             "pck": pck,
+            "pck_counts": {
+                str(thr): int(self.pck_counts[thr]) for thr in self.thresholds_px
+            },
             "swap_pairs_total": self.swap_pairs_total,
             "swap_pairs_swapped": self.swap_pairs_swapped,
             "swap_rate": swap_rate,
@@ -214,9 +221,205 @@ class DinoKPSEGEvalAccumulator:
                         str(thr): stats.pck_counts[thr] / float(stats.count)
                         for thr in self.thresholds_px
                     },
+                    "pck_counts": {
+                        str(thr): int(stats.pck_counts[thr])
+                        for thr in self.thresholds_px
+                    },
                 }
             payload["per_keypoint"] = kp_payload
         return payload
+
+
+def _float_or_none(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except Exception:
+        return None
+    if not np.isfinite(out):
+        return None
+    return out
+
+
+def _format_float(value: Optional[float], *, precision: int = 4) -> str:
+    if value is None:
+        return "NA"
+    return f"{float(value):.{int(precision)}f}"
+
+
+def _format_threshold_label(threshold_px: float) -> str:
+    v = float(threshold_px)
+    if abs(v - round(v)) < 1e-9:
+        return f"{int(round(v))}"
+    return f"{v:g}"
+
+
+def _wilson_interval(
+    successes: int, total: int, *, z: float = 1.96
+) -> Tuple[Optional[float], Optional[float]]:
+    n = int(total)
+    if n <= 0:
+        return (None, None)
+    k = max(0, min(int(successes), n))
+    p = float(k) / float(n)
+    z2 = float(z) ** 2
+    denom = 1.0 + z2 / float(n)
+    center = (p + z2 / (2.0 * float(n))) / denom
+    spread = (z / denom) * (
+        (p * (1.0 - p) / float(n) + z2 / (4.0 * float(n) * float(n))) ** 0.5
+    )
+    return (max(0.0, center - spread), min(1.0, center + spread))
+
+
+def _paper_markdown_table(*, rows: Sequence[Tuple[str, str, str]]) -> str:
+    lines = [
+        "| Metric | Value | 95% CI |",
+        "|---|---:|---:|",
+    ]
+    for metric, value, ci in rows:
+        lines.append(f"| {metric} | {value} | {ci} |")
+    return "\n".join(lines)
+
+
+def _paper_latex_table(*, rows: Sequence[Tuple[str, str, str]]) -> str:
+    out = [
+        "\\begin{tabular}{lcc}",
+        "\\hline",
+        "Metric & Value & 95\\% CI \\\\",
+        "\\hline",
+    ]
+    for metric, value, ci in rows:
+        metric_esc = str(metric).replace("_", "\\_")
+        value_esc = str(value).replace("%", "\\%")
+        ci_esc = str(ci).replace("%", "\\%")
+        out.append(f"{metric_esc} & {value_esc} & {ci_esc} \\\\")
+    out.extend(["\\hline", "\\end{tabular}"])
+    return "\n".join(out)
+
+
+def _paper_csv(*, row: Dict[str, object]) -> str:
+    headers = list(row.keys())
+    stream = StringIO()
+    writer = csv.DictWriter(stream, fieldnames=headers)
+    writer.writeheader()
+    writer.writerow({k: ("" if row.get(k) is None else row.get(k)) for k in headers})
+    return stream.getvalue()
+
+
+def build_paper_report(
+    *,
+    summary: Dict[str, object],
+    dataset_name: str,
+    model_name: str,
+    split: str,
+) -> Dict[str, object]:
+    pck_raw = summary.get("pck") or {}
+    pck_counts_raw = summary.get("pck_counts") or {}
+    if not isinstance(pck_raw, dict):
+        pck_raw = {}
+    if not isinstance(pck_counts_raw, dict):
+        pck_counts_raw = {}
+
+    kpt_visible = int(summary.get("keypoints_visible_total") or 0)
+    rows: List[Tuple[str, str, str]] = []
+
+    mean_error = _float_or_none(summary.get("mean_error_px"))
+    rows.append(("Mean Error (px)", _format_float(mean_error, precision=3), "NA"))
+
+    swap_rate = _float_or_none(summary.get("swap_rate"))
+    if swap_rate is not None:
+        rows.append(("Swap Rate", _format_float(swap_rate, precision=4), "NA"))
+
+    csv_row: Dict[str, object] = {
+        "dataset": dataset_name,
+        "split": split,
+        "model": model_name,
+        "images_total": int(summary.get("images_total") or 0),
+        "images_used": int(summary.get("images_used") or 0),
+        "instances_total": int(summary.get("instances_total") or 0),
+        "keypoints_visible_total": int(kpt_visible),
+        "mean_error_px": ("" if mean_error is None else f"{float(mean_error):.6f}"),
+        "swap_rate": ("" if swap_rate is None else f"{float(swap_rate):.6f}"),
+    }
+
+    threshold_values: List[float] = []
+    for key in pck_raw.keys():
+        try:
+            threshold_values.append(float(key))
+        except Exception:
+            continue
+    threshold_values = sorted(set(threshold_values))
+    for thr in threshold_values:
+        key = str(float(thr))
+        pck_val = _float_or_none(pck_raw.get(key))
+        pck_count = int(pck_counts_raw.get(key) or 0)
+        low, high = _wilson_interval(pck_count, kpt_visible)
+        label = _format_threshold_label(thr)
+        ci_text = (
+            "NA"
+            if low is None or high is None
+            else f"[{float(low):.4f}, {float(high):.4f}]"
+        )
+        rows.append((f"PCK@{label}px", _format_float(pck_val, precision=4), ci_text))
+        csv_row[f"pck@{label}px"] = "" if pck_val is None else f"{float(pck_val):.6f}"
+        csv_row[f"pck@{label}px_ci95_low"] = "" if low is None else f"{float(low):.6f}"
+        csv_row[f"pck@{label}px_ci95_high"] = (
+            "" if high is None else f"{float(high):.6f}"
+        )
+
+    markdown = _paper_markdown_table(rows=rows)
+    latex = _paper_latex_table(rows=rows)
+    csv_text = _paper_csv(row=csv_row)
+    generated_at = datetime.now(timezone.utc).isoformat()
+
+    return {
+        "metadata": {
+            "dataset": str(dataset_name),
+            "split": str(split),
+            "model": str(model_name),
+            "generated_at_utc": generated_at,
+        },
+        "summary": summary,
+        "paper_table": {
+            "rows": [
+                {"metric": metric, "value": value, "ci95": ci}
+                for metric, value, ci in rows
+            ],
+            "markdown": markdown,
+            "latex": latex,
+            "csv": csv_text,
+        },
+    }
+
+
+def write_paper_report_files(
+    *,
+    report: Dict[str, object],
+    report_dir: Path,
+    base_name: str = "paper_metrics",
+) -> Dict[str, str]:
+    out_dir = Path(report_dir).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = str(base_name or "paper_metrics").strip() or "paper_metrics"
+    json_path = out_dir / f"{stem}.json"
+    md_path = out_dir / f"{stem}.md"
+    csv_path = out_dir / f"{stem}.csv"
+    tex_path = out_dir / f"{stem}.tex"
+
+    json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    paper_table = report.get("paper_table") if isinstance(report, dict) else None
+    if not isinstance(paper_table, dict):
+        paper_table = {}
+    md_path.write_text(str(paper_table.get("markdown") or ""), encoding="utf-8")
+    csv_path.write_text(str(paper_table.get("csv") or ""), encoding="utf-8")
+    tex_path.write_text(str(paper_table.get("latex") or ""), encoding="utf-8")
+    return {
+        "json": str(json_path),
+        "markdown": str(md_path),
+        "csv": str(csv_path),
+        "latex": str(tex_path),
+    }
 
 
 def _collect_gt_candidates(
@@ -438,25 +641,14 @@ def evaluate(
     kpt_count = int(dataset_spec.kpt_count)
     kpt_dims = int(dataset_spec.kpt_dims)
     keypoint_names = list(dataset_spec.keypoint_names or [])
-    train_images = list(dataset_spec.train_images)
-    val_images = list(dataset_spec.val_images)
-    train_labels = (
-        list(dataset_spec.train_label_paths)
-        if dataset_spec.train_label_paths is not None
-        else None
-    )
-    val_labels = (
-        list(dataset_spec.val_label_paths)
-        if dataset_spec.val_label_paths is not None
-        else None
-    )
+    split_norm = str(split or "val").strip().lower()
     flip_idx = dataset_spec.flip_idx
-    if split not in ("train", "val"):
-        raise ValueError("split must be 'train' or 'val'")
-    image_paths = train_images if split == "train" else val_images
-    label_paths = train_labels if split == "train" else val_labels
+    if split_norm not in ("train", "val", "test"):
+        raise ValueError("split must be 'train', 'val', or 'test'")
+    image_paths = dataset_spec.split_images(split_norm)
+    label_paths = dataset_spec.split_labels(split_norm)
     if not image_paths:
-        raise ValueError(f"No images found for split '{split}'")
+        raise ValueError(f"No images found for split '{split_norm}'")
 
     payload = torch.load(weights, map_location="cpu")
     head, meta = checkpoint_unpack(payload)
@@ -587,24 +779,13 @@ def calibrate_thresholds(
     kpt_count = int(dataset_spec.kpt_count)
     kpt_dims = int(dataset_spec.kpt_dims)
     keypoint_names = list(dataset_spec.keypoint_names or [])
-    train_images = list(dataset_spec.train_images)
-    val_images = list(dataset_spec.val_images)
-    train_labels = (
-        list(dataset_spec.train_label_paths)
-        if dataset_spec.train_label_paths is not None
-        else None
-    )
-    val_labels = (
-        list(dataset_spec.val_label_paths)
-        if dataset_spec.val_label_paths is not None
-        else None
-    )
-    if split not in ("train", "val"):
-        raise ValueError("split must be 'train' or 'val'")
-    image_paths = train_images if split == "train" else val_images
-    label_paths = train_labels if split == "train" else val_labels
+    split_norm = str(split or "val").strip().lower()
+    if split_norm not in ("train", "val", "test"):
+        raise ValueError("split must be 'train', 'val', or 'test'")
+    image_paths = dataset_spec.split_images(split_norm)
+    label_paths = dataset_spec.split_labels(split_norm)
     if not image_paths:
-        raise ValueError(f"No images found for split '{split}'")
+        raise ValueError(f"No images found for split '{split_norm}'")
 
     payload = torch.load(weights, map_location="cpu")
     head, meta = checkpoint_unpack(payload)
@@ -783,7 +964,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--weights", required=True, help="Path to DinoKPSEG checkpoint (.pt)"
     )
-    parser.add_argument("--split", default="val", choices=("train", "val"))
+    parser.add_argument("--split", default="val", choices=("train", "val", "test"))
     parser.add_argument(
         "--thresholds",
         default="4,8,16",
@@ -831,6 +1012,31 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--out", default=None, help="Optional JSON output path (default: stdout)"
     )
+    parser.add_argument(
+        "--paper-report",
+        action="store_true",
+        help="Build paper-ready metrics tables (markdown/csv/latex).",
+    )
+    parser.add_argument(
+        "--dataset-name",
+        default=None,
+        help="Optional dataset display name for paper report output.",
+    )
+    parser.add_argument(
+        "--model-name",
+        default=None,
+        help="Optional model display name for paper report output.",
+    )
+    parser.add_argument(
+        "--report-dir",
+        default=None,
+        help="Optional directory to write paper report artifacts.",
+    )
+    parser.add_argument(
+        "--report-basename",
+        default="paper_metrics",
+        help="Base name for files written by --report-dir.",
+    )
     args = parser.parse_args(argv)
 
     thresholds = _parse_thresholds(args.thresholds)
@@ -838,6 +1044,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     weights = Path(args.weights).expanduser().resolve()
 
     if bool(args.auto_threshold):
+        if bool(args.paper_report):
+            raise ValueError(
+                "--paper-report is only supported for evaluation mode (without --auto-threshold)."
+            )
         grid = _parse_threshold_grid(args.auto_threshold_grid)
         output = calibrate_thresholds(
             data_yaml=data_yaml,
@@ -862,7 +1072,28 @@ def main(argv: Optional[List[str]] = None) -> int:
             max_images=(int(args.max_images) if args.max_images else None),
             include_per_keypoint=bool(args.per_keypoint),
         )
-        output = summary
+        if bool(args.paper_report):
+            dataset_name = (
+                str(args.dataset_name).strip() if args.dataset_name else data_yaml.stem
+            )
+            model_name = (
+                str(args.model_name).strip() if args.model_name else weights.stem
+            )
+            report = build_paper_report(
+                summary=summary,
+                dataset_name=dataset_name,
+                model_name=model_name,
+                split=str(args.split),
+            )
+            if args.report_dir:
+                report["artifacts"] = write_paper_report_files(
+                    report=report,
+                    report_dir=Path(args.report_dir),
+                    base_name=str(args.report_basename),
+                )
+            output = report
+        else:
+            output = summary
 
     text = json.dumps(output, indent=2)
     out_path = args.out

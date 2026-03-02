@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import platform
 import queue
@@ -334,6 +335,12 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         workers: int = 0,
         max_cpu_threads: int = 8,
         max_interop_threads: int = 1,
+        auto_report_enabled: bool = True,
+        auto_report_split: str = "test",
+        auto_report_fallback_to_val: bool = True,
+        auto_report_thresholds: str = "4,8,16",
+        auto_report_per_keypoint: bool = False,
+        auto_report_paper: bool = True,
     ) -> bool:
         if self._training_running:
             QtWidgets.QMessageBox.warning(
@@ -684,10 +691,25 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                     f"Log: {log_path}\n\n{_tail_text(log_path)}"
                 )
 
+            post_training_report = None
+            if bool(auto_report_enabled):
+                post_training_report = self._run_post_training_report(
+                    data_path=data_path,
+                    data_format=str(data_format or "auto"),
+                    best_path=best_path,
+                    output_dir=output_dir,
+                    requested_split=str(auto_report_split or "test"),
+                    fallback_to_val=bool(auto_report_fallback_to_val),
+                    thresholds_text=str(auto_report_thresholds or "4,8,16"),
+                    include_per_keypoint=bool(auto_report_per_keypoint),
+                    paper_report=bool(auto_report_paper),
+                )
+
             return {
                 "best": str(best_path),
                 "output_dir": str(output_dir),
                 "log_path": str(log_path),
+                "post_training_report": post_training_report,
             }
 
         self._training_running = True
@@ -704,14 +726,17 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         def on_finished(outcome: Any) -> None:
             self._handle_finished(outcome, thread, worker, data_config_path)
             resolved_out_dir = None
+            post_training_report = None
             if isinstance(outcome, dict):
                 resolved_out_dir = outcome.get("output_dir")
+                post_training_report = outcome.get("post_training_report")
             self.training_finished.emit(
                 {
                     "task": "dino_kpseg",
                     "model": str(model_name),
                     "run_dir": str(resolved_out_dir or output_dir),
                     "ok": not isinstance(outcome, Exception),
+                    "post_training_report": post_training_report,
                 }
             )
 
@@ -1095,6 +1120,23 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 details += f"\n\nBest checkpoint:\n{best}"
             if log_path:
                 details += f"\n\nTraining log:\n{log_path}"
+            post_report = outcome.get("post_training_report")
+            if isinstance(post_report, dict):
+                if bool(post_report.get("ok")):
+                    details += "\n\nAuto test report: completed."
+                    if post_report.get("used_split"):
+                        details += f"\nSplit used: {post_report.get('used_split')}"
+                    if post_report.get("summary_json"):
+                        details += f"\nSummary JSON:\n{post_report.get('summary_json')}"
+                    artifacts = post_report.get("paper_artifacts")
+                    if isinstance(artifacts, dict) and artifacts:
+                        details += "\nPaper artifacts:"
+                        for _, path_value in artifacts.items():
+                            details += f"\n- {path_value}"
+                else:
+                    details += "\n\nAuto test report: failed."
+                    if post_report.get("error"):
+                        details += f"\nReason: {post_report.get('error')}"
 
         QtWidgets.QMessageBox.information(
             self._window,
@@ -1104,6 +1146,117 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         self._window.statusBar().showMessage(
             self._window.tr("DinoKPSEG training completed.")
         )
+
+    @staticmethod
+    def _parse_pck_thresholds(text: str) -> Tuple[float, ...]:
+        raw = str(text or "").strip()
+        if not raw:
+            return (4.0, 8.0, 16.0)
+        out: List[float] = []
+        for token in raw.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                value = float(token)
+            except Exception:
+                continue
+            if value > 0:
+                out.append(float(value))
+        if not out:
+            return (4.0, 8.0, 16.0)
+        return tuple(out)
+
+    def _run_post_training_report(
+        self,
+        *,
+        data_path: Path,
+        data_format: str,
+        best_path: Path,
+        output_dir: Path,
+        requested_split: str,
+        fallback_to_val: bool,
+        thresholds_text: str,
+        include_per_keypoint: bool,
+        paper_report: bool,
+    ) -> Dict[str, Any]:
+        from annolid.segmentation.dino_kpseg.eval import (
+            build_paper_report,
+            evaluate,
+            write_paper_report_files,
+        )
+
+        split_raw = str(requested_split or "test").strip().lower()
+        split = split_raw if split_raw in {"train", "val", "test"} else "test"
+        splits_to_try: List[str] = [split]
+        if split == "test" and bool(fallback_to_val):
+            splits_to_try.append("val")
+
+        thresholds = self._parse_pck_thresholds(thresholds_text)
+        errors: List[str] = []
+        summary: Optional[Dict[str, Any]] = None
+        used_split: Optional[str] = None
+        for candidate in splits_to_try:
+            try:
+                summary = evaluate(
+                    data_yaml=data_path,
+                    data_format=str(data_format or "auto"),
+                    weights=best_path,
+                    split=str(candidate),
+                    thresholds_px=thresholds,
+                    device=None,
+                    max_images=None,
+                    include_per_keypoint=bool(include_per_keypoint),
+                )
+                used_split = str(candidate)
+                break
+            except Exception as exc:
+                errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+
+        if summary is None or used_split is None:
+            return {
+                "ok": False,
+                "requested_split": split,
+                "attempted_splits": splits_to_try,
+                "error": "; ".join(errors) if errors else "Unknown evaluation error.",
+            }
+
+        report_dir = output_dir / "reports" / "eval" / used_split
+        report_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = report_dir / f"{used_split}_summary.json"
+        summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+        out: Dict[str, Any] = {
+            "ok": True,
+            "requested_split": split,
+            "used_split": used_split,
+            "summary_json": str(summary_path),
+        }
+        if errors:
+            out["warnings"] = list(errors)
+
+        if not bool(paper_report):
+            return out
+
+        try:
+            dataset_name = self._infer_run_name(str(data_path)) or data_path.stem
+            model_name = best_path.stem
+            report_payload = build_paper_report(
+                summary=summary,
+                dataset_name=str(dataset_name),
+                model_name=str(model_name),
+                split=str(used_split),
+            )
+            artifacts = write_paper_report_files(
+                report=report_payload,
+                report_dir=report_dir,
+                base_name=f"{used_split}_paper_metrics",
+            )
+            out["paper_artifacts"] = artifacts
+        except Exception as exc:
+            out["warnings"] = list(out.get("warnings", []))
+            out["warnings"].append(f"paper_report: {type(exc).__name__}: {exc}")
+        return out
 
     def _show_start_notification(self) -> None:
         self._close_start_notification()

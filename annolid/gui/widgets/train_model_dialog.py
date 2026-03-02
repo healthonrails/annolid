@@ -9,8 +9,13 @@ from qtpy import QtCore, QtWidgets
 from annolid.utils.devices import get_device
 from annolid.gui.models_registry import (
     MODEL_REGISTRY,
-    PATCH_SIMILARITY_MODELS,
     PATCH_SIMILARITY_DEFAULT_MODEL,
+)
+from annolid.gui.widgets.dino_training_ui_shared import (
+    apply_dino_bce_control_state,
+    apply_dino_head_control_state,
+    configure_dino_model_combo,
+    create_dino_head_loss_controls,
 )
 from annolid.segmentation.dino_kpseg import defaults as dino_defaults
 
@@ -133,6 +138,12 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.dino_workers = 0
         self.dino_max_cpu_threads = 8
         self.dino_max_interop_threads = 1
+        self.dino_auto_report_enabled = True
+        self.dino_auto_report_split = "test"
+        self.dino_auto_report_fallback_to_val = True
+        self.dino_auto_report_thresholds = "4,8,16"
+        self.dino_auto_report_per_keypoint = False
+        self.dino_auto_report_paper = True
 
         # YOLO hyperparams (Advanced tab)
         self.yolo_lr0 = 0.01
@@ -430,12 +441,9 @@ class TrainModelDialog(QtWidgets.QDialog):
         form.setLabelAlignment(QtCore.Qt.AlignRight)
 
         self.dino_model_combo = QtWidgets.QComboBox(self.dino_model_groupbox)
-        for cfg in PATCH_SIMILARITY_MODELS:
-            self.dino_model_combo.addItem(cfg.display_name, cfg.identifier)
-
-        idx = self.dino_model_combo.findData(self.dino_model_name)
-        if idx >= 0:
-            self.dino_model_combo.setCurrentIndex(idx)
+        configure_dino_model_combo(
+            self.dino_model_combo, default_identifier=str(self.dino_model_name)
+        )
 
         self.dino_model_combo.currentIndexChanged.connect(
             lambda _=None: setattr(
@@ -831,18 +839,40 @@ class TrainModelDialog(QtWidgets.QDialog):
         form = QtWidgets.QFormLayout(box)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
 
-        head_type = QtWidgets.QComboBox(box)
-        head_type.addItem("Relational attention head", userData="relational")
-        head_type.addItem("Conv head (fast)", userData="conv")
-        head_type.addItem("Multitask head", userData="multitask")
-        saved_head_type = (
-            str(getattr(self, "dino_head_type", dino_defaults.HEAD_TYPE) or "")
-            .strip()
-            .lower()
+        controls = create_dino_head_loss_controls(
+            box,
+            head_type=str(getattr(self, "dino_head_type", dino_defaults.HEAD_TYPE)),
+            attn_heads=int(getattr(self, "dino_attn_heads", dino_defaults.ATTN_HEADS)),
+            attn_layers=int(
+                getattr(self, "dino_attn_layers", dino_defaults.ATTN_LAYERS)
+            ),
+            hidden_dim=int(getattr(self, "dino_hidden_dim", dino_defaults.HIDDEN_DIM)),
+            threshold=float(getattr(self, "dino_threshold", dino_defaults.THRESHOLD)),
+            bce_type=str(getattr(self, "dino_bce_type", dino_defaults.BCE_TYPE)),
+            focal_alpha=float(
+                getattr(self, "dino_focal_alpha", dino_defaults.FOCAL_ALPHA)
+            ),
+            focal_gamma=float(
+                getattr(self, "dino_focal_gamma", dino_defaults.FOCAL_GAMMA)
+            ),
+            obj_loss_weight=float(
+                getattr(self, "dino_obj_loss_weight", dino_defaults.OBJ_LOSS_WEIGHT)
+            ),
+            box_loss_weight=float(
+                getattr(self, "dino_box_loss_weight", dino_defaults.BOX_LOSS_WEIGHT)
+            ),
+            inst_loss_weight=float(
+                getattr(self, "dino_inst_loss_weight", dino_defaults.INST_LOSS_WEIGHT)
+            ),
+            multitask_aux_warmup_epochs=int(
+                getattr(
+                    self,
+                    "dino_multitask_aux_warmup_epochs",
+                    dino_defaults.MULTITASK_AUX_WARMUP_EPOCHS,
+                )
+            ),
         )
-        head_default_idx = head_type.findData(saved_head_type)
-        if head_default_idx >= 0:
-            head_type.setCurrentIndex(head_default_idx)
+        head_type = controls.head_type_combo
 
         def _on_head_changed(_=None) -> None:
             setattr(
@@ -855,15 +885,11 @@ class TrainModelDialog(QtWidgets.QDialog):
         head_type.currentIndexChanged.connect(_on_head_changed)
         self._dino_head_type_combo = head_type
 
-        attn_heads = QtWidgets.QSpinBox(box)
-        attn_heads.setRange(1, 32)
-        attn_heads.setValue(int(getattr(self, "dino_attn_heads", 4)))
+        attn_heads = controls.attn_heads_spin
         self._bind_spin_int(attn_heads, "dino_attn_heads")
         self._dino_attn_heads_spin = attn_heads
 
-        attn_layers = QtWidgets.QSpinBox(box)
-        attn_layers.setRange(1, 8)
-        attn_layers.setValue(int(getattr(self, "dino_attn_layers", 1)))
+        attn_layers = controls.attn_layers_spin
         self._bind_spin_int(attn_layers, "dino_attn_layers")
         self._dino_attn_layers_spin = attn_layers
 
@@ -899,35 +925,19 @@ class TrainModelDialog(QtWidgets.QDialog):
         self._bind_spin_float(side_margin, "dino_lr_side_loss_margin")
         self._dino_side_loss_margin = side_margin
 
-        obj_w = QtWidgets.QDoubleSpinBox(box)
-        obj_w.setDecimals(6)
-        obj_w.setRange(0.0, 10.0)
-        obj_w.setSingleStep(0.01)
-        obj_w.setValue(float(getattr(self, "dino_obj_loss_weight", 0.0)))
+        obj_w = controls.obj_loss_weight_spin
         self._bind_spin_float(obj_w, "dino_obj_loss_weight")
 
-        box_w = QtWidgets.QDoubleSpinBox(box)
-        box_w.setDecimals(6)
-        box_w.setRange(0.0, 10.0)
-        box_w.setSingleStep(0.01)
-        box_w.setValue(float(getattr(self, "dino_box_loss_weight", 0.0)))
+        box_w = controls.box_loss_weight_spin
         self._bind_spin_float(box_w, "dino_box_loss_weight")
 
-        inst_w = QtWidgets.QDoubleSpinBox(box)
-        inst_w.setDecimals(6)
-        inst_w.setRange(0.0, 10.0)
-        inst_w.setSingleStep(0.01)
-        inst_w.setValue(float(getattr(self, "dino_inst_loss_weight", 0.0)))
+        inst_w = controls.inst_loss_weight_spin
         self._bind_spin_float(inst_w, "dino_inst_loss_weight")
 
-        multitask_aux_warmup = QtWidgets.QSpinBox(box)
-        multitask_aux_warmup.setRange(0, 1000)
-        multitask_aux_warmup.setValue(
-            int(getattr(self, "dino_multitask_aux_warmup_epochs", 0))
-        )
+        multitask_aux_warmup = controls.multitask_aux_warmup_spin
         self._bind_spin_int(multitask_aux_warmup, "dino_multitask_aux_warmup_epochs")
 
-        self._dino_multitask_controls = [obj_w, box_w, inst_w, multitask_aux_warmup]
+        self._dino_multitask_controls = list(controls.multitask_controls)
 
         lr = QtWidgets.QDoubleSpinBox(box)
         lr.setDecimals(6)
@@ -943,29 +953,13 @@ class TrainModelDialog(QtWidgets.QDialog):
         radius.setValue(float(self.dino_radius_px))
         self._bind_spin_float(radius, "dino_radius_px")
 
-        hidden = QtWidgets.QSpinBox(box)
-        hidden.setRange(16, 2048)
-        hidden.setSingleStep(16)
-        hidden.setValue(int(self.dino_hidden_dim))
+        hidden = controls.hidden_dim_spin
         self._bind_spin_int(hidden, "dino_hidden_dim")
 
-        thr = QtWidgets.QDoubleSpinBox(box)
-        thr.setDecimals(3)
-        thr.setRange(0.01, 0.99)
-        thr.setSingleStep(0.01)
-        thr.setValue(float(self.dino_threshold))
+        thr = controls.threshold_spin
         self._bind_spin_float(thr, "dino_threshold")
 
-        bce_type = QtWidgets.QComboBox(box)
-        bce_type.addItem("Standard BCE", userData="bce")
-        bce_type.addItem("Focal BCE", userData="focal")
-        bce_default = str(
-            getattr(self, "dino_bce_type", dino_defaults.BCE_TYPE)
-            or dino_defaults.BCE_TYPE
-        )
-        bce_idx = bce_type.findData(bce_default)
-        if bce_idx >= 0:
-            bce_type.setCurrentIndex(bce_idx)
+        bce_type = controls.bce_type_combo
 
         def _on_bce_changed(_=None) -> None:
             setattr(
@@ -977,25 +971,13 @@ class TrainModelDialog(QtWidgets.QDialog):
 
         bce_type.currentIndexChanged.connect(_on_bce_changed)
 
-        focal_alpha = QtWidgets.QDoubleSpinBox(box)
-        focal_alpha.setDecimals(3)
-        focal_alpha.setRange(0.0, 1.0)
-        focal_alpha.setSingleStep(0.05)
-        focal_alpha.setValue(
-            float(getattr(self, "dino_focal_alpha", dino_defaults.FOCAL_ALPHA))
-        )
+        focal_alpha = controls.focal_alpha_spin
         self._bind_spin_float(focal_alpha, "dino_focal_alpha")
 
-        focal_gamma = QtWidgets.QDoubleSpinBox(box)
-        focal_gamma.setDecimals(3)
-        focal_gamma.setRange(0.0, 10.0)
-        focal_gamma.setSingleStep(0.1)
-        focal_gamma.setValue(
-            float(getattr(self, "dino_focal_gamma", dino_defaults.FOCAL_GAMMA))
-        )
+        focal_gamma = controls.focal_gamma_spin
         self._bind_spin_float(focal_gamma, "dino_focal_gamma")
 
-        self._dino_focal_controls = [focal_alpha, focal_gamma]
+        self._dino_focal_controls = list(controls.focal_controls)
 
         coord_warmup = QtWidgets.QSpinBox(box)
         coord_warmup.setRange(0, 1000)
@@ -1084,6 +1066,104 @@ class TrainModelDialog(QtWidgets.QDialog):
             max_cpu_threads,
             max_interop_threads,
         ]
+
+        auto_report_enable = QtWidgets.QCheckBox(
+            "Auto-run evaluation report after training", box
+        )
+        auto_report_enable.setChecked(
+            bool(getattr(self, "dino_auto_report_enabled", True))
+        )
+
+        def _on_auto_report_changed(_=None) -> None:
+            setattr(
+                self, "dino_auto_report_enabled", bool(auto_report_enable.isChecked())
+            )
+            self._update_dino_auto_report_controls()
+
+        auto_report_enable.stateChanged.connect(_on_auto_report_changed)
+
+        auto_report_split = QtWidgets.QComboBox(box)
+        auto_report_split.addItem("Test split", userData="test")
+        auto_report_split.addItem("Validation split", userData="val")
+        auto_report_split.addItem("Train split", userData="train")
+        split_default = str(getattr(self, "dino_auto_report_split", "test") or "test")
+        split_idx = auto_report_split.findData(split_default)
+        if split_idx >= 0:
+            auto_report_split.setCurrentIndex(split_idx)
+
+        def _on_auto_report_split_changed(_=None) -> None:
+            setattr(
+                self,
+                "dino_auto_report_split",
+                str(auto_report_split.currentData() or "test"),
+            )
+            self._update_dino_auto_report_controls()
+
+        auto_report_split.currentIndexChanged.connect(_on_auto_report_split_changed)
+
+        auto_report_fallback = QtWidgets.QCheckBox(
+            "If test split is missing, fallback to val", box
+        )
+        auto_report_fallback.setChecked(
+            bool(getattr(self, "dino_auto_report_fallback_to_val", True))
+        )
+        auto_report_fallback.stateChanged.connect(
+            lambda _=None: (
+                setattr(
+                    self,
+                    "dino_auto_report_fallback_to_val",
+                    bool(auto_report_fallback.isChecked()),
+                ),
+                self._update_dino_auto_report_controls(),
+            )
+        )
+
+        auto_report_thresholds = QtWidgets.QLineEdit(box)
+        auto_report_thresholds.setPlaceholderText("4,8,16")
+        auto_report_thresholds.setText(
+            str(getattr(self, "dino_auto_report_thresholds", "4,8,16"))
+        )
+        self._bind_lineedit_str(auto_report_thresholds, "dino_auto_report_thresholds")
+
+        auto_report_per_kpt = QtWidgets.QCheckBox("Include per-keypoint metrics", box)
+        auto_report_per_kpt.setChecked(
+            bool(getattr(self, "dino_auto_report_per_keypoint", False))
+        )
+        auto_report_per_kpt.stateChanged.connect(
+            lambda _=None: setattr(
+                self,
+                "dino_auto_report_per_keypoint",
+                bool(auto_report_per_kpt.isChecked()),
+            )
+        )
+
+        auto_report_paper = QtWidgets.QCheckBox(
+            "Generate paper artifacts (JSON/MD/CSV/LaTeX)", box
+        )
+        auto_report_paper.setChecked(
+            bool(getattr(self, "dino_auto_report_paper", True))
+        )
+        auto_report_paper.stateChanged.connect(
+            lambda _=None: setattr(
+                self, "dino_auto_report_paper", bool(auto_report_paper.isChecked())
+            )
+        )
+
+        auto_report_hint = QtWidgets.QLabel(box)
+        auto_report_hint.setWordWrap(True)
+        auto_report_hint.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self._dino_auto_report_output_hint = auto_report_hint
+
+        self._dino_auto_report_controls = [
+            auto_report_split,
+            auto_report_fallback,
+            auto_report_thresholds,
+            auto_report_per_kpt,
+            auto_report_paper,
+            auto_report_hint,
+        ]
+        self._dino_auto_report_split_control = auto_report_split
+        self._dino_auto_report_fallback_control = auto_report_fallback
 
         cache = QtWidgets.QCheckBox("Cache frozen DINO features to disk", box)
         cache.setChecked(bool(self.dino_cache_features))
@@ -1379,6 +1459,13 @@ class TrainModelDialog(QtWidgets.QDialog):
         form.addRow("DataLoader workers", workers)
         form.addRow("Max CPU threads", max_cpu_threads)
         form.addRow("Max interop threads", max_interop_threads)
+        form.addRow("", auto_report_enable)
+        form.addRow("Auto-report split", auto_report_split)
+        form.addRow("", auto_report_fallback)
+        form.addRow("Auto-report PCK thresholds", auto_report_thresholds)
+        form.addRow("", auto_report_per_kpt)
+        form.addRow("", auto_report_paper)
+        form.addRow("Auto-report output", auto_report_hint)
         form.addRow("Best checkpoint metric", best_metric)
         form.addRow("Early stop metric", early_stop_metric)
         form.addRow("Weighted PCK weights", pck_weights)
@@ -1405,6 +1492,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self._update_dino_radius_schedule_controls()
         self._update_dino_model_selection_controls()
         self._update_dino_resource_controls()
+        self._update_dino_auto_report_controls()
         return box
 
     def _update_dino_model_selection_controls(self) -> None:
@@ -1422,28 +1510,26 @@ class TrainModelDialog(QtWidgets.QDialog):
             pass
 
     def _update_dino_head_controls(self) -> None:
-        head_type = (
-            str(getattr(self, "dino_head_type", dino_defaults.HEAD_TYPE) or "")
-            .strip()
-            .lower()
+        head_type = str(getattr(self, "dino_head_type", dino_defaults.HEAD_TYPE) or "")
+        relational_controls = [
+            w
+            for w in (
+                getattr(self, "_dino_attn_heads_spin", None),
+                getattr(self, "_dino_attn_layers_spin", None),
+                getattr(self, "_dino_pair_loss_weight", None),
+                getattr(self, "_dino_pair_margin_px", None),
+                getattr(self, "_dino_side_loss_weight", None),
+                getattr(self, "_dino_side_loss_margin", None),
+            )
+            if w is not None
+        ]
+        apply_dino_head_control_state(
+            head_type=head_type,
+            relational_controls=relational_controls,
+            multitask_controls=list(
+                getattr(self, "_dino_multitask_controls", []) or []
+            ),
         )
-        attn_enabled = head_type == "relational"
-        multitask_enabled = head_type == "multitask"
-        for w in (
-            getattr(self, "_dino_attn_heads_spin", None),
-            getattr(self, "_dino_attn_layers_spin", None),
-            getattr(self, "_dino_pair_loss_weight", None),
-            getattr(self, "_dino_pair_margin_px", None),
-            getattr(self, "_dino_side_loss_weight", None),
-            getattr(self, "_dino_side_loss_margin", None),
-        ):
-            if w is not None:
-                w.setEnabled(attn_enabled)
-        for w in getattr(self, "_dino_multitask_controls", []) or []:
-            try:
-                w.setEnabled(multitask_enabled)
-            except Exception:
-                pass
 
     def _update_dino_projector_enabled_state(self) -> None:
         enabled = bool(getattr(self, "dino_tb_projector", dino_defaults.TB_PROJECTOR))
@@ -1457,23 +1543,15 @@ class TrainModelDialog(QtWidgets.QDialog):
                 pass
 
     def _update_dino_focal_controls(self) -> None:
-        bce_type = (
-            str(
-                getattr(self, "dino_bce_type", dino_defaults.BCE_TYPE)
-                or dino_defaults.BCE_TYPE
-            )
-            .strip()
-            .lower()
+        bce_type = str(
+            getattr(self, "dino_bce_type", dino_defaults.BCE_TYPE)
+            or dino_defaults.BCE_TYPE
         )
-        enabled = bce_type == "focal"
-        controls = getattr(self, "_dino_focal_controls", None)
-        if not controls:
-            return
-        for widget in controls:
-            try:
-                widget.setEnabled(enabled)
-            except Exception:
-                pass
+        controls = list(getattr(self, "_dino_focal_controls", None) or [])
+        apply_dino_bce_control_state(
+            bce_type=bce_type,
+            focal_controls=controls,
+        )
 
     def _update_dino_radius_schedule_controls(self) -> None:
         schedule = (
@@ -1500,6 +1578,38 @@ class TrainModelDialog(QtWidgets.QDialog):
                 widget.setEnabled(enabled)
             except Exception:
                 pass
+
+    def _update_dino_auto_report_controls(self) -> None:
+        enabled = bool(getattr(self, "dino_auto_report_enabled", True))
+        controls = getattr(self, "_dino_auto_report_controls", None)
+        if controls:
+            for widget in controls:
+                try:
+                    widget.setEnabled(enabled)
+                except Exception:
+                    pass
+
+        split_control = getattr(self, "_dino_auto_report_split_control", None)
+        fallback_control = getattr(self, "_dino_auto_report_fallback_control", None)
+        if split_control is None or fallback_control is None:
+            return
+        split_value = str(split_control.currentData() or "test").strip().lower()
+        fallback_control.setEnabled(enabled and split_value == "test")
+        hint = getattr(self, "_dino_auto_report_output_hint", None)
+        if hint is not None:
+            used_split = (
+                "test|val"
+                if split_value == "test"
+                and bool(getattr(self, "dino_auto_report_fallback_to_val", True))
+                else split_value
+            )
+            hint_text = (
+                "Saved after training under run directory:\n"
+                f"<run_dir>/reports/eval/{used_split}/\n"
+                "- <split>_summary.json\n"
+                "- <split>_paper_metrics.json/.md/.csv/.tex (if enabled)"
+            )
+            hint.setText(hint_text)
 
     def _build_dino_augment_groupbox(self) -> QtWidgets.QGroupBox:
         box = QtWidgets.QGroupBox("DINO KPSEG Augmentations", self)
