@@ -4,6 +4,7 @@ import argparse
 import csv
 from datetime import datetime, timezone
 import json
+import math
 from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
@@ -29,6 +30,8 @@ from annolid.segmentation.dino_kpseg.keypoints import (
 )
 from annolid.segmentation.dino_kpseg.model import checkpoint_unpack
 from annolid.utils.annotation_store import load_labelme_json
+
+_AP_OKS_THRESHOLDS: Tuple[float, ...] = tuple(0.50 + 0.05 * i for i in range(10))
 
 
 def _average_precision(
@@ -446,6 +449,108 @@ def _collect_gt_candidates(
     return candidates
 
 
+def _default_oks_sigma_for_name(name: str) -> float:
+    token = str(name or "").strip().lower()
+    if token and any(k in token for k in ("nose", "snout", "muzzle")):
+        return 0.026
+    return 0.067
+
+
+def default_oks_sigmas(
+    *,
+    kpt_count: int,
+    keypoint_names: Optional[Sequence[str]] = None,
+) -> List[float]:
+    names = list(keypoint_names or [])
+    out: List[float] = []
+    for idx in range(int(kpt_count)):
+        if idx < len(names):
+            out.append(float(_default_oks_sigma_for_name(str(names[idx]))))
+        else:
+            out.append(0.067)
+    return out
+
+
+def _gt_instance_scale_px(
+    gt_kpts: np.ndarray,
+    *,
+    image_hw: Tuple[int, int],
+) -> Optional[float]:
+    if gt_kpts.ndim != 2 or gt_kpts.shape[1] < 2:
+        return None
+    height, width = int(image_hw[0]), int(image_hw[1])
+    xs: List[float] = []
+    ys: List[float] = []
+    for i in range(int(gt_kpts.shape[0])):
+        x_norm = float(gt_kpts[i, 0])
+        y_norm = float(gt_kpts[i, 1])
+        v = float(gt_kpts[i, 2]) if gt_kpts.shape[1] >= 3 else 2.0
+        if v <= 0:
+            continue
+        if not (0.0 <= x_norm <= 1.0 and 0.0 <= y_norm <= 1.0):
+            continue
+        xs.append(float(x_norm) * float(width))
+        ys.append(float(y_norm) * float(height))
+    if len(xs) < 2 or len(ys) < 2:
+        return None
+    box_w = max(xs) - min(xs)
+    box_h = max(ys) - min(ys)
+    area = max(1.0, float(box_w) * float(box_h))
+    return float(math.sqrt(area))
+
+
+def _min_error_and_scale_px(
+    pred_xy: Tuple[float, float],
+    gt_instances: Sequence[np.ndarray],
+    *,
+    kpt_idx: int,
+    image_hw: Tuple[int, int],
+) -> Optional[Tuple[float, float]]:
+    px, py = float(pred_xy[0]), float(pred_xy[1])
+    height, width = int(image_hw[0]), int(image_hw[1])
+    best_err: Optional[float] = None
+    best_scale: Optional[float] = None
+
+    for kpts in gt_instances:
+        if kpts.ndim != 2 or kpts.shape[1] < 2:
+            continue
+        if int(kpt_idx) >= int(kpts.shape[0]):
+            continue
+        x_norm = float(kpts[int(kpt_idx), 0])
+        y_norm = float(kpts[int(kpt_idx), 1])
+        v = float(kpts[int(kpt_idx), 2]) if kpts.shape[1] >= 3 else 2.0
+        if v <= 0:
+            continue
+        if not (0.0 <= x_norm <= 1.0 and 0.0 <= y_norm <= 1.0):
+            continue
+        gx = float(x_norm) * float(width)
+        gy = float(y_norm) * float(height)
+        err = float(((px - gx) ** 2 + (py - gy) ** 2) ** 0.5)
+        scale = _gt_instance_scale_px(kpts, image_hw=image_hw)
+        if scale is None:
+            continue
+        if best_err is None or err < best_err:
+            best_err = float(err)
+            best_scale = float(scale)
+
+    if best_err is None or best_scale is None:
+        return None
+    return (float(best_err), float(best_scale))
+
+
+def oks_from_error(
+    *,
+    error_px: float,
+    scale_px: float,
+    sigma: float,
+) -> float:
+    err = max(0.0, float(error_px))
+    s = max(1e-6, float(scale_px))
+    k = max(1e-6, float(sigma))
+    denom = 2.0 * (s**2) * (k**2)
+    return float(math.exp(-(err**2) / denom))
+
+
 def _min_error_px(
     pred_xy: Tuple[float, float],
     gt_candidates: Iterable[Tuple[float, float]],
@@ -684,6 +789,13 @@ def evaluate(
         thresholds_px=thresholds_px,
         keypoint_names=meta.keypoint_names or keypoint_names,
     )
+    oks_sigmas = default_oks_sigmas(
+        kpt_count=int(meta.num_parts),
+        keypoint_names=(meta.keypoint_names or keypoint_names),
+    )
+    det_scores: List[List[float]] = [[] for _ in range(int(meta.num_parts))]
+    det_oks: List[List[float]] = [[] for _ in range(int(meta.num_parts))]
+    gt_counts = [0 for _ in range(int(meta.num_parts))]
 
     limit = int(max_images) if max_images is not None else None
     for idx, image_path in enumerate(image_paths):
@@ -739,7 +851,9 @@ def evaluate(
         with torch.no_grad():
             logits = head(feats.unsqueeze(0).to(device_t, dtype=torch.float32))[0]
         probs = torch.sigmoid(logits).to("cpu")
-        pred_resized = _predict_keypoints(probs, patch_size=patch_size)
+        pred_resized, pred_scores = _predict_keypoints_and_scores(
+            probs, patch_size=patch_size
+        )
 
         pred_xy = []
         for x_res, y_res in pred_resized:
@@ -747,14 +861,83 @@ def evaluate(
             y_orig = y_res * (float(height) / float(resized_h))
             pred_xy.append((float(x_orig), float(y_orig)))
 
+        for kpt_idx in range(int(meta.num_parts)):
+            if kpt_idx >= len(pred_xy):
+                continue
+            matched = _min_error_and_scale_px(
+                pred_xy[kpt_idx],
+                gt_instances,
+                kpt_idx=int(kpt_idx),
+                image_hw=(height, width),
+            )
+            if matched is None:
+                continue
+            err_px, scale_px = matched
+            gt_counts[kpt_idx] += 1
+            score = float(pred_scores[kpt_idx]) if kpt_idx < len(pred_scores) else 0.0
+            sigma = float(oks_sigmas[kpt_idx]) if kpt_idx < len(oks_sigmas) else 0.067
+            det_scores[kpt_idx].append(float(score))
+            det_oks[kpt_idx].append(
+                oks_from_error(
+                    error_px=float(err_px),
+                    scale_px=float(scale_px),
+                    sigma=float(sigma),
+                )
+            )
+
         acc.update(
             pred_xy=pred_xy,
             gt_instances=gt_instances,
             image_hw=(height, width),
             lr_pairs=lr_pairs,
         )
+    summary = acc.summary(include_per_keypoint=include_per_keypoint)
 
-    return acc.summary(include_per_keypoint=include_per_keypoint)
+    ap50_list: List[float] = []
+    ap5095_list: List[float] = []
+    prec_list: List[float] = []
+    rec_list: List[float] = []
+    conf_gate = 0.01
+    for i in range(int(meta.num_parts)):
+        n_gt = int(gt_counts[i])
+        if n_gt <= 0:
+            continue
+        scores_i = det_scores[i]
+        oks_i = det_oks[i]
+        ap_by_thr = []
+        for thr in _AP_OKS_THRESHOLDS:
+            tp_flags = [float(v) >= float(thr) for v in oks_i]
+            ap_by_thr.append(_average_precision(scores_i, tp_flags, num_gt=n_gt))
+        ap50_list.append(float(ap_by_thr[0] if ap_by_thr else 0.0))
+        ap5095_list.append(float(sum(ap_by_thr) / max(1, len(ap_by_thr))))
+
+        tp_i = 0
+        fp_i = 0
+        for score, oks_v in zip(scores_i, oks_i):
+            if float(score) < float(conf_gate):
+                continue
+            if float(oks_v) >= 0.50:
+                tp_i += 1
+            else:
+                fp_i += 1
+        prec_list.append(float(tp_i / max(1, (tp_i + fp_i))))
+        rec_list.append(float(tp_i / max(1, n_gt)))
+
+    summary["metrics/precision(P)"] = (
+        float(sum(prec_list) / len(prec_list)) if prec_list else 0.0
+    )
+    summary["metrics/recall(P)"] = (
+        float(sum(rec_list) / len(rec_list)) if rec_list else 0.0
+    )
+    summary["metrics/mAP50(P)"] = (
+        float(sum(ap50_list) / len(ap50_list)) if ap50_list else 0.0
+    )
+    summary["metrics/mAP50-95(P)"] = (
+        float(sum(ap5095_list) / len(ap5095_list)) if ap5095_list else 0.0
+    )
+    summary["oks_thresholds"] = [float(v) for v in _AP_OKS_THRESHOLDS]
+    summary["oks_sigmas"] = [float(v) for v in oks_sigmas]
+    return summary
 
 
 def calibrate_thresholds(

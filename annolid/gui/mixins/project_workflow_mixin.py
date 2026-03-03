@@ -203,6 +203,7 @@ class ProjectWorkflowMixin:
                     "multitask_aux_warmup_epochs",
                     dino_defaults.MULTITASK_AUX_WARMUP_EPOCHS,
                 ),
+                freeze_bn=config.get("freeze_bn", None),
             )
             self.statusBar().showMessage(self.tr("DINO KPSEG training started"), 3000)
         except Exception as e:

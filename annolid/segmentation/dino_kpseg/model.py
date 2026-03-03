@@ -72,6 +72,20 @@ class DinoKPSEGHead(nn.Module):
         return self.net(feats_bchw)
 
 
+def freeze_batchnorm_running_stats(module: nn.Module) -> int:
+    """Set all BatchNorm layers to eval() so running stats stay fixed.
+
+    Returns:
+        Number of BatchNorm modules affected.
+    """
+    count = 0
+    for child in module.modules():
+        if isinstance(child, nn.modules.batchnorm._BatchNorm):
+            child.eval()
+            count += 1
+    return int(count)
+
+
 class _HRNetConvBlock(nn.Module):
     """Depthwise-separable conv block with residual for HRNet branches.
 

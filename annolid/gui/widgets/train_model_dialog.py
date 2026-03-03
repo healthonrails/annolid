@@ -58,6 +58,8 @@ class TrainModelDialog(QtWidgets.QDialog):
         # YOLO defaults
         self.image_size = 640
         self.epochs = 100
+        self.yolo_epochs = 100
+        self.dino_epochs = 210
         self.yolo_device = self._default_yolo_device()
         self.yolo_plots = True
 
@@ -71,7 +73,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.dino_layers = str(dino_defaults.LAYERS)
         self.dino_radius_px = float(dino_defaults.RADIUS_PX)
         self.dino_hidden_dim = int(dino_defaults.HIDDEN_DIM)
-        self.dino_head_type = str(dino_defaults.HEAD_TYPE)
+        self.dino_head_type = "conv"
         self.dino_attn_heads = int(dino_defaults.ATTN_HEADS)
         self.dino_attn_layers = int(dino_defaults.ATTN_LAYERS)
         self.dino_lr_pair_loss_weight = float(dino_defaults.LR_PAIR_LOSS_WEIGHT)
@@ -84,7 +86,8 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.dino_multitask_aux_warmup_epochs = int(
             dino_defaults.MULTITASK_AUX_WARMUP_EPOCHS
         )
-        self.dino_lr = float(dino_defaults.LR)
+        self.dino_lr = 5e-4
+        self.dino_freeze_bn: Optional[bool] = None
         self.dino_threshold = float(dino_defaults.THRESHOLD)
         self.dino_bce_type = str(dino_defaults.BCE_TYPE)
         self.dino_focal_alpha = float(dino_defaults.FOCAL_ALPHA)
@@ -229,7 +232,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.epochs_spin = QtWidgets.QSpinBox(self)
         self.epochs_spin.setRange(1, 300)
         self.epochs_spin.setValue(int(self.epochs))
-        self._bind_spin_int(self.epochs_spin, "epochs")
+        self.epochs_spin.valueChanged.connect(self._on_epochs_changed)
 
         self.max_iter_spin = QtWidgets.QSpinBox(self)
         self.max_iter_spin.setRange(100, 20000)
@@ -657,6 +660,14 @@ class TrainModelDialog(QtWidgets.QDialog):
         dino_selected = self.algo == "DINO KPSEG"
         classic_selected = not (yolo_selected or dino_selected)
 
+        if yolo_selected or dino_selected:
+            target_epochs = int(self.yolo_epochs if yolo_selected else self.dino_epochs)
+            if int(self.epochs_spin.value()) != int(target_epochs):
+                self.epochs_spin.blockSignals(True)
+                self.epochs_spin.setValue(int(target_epochs))
+                self.epochs_spin.blockSignals(False)
+            self.epochs = int(target_epochs)
+
         self.yolo_model_groupbox.setVisible(yolo_selected)
         self.dino_model_groupbox.setVisible(dino_selected)
 
@@ -714,6 +725,13 @@ class TrainModelDialog(QtWidgets.QDialog):
             self._io_config_label.setText("Dataset YAML / Spec")
 
         self._update_dino_augment_enabled_state()
+
+    def _on_epochs_changed(self, value: int) -> None:
+        self.epochs = int(value)
+        if self.algo == "DINO KPSEG":
+            self.dino_epochs = int(value)
+        elif self.algo == "YOLO":
+            self.yolo_epochs = int(value)
 
     def _on_device_changed(self) -> None:
         value = self.yolo_device_combo.currentData()
@@ -945,6 +963,18 @@ class TrainModelDialog(QtWidgets.QDialog):
         lr.setSingleStep(0.0005)
         lr.setValue(float(self.dino_lr))
         self._bind_spin_float(lr, "dino_lr")
+
+        freeze_bn = QtWidgets.QComboBox(box)
+        freeze_bn.addItem("Auto (<64 images)", userData=None)
+        freeze_bn.addItem("Enabled", userData=True)
+        freeze_bn.addItem("Disabled", userData=False)
+        freeze_bn_default = getattr(self, "dino_freeze_bn", None)
+        freeze_bn_idx = freeze_bn.findData(freeze_bn_default)
+        if freeze_bn_idx >= 0:
+            freeze_bn.setCurrentIndex(freeze_bn_idx)
+        freeze_bn.currentIndexChanged.connect(
+            lambda _=None: setattr(self, "dino_freeze_bn", freeze_bn.currentData())
+        )
 
         radius = QtWidgets.QDoubleSpinBox(box)
         radius.setDecimals(2)
@@ -1444,6 +1474,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         form.addRow("Multitask instance-mask weight", inst_w)
         form.addRow("Multitask aux warmup (epochs)", multitask_aux_warmup)
         form.addRow("Learning rate", lr)
+        form.addRow("Freeze BatchNorm stats", freeze_bn)
         form.addRow("Circle radius (px)", radius)
         form.addRow("Radius schedule", radius_schedule)
         form.addRow("Radius start (px)", radius_start)

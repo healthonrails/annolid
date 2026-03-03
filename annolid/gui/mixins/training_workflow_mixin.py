@@ -265,6 +265,7 @@ class TrainingWorkflowMixin:
                 dlg, "dino_auto_report_per_keypoint", False
             )
             dino_auto_report_paper = getattr(dlg, "dino_auto_report_paper", True)
+            dino_freeze_bn = getattr(dlg, "dino_freeze_bn", None)
 
         if config_file is None:
             return
@@ -375,6 +376,7 @@ class TrainingWorkflowMixin:
                 auto_report_thresholds=str(dino_auto_report_thresholds or "4,8,16"),
                 auto_report_per_keypoint=bool(dino_auto_report_per_keypoint),
                 auto_report_paper=bool(dino_auto_report_paper),
+                freeze_bn=dino_freeze_bn,
             )
 
         elif algo == "YOLACT":

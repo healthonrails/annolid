@@ -230,7 +230,7 @@ In the GUI (`Train Models` -> `DINO KPSEG` -> `Advanced`), use:
 
 Equivalent `annolid-run` training flags are also supported (for example
 `--schedule-profile`, `--batch`, `--cos-lr`, `--warmup-epochs`,
-`--best-metric`, and augmentation epoch windows).
+`--best-metric`, `--freeze-bn`, and augmentation epoch windows).
 
 ### Unified Attention Head
 
@@ -259,7 +259,8 @@ python -m annolid.segmentation.dino_kpseg.train \
 Note:
 - For YOLO pose datasets with very high left/right ambiguity, DinoKPSEG now auto-disables default LR regularizer weights to avoid destabilizing training. Explicit non-default values still override this behavior.
 - For high-ambiguity datasets, DinoKPSEG also auto-reduces geometry-heavy augmentation (disables hflip, and for ambiguous small datasets disables rotation/translate/scale) to reduce swap drift.
-- For very small training sets (`<=64` images), DinoKPSEG applies a conservative small-data profile when defaults are used: `head_type` becomes `conv`, `feature_align_dim` becomes `auto`, `lr` becomes `1e-4`, and `early_stop_patience` is capped at `12`.
+- For HRNet-style training (`--head-type conv`), DinoKPSEG follows a SuperAnimal-aligned schedule by default: `epochs=210`, AdamW `lr=5e-4`, and MultiStepLR milestones at epochs `170` and `200` (`gamma=0.1`).
+- For very small training sets (`<64` images) with HRNet, DinoKPSEG auto-enables BatchNorm running-stat freeze and lowers LR to `5e-5` unless you explicitly override. Use `--freeze-bn` / `--no-freeze-bn` for manual control.
 - For small/high-ambiguity datasets with orientation anchors (for example `nose` + `tailbase`), DinoKPSEG can auto-canonicalize left/right supervision to reduce persistent identity inversion. Override with `--lr-canonicalize` or `--no-lr-canonicalize`.
 
 Optional left/right side-consistency (uses asymmetric anchors like `nose`/`tailbase` to define an axis):

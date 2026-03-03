@@ -341,6 +341,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         auto_report_thresholds: str = "4,8,16",
         auto_report_per_keypoint: bool = False,
         auto_report_paper: bool = True,
+        freeze_bn: Optional[bool] = None,
     ) -> bool:
         if self._training_running:
             QtWidgets.QMessageBox.warning(
@@ -559,6 +560,10 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
                 cmd += ["--seed", str(int(seed))]
             if bool(auto_safe_mode):
                 cmd.append("--auto-safe-mode")
+            if freeze_bn is True:
+                cmd.append("--freeze-bn")
+            elif freeze_bn is False:
+                cmd.append("--no-freeze-bn")
 
             env = dict(os.environ)
             env.setdefault("PYTHONUNBUFFERED", "1")

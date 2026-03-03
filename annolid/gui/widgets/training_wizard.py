@@ -997,7 +997,7 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
 
         self.dino_epochs_spin = QtWidgets.QSpinBox()
         self.dino_epochs_spin.setRange(1, 500)
-        self.dino_epochs_spin.setValue(int(dino_defaults.EPOCHS))
+        self.dino_epochs_spin.setValue(210)
         train_layout.addRow("Epochs:", self.dino_epochs_spin)
 
         self.dino_batch_spin = QtWidgets.QSpinBox()
@@ -1006,10 +1006,16 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         train_layout.addRow("Batch size:", self.dino_batch_spin)
 
         self.dino_lr_spin = QtWidgets.QDoubleSpinBox()
-        self.dino_lr_spin.setRange(0.0001, 0.05)
-        self.dino_lr_spin.setDecimals(4)
-        self.dino_lr_spin.setValue(float(dino_defaults.LR))
+        self.dino_lr_spin.setRange(0.000001, 0.05)
+        self.dino_lr_spin.setDecimals(6)
+        self.dino_lr_spin.setValue(5e-4)
         train_layout.addRow("Learning rate:", self.dino_lr_spin)
+
+        self.dino_freeze_bn_combo = QtWidgets.QComboBox()
+        self.dino_freeze_bn_combo.addItem("Auto (<64 images)", userData=None)
+        self.dino_freeze_bn_combo.addItem("Enabled", userData=True)
+        self.dino_freeze_bn_combo.addItem("Disabled", userData=False)
+        train_layout.addRow("Freeze BatchNorm stats:", self.dino_freeze_bn_combo)
 
         self.dino_radius_spin = QtWidgets.QDoubleSpinBox()
         self.dino_radius_spin.setRange(1.0, 30.0)
@@ -1035,7 +1041,7 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         head_layout = QtWidgets.QFormLayout(head_group)
         controls = create_dino_head_loss_controls(
             head_group,
-            head_type=str(dino_defaults.HEAD_TYPE),
+            head_type="conv",
             attn_heads=int(dino_defaults.ATTN_HEADS),
             attn_layers=int(dino_defaults.ATTN_LAYERS),
             hidden_dim=int(dino_defaults.HIDDEN_DIM),
@@ -1422,6 +1428,7 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
                     "layers": self.dino_layers_edit.text().strip()
                     or str(dino_defaults.LAYERS),
                     "lr": self.dino_lr_spin.value(),
+                    "freeze_bn": self.dino_freeze_bn_combo.currentData(),
                     "radius_px": self.dino_radius_spin.value(),
                     "hidden_dim": self.dino_hidden_dim_spin.value(),
                     "head_type": str(self.dino_head_type_combo.currentData() or ""),
@@ -1557,16 +1564,22 @@ class TrainingSummaryPage(QtWidgets.QWizardPage):
                 row("Device", str(config.get("device", "auto") or "auto")),
             ]
         elif backend == "dino_kpseg":
+            freeze_bn_val = config.get("freeze_bn", None)
+            if freeze_bn_val is None:
+                freeze_bn_text = "Auto"
+            else:
+                freeze_bn_text = "Enabled" if bool(freeze_bn_val) else "Disabled"
             params_rows += [
                 row("Model", str(config.get("model", "DINO"))),
-                row("Epochs", str(config.get("epochs", 100))),
+                row("Epochs", str(config.get("epochs", 210))),
                 row("Batch", str(config.get("batch", 8))),
                 row(
                     "Short side",
                     str(config.get("short_side", dino_defaults.SHORT_SIDE)),
                 ),
                 row("Layers", str(config.get("layers", dino_defaults.LAYERS))),
-                row("LR", str(config.get("lr", dino_defaults.LR))),
+                row("LR", str(config.get("lr", 5e-4))),
+                row("Freeze BN stats", freeze_bn_text),
                 row("Radius (px)", str(config.get("radius_px", 6.0))),
                 row("Head type", str(config.get("head_type", dino_defaults.HEAD_TYPE))),
                 row(

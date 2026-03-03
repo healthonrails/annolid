@@ -38,11 +38,15 @@ from annolid.segmentation.dino_kpseg.model import (
     DinoKPSEGAlignedHead,
     DinoKPSEGMultiTaskHead,
     checkpoint_pack,
+    freeze_batchnorm_running_stats,
 )
 from annolid.segmentation.dino_kpseg.cli_utils import normalize_device, parse_layers
 from annolid.segmentation.dino_kpseg.eval import (
     DinoKPSEGEvalAccumulator,
+    default_oks_sigmas,
+    oks_from_error,
     _collect_gt_candidates,
+    _min_error_and_scale_px,
     _min_error_px,
 )
 from annolid.segmentation.dino_kpseg.keypoints import (
@@ -1796,6 +1800,41 @@ def _canonicalize_head_type(head_type: str) -> str:
     return str(head_type or "conv").strip().lower()
 
 
+def _is_hrnet_protocol_head(head_type_norm: str) -> bool:
+    # In DinoKPSEG, "conv" selects the HRNet-style pose head.
+    return str(head_type_norm or "").strip().lower() == "conv"
+
+
+def _resolve_hrnet_protocol_params(
+    *,
+    head_type_norm: str,
+    num_train_images: int,
+    requested_lr: float,
+    requested_epochs: int,
+    freeze_bn: Optional[bool],
+) -> Tuple[float, int, bool]:
+    lr = float(requested_lr)
+    epochs = int(requested_epochs)
+    use_freeze_bn = bool(freeze_bn) if freeze_bn is not None else False
+
+    if not _is_hrnet_protocol_head(head_type_norm):
+        return float(lr), int(epochs), bool(use_freeze_bn)
+
+    # HRNet protocol defaults: 210 epochs, AdamW lr=5e-4.
+    if int(epochs) == int(dino_defaults.EPOCHS):
+        epochs = 210
+    if abs(float(lr) - float(dino_defaults.LR)) < 1e-12:
+        lr = 5e-4
+
+    small_data = int(num_train_images) < 64
+    if freeze_bn is None and small_data:
+        use_freeze_bn = True
+    if bool(use_freeze_bn) and small_data:
+        # Paper guidance for low-data fine-tuning.
+        lr = min(float(lr), 5e-5)
+    return float(lr), int(epochs), bool(use_freeze_bn)
+
+
 def train(
     *,
     data_yaml: Path,
@@ -1883,6 +1922,7 @@ def train(
     max_cpu_threads: int = 8,
     max_interop_threads: int = 1,
     auto_safe_mode: bool = False,
+    freeze_bn: Optional[bool] = None,
 ) -> Path:
     if seed is not None:
         _set_global_seed(int(seed))
@@ -2210,6 +2250,34 @@ def train(
             f"{head_type!r} (expected 'conv', 'relational', or 'multitask')"
         )
 
+    resolved_lr, resolved_epochs, freeze_bn_enabled = _resolve_hrnet_protocol_params(
+        head_type_norm=str(head_type_norm),
+        num_train_images=len(train_images),
+        requested_lr=float(lr),
+        requested_epochs=int(epochs),
+        freeze_bn=freeze_bn,
+    )
+    if abs(float(resolved_lr) - float(lr)) > 1e-12:
+        logger.info(
+            "Applying HRNet protocol LR override: lr %.6g -> %.6g",
+            float(lr),
+            float(resolved_lr),
+        )
+    if int(resolved_epochs) != int(epochs):
+        logger.info(
+            "Applying HRNet protocol epoch override: epochs %d -> %d",
+            int(epochs),
+            int(resolved_epochs),
+        )
+    if bool(freeze_bn_enabled):
+        logger.info(
+            "BatchNorm running stats freeze enabled (head_type=%s train_images=%d).",
+            str(head_type_norm),
+            int(len(train_images)),
+        )
+    lr = float(resolved_lr)
+    epochs = int(resolved_epochs)
+
     orientation_anchor_idx = (
         infer_orientation_anchor_indices(list(keypoint_names or []))
         if keypoint_names
@@ -2260,12 +2328,27 @@ def train(
     base_lr = float(lr)
     opt = torch.optim.AdamW(head.parameters(), lr=base_lr, weight_decay=1e-4)
     scheduler = None
+    scheduler_name = "none"
     warmup_epochs = max(0, int(warmup_epochs))
     lr_decay_start_epoch = max(int(warmup_epochs) + 1, int(flat_epoch) + 1)
     lr_final_frac = float(lr_final_frac)
     if lr_final_frac <= 0:
         lr_final_frac = 0.01
-    if bool(cos_lr):
+    if _is_hrnet_protocol_head(head_type_norm):
+        try:
+            from torch.optim.lr_scheduler import MultiStepLR  # type: ignore
+
+            scheduler = MultiStepLR(
+                opt,
+                milestones=[170, 200],
+                gamma=0.1,
+            )
+            scheduler_name = "multistep_170_200_gamma0.1"
+            lr_decay_start_epoch = 170
+        except Exception:
+            scheduler = None
+            scheduler_name = "none"
+    elif bool(cos_lr):
         try:
             from torch.optim.lr_scheduler import CosineAnnealingLR  # type: ignore
 
@@ -2275,8 +2358,10 @@ def train(
                 T_max=int(t_max),
                 eta_min=float(base_lr) * float(lr_final_frac),
             )
+            scheduler_name = "cosine"
         except Exception:
             scheduler = None
+            scheduler_name = "none"
 
     weights_dir = output_dir / "weights"
     _ensure_dir(weights_dir)
@@ -2375,6 +2460,7 @@ def train(
             f"warmup_epochs: {int(warmup_epochs)}",
             f"flat_epoch: {int(flat_epoch)}",
             f"lr_decay_start_epoch: {int(lr_decay_start_epoch)}",
+            f"lr_scheduler: {str(scheduler_name)}",
             f"lr_final_frac: {float(lr_final_frac)}",
             f"epochs: {epochs}",
             f"schedule_profile: {schedule_profile_norm}",
@@ -2419,6 +2505,7 @@ def train(
             f"max_cpu_threads: {int(max_cpu_threads)}",
             f"max_interop_threads: {int(max_interop_threads)}",
             f"auto_safe_mode: {bool(auto_safe_mode)}",
+            f"freeze_bn: {bool(freeze_bn_enabled)}",
             f"augment: {bool(augment_cfg.enabled)}",
             f"aug_start_epoch: {int(aug_start_epoch)}",
             f"aug_stop_epoch: {int(aug_stop_epoch)}",
@@ -2451,6 +2538,10 @@ def train(
             pass
 
     pck_thresholds = (2.0, 4.0, 8.0, 16.0)
+    kpt_oks_sigmas = default_oks_sigmas(
+        kpt_count=int(kpt_count),
+        keypoint_names=list(keypoint_names) if keypoint_names else None,
+    )
 
     batch_size = max(1, int(batch_size))
     accumulate = max(1, int(accumulate))
@@ -2581,6 +2672,7 @@ def train(
         tb_writer.add_text(
             "config/lr_decay_start_epoch", str(int(lr_decay_start_epoch)), 0
         )
+        tb_writer.add_text("config/lr_scheduler", str(scheduler_name), 0)
         tb_writer.add_text("config/aug_start_epoch", str(int(aug_start_epoch)), 0)
         tb_writer.add_text("config/aug_stop_epoch", str(int(aug_stop_epoch)), 0)
         tb_writer.add_text("config/no_aug_epoch", str(int(no_aug_epoch)), 0)
@@ -2629,6 +2721,7 @@ def train(
             "config/max_interop_threads", str(int(max_interop_threads)), 0
         )
         tb_writer.add_text("config/auto_safe_mode", str(bool(auto_safe_mode)), 0)
+        tb_writer.add_text("config/freeze_bn", str(bool(freeze_bn_enabled)), 0)
         tb_writer.add_text("config/head_type", str(head_type_norm), 0)
         tb_writer.add_text("config/attn_heads", str(int(attn_heads)), 0)
         tb_writer.add_text("config/attn_layers", str(int(attn_layers)), 0)
@@ -2973,6 +3066,8 @@ def train(
                 )
 
                 head.train()
+                if bool(freeze_bn_enabled):
+                    freeze_batchnorm_running_stats(head)
                 if warmup_epochs > 0 and int(epoch) <= int(warmup_epochs):
                     warm_lr = (
                         float(base_lr) * float(epoch) / float(max(1, warmup_epochs))
@@ -3751,25 +3846,33 @@ def train(
                                 coord_err_count += use_coords.to(
                                     dtype=dist_xy.dtype
                                 ).sum(dim=0)
-                            oks = _oks_from_distance(
-                                dist_xy,
-                                sigma_px=float(extractor.patch_size) * 2.0,
-                            )
-                            oks = oks * gt_present.to(dtype=oks.dtype)
-
-                            for kp in range(int(kpt_count)):
-                                gt_counts[kp] += int(gt_present[:, kp].sum().item())
-                                gt_mask_kp = gt_present[:, kp].detach().cpu()
-                                conf_kp = conf[:, kp].detach().cpu()
-                                oks_kp = oks[:, kp].detach().cpu()
-                                for bi in range(int(bsz)):
-                                    if bool(gt_mask_kp[bi].item()):
-                                        det_scores[kp].append(float(conf_kp[bi].item()))
-                                        det_oks[kp].append(float(oks_kp[bi].item()))
-
                             gt_instances_batch = batch.get("gt_instances")
                             image_hw_batch = batch.get("image_hw")
                             image_batch = batch.get("image")
+                            have_gt_meta = (
+                                isinstance(gt_instances_batch, list)
+                                and image_hw_batch is not None
+                            )
+
+                            if not have_gt_meta:
+                                # Fallback when instance metadata is unavailable:
+                                # use patch-space OKS proxy for continuity.
+                                oks = _oks_from_distance(
+                                    dist_xy,
+                                    sigma_px=float(extractor.patch_size) * 2.0,
+                                )
+                                oks = oks * gt_present.to(dtype=oks.dtype)
+                                for kp in range(int(kpt_count)):
+                                    gt_counts[kp] += int(gt_present[:, kp].sum().item())
+                                    gt_mask_kp = gt_present[:, kp].detach().cpu()
+                                    conf_kp = conf[:, kp].detach().cpu()
+                                    oks_kp = oks[:, kp].detach().cpu()
+                                    for bi in range(int(bsz)):
+                                        if bool(gt_mask_kp[bi].item()):
+                                            det_scores[kp].append(
+                                                float(conf_kp[bi].item())
+                                            )
+                                            det_oks[kp].append(float(oks_kp[bi].item()))
 
                             def _get_image_hw(
                                 value: object, bi: int
@@ -3810,10 +3913,6 @@ def train(
                                         )
                                 return None
 
-                            have_gt_meta = (
-                                isinstance(gt_instances_batch, list)
-                                and image_hw_batch is not None
-                            )
                             pred_xy_cpu = pred_xy.detach().cpu()
                             valid_mask_cpu = valid_mask.detach().cpu()
                             for bi in range(int(bsz)):
@@ -3932,6 +4031,37 @@ def train(
                                         gt_instances=gt_instances_eval,
                                         image_hw=(orig_h, orig_w),
                                         lr_pairs=lr_pairs,
+                                    )
+                                conf_bi = conf[bi].detach().cpu()
+                                for kpt_idx in range(int(kpt_count)):
+                                    if kpt_idx >= len(pred_xy_orig):
+                                        break
+                                    matched = _min_error_and_scale_px(
+                                        pred_xy_orig[kpt_idx],
+                                        gt_instances_eval,
+                                        kpt_idx=int(kpt_idx),
+                                        image_hw=(orig_h, orig_w),
+                                    )
+                                    if matched is None:
+                                        continue
+                                    err_px, scale_px = matched
+                                    gt_counts[kpt_idx] += 1
+                                    sigma = (
+                                        float(kpt_oks_sigmas[kpt_idx])
+                                        if kpt_idx < len(kpt_oks_sigmas)
+                                        else 0.067
+                                    )
+                                    det_scores[kpt_idx].append(
+                                        float(conf_bi[kpt_idx].item())
+                                    )
+                                    det_oks[kpt_idx].append(
+                                        float(
+                                            oks_from_error(
+                                                error_px=float(err_px),
+                                                scale_px=float(scale_px),
+                                                sigma=float(sigma),
+                                            )
+                                        )
                                     )
 
                                 errors = []
@@ -4727,6 +4857,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=dino_defaults.HEAD_TYPE,
         help="Head architecture.",
     )
+    bn_group = p.add_mutually_exclusive_group()
+    bn_group.add_argument(
+        "--freeze-bn",
+        dest="freeze_bn",
+        action="store_true",
+        help="Freeze BatchNorm running statistics during training.",
+    )
+    bn_group.add_argument(
+        "--no-freeze-bn",
+        dest="freeze_bn",
+        action="store_false",
+        help="Do not freeze BatchNorm running statistics.",
+    )
+    p.set_defaults(freeze_bn=None)
     p.add_argument(
         "--relational-heads",
         "--attn-heads",
@@ -5140,6 +5284,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         aug_start_epoch=int(args.aug_start_epoch),
         aug_stop_epoch=int(args.aug_stop_epoch),
         no_aug_epoch=int(args.no_aug_epoch),
+        freeze_bn=args.freeze_bn,
     )
     logger.info("Training complete. Best checkpoint: %s", best)
     logger.info("Run directory: %s", out_dir)
