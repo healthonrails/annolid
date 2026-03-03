@@ -789,10 +789,16 @@ class YOLOTrainingManager(QtCore.QObject):
         if not path_str:
             return
         path_obj = Path(path_str)
+        should_delete = False
         try:
             self._temp_configs.remove(path_obj)
+            should_delete = True
         except ValueError:
-            pass
+            # Never delete user-provided configs here. Only manager-created
+            # temp configs tracked in _temp_configs should be removed.
+            should_delete = False
+        if not should_delete:
+            return
         try:
             path_obj.unlink()
         except FileNotFoundError:
