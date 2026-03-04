@@ -116,7 +116,15 @@
 <span class="w">      </span><span class="nt">&quot;stream&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;annolid&quot;</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">&quot;topic&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;bot&quot;</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">&quot;polling_interval&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span>
-<span class="w">      </span><span class="nt">&quot;allow_from&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;alice@your-org.com&quot;</span><span class="p">]</span>
+<span class="w">      </span><span class="nt">&quot;allow_from&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;alice@your-org.com&quot;</span><span class="p">],</span>
+<span class="w">      </span><span class="nt">&quot;cursor_state_path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;~/.annolid/agent/channels/zulip_cursor_custom.json&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;max_processed_ids&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4096</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;log_skip_reasons&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;bot_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Annolid Bot&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;unread_backfill_enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;unread_backfill_on_empty_only&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;unread_backfill_limit&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">50</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;unread_backfill_cooldown_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">300</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
@@ -127,6 +135,22 @@
 <li><p><code class="docutils literal notranslate"><span class="pre">stream</span></code>/<code class="docutils literal notranslate"><span class="pre">topic</span></code> are optional filters for inbound polling.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">allow_from</span></code> is optional. If set, only matching senders are ingested.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">polling_interval</span></code> has a minimum bound and defaults to 30 seconds.</p></li>
+<li><p>Annolid persists Zulip cursor state by default at
+<code class="docutils literal notranslate"><span class="pre">~/.annolid/agent/channels/zulip_cursor_&lt;scope-hash&gt;.json</span></code> to avoid replying to old
+messages after restart.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">cursor_state_path</span></code> is optional and overrides the default state file location.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">max_processed_ids</span></code> controls the in-memory/on-disk dedupe window (default <code class="docutils literal notranslate"><span class="pre">4096</span></code>,
+minimum <code class="docutils literal notranslate"><span class="pre">256</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">log_skip_reasons</span></code> enables debug logs for skipped messages (<code class="docutils literal notranslate"><span class="pre">duplicate</span></code>, <code class="docutils literal notranslate"><span class="pre">read</span></code>,
+<code class="docutils literal notranslate"><span class="pre">historical</span></code>, etc.) to diagnose ingestion behavior.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">bot_name</span></code> controls mention matching when <code class="docutils literal notranslate"><span class="pre">topic</span></code> is configured. Messages from other
+topics are still ingested if they mention the bot.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">unread_backfill_enabled</span></code> enables a second query for older unread messages.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">unread_backfill_on_empty_only</span></code> runs unread backfill only when main polling returns no
+new messages.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">unread_backfill_limit</span></code> sets how many unread messages are scanned per backfill query
+(default <code class="docutils literal notranslate"><span class="pre">50</span></code>, max <code class="docutils literal notranslate"><span class="pre">200</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">unread_backfill_cooldown_s</span></code> throttles unread backfill requests (default <code class="docutils literal notranslate"><span class="pre">300s</span></code>).</p></li>
 </ul>
 </section>
 <section id="start-annolid">
@@ -178,12 +202,28 @@ curl<span class="w"> </span>-sS<span class="w"> </span>-u<span class="w"> </span
 <ul>
 <li><p>verify <code class="docutils literal notranslate"><span class="pre">enabled=true</span></code></p></li>
 <li><p>verify <code class="docutils literal notranslate"><span class="pre">server_url</span></code>, <code class="docutils literal notranslate"><span class="pre">user</span></code>, and <code class="docutils literal notranslate"><span class="pre">api_key</span></code></p></li>
+<li><p>verify runtime logs include:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">Polling</span> <span class="pre">Zulip</span> <span class="pre">for</span> <span class="pre">...</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Zulip</span> <span class="pre">poll</span> <span class="pre">complete</span> <span class="pre">...</span></code></p></li>
+</ul>
+</li>
 </ul>
 </li>
 <li><p>If no inbound messages appear:</p>
 <ul>
 <li><p>check <code class="docutils literal notranslate"><span class="pre">allow_from</span></code> filters</p></li>
 <li><p>confirm the bot has permission to read the target stream/topic</p></li>
+<li><p>if you expect older unread messages to be picked up quickly, lower
+<code class="docutils literal notranslate"><span class="pre">unread_backfill_cooldown_s</span></code> (for example to <code class="docutils literal notranslate"><span class="pre">30</span></code>).</p></li>
+<li><p>inspect <code class="docutils literal notranslate"><span class="pre">skip_reasons=</span></code> in <code class="docutils literal notranslate"><span class="pre">Zulip</span> <span class="pre">poll</span> <span class="pre">complete</span> <span class="pre">...</span></code> logs. Common values:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">allow_from_blocked</span></code>: sender not in allow list</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">self_or_missing_sender</span></code>: bot’s own message or missing sender</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">read</span></code>: message already marked read</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">historical</span></code>: pre-start history guard</p></li>
+</ul>
+</li>
 </ul>
 </li>
 <li><p>If outbound replies fail:</p>
