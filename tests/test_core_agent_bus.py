@@ -393,6 +393,57 @@ def test_agent_bus_service_streams_intermediate_progress() -> None:
     asyncio.run(_run())
 
 
+def test_agent_bus_service_does_not_stream_intermediate_progress_to_zulip() -> None:
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "Inspecting local files",
+                "tool_calls": [
+                    {"id": "c1", "name": "echo", "arguments": {"text": "hello"}}
+                ],
+            }
+        return {"content": "done"}
+
+    async def _run() -> None:
+        bus = MessageBus()
+        registry = FunctionToolRegistry()
+        registry.register(_EchoTool())
+        loop = AgentLoop(
+            tools=registry,
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="zulip",
+                    sender_id="alice",
+                    chat_id="stream:Annolid:general chat",
+                    content="ping",
+                )
+            )
+            final = await bus.consume_outbound(timeout_s=1.0)
+            assert final.content == "done"
+            assert bool(final.metadata.get("intermediate")) is False
+            assert final.metadata.get("iterations") == 2
+            assert bus.outbound_size == 0
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
 def test_agent_bus_service_redacts_sensitive_metadata_in_annotate() -> None:
     async def fake_llm(
         messages: Sequence[Mapping[str, Any]],
@@ -455,6 +506,46 @@ def test_agent_bus_service_substitutes_empty_email_reply_with_fallback() -> None
             assert out.chat_id == "alice@example.com"
             assert bool(str(out.content or "").strip())
             assert "Papers" in out.content
+            assert bool(out.metadata.get("empty_reply_fallback")) is True
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_agent_bus_service_substitutes_empty_zulip_reply_with_fallback() -> None:
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        return {"content": "   "}
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="zulip",
+                    sender_id="alice@example.com",
+                    chat_id="stream:Annolid:general chat",
+                    content="hello",
+                )
+            )
+            out = await bus.consume_outbound(timeout_s=1.0)
+            assert out.channel == "zulip"
+            assert out.chat_id == "stream:Annolid:general chat"
+            assert bool(str(out.content or "").strip())
+            assert "I received your message" in out.content
             assert bool(out.metadata.get("empty_reply_fallback")) is True
         finally:
             await svc.stop()

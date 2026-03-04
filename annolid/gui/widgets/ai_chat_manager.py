@@ -397,6 +397,7 @@ class AIChatManager(QtCore.QObject):
 
     def cleanup(self) -> None:
         """Stop background services and the event loop."""
+        shutdown_wait_s = 8.0
         start_task = self._channel_start_task
         self._channel_start_task = None
         if start_task is not None:
@@ -415,7 +416,7 @@ class AIChatManager(QtCore.QObject):
                 fut = asyncio.run_coroutine_threadsafe(
                     bridge.stop(), self._background_loop
                 )
-                fut.result(timeout=2.0)
+                fut.result(timeout=shutdown_wait_s)
             except Exception:
                 logger.exception("Failed stopping WhatsApp Python bridge")
         if self._channel_manager is not None and self._background_loop is not None:
@@ -423,7 +424,7 @@ class AIChatManager(QtCore.QObject):
                 fut = asyncio.run_coroutine_threadsafe(
                     self._channel_manager.stop_all(), self._background_loop
                 )
-                fut.result(timeout=2.0)
+                fut.result(timeout=shutdown_wait_s)
             except Exception:
                 logger.exception("Failed stopping channel manager")
             self._channel_manager = None
@@ -432,7 +433,7 @@ class AIChatManager(QtCore.QObject):
                 fut = asyncio.run_coroutine_threadsafe(
                     self._cron_service.stop(), self._background_loop
                 )
-                fut.result(timeout=2.0)
+                fut.result(timeout=shutdown_wait_s)
             except Exception:
                 logger.exception("Failed stopping cron service")
             self._cron_service = None
@@ -441,7 +442,7 @@ class AIChatManager(QtCore.QObject):
                 fut = asyncio.run_coroutine_threadsafe(
                     self._task_scheduler.stop(), self._background_loop
                 )
-                fut.result(timeout=2.0)
+                fut.result(timeout=shutdown_wait_s)
             except Exception:
                 logger.exception("Failed stopping task scheduler")
             self._task_scheduler = None
@@ -450,7 +451,7 @@ class AIChatManager(QtCore.QObject):
                 fut = asyncio.run_coroutine_threadsafe(
                     self._bus_service.stop(), self._background_loop
                 )
-                fut.result(timeout=2.0)
+                fut.result(timeout=shutdown_wait_s)
             except Exception:
                 logger.exception("Failed stopping bus service")
             self._bus_service = None
@@ -462,7 +463,7 @@ class AIChatManager(QtCore.QObject):
         if self._background_thread is not None:
             # We use daemon=True, but joining ensures it stops gracefully if possible.
             # Don't block for too long during GUI shutdown.
-            self._background_thread.join(timeout=1.0)
+            self._background_thread.join(timeout=3.0)
             self._background_thread = None
 
     async def _on_automation_task_run(self, task: ScheduledTask) -> Optional[str]:

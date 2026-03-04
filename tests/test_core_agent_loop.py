@@ -808,6 +808,37 @@ def test_agent_loop_does_not_persist_empty_assistant_reply() -> None:
     assert loop.get_session_history("s-empty") == []
 
 
+def test_agent_loop_retries_once_when_final_response_empty_after_tools() -> None:
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "checking",
+                "tool_calls": [
+                    {"id": "c1", "name": "echo", "arguments": {"text": "hello"}}
+                ],
+            }
+        if state["n"] == 2:
+            return {"content": "   ", "tool_calls": []}
+        return {"content": "final answer", "tool_calls": []}
+
+    registry = FunctionToolRegistry()
+    registry.register(_EchoTool())
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+
+    result = asyncio.run(loop.run("hello", session_id="s-empty-repair"))
+    assert result.content == "final answer"
+    assert result.iterations == 3
+
+
 def test_agent_loop_consolidates_large_history_into_history_file(
     tmp_path: Path,
 ) -> None:

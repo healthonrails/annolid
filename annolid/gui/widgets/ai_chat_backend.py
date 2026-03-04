@@ -778,9 +778,13 @@ class StreamingChatTask(QRunnable):
         return gui_fast_mode_timeout_seconds(self.settings)
 
     def _agent_loop_llm_timeout_seconds(self, *, prompt_needs_tools: bool) -> float:
-        return gui_agent_loop_llm_timeout_seconds(
+        base = gui_agent_loop_llm_timeout_seconds(
             self.settings, prompt_needs_tools=prompt_needs_tools
         )
+        provider = str(self.provider or "").strip().lower()
+        if provider == "nvidia":
+            return max(base, 420.0 if prompt_needs_tools else 120.0)
+        return base
 
     def _ollama_agent_tool_timeout_seconds(self) -> float:
         return gui_ollama_agent_tool_timeout_seconds(self.settings)
@@ -809,7 +813,11 @@ class StreamingChatTask(QRunnable):
         return gui_ollama_plain_recovery_nudge_timeout_seconds(self.settings)
 
     def _fallback_retry_timeout_seconds(self) -> float:
-        return gui_fallback_retry_timeout_seconds(self.settings)
+        base = gui_fallback_retry_timeout_seconds(self.settings)
+        provider = str(self.provider or "").strip().lower()
+        if provider == "nvidia":
+            return max(base, 60.0)
+        return base
 
     def _fallback_timeout_retry_seconds(self) -> float:
         return gui_fallback_timeout_retry_seconds(

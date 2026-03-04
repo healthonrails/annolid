@@ -27,6 +27,9 @@ from .queue import MessageBus
 class AgentBusService:
     """Bridge inbound bus messages to AgentLoop and publish outbound replies."""
 
+    _EMPTY_REPLY_FALLBACK_CHANNELS = frozenset({"email", "zulip"})
+    _SUPPRESS_INTERMEDIATE_PROGRESS_CHANNELS = frozenset({"zulip"})
+
     def __init__(
         self,
         *,
@@ -379,8 +382,13 @@ class AgentBusService:
             channel=outbound.channel,
         )
         if not normalized:
-            if str(inbound.channel or "").strip().lower() == "email":
-                fallback = self._build_empty_email_fallback(inbound)
+            channel = self._channel_key(inbound.channel)
+            if channel in self._EMPTY_REPLY_FALLBACK_CHANNELS:
+                fallback = (
+                    self._build_empty_email_fallback(inbound)
+                    if channel == "email"
+                    else self._build_empty_zulip_fallback(inbound)
+                )
                 meta = dict(outbound.metadata or {})
                 meta["empty_reply_fallback"] = True
                 outbound = OutboundMessage(
@@ -392,7 +400,8 @@ class AgentBusService:
                     metadata=meta,
                 )
                 self._logger.warning(
-                    "Generated empty email reply; substituted fallback text for %s",
+                    "Generated empty %s reply; substituted fallback text for %s",
+                    channel,
                     outbound.chat_id,
                 )
             else:
@@ -431,6 +440,9 @@ class AgentBusService:
         inbound: InboundMessage,
         content: str,
     ) -> None:
+        channel = self._channel_key(inbound.channel)
+        if channel in self._SUPPRESS_INTERMEDIATE_PROGRESS_CHANNELS:
+            return
         progress_meta = {
             "intermediate": True,
             "progress": True,
@@ -467,6 +479,14 @@ class AgentBusService:
         )
 
     @staticmethod
+    def _build_empty_zulip_fallback(inbound: InboundMessage) -> str:
+        del inbound
+        return (
+            "I received your message, but I couldn't generate a complete reply. "
+            "Please resend with a bit more detail and I will try again."
+        )
+
+    @staticmethod
     def _build_empty_email_fallback(inbound: InboundMessage) -> str:
         subject = str((inbound.metadata or {}).get("subject") or "").strip()
         if subject:
@@ -479,6 +499,10 @@ class AgentBusService:
             "I received your email, but I couldn't generate a complete reply. "
             "Please resend with a bit more detail and I will try again."
         )
+
+    @staticmethod
+    def _channel_key(channel: str | None) -> str:
+        return str(channel or "").strip().lower()
 
     def _resolve_session_key(self, inbound: InboundMessage) -> str:
         return inbound.resolved_session_key(

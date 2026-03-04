@@ -183,6 +183,25 @@ def test_fallback_timeout_retry_uses_at_least_loop_timeout() -> None:
     assert task._fallback_timeout_retry_seconds() == 40
 
 
+def test_nvidia_timeout_floors_for_agent_loop_and_retry() -> None:
+    task = StreamingChatTask(
+        prompt="use tools please",
+        widget=None,
+        provider="nvidia",
+        model="moonshotai/kimi-k2.5",
+        settings={
+            "agent": {
+                "loop_llm_timeout_seconds": 300,
+                "loop_llm_timeout_seconds_no_tools": 40,
+                "fallback_retry_timeout_seconds": 20,
+            }
+        },
+    )
+    assert task._agent_loop_llm_timeout_seconds(prompt_needs_tools=True) == 420
+    assert task._agent_loop_llm_timeout_seconds(prompt_needs_tools=False) == 120
+    assert task._fallback_retry_timeout_seconds() == 60
+
+
 def test_run_provider_fallback_timeout_is_graceful(monkeypatch) -> None:
     task = StreamingChatTask(
         prompt="hello there",

@@ -212,6 +212,14 @@ class ZulipChannelConfig:
     topic: str = ""
     polling_interval: int = 30
     allow_from: list[str] = field(default_factory=list)
+    cursor_state_path: str = ""
+    max_processed_ids: int = 4096
+    log_skip_reasons: bool = False
+    bot_name: str = ""
+    unread_backfill_enabled: bool = True
+    unread_backfill_on_empty_only: bool = True
+    unread_backfill_limit: int = 50
+    unread_backfill_cooldown_s: int = 300
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "ZulipChannelConfig":
@@ -232,6 +240,52 @@ class ZulipChannelConfig:
                 ),
             ),
             allow_from=list(payload.get("allow_from") or payload.get("allowFrom", [])),
+            cursor_state_path=str(
+                payload.get("cursor_state_path") or payload.get("cursorStatePath") or ""
+            ),
+            max_processed_ids=max(
+                256,
+                int(
+                    payload.get("max_processed_ids")
+                    or payload.get("maxProcessedIds")
+                    or 4096
+                ),
+            ),
+            log_skip_reasons=bool(
+                payload.get("log_skip_reasons")
+                if "log_skip_reasons" in payload
+                else payload.get("logSkipReasons", False)
+            ),
+            bot_name=str(payload.get("bot_name") or payload.get("botName") or ""),
+            unread_backfill_enabled=bool(
+                payload.get("unread_backfill_enabled")
+                if "unread_backfill_enabled" in payload
+                else payload.get("unreadBackfillEnabled", True)
+            ),
+            unread_backfill_on_empty_only=bool(
+                payload.get("unread_backfill_on_empty_only")
+                if "unread_backfill_on_empty_only" in payload
+                else payload.get("unreadBackfillOnEmptyOnly", True)
+            ),
+            unread_backfill_limit=max(
+                1,
+                min(
+                    200,
+                    int(
+                        payload.get("unread_backfill_limit")
+                        or payload.get("unreadBackfillLimit")
+                        or 50
+                    ),
+                ),
+            ),
+            unread_backfill_cooldown_s=max(
+                0,
+                int(
+                    payload.get("unread_backfill_cooldown_s")
+                    or payload.get("unreadBackfillCooldownS")
+                    or 300
+                ),
+            ),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -244,6 +298,14 @@ class ZulipChannelConfig:
             "topic": self.topic,
             "polling_interval": self.polling_interval,
             "allow_from": list(self.allow_from),
+            "cursor_state_path": self.cursor_state_path,
+            "max_processed_ids": self.max_processed_ids,
+            "log_skip_reasons": self.log_skip_reasons,
+            "bot_name": self.bot_name,
+            "unread_backfill_enabled": self.unread_backfill_enabled,
+            "unread_backfill_on_empty_only": self.unread_backfill_on_empty_only,
+            "unread_backfill_limit": self.unread_backfill_limit,
+            "unread_backfill_cooldown_s": self.unread_backfill_cooldown_s,
         }
 
 

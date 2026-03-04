@@ -5,6 +5,7 @@ import json
 import builtins
 import urllib.error
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -22,6 +23,12 @@ from annolid.core.agent.channels import (
 from annolid.core.agent.channels.whatsapp_python_bridge import (
     _PlaywrightWhatsAppProvider,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_home_for_zulip_cursor_state(monkeypatch, tmp_path: Path):
+    """Prevent default Zulip cursor files in ~/.annolid from leaking across tests."""
+    monkeypatch.setenv("HOME", str(tmp_path))
 
 
 def test_markdown_to_telegram_html_basic() -> None:
@@ -174,12 +181,45 @@ def test_zulip_channel_uses_camel_case_config_aliases() -> None:
             "user": "bot@zulip.example.com",
             "apiKey": "k",
             "pollingInterval": 15,
+            "cursorStatePath": "/tmp/zulip_cursor.json",
+            "maxProcessedIds": 2048,
+            "logSkipReasons": True,
+            "botName": "Annolid Bot",
+            "unreadBackfillEnabled": True,
+            "unreadBackfillOnEmptyOnly": True,
+            "unreadBackfillLimit": 25,
+            "unreadBackfillCooldownS": 60,
         },
         bus,
     )
     assert channel._cfg("server_url") == "https://zulip.example.com"
     assert channel._cfg("api_key") == "k"
     assert channel._resolve_poll_interval_seconds() == 15
+    assert channel._cfg("cursor_state_path") == "/tmp/zulip_cursor.json"
+    assert int(channel._cfg("max_processed_ids")) == 2048
+    assert bool(channel._cfg("log_skip_reasons")) is True
+    assert channel._cfg("bot_name") == "Annolid Bot"
+    assert bool(channel._cfg("unread_backfill_enabled")) is True
+    assert bool(channel._cfg("unread_backfill_on_empty_only")) is True
+    assert int(channel._cfg("unread_backfill_limit")) == 25
+    assert int(channel._cfg("unread_backfill_cooldown_s")) == 60
+
+
+def test_zulip_channel_uses_default_cursor_state_path_when_not_configured() -> None:
+    bus = MessageBus()
+    channel = ZulipChannel(
+        {
+            "server_url": "https://zulip.example.com",
+            "user": "bot@zulip.example.com",
+            "stream": "Annolid",
+            "topic": "general chat",
+        },
+        bus,
+    )
+    path = channel._cursor_state_path
+    assert path
+    assert path.endswith(".json")
+    assert "zulip_cursor_" in path
 
 
 def test_zulip_channel_request_json_handles_http_error_payload() -> None:
@@ -243,6 +283,429 @@ def test_zulip_channel_first_poll_only_initializes_anchor() -> None:
     asyncio.run(_run())
 
 
+def test_zulip_channel_anchor_init_failure_does_not_mark_initialized(
+    tmp_path: Path,
+) -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = ZulipChannel(
+            {
+                "server_url": "https://zulip.example.com",
+                "user": "bot@zulip.example.com",
+                "api_key": "k",
+                "cursor_state_path": str(
+                    tmp_path / "zulip_cursor_anchor_init_fail.json"
+                ),
+            },
+            bus,
+        )
+
+        def _fake_request_json(**kwargs):
+            del kwargs
+            return {"result": "error", "msg": "temporary failure"}
+
+        channel._request_json = _fake_request_json  # type: ignore[assignment]
+        await channel._poll_messages()
+        assert channel._anchor_initialized is False
+        assert channel._last_message_id == 0
+
+    asyncio.run(_run())
+
+
+def test_zulip_channel_skips_read_and_duplicate_messages() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = ZulipChannel(
+            {
+                "server_url": "https://zulip.example.com",
+                "user": "bot@zulip.example.com",
+                "api_key": "k",
+            },
+            bus,
+        )
+        channel._anchor_initialized = True
+
+        calls: list[int] = []
+
+        async def _fake_handle_message(**kwargs):
+            calls.append(int((kwargs.get("metadata") or {}).get("zulip_message_id", 0)))
+            return True
+
+        channel._handle_message = _fake_handle_message  # type: ignore[assignment]
+
+        def _fake_request_json(**kwargs):
+            del kwargs
+            return {
+                "result": "success",
+                "messages": [
+                    {
+                        "id": 200,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "general chat",
+                        "content": "already read",
+                        "flags": ["read"],
+                    },
+                    {
+                        "id": 201,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "general chat",
+                        "content": "process me",
+                        "flags": [],
+                    },
+                    {
+                        "id": 201,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "general chat",
+                        "content": "duplicate",
+                        "flags": [],
+                    },
+                ],
+            }
+
+        channel._request_json = _fake_request_json  # type: ignore[assignment]
+        await channel._poll_messages()
+        assert calls == [201]
+        assert channel._last_message_id == 201
+
+    asyncio.run(_run())
+
+
+def test_zulip_channel_persists_cursor_state_and_skips_old_on_restart(tmp_path) -> None:
+    async def _run() -> None:
+        state_path = tmp_path / "zulip_cursor.json"
+        config = {
+            "server_url": "https://zulip.example.com",
+            "user": "bot@zulip.example.com",
+            "api_key": "k",
+            "cursor_state_path": str(state_path),
+        }
+        bus = MessageBus()
+        channel = ZulipChannel(config, bus)
+        channel._anchor_initialized = True
+
+        first_calls: list[int] = []
+
+        async def _fake_handle_message_first(**kwargs):
+            first_calls.append(
+                int((kwargs.get("metadata") or {}).get("zulip_message_id", 0))
+            )
+            return True
+
+        channel._handle_message = _fake_handle_message_first  # type: ignore[assignment]
+
+        def _fake_request_json_first(**kwargs):
+            del kwargs
+            return {
+                "result": "success",
+                "messages": [
+                    {
+                        "id": 301,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "general chat",
+                        "content": "first message",
+                        "flags": [],
+                    }
+                ],
+            }
+
+        channel._request_json = _fake_request_json_first  # type: ignore[assignment]
+        await channel._poll_messages()
+        assert first_calls == [301]
+        assert state_path.exists()
+
+        bus2 = MessageBus()
+        channel2 = ZulipChannel(config, bus2)
+        channel2._anchor_initialized = True
+
+        second_calls: list[int] = []
+
+        async def _fake_handle_message_second(**kwargs):
+            second_calls.append(
+                int((kwargs.get("metadata") or {}).get("zulip_message_id", 0))
+            )
+            return True
+
+        channel2._handle_message = _fake_handle_message_second  # type: ignore[assignment]
+
+        def _fake_request_json_second(**kwargs):
+            del kwargs
+            return {
+                "result": "success",
+                "messages": [
+                    {
+                        "id": 301,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "general chat",
+                        "content": "old replay",
+                        "flags": [],
+                    },
+                    {
+                        "id": 302,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "general chat",
+                        "content": "new message",
+                        "flags": [],
+                    },
+                ],
+            }
+
+        channel2._request_json = _fake_request_json_second  # type: ignore[assignment]
+        await channel2._poll_messages()
+        assert second_calls == [302]
+        assert channel2._last_message_id == 302
+
+    asyncio.run(_run())
+
+
+def test_zulip_channel_skips_historical_messages_without_checkpoint(
+    tmp_path: Path,
+) -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = ZulipChannel(
+            {
+                "server_url": "https://zulip.example.com",
+                "user": "bot@zulip.example.com",
+                "api_key": "k",
+                "cursor_state_path": str(
+                    tmp_path / "zulip_cursor_historical_skip.json"
+                ),
+            },
+            bus,
+        )
+        channel._anchor_initialized = True
+        channel._cursor_state_has_checkpoint = False
+        channel._startup_unix_s = 2_000_000
+
+        calls: list[int] = []
+
+        async def _fake_handle_message(**kwargs):
+            calls.append(int((kwargs.get("metadata") or {}).get("zulip_message_id", 0)))
+            return True
+
+        channel._handle_message = _fake_handle_message  # type: ignore[assignment]
+
+        def _fake_request_json(**kwargs):
+            del kwargs
+            return {
+                "result": "success",
+                "messages": [
+                    {
+                        "id": 401,
+                        "timestamp": 1_999_000,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "general chat",
+                        "content": "old message",
+                        "flags": [],
+                    },
+                    {
+                        "id": 402,
+                        "timestamp": 2_000_000,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "general chat",
+                        "content": "new message",
+                        "flags": [],
+                    },
+                ],
+            }
+
+        channel._request_json = _fake_request_json  # type: ignore[assignment]
+        await channel._poll_messages()
+        assert calls == [402]
+
+    asyncio.run(_run())
+
+
+def test_zulip_channel_logs_skip_reasons_when_enabled(tmp_path: Path) -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = ZulipChannel(
+            {
+                "server_url": "https://zulip.example.com",
+                "user": "bot@zulip.example.com",
+                "api_key": "k",
+                "log_skip_reasons": True,
+                "cursor_state_path": str(tmp_path / "zulip_cursor_skip_reasons.json"),
+            },
+            bus,
+        )
+        channel._anchor_initialized = True
+        channel._cursor_state_has_checkpoint = False
+        channel._startup_unix_s = 2_000_000
+
+        async def _fake_handle_message(**kwargs):
+            del kwargs
+            return True
+
+        channel._handle_message = _fake_handle_message  # type: ignore[assignment]
+
+        def _fake_request_json(**kwargs):
+            del kwargs
+            return {
+                "result": "success",
+                "messages": [
+                    {
+                        "id": 501,
+                        "timestamp": 2_000_000,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "general chat",
+                        "content": "",
+                        "flags": [],
+                    },
+                    {
+                        "id": 502,
+                        "timestamp": 1_999_000,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "general chat",
+                        "content": "old",
+                        "flags": [],
+                    },
+                ],
+            }
+
+        channel._request_json = _fake_request_json  # type: ignore[assignment]
+        with patch("annolid.core.agent.channels.zulip.logger.debug") as mock_debug:
+            await channel._poll_messages()
+        debug_calls = " | ".join(
+            str(args[0]) % args[1:] if args else ""
+            for args, _kwargs in mock_debug.call_args_list
+        )
+        assert "Zulip skip message id=501 reason=empty_content" in debug_calls
+        assert "Zulip skip message id=502 reason=historical" in debug_calls
+
+    asyncio.run(_run())
+
+
+def test_zulip_channel_topic_mismatch_requires_mention() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = ZulipChannel(
+            {
+                "server_url": "https://zulip.example.com",
+                "user": "annolid-bot@zulip.example.com",
+                "api_key": "k",
+                "topic": "bot",
+                "bot_name": "Annolid Bot",
+            },
+            bus,
+        )
+        channel._anchor_initialized = True
+        channel._cursor_state_has_checkpoint = True
+        calls: list[str] = []
+
+        async def _fake_handle_message(**kwargs):
+            calls.append(str(kwargs.get("content") or ""))
+            return True
+
+        channel._handle_message = _fake_handle_message  # type: ignore[assignment]
+
+        def _fake_request_json(**kwargs):
+            del kwargs
+            return {
+                "result": "success",
+                "messages": [
+                    {
+                        "id": 601,
+                        "timestamp": 2_000_000,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "general chat",
+                        "content": "No mention here",
+                        "flags": [],
+                    },
+                    {
+                        "id": 602,
+                        "timestamp": 2_000_001,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "general chat",
+                        "content": "@**Annolid Bot** please help",
+                        "flags": [],
+                    },
+                ],
+            }
+
+        channel._request_json = _fake_request_json  # type: ignore[assignment]
+        await channel._poll_messages()
+        assert calls == ["please help"]
+
+    asyncio.run(_run())
+
+
+def test_zulip_channel_first_poll_fetches_after_anchor_init() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = ZulipChannel(
+            {
+                "server_url": "https://zulip.example.com",
+                "user": "annolid-bot@zulip.example.com",
+                "api_key": "k",
+            },
+            bus,
+        )
+        calls: list[int] = []
+        request_anchors: list[Any] = []
+        channel._cursor_state_has_checkpoint = True
+
+        async def _fake_handle_message(**kwargs):
+            calls.append(int((kwargs.get("metadata") or {}).get("zulip_message_id", 0)))
+            return True
+
+        channel._handle_message = _fake_handle_message  # type: ignore[assignment]
+
+        def _fake_request_json(**kwargs):
+            params = kwargs.get("params", {})
+            anchor = params.get("anchor")
+            request_anchors.append(anchor)
+            if anchor == "newest":
+                return {"result": "success", "messages": [{"id": 700}]}
+            return {
+                "result": "success",
+                "messages": [
+                    {
+                        "id": 701,
+                        "timestamp": 2_000_010,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "bot",
+                        "content": "hello",
+                        "flags": [],
+                    }
+                ],
+            }
+
+        channel._request_json = _fake_request_json  # type: ignore[assignment]
+        await channel._poll_messages()
+        assert "newest" in request_anchors
+        assert 700 in request_anchors
+        assert calls == [701]
+
+    asyncio.run(_run())
+
+
 def test_zulip_channel_request_json_encodes_bool_query_as_json_lowercase() -> None:
     bus = MessageBus()
     channel = ZulipChannel({}, bus)
@@ -279,6 +742,184 @@ def test_zulip_channel_request_json_encodes_bool_query_as_json_lowercase() -> No
     assert data["result"] == "success"
     assert "apply_markdown=false" in captured_url["value"]
     assert "include_anchor=true" in captured_url["value"]
+
+
+def test_zulip_channel_logs_poll_cycle_summary() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = ZulipChannel(
+            {
+                "server_url": "https://zulip.example.com",
+                "user": "bot@zulip.example.com",
+                "api_key": "k",
+                "stream": "Annolid",
+                "topic": "bot",
+            },
+            bus,
+        )
+        channel._anchor_initialized = True
+        channel._cursor_state_has_checkpoint = True
+
+        async def _fake_handle_message(**kwargs):
+            del kwargs
+            return True
+
+        channel._handle_message = _fake_handle_message  # type: ignore[assignment]
+
+        def _fake_request_json(**kwargs):
+            del kwargs
+            return {
+                "result": "success",
+                "messages": [
+                    {
+                        "id": 801,
+                        "timestamp": 2_000_000,
+                        "sender_email": "alice@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "bot",
+                        "content": "hello",
+                        "flags": [],
+                    }
+                ],
+            }
+
+        channel._request_json = _fake_request_json  # type: ignore[assignment]
+        with patch("annolid.core.agent.channels.zulip.logger.info") as mock_info:
+            await channel._poll_messages()
+        info_messages = " | ".join(
+            str(args[0]) % args[1:] if args else ""
+            for args, _kwargs in mock_info.call_args_list
+        )
+        assert (
+            "Polling Zulip for bot@zulip.example.com stream=Annolid topic=bot"
+            in info_messages
+        )
+        assert (
+            "Zulip poll complete user=bot@zulip.example.com fetched_main=1 fetched_unread=0 handled=1 skipped=0 skip_reasons=none"
+            in info_messages
+        )
+
+    asyncio.run(_run())
+
+
+def test_zulip_channel_missing_credentials_warn_once() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = ZulipChannel({}, bus)
+        with patch("annolid.core.agent.channels.zulip.logger.warning") as mock_warning:
+            await channel._poll_messages()
+            await channel._poll_messages()
+        warning_messages = [
+            str(args[0]) % args[1:] if args else ""
+            for args, _kwargs in mock_warning.call_args_list
+        ]
+        hits = [m for m in warning_messages if "missing server_url/user/api_key" in m]
+        assert len(hits) == 1
+
+    asyncio.run(_run())
+
+
+def test_zulip_channel_unread_backfill_processes_older_unread() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = ZulipChannel(
+            {
+                "server_url": "https://zulip.example.com",
+                "user": "bot@zulip.example.com",
+                "api_key": "k",
+                "stream": "Annolid",
+                "unread_backfill_enabled": True,
+                "unread_backfill_on_empty_only": True,
+                "unread_backfill_limit": 10,
+                "unread_backfill_cooldown_s": 0,
+            },
+            bus,
+        )
+        channel._anchor_initialized = True
+        channel._cursor_state_has_checkpoint = False
+        channel._startup_unix_s = 2_000_000
+
+        calls: list[int] = []
+
+        async def _fake_handle_message(**kwargs):
+            calls.append(int((kwargs.get("metadata") or {}).get("zulip_message_id", 0)))
+            return True
+
+        channel._handle_message = _fake_handle_message  # type: ignore[assignment]
+
+        def _fake_request_json(**kwargs):
+            params = kwargs.get("params", {})
+            anchor = params.get("anchor")
+            narrow = str(params.get("narrow") or "")
+            if anchor == "newest" and '"unread"' in narrow:
+                return {
+                    "result": "success",
+                    "messages": [
+                        {
+                            "id": 901,
+                            "timestamp": 1_999_000,
+                            "sender_email": "alice@example.com",
+                            "type": "stream",
+                            "display_recipient": "Annolid",
+                            "subject": "bot",
+                            "content": "older unread",
+                            "flags": [],
+                        }
+                    ],
+                }
+            return {"result": "success", "messages": []}
+
+        channel._request_json = _fake_request_json  # type: ignore[assignment]
+        await channel._poll_messages()
+        assert calls == [901]
+
+    asyncio.run(_run())
+
+
+def test_zulip_channel_allow_from_blocked_reason_in_summary() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = ZulipChannel(
+            {
+                "server_url": "https://zulip.example.com",
+                "user": "bot@zulip.example.com",
+                "api_key": "k",
+                "allow_from": ["trusted@example.com"],
+            },
+            bus,
+        )
+        channel._anchor_initialized = True
+        channel._cursor_state_has_checkpoint = True
+
+        def _fake_request_json(**kwargs):
+            del kwargs
+            return {
+                "result": "success",
+                "messages": [
+                    {
+                        "id": 951,
+                        "timestamp": 2_000_000,
+                        "sender_email": "other@example.com",
+                        "type": "stream",
+                        "display_recipient": "Annolid",
+                        "subject": "bot",
+                        "content": "hello",
+                        "flags": [],
+                    }
+                ],
+            }
+
+        channel._request_json = _fake_request_json  # type: ignore[assignment]
+        with patch("annolid.core.agent.channels.zulip.logger.info") as mock_info:
+            await channel._poll_messages()
+        info_messages = " | ".join(
+            str(args[0]) % args[1:] if args else ""
+            for args, _kwargs in mock_info.call_args_list
+        )
+        assert "skip_reasons=allow_from_blocked:1" in info_messages
+
+    asyncio.run(_run())
 
 
 def test_channel_ingest_infers_dm_metadata() -> None:

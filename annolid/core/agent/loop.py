@@ -325,6 +325,7 @@ class AgentLoop:
         llm_total_ms = 0.0
         tool_exec_total_ms = 0.0
         tool_call_count = 0
+        empty_final_repair_passes = 0
         message_build_ms = 0.0
         mcp_connect_ms = 0.0
         memory_enabled = (
@@ -386,6 +387,7 @@ class AgentLoop:
             repeated_tool_cycles = 0
             last_tool_cycle_signature: Optional[tuple[str, ...]] = None
             last_iteration = 0
+            empty_final_repair_used = False
 
             for iteration in range(1, self._max_iterations + 1):
                 last_iteration = iteration
@@ -636,6 +638,31 @@ class AgentLoop:
                 last_tool_cycle_signature = None
 
                 final_content = self._strip_think(assistant_text)
+                if (
+                    not str(final_content or "").strip()
+                    and tool_runs
+                    and not empty_final_repair_used
+                    and iteration < self._max_iterations
+                ):
+                    empty_final_repair_used = True
+                    empty_final_repair_passes += 1
+                    self._logger.warning(
+                        "annolid-bot empty final response session=%s model=%s iteration=%d; requesting one repair pass",
+                        session_id,
+                        self.model,
+                        iteration,
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Please provide a concise final answer for the user "
+                                "based on the tool results above. Avoid additional "
+                                "tool calls unless absolutely necessary."
+                            ),
+                        }
+                    )
+                    continue
                 if memory_enabled and str(final_content).strip():
                     tools_used = self._extract_tools_used(tool_runs)
                     self._memory_store.append_history(
@@ -784,7 +811,7 @@ class AgentLoop:
                 buckets.items(), key=lambda item: item[1]
             )
             self._logger.info(
-                "annolid-bot profile summary session=%s model=%s total_ms=%.1f mcp_connect_ms=%.1f message_build_ms=%.1f llm_total_ms=%.1f tool_exec_total_ms=%.1f tool_calls=%d",
+                "annolid-bot profile summary session=%s model=%s total_ms=%.1f mcp_connect_ms=%.1f message_build_ms=%.1f llm_total_ms=%.1f tool_exec_total_ms=%.1f tool_calls=%d empty_repair_passes=%d",
                 session_id,
                 self.model,
                 total_ms,
@@ -793,6 +820,7 @@ class AgentLoop:
                 llm_total_ms,
                 tool_exec_total_ms,
                 tool_call_count,
+                empty_final_repair_passes,
             )
             self._logger.info(
                 "annolid-bot profile bottleneck session=%s model=%s bottleneck=%s bottleneck_ms=%.1f other_ms=%.1f",
