@@ -37,6 +37,7 @@ from .fallbacks import (
     try_open_page_content_fallback,
     try_open_pdf_content_fallback,
     try_web_fetch_fallback,
+    try_web_search_fallback,
 )
 from .paths import (
     build_pdf_search_roots,
@@ -56,6 +57,7 @@ from .tool_handlers_web_pdf import (
     pdf_get_state,
     pdf_get_text,
     web_click,
+    web_extract_structured,
     web_find_forms,
     web_get_dom_text,
     web_get_state,
@@ -195,6 +197,7 @@ __all__ = [
     "topic_tokens",
     "candidate_web_urls_for_prompt",
     "try_web_fetch_fallback",
+    "try_web_search_fallback",
     "extract_page_text_from_web_steps",
     "try_browser_search_fallback",
     "try_open_page_content_fallback",
@@ -218,6 +221,7 @@ __all__ = [
     "PromptBuildInputs",
     "build_compact_system_prompt",
     "web_get_dom_text",
+    "web_extract_structured",
     "web_get_state",
     "web_click",
     "web_type",

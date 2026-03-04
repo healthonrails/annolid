@@ -79,6 +79,7 @@ from annolid.core.agent.gui_backend.fallbacks import (
     try_open_page_content_fallback,
     try_open_pdf_content_fallback,
     try_web_fetch_fallback,
+    try_web_search_fallback,
 )
 from annolid.core.agent.gui_backend.heuristics import (
     build_extractive_summary,
@@ -115,6 +116,7 @@ from annolid.core.agent.gui_backend.tool_handlers_web_pdf import (
     pdf_get_state as gui_pdf_get_state,
     pdf_get_text as gui_pdf_get_text,
     web_click as gui_web_click,
+    web_extract_structured as gui_web_extract_structured,
     web_find_forms as gui_web_find_forms,
     web_get_dom_text as gui_web_get_dom_text,
     web_get_state as gui_web_get_state,
@@ -1199,6 +1201,7 @@ class StreamingChatTask(QRunnable):
                 "open_threejs": self._tool_gui_open_threejs,
                 "open_threejs_example": self._tool_gui_open_threejs_example,
                 "web_get_dom_text": self._tool_gui_web_get_dom_text,
+                "web_extract_structured": self._tool_gui_web_extract_structured,
                 "web_click": self._tool_gui_web_click,
                 "web_type": self._tool_gui_web_type,
                 "web_scroll": self._tool_gui_web_scroll,
@@ -1320,8 +1323,10 @@ class StreamingChatTask(QRunnable):
             enable_web_tools=self.enable_web_tools,
             looks_like_open_url_suggestion=self._looks_like_open_url_suggestion,
             should_apply_web_refusal_fallback_cb=self._should_apply_web_refusal_fallback,
+            should_force_web_fallback_cb=self._should_force_web_fallback,
             try_open_page_content_fallback=self._try_open_page_content_fallback,
             try_browser_search_fallback=self._try_browser_search_fallback,
+            try_web_search_fallback=self._try_web_search_fallback,
             try_web_fetch_fallback=self._try_web_fetch_fallback,
         )
 
@@ -1331,6 +1336,14 @@ class StreamingChatTask(QRunnable):
             looks_like_web_access_refusal=self._looks_like_web_access_refusal,
             looks_like_knowledge_gap_response=self._looks_like_knowledge_gap_response,
         )
+
+    def _should_force_web_fallback(self, prompt: str, text: str) -> bool:
+        if str(text or "").strip():
+            return False
+        if should_attach_live_web_context(prompt):
+            return True
+        tokens = set(re.findall(r"[a-z0-9_]+", str(prompt or "").lower()))
+        return bool(tokens.intersection({"weather", "forecast", "temperature"}))
 
     def _apply_pdf_response_fallback(self, text: str, *, tool_run_count: int) -> str:
         return gui_apply_pdf_response_fallback(
@@ -1479,6 +1492,26 @@ class StreamingChatTask(QRunnable):
 
     def _tool_gui_web_get_state(self) -> Dict[str, Any]:
         return gui_web_get_state(invoke_widget_json_slot=self._invoke_widget_json_slot)
+
+    def _tool_gui_web_extract_structured(
+        self,
+        fields: List[str] | None = None,
+        regex_overrides: Dict[str, str] | None = None,
+        selector_hints: Dict[str, str] | None = None,
+        extraction_mode: str = "auto",
+        max_chars: int = 9000,
+        include_excerpt: bool = True,
+    ) -> Dict[str, Any]:
+        return gui_web_extract_structured(
+            get_state=self._tool_gui_web_get_state,
+            get_dom_text=self._tool_gui_web_get_dom_text,
+            fields=fields,
+            regex_overrides=regex_overrides,
+            selector_hints=selector_hints,
+            extraction_mode=extraction_mode,
+            max_chars=max_chars,
+            include_excerpt=include_excerpt,
+        )
 
     def _tool_gui_web_click(self, selector: str) -> Dict[str, Any]:
         return gui_web_click(
@@ -1897,6 +1930,17 @@ class StreamingChatTask(QRunnable):
             tools=tools,
             candidate_urls_for_prompt=self._candidate_web_urls_for_prompt,
             build_summary=self._build_extractive_summary,
+            emit_progress=self._emit_progress,
+        )
+
+    async def _try_web_search_fallback(
+        self,
+        prompt: str,
+        tools: Optional[FunctionToolRegistry],
+    ) -> str:
+        return await try_web_search_fallback(
+            prompt=prompt,
+            tools=tools,
             emit_progress=self._emit_progress,
         )
 

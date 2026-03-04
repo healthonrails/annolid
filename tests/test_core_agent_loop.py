@@ -1186,7 +1186,7 @@ def test_agent_loop_stops_on_repeated_identical_tool_cycles() -> None:
 
 def test_agent_loop_toolcall_web_search_example() -> None:
     registry = FunctionToolRegistry()
-    registry.register(WebSearchTool(api_key=""))
+    registry.register(WebSearchTool(api_key="", backend="brave"))
     state = {"n": 0}
 
     async def fake_llm(
@@ -1272,6 +1272,31 @@ def test_agent_loop_prefers_browser_tool_for_web_intent_queries() -> None:
     _ = asyncio.run(loop.run("what is the weather today?"))
     assert observed["tool_names"]
     assert observed["tool_names"][0] == "mcp_browser_navigate"
+
+
+def test_agent_loop_prefers_web_search_for_stock_price_intent() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_SearchLikeTool())
+    registry.register(_BrowserLikeTool())
+    registry.register(_MathLikeTool())
+    observed = {"tool_names": []}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, model, on_token
+        observed["tool_names"] = [
+            str((t.get("function") or {}).get("name") or "") for t in tools
+        ]
+        return {"content": "ok"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    _ = asyncio.run(loop.run("check NVDA stock price"))
+    assert observed["tool_names"]
+    assert observed["tool_names"][0] == "web_search"
 
 
 def test_agent_loop_can_disable_browser_first_for_web() -> None:

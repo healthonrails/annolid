@@ -725,9 +725,113 @@ def test_exec_process_write_poll_log_and_kill(tmp_path: Path) -> None:
 
 
 def test_web_search_tool_without_key_reports_config_error() -> None:
-    tool = WebSearchTool(api_key="")
+    tool = WebSearchTool(api_key="", backend="brave")
     result = asyncio.run(tool.execute(query="annolid"))
     assert "BRAVE_API_KEY not configured" in result
+
+
+def test_web_search_tool_prefers_scrapling_backend(monkeypatch) -> None:
+    tool = WebSearchTool(api_key="test-key")
+
+    async def _fake_scrapling(*, query: str, count: int):
+        del query, count
+        return [
+            {
+                "title": "Scrapling Result",
+                "url": "https://example.org/scrapling",
+                "description": "from scrapling",
+            }
+        ]
+
+    async def _fake_brave(*, query: str, count: int):
+        del query, count
+        return [
+            {
+                "title": "Brave Result",
+                "url": "https://example.org/brave",
+                "description": "from brave",
+            }
+        ]
+
+    monkeypatch.setattr(tool, "_search_with_scrapling", _fake_scrapling)
+    monkeypatch.setattr(tool, "_search_with_brave", _fake_brave)
+
+    result = asyncio.run(tool.execute(query="annolid"))
+    assert "Scrapling Result" in result
+    assert "Brave Result" not in result
+
+
+def test_web_search_tool_scrapling_fetchers_class_api(monkeypatch) -> None:
+    called: dict[str, object] = {}
+
+    class _Page:
+        html = '<a class="result__a" href="https://example.org/docs">Example Docs</a>'
+
+    class _AsyncFetcher:
+        @classmethod
+        async def fetch(cls, url: str, **kwargs):
+            called["url"] = url
+            called["kwargs"] = dict(kwargs)
+            return _Page()
+
+    scrapling_mod = types.ModuleType("scrapling")
+    fetchers_mod = types.ModuleType("scrapling.fetchers")
+    setattr(fetchers_mod, "AsyncFetcher", _AsyncFetcher)
+    setattr(scrapling_mod, "fetchers", fetchers_mod)
+    monkeypatch.setitem(sys.modules, "scrapling", scrapling_mod)
+    monkeypatch.setitem(sys.modules, "scrapling.fetchers", fetchers_mod)
+
+    tool = WebSearchTool(api_key="")
+    result = asyncio.run(tool.execute(query="annolid", backend="scrapling"))
+    assert "Results for: annolid" in result
+    assert "Example Docs" in result
+    assert str(called.get("url") or "").startswith("https://duckduckgo.com/html/?q=")
+
+
+def test_web_search_tool_returns_no_results_when_scrapling_empty(monkeypatch) -> None:
+    tool = WebSearchTool(api_key="")
+
+    async def _fake_scrapling(*, query: str, count: int):
+        del query, count
+        return []
+
+    async def _fake_brave(*, query: str, count: int):
+        del query, count
+        return None
+
+    monkeypatch.setattr(tool, "_search_with_scrapling", _fake_scrapling)
+    monkeypatch.setattr(tool, "_search_with_brave", _fake_brave)
+
+    result = asyncio.run(tool.execute(query="annolid"))
+    assert result == "No results for: annolid"
+
+
+def test_web_search_tool_parses_duckduckgo_results() -> None:
+    html = """
+    <html><body>
+      <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdoc">
+        Example Title
+      </a>
+    </body></html>
+    """
+    rows = WebSearchTool._parse_duckduckgo_results(html, count=3)
+    assert rows
+    assert rows[0]["title"] == "Example Title"
+    assert rows[0]["url"] == "https://example.com/doc"
+
+
+def test_web_search_tool_parse_deduplicates_and_normalizes_duck_links() -> None:
+    html = """
+    <html><body>
+      <a class='result__a' href='//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdoc'>First</a>
+      <a class='result__a' href='https://example.com/doc'>Duplicate</a>
+      <a class='result__a' href='https://duckduckgo.com/?q=test'>Internal</a>
+    </body></html>
+    """
+    rows = WebSearchTool._parse_duckduckgo_results(html, count=10)
+    assert len(rows) == 1
+    assert rows[0]["title"] == "First"
+    assert rows[0]["url"] == "https://example.com/doc"
 
 
 def test_cron_tool_add_list_remove(tmp_path: Path) -> None:
@@ -1742,6 +1846,9 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         web_get_dom_text_callback=lambda max_chars=8000: _mark(
             "web_get_dom_text", max_chars
         ),
+        web_extract_structured_callback=lambda **kwargs: _mark(
+            "web_extract_structured", kwargs
+        ),
         web_click_callback=lambda selector: _mark("web_click", selector),
         web_type_callback=lambda selector, text, submit=False: _mark(
             "web_type", {"selector": selector, "text": text, "submit": bool(submit)}
@@ -1846,6 +1953,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_open_threejs")
     assert registry.has("gui_open_threejs_example")
     assert registry.has("gui_web_get_dom_text")
+    assert registry.has("gui_web_extract_structured")
     assert registry.has("gui_web_click")
     assert registry.has("gui_web_type")
     assert registry.has("gui_web_scroll")
@@ -1912,6 +2020,17 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         registry.execute("gui_web_get_dom_text", {"max_chars": 1200})
     )
     assert json.loads(web_get_dom_text)["ok"] is True
+    web_extract_structured = asyncio.run(
+        registry.execute(
+            "gui_web_extract_structured",
+            {
+                "fields": ["title", "summary"],
+                "max_chars": 1200,
+                "include_excerpt": True,
+            },
+        )
+    )
+    assert json.loads(web_extract_structured)["ok"] is True
     web_click = asyncio.run(
         registry.execute("gui_web_click", {"selector": "button.submit"})
     )
@@ -2081,6 +2200,14 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         ("open_threejs", "/tmp/annolid_threejs_examples/two_mice.html"),
         ("open_threejs_example", "two_mice_html"),
         ("web_get_dom_text", 1200),
+        (
+            "web_extract_structured",
+            {
+                "fields": ["title", "summary"],
+                "max_chars": 1200,
+                "include_excerpt": True,
+            },
+        ),
         ("web_click", "button.submit"),
         (
             "web_type",

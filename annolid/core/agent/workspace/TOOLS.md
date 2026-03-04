@@ -43,7 +43,7 @@ Safety notes:
 
 ## Web
 
-- `web_search(query, count?)`
+- `web_search(query, count?)` (Scrapling-first backend for extraction-oriented web results; falls back to Brave Search API when configured)
 - `web_fetch(url, extractMode?, maxChars?)`
 - `download_url(url, output_path, max_bytes?, overwrite?, content_type_prefixes?, request_headers?)`
 - `download_pdf(url, output_path?, max_bytes?, overwrite?)`
@@ -65,6 +65,7 @@ Safety notes:
 - `gui_open_url(url)`
 - `gui_open_in_browser(url)`
 - `gui_web_get_dom_text(max_chars?)`
+- `gui_web_extract_structured(fields?, regex_overrides?, selector_hints?, extraction_mode?, max_chars?, include_excerpt?)`
 - `gui_web_click(selector)`
 - `gui_web_type(selector, text, submit?)`
 - `gui_web_scroll(delta_y?)`

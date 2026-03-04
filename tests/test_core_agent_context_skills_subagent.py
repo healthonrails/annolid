@@ -41,6 +41,7 @@ def test_skills_loader_lists_builtin_skills() -> None:
     names = {s["name"] for s in skills}
     assert "github" in names
     assert "weather" in names
+    assert "web-scraping" in names
     summary = loader.build_skills_summary()
     assert "<skills>" in summary
     assert "<location>" in summary

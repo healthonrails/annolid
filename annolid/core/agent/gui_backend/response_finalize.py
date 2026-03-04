@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional, Tuple
 
+from annolid.core.agent.web_intents import (
+    has_fast_web_data_intent,
+    has_live_web_intent,
+    tokenize_intent_text,
+)
+
 
 def should_apply_web_refusal_fallback(
     text: str,
@@ -111,27 +117,46 @@ async def apply_web_response_fallbacks(
     enable_web_tools: bool,
     looks_like_open_url_suggestion: Callable[[str], bool],
     should_apply_web_refusal_fallback_cb: Callable[[str], bool],
+    should_force_web_fallback_cb: Callable[[str, str], bool],
     try_open_page_content_fallback: Callable[[], str],
     try_browser_search_fallback: Callable[[str, Optional[Any]], Any],
+    try_web_search_fallback: Callable[[str, Optional[Any]], Any],
     try_web_fetch_fallback: Callable[[str, Optional[Any]], Any],
 ) -> str:
     result = text
     if tool_run_count > 0:
         return result
+    prompt_tokens = tokenize_intent_text(prompt)
+    prompt_needs_live_web = has_live_web_intent(prompt_tokens)
+    prompt_prefers_fast_web_tools = has_fast_web_data_intent(prompt_tokens)
+    should_force_fallback = bool(
+        should_force_web_fallback_cb(prompt, result)
+        or (prompt_needs_live_web and not str(result or "").strip())
+    )
     if enable_web_tools and looks_like_open_url_suggestion(result):
         open_page_fallback = try_open_page_content_fallback()
         if open_page_fallback:
             result = open_page_fallback
-    if not should_apply_web_refusal_fallback_cb(result):
+    if not should_force_fallback and not should_apply_web_refusal_fallback_cb(result):
         return result
     open_page_fallback = try_open_page_content_fallback()
     if open_page_fallback:
         return open_page_fallback
+    if enable_web_tools and prompt_prefers_fast_web_tools:
+        search_fallback = await try_web_search_fallback(prompt, tools)
+        if search_fallback:
+            return search_fallback
+        web_fallback = await try_web_fetch_fallback(prompt, tools)
+        if web_fallback:
+            return web_fallback
     # Browser MCP fallback is allowed even when web_search/web_fetch are disabled.
     browser_fallback = await try_browser_search_fallback(prompt, tools)
     if browser_fallback:
         return browser_fallback
     if enable_web_tools:
+        search_fallback = await try_web_search_fallback(prompt, tools)
+        if search_fallback:
+            return search_fallback
         web_fallback = await try_web_fetch_fallback(prompt, tools)
         if web_fallback:
             return web_fallback

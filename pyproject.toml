@@ -120,6 +120,7 @@ cowtracker = [
 annolid_bot = [
     # Primary Annolid Bot bundle: channels + integrations.
     "croniter>=2.0.5",
+    "scrapling>=0.2.96",
     "mcp>=1.0.0",
     "websockets>=12.0",
     "playwright>=1.45.0",

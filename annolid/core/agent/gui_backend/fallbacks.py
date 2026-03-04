@@ -78,6 +78,39 @@ async def try_web_fetch_fallback(
     )
 
 
+async def try_web_search_fallback(
+    *,
+    prompt: str,
+    tools: Optional[FunctionToolRegistry],
+    emit_progress: Callable[[str], None],
+) -> str:
+    registry = tools
+    if registry is None:
+        return ""
+    if not registry.has("web_search"):
+        return ""
+    query = " ".join(str(prompt or "").split()).strip()
+    if not query:
+        return ""
+    if len(query) > 280:
+        query = query[:280].rstrip()
+    try:
+        emit_progress("Retrying with web_search")
+        payload_raw = await registry.execute(
+            "web_search",
+            {"query": query, "count": 5},
+        )
+    except Exception:
+        return ""
+    text = str(payload_raw or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered.startswith("error:") or lowered.startswith("no results for:"):
+        return ""
+    return text
+
+
 def extract_page_text_from_web_steps(payload: Dict[str, Any]) -> str:
     if not isinstance(payload, dict):
         return ""

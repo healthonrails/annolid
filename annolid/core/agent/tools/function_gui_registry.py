@@ -19,6 +19,7 @@ from .function_gui_web import (
     GuiOpenUrlTool,
     GuiOpenInBrowserTool,
     GuiWebGetDomTextTool,
+    GuiWebExtractStructuredTool,
     GuiWebClickTool,
     GuiWebTypeTool,
     GuiWebScrollTool,
@@ -80,6 +81,7 @@ def register_annolid_gui_tools(
     open_threejs_callback: Optional[ActionCallback] = None,
     open_threejs_example_callback: Optional[ActionCallback] = None,
     web_get_dom_text_callback: Optional[ActionCallback] = None,
+    web_extract_structured_callback: Optional[ActionCallback] = None,
     web_click_callback: Optional[ActionCallback] = None,
     web_type_callback: Optional[ActionCallback] = None,
     web_scroll_callback: Optional[ActionCallback] = None,
@@ -139,6 +141,11 @@ def register_annolid_gui_tools(
     )
     registry.register(
         GuiWebGetDomTextTool(web_get_dom_text_callback=web_get_dom_text_callback)
+    )
+    registry.register(
+        GuiWebExtractStructuredTool(
+            web_extract_structured_callback=web_extract_structured_callback
+        )
     )
     registry.register(GuiWebClickTool(web_click_callback=web_click_callback))
     registry.register(GuiWebTypeTool(web_type_callback=web_type_callback))

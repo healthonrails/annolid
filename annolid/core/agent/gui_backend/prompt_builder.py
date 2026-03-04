@@ -129,10 +129,9 @@ def build_compact_system_prompt(
         "'kill session <session_id>'."
     )
     parts.append(
-        "If MCP browser tools are available and the request needs live web search "
-        "(weather/news/prices/current events), use browser-first flow by default: "
-        "navigate to a search engine, type the query, snapshot/parse results, then summarize with source URLs. "
-        "If MCP browser is unavailable, use `gui_web_run_steps` for text extraction."
+        "If the request needs live web search (weather/news/prices/current events), "
+        "prefer native tools first (`web_search`, `web_fetch`, `gui_web_run_steps`). "
+        "Use MCP browser tools as a fallback for complex dynamic pages."
     )
     if web_tools_enabled:
         parts.append(

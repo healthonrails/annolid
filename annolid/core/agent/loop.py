@@ -33,7 +33,11 @@ from .eval.telemetry import RunTraceStore
 from .memory import AgentMemoryStore
 from .memory_store.flush import append_pre_compaction_flush
 from .providers import LiteLLMProvider, OpenAICompatProvider, resolve_openai_compat
-from .web_intents import LIVE_WEB_INTENT_TOKENS, WEATHER_INTENT_TOKENS
+from .web_intents import (
+    LIVE_WEB_INTENT_TOKENS,
+    WEATHER_INTENT_TOKENS,
+    has_fast_web_data_intent,
+)
 from .tools import FunctionToolRegistry
 from .tools.function_builtin import (
     AutomationSchedulerTool,
@@ -2122,6 +2126,7 @@ class AgentLoop:
         "clawhub_search_skills",
         "clawhub_install_skill",
         "gui_web_get_dom_text",
+        "gui_web_extract_structured",
         "gui_web_click",
         "gui_web_type",
         "gui_web_scroll",
@@ -2150,9 +2155,10 @@ class AgentLoop:
     _POST_TOOL_SYSTEM_GUIDANCE = (
         "Use the tool results to decide the next best action. "
         "Either call another tool with concrete arguments or provide a concise "
-        "final answer. For live web search requests, prefer MCP browser workflow "
-        "by default: navigate to a search engine, type the query, snapshot/parse "
-        "the results, then continue. For GUI web tasks, prefer `gui_web_run_steps` "
+        "final answer. For live web search requests, prefer native `web_search` "
+        "or `web_fetch` first, and use MCP browser workflow as fallback: "
+        "navigate to a search engine, type the query, snapshot/parse the results, "
+        "then continue. For GUI web tasks, prefer `gui_web_run_steps` "
         "before claiming browsing limits. Do not reveal private chain-of-thought."
     )
     _BROWSER_WORKFLOW_TOOL_NAMES = frozenset(
@@ -2312,16 +2318,24 @@ class AgentLoop:
         scored: List[tuple[int, Dict[str, Any]]] = []
         entries = list(tool_index) or self._compile_tool_index(tools)
         web_intent = bool(self._WEB_INTENT_TOKENS.intersection(query_tokens))
+        fast_web_data_intent = has_fast_web_data_intent(query_tokens)
         weather_intent = bool(WEATHER_INTENT_TOKENS.intersection(query_tokens))
         vcs_intent = bool(self._VCS_INTENT_TOKENS.intersection(query_tokens))
         for entry in entries:
             score = self._score_tool_schema(entry, query_tokens)
             if self._browser_first_for_web and web_intent:
-                if entry.name in self._BROWSER_WORKFLOW_TOOL_NAMES:
+                if fast_web_data_intent and entry.name in {"web_search", "web_fetch"}:
+                    score += 22
+                elif entry.name in self._BROWSER_WORKFLOW_TOOL_NAMES:
                     score += 24
                 elif "browser" in entry.name or "browser" in entry.desc:
                     score += 12
-                if entry.name == "web_search":
+                if fast_web_data_intent and (
+                    entry.name in self._BROWSER_WORKFLOW_TOOL_NAMES
+                    or "browser" in entry.name
+                ):
+                    score = max(1, score - 12)
+                if entry.name == "web_search" and not fast_web_data_intent:
                     score = max(1, score - 6)
             if score > 0:
                 scored.append((score, entry.schema))

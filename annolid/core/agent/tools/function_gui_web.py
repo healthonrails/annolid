@@ -234,3 +234,52 @@ class GuiWebRunStepsTool(FunctionTool):
 
     async def execute(self, **kwargs: Any) -> str:
         return await _run_callback(self._web_run_steps_callback, **kwargs)
+
+
+class GuiWebExtractStructuredTool(FunctionTool):
+    def __init__(
+        self, web_extract_structured_callback: Optional[ActionCallback] = None
+    ):
+        self._web_extract_structured_callback = web_extract_structured_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_web_extract_structured"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Extract structured fields from the active embedded web page text. "
+            "Useful for titles, summaries, weather facts, prices, and source URLs."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+                "regex_overrides": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                },
+                "selector_hints": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                },
+                "extraction_mode": {
+                    "type": "string",
+                    "enum": ["auto", "regex", "hint"],
+                },
+                "max_chars": {"type": "integer", "minimum": 200, "maximum": 50000},
+                "include_excerpt": {"type": "boolean"},
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._web_extract_structured_callback, **kwargs)

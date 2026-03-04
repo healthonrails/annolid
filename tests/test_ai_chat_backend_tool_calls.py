@@ -474,6 +474,97 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
     ]
 
 
+def test_gui_web_extract_structured_from_active_page(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    task = StreamingChatTask("extract weather fields", widget=None)
+    task._tool_gui_web_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_page": True,
+        "title": "Ithaca Weather",
+        "url": "https://weather.example/ithaca",
+    }
+    task._tool_gui_web_get_dom_text = lambda max_chars=9000: {  # type: ignore[method-assign]
+        "ok": True,
+        "title": "Ithaca Weather",
+        "url": "https://weather.example/ithaca",
+        "text": (
+            "Ithaca weather today: 39 F, light rain, wind 6 mph.\n"
+            "Humidity: 82%\n"
+            "Feels like: 36 F\n"
+        ),
+        "max_chars": max_chars,
+    }
+
+    payload = task._tool_gui_web_extract_structured(
+        fields=["title", "temperature", "humidity", "source"],
+        regex_overrides={
+            "temperature": r"weather today:\s*([0-9]+\s*F)",
+            "humidity": r"Humidity:\s*([0-9]+%)",
+        },
+        max_chars=1200,
+    )
+    assert payload["ok"] is True
+    assert payload["fields"]["title"] == "Ithaca Weather"
+    assert payload["fields"]["temperature"] == "39 F"
+    assert payload["fields"]["humidity"] == "82%"
+    assert payload["fields"]["source"] == "https://weather.example/ithaca"
+
+
+def test_gui_web_extract_structured_uses_selector_hints_mode(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+
+    task = StreamingChatTask("extract product card", widget=None)
+    task._tool_gui_web_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_page": True,
+        "title": "GPU Product",
+        "url": "https://shop.example/gpu",
+    }
+    task._tool_gui_web_get_dom_text = lambda max_chars=9000: {  # type: ignore[method-assign]
+        "ok": True,
+        "title": "GPU Product",
+        "url": "https://shop.example/gpu",
+        "text": ("NVIDIA RTX 4090\nPrice: $1599\nRating: 4.8/5\nStock: In stock\n"),
+        "max_chars": max_chars,
+    }
+
+    payload = task._tool_gui_web_extract_structured(
+        fields=["price", "rating", "stock"],
+        selector_hints={
+            "price": ".price",
+            "rating": ".rating",
+            "stock": ".stock",
+        },
+        extraction_mode="hint",
+        max_chars=1200,
+    )
+    assert payload["ok"] is True
+    assert payload["fields"]["price"] == "$1599"
+    assert payload["fields"]["rating"] == "4.8/5"
+    assert payload["fields"]["stock"] == "In stock"
+
+
 def test_gui_shape_tool_callbacks_validate_and_queue(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1740,6 +1831,120 @@ def test_finalize_agent_text_uses_browser_search_fallback_when_web_api_unconfigu
     assert "Ithaca weather today" in text
 
 
+def test_finalize_agent_text_prefers_web_search_before_browser_for_stock_intent() -> (
+    None
+):
+    class _DummyRegistry:
+        def has(self, name: str) -> bool:
+            return name in {"web_search", "gui_web_run_steps"}
+
+        async def execute(self, name: str, params: dict) -> str:
+            if name == "web_search":
+                assert params.get("query") == "check NVDA stock price"
+                return (
+                    "Results for: check NVDA stock price\n\n"
+                    "1. NVDA quote\n   https://example.org/nvda\n"
+                    "   NVDA: 901.23 USD"
+                )
+            if name == "gui_web_run_steps":
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "results": [
+                            {
+                                "action": "get_text",
+                                "result": {"ok": True, "text": "browser fallback"},
+                            }
+                        ],
+                    }
+                )
+            raise AssertionError(f"Unexpected tool {name}")
+
+    class _Result:
+        content = "I don't have access to that information directly."
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "check NVDA stock price",
+        widget=None,
+        enable_web_tools=True,
+    )
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=_DummyRegistry(),  # type: ignore[arg-type]
+    )
+    assert used_recovery is False
+    assert used_direct_gui_fallback is False
+    assert "Results for: check NVDA stock price" in text
+    assert "NVDA: 901.23 USD" in text
+    assert "Web lookup via embedded browser" not in text
+
+
+def test_finalize_agent_text_uses_web_search_fallback_on_empty_weather_output() -> None:
+    class _DummyRegistry:
+        def has(self, name: str) -> bool:
+            return name == "web_search"
+
+        async def execute(self, name: str, params: dict) -> str:
+            assert name == "web_search"
+            assert params.get("query") == "check weather in Ithaca NY"
+            return (
+                "Results for: check weather in Ithaca NY\n\n"
+                "1. Ithaca weather\n   https://example.org/weather\n"
+                "   39 F, light rain, wind 6 mph."
+            )
+
+    class _Result:
+        content = ""
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "check weather in Ithaca NY",
+        widget=None,
+        enable_web_tools=True,
+    )
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=_DummyRegistry(),  # type: ignore[arg-type]
+    )
+    assert used_recovery is False
+    assert used_direct_gui_fallback is False
+    assert "Results for: check weather in Ithaca NY" in text
+    assert "39 F, light rain" in text
+
+
+def test_finalize_agent_text_does_not_force_web_search_for_non_web_empty_output() -> (
+    None
+):
+    class _DummyRegistry:
+        def has(self, name: str) -> bool:
+            return name == "web_search"
+
+        async def execute(self, name: str, params: dict) -> str:
+            del name, params
+            return "unexpected web result"
+
+    class _Result:
+        content = ""
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "rename file foo.txt to bar.txt",
+        widget=None,
+        enable_web_tools=True,
+        provider="nvidia",
+        model="m",
+    )
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=_DummyRegistry(),  # type: ignore[arg-type]
+    )
+    assert used_recovery is False
+    assert isinstance(used_direct_gui_fallback, bool)
+    assert "unexpected web result" not in text
+    assert "Results for:" not in text
+
+
 def test_finalize_agent_text_prefers_open_page_content_before_browser_search() -> None:
     class _Result:
         content = (
@@ -1774,6 +1979,44 @@ def test_finalize_agent_text_prefers_open_page_content_before_browser_search() -
     assert used_direct_gui_fallback is False
     assert "Using the currently open page" in text
     assert "Current conditions in Ithaca NY" in text
+
+
+def test_finalize_agent_text_uses_open_page_fallback_on_empty_page_context_prompt() -> (
+    None
+):
+    class _Result:
+        content = ""
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "summarize this page",
+        widget=None,
+        enable_web_tools=True,
+    )
+    task._tool_gui_web_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_page": True,
+        "url": "https://example.org/report",
+        "title": "Example Report",
+    }
+    task._tool_gui_web_get_dom_text = lambda max_chars=8000: {  # type: ignore[method-assign]
+        "ok": True,
+        "url": "https://example.org/report",
+        "title": "Example Report",
+        "text": (
+            "Example quarterly report summary: revenue increased 12 percent year over year, "
+            "with strongest gains in data products."
+        ),
+    }
+
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=None,
+    )
+    assert used_recovery is False
+    assert used_direct_gui_fallback is False
+    assert "Using the currently open page" in text
+    assert "revenue increased 12 percent" in text
 
 
 def test_build_live_web_context_prompt_block_includes_open_page_snapshot() -> None:
