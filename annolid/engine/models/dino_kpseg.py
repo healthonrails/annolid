@@ -33,6 +33,11 @@ class DinoKPSEGPlugin(ModelPluginBase):
 
     def add_train_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
+            "--run-config",
+            default=None,
+            help="Path to run config YAML. CLI flags override YAML values.",
+        )
+        parser.add_argument(
             "--data",
             required=True,
             help="Path to dataset YAML (YOLO pose, LabelMe spec, or COCO spec)",

@@ -1,0 +1,18 @@
+model: maskrcnn_detectron2
+
+train:
+  dataset_dir: /path/to/coco_dataset
+  output_dir: /path/to/output_dir
+  weights: /path/to/initial_model.pth
+  model_config: COCO-InstanceSegmentation/mask_rcnn_R_101_FPN_3x.yaml
+  max_iterations: 12000
+  batch_size: 4
+  score_threshold: 0.2
+  overlap_threshold: 0.7
+
+base_lr: 0.001
+num_workers: 4
+checkpoint_period: 500
+roi_batch_size_per_image: 256
+sampler_train: RepeatFactorTrainingSampler
+repeat_threshold: 0.5

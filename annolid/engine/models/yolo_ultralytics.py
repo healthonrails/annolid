@@ -17,6 +17,11 @@ class YOLOUltralyticsPlugin(ModelPluginBase):
 
     def add_train_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
+            "--run-config",
+            default=None,
+            help="Path to run config YAML. CLI flags override YAML values.",
+        )
+        parser.add_argument(
             "--weights",
             default="yolo11n-seg.pt",
             help="Initial YOLO weights (asset name or path)",

@@ -14,6 +14,7 @@ from annolid.engine.registry import (
     list_models,
     load_builtin_models,
 )
+from annolid.engine.run_config import expand_argv_with_run_config
 from annolid.utils.logger import configure_logging
 
 
@@ -2150,7 +2151,13 @@ def _dispatch_model_subcommand(
         if base_args.help_model:
             p.print_help()
             return 0
-        args = p.parse_args(argv)
+        resolved_argv = expand_argv_with_run_config(
+            parser=p,
+            argv=argv,
+            model_name=model_name,
+            mode="train",
+        )
+        args = p.parse_args(list(resolved_argv))
         return int(plugin.train(args))
 
     if mode == "predict":

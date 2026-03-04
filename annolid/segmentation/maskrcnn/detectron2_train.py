@@ -24,6 +24,12 @@ class Segmentor:
         batch_size=8,
         model_pth_path=None,
         model_config=None,
+        base_lr=0.0025,
+        num_workers=2,
+        checkpoint_period=1000,
+        roi_batch_size_per_image=128,
+        sampler_train="RepeatFactorTrainingSampler",
+        repeat_threshold=0.3,
     ) -> None:
         self.dataset_dir = dataset_dir
         self.batch_size = batch_size
@@ -83,9 +89,9 @@ class Segmentor:
 
         self.cfg.DATASETS.TEST = ()
 
-        self.cfg.DATALOADER.NUM_WORKERS = 2  # @param
-        self.cfg.DATALOADER.SAMPLER_TRAIN = "RepeatFactorTrainingSampler"
-        self.cfg.DATALOADER.REPEAT_THRESHOLD = 0.3
+        self.cfg.DATALOADER.NUM_WORKERS = int(num_workers)
+        self.cfg.DATALOADER.SAMPLER_TRAIN = str(sampler_train)
+        self.cfg.DATALOADER.REPEAT_THRESHOLD = float(repeat_threshold)
         if model_pth_path is not None:
             self.cfg.MODEL.WEIGHTS = model_pth_path
         else:
@@ -93,7 +99,7 @@ class Segmentor:
                 model_config
             )  # Let training initialize from model zoo
         self.cfg.SOLVER.IMS_PER_BATCH = self.batch_size  # @param
-        self.cfg.SOLVER.BASE_LR = 0.0025  # @param # pick a good LR
+        self.cfg.SOLVER.BASE_LR = float(base_lr)
         self.logger.info(f"Max iterations {max_iterations}")
         self.logger.info(f"Batch size is: {batch_size}")
         self.logger.info(f"Dataset dir is : {dataset_dir}")
@@ -101,9 +107,9 @@ class Segmentor:
         # @param    # 3000 iterations seems good enough for 100 frames dataset;
         #  you will need to train longer for a practical dataset
         self.cfg.SOLVER.MAX_ITER = max_iterations
-        self.cfg.SOLVER.CHECKPOINT_PERIOD = 1000  # @param
+        self.cfg.SOLVER.CHECKPOINT_PERIOD = int(checkpoint_period)
         # @param   # faster, and good enough for this toy dataset (default: 512)
-        self.cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = 128
+        self.cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = int(roi_batch_size_per_image)
         # (see https://detectron2.readthedocs.io/tutorials/datasets.html#update-the-config-for-new-datasets)
         self.cfg.OUTPUT_DIR = self.out_put_dir
         os.makedirs(self.cfg.OUTPUT_DIR, exist_ok=True)

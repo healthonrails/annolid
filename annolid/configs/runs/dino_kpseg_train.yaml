@@ -1,0 +1,19 @@
+model: dino_kpseg
+
+train:
+  data: /path/to/dino_kpseg_data.yaml
+  data_format: auto
+  output: /path/to/output_dir
+  model_name: facebook/dinov3-vits16-pretrain-lvd1689m
+  short_side: 768
+  layers: -1,-2
+  radius_px: 5.5
+  mask_type: gaussian
+  instance_mode: auto
+  bbox_scale: 1.15
+  hidden_dim: 192
+  lr: 0.0005
+  epochs: 210
+  batch: 8
+  threshold: 0.2
+  augment: true

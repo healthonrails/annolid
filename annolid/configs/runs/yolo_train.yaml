@@ -1,0 +1,11 @@
+model: yolo
+
+train:
+  data: /path/to/data.yaml
+  weights: yolo11n-seg.pt
+  epochs: 300
+  imgsz: 640
+  batch: 16
+  device: "0"
+  project: /path/to/yolo_runs
+  plots: true

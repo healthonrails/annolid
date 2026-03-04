@@ -218,6 +218,7 @@ required vendored file list and packaging notes.
 - If the GUI does not launch, confirm the correct environment is active and run `annolid --help` for CLI usage.
 - If you see `qtpy.QtBindingsNotFoundError`, install GUI dependencies in the active environment: `pip install -e ".[gui]"` (source) or `pip install "annolid[gui]"` (PyPI).
 - For model training/inference from the terminal, use `annolid-run list-models`, `annolid-run train <model> --help-model`, and `annolid-run predict <model> --help-model`.
+- Shared YAML run-configs are supported for multiple training plugins (for example `dino_kpseg`, `maskrcnn_detectron2`, `yolo`, `behavior_classifier`): `annolid-run train <model> --run-config annolid/configs/runs/<template>.yaml` (CLI flags still override YAML fields).
 - YOLOE-26 prompting (text, visual, prompt-free) is available via `annolid-run predict yolo_labelme` and in the GUI video inference workflow (see `docs/source/yoloe_prompting.md`).
 - For an interactive TensorBoard embedding projector view of DinoKPSEG DINOv3 patch features, run `annolid-run dino-kpseg-embeddings --data /path/to/data.yaml [--weights /path/to/best.pt]` and then `tensorboard --logdir <run_dir>/tensorboard` (some DINOv3 checkpoints require a Hugging Face token).
 

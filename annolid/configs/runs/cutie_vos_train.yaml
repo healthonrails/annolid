@@ -1,0 +1,12 @@
+model: cutie_vos
+
+# Template for CUTIE VOS Hydra training/eval overrides.
+# This file is shared in the same run-config directory so projects can keep one
+# configuration style across models, even though CUTIE training is Hydra-based.
+hydra:
+  config_name: train_config
+  config_path: annolid/segmentation/cutie_vos/config
+  overrides:
+    - data=with-mose
+    - output_dir=/path/to/cutie_output
+    - exp_id=cutie_shared_run

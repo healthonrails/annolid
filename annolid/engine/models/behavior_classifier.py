@@ -30,6 +30,11 @@ class BehaviorClassifierPlugin(ModelPluginBase):
 
     def add_train_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
+            "--run-config",
+            default=None,
+            help="Path to run config YAML. CLI flags override YAML values.",
+        )
+        parser.add_argument(
             "--video-folder", required=True, help="Folder of labeled videos"
         )
         parser.add_argument("--batch-size", type=int, default=1)
