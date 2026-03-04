@@ -67,6 +67,7 @@ async def register_nanobot_style_tools(
     *,
     allowed_dir: Path | None = None,
     allowed_read_roots: Sequence[str | Path] | None = None,
+    cron_store_path: Path | None = None,
     send_callback: Callable[[str, str, str], Awaitable[None] | None] | None = None,
     spawn_callback: Callable[[str, str | None], Awaitable[str] | str] | None = None,
     mcp_servers: dict | None = None,
@@ -202,7 +203,7 @@ async def register_nanobot_style_tools(
         registry.register(CancelTaskTool())
     if "run_swarm" not in ignored_tools:
         registry.register(SwarmTool())
-    registry.register(CronTool(send_callback=send_callback))
+    registry.register(CronTool(store_path=cron_store_path, send_callback=send_callback))
 
     if email_cfg and email_cfg.enabled:
         attachment_roots: list[str | Path] = []

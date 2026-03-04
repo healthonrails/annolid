@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import logging
 import time
 from pathlib import Path
 
@@ -60,6 +62,66 @@ def test_cron_service_run_job_calls_handler(tmp_path: Path) -> None:
     ok = asyncio.run(svc.run_job(job.id, force=True))
     assert ok is True
     assert seen == ["task"]
+
+
+def test_cron_service_preserves_at_job_on_handler_error(tmp_path: Path) -> None:
+    async def _on_job(_job) -> str:
+        return "Error: background bus unavailable"
+
+    svc = CronService(store_path=tmp_path / "jobs.json", on_job=_on_job)
+    job = svc.add_job(
+        name="oneshot",
+        schedule=CronSchedule(kind="at", at_ms=int(time.time() * 1000) + 60_000),
+        payload=CronPayload(message="task"),
+        delete_after_run=True,
+    )
+    ok = asyncio.run(svc.run_job(job.id, force=True))
+    assert ok is True
+    rows = svc.list_jobs(include_disabled=True)
+    assert any(row.id == job.id for row in rows)
+    saved = next(row for row in rows if row.id == job.id)
+    assert saved.enabled is True
+    assert saved.state.last_status == "error"
+    assert saved.state.next_run_at_ms is not None
+
+
+def test_cron_service_start_arms_poll_timer_without_jobs(tmp_path: Path) -> None:
+    svc = CronService(store_path=tmp_path / "jobs.json")
+
+    async def _run() -> None:
+        await svc.start()
+        assert svc.status().get("timer_armed") is True
+        await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_cron_service_emits_job_audit_log(tmp_path: Path) -> None:
+    async def _on_job(_job) -> str:
+        return "ok"
+
+    stream = io.StringIO()
+    logger = logging.getLogger("annolid.agent.cron.test_audit")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    handler = logging.StreamHandler(stream)
+    logger.handlers = [handler]
+
+    svc = CronService(
+        store_path=tmp_path / "jobs.json",
+        on_job=_on_job,
+        logger=logger,
+    )
+    job = svc.add_job(
+        name="audit",
+        schedule=CronSchedule(kind="every", every_ms=1000),
+        payload=CronPayload(message="task"),
+    )
+    ok = asyncio.run(svc.run_job(job.id, force=True))
+    assert ok is True
+    log_text = stream.getvalue()
+    assert "Cron job audit id=" in log_text
+    assert f"id={job.id}" in log_text
 
 
 def test_cron_service_rejects_invalid_timezone_on_add(tmp_path: Path) -> None:

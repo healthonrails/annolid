@@ -92,6 +92,19 @@ def test_channel_manager_dispatches_outbound() -> None:
     asyncio.run(_run())
 
 
+def test_channel_manager_skips_local_only_gui_outbound_without_warning(caplog) -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        manager = ChannelManager(bus=bus, channels_config={})
+        with caplog.at_level("WARNING", logger="annolid.agent.channels"):
+            await manager._send_to_channel(
+                OutboundMessage(channel="gui", chat_id="annolid_bot", content="ok")
+            )
+        assert "Unknown outbound channel: gui" not in caplog.text
+
+    asyncio.run(_run())
+
+
 def test_channel_ingest_infers_dm_metadata() -> None:
     async def _run() -> None:
         bus = MessageBus()

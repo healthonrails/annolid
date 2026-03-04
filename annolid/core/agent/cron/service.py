@@ -10,13 +10,90 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
+from annolid.core.agent.utils import get_agent_data_path, get_agent_workspace_path
+
 from .types import CronJob, CronJobState, CronPayload, CronSchedule, CronStore
 
 CronJobHandler = Callable[[CronJob], Awaitable[Optional[str]]]
+_POLL_INTERVAL_SECONDS = 5.0
+_MAX_TIMER_SLEEP_SECONDS = 60.0
+_AT_ERROR_RETRY_MS = 60_000
 
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def default_cron_store_path() -> Path:
+    """Return the canonical cron store path under agent workspace."""
+    return get_agent_workspace_path() / "cron" / "jobs.json"
+
+
+def legacy_cron_store_path() -> Path:
+    """Return the legacy cron store path kept for migration compatibility."""
+    return get_agent_data_path() / "cron" / "jobs.json"
+
+
+def migrate_legacy_cron_store(
+    *,
+    store_path: Path,
+    legacy_path: Path | None = None,
+    logger: Optional[logging.Logger] = None,
+) -> int:
+    """Merge jobs from legacy store into canonical store, deduplicated by id."""
+    source = Path(legacy_path) if legacy_path is not None else legacy_cron_store_path()
+    target = Path(store_path)
+    if source == target or not source.exists():
+        return 0
+    try:
+        legacy_payload = json.loads(source.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    legacy_jobs = list(legacy_payload.get("jobs") or [])
+    if not legacy_jobs:
+        return 0
+
+    current_payload: dict[str, Any] = {"version": 1, "jobs": []}
+    if target.exists():
+        try:
+            loaded = json.loads(target.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                current_payload = loaded
+        except Exception:
+            pass
+    current_jobs = list(current_payload.get("jobs") or [])
+    existing_ids = {
+        str(row.get("id") or "").strip()
+        for row in current_jobs
+        if isinstance(row, dict)
+    }
+    merged_jobs = list(current_jobs)
+    migrated = 0
+    for row in legacy_jobs:
+        if not isinstance(row, dict):
+            continue
+        job_id = str(row.get("id") or "").strip()
+        if not job_id or job_id in existing_ids:
+            continue
+        merged_jobs.append(row)
+        existing_ids.add(job_id)
+        migrated += 1
+    if migrated <= 0:
+        return 0
+    target.parent.mkdir(parents=True, exist_ok=True)
+    current_payload["jobs"] = merged_jobs
+    target.write_text(
+        json.dumps(current_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    if logger is not None:
+        logger.info(
+            "Migrated %s cron job(s) from legacy store %s to %s",
+            migrated,
+            source,
+            target,
+        )
+    return migrated
 
 
 def compute_next_run(schedule: CronSchedule, now_ms: int) -> Optional[int]:
@@ -247,34 +324,38 @@ class CronService:
             return None
         return min(next_values)
 
+    def _refresh_from_disk_if_modified(self) -> bool:
+        try:
+            if not self.store_path.exists():
+                return False
+            current_mtime = self.store_path.stat().st_mtime
+            if current_mtime <= self._last_store_mtime:
+                return False
+        except OSError:
+            return False
+        self._store = None
+        self._recompute_next_runs()
+        return True
+
+    def _compute_timer_delay_seconds(self) -> float:
+        wake = self._next_wake_ms()
+        if wake is None:
+            return _POLL_INTERVAL_SECONDS
+        return max(
+            0.0,
+            min(_MAX_TIMER_SLEEP_SECONDS, (wake - _now_ms()) / 1000.0),
+        )
+
     def _arm_timer(self) -> None:
         if self._timer_task is not None:
             self._timer_task.cancel()
             self._timer_task = None
         if not self._running:
             return
-        wake = self._next_wake_ms()
-        if wake is None:
-            return
-        # Cap sleep so we can poll for ad-hoc mtime changes
-        delay = min(60.0, max(0.0, (wake - _now_ms()) / 1000.0))
+        delay = self._compute_timer_delay_seconds()
 
         async def _tick() -> None:
-            slept = 0.0
-            while slept < delay and self._running:
-                await asyncio.sleep(1.0)
-                slept += 1.0
-                try:
-                    if self.store_path.exists():
-                        current_mtime = self.store_path.stat().st_mtime
-                        if current_mtime > self._last_store_mtime:
-                            # Externally modified (e.g., via GUI/CLI Tool)
-                            self._store = None
-                            self._recompute_next_runs()
-                            break
-                except OSError:
-                    pass
-
+            await asyncio.sleep(delay)
             if self._running:
                 await self.on_timer()
 
@@ -295,6 +376,7 @@ class CronService:
             self._timer_task = None
 
     async def on_timer(self) -> None:
+        self._refresh_from_disk_if_modified()
         await self.run_due_jobs()
         self._save_store()
         self._arm_timer()
@@ -318,15 +400,21 @@ class CronService:
         return ran
 
     async def execute_job(self, job: CronJob) -> None:
+        scheduled_for_ms = job.state.next_run_at_ms
         started = _now_ms()
+        terminal_run = False
         try:
             if self.on_job is not None:
-                await self.on_job(job)
+                outcome = await self.on_job(job)
+                if str(outcome or "").strip().lower().startswith("error:"):
+                    raise RuntimeError(str(outcome))
                 job.state.last_status = "ok"
                 job.state.last_error = None
+                terminal_run = True
             else:
                 job.state.last_status = "skipped"
                 job.state.last_error = "No on_job handler configured."
+                terminal_run = True
         except Exception as exc:
             job.state.last_status = "error"
             job.state.last_error = str(exc)
@@ -334,14 +422,58 @@ class CronService:
         job.state.last_run_at_ms = started
         job.updated_at_ms = _now_ms()
         if job.schedule.kind == "at":
-            if job.delete_after_run:
-                store = self._load_store()
-                store.jobs = [row for row in store.jobs if row.id != job.id]
+            if terminal_run:
+                if job.delete_after_run:
+                    store = self._load_store()
+                    store.jobs = [row for row in store.jobs if row.id != job.id]
+                else:
+                    job.enabled = False
+                    job.state.next_run_at_ms = None
             else:
-                job.enabled = False
-                job.state.next_run_at_ms = None
+                # Preserve one-time jobs on failure and retry shortly.
+                job.enabled = True
+                job.state.next_run_at_ms = _now_ms() + _AT_ERROR_RETRY_MS
+            self._log_job_audit(
+                job,
+                scheduled_for_ms=scheduled_for_ms,
+                started_ms=started,
+            )
             return
         job.state.next_run_at_ms = compute_next_run(job.schedule, _now_ms())
+        self._log_job_audit(
+            job,
+            scheduled_for_ms=scheduled_for_ms,
+            started_ms=started,
+        )
+
+    def _log_job_audit(
+        self,
+        job: CronJob,
+        *,
+        scheduled_for_ms: int | None,
+        started_ms: int,
+    ) -> None:
+        finished_ms = _now_ms()
+        elapsed_ms = max(0, int(finished_ms - started_ms))
+        self._logger.info(
+            (
+                "Cron job audit id=%s name=%r kind=%s "
+                "scheduled_for_ms=%s started_ms=%s finished_ms=%s elapsed_ms=%s "
+                "status=%s error=%r enabled=%s next_run_at_ms=%s store_path=%s"
+            ),
+            job.id,
+            job.name,
+            job.schedule.kind,
+            scheduled_for_ms,
+            started_ms,
+            finished_ms,
+            elapsed_ms,
+            job.state.last_status,
+            job.state.last_error,
+            job.enabled,
+            job.state.next_run_at_ms,
+            self.store_path,
+        )
 
     def list_jobs(self, *, include_disabled: bool = False) -> list[CronJob]:
         store = self._load_store()
@@ -421,4 +553,6 @@ class CronService:
             "jobs": len(store.jobs),
             "next_wake_at_ms": self._next_wake_ms(),
             "persistence_error": self._persistence_error,
+            "timer_armed": self._timer_task is not None,
+            "store_path": str(self.store_path),
         }

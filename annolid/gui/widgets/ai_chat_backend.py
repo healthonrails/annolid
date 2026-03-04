@@ -13,7 +13,7 @@ import logging
 import re
 import time
 from threading import Event, Lock
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from typing import Mapping
 
 from qtpy import QtCore
@@ -1268,7 +1268,8 @@ class StreamingChatTask(QRunnable):
         tools: Optional[FunctionToolRegistry] = None,
     ) -> Tuple[str, bool, bool]:
         text = str(getattr(result, "content", "") or "").strip()
-        tool_run_count = len(getattr(result, "tool_runs", ()) or ())
+        tool_runs = tuple(getattr(result, "tool_runs", ()) or ())
+        tool_run_count = len(tool_runs)
         (
             text,
             used_direct_gui_fallback,
@@ -1283,12 +1284,82 @@ class StreamingChatTask(QRunnable):
             used_direct_gui_fallback=used_direct_gui_fallback,
             direct_gui_text=direct_gui_text,
         )
+        text = self._enforce_cron_schedule_confirmation(
+            text=text,
+            prompt=self.prompt,
+            tool_runs=tool_runs,
+        )
         text = self._ensure_non_empty_final_text(text)
         if self.show_tool_trace:
-            trace = self._format_tool_trace(getattr(result, "tool_runs", ()) or ())
+            trace = self._format_tool_trace(tool_runs)
             text = f"{text}\n\n{trace}".strip()
         self._emit_progress("Finalizing response")
         return text, used_recovery, used_direct_gui_fallback
+
+    @staticmethod
+    def _is_schedule_email_intent(prompt: str) -> bool:
+        tokens = set(re.findall(r"[a-z0-9_]+", str(prompt or "").lower()))
+        has_schedule = bool(tokens.intersection({"schedule", "scheduled"}))
+        has_email = bool(tokens.intersection({"email", "mail"}))
+        return has_schedule and has_email
+
+    @staticmethod
+    def _extract_reported_job_ids(text: str) -> List[str]:
+        matches = re.findall(
+            r"\bjob\s*id\b[^A-Za-z0-9_-]*`?([A-Za-z0-9_-]{6,})`?",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return [str(m).strip() for m in matches if str(m).strip()]
+
+    @staticmethod
+    def _extract_confirmed_cron_add_job_ids(tool_runs: Sequence[Any]) -> List[str]:
+        ids: List[str] = []
+        for run in tool_runs:
+            name = str(getattr(run, "name", "") or "").strip().lower()
+            if name != "cron":
+                continue
+            arguments = getattr(run, "arguments", {}) or {}
+            action = str(arguments.get("action", "")).strip().lower()
+            if action != "add":
+                continue
+            result_text = str(getattr(run, "result", "") or "")
+            match = re.search(r"\(id:\s*([A-Za-z0-9_-]{6,})\)", result_text)
+            if match:
+                ids.append(str(match.group(1)).strip())
+        return ids
+
+    def _enforce_cron_schedule_confirmation(
+        self,
+        *,
+        text: str,
+        prompt: str,
+        tool_runs: Sequence[Any],
+    ) -> str:
+        if not self._is_schedule_email_intent(prompt):
+            return text
+        lowered = str(text or "").lower()
+        appears_scheduled = ("scheduled" in lowered) or ("job id" in lowered)
+        if not appears_scheduled:
+            return text
+        confirmed_job_ids = self._extract_confirmed_cron_add_job_ids(tool_runs)
+        if not confirmed_job_ids:
+            return (
+                "I couldn't confirm that the cron job was created. "
+                "The schedule request was not persisted, so the email will not run. "
+                "Please retry scheduling and I will verify with `cron` before confirming."
+            )
+        reported_job_ids = self._extract_reported_job_ids(text)
+        if reported_job_ids and any(
+            job_id not in confirmed_job_ids for job_id in reported_job_ids
+        ):
+            confirmed_text = ", ".join(f"`{job_id}`" for job_id in confirmed_job_ids)
+            return (
+                "I found a mismatch between the response and persisted scheduler state. "
+                f"Confirmed scheduled job ID(s): {confirmed_text}. "
+                "Use `list cron jobs` to verify details."
+            )
+        return text
 
     async def _apply_direct_gui_fallback(
         self,

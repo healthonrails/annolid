@@ -7,8 +7,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from annolid.core.agent.cron import CronPayload, CronSchedule, CronService
-from annolid.core.agent.utils import get_agent_data_path
+from annolid.core.agent.cron import (
+    CronPayload,
+    CronSchedule,
+    CronService,
+    default_cron_store_path,
+    legacy_cron_store_path,
+    migrate_legacy_cron_store,
+)
 
 from .function_base import FunctionTool
 
@@ -25,13 +31,17 @@ class CronTool(FunctionTool):
         self._send_callback = send_callback
         if store_path is None:
             store_path = self._resolve_default_store_path()
+            migrate_legacy_cron_store(
+                store_path=store_path,
+                legacy_path=legacy_cron_store_path(),
+            )
         self._service = CronService(store_path=store_path, on_job=self._on_job)
 
     @staticmethod
     def _resolve_default_store_path() -> Path:
-        data_path = get_agent_data_path()
         candidates = [
-            data_path / "cron" / "jobs.json",
+            default_cron_store_path(),
+            legacy_cron_store_path(),
             Path.cwd() / ".annolid" / "cron" / "jobs.json",
             Path("/tmp") / "annolid" / "cron" / "jobs.json",
         ]

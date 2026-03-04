@@ -18,6 +18,8 @@ from .whatsapp import WhatsAppChannel
 class ChannelManager:
     """Manage enabled channel adapters and outbound routing."""
 
+    _LOCAL_ONLY_OUTBOUND_CHANNELS = frozenset({"gui", "gui-ui"})
+
     def __init__(
         self,
         *,
@@ -90,6 +92,15 @@ class ChannelManager:
     async def _send_to_channel(self, msg: OutboundMessage) -> None:
         channel = self.channels.get(msg.channel)
         if channel is None:
+            if (
+                str(msg.channel or "").strip().lower()
+                in self._LOCAL_ONLY_OUTBOUND_CHANNELS
+            ):
+                self._logger.debug(
+                    "Skipping local-only outbound channel without adapter: %s",
+                    msg.channel,
+                )
+                return
             self._logger.warning("Unknown outbound channel: %s", msg.channel)
             return
         await channel.send(msg)

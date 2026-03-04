@@ -16,7 +16,13 @@ from annolid.core.agent.channels.whatsapp import WhatsAppChannel
 from annolid.core.agent.channels.whatsapp_python_bridge import WhatsAppPythonBridge
 from annolid.core.agent.channels.whatsapp_webhook_server import WhatsAppWebhookServer
 from annolid.core.agent.config import load_config
-from annolid.core.agent.cron import CronJob, CronService
+from annolid.core.agent.cron import (
+    CronJob,
+    CronService,
+    default_cron_store_path,
+    legacy_cron_store_path,
+    migrate_legacy_cron_store,
+)
 from annolid.core.agent.loop import AgentLoop
 from annolid.core.agent.scheduler import ScheduledTask, TaskScheduler
 from annolid.core.agent.tools import (
@@ -231,16 +237,23 @@ class AIChatManager(QtCore.QObject):
                         tick_seconds=0.25,
                     )
                     await self._task_scheduler.start()
+                    workspace = get_agent_workspace_path()
+                    cron_store_path = default_cron_store_path()
+                    migrate_legacy_cron_store(
+                        store_path=cron_store_path,
+                        legacy_path=legacy_cron_store_path(),
+                        logger=logger,
+                    )
                     await register_nanobot_style_tools(
                         tools,
-                        allowed_dir=get_agent_workspace_path(),
+                        allowed_dir=workspace,
+                        cron_store_path=cron_store_path,
                         email_cfg=config.tools.email,
                         calendar_cfg=calendar_cfg,
                         task_scheduler=self._task_scheduler,
                     )
 
                     # In background mode, we use a standard loop.
-                    workspace = get_agent_workspace_path()
                     loop_instance = AgentLoop(
                         tools=tools,
                         workspace=workspace,
@@ -278,13 +291,21 @@ class AIChatManager(QtCore.QObject):
                             await self._background_bus.publish_inbound(
                                 InboundMessage(
                                     channel=channel,
+                                    sender_id="cron_scheduler",
                                     chat_id=chat_id,
                                     content=msg,
+                                    metadata={
+                                        "cron_job_id": str(job.id),
+                                        "cron_job_name": str(job.name or ""),
+                                        "cron_schedule_kind": str(
+                                            job.schedule.kind or ""
+                                        ),
+                                        "cron_next_run_at_ms": job.state.next_run_at_ms,
+                                    },
                                 )
                             )
                         return "Inbound generated"
 
-                    cron_store_path = workspace / "cron" / "jobs.json"
                     self._cron_service = CronService(
                         store_path=cron_store_path,
                         on_job=_on_cron_job,

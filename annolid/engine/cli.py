@@ -638,9 +638,26 @@ def _cmd_agent(args: argparse.Namespace) -> int:
 
 
 def _default_agent_cron_store_path() -> Path:
-    from annolid.core.agent.utils import get_agent_data_path
+    from annolid.core.agent.cron import default_cron_store_path
 
-    return get_agent_data_path() / "cron" / "jobs.json"
+    return default_cron_store_path()
+
+
+def _agent_cron_service():
+    from annolid.core.agent.cron import (
+        CronService,
+        default_cron_store_path,
+        legacy_cron_store_path,
+        migrate_legacy_cron_store,
+    )
+
+    store_path = _default_agent_cron_store_path()
+    if store_path == default_cron_store_path():
+        migrate_legacy_cron_store(
+            store_path=store_path,
+            legacy_path=legacy_cron_store_path(),
+        )
+    return CronService(store_path=store_path)
 
 
 def _cmd_agent_onboard(args: argparse.Namespace) -> int:
@@ -1325,9 +1342,7 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
 
 
 def _cmd_agent_cron_list(args: argparse.Namespace) -> int:
-    from annolid.core.agent.cron import CronService
-
-    service = CronService(store_path=_default_agent_cron_store_path())
+    service = _agent_cron_service()
     jobs = service.list_jobs(include_disabled=bool(args.all))
     rows = []
     for j in jobs:
@@ -1362,7 +1377,7 @@ def _cmd_agent_cron_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_agent_cron_add(args: argparse.Namespace) -> int:
-    from annolid.core.agent.cron import CronPayload, CronSchedule, CronService
+    from annolid.core.agent.cron import CronPayload, CronSchedule
 
     def _parse_iso_datetime_ms(raw: str) -> int:
         text = str(raw or "").strip()
@@ -1405,7 +1420,7 @@ def _cmd_agent_cron_add(args: argparse.Namespace) -> int:
         channel=(str(args.channel) if args.channel else None),
         to=(str(args.to) if args.to else None),
     )
-    service = CronService(store_path=_default_agent_cron_store_path())
+    service = _agent_cron_service()
     try:
         job = service.add_job(
             name=str(args.name),
@@ -1430,18 +1445,14 @@ def _cmd_agent_cron_add(args: argparse.Namespace) -> int:
 
 
 def _cmd_agent_cron_remove(args: argparse.Namespace) -> int:
-    from annolid.core.agent.cron import CronService
-
-    service = CronService(store_path=_default_agent_cron_store_path())
+    service = _agent_cron_service()
     ok = service.remove_job(str(args.job_id))
     print(json.dumps({"removed": bool(ok), "job_id": str(args.job_id)}, indent=2))
     return 0 if ok else 1
 
 
 def _cmd_agent_cron_enable(args: argparse.Namespace) -> int:
-    from annolid.core.agent.cron import CronService
-
-    service = CronService(store_path=_default_agent_cron_store_path())
+    service = _agent_cron_service()
     job = service.enable_job(str(args.job_id), enabled=not bool(args.disable))
     if job is None:
         print(json.dumps({"updated": False, "job_id": str(args.job_id)}, indent=2))
@@ -1455,9 +1466,7 @@ def _cmd_agent_cron_enable(args: argparse.Namespace) -> int:
 
 
 def _cmd_agent_cron_run(args: argparse.Namespace) -> int:
-    from annolid.core.agent.cron import CronService
-
-    service = CronService(store_path=_default_agent_cron_store_path())
+    service = _agent_cron_service()
 
     async def _run() -> bool:
         return await service.run_job(str(args.job_id), force=bool(args.force))

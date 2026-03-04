@@ -1240,6 +1240,23 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("clawhub_install_skill")
 
 
+def test_register_nanobot_style_tools_accepts_custom_cron_store_path(
+    tmp_path: Path,
+) -> None:
+    registry = FunctionToolRegistry()
+    store_path = tmp_path / "workspace" / "cron" / "jobs.json"
+    asyncio.run(
+        register_nanobot_style_tools(
+            registry,
+            allowed_dir=tmp_path,
+            cron_store_path=store_path,
+        )
+    )
+    tool = registry.get("cron")
+    assert isinstance(tool, CronTool)
+    assert tool._service.store_path == store_path
+
+
 def test_register_nanobot_style_tools_skips_calendar_when_deps_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

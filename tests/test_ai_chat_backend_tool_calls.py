@@ -1672,6 +1672,75 @@ def test_finalize_agent_text_uses_direct_fallback_for_non_ollama_provider() -> N
     assert "Renamed file:" in text
 
 
+def test_finalize_agent_text_rejects_unconfirmed_cron_schedule_claim() -> None:
+    class _Result:
+        content = (
+            "Done! I've scheduled an email.\n"
+            "Job ID: `ddf452b2-437`\n"
+            "It will run in 5 minutes."
+        )
+        tool_runs = (
+            type(
+                "_Run",
+                (),
+                {
+                    "name": "cron",
+                    "arguments": {"action": "check"},
+                    "result": "Cron status: enabled=True jobs=4",
+                },
+            )(),
+        )
+
+    task = StreamingChatTask(
+        "schedule and send me an email about your latest status in 5 minutes",
+        widget=None,
+        enable_web_tools=False,
+        provider="nvidia",
+    )
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=None,
+    )
+    assert used_recovery is False
+    assert isinstance(used_direct_gui_fallback, bool)
+    assert "couldn't confirm that the cron job was created" in text
+    assert "ddf452b2-437" not in text
+
+
+def test_finalize_agent_text_keeps_confirmed_cron_schedule_claim() -> None:
+    class _Result:
+        content = (
+            "Done! I've scheduled an email.\n"
+            "Job ID: `abc12345-def`\n"
+            "It will run in 5 minutes."
+        )
+        tool_runs = (
+            type(
+                "_Run",
+                (),
+                {
+                    "name": "cron",
+                    "arguments": {"action": "add"},
+                    "result": "Created job 'status email' (id: abc12345-def)",
+                },
+            )(),
+        )
+
+    task = StreamingChatTask(
+        "schedule and send me an email about your latest status in 5 minutes",
+        widget=None,
+        enable_web_tools=False,
+        provider="nvidia",
+    )
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=None,
+    )
+    assert used_recovery is False
+    assert isinstance(used_direct_gui_fallback, bool)
+    assert "Job ID: `abc12345-def`" in text
+
+
 def test_finalize_agent_text_uses_browser_search_fallback_on_knowledge_gap() -> None:
     class _DummyRegistry:
         def has(self, name: str) -> bool:
