@@ -9,6 +9,15 @@ from annolid.engine.registry import ModelPluginBase, register_model
 from annolid.engine.run_config import get_cfg_value, load_run_config
 
 
+# Map of friendly arch names → Detectron2 model-zoo config paths
+_ARCH_TO_CONFIG: Dict[str, str] = {
+    "mask_rcnn_R_50_FPN_3x": "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml",
+    "mask_rcnn_R_101_FPN_3x": "COCO-InstanceSegmentation/mask_rcnn_R_101_FPN_3x.yaml",
+    "vitdet_b": "new_baselines/mask_rcnn_vitdet_b_100ep.py",
+    "mvitv2_t": "new_baselines/mask_rcnn_mvitv2_t_100ep.py",
+}
+
+
 @dataclass(frozen=True)
 class Detectron2TrainSettings:
     dataset_dir: str
@@ -25,6 +34,8 @@ class Detectron2TrainSettings:
     roi_batch_size_per_image: int
     sampler_train: str
     repeat_threshold: float
+    model_arch: str = "mask_rcnn_R_50_FPN_3x"
+    export_torchscript: bool = False
 
 
 def _resolve_train_settings(args: argparse.Namespace) -> Detectron2TrainSettings:
@@ -70,9 +81,23 @@ def _resolve_train_settings(args: argparse.Namespace) -> Detectron2TrainSettings
         return defaults[name]
 
     output_dir = args.output_dir if args.output_dir is not None else output_dir_cfg
-    model_config = str(
-        pick("model_config", "model_config", "train.model_config", "model.config")
-    )
+
+    # Resolve model_config: prefer explicit --model-config; then map from --model-arch
+    model_arch = str(getattr(args, "model_arch", None) or "mask_rcnn_R_50_FPN_3x")
+    if getattr(args, "model_config", None):
+        model_config = str(args.model_config)
+    else:
+        cfg_model_config = get_cfg_value(
+            payload, "model_config", "train.model_config", "model.config"
+        )
+        if cfg_model_config:
+            model_config = str(cfg_model_config)
+        else:
+            model_config = _ARCH_TO_CONFIG.get(
+                model_arch,
+                "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml",
+            )
+
     settings = Detectron2TrainSettings(
         dataset_dir=str(Path(dataset_dir).expanduser().resolve()),
         output_dir=(
@@ -132,6 +157,8 @@ def _resolve_train_settings(args: argparse.Namespace) -> Detectron2TrainSettings
         repeat_threshold=float(
             pick("repeat_threshold", "repeat_threshold", "dataloader.repeat_threshold")
         ),
+        model_arch=model_arch,
+        export_torchscript=False,  # only relevant at predict time
     )
     return settings
 
@@ -173,6 +200,15 @@ class MaskRCNNDetectron2Plugin(ModelPluginBase):
         parser.add_argument("--roi-batch-size-per-image", type=int, default=None)
         parser.add_argument("--sampler-train", default=None)
         parser.add_argument("--repeat-threshold", type=float, default=None)
+        parser.add_argument(
+            "--model-arch",
+            default=None,
+            choices=list(_ARCH_TO_CONFIG.keys()),
+            help=(
+                "Architecture shorthand.  Ignored when --model-config is set explicitly.  "
+                "Choices: " + ", ".join(_ARCH_TO_CONFIG.keys())
+            ),
+        )
 
     def train(self, args: argparse.Namespace) -> int:
         try:
@@ -219,7 +255,18 @@ class MaskRCNNDetectron2Plugin(ModelPluginBase):
             "--model-config", default=None, help="Override detectron2 model zoo config"
         )
         parser.add_argument(
+            "--model-arch",
+            default=None,
+            choices=list(_ARCH_TO_CONFIG.keys()),
+            help="Architecture shorthand (ignored when --model-config is set).",
+        )
+        parser.add_argument(
             "--no-display", action="store_true", help="Do not open an OpenCV window"
+        )
+        parser.add_argument(
+            "--export-torchscript",
+            action="store_true",
+            help="Export the model to TorchScript format after inference.",
         )
 
     def predict(self, args: argparse.Namespace) -> int:
@@ -230,15 +277,49 @@ class MaskRCNNDetectron2Plugin(ModelPluginBase):
                 "maskrcnn_detectron2 inference requires the optional dependency 'detectron2'."
             ) from exc
 
+        # Resolve model config: explicit flag > arch shorthand
+        if getattr(args, "model_config", None):
+            model_config = str(args.model_config)
+        elif getattr(args, "model_arch", None):
+            model_config = _ARCH_TO_CONFIG.get(args.model_arch)
+        else:
+            model_config = None
+
         seg = Segmentor(
             dataset_dir=str(Path(args.dataset_dir).expanduser().resolve()),
             model_pth_path=str(Path(args.weights).expanduser().resolve()),
             score_threshold=float(args.score_threshold),
             overlap_threshold=float(args.overlap_threshold),
-            model_config=(str(args.model_config) if args.model_config else None),
+            model_config=model_config,
         )
         seg.on_image(
             str(Path(args.image).expanduser().resolve()),
             display=not bool(args.no_display),
         )
+
+        if getattr(args, "export_torchscript", False):
+            try:
+                import torch
+                from detectron2.export import TracingAdapter
+
+                image = __import__("cv2").imread(
+                    str(Path(args.image).expanduser().resolve())
+                )
+                inputs = [
+                    {
+                        "image": torch.as_tensor(
+                            image.astype("float32").transpose(2, 0, 1)
+                        )
+                    }
+                ]
+                tracer = TracingAdapter(
+                    seg.predictor.model, inputs, inference_func=lambda m, x: m(x)
+                )
+                script_model = torch.jit.trace(tracer, (inputs,))
+                out_path = str(Path(args.weights).with_suffix(".torchscript.pt"))
+                script_model.save(out_path)
+                print(f"TorchScript model saved to {out_path}")
+            except Exception as exc:
+                print(f"Warning: TorchScript export failed: {exc}")
+
         return 0

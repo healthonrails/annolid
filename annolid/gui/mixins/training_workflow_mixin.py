@@ -9,7 +9,7 @@ from annolid.data import videos
 from annolid.gui.widgets import ExtractFrameDialog
 from annolid.gui.widgets import ProgressingWindow
 from annolid.gui.widgets import TrainModelDialog
-from annolid.gui.workers import FlexibleWorker
+
 from annolid.segmentation.dino_kpseg import defaults as dino_defaults
 from annolid.utils.runs import shared_runs_root
 
@@ -410,32 +410,49 @@ class TrainingWorkflowMixin:
             )
 
         elif algo == "MaskRCNN":
-            from annolid.segmentation.maskrcnn.detectron2_train import Segmentor
-
+            # Build the CLI command so MaskRCNN training runs in a subprocess,
+            # consistent with YOLO and YOLACT.  This keeps the Qt event loop
+            # responsive and avoids hard detectron2 import at GUI startup.
             dataset_dir = str(Path(config_file).parent)
-            segmentor = Segmentor(
-                dataset_dir,
-                out_dir or str(shared_runs_root()),
-                max_iterations=max_iterations,
-                batch_size=batch_size,
-                model_pth_path=model_path,
-            )
-            out_runs_dir = segmentor.out_put_dir
+            cmd = [
+                "annolid",
+                "train",
+                "maskrcnn_detectron2",
+                f"--dataset-dir={dataset_dir}",
+                f"--max-iterations={max_iterations}",
+                f"--batch-size={batch_size}",
+            ]
+            if model_path:
+                cmd.append(f"--weights={model_path}")
+            if out_dir:
+                cmd.append(f"--output-dir={out_dir}")
+
+            if out_dir is None:
+                out_runs_dir = shared_runs_root()
+            else:
+                out_runs_dir = Path(out_dir)
+
+            out_runs_dir = Path(out_runs_dir)
+            out_runs_dir.mkdir(exist_ok=True, parents=True)
+
             try:
-                self.seg_train_thread.start()
-                train_worker = FlexibleWorker(task_function=segmentor.train)
-                train_worker.moveToThread(self.seg_train_thread)
-                train_worker.start_signal.connect(train_worker.run)
-                train_worker.start_signal.emit()
-            except Exception:
-                segmentor.train()
+                subprocess.Popen(cmd)
+            except FileNotFoundError:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Detectron2 / annolid CLI not found",
+                    "Could not launch 'annolid train maskrcnn_detectron2'.\n"
+                    "Please ensure detectron2 is installed and the annolid CLI "
+                    "is on your PATH.\n\n"
+                    "See https://detectron2.readthedocs.io/tutorials/install.html",
+                )
+                return
 
             QtWidgets.QMessageBox.about(
                 self,
                 "Started.",
-                f"Training in background... \
-                                        Results will be saved to folder: \
-                                         {str(out_runs_dir)} \
-                                         Please do not close Annolid GUI.",
+                f"Training in background...\n"
+                f"Results will be saved to: {str(out_runs_dir)}\n"
+                f"Please do not close Annolid GUI.",
             )
             self.statusBar().showMessage(self.tr("Training..."))

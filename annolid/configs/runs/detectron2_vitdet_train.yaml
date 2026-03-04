@@ -1,0 +1,32 @@
+model: maskrcnn_detectron2
+
+# ViTDet-B backbone (Vision Transformer with plain, non-hierarchical backbone)
+# Requires Detectron2 >= 0.6 and the new_baselines project configs.
+# Reference: https://github.com/facebookresearch/detectron2/tree/main/configs/new_baselines
+
+# --- Dataset ---
+train:
+  dataset_dir: /path/to/coco_dataset
+  output_dir: /path/to/output_dir
+  # ViTDet-B pretrained on COCO for 100 epochs
+  model_config: new_baselines/mask_rcnn_vitdet_b_100ep.py
+  max_iterations: 10000
+  score_threshold: 0.5
+  overlap_threshold: 0.7
+
+# --- Optimiser ---
+# ViTDet uses AdamW; the config file sets the scheduler automatically.
+solver:
+  batch_size: 2
+  base_lr: 0.0001
+  checkpoint_period: 1000
+
+# --- Data loading ---
+dataloader:
+  num_workers: 4
+  sampler_train: RepeatFactorTrainingSampler
+  repeat_threshold: 0.3
+
+# --- Model head ---
+detectron2:
+  roi_batch_size_per_image: 512

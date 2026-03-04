@@ -91,3 +91,45 @@ def test_resolve_train_settings_requires_dataset_dir():
         assert "dataset_dir is required" in str(exc)
     else:
         raise AssertionError("Expected ValueError when dataset_dir is missing")
+
+
+def test_resolve_train_settings_default_model_arch_and_no_export(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+
+    settings = _resolve_train_settings(_build_args(dataset_dir=str(dataset_dir)))
+
+    assert settings.model_arch == "mask_rcnn_R_50_FPN_3x"
+    assert settings.export_torchscript is False
+
+
+def test_resolve_train_settings_arch_maps_to_correct_config(tmp_path):
+    from annolid.engine.models.maskrcnn_detectron2 import _ARCH_TO_CONFIG
+
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+
+    settings = _resolve_train_settings(
+        _build_args(dataset_dir=str(dataset_dir), model_arch="mask_rcnn_R_101_FPN_3x")
+    )
+
+    expected_config = _ARCH_TO_CONFIG["mask_rcnn_R_101_FPN_3x"]
+    assert settings.model_config == expected_config
+    assert settings.model_arch == "mask_rcnn_R_101_FPN_3x"
+
+
+def test_resolve_train_settings_explicit_model_config_overrides_arch(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    custom_config = "MyOrg/custom_model.yaml"
+
+    settings = _resolve_train_settings(
+        _build_args(
+            dataset_dir=str(dataset_dir),
+            model_arch="vitdet_b",
+            model_config=custom_config,
+        )
+    )
+
+    # explicit --model-config should take precedence over --model-arch
+    assert settings.model_config == custom_config
