@@ -1364,15 +1364,25 @@ def _cmd_agent_cron_list(args: argparse.Namespace) -> int:
 def _cmd_agent_cron_add(args: argparse.Namespace) -> int:
     from annolid.core.agent.cron import CronPayload, CronSchedule, CronService
 
+    def _parse_iso_datetime_ms(raw: str) -> int:
+        text = str(raw or "").strip()
+        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+        dt = datetime.datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.astimezone()
+        return int(dt.timestamp() * 1000)
+
     if args.every is None and args.cron_expr is None and args.at is None:
         raise SystemExit("Specify one of --every, --cron, or --at.")
+    if args.tz is not None and args.cron_expr is None:
+        raise SystemExit("--tz can only be used with --cron.")
 
     if args.at is not None:
         try:
-            dt = datetime.datetime.fromisoformat(str(args.at))
+            at_ms = _parse_iso_datetime_ms(str(args.at))
         except ValueError as exc:
             raise SystemExit(f"Invalid --at value: {args.at}") from exc
-        schedule = CronSchedule(kind="at", at_ms=int(dt.timestamp() * 1000))
+        schedule = CronSchedule(kind="at", at_ms=at_ms)
         delete_after_run = True
     elif args.every is not None:
         every = int(args.every)
@@ -1381,7 +1391,11 @@ def _cmd_agent_cron_add(args: argparse.Namespace) -> int:
         schedule = CronSchedule(kind="every", every_ms=every * 1000)
         delete_after_run = False
     else:
-        schedule = CronSchedule(kind="cron", expr=str(args.cron_expr))
+        schedule = CronSchedule(
+            kind="cron",
+            expr=str(args.cron_expr),
+            tz=(str(args.tz) if args.tz else None),
+        )
         delete_after_run = False
 
     payload = CronPayload(
@@ -1392,12 +1406,15 @@ def _cmd_agent_cron_add(args: argparse.Namespace) -> int:
         to=(str(args.to) if args.to else None),
     )
     service = CronService(store_path=_default_agent_cron_store_path())
-    job = service.add_job(
-        name=str(args.name),
-        schedule=schedule,
-        payload=payload,
-        delete_after_run=delete_after_run,
-    )
+    try:
+        job = service.add_job(
+            name=str(args.name),
+            schedule=schedule,
+            payload=payload,
+            delete_after_run=delete_after_run,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     print(
         json.dumps(
             {
@@ -2045,6 +2062,11 @@ def _build_root_parser() -> argparse.ArgumentParser:
         dest="cron_expr",
         default=None,
         help="Cron expression, e.g. '0 9 * * *'.",
+    )
+    cron_add_p.add_argument(
+        "--tz",
+        default=None,
+        help="IANA timezone for --cron, e.g. America/New_York.",
     )
     cron_add_p.add_argument(
         "--at",

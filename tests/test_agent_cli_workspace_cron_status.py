@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from annolid.engine.cli import main as annolid_run
@@ -89,6 +90,73 @@ def test_agent_cron_add_list_remove(tmp_path: Path, monkeypatch, capsys) -> None
     assert rc_remove == 0
     remove_payload = json.loads(capsys.readouterr().out)
     assert remove_payload["removed"] is True
+
+
+def test_agent_cron_add_with_timezone(tmp_path: Path, monkeypatch, capsys) -> None:
+    import annolid.engine.cli as cli_mod
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(
+        cli_mod,
+        "_default_agent_cron_store_path",
+        lambda: data_dir / "cron" / "jobs.json",
+    )
+
+    rc_add = annolid_run(
+        [
+            "agent-cron-add",
+            "--name",
+            "weekday",
+            "--message",
+            "daily check",
+            "--cron",
+            "0 9 * * 1-5",
+            "--tz",
+            "America/New_York",
+        ]
+    )
+    assert rc_add == 0
+    _ = json.loads(capsys.readouterr().out)
+
+    rc_list = annolid_run(["agent-cron-list"])
+    assert rc_list == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert any(
+        (row.get("schedule") or {}).get("tz") == "America/New_York" for row in rows
+    )
+
+
+def test_agent_cron_add_accepts_at_with_z_suffix(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import annolid.engine.cli as cli_mod
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(
+        cli_mod,
+        "_default_agent_cron_store_path",
+        lambda: data_dir / "cron" / "jobs.json",
+    )
+
+    at_value = (
+        (datetime.now(timezone.utc) + timedelta(minutes=5))
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    rc_add = annolid_run(
+        [
+            "agent-cron-add",
+            "--name",
+            "oneshot-z",
+            "--message",
+            "run once",
+            "--at",
+            at_value,
+        ]
+    )
+    assert rc_add == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["name"] == "oneshot-z"
 
 
 def test_agent_security_check_ok_for_private_clean_settings(

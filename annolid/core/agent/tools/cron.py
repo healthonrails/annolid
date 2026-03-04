@@ -67,7 +67,8 @@ class CronTool(FunctionTool):
         return (
             "Schedule commands, agent workflows (like sending emails), or recurring tasks. "
             "When triggered, the configured `message` string is executed as a background prompt. "
-            "Actions: add, list, remove, enable, disable, run, status."
+            "Actions: add, list, remove/cancel, enable, disable, run, status/check. "
+            "For cron expressions, optional `tz` accepts an IANA timezone."
         )
 
     @property
@@ -81,15 +82,18 @@ class CronTool(FunctionTool):
                         "add",
                         "list",
                         "remove",
+                        "cancel",
                         "enable",
                         "disable",
                         "run",
                         "status",
+                        "check",
                     ],
                 },
                 "message": {"type": "string"},
                 "every_seconds": {"type": "integer"},
                 "cron_expr": {"type": "string"},
+                "tz": {"type": "string"},
                 "at": {"type": "string"},
                 "at_ms": {"type": "integer"},
                 "deliver": {"type": "boolean"},
@@ -104,6 +108,7 @@ class CronTool(FunctionTool):
         message: str = "",
         every_seconds: int | None = None,
         cron_expr: str | None = None,
+        tz: str | None = None,
         at: str | None = None,
         at_ms: int | None = None,
         deliver: bool = False,
@@ -116,13 +121,14 @@ class CronTool(FunctionTool):
                 message=message,
                 every_seconds=every_seconds,
                 cron_expr=cron_expr,
+                tz=tz,
                 at=at,
                 at_ms=at_ms,
                 deliver=bool(deliver),
             )
         if action == "list":
             return self._list_jobs()
-        if action == "remove":
+        if action in {"remove", "cancel"}:
             return self._remove_job(job_id)
         if action == "enable":
             return self._enable_job(job_id, True)
@@ -132,6 +138,8 @@ class CronTool(FunctionTool):
             return await self._run_job(job_id)
         if action == "status":
             return self._status()
+        if action == "check":
+            return self._check(job_id)
         return f"Unknown action: {action}"
 
     def _add_job(
@@ -140,6 +148,7 @@ class CronTool(FunctionTool):
         message: str,
         every_seconds: int | None,
         cron_expr: str | None,
+        tz: str | None,
         at: str | None,
         at_ms: int | None,
         deliver: bool,
@@ -158,6 +167,8 @@ class CronTool(FunctionTool):
             return "Error: one of every_seconds, cron_expr, at, or at_ms is required"
         if every_seconds and int(every_seconds) <= 0:
             return "Error: every_seconds must be > 0"
+        if tz and not cron_expr:
+            return "Error: tz can only be used with cron_expr"
 
         resolved_at_ms = int(at_ms) if at_ms else parsed_at_ms
         if resolved_at_ms is not None:
@@ -165,7 +176,11 @@ class CronTool(FunctionTool):
         elif every_seconds:
             schedule = CronSchedule(kind="every", every_ms=int(every_seconds) * 1000)
         else:
-            schedule = CronSchedule(kind="cron", expr=str(cron_expr or "").strip())
+            schedule = CronSchedule(
+                kind="cron",
+                expr=str(cron_expr or "").strip(),
+                tz=(str(tz).strip() if tz else None),
+            )
 
         payload = CronPayload(
             kind="agent_turn",
@@ -174,12 +189,15 @@ class CronTool(FunctionTool):
             channel=self._channel,
             to=self._chat_id,
         )
-        job = self._service.add_job(
-            name=message[:40],
-            schedule=schedule,
-            payload=payload,
-            delete_after_run=(schedule.kind == "at"),
-        )
+        try:
+            job = self._service.add_job(
+                name=message[:40],
+                schedule=schedule,
+                payload=payload,
+                delete_after_run=(schedule.kind == "at"),
+            )
+        except ValueError as exc:
+            return f"Error: {exc}"
         return f"Created job '{message[:30]}' (id: {job.id})"
 
     def _list_jobs(self) -> str:
@@ -191,7 +209,8 @@ class CronTool(FunctionTool):
             if job.schedule.kind == "every":
                 mode = f"every={int((job.schedule.every_ms or 0) / 1000)}s"
             elif job.schedule.kind == "cron":
-                mode = f"cron={job.schedule.expr}"
+                tz = f", tz={job.schedule.tz}" if job.schedule.tz else ""
+                mode = f"cron={job.schedule.expr}{tz}"
             else:
                 mode = f"at={job.schedule.at_ms}"
             marker = "enabled" if job.enabled else "disabled"
@@ -233,6 +252,32 @@ class CronTool(FunctionTool):
         if persistence_error:
             text += f" persistence_error={persistence_error}"
         return text
+
+    def _check(self, job_id: str | None) -> str:
+        key = str(job_id or "").strip()
+        if not key:
+            return self._status()
+        rows = self._service.list_jobs(include_disabled=True)
+        for job in rows:
+            if str(job.id) != key:
+                continue
+            if job.schedule.kind == "every":
+                mode = f"every={int((job.schedule.every_ms or 0) / 1000)}s"
+            elif job.schedule.kind == "cron":
+                tz = f", tz={job.schedule.tz}" if job.schedule.tz else ""
+                mode = f"cron={job.schedule.expr}{tz}"
+            else:
+                mode = f"at={job.schedule.at_ms}"
+            state = "enabled" if job.enabled else "disabled"
+            return (
+                "Cron job: "
+                f"id={job.id} name={job.name!r} state={state} mode={mode} "
+                f"next_run_at_ms={job.state.next_run_at_ms} "
+                f"last_run_at_ms={job.state.last_run_at_ms} "
+                f"last_status={job.state.last_status} "
+                f"last_error={job.state.last_error!r}"
+            )
+        return f"Job {key} not found"
 
     async def _on_job(self, job) -> str | None:
         message = str(job.payload.message or "")

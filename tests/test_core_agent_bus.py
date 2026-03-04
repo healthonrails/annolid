@@ -122,6 +122,29 @@ def test_agent_bus_service_processes_inbound_to_outbound() -> None:
     asyncio.run(_run())
 
 
+def test_agent_bus_service_stop_closes_loop_when_available() -> None:
+    class _LoopWithClose:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def run(self, *args: Any, **kwargs: Any):  # noqa: ANN002, ANN003
+            del args, kwargs
+            return None
+
+        async def close(self) -> None:
+            self.closed = True
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = _LoopWithClose()
+        svc = AgentBusService(bus=bus, loop=loop)  # type: ignore[arg-type]
+        await svc.start()
+        await svc.stop()
+        assert loop.closed is True
+
+    asyncio.run(_run())
+
+
 def test_agent_bus_service_strips_model_think_blocks_from_outbound() -> None:
     async def fake_llm(
         messages: Sequence[Mapping[str, Any]],

@@ -1129,6 +1129,33 @@ def test_agent_loop_sanitizes_and_deduplicates_tool_calls() -> None:
     assert cleaned[1]["arguments"]["text"] == "y"
 
 
+def test_agent_loop_extracts_legacy_function_call_payload() -> None:
+    registry = FunctionToolRegistry()
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        return {"content": "ok"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    calls = loop._extract_tool_calls(
+        {
+            "function_call": {
+                "name": "echo",
+                "arguments": '{"text":"hi"}',
+            }
+        }
+    )
+    assert len(calls) == 1
+    assert calls[0]["id"] == "call_0"
+    assert calls[0]["name"] == "echo"
+    assert calls[0]["arguments"] == '{"text":"hi"}'
+
+
 def test_agent_loop_stops_on_repeated_identical_tool_cycles() -> None:
     registry = FunctionToolRegistry()
     registry.register(_EchoTool())

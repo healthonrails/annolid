@@ -60,3 +60,68 @@ def test_cron_service_run_job_calls_handler(tmp_path: Path) -> None:
     ok = asyncio.run(svc.run_job(job.id, force=True))
     assert ok is True
     assert seen == ["task"]
+
+
+def test_cron_service_rejects_invalid_timezone_on_add(tmp_path: Path) -> None:
+    svc = CronService(store_path=tmp_path / "jobs.json")
+    try:
+        svc.add_job(
+            name="bad-tz",
+            schedule=CronSchedule(kind="cron", expr="0 9 * * *", tz="Mars/Phobos"),
+            payload=CronPayload(message="hello"),
+        )
+        assert False, "expected ValueError for invalid timezone"
+    except ValueError as exc:
+        assert "unknown timezone" in str(exc)
+
+
+def test_cron_service_rejects_timezone_for_non_cron(tmp_path: Path) -> None:
+    svc = CronService(store_path=tmp_path / "jobs.json")
+    try:
+        svc.add_job(
+            name="bad-tz-kind",
+            schedule=CronSchedule(kind="every", every_ms=1000, tz="UTC"),
+            payload=CronPayload(message="hello"),
+        )
+        assert False, "expected ValueError for non-cron tz usage"
+    except ValueError as exc:
+        assert "tz can only be used with cron schedules" in str(exc)
+
+
+def test_cron_service_rejects_invalid_every_interval(tmp_path: Path) -> None:
+    svc = CronService(store_path=tmp_path / "jobs.json")
+    try:
+        svc.add_job(
+            name="bad-every",
+            schedule=CronSchedule(kind="every", every_ms=0),
+            payload=CronPayload(message="hello"),
+        )
+        assert False, "expected ValueError for invalid every_ms"
+    except ValueError as exc:
+        assert "every_ms > 0" in str(exc)
+
+
+def test_cron_service_rejects_past_at_schedule(tmp_path: Path) -> None:
+    svc = CronService(store_path=tmp_path / "jobs.json")
+    try:
+        svc.add_job(
+            name="past-at",
+            schedule=CronSchedule(kind="at", at_ms=int(time.time() * 1000) - 1),
+            payload=CronPayload(message="hello"),
+        )
+        assert False, "expected ValueError for past at schedule"
+    except ValueError as exc:
+        assert "must be in the future" in str(exc)
+
+
+def test_cron_service_rejects_invalid_cron_expression(tmp_path: Path) -> None:
+    svc = CronService(store_path=tmp_path / "jobs.json")
+    try:
+        svc.add_job(
+            name="bad-cron",
+            schedule=CronSchedule(kind="cron", expr="bad cron expr"),
+            payload=CronPayload(message="hello"),
+        )
+        assert False, "expected ValueError for invalid cron expression"
+    except ValueError as exc:
+        assert "invalid cron schedule" in str(exc)

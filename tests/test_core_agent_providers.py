@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import types
 from types import SimpleNamespace
 
 from annolid.core.agent.providers.openai_compat import (
@@ -184,3 +186,42 @@ def test_litellm_provider_applies_model_overrides() -> None:
     payload = {"temperature": 0.2}
     provider._apply_model_overrides("moonshot/kimi-k2.5", payload)
     assert payload["temperature"] == 1.0
+
+
+def test_litellm_provider_sanitizes_assistant_tool_call_messages() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "c1"}],
+            "untrusted": "drop",
+        }
+    ]
+    sanitized = LiteLLMProvider._sanitize_messages(messages)
+    assert len(sanitized) == 1
+    assert "untrusted" not in sanitized[0]
+    assert sanitized[0]["content"] is None
+
+
+def test_litellm_provider_parses_repairable_tool_call_arguments(monkeypatch) -> None:
+    fake_repair = types.SimpleNamespace(loads=lambda _text: {"text": "hi"})
+    monkeypatch.setitem(sys.modules, "json_repair", fake_repair)
+    parsed = LiteLLMProvider._parse_tool_call_arguments('{"text":"hi",}')
+    assert parsed["text"] == "hi"
+
+
+def test_litellm_provider_parse_response_defaults_missing_tool_call_id() -> None:
+    provider = LiteLLMProvider(
+        provider_name="openrouter",
+        api_key="sk-or-test",
+        default_model="gpt-4o-mini",
+    )
+    tc = SimpleNamespace(
+        id="",
+        function=SimpleNamespace(name="echo", arguments='{"text":"hi"}'),
+    )
+    message = SimpleNamespace(content="ok", tool_calls=[tc], reasoning_content=None)
+    choice = SimpleNamespace(message=message, finish_reason="stop")
+    completion = SimpleNamespace(choices=[choice], usage=None)
+    resp = provider._parse_response(completion)
+    assert resp.has_tool_calls is True
+    assert resp.tool_calls[0].id == "call_0"

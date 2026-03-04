@@ -12,7 +12,7 @@ Tool usage (Three Modes):
 
 1. `cron` `add` with one of:
    - `every_seconds` for fixed intervals
-   - `cron_expr` for cron-style expressions
+   - `cron_expr` for cron-style expressions (optional `tz`, e.g. `America/New_York`)
    - `at` for a one-time run using ISO datetime (e.g. `2026-02-13T09:30:00Z`)
 2. `cron` `list` to confirm schedule and identifiers.
 3. `cron` `disable`/`enable` for temporary control.

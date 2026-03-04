@@ -92,6 +92,52 @@ class LiteLLMProvider(LLMProvider):
                 payload.update(dict(overrides))
                 return
 
+    @staticmethod
+    def _sanitize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        allowed = {
+            "role",
+            "content",
+            "tool_calls",
+            "tool_call_id",
+            "name",
+            "reasoning_content",
+        }
+        sanitized: List[Dict[str, Any]] = []
+        for msg in messages:
+            clean = {k: v for k, v in dict(msg).items() if k in allowed}
+            if (
+                str(clean.get("role") or "") == "assistant"
+                and clean.get("tool_calls")
+                and ("content" not in clean or clean.get("content") == "")
+            ):
+                clean["content"] = None
+            sanitized.append(clean)
+        return sanitized
+
+    @staticmethod
+    def _parse_tool_call_arguments(raw_args: Any) -> Dict[str, Any]:
+        if isinstance(raw_args, dict):
+            return dict(raw_args)
+        if isinstance(raw_args, str):
+            text = raw_args.strip()
+            if not text:
+                return {}
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    return dict(parsed)
+            except json.JSONDecodeError:
+                try:
+                    import json_repair  # type: ignore
+
+                    repaired = json_repair.loads(text)
+                    if isinstance(repaired, dict):
+                        return dict(repaired)
+                except Exception:
+                    pass
+            return {"_raw": raw_args}
+        return {"_raw": raw_args}
+
     async def chat(
         self,
         *,
@@ -120,7 +166,7 @@ class LiteLLMProvider(LLMProvider):
         resolved_model = self._resolve_model(model or self.default_model)
         payload: Dict[str, Any] = {
             "model": resolved_model,
-            "messages": list(messages),
+            "messages": self._sanitize_messages(list(messages)),
             "max_tokens": int(max_tokens),
         }
         if temperature is not None:
@@ -200,21 +246,12 @@ class LiteLLMProvider(LLMProvider):
         message = choice.message
 
         tool_calls: List[ToolCallRequest] = []
-        for tc in list(getattr(message, "tool_calls", None) or []):
+        for idx, tc in enumerate(list(getattr(message, "tool_calls", None) or [])):
             raw_args = getattr(getattr(tc, "function", None), "arguments", "{}")
-            if isinstance(raw_args, str):
-                try:
-                    parsed = json.loads(raw_args)
-                    args = parsed if isinstance(parsed, dict) else {"_raw": raw_args}
-                except json.JSONDecodeError:
-                    args = {"_raw": raw_args}
-            elif isinstance(raw_args, dict):
-                args = dict(raw_args)
-            else:
-                args = {"_raw": raw_args}
+            args = self._parse_tool_call_arguments(raw_args)
             tool_calls.append(
                 ToolCallRequest(
-                    id=str(getattr(tc, "id", "")),
+                    id=str(getattr(tc, "id", "") or f"call_{idx}"),
                     name=str(getattr(getattr(tc, "function", None), "name", "")),
                     arguments=args,
                 )
@@ -238,3 +275,16 @@ class LiteLLMProvider(LLMProvider):
             usage=usage,
             reasoning_content=getattr(message, "reasoning_content", None),
         )
+
+    async def close(self) -> None:
+        """Best-effort shutdown for LiteLLM background logging worker."""
+        try:
+            from litellm.litellm_core_utils.logging_worker import (  # type: ignore
+                GLOBAL_LOGGING_WORKER,
+            )
+        except Exception:
+            return
+        try:
+            await GLOBAL_LOGGING_WORKER.stop()
+        except Exception:
+            return

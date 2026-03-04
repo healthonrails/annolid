@@ -160,6 +160,10 @@ class AgentBusService:
         for worker in worker_tasks:
             with suppress(asyncio.CancelledError):
                 await worker
+        close_loop = getattr(self.loop, "close", None)
+        if callable(close_loop):
+            with suppress(asyncio.CancelledError, RuntimeError):
+                await close_loop()
 
     async def _run(self) -> None:
         while self._running:

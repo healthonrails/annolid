@@ -740,8 +740,15 @@ def test_cron_tool_add_list_remove(tmp_path: Path) -> None:
     listed = asyncio.run(tool.execute(action="list"))
     assert "Scheduled jobs" in listed
     job_id = added.split("id: ")[-1].rstrip(")")
+    checked = asyncio.run(tool.execute(action="check", job_id=job_id))
+    assert f"id={job_id}" in checked
+    assert "next_run_at_ms=" in checked
+    checked_status = asyncio.run(tool.execute(action="check"))
+    assert checked_status.startswith("Cron status:")
+    canceled = asyncio.run(tool.execute(action="cancel", job_id=job_id))
+    assert f"Removed job {job_id}" == canceled
     removed = asyncio.run(tool.execute(action="remove", job_id=job_id))
-    assert f"Removed job {job_id}" == removed
+    assert f"Job {job_id} not found" == removed
 
 
 def test_cron_tool_add_one_time_at_iso_datetime(tmp_path: Path) -> None:
@@ -761,6 +768,64 @@ def test_cron_tool_add_one_time_at_iso_datetime(tmp_path: Path) -> None:
     listed = asyncio.run(tool.execute(action="list"))
     assert "Scheduled jobs" in listed
     assert "at=" in listed
+
+
+def test_cron_tool_accepts_timezone_for_cron_expr(tmp_path: Path) -> None:
+    tool = CronTool(store_path=tmp_path / "cron" / "jobs.json")
+    tool.set_context("local", "user1")
+    added = asyncio.run(
+        tool.execute(
+            action="add",
+            message="weekday check",
+            cron_expr="0 9 * * 1-5",
+            tz="America/New_York",
+        )
+    )
+    assert "Created job" in added
+    listed = asyncio.run(tool.execute(action="list"))
+    assert "tz=America/New_York" in listed
+
+
+def test_cron_tool_rejects_timezone_without_cron_expr(tmp_path: Path) -> None:
+    tool = CronTool(store_path=tmp_path / "cron" / "jobs.json")
+    tool.set_context("local", "user1")
+    result = asyncio.run(
+        tool.execute(
+            action="add",
+            message="bad tz usage",
+            every_seconds=30,
+            tz="America/New_York",
+        )
+    )
+    assert "tz can only be used with cron_expr" in result
+
+
+def test_cron_tool_rejects_invalid_timezone(tmp_path: Path) -> None:
+    tool = CronTool(store_path=tmp_path / "cron" / "jobs.json")
+    tool.set_context("local", "user1")
+    result = asyncio.run(
+        tool.execute(
+            action="add",
+            message="bad tz value",
+            cron_expr="0 9 * * *",
+            tz="Mars/Phobos",
+        )
+    )
+    assert "unknown timezone" in result
+
+
+def test_cron_tool_rejects_past_at_schedule(tmp_path: Path) -> None:
+    tool = CronTool(store_path=tmp_path / "cron" / "jobs.json")
+    tool.set_context("local", "user1")
+    past_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    result = asyncio.run(
+        tool.execute(
+            action="add",
+            message="past one-shot",
+            at=past_at,
+        )
+    )
+    assert "must be in the future" in result
 
 
 def test_memory_search_and_get_tools(tmp_path: Path) -> None:

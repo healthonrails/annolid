@@ -175,8 +175,9 @@ class AIChatManager(QtCore.QObject):
                         ),
                     )
                     if not (config.tools.email.enabled or whatsapp_start_runtime):
-                        logger.info("Background services disabled by config")
-                        return
+                        logger.info(
+                            "Email/WhatsApp channels disabled by config; starting core bot services for local automation scheduler."
+                        )
 
                     self._background_bus = MessageBus()
                     whatsapp_cfg = config.tools.whatsapp.to_dict()

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import logging
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -28,13 +30,77 @@ def compute_next_run(schedule: CronSchedule, now_ms: int) -> Optional[int]:
         return int(now_ms + int(schedule.every_ms))
     if schedule.kind == "cron" and schedule.expr:
         try:
+            from zoneinfo import ZoneInfo
+
             from croniter import croniter  # type: ignore
 
-            itr = croniter(schedule.expr, now_ms / 1000.0)
-            return int(float(itr.get_next()) * 1000.0)
+            tz = (
+                ZoneInfo(str(schedule.tz))
+                if str(schedule.tz or "").strip()
+                else datetime.now().astimezone().tzinfo
+            )
+            base_dt = datetime.fromtimestamp(now_ms / 1000.0, tz=tz)
+            itr = croniter(schedule.expr, base_dt)
+            next_dt = itr.get_next(datetime)
+            return int(float(next_dt.timestamp()) * 1000.0)
         except Exception:
             return None
     return None
+
+
+def _validate_schedule_for_add(schedule: CronSchedule, *, now_ms: int) -> None:
+    kind = str(schedule.kind or "").strip()
+    if kind not in {"at", "every", "cron"}:
+        raise ValueError("schedule kind must be one of: at, every, cron")
+    if schedule.tz and schedule.kind != "cron":
+        raise ValueError("tz can only be used with cron schedules")
+    if schedule.kind == "at":
+        if schedule.at_ms is None:
+            raise ValueError("at schedule requires at_ms")
+        if int(schedule.at_ms) <= int(now_ms):
+            raise ValueError("at schedule must be in the future")
+        return
+    if schedule.kind == "every":
+        if schedule.every_ms is None or int(schedule.every_ms) <= 0:
+            raise ValueError("every schedule requires every_ms > 0")
+        return
+    expr = str(schedule.expr or "").strip()
+    if not expr:
+        raise ValueError("cron schedule requires expr")
+    if schedule.kind == "cron" and schedule.tz:
+        try:
+            from zoneinfo import ZoneInfo
+
+            ZoneInfo(str(schedule.tz))
+        except Exception:
+            raise ValueError(f"unknown timezone '{schedule.tz}'") from None
+    if compute_next_run(schedule, int(now_ms)) is None:
+        if importlib.util.find_spec("croniter") is None:
+            if not _is_basic_cron_expr(expr):
+                raise ValueError("invalid cron schedule")
+            return
+        raise ValueError("invalid cron schedule")
+
+
+def _is_basic_cron_expr(expr: str) -> bool:
+    text = str(expr or "").strip()
+    if not text:
+        return False
+    parts = text.split()
+    if len(parts) not in {5, 6}:
+        return False
+    allowed = set("0123456789*,-/LW?#")
+    for part in parts:
+        if not part:
+            return False
+        for ch in part:
+            if ch.isalpha():
+                if ch.upper() not in {"L", "W"}:
+                    return False
+                continue
+            if ch not in allowed:
+                return False
+    return True
 
 
 class CronService:
@@ -292,6 +358,7 @@ class CronService:
     ) -> CronJob:
         store = self._load_store()
         now = _now_ms()
+        _validate_schedule_for_add(schedule, now_ms=now)
         job = CronJob(
             id=str(uuid.uuid4())[:12],
             name=str(name or payload.message[:30] or "job"),

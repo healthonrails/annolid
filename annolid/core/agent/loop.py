@@ -2489,6 +2489,19 @@ class AgentLoop:
             normalized.append({"id": call_id, "name": name, "arguments": args})
 
         if not normalized:
+            legacy = response.get("function_call")
+            if isinstance(legacy, Mapping):
+                legacy_name = str(legacy.get("name") or "").strip()
+                if legacy_name:
+                    normalized.append(
+                        {
+                            "id": "call_0",
+                            "name": legacy_name,
+                            "arguments": legacy.get("arguments", {}),
+                        }
+                    )
+
+        if not normalized:
             content = str(response.get("content") or "")
             import re
             import json
