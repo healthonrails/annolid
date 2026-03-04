@@ -71,7 +71,7 @@ class WorkspaceMemoryStore:
 
     def append_history(self, content: str) -> None:
         path = self.history_file
-        text = str(content or "").strip()
+        text = self._normalize_history_entry(content)
         if not text:
             return
         if path.exists():
@@ -92,6 +92,16 @@ class WorkspaceMemoryStore:
                 "chars": len(text),
             },
         )
+
+    @staticmethod
+    def _normalize_history_entry(content: str) -> str:
+        text = str(content or "").strip()
+        if not text:
+            return ""
+        if text.startswith("["):
+            return text
+        stamp = datetime.now().strftime("[%Y-%m-%d %H:%M]")
+        return f"{stamp} {text}"
 
     def read_long_term(self) -> str:
         if self.memory_file.exists():
@@ -361,7 +371,9 @@ class WorkspaceMemoryStore:
             )
         resolved = (self.memory_dir / raw).resolve()
         memory_root = self.memory_dir.resolve()
-        if not str(resolved).startswith(str(memory_root)):
+        try:
+            resolved.relative_to(memory_root)
+        except ValueError:
             raise ValueError("Path escapes memory directory.")
         return resolved
 

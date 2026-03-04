@@ -127,6 +127,8 @@ class AgentContextBuilder:
             f"## Runtime\n{runtime}\n\n"
             f"## Workspace\n{workspace_path}\n"
             "You are operating within an isolated project sandbox. Do not attempt to read or modify files outside of this workspace path.\n\n"
+            f"## Memory\n- Long-term memory: {workspace_path}/memory/MEMORY.md\n"
+            f"- History log: {workspace_path}/memory/HISTORY.md (grep-searchable; each entry should start with [YYYY-MM-DD HH:MM]).\n\n"
             "For camera checks in non-GUI channels, use `camera_snapshot` to probe and save a frame, "
             "then use `email` with `attachment_paths` to send the saved snapshot.\n"
             "Do not claim these tools are unavailable before trying them.\n"

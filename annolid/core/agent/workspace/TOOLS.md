@@ -15,7 +15,8 @@ This workspace is intended for the Annolid agent tool stack.
 - `code_explain(path, symbol?, include_source?, max_source_lines?)`
 - `memory_search(query, top_k?, max_snippet_chars?)`
 - `memory_get(path, start_line?, end_line?, max_chars?)`
-- `memory_set(key?, value?, note?)`
+- `memory_set(key?, value?, note?, mode?)`
+  - `mode`: `replace` (default, upsert for `key`+`value`) or `append` (always append a new line)
 
 ## Execution
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
+import pytest
+
 from annolid.core.agent.memory import AgentMemoryStore
 
 
@@ -42,6 +44,14 @@ def test_memory_append_history_writes_history_file(tmp_path: Path) -> None:
     assert "export defaults" in content
 
 
+def test_memory_append_history_auto_prefixes_timestamp(tmp_path: Path) -> None:
+    store = AgentMemoryStore(tmp_path)
+    store.append_history("User confirmed preferred export profile.")
+    content = (store.memory_dir / "HISTORY.md").read_text(encoding="utf-8")
+    assert "User confirmed preferred export profile." in content
+    assert "[" in content and "]" in content
+
+
 def test_memory_get_guards_path_scope(tmp_path: Path) -> None:
     store = AgentMemoryStore(tmp_path)
     (store.memory_dir / "MEMORY.md").write_text(
@@ -64,6 +74,22 @@ def test_memory_get_guards_path_scope(tmp_path: Path) -> None:
     history_payload = store.memory_get("memory/HISTORY.md")
     assert history_payload["path"] == "memory/HISTORY.md"
     assert "line range test" in history_payload["content"]
+
+
+def test_memory_get_rejects_symlink_escape(tmp_path: Path) -> None:
+    store = AgentMemoryStore(tmp_path)
+    outside = tmp_path / "outside.md"
+    outside.write_text("secret", encoding="utf-8")
+    daily = store.memory_dir / "2026-01-01.md"
+    try:
+        daily.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is unavailable in this environment")
+    try:
+        store.memory_get("2026-01-01.md")
+        assert False, "expected ValueError for symlink escape"
+    except ValueError:
+        pass
 
 
 def test_memory_store_supports_custom_retrieval_plugin(tmp_path: Path) -> None:

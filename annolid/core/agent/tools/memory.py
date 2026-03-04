@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from annolid.core.agent.memory import AgentMemoryStore
@@ -128,7 +129,10 @@ class MemorySetTool(FunctionTool):
 
     @property
     def description(self) -> str:
-        return "Remember a durable long-term fact by appending it to memory/MEMORY.md."
+        return (
+            "Remember a durable long-term fact in memory/MEMORY.md. "
+            "Use mode=replace to upsert key/value facts, or mode=append to always append."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -138,6 +142,7 @@ class MemorySetTool(FunctionTool):
                 "key": {"type": "string"},
                 "value": {"type": "string"},
                 "note": {"type": "string"},
+                "mode": {"type": "string", "enum": ["replace", "append"]},
             },
             "required": [],
         }
@@ -147,12 +152,21 @@ class MemorySetTool(FunctionTool):
         key: str | None = None,
         value: str | None = None,
         note: str | None = None,
+        mode: str = "replace",
         **kwargs: Any,
     ) -> str:
         del kwargs
         key_text = str(key or "").strip()
         value_text = str(value or "").strip()
         note_text = str(note or "").strip()
+        mode_text = str(mode or "replace").strip().lower()
+        if mode_text not in {"replace", "append"}:
+            return json.dumps(
+                {
+                    "error": "Invalid mode. Supported values: replace, append.",
+                    "path": "memory/MEMORY.md",
+                }
+            )
 
         if key_text and value_text:
             line = f"- {key_text}: {value_text}"
@@ -167,15 +181,40 @@ class MemorySetTool(FunctionTool):
             )
 
         existing = self._memory.read_long_term().rstrip()
-        updated = (existing + "\n" + line).strip() + "\n" if existing else line + "\n"
+        if key_text and value_text:
+            if mode_text == "append":
+                updated = (
+                    (existing + "\n" + line).strip() + "\n" if existing else line + "\n"
+                )
+            else:
+                updated = self._upsert_key_line(existing, key_text, value_text)
+        else:
+            updated = (
+                (existing + "\n" + line).strip() + "\n" if existing else line + "\n"
+            )
         self._memory.write_long_term(updated)
         return json.dumps(
             {
                 "ok": True,
                 "path": "memory/MEMORY.md",
                 "line": line,
+                "mode": mode_text,
             }
         )
+
+    @staticmethod
+    def _upsert_key_line(existing: str, key: str, value: str) -> str:
+        text = str(existing or "")
+        lines = text.splitlines() if text else []
+        key_pattern = re.compile(rf"^\s*-\s*{re.escape(key)}\s*:")
+        new_line = f"- {key}: {value}"
+        for idx, current in enumerate(lines):
+            if key_pattern.match(str(current or "")):
+                lines[idx] = new_line
+                return "\n".join(lines).rstrip() + "\n"
+        if lines:
+            return ("\n".join(lines).rstrip() + "\n" + new_line).strip() + "\n"
+        return new_line + "\n"
 
 
 __all__ = ["MemorySearchTool", "MemoryGetTool", "MemorySetTool"]

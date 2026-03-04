@@ -808,6 +808,40 @@ def test_memory_set_tool_writes_long_term_memory(tmp_path: Path) -> None:
     assert "- Use higher threshold for arena C" in memory_text
 
 
+def test_memory_set_tool_upserts_existing_key(tmp_path: Path) -> None:
+    set_tool = MemorySetTool(workspace=tmp_path)
+    asyncio.run(set_tool.execute(key="preferred_species", value="zebrafish"))
+    asyncio.run(set_tool.execute(key="preferred_species", value="medaka"))
+    memory_text = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "- preferred_species: medaka" in memory_text
+    assert memory_text.count("- preferred_species:") == 1
+
+
+def test_memory_set_tool_append_mode_keeps_duplicate_key_entries(
+    tmp_path: Path,
+) -> None:
+    set_tool = MemorySetTool(workspace=tmp_path)
+    asyncio.run(
+        set_tool.execute(key="preferred_species", value="zebrafish", mode="append")
+    )
+    asyncio.run(
+        set_tool.execute(key="preferred_species", value="medaka", mode="append")
+    )
+    memory_text = (tmp_path / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "- preferred_species: zebrafish" in memory_text
+    assert "- preferred_species: medaka" in memory_text
+    assert memory_text.count("- preferred_species:") == 2
+
+
+def test_memory_set_tool_rejects_invalid_mode(tmp_path: Path) -> None:
+    set_tool = MemorySetTool(workspace=tmp_path)
+    result = asyncio.run(
+        set_tool.execute(key="preferred_species", value="zebrafish", mode="merge")
+    )
+    payload = json.loads(result)
+    assert "Invalid mode" in payload["error"]
+
+
 def test_code_search_tool_finds_matches_with_context(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
