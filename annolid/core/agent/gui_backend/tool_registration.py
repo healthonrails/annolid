@@ -12,6 +12,8 @@ _WRAPPED_GUI_TOOL_SPECS: Tuple[Tuple[str, str], ...] = (
     ("open_threejs_callback", "open_threejs"),
     ("open_threejs_example_callback", "open_threejs_example"),
     ("web_get_dom_text_callback", "web_get_dom_text"),
+    ("web_capture_screenshot_callback", "web_capture_screenshot"),
+    ("web_describe_view_callback", "web_describe_view"),
     ("web_extract_structured_callback", "web_extract_structured"),
     ("web_click_callback", "web_click"),
     ("web_type_callback", "web_type"),

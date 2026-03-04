@@ -2542,6 +2542,42 @@ class AIChatWidget(QtWidgets.QWidget):
             payload = {"ok": False, "error": str(exc)}
         self._set_bot_action_result("web_get_state", payload)
 
+    @QtCore.Slot(int)
+    def bot_web_capture_screenshot(self, max_width: int) -> None:
+        manager = self._resolve_web_manager()
+        if manager is None:
+            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
+            self._set_bot_action_result("web_capture_screenshot", payload)
+            self.status_label.setText("Bot action failed: web manager unavailable.")
+            return
+        try:
+            payload = manager.capture_screenshot(max_width=int(max_width))
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+        self._set_bot_action_result("web_capture_screenshot", payload)
+        self.status_label.setText(
+            "Captured web screenshot." if payload.get("ok") else "Bot action failed."
+        )
+
+    @QtCore.Slot(int)
+    def bot_web_describe_view(self, max_width: int) -> None:
+        manager = self._resolve_web_manager()
+        if manager is None:
+            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
+            self._set_bot_action_result("web_describe_view", payload)
+            self.status_label.setText("Bot action failed: web manager unavailable.")
+            return
+        try:
+            payload = manager.describe_current_view(max_width=int(max_width))
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+        self._set_bot_action_result("web_describe_view", payload)
+        self.status_label.setText(
+            "Submitted screenshot for description."
+            if payload.get("ok")
+            else "Bot action failed."
+        )
+
     @QtCore.Slot()
     def bot_pdf_get_state(self) -> None:
         manager = self._resolve_pdf_manager()

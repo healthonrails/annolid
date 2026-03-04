@@ -337,6 +337,7 @@ class WebFetchTool(FunctionTool):
                     "finalUrl": str(response.url),
                     "status": response.status_code,
                     "extractor": extractor,
+                    "contentTrust": "untrusted_external_content",
                     "truncated": truncated,
                     "length": len(text),
                     "text": text,

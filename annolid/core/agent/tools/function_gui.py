@@ -49,7 +49,9 @@ from .function_gui_video import (
 from .function_gui_web import (
     GuiOpenInBrowserTool,
     GuiOpenUrlTool,
+    GuiWebCaptureScreenshotTool,
     GuiWebClickTool,
+    GuiWebDescribeViewTool,
     GuiWebFindFormsTool,
     GuiWebGetDomTextTool,
     GuiWebRunStepsTool,
@@ -74,6 +76,8 @@ __all__ = [
     "GuiOpenThreeJsTool",
     "GuiOpenThreeJsExampleTool",
     "GuiWebGetDomTextTool",
+    "GuiWebCaptureScreenshotTool",
+    "GuiWebDescribeViewTool",
     "GuiWebClickTool",
     "GuiWebTypeTool",
     "GuiWebScrollTool",

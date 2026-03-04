@@ -19,6 +19,7 @@ Primary goal: return grounded page content quickly, with source links and minima
 - Prefer `gui_web_extract_structured(fields=[...])` for schema-shaped answers.
 - When field-specific regex is brittle, provide `selector_hints` (CSS-like or keyword hints) and set `extraction_mode="hint"` for resilient line-level extraction.
 - If content is too short/noisy, use `gui_web_run_steps` with `get_text` after a short `wait` and optional `scroll`.
+- If visual context matters, use `gui_web_capture_screenshot(max_width=1600)` and then `gui_web_describe_view(max_width=1600)`.
 
 3. Fallback to scraper/search tools when needed.
 - Use `web_search(query, count)` (Scrapling-first backend).

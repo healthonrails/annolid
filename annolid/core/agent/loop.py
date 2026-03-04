@@ -2126,6 +2126,8 @@ class AgentLoop:
         "clawhub_search_skills",
         "clawhub_install_skill",
         "gui_web_get_dom_text",
+        "gui_web_capture_screenshot",
+        "gui_web_describe_view",
         "gui_web_extract_structured",
         "gui_web_click",
         "gui_web_type",
@@ -2158,7 +2160,8 @@ class AgentLoop:
         "final answer. For live web search requests, prefer native `web_search` "
         "or `web_fetch` first, and use MCP browser workflow as fallback: "
         "navigate to a search engine, type the query, snapshot/parse the results, "
-        "then continue. For GUI web tasks, prefer `gui_web_run_steps` "
+        "then continue. For GUI web tasks, prefer `gui_web_run_steps`; "
+        "for visual description of the current web view, prefer `gui_web_describe_view`. "
         "before claiming browsing limits. Do not reveal private chain-of-thought."
     )
     _BROWSER_WORKFLOW_TOOL_NAMES = frozenset(

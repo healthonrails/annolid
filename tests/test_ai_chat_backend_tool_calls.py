@@ -237,6 +237,7 @@ def test_compact_system_prompt_includes_allowed_read_roots(tmp_path: Path) -> No
     assert "/Users/chenyang/Downloads/test_annolid_videos_batch" in prompt
     assert "schedule camera check every 5 minutes" in prompt
     assert "list automation tasks" in prompt
+    assert "gui_web_describe_view" in prompt
 
 
 def test_workspace_skill_name_cache_invalidation_detects_new_skill_file(
@@ -381,6 +382,10 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
     assert open_in_browser_payload["url"] == "https://google.com"
     web_text_payload = task._tool_gui_web_get_dom_text(1200)
     assert web_text_payload["ok"] is True
+    web_capture_payload = task._tool_gui_web_capture_screenshot(1280)
+    assert web_capture_payload["ok"] is True
+    web_describe_payload = task._tool_gui_web_describe_view(1280)
+    assert web_describe_payload["ok"] is True
     web_click_payload = task._tool_gui_web_click("button.submit")
     assert web_click_payload["ok"] is True
     web_type_payload = task._tool_gui_web_type(
@@ -453,6 +458,8 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
         "bot_open_url",
         "bot_open_in_browser",
         "bot_web_get_dom_text",
+        "bot_web_capture_screenshot",
+        "bot_web_describe_view",
         "bot_web_click",
         "bot_web_type",
         "bot_web_scroll",
@@ -1297,14 +1304,22 @@ def test_gui_web_run_steps_executes_sequence(monkeypatch, tmp_path: Path) -> Non
                 {"action": "open_url", "url": "google.com"},
                 {"action": "click", "selector": "button.submit"},
                 {"action": "scroll", "delta_y": 400},
+                {"action": "capture_screenshot", "max_width": 1200},
+                {"action": "describe_view", "max_width": 1200},
             ],
             stop_on_error=True,
             max_steps=10,
         )
     )
     assert payload["ok"] is True
-    assert payload["steps_run"] == 3
-    assert calls == ["bot_open_url", "bot_web_click", "bot_web_scroll"]
+    assert payload["steps_run"] == 5
+    assert calls == [
+        "bot_open_url",
+        "bot_web_click",
+        "bot_web_scroll",
+        "bot_web_capture_screenshot",
+        "bot_web_describe_view",
+    ]
 
 
 def test_extract_pdf_path_candidates_includes_url() -> None:

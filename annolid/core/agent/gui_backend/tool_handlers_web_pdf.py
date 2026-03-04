@@ -25,6 +25,36 @@ def web_get_state(
     return invoke_widget_json_slot("bot_web_get_state")
 
 
+def web_capture_screenshot(
+    *,
+    invoke_widget_json_slot: Callable[..., Dict[str, Any]],
+    max_width: int = 1600,
+) -> Dict[str, Any]:
+    limit = max(320, min(int(max_width or 1600), 4096))
+    payload = invoke_widget_json_slot(
+        "bot_web_capture_screenshot",
+        QtCore.Q_ARG(int, limit),
+    )
+    if "max_width" not in payload:
+        payload["max_width"] = limit
+    return payload
+
+
+def web_describe_view(
+    *,
+    invoke_widget_json_slot: Callable[..., Dict[str, Any]],
+    max_width: int = 1600,
+) -> Dict[str, Any]:
+    limit = max(320, min(int(max_width or 1600), 4096))
+    payload = invoke_widget_json_slot(
+        "bot_web_describe_view",
+        QtCore.Q_ARG(int, limit),
+    )
+    if "max_width" not in payload:
+        payload["max_width"] = limit
+    return payload
+
+
 def web_extract_structured(
     *,
     get_state: Callable[[], Dict[str, Any]],
@@ -216,6 +246,8 @@ async def web_run_steps(
     type_text: Callable[[str, str, bool], Dict[str, Any]],
     scroll: Callable[[int], Dict[str, Any]],
     find_forms: Callable[[], Dict[str, Any]],
+    capture_screenshot: Callable[[int], Dict[str, Any]],
+    describe_view: Callable[[int], Dict[str, Any]],
     sleep_ms: Callable[[int], None],
 ) -> Dict[str, Any]:
     if not isinstance(steps, list) or not steps:
@@ -267,6 +299,10 @@ async def web_run_steps(
             payload = scroll(int(raw_step.get("delta_y") or 800))
         elif action == "find_forms":
             payload = find_forms()
+        elif action in {"capture_screenshot", "screenshot"}:
+            payload = capture_screenshot(int(raw_step.get("max_width") or 1600))
+        elif action in {"describe_view", "describe_screenshot"}:
+            payload = describe_view(int(raw_step.get("max_width") or 1600))
         elif action == "wait":
             wait_ms = max(0, min(int(raw_step.get("wait_ms") or 500), 60000))
             sleep_ms(wait_ms)

@@ -78,6 +78,14 @@ class WebManager(QtCore.QObject):
         viewer = self.ensure_web_viewer()
         return viewer.find_forms()
 
+    def capture_screenshot(self, max_width: int = 1600) -> dict:
+        viewer = self.ensure_web_viewer()
+        return viewer.capture_screenshot(max_width=max_width)
+
+    def describe_current_view(self, max_width: int = 1600) -> dict:
+        viewer = self.ensure_web_viewer()
+        return viewer.describe_current_view(max_width=max_width)
+
     def get_web_state(self) -> dict:
         viewer = self.web_viewer
         if viewer is None:

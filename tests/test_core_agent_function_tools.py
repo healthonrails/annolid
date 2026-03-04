@@ -1863,6 +1863,12 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         web_get_dom_text_callback=lambda max_chars=8000: _mark(
             "web_get_dom_text", max_chars
         ),
+        web_capture_screenshot_callback=lambda max_width=1600: _mark(
+            "web_capture_screenshot", max_width
+        ),
+        web_describe_view_callback=lambda max_width=1600: _mark(
+            "web_describe_view", max_width
+        ),
         web_extract_structured_callback=lambda **kwargs: _mark(
             "web_extract_structured", kwargs
         ),
@@ -1970,6 +1976,8 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_open_threejs")
     assert registry.has("gui_open_threejs_example")
     assert registry.has("gui_web_get_dom_text")
+    assert registry.has("gui_web_capture_screenshot")
+    assert registry.has("gui_web_describe_view")
     assert registry.has("gui_web_extract_structured")
     assert registry.has("gui_web_click")
     assert registry.has("gui_web_type")
@@ -2037,6 +2045,14 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         registry.execute("gui_web_get_dom_text", {"max_chars": 1200})
     )
     assert json.loads(web_get_dom_text)["ok"] is True
+    web_capture_screenshot = asyncio.run(
+        registry.execute("gui_web_capture_screenshot", {"max_width": 1280})
+    )
+    assert json.loads(web_capture_screenshot)["ok"] is True
+    web_describe_view = asyncio.run(
+        registry.execute("gui_web_describe_view", {"max_width": 1280})
+    )
+    assert json.loads(web_describe_view)["ok"] is True
     web_extract_structured = asyncio.run(
         registry.execute(
             "gui_web_extract_structured",
@@ -2217,6 +2233,8 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         ("open_threejs", "/tmp/annolid_threejs_examples/two_mice.html"),
         ("open_threejs_example", "two_mice_html"),
         ("web_get_dom_text", 1200),
+        ("web_capture_screenshot", 1280),
+        ("web_describe_view", 1280),
         (
             "web_extract_structured",
             {

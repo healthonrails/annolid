@@ -65,12 +65,15 @@ Safety notes:
 - `gui_open_url(url)`
 - `gui_open_in_browser(url)`
 - `gui_web_get_dom_text(max_chars?)`
+- `gui_web_capture_screenshot(max_width?)`
+- `gui_web_describe_view(max_width?)`
 - `gui_web_extract_structured(fields?, regex_overrides?, selector_hints?, extraction_mode?, max_chars?, include_excerpt?)`
 - `gui_web_click(selector)`
 - `gui_web_type(selector, text, submit?)`
 - `gui_web_scroll(delta_y?)`
 - `gui_web_find_forms()`
 - `gui_web_run_steps(steps, stop_on_error?, max_steps?)`
+  Supported web actions include: `open_url`, `open_in_browser`, `get_text`, `click`, `type`, `scroll`, `find_forms`, `capture_screenshot`, `describe_view`, `wait`.
 - `gui_open_pdf(path?)`
 - `gui_pdf_get_state()`
 - `gui_pdf_get_text(max_chars?, pages?)`

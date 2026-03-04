@@ -1,6 +1,7 @@
 from annolid.core.agent.web_intents import (
     FAST_WEB_DATA_TOKENS,
     LIVE_WEB_INTENT_TOKENS,
+    classify_web_access_stage,
     has_fast_web_data_intent,
     has_live_web_intent,
     tokenize_intent_text,
@@ -32,3 +33,9 @@ def test_intent_token_sets_include_expected_keywords() -> None:
     assert "price" in LIVE_WEB_INTENT_TOKENS
     assert "price" in FAST_WEB_DATA_TOKENS
     assert "ticker" in FAST_WEB_DATA_TOKENS
+
+
+def test_classify_web_access_stage() -> None:
+    assert classify_web_access_stage("check NVDA stock price") == "discover"
+    assert classify_web_access_stage("summarize this page content") == "read"
+    assert classify_web_access_stage("open browser and login to website") == "interact"

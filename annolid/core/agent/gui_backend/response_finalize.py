@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Optional, Tuple
 
 from annolid.core.agent.web_intents import (
+    classify_web_access_stage,
     has_fast_web_data_intent,
     has_live_web_intent,
     tokenize_intent_text,
@@ -122,13 +123,28 @@ async def apply_web_response_fallbacks(
     try_browser_search_fallback: Callable[[str, Optional[Any]], Any],
     try_web_search_fallback: Callable[[str, Optional[Any]], Any],
     try_web_fetch_fallback: Callable[[str, Optional[Any]], Any],
+    log_web_fallback_event: Optional[Callable[[str, str, str], None]] = None,
 ) -> str:
+    def _log(step: str, outcome: str) -> None:
+        if log_web_fallback_event:
+            log_web_fallback_event(access_stage, step, outcome)
+
     result = text
     if tool_run_count > 0:
         return result
     prompt_tokens = tokenize_intent_text(prompt)
     prompt_needs_live_web = has_live_web_intent(prompt_tokens)
     prompt_prefers_fast_web_tools = has_fast_web_data_intent(prompt_tokens)
+    access_stage = classify_web_access_stage(prompt_tokens)
+    _log(
+        "decision",
+        (
+            "start"
+            f" live_web={int(prompt_needs_live_web)}"
+            f" fast_data={int(prompt_prefers_fast_web_tools)}"
+            f" has_text={int(bool(str(result or '').strip()))}"
+        ),
+    )
     should_force_fallback = bool(
         should_force_web_fallback_cb(prompt, result)
         or (prompt_needs_live_web and not str(result or "").strip())
@@ -136,28 +152,70 @@ async def apply_web_response_fallbacks(
     if enable_web_tools and looks_like_open_url_suggestion(result):
         open_page_fallback = try_open_page_content_fallback()
         if open_page_fallback:
+            _log("open_page_suggestion", "hit")
             result = open_page_fallback
+        else:
+            _log("open_page_suggestion", "miss")
     if not should_force_fallback and not should_apply_web_refusal_fallback_cb(result):
+        _log("decision", "skip_no_refusal_or_force")
         return result
     open_page_fallback = try_open_page_content_fallback()
     if open_page_fallback:
+        _log("open_page_refusal", "hit")
         return open_page_fallback
-    if enable_web_tools and prompt_prefers_fast_web_tools:
+    _log("open_page_refusal", "miss")
+    if enable_web_tools and (
+        prompt_prefers_fast_web_tools or access_stage == "discover"
+    ):
         search_fallback = await try_web_search_fallback(prompt, tools)
         if search_fallback:
+            _log("web_search", "hit")
             return search_fallback
+        _log("web_search", "miss")
         web_fallback = await try_web_fetch_fallback(prompt, tools)
         if web_fallback:
+            _log("web_fetch", "hit")
             return web_fallback
+        _log("web_fetch", "miss")
+    if access_stage == "read" and enable_web_tools:
+        web_fallback = await try_web_fetch_fallback(prompt, tools)
+        if web_fallback:
+            _log("web_fetch", "hit")
+            return web_fallback
+        _log("web_fetch", "miss")
+        search_fallback = await try_web_search_fallback(prompt, tools)
+        if search_fallback:
+            _log("web_search", "hit")
+            return search_fallback
+        _log("web_search", "miss")
     # Browser MCP fallback is allowed even when web_search/web_fetch are disabled.
     browser_fallback = await try_browser_search_fallback(prompt, tools)
     if browser_fallback:
+        _log("browser", "hit")
         return browser_fallback
+    _log("browser", "miss")
+    if access_stage == "interact" and enable_web_tools:
+        # For interactive requests, fall back to data tools if browser path is unavailable.
+        search_fallback = await try_web_search_fallback(prompt, tools)
+        if search_fallback:
+            _log("web_search", "hit")
+            return search_fallback
+        _log("web_search", "miss")
+        web_fallback = await try_web_fetch_fallback(prompt, tools)
+        if web_fallback:
+            _log("web_fetch", "hit")
+            return web_fallback
+        _log("web_fetch", "miss")
     if enable_web_tools:
         search_fallback = await try_web_search_fallback(prompt, tools)
         if search_fallback:
+            _log("web_search", "hit")
             return search_fallback
+        _log("web_search", "miss")
         web_fallback = await try_web_fetch_fallback(prompt, tools)
         if web_fallback:
+            _log("web_fetch", "hit")
             return web_fallback
+        _log("web_fetch", "miss")
+    _log("decision", "return_original")
     return result

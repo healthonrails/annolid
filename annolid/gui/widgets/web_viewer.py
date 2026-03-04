@@ -1020,6 +1020,77 @@ class WebViewerWidget(QtWidgets.QWidget):
             "title": title,
         }
 
+    @staticmethod
+    def _web_screenshot_dir() -> Path:
+        return get_agent_workspace_path() / "screenshots" / "web"
+
+    def capture_screenshot(self, max_width: int = 1600) -> dict:
+        if self._web_view is None:
+            return {"ok": False, "error": "Embedded web view is unavailable."}
+        state = self.get_state()
+        if not bool(state.get("has_page")):
+            return {"ok": False, "error": "No active embedded web page to capture."}
+        try:
+            pixmap = self._web_view.grab()
+        except Exception as exc:
+            return {"ok": False, "error": f"Failed to grab web screenshot: {exc}"}
+        if pixmap.isNull():
+            return {"ok": False, "error": "Web screenshot returned empty image."}
+
+        width_limit = max(320, min(int(max_width or 1600), 4096))
+        if pixmap.width() > width_limit:
+            pixmap = pixmap.scaledToWidth(
+                width_limit,
+                QtCore.Qt.SmoothTransformation,
+            )
+
+        screenshot_dir = self._web_screenshot_dir()
+        try:
+            screenshot_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            return {"ok": False, "error": f"Failed to prepare screenshot dir: {exc}"}
+
+        ts_ms = int(time.time() * 1000)
+        file_name = f"web_view_{ts_ms}_{uuid.uuid4().hex[:8]}.png"
+        image_path = screenshot_dir / file_name
+        try:
+            saved = bool(pixmap.save(str(image_path), "PNG"))
+        except Exception as exc:
+            return {"ok": False, "error": f"Failed to save screenshot: {exc}"}
+        if not saved:
+            return {"ok": False, "error": "Failed to save screenshot image."}
+        return {
+            "ok": True,
+            "image_path": str(image_path),
+            "width": int(pixmap.width()),
+            "height": int(pixmap.height()),
+            "url": str(state.get("url") or ""),
+            "title": str(state.get("title") or ""),
+            "max_width": width_limit,
+        }
+
+    def describe_current_view(self, max_width: int = 1600) -> dict:
+        payload = self.capture_screenshot(max_width=max_width)
+        if not bool(payload.get("ok")):
+            return payload
+        image_path = str(payload.get("image_path") or "").strip()
+        if not image_path:
+            return {"ok": False, "error": "Screenshot path is unavailable."}
+        ok, message = explain_image_with_annolid_bot(
+            self,
+            image_path,
+            source_hint=str(self._current_url or "").strip(),
+        )
+        response = dict(payload)
+        response["describe_ok"] = bool(ok)
+        response["describe_message"] = str(message or "")
+        if not ok:
+            response["ok"] = False
+            response["error"] = str(message or "Failed to request image description.")
+            return response
+        self.status_changed.emit(message or "Sent screenshot to Annolid Bot.")
+        return response
+
     def _run_js_sync(self, script: str, *, timeout_ms: int = 5000) -> object:
         if self._web_view is None:
             return {"error": "Embedded web view is unavailable."}

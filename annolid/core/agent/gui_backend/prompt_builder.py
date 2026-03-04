@@ -131,6 +131,8 @@ def build_compact_system_prompt(
     parts.append(
         "If the request needs live web search (weather/news/prices/current events), "
         "prefer native tools first (`web_search`, `web_fetch`, `gui_web_run_steps`). "
+        "If the user asks to visually describe the current/open web page or screenshot, "
+        "prefer `gui_web_describe_view` (or `gui_web_capture_screenshot` + vision). "
         "Use MCP browser tools as a fallback for complex dynamic pages."
     )
     if web_tools_enabled:
@@ -158,7 +160,7 @@ def build_compact_system_prompt(
 
     parts.append(
         "Tools starting with `mcp_` are dynamically injected through an external MCP Server. "
-        "CRITICAL INSTRUCTION: You MUST use native Annolid tools (`web_search`, `web_fetch`, `gui_web_run_steps`) FIRST for all web tasks. "
+        "CRITICAL INSTRUCTION: You MUST use native Annolid tools (`web_search`, `web_fetch`, `gui_web_run_steps`, `gui_web_describe_view`) FIRST for all web tasks. "
         "Only use MCP browser tools as a SECONDARY BACKUP if the native tools fail or are insufficient for the task. "
         "Because MCP tools can return massive, unchecked strings or DOM trees, their output is forcefully "
         "truncated at 50,000 characters. If querying an MCP browser (e.g. Playwright), always run evaluation scripts "

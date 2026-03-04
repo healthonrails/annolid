@@ -84,6 +84,66 @@ class GuiWebGetDomTextTool(FunctionTool):
         return await _run_callback(self._web_get_dom_text_callback, **kwargs)
 
 
+class GuiWebCaptureScreenshotTool(FunctionTool):
+    def __init__(
+        self, web_capture_screenshot_callback: Optional[ActionCallback] = None
+    ):
+        self._web_capture_screenshot_callback = web_capture_screenshot_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_web_capture_screenshot"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Capture a screenshot of the active embedded web page and save it to "
+            "the Annolid workspace."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "max_width": {"type": "integer", "minimum": 320, "maximum": 4096}
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._web_capture_screenshot_callback, **kwargs)
+
+
+class GuiWebDescribeViewTool(FunctionTool):
+    def __init__(self, web_describe_view_callback: Optional[ActionCallback] = None):
+        self._web_describe_view_callback = web_describe_view_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_web_describe_view"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Capture the active embedded web page as an image and ask Annolid Bot "
+            "vision to describe it."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "max_width": {"type": "integer", "minimum": 320, "maximum": 4096}
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._web_describe_view_callback, **kwargs)
+
+
 class GuiWebClickTool(FunctionTool):
     def __init__(self, web_click_callback: Optional[ActionCallback] = None):
         self._web_click_callback = web_click_callback
@@ -200,7 +260,7 @@ class GuiWebRunStepsTool(FunctionTool):
         return (
             "Run a sequence of embedded web actions for browser automation. "
             "Supported actions: open_url, open_in_browser, get_text, click, type, "
-            "scroll, find_forms, wait."
+            "scroll, find_forms, capture_screenshot, describe_view, wait."
         )
 
     @property
@@ -220,6 +280,11 @@ class GuiWebRunStepsTool(FunctionTool):
                             "submit": {"type": "boolean"},
                             "delta_y": {"type": "integer"},
                             "max_chars": {"type": "integer", "minimum": 200},
+                            "max_width": {
+                                "type": "integer",
+                                "minimum": 320,
+                                "maximum": 4096,
+                            },
                             "wait_ms": {"type": "integer", "minimum": 0},
                         },
                         "required": ["action"],

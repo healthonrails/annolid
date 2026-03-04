@@ -112,10 +112,12 @@ from annolid.core.agent.gui_backend.runtime_flow import (
 )
 from annolid.core.agent.gui_backend.tool_registration import register_chat_gui_tools
 from annolid.core.agent.gui_backend.tool_handlers_web_pdf import (
+    web_capture_screenshot as gui_web_capture_screenshot,
     pdf_find_sections as gui_pdf_find_sections,
     pdf_get_state as gui_pdf_get_state,
     pdf_get_text as gui_pdf_get_text,
     web_click as gui_web_click,
+    web_describe_view as gui_web_describe_view,
     web_extract_structured as gui_web_extract_structured,
     web_find_forms as gui_web_find_forms,
     web_get_dom_text as gui_web_get_dom_text,
@@ -1201,6 +1203,8 @@ class StreamingChatTask(QRunnable):
                 "open_threejs": self._tool_gui_open_threejs,
                 "open_threejs_example": self._tool_gui_open_threejs_example,
                 "web_get_dom_text": self._tool_gui_web_get_dom_text,
+                "web_capture_screenshot": self._tool_gui_web_capture_screenshot,
+                "web_describe_view": self._tool_gui_web_describe_view,
                 "web_extract_structured": self._tool_gui_web_extract_structured,
                 "web_click": self._tool_gui_web_click,
                 "web_type": self._tool_gui_web_type,
@@ -1399,6 +1403,18 @@ class StreamingChatTask(QRunnable):
             try_browser_search_fallback=self._try_browser_search_fallback,
             try_web_search_fallback=self._try_web_search_fallback,
             try_web_fetch_fallback=self._try_web_fetch_fallback,
+            log_web_fallback_event=self._log_web_fallback_event,
+        )
+
+    def _log_web_fallback_event(self, stage: str, step: str, outcome: str) -> None:
+        log_fn = logger.debug if outcome == "miss" else logger.info
+        log_fn(
+            "annolid-bot web fallback session=%s model=%s stage=%s step=%s outcome=%s",
+            self.session_id,
+            self.model,
+            stage,
+            step,
+            outcome,
         )
 
     def _should_apply_web_refusal_fallback(self, text: str) -> bool:
@@ -1564,6 +1580,18 @@ class StreamingChatTask(QRunnable):
     def _tool_gui_web_get_state(self) -> Dict[str, Any]:
         return gui_web_get_state(invoke_widget_json_slot=self._invoke_widget_json_slot)
 
+    def _tool_gui_web_capture_screenshot(self, max_width: int = 1600) -> Dict[str, Any]:
+        return gui_web_capture_screenshot(
+            invoke_widget_json_slot=self._invoke_widget_json_slot,
+            max_width=max_width,
+        )
+
+    def _tool_gui_web_describe_view(self, max_width: int = 1600) -> Dict[str, Any]:
+        return gui_web_describe_view(
+            invoke_widget_json_slot=self._invoke_widget_json_slot,
+            max_width=max_width,
+        )
+
     def _tool_gui_web_extract_structured(
         self,
         fields: List[str] | None = None,
@@ -1626,6 +1654,8 @@ class StreamingChatTask(QRunnable):
             type_text=self._tool_gui_web_type,
             scroll=self._tool_gui_web_scroll,
             find_forms=self._tool_gui_web_find_forms,
+            capture_screenshot=self._tool_gui_web_capture_screenshot,
+            describe_view=self._tool_gui_web_describe_view,
             sleep_ms=lambda ms: QtCore.QThread.msleep(ms),
         )
 

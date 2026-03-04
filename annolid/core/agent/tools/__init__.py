@@ -70,7 +70,9 @@ from .function_gui_core import (
 from .function_gui_web import (
     GuiOpenInBrowserTool,
     GuiOpenUrlTool,
+    GuiWebCaptureScreenshotTool,
     GuiWebClickTool,
+    GuiWebDescribeViewTool,
     GuiWebExtractStructuredTool,
     GuiWebFindFormsTool,
     GuiWebGetDomTextTool,
@@ -200,6 +202,8 @@ __all__ = [
     "GuiOpenThreeJsTool",
     "GuiOpenThreeJsExampleTool",
     "GuiWebGetDomTextTool",
+    "GuiWebCaptureScreenshotTool",
+    "GuiWebDescribeViewTool",
     "GuiWebExtractStructuredTool",
     "GuiWebClickTool",
     "GuiWebTypeTool",
