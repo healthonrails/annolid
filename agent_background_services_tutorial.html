@@ -59,9 +59,10 @@
 <li class="toctree-l2"><a class="reference internal" href="#install-optional-extras-you-actually-need">1. Install optional extras you actually need</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#minimal-safe-config-annolid-agent-config-json">2. Minimal safe config (<code class="docutils literal notranslate"><span class="pre">~/.annolid/agent/config.json</span></code>)</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#enable-whatsapp-optional">3. Enable WhatsApp (optional)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#enable-google-calendar-optional">4. Enable Google Calendar (optional)</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#common-errors-and-quick-fixes">5. Common errors and quick fixes</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#verify-from-your-environment">6. Verify from your environment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#enable-zulip-optional">4. Enable Zulip (optional)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#enable-google-calendar-optional">5. Enable Google Calendar (optional)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#common-errors-and-quick-fixes">6. Common errors and quick fixes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#verify-from-your-environment">7. Verify from your environment</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="agent_google_calendar_tutorial.html">Annolid Bot Google Calendar Tutorial</a></li>
@@ -103,6 +104,7 @@
 <ul class="simple">
 <li><p>Email polling/sending</p></li>
 <li><p>WhatsApp bridge/webhook channel</p></li>
+<li><p>Zulip channel</p></li>
 <li><p>Google Calendar tool</p></li>
 </ul>
 <p>If optional packages are missing, Annolid now skips those features and keeps the app running.</p>
@@ -129,6 +131,9 @@ pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot
 <span class="w">      </span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">&quot;autoStart&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
 <span class="w">    </span><span class="p">},</span>
+<span class="w">    </span><span class="nt">&quot;zulip&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+<span class="w">    </span><span class="p">},</span>
 <span class="w">    </span><span class="nt">&quot;calendar&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 <span class="w">      </span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
 <span class="w">      </span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;google&quot;</span>
@@ -148,8 +153,23 @@ pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot
 </ul>
 <p>If <code class="docutils literal notranslate"><span class="pre">websockets</span></code>/Playwright deps are missing, Annolid logs a warning and continues without WhatsApp startup.</p>
 </section>
+<section id="enable-zulip-optional">
+<h2>4. Enable Zulip (optional)<a class="headerlink" href="#enable-zulip-optional" title="Link to this heading"></a></h2>
+<p>See full guide: <code class="docutils literal notranslate"><span class="pre">docs/source/agent_zulip_tutorial.md</span></code></p>
+<ul class="simple">
+<li><p>Set <code class="docutils literal notranslate"><span class="pre">tools.zulip.enabled=true</span></code></p></li>
+<li><p>Provide:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">tools.zulip.server_url</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">tools.zulip.user</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">tools.zulip.api_key</span></code></p></li>
+</ul>
+</li>
+<li><p>Optionally set <code class="docutils literal notranslate"><span class="pre">stream</span></code>, <code class="docutils literal notranslate"><span class="pre">topic</span></code>, and <code class="docutils literal notranslate"><span class="pre">allow_from</span></code></p></li>
+</ul>
+</section>
 <section id="enable-google-calendar-optional">
-<h2>4. Enable Google Calendar (optional)<a class="headerlink" href="#enable-google-calendar-optional" title="Link to this heading"></a></h2>
+<h2>5. Enable Google Calendar (optional)<a class="headerlink" href="#enable-google-calendar-optional" title="Link to this heading"></a></h2>
 <p>See full guide: <code class="docutils literal notranslate"><span class="pre">docs/source/agent_google_calendar_tutorial.md</span></code></p>
 <ul class="simple">
 <li><p>Set <code class="docutils literal notranslate"><span class="pre">tools.calendar.enabled=true</span></code></p></li>
@@ -159,7 +179,7 @@ pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot
 <p>If Google auth/client deps are missing, Annolid logs a warning and skips registering the calendar tool.</p>
 </section>
 <section id="common-errors-and-quick-fixes">
-<h2>5. Common errors and quick fixes<a class="headerlink" href="#common-errors-and-quick-fixes" title="Link to this heading"></a></h2>
+<h2>6. Common errors and quick fixes<a class="headerlink" href="#common-errors-and-quick-fixes" title="Link to this heading"></a></h2>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">module</span> <span class="pre">named</span> <span class="pre">'websockets'</span></code></p>
 <ul>
@@ -171,12 +191,19 @@ pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot
 <li><p>Run: <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">&quot;annolid[annolid_bot]&quot;</span></code></p></li>
 </ul>
 </li>
+<li><p>Zulip channel enabled but no traffic</p>
+<ul>
+<li><p>Verify <code class="docutils literal notranslate"><span class="pre">server_url</span></code>, <code class="docutils literal notranslate"><span class="pre">user</span></code>, <code class="docutils literal notranslate"><span class="pre">api_key</span></code></p></li>
+<li><p>Verify <code class="docutils literal notranslate"><span class="pre">allow_from</span></code> is not filtering expected senders</p></li>
+</ul>
+</li>
 <li><p>Background services should not auto-start</p>
 <ul>
 <li><p>Set:</p>
 <ul>
 <li><p><code class="docutils literal notranslate"><span class="pre">tools.whatsapp.autoStart=false</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">tools.email.enabled=false</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">tools.zulip.enabled=false</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">tools.calendar.enabled=false</span></code></p></li>
 </ul>
 </li>
@@ -185,7 +212,7 @@ pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot
 </ul>
 </section>
 <section id="verify-from-your-environment">
-<h2>6. Verify from your environment<a class="headerlink" href="#verify-from-your-environment" title="Link to this heading"></a></h2>
+<h2>7. Verify from your environment<a class="headerlink" href="#verify-from-your-environment" title="Link to this heading"></a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import importlib.util as u; print(&#39;websockets&#39;, u.find_spec(&#39;websockets&#39;) is not None)&quot;</span>
 python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import importlib.util as u; print(&#39;google.auth&#39;, u.find_spec(&#39;google.auth&#39;) is not None)&quot;</span>
 </pre></div>

@@ -4,6 +4,7 @@ This tutorial helps you configure optional background services safely:
 
 - Email polling/sending
 - WhatsApp bridge/webhook channel
+- Zulip channel
 - Google Calendar tool
 
 If optional packages are missing, Annolid now skips those features and keeps the app running.
@@ -35,6 +36,9 @@ Start with disabled services, then enable one at a time:
       "enabled": false,
       "autoStart": false
     },
+    "zulip": {
+      "enabled": false
+    },
     "calendar": {
       "enabled": false,
       "provider": "google"
@@ -53,7 +57,18 @@ See full guide: `docs/source/agent_whatsapp_tutorial.md`
 
 If `websockets`/Playwright deps are missing, Annolid logs a warning and continues without WhatsApp startup.
 
-## 4. Enable Google Calendar (optional)
+## 4. Enable Zulip (optional)
+
+See full guide: `docs/source/agent_zulip_tutorial.md`
+
+- Set `tools.zulip.enabled=true`
+- Provide:
+  - `tools.zulip.server_url`
+  - `tools.zulip.user`
+  - `tools.zulip.api_key`
+- Optionally set `stream`, `topic`, and `allow_from`
+
+## 5. Enable Google Calendar (optional)
 
 See full guide: `docs/source/agent_google_calendar_tutorial.md`
 
@@ -63,19 +78,23 @@ See full guide: `docs/source/agent_google_calendar_tutorial.md`
 
 If Google auth/client deps are missing, Annolid logs a warning and skips registering the calendar tool.
 
-## 5. Common errors and quick fixes
+## 6. Common errors and quick fixes
 
 - `No module named 'websockets'`
   - Run: `pip install "annolid[annolid_bot]"`
 - `No module named 'google.auth'`
   - Run: `pip install "annolid[annolid_bot]"`
+- Zulip channel enabled but no traffic
+  - Verify `server_url`, `user`, `api_key`
+  - Verify `allow_from` is not filtering expected senders
 - Background services should not auto-start
   - Set:
     - `tools.whatsapp.autoStart=false`
     - `tools.email.enabled=false`
+    - `tools.zulip.enabled=false`
     - `tools.calendar.enabled=false`
 
-## 6. Verify from your environment
+## 7. Verify from your environment
 
 ```bash
 python -c "import importlib.util as u; print('websockets', u.find_spec('websockets') is not None)"
