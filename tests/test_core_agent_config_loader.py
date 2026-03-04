@@ -25,11 +25,13 @@ def test_agent_config_load_creates_default_template(tmp_path: Path) -> None:
     update = payload.get("update") or {}
     calendar = tools.get("calendar") or {}
     email = tools.get("email") or {}
+    zulip = tools.get("zulip") or {}
     skill_load = skills.get("load") or {}
     update_auto = update.get("auto") or {}
     assert "enabled" in calendar
     assert "provider" in calendar
     assert email.get("polling_interval", email.get("pollingInterval")) == 300
+    assert zulip.get("polling_interval", zulip.get("pollingInterval")) == 30
     assert "watch" in skill_load
     assert memory.get("mode") in {"semantic_keyword", "lexical"}
     assert update_auto.get("channel") in {"stable", "beta", "dev"}
@@ -82,6 +84,14 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     cfg.tools.whatsapp.webhook_port = 18081
     cfg.tools.whatsapp.webhook_path = "/whatsapp/webhook"
     cfg.tools.whatsapp.ingest_outgoing_messages = True
+    cfg.tools.zulip.enabled = True
+    cfg.tools.zulip.server_url = "https://zulip.example.com"
+    cfg.tools.zulip.user = "annolid-bot@zulip.example.com"
+    cfg.tools.zulip.api_key = "zulip-key"
+    cfg.tools.zulip.stream = "annolid"
+    cfg.tools.zulip.topic = "bot"
+    cfg.tools.zulip.polling_interval = 20
+    cfg.tools.zulip.allow_from = ["alice@example.com"]
     cfg.tools.calendar.enabled = True
     cfg.tools.calendar.provider = "google"
     cfg.tools.calendar.credentials_file = "~/calendar_credentials.json"
@@ -141,6 +151,14 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     assert loaded.tools.whatsapp.webhook_port == 18081
     assert loaded.tools.whatsapp.webhook_path == "/whatsapp/webhook"
     assert loaded.tools.whatsapp.ingest_outgoing_messages is True
+    assert loaded.tools.zulip.enabled is True
+    assert loaded.tools.zulip.server_url == "https://zulip.example.com"
+    assert loaded.tools.zulip.user == "annolid-bot@zulip.example.com"
+    assert loaded.tools.zulip.api_key == "zulip-key"
+    assert loaded.tools.zulip.stream == "annolid"
+    assert loaded.tools.zulip.topic == "bot"
+    assert loaded.tools.zulip.polling_interval == 20
+    assert loaded.tools.zulip.allow_from == ["alice@example.com"]
     assert loaded.tools.calendar.enabled is True
     assert loaded.tools.calendar.provider == "google"
     assert loaded.tools.calendar.credentials_file == "~/calendar_credentials.json"

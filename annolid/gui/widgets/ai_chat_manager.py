@@ -152,11 +152,16 @@ class AIChatManager(QtCore.QObject):
                     whatsapp_enabled = bool(config.tools.whatsapp.enabled)
                     whatsapp_auto_start = bool(config.tools.whatsapp.auto_start)
                     whatsapp_start_runtime = whatsapp_enabled and whatsapp_auto_start
+                    zulip_enabled = bool(
+                        getattr(config.tools, "zulip", None)
+                        and config.tools.zulip.enabled
+                    )
                     logger.info(
-                        "Background services config: email_enabled=%s whatsapp_enabled=%s whatsapp_auto_start=%s bridge_mode=%s webhook_enabled=%s max_parallel_sessions=%s max_pending_messages=%s collapse_superseded_pending=%s transient_retry_attempts=%s",
+                        "Background services config: email_enabled=%s whatsapp_enabled=%s whatsapp_auto_start=%s zulip_enabled=%s bridge_mode=%s webhook_enabled=%s max_parallel_sessions=%s max_pending_messages=%s collapse_superseded_pending=%s transient_retry_attempts=%s",
                         bool(config.tools.email.enabled),
                         whatsapp_enabled,
                         whatsapp_auto_start,
+                        zulip_enabled,
                         str(config.tools.whatsapp.bridge_mode or "python"),
                         bool(config.tools.whatsapp.webhook_enabled),
                         int(
@@ -180,9 +185,13 @@ class AIChatManager(QtCore.QObject):
                             )
                         ),
                     )
-                    if not (config.tools.email.enabled or whatsapp_start_runtime):
+                    if not (
+                        config.tools.email.enabled
+                        or whatsapp_start_runtime
+                        or zulip_enabled
+                    ):
                         logger.info(
-                            "Email/WhatsApp channels disabled by config; starting core bot services for local automation scheduler."
+                            "Email/WhatsApp/Zulip channels disabled by config; starting core bot services for local automation scheduler."
                         )
 
                     self._background_bus = MessageBus()
@@ -278,6 +287,7 @@ class AIChatManager(QtCore.QObject):
                         channels_config={
                             "email": config.tools.email.to_dict(),
                             "whatsapp": whatsapp_cfg,
+                            "zulip": config.tools.zulip.to_dict(),
                         },
                     )
 

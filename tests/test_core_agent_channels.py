@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import builtins
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -15,6 +16,7 @@ from annolid.core.agent.channels import (
     SlackChannel,
     TelegramChannel,
     WhatsAppChannel,
+    ZulipChannel,
     markdown_to_telegram_html,
 )
 from annolid.core.agent.channels.whatsapp_python_bridge import (
@@ -92,6 +94,32 @@ def test_channel_manager_dispatches_outbound() -> None:
     asyncio.run(_run())
 
 
+def test_zulip_channel_ingest_with_allowlist() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = ZulipChannel({"allow_from": ["alice@example.com"]}, bus)
+        ok = await channel._handle_message(
+            sender_id="alice@example.com",
+            chat_id="stream:general:annolid",
+            content="hello from zulip",
+            metadata={"conversation_type": "channel"},
+        )
+        denied = await channel._handle_message(
+            sender_id="bob@example.com",
+            chat_id="stream:general:annolid",
+            content="blocked",
+            metadata={"conversation_type": "channel"},
+        )
+        assert ok is True
+        assert denied is False
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert inbound.channel == "zulip"
+        assert inbound.sender_id == "alice@example.com"
+        assert inbound.chat_id == "stream:general:annolid"
+
+    asyncio.run(_run())
+
+
 def test_channel_manager_skips_local_only_gui_outbound_without_warning(caplog) -> None:
     async def _run() -> None:
         bus = MessageBus()
@@ -103,6 +131,154 @@ def test_channel_manager_skips_local_only_gui_outbound_without_warning(caplog) -
         assert "Unknown outbound channel: gui" not in caplog.text
 
     asyncio.run(_run())
+
+
+def test_channel_manager_initializes_zulip_when_enabled() -> None:
+    bus = MessageBus()
+    manager = ChannelManager(
+        bus=bus,
+        channels_config={
+            "zulip": {
+                "enabled": True,
+                "server_url": "https://zulip.example.com",
+                "user": "bot@zulip.example.com",
+                "api_key": "x",
+            }
+        },
+    )
+    assert "zulip" in manager.enabled_channels
+
+
+def test_zulip_channel_build_send_payload_for_private_multiple() -> None:
+    bus = MessageBus()
+    channel = ZulipChannel({}, bus)
+    payload = channel._build_send_payload(
+        OutboundMessage(
+            channel="zulip",
+            chat_id="pm:alice@example.com,bob@example.com,alice@example.com",
+            content="hello",
+        )
+    )
+    assert payload is not None
+    assert payload["type"] == "private"
+    recipients = json.loads(payload["to"])
+    assert recipients == ["alice@example.com", "bob@example.com"]
+
+
+def test_zulip_channel_uses_camel_case_config_aliases() -> None:
+    bus = MessageBus()
+    channel = ZulipChannel(
+        {
+            "enabled": True,
+            "serverUrl": "https://zulip.example.com",
+            "user": "bot@zulip.example.com",
+            "apiKey": "k",
+            "pollingInterval": 15,
+        },
+        bus,
+    )
+    assert channel._cfg("server_url") == "https://zulip.example.com"
+    assert channel._cfg("api_key") == "k"
+    assert channel._resolve_poll_interval_seconds() == 15
+
+
+def test_zulip_channel_request_json_handles_http_error_payload() -> None:
+    bus = MessageBus()
+    channel = ZulipChannel({}, bus)
+
+    class _FakeHttpError(urllib.error.HTTPError):
+        def __init__(self) -> None:
+            super().__init__(
+                url="https://zulip.example.com/api/v1/messages",
+                code=400,
+                msg="Bad Request",
+                hdrs=None,
+                fp=None,
+            )
+
+        def read(self) -> bytes:
+            return b'{"result":"error","msg":"invalid narrow operator"}'
+
+    with patch("urllib.request.urlopen", side_effect=_FakeHttpError()):
+        data = channel._request_json(
+            method="GET",
+            base_url="https://zulip.example.com",
+            path="/api/v1/messages",
+            user="bot@zulip.example.com",
+            api_key="k",
+            params={"anchor": "newest"},
+        )
+    assert data["result"] == "error"
+    assert "invalid narrow operator" in data["msg"]
+
+
+def test_zulip_channel_first_poll_only_initializes_anchor() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = ZulipChannel(
+            {
+                "server_url": "https://zulip.example.com",
+                "user": "bot@zulip.example.com",
+                "api_key": "k",
+            },
+            bus,
+        )
+
+        def _fake_request_json(**kwargs):
+            anchor = kwargs.get("params", {}).get("anchor")
+            if anchor == "newest":
+                return {
+                    "result": "success",
+                    "messages": [{"id": 123, "sender_email": "bot@zulip.example.com"}],
+                }
+            return {"result": "success", "messages": []}
+
+        channel._request_json = _fake_request_json  # type: ignore[assignment]
+        await channel._poll_messages()
+        assert channel._anchor_initialized is True
+        assert channel._last_message_id == 123
+        with pytest.raises(asyncio.TimeoutError):
+            await bus.consume_inbound(timeout_s=0.1)
+
+    asyncio.run(_run())
+
+
+def test_zulip_channel_request_json_encodes_bool_query_as_json_lowercase() -> None:
+    bus = MessageBus()
+    channel = ZulipChannel({}, bus)
+    captured_url = {"value": ""}
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def read(self) -> bytes:
+            return b'{"result":"success","messages":[]}'
+
+    def _fake_urlopen(req, timeout=30):
+        del timeout
+        captured_url["value"] = str(getattr(req, "full_url", "") or "")
+        return _FakeResponse()
+
+    with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+        data = channel._request_json(
+            method="GET",
+            base_url="https://zulip.example.com",
+            path="/api/v1/messages",
+            user="bot@zulip.example.com",
+            api_key="k",
+            params={
+                "anchor": "newest",
+                "apply_markdown": False,
+                "include_anchor": True,
+            },
+        )
+    assert data["result"] == "success"
+    assert "apply_markdown=false" in captured_url["value"]
+    assert "include_anchor=true" in captured_url["value"]
 
 
 def test_channel_ingest_infers_dm_metadata() -> None:

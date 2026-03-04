@@ -9,6 +9,7 @@ from .telegram import TelegramChannel, markdown_to_telegram_html
 from .whatsapp import WhatsAppChannel
 from .whatsapp_python_bridge import WhatsAppPythonBridge
 from .whatsapp_webhook_server import WhatsAppWebhookServer
+from .zulip import ZulipChannel
 
 __all__ = [
     "BaseChannel",
@@ -18,6 +19,7 @@ __all__ = [
     "SlackChannel",
     "EmailChannel",
     "WhatsAppChannel",
+    "ZulipChannel",
     "WhatsAppPythonBridge",
     "WhatsAppWebhookServer",
     "markdown_to_telegram_html",

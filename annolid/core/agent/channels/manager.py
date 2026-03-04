@@ -13,6 +13,7 @@ from .email import EmailChannel
 from .slack import SlackChannel
 from .telegram import TelegramChannel
 from .whatsapp import WhatsAppChannel
+from .zulip import ZulipChannel
 
 
 class ChannelManager:
@@ -48,6 +49,7 @@ class ChannelManager:
             "discord": DiscordChannel,
             "email": EmailChannel,
             "slack": SlackChannel,
+            "zulip": ZulipChannel,
         }
         for name, cls in mapping.items():
             if not self._is_enabled(name):

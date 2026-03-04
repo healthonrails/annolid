@@ -203,6 +203,51 @@ class WhatsAppChannelConfig:
 
 
 @dataclass
+class ZulipChannelConfig:
+    enabled: bool = False
+    server_url: str = ""
+    user: str = ""
+    api_key: str = ""
+    stream: str = ""
+    topic: str = ""
+    polling_interval: int = 30
+    allow_from: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "ZulipChannelConfig":
+        payload = data or {}
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            server_url=str(payload.get("server_url") or payload.get("serverUrl") or ""),
+            user=str(payload.get("user") or ""),
+            api_key=str(payload.get("api_key") or payload.get("apiKey") or ""),
+            stream=str(payload.get("stream") or ""),
+            topic=str(payload.get("topic") or ""),
+            polling_interval=max(
+                5,
+                int(
+                    payload.get("polling_interval")
+                    or payload.get("pollingInterval")
+                    or 30
+                ),
+            ),
+            allow_from=list(payload.get("allow_from") or payload.get("allowFrom", [])),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "server_url": self.server_url,
+            "user": self.user,
+            "api_key": self.api_key,
+            "stream": self.stream,
+            "topic": self.topic,
+            "polling_interval": self.polling_interval,
+            "allow_from": list(self.allow_from),
+        }
+
+
+@dataclass
 class CalendarToolConfig:
     enabled: bool = False
     provider: str = "google"
@@ -505,6 +550,7 @@ class ToolsConfig:
     mcp_servers: Dict[str, MCPServerConfig] = field(default_factory=dict)
     email: EmailChannelConfig = field(default_factory=EmailChannelConfig)
     whatsapp: WhatsAppChannelConfig = field(default_factory=WhatsAppChannelConfig)
+    zulip: ZulipChannelConfig = field(default_factory=ZulipChannelConfig)
     calendar: CalendarToolConfig = field(default_factory=CalendarToolConfig)
     by_provider: Dict[str, ToolPolicyConfig] = field(default_factory=dict)
 
@@ -552,6 +598,7 @@ class ToolsConfig:
                 )
         email_cfg = EmailChannelConfig.from_dict(payload.get("email"))
         whatsapp_cfg = WhatsAppChannelConfig.from_dict(payload.get("whatsapp"))
+        zulip_cfg = ZulipChannelConfig.from_dict(payload.get("zulip"))
         calendar_cfg = CalendarToolConfig.from_dict(payload.get("calendar"))
         exec_cfg = ExecToolConfig.from_dict(payload.get("exec"))
         return cls(
@@ -564,6 +611,7 @@ class ToolsConfig:
             mcp_servers=mcp_servers,
             email=email_cfg,
             whatsapp=whatsapp_cfg,
+            zulip=zulip_cfg,
             calendar=calendar_cfg,
             by_provider=by_provider,
         )
@@ -578,6 +626,7 @@ class ToolsConfig:
             "deny": list(self.deny),
             "email": self.email.to_dict(),
             "whatsapp": self.whatsapp.to_dict(),
+            "zulip": self.zulip.to_dict(),
             "calendar": self.calendar.to_dict(),
             "mcp_servers": {
                 name: cfg.to_dict() for name, cfg in self.mcp_servers.items()
