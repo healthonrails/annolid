@@ -388,13 +388,16 @@ class TrainingWorkflowMixin:
                 )
                 return
 
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 [
                     "annolid-train",
                     f"--config={config_file}",
                     f"--batch_size={batch_size}",
                 ]
             )
+            if not hasattr(self, "_active_training_subprocesses"):
+                self._active_training_subprocesses = []
+            self._active_training_subprocesses.append(proc)
 
             if out_dir is None:
                 out_runs_dir = shared_runs_root()
@@ -412,10 +415,10 @@ class TrainingWorkflowMixin:
         elif algo == "MaskRCNN":
             # Build the CLI command so MaskRCNN training runs in a subprocess,
             # consistent with YOLO and YOLACT.  This keeps the Qt event loop
-            # responsive and avoids hard detectron2 import at GUI startup.
+            # responsive.  Uses torchvision Mask R-CNN (no detectron2 needed).
             dataset_dir = str(Path(config_file).parent)
             cmd = [
-                "annolid",
+                "annolid-run",
                 "train",
                 "maskrcnn_detectron2",
                 f"--dataset-dir={dataset_dir}",
@@ -428,31 +431,61 @@ class TrainingWorkflowMixin:
                 cmd.append(f"--output-dir={out_dir}")
 
             if out_dir is None:
-                out_runs_dir = shared_runs_root()
+                # Default: allocate_run_dir writes runs under
+                # shared_runs_root()/maskrcnn/train/<run_N>/.
+                # Point TensorBoard at the maskrcnn task root so it discovers
+                # all run sub-directories automatically — same pattern as DINO.
+                out_runs_dir = shared_runs_root() / "maskrcnn"
+                tb_log_dir = out_runs_dir  # TB will recurse into run dirs
             else:
                 out_runs_dir = Path(out_dir)
+                # When the user specifies an explicit dir the logger writes
+                # events to {out_dir}/tensorboard/.
+                tb_log_dir = out_runs_dir / "tensorboard"
 
-            out_runs_dir = Path(out_runs_dir)
             out_runs_dir.mkdir(exist_ok=True, parents=True)
+            tb_log_dir.mkdir(exist_ok=True, parents=True)
 
             try:
-                subprocess.Popen(cmd)
+                proc = subprocess.Popen(cmd)
+                if not hasattr(self, "_active_training_subprocesses"):
+                    self._active_training_subprocesses = []
+                self._active_training_subprocesses.append(proc)
             except FileNotFoundError:
                 QtWidgets.QMessageBox.critical(
                     self,
-                    "Detectron2 / annolid CLI not found",
-                    "Could not launch 'annolid train maskrcnn_detectron2'.\n"
-                    "Please ensure detectron2 is installed and the annolid CLI "
-                    "is on your PATH.\n\n"
-                    "See https://detectron2.readthedocs.io/tutorials/install.html",
+                    "annolid-run CLI not found",
+                    "Could not launch 'annolid-run train maskrcnn_detectron2'.\n"
+                    "Please ensure the annolid-run CLI is on your PATH.\n\n"
+                    "Try: pip install -e .",
                 )
                 return
 
-            QtWidgets.QMessageBox.about(
-                self,
-                "Started.",
-                f"Training in background...\n"
-                f"Results will be saved to: {str(out_runs_dir)}\n"
-                f"Please do not close Annolid GUI.",
+            msg_box = QtWidgets.QMessageBox(self)
+            msg_box.setWindowTitle("MaskRCNN Training Started")
+            msg_box.setText(
+                "Training in background...\n"
+                f"Results will be saved under: {str(out_runs_dir)}\n\n"
+                "Click 'View TensorBoard' to open the live metrics dashboard.\n"
+                "(Metrics will appear once the first iteration completes.)"
             )
+            tb_button = msg_box.addButton(
+                "View TensorBoard", QtWidgets.QMessageBox.ActionRole
+            )
+            msg_box.addButton(QtWidgets.QMessageBox.Ok)
+            msg_box.exec_()
+
+            if msg_box.clickedButton() is tb_button:
+                try:
+                    import webbrowser
+                    from annolid.gui.tensorboard import ensure_tensorboard
+
+                    _, url = ensure_tensorboard(log_dir=tb_log_dir)
+                    webbrowser.open_new_tab(url)
+                except Exception as exc:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "TensorBoard unavailable",
+                        f"Could not open TensorBoard viewer:\n{exc}",
+                    )
             self.statusBar().showMessage(self.tr("Training..."))

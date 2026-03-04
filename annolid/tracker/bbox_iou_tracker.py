@@ -1,126 +1,220 @@
 """
-Detectron2-based bounding-box IOU tracker for Annolid.
+Standalone IOU-based bounding-box tracker for Annolid.
 
-The ``detectron2`` import is optional at module level so that the rest of
-annolid can be imported without detectron2 installed.  An informative
-``ImportError`` is raised when the tracker is actually constructed.
+This is a self-contained reimplementation that does **not** depend on
+detectron2.  It uses :mod:`torchvision.ops.box_iou` for pairwise IoU
+computation and :class:`~annolid.tracker.simple_instances.SimpleInstances`
+instead of ``detectron2.structures.Instances``.
 """
 
 from __future__ import annotations
 
-import warnings
+import copy
+from typing import List, Optional, Set
 
-try:
-    from detectron2.config import CfgNode as CfgNode_
-    from detectron2.config import instantiate
-    from detectron2.tracking.base_tracker import build_tracker_head
+import numpy as np
+import torch
+from torchvision.ops import box_iou
 
-    _D2_AVAILABLE = True
-except ImportError:
-    _D2_AVAILABLE = False
+from annolid.tracker.simple_instances import SimpleInstances
 
 
-class D2BBoxIOUTracker:
-    """Track objects in a video using IOUWeightedHungarianBBoxIOUTracker.
+class BBoxIOUTracker:
+    """Greedy IOU tracker that assigns persistent IDs to detections.
 
-    Parameters
-    ----------
-    height, width:
-        Frame dimensions (pixels).  These are required because the underlying
-        D2 tracker uses them to normalise bounding-box coordinates.
-    prev_instances, curr_instances:
-        Detectron2 ``Instances`` objects from consecutive frames.
-    max_num_instances:
-        Maximum number of object tracks to maintain.
-    max_lost_frame_count:
-        Frames a track can be invisible before it is deleted.
-    min_box_rel_dim:
-        Minimum relative size (fraction of frame) for a box to be tracked.
-    min_instance_period:
-        Minimum frames an instance must appear before it gets a stable ID.
-    track_iou_threshold:
-        IOU threshold used to associate detections to tracks.
+    For each pair of current / previous-frame bounding boxes the tracker
+    computes pairwise IoU.  Pairs above ``track_iou_threshold`` are matched
+    greedily in descending IoU order, giving the new detection the same ID as
+    the matched previous detection.  Unmatched detections get fresh IDs.
     """
 
     def __init__(
         self,
-        height: int,
-        width: int,
-        prev_instances=None,
-        curr_instances=None,
-        max_num_instances: int = 10,
-        max_lost_frame_count: int = 3,
+        *,
+        video_height: int,
+        video_width: int,
+        max_num_instances: int = 200,
+        max_lost_frame_count: int = 0,
         min_box_rel_dim: float = 0.02,
         min_instance_period: int = 1,
         track_iou_threshold: float = 0.5,
     ) -> None:
-        if not _D2_AVAILABLE:
-            raise ImportError(
-                "detectron2 is required for D2BBoxIOUTracker. "
-                "See https://detectron2.readthedocs.io/tutorials/install.html"
-            )
-
-        self._img_size = (int(height), int(width))
-        self._prev_instances = prev_instances
-        self._curr_instances = curr_instances
-
+        self._video_height = video_height
+        self._video_width = video_width
         self._max_num_instances = max_num_instances
         self._max_lost_frame_count = max_lost_frame_count
         self._min_box_rel_dim = min_box_rel_dim
         self._min_instance_period = min_instance_period
         self._track_iou_threshold = track_iou_threshold
 
+        self._prev_instances: Optional[SimpleInstances] = None
+        self._matched_idx: Set[int] = set()
+        self._matched_ID: Set[int] = set()
+        self._untracked_prev_idx: Set[int] = set()
+        self._id_count: int = 0
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def get_tracker(self):
-        """Build and return a tracker using the modern ``instantiate()`` API."""
-        cfg = {
-            "_target_": (
-                "detectron2.tracking.iou_weighted_hungarian_bbox_iou_tracker"
-                ".IOUWeightedHungarianBBoxIOUTracker"
-            ),
-            "video_height": self._img_size[0],
-            "video_width": self._img_size[1],
-            "max_num_instances": self._max_num_instances,
-            "max_lost_frame_count": self._max_lost_frame_count,
-            "min_box_rel_dim": self._min_box_rel_dim,
-            "min_instance_period": self._min_instance_period,
-            "track_iou_threshold": self._track_iou_threshold,
-        }
-        return instantiate(cfg)
+    def update(self, instances: SimpleInstances) -> SimpleInstances:
+        """Assign tracking IDs to *instances* for the current frame.
 
-    def tracker_from_config(self):
-        """Build a tracker using the legacy ``CfgNode`` API.
+        Args:
+            instances: Current-frame detections.  Must have ``pred_boxes``
+                (``Tensor[N, 4]``), ``scores``, and ``pred_classes``.
 
-        .. deprecated::
-            Use :meth:`get_tracker` instead.  This method will be removed in a
-            future Annolid release.
+        Returns:
+            The same ``SimpleInstances`` object with ``ID``,
+            ``ID_period``, and ``lost_frame_count`` fields populated.
         """
-        warnings.warn(
-            "tracker_from_config() is deprecated and will be removed in a "
-            "future release. Use get_tracker() instead.",
-            DeprecationWarning,
-            stacklevel=2,
+        instances = self._initialize_extra_fields(instances)
+
+        if self._prev_instances is not None:
+            iou_all = box_iou(
+                instances.pred_boxes,
+                self._prev_instances.pred_boxes,
+            )
+            bbox_pairs = self._create_prediction_pairs(instances, iou_all)
+            self._reset_fields()
+            for pair in bbox_pairs:
+                idx = pair["idx"]
+                prev_id = pair["prev_id"]
+                if (
+                    idx in self._matched_idx
+                    or prev_id in self._matched_ID
+                    or pair["IoU"] < self._track_iou_threshold
+                ):
+                    continue
+                instances.ID[idx] = prev_id
+                instances.ID_period[idx] = pair["prev_period"] + 1
+                instances.lost_frame_count[idx] = 0
+                self._matched_idx.add(idx)
+                self._matched_ID.add(prev_id)
+                self._untracked_prev_idx.discard(pair["prev_idx"])
+
+            instances = self._assign_new_id(instances)
+            instances = self._merge_untracked_instances(instances)
+
+        self._prev_instances = copy.deepcopy(instances)
+        return instances
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _create_prediction_pairs(
+        self, instances: SimpleInstances, iou_all: torch.Tensor
+    ) -> List[dict]:
+        pairs = []
+        for i in range(len(instances)):
+            for j in range(len(self._prev_instances)):
+                pairs.append(
+                    {
+                        "idx": i,
+                        "prev_idx": j,
+                        "prev_id": self._prev_instances.ID[j],
+                        "IoU": float(iou_all[i, j]),
+                        "prev_period": self._prev_instances.ID_period[j],
+                    }
+                )
+        pairs.sort(key=lambda p: p["IoU"], reverse=True)
+        return pairs
+
+    def _initialize_extra_fields(self, instances: SimpleInstances) -> SimpleInstances:
+        if not instances.has("ID"):
+            instances.set("ID", [None] * len(instances))
+        if not instances.has("ID_period"):
+            instances.set("ID_period", [None] * len(instances))
+        if not instances.has("lost_frame_count"):
+            instances.set("lost_frame_count", [None] * len(instances))
+        if self._prev_instances is None:
+            instances.ID = list(range(len(instances)))
+            self._id_count += len(instances)
+            instances.ID_period = [1] * len(instances)
+            instances.lost_frame_count = [0] * len(instances)
+        return instances
+
+    def _reset_fields(self) -> None:
+        self._matched_idx = set()
+        self._matched_ID = set()
+        self._untracked_prev_idx = set(range(len(self._prev_instances)))
+
+    def _assign_new_id(self, instances: SimpleInstances) -> SimpleInstances:
+        untracked = set(range(len(instances))).difference(self._matched_idx)
+        for idx in untracked:
+            instances.ID[idx] = self._id_count
+            self._id_count += 1
+            instances.ID_period[idx] = 1
+            instances.lost_frame_count[idx] = 0
+        return instances
+
+    def _merge_untracked_instances(self, instances: SimpleInstances) -> SimpleInstances:
+        """Keep previously-tracked instances that were not matched this frame."""
+        untracked = SimpleInstances(
+            image_size=instances.image_size,
         )
-        cfg = CfgNode_()
-        cfg.TRACKER_HEADS = CfgNode_()
-        cfg.TRACKER_HEADS.TRACKER_NAME = "IOUWeightedHungarianBBoxIOUTracker"
-        cfg.TRACKER_HEADS.VIDEO_HEIGHT = self._img_size[0]
-        cfg.TRACKER_HEADS.VIDEO_WIDTH = self._img_size[1]
-        cfg.TRACKER_HEADS.MAX_NUM_INSTANCES = self._max_num_instances
-        cfg.TRACKER_HEADS.MAX_LOST_FRAME_COUNT = self._max_lost_frame_count
-        cfg.TRACKER_HEADS.MIN_BOX_REL_DIM = self._min_box_rel_dim
-        cfg.TRACKER_HEADS.MIN_INSTANCE_PERIOD = self._min_instance_period
-        cfg.TRACKER_HEADS.TRACK_IOU_THRESHOLD = self._track_iou_threshold
-        return build_tracker_head(cfg)
+        untracked.set("pred_boxes", [])
+        untracked.set("pred_classes", [])
+        untracked.set("scores", [])
+        untracked.set("ID", [])
+        untracked.set("ID_period", [])
+        untracked.set("lost_frame_count", [])
 
-    def extra_fields(self):
-        tracker = self.get_tracker()
-        return tracker._initialize_extra_fields(self._curr_instances)
+        prev_boxes = self._prev_instances.pred_boxes
+        prev_classes = self._prev_instances.pred_classes
+        prev_scores = self._prev_instances.scores
+        prev_ID_period = self._prev_instances.ID_period
 
-    def _update(self):
-        tracker = self.get_tracker()
-        _ = tracker.update(self._prev_instances)
-        return tracker.update(self._curr_instances)
+        has_masks = instances.has("pred_masks")
+        if has_masks:
+            untracked.set("pred_masks", [])
+            prev_masks = self._prev_instances.pred_masks
+
+        for idx in self._untracked_prev_idx:
+            box = prev_boxes[idx]
+            if isinstance(box, torch.Tensor):
+                x_left, y_top, x_right, y_bot = box.tolist()
+            else:
+                x_left, y_top, x_right, y_bot = box
+
+            if (
+                (x_right - x_left) / self._video_width < self._min_box_rel_dim
+                or (y_bot - y_top) / self._video_height < self._min_box_rel_dim
+                or self._prev_instances.lost_frame_count[idx]
+                >= self._max_lost_frame_count
+                or prev_ID_period[idx] <= self._min_instance_period
+            ):
+                continue
+
+            untracked.pred_boxes.append(
+                prev_boxes[idx].tolist()
+                if isinstance(prev_boxes[idx], torch.Tensor)
+                else list(prev_boxes[idx])
+            )
+            untracked.pred_classes.append(int(prev_classes[idx]))
+            untracked.scores.append(float(prev_scores[idx]))
+            untracked.ID.append(self._prev_instances.ID[idx])
+            untracked.ID_period.append(self._prev_instances.ID_period[idx])
+            untracked.lost_frame_count.append(
+                self._prev_instances.lost_frame_count[idx] + 1
+            )
+            if has_masks:
+                mask = prev_masks[idx]
+                if isinstance(mask, torch.Tensor):
+                    mask = mask.numpy().astype(np.uint8)
+                untracked.pred_masks.append(mask)
+
+        # Convert lists back to tensors
+        if len(untracked.pred_boxes) > 0:
+            untracked.pred_boxes = torch.FloatTensor(untracked.pred_boxes)
+        else:
+            untracked.pred_boxes = torch.zeros((0, 4), dtype=torch.float32)
+        untracked.pred_classes = torch.IntTensor(untracked.pred_classes)
+        untracked.scores = torch.FloatTensor(untracked.scores)
+        if has_masks and len(untracked.pred_masks) > 0:
+            untracked.pred_masks = torch.IntTensor(np.stack(untracked.pred_masks))
+        elif has_masks:
+            untracked.remove("pred_masks")
+
+        return SimpleInstances.cat([instances, untracked])

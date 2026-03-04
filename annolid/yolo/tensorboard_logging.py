@@ -1,45 +1,23 @@
 from __future__ import annotations
 
 import csv
-import re
 import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Deque, Dict, Optional, Protocol, Tuple
+from typing import Any, Deque, Dict, Optional, Tuple
+
+from annolid.utils.tb_utils import (
+    ScalarWriter,
+    _try_create_summary_writer,
+    _read_image_rgb,
+    _safe_float,
+    sanitize_tensorboard_tag,
+)
 
 
-class ScalarWriter(Protocol):
-    def add_scalar(self, tag: str, scalar_value: float, global_step: int) -> None: ...
-
-    def add_text(self, tag: str, text_string: str, global_step: int) -> None: ...
-    def add_image(
-        self, tag: str, img_tensor: Any, global_step: int, dataformats: str = "HWC"
-    ) -> None: ...
-
-    def flush(self) -> None: ...
-    def close(self) -> None: ...
-
-
-def _try_create_summary_writer(log_dir: Path) -> Optional[ScalarWriter]:
-    try:
-        from torch.utils.tensorboard import SummaryWriter  # type: ignore
-
-        return SummaryWriter(log_dir=str(log_dir))
-    except Exception:
-        return None
-
-
-def _safe_float(value: object) -> Optional[float]:
-    try:
-        if value is None:
-            return None
-        s = str(value).strip()
-        if not s:
-            return None
-        return float(s)
-    except Exception:
-        return None
+# Shared helpers imported from annolid.utils.tb_utils.
+# _safe_int is kept local (not shared) since it is only used by YOLO CSV parsing.
 
 
 def _safe_int(value: object) -> Optional[int]:
@@ -52,20 +30,6 @@ def _safe_int(value: object) -> Optional[int]:
         return int(float(s))
     except Exception:
         return None
-
-
-_TAG_SAFE = re.compile(r"[^a-zA-Z0-9._/-]+")
-
-
-def sanitize_tensorboard_tag(tag: str) -> str:
-    tag = str(tag or "").strip()
-    tag = tag.replace(" ", "_")
-    tag = tag.replace("(", "_").replace(")", "_")
-    tag = tag.replace("[", "_").replace("]", "_")
-    tag = tag.replace("{", "_").replace("}", "_")
-    tag = _TAG_SAFE.sub("_", tag)
-    tag = re.sub(r"_+", "_", tag).strip("_")
-    return tag or "metric"
 
 
 def _find_results_csv(run_dir: Path) -> Optional[Path]:
@@ -334,62 +298,3 @@ class YOLORunTensorBoardLogger:
 
         out.sort(key=key_fn, reverse=True)
         return out
-
-
-def _read_image_rgb(path: Path, *, max_edge_px: int = 1280) -> Optional[Any]:
-    """Read an image into an RGB uint8 HWC array for TensorBoard."""
-    try:
-        import numpy as np  # type: ignore
-    except Exception:
-        return None
-
-    arr: Optional[Any] = None
-    try:
-        import cv2  # type: ignore
-
-        bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
-        if bgr is not None:
-            arr = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-    except Exception:
-        arr = None
-
-    if arr is None:
-        try:
-            from PIL import Image  # type: ignore
-
-            with Image.open(path) as im:
-                im = im.convert("RGB")
-                arr = np.asarray(im)
-        except Exception:
-            return None
-
-    try:
-        h, w = int(arr.shape[0]), int(arr.shape[1])
-    except Exception:
-        return None
-
-    edge = max(h, w)
-    if max_edge_px and edge > int(max_edge_px):
-        scale = float(max_edge_px) / float(edge)
-        new_w = max(1, int(round(w * scale)))
-        new_h = max(1, int(round(h * scale)))
-        try:
-            import cv2  # type: ignore
-
-            arr = cv2.resize(arr, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        except Exception:
-            try:
-                from PIL import Image  # type: ignore
-
-                im = Image.fromarray(arr)
-                im = im.resize((new_w, new_h))
-                arr = np.asarray(im)
-            except Exception:
-                pass
-
-    if getattr(arr, "dtype", None) != np.uint8:
-        try:
-            arr = arr.astype(np.uint8, copy=False)
-        except Exception:
-            return None
-    return arr

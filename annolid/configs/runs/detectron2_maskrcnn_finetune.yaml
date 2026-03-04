@@ -5,7 +5,6 @@ train:
   dataset_dir: /path/to/coco_dataset
   output_dir: /path/to/output_dir
   weights: /path/to/initial_model.pth
-  model_config: COCO-InstanceSegmentation/mask_rcnn_R_101_FPN_3x.yaml
   max_iterations: 12000
   score_threshold: 0.2
   overlap_threshold: 0.7
@@ -23,5 +22,6 @@ dataloader:
   repeat_threshold: 0.5
 
 # --- Model head ---
-detectron2:
-  roi_batch_size_per_image: 256
+# Uses torchvision maskrcnn_resnet50_fpn_v2.
+# Supply train.weights to fine-tune from a previous checkpoint.
+# No detectron2 installation required.

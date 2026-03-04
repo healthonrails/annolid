@@ -37,9 +37,6 @@ def test_resolve_train_settings_uses_defaults_with_cli_dataset(tmp_path):
     assert settings.dataset_dir == str(dataset_dir.resolve())
     assert settings.max_iterations == 3000
     assert settings.batch_size == 8
-    assert (
-        settings.model_config == "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
-    )
     assert settings.base_lr == 0.0025
 
 
@@ -93,43 +90,22 @@ def test_resolve_train_settings_requires_dataset_dir():
         raise AssertionError("Expected ValueError when dataset_dir is missing")
 
 
-def test_resolve_train_settings_default_model_arch_and_no_export(tmp_path):
+def test_resolve_train_settings_default_model_arch(tmp_path):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
 
     settings = _resolve_train_settings(_build_args(dataset_dir=str(dataset_dir)))
 
-    assert settings.model_arch == "mask_rcnn_R_50_FPN_3x"
+    assert settings.model_arch == "resnet50_fpn_v2"
     assert settings.export_torchscript is False
 
 
-def test_resolve_train_settings_arch_maps_to_correct_config(tmp_path):
-    from annolid.engine.models.maskrcnn_detectron2 import _ARCH_TO_CONFIG
-
+def test_resolve_train_settings_custom_model_arch(tmp_path):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
 
     settings = _resolve_train_settings(
-        _build_args(dataset_dir=str(dataset_dir), model_arch="mask_rcnn_R_101_FPN_3x")
+        _build_args(dataset_dir=str(dataset_dir), model_arch="resnet50_fpn")
     )
 
-    expected_config = _ARCH_TO_CONFIG["mask_rcnn_R_101_FPN_3x"]
-    assert settings.model_config == expected_config
-    assert settings.model_arch == "mask_rcnn_R_101_FPN_3x"
-
-
-def test_resolve_train_settings_explicit_model_config_overrides_arch(tmp_path):
-    dataset_dir = tmp_path / "dataset"
-    dataset_dir.mkdir()
-    custom_config = "MyOrg/custom_model.yaml"
-
-    settings = _resolve_train_settings(
-        _build_args(
-            dataset_dir=str(dataset_dir),
-            model_arch="vitdet_b",
-            model_config=custom_config,
-        )
-    )
-
-    # explicit --model-config should take precedence over --model-arch
-    assert settings.model_config == custom_config
+    assert settings.model_arch == "resnet50_fpn"

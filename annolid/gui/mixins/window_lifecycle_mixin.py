@@ -262,6 +262,12 @@ class WindowLifecycleMixin:
                 "Error stopping realtime inference on exit: %s", exc, exc_info=True
             )
         try:
+            for proc in getattr(self, "_active_training_subprocesses", []):
+                if proc.poll() is None:
+                    proc.terminate()
+        except Exception as exc:
+            logger.debug("Failed terminating training subprocesses on close: %s", exc)
+        try:
             current_file = str(getattr(self, "filename", "") or "").strip()
             if current_file:
                 self.settings.setValue("session/last_worked_file", current_file)

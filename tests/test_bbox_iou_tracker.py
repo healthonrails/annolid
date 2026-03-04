@@ -1,121 +1,132 @@
 """
-Tests for D2BBoxIOUTracker.
+Tests for the standalone BBoxIOUTracker.
 
-These tests do NOT require detectron2 to be installed.
-The ``instantiate`` call is mocked so the logic can be verified in isolation.
+No detectron2 required — uses SimpleInstances directly.
 """
 
 from __future__ import annotations
 
-import importlib
-import sys
-import types
+import torch
 import unittest
-from unittest.mock import MagicMock
+
+from annolid.tracker.simple_instances import SimpleInstances
+from annolid.tracker.bbox_iou_tracker import BBoxIOUTracker
 
 
-def _install_d2_stub():
-    """
-    Install a minimal detectron2 stub into sys.modules so that the tracker
-    module can be imported without a real detectron2 installation.
-    """
-    d2 = types.ModuleType("detectron2")
-    d2_config = types.ModuleType("detectron2.config")
-    d2_config.CfgNode = MagicMock()
-    d2_config.instantiate = MagicMock()
-    d2_tracking = types.ModuleType("detectron2.tracking")
-    d2_tracking_base = types.ModuleType("detectron2.tracking.base_tracker")
-    d2_tracking_base.build_tracker_head = MagicMock()
-
-    sys.modules.setdefault("detectron2", d2)
-    sys.modules.setdefault("detectron2.config", d2_config)
-    sys.modules.setdefault("detectron2.tracking", d2_tracking)
-    sys.modules.setdefault("detectron2.tracking.base_tracker", d2_tracking_base)
-    return d2_config
+def _make_instances(boxes, scores=None, classes=None, image_size=(480, 640)):
+    """Helper to create SimpleInstances for testing."""
+    inst = SimpleInstances(image_size=image_size)
+    inst.pred_boxes = torch.FloatTensor(boxes)
+    n = len(boxes)
+    inst.scores = torch.FloatTensor(scores or [0.9] * n)
+    inst.pred_classes = torch.IntTensor(classes or [0] * n)
+    return inst
 
 
-class TestD2BBoxIOUTrackerImport(unittest.TestCase):
-    """Verify the module imports cleanly even without detectron2 installed."""
+class TestBBoxIOUTrackerImport(unittest.TestCase):
+    def test_module_importable(self):
+        """The tracker module should import cleanly (no D2)."""
+        import annolid.tracker.bbox_iou_tracker as mod
 
-    def test_module_importable_without_d2(self):
-        """The module should be importable even when detectron2 is absent."""
-        # Temporarily hide detectron2
-        saved = {k: v for k, v in sys.modules.items() if k.startswith("detectron2")}
-        for k in list(saved):
-            del sys.modules[k]
-
-        tracker_mod_name = "annolid.tracker.bbox_iou_tracker"
-        if tracker_mod_name in sys.modules:
-            del sys.modules[tracker_mod_name]
-
-        try:
-            mod = importlib.import_module(tracker_mod_name)
-            self.assertFalse(mod._D2_AVAILABLE)
-        finally:
-            # Restore
-            sys.modules.update(saved)
-            if tracker_mod_name in sys.modules:
-                del sys.modules[tracker_mod_name]
+        self.assertTrue(hasattr(mod, "BBoxIOUTracker"))
 
 
-class TestD2BBoxIOUTrackerWithStub(unittest.TestCase):
-    """Unit tests for D2BBoxIOUTracker using a mocked detectron2."""
-
-    def setUp(self):
-        self.d2_config = _install_d2_stub()
-        # Force re-import so the stub is picked up
-        mod_name = "annolid.tracker.bbox_iou_tracker"
-        if mod_name in sys.modules:
-            del sys.modules[mod_name]
-        import importlib as _il
-
-        self.mod = _il.import_module(mod_name)
-        self.mod._D2_AVAILABLE = True  # pretend D2 is there
-
-    def _make_tracker(self, **kwargs):
-        return self.mod.D2BBoxIOUTracker(height=480, width=640, **kwargs)
-
-    def test_img_size_stored(self):
-        t = self._make_tracker()
-        self.assertEqual(t._img_size, (480, 640))
-
-    def test_default_hyperparams(self):
-        t = self._make_tracker()
-        self.assertEqual(t._max_num_instances, 10)
-        self.assertEqual(t._max_lost_frame_count, 3)
+class TestBBoxIOUTracker(unittest.TestCase):
+    def test_constructor_params(self):
+        t = BBoxIOUTracker(video_height=480, video_width=640)
+        self.assertEqual(t._video_height, 480)
+        self.assertEqual(t._video_width, 640)
+        self.assertEqual(t._max_num_instances, 200)
+        self.assertEqual(t._max_lost_frame_count, 0)
         self.assertAlmostEqual(t._min_box_rel_dim, 0.02)
         self.assertEqual(t._min_instance_period, 1)
         self.assertAlmostEqual(t._track_iou_threshold, 0.5)
 
-    def test_get_tracker_calls_instantiate_with_correct_keys(self):
-        t = self._make_tracker(
-            max_num_instances=5,
-            max_lost_frame_count=2,
-            track_iou_threshold=0.4,
+    def test_first_frame_assigns_sequential_ids(self):
+        t = BBoxIOUTracker(video_height=100, video_width=100)
+        inst = _make_instances(
+            [[10, 10, 50, 50], [60, 60, 90, 90]],
+            image_size=(100, 100),
         )
-        # Patch the instantiate name inside the already-imported tracker module
-        mock_instantiate = MagicMock()
-        with unittest.mock.patch.object(self.mod, "instantiate", mock_instantiate):
-            t.get_tracker()
-        call_args = mock_instantiate.call_args[0][0]
-        self.assertIn("_target_", call_args)
-        self.assertIn("IOUWeightedHungarianBBoxIOUTracker", call_args["_target_"])
-        self.assertEqual(call_args["video_height"], 480)
-        self.assertEqual(call_args["video_width"], 640)
-        self.assertEqual(call_args["max_num_instances"], 5)
-        self.assertEqual(call_args["max_lost_frame_count"], 2)
-        self.assertAlmostEqual(call_args["track_iou_threshold"], 0.4)
+        result = t.update(inst)
+        self.assertEqual(result.ID, [0, 1])
+        self.assertEqual(result.ID_period, [1, 1])
 
-    def test_tracker_from_config_emits_deprecation_warning(self):
-        t = self._make_tracker()
-        with self.assertWarns(DeprecationWarning):
-            t.tracker_from_config()
+    def test_second_frame_same_boxes_keeps_ids(self):
+        t = BBoxIOUTracker(video_height=100, video_width=100, track_iou_threshold=0.3)
+        frame1 = _make_instances(
+            [[10, 10, 50, 50], [60, 60, 90, 90]],
+            image_size=(100, 100),
+        )
+        t.update(frame1)
 
-    def test_raises_importerror_when_d2_unavailable(self):
-        self.mod._D2_AVAILABLE = False
-        with self.assertRaises(ImportError):
-            self.mod.D2BBoxIOUTracker(height=480, width=640)
-        self.mod._D2_AVAILABLE = True  # restore for other tests
+        # Same boxes in frame 2 — should get same IDs
+        frame2 = _make_instances(
+            [[10, 10, 50, 50], [60, 60, 90, 90]],
+            image_size=(100, 100),
+        )
+        result = t.update(frame2)
+        self.assertEqual(result.ID[0], 0)
+        self.assertEqual(result.ID[1], 1)
+        self.assertEqual(result.ID_period[0], 2)
+
+    def test_new_detection_gets_new_id(self):
+        t = BBoxIOUTracker(video_height=100, video_width=100, track_iou_threshold=0.3)
+        frame1 = _make_instances(
+            [[10, 10, 50, 50]],
+            image_size=(100, 100),
+        )
+        t.update(frame1)
+
+        # Completely different box in frame 2
+        frame2 = _make_instances(
+            [[70, 70, 95, 95]],
+            image_size=(100, 100),
+        )
+        result = t.update(frame2)
+        # Should have a new ID (not 0)
+        self.assertNotEqual(result.ID[0], 0)
+
+    def test_empty_frame(self):
+        t = BBoxIOUTracker(video_height=100, video_width=100)
+        inst = _make_instances([], image_size=(100, 100))
+        result = t.update(inst)
+        self.assertEqual(len(result), 0)
+
+
+class TestSimpleInstances(unittest.TestCase):
+    def test_has_and_set(self):
+        inst = SimpleInstances(image_size=(100, 100))
+        self.assertFalse(inst.has("ID"))
+        inst.set("ID", [1, 2])
+        self.assertTrue(inst.has("ID"))
+        self.assertEqual(inst.ID, [1, 2])
+
+    def test_len(self):
+        inst = SimpleInstances(image_size=(100, 100))
+        inst.pred_boxes = torch.FloatTensor([[1, 2, 3, 4], [5, 6, 7, 8]])
+        self.assertEqual(len(inst), 2)
+
+    def test_to_device(self):
+        inst = SimpleInstances(image_size=(100, 100))
+        inst.pred_boxes = torch.FloatTensor([[1, 2, 3, 4]])
+        inst.ID = [0]
+        moved = inst.to("cpu")
+        self.assertEqual(moved.pred_boxes.device.type, "cpu")
+        self.assertEqual(moved.ID, [0])
+
+    def test_cat(self):
+        a = SimpleInstances(image_size=(100, 100))
+        a.pred_boxes = torch.FloatTensor([[1, 2, 3, 4]])
+        a.ID = [0]
+
+        b = SimpleInstances(image_size=(100, 100))
+        b.pred_boxes = torch.FloatTensor([[5, 6, 7, 8]])
+        b.ID = [1]
+
+        merged = SimpleInstances.cat([a, b])
+        self.assertEqual(len(merged), 2)
+        self.assertEqual(merged.ID, [0, 1])
 
 
 if __name__ == "__main__":

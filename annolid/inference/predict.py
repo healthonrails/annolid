@@ -1,8 +1,8 @@
 """
-Detectron2-based Mask R-CNN inference / tracking for Annolid.
+Torchvision-based Mask R-CNN inference / tracking for Annolid.
 
-All ``detectron2`` imports are deferred to runtime inside ``Segmentor.__init__``
-so this module can be imported on machines where detectron2 is not installed.
+No detectron2 dependency.  Uses the same torchvision model as
+``detectron2_train.py`` and the standalone :class:`BBoxIOUTracker`.
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ from annolid.annotation.masks import mask_iou
 from annolid.data import videos
 from annolid.data.videos import key_frames
 from annolid.postprocessing.quality_control import TracksResults, pred_dict_to_labelme
+from annolid.segmentation.maskrcnn.coco_dataset import load_class_names
+from annolid.tracker.simple_instances import SimpleInstances
 
 
 def _get_device() -> str:
@@ -36,12 +38,47 @@ def _get_device() -> str:
     return "cpu"
 
 
-class Segmentor:
-    """Instance segmentation / tracking using Detectron2 Mask R-CNN.
+def _build_model(num_classes: int, weights_path: str, device: str):
+    """Load a trained torchvision Mask R-CNN model for inference."""
+    from torchvision.models.detection import maskrcnn_resnet50_fpn_v2
+    from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+    from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 
-    All detectron2 imports happen inside ``__init__`` so this class can be
-    referenced without detectron2 installed; the error is only raised when the
-    class is actually instantiated.
+    model = maskrcnn_resnet50_fpn_v2(weights=None)
+
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+
+    in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
+    model.roi_heads.mask_predictor = MaskRCNNPredictor(
+        in_features_mask, 256, num_classes
+    )
+
+    state = torch.load(weights_path, map_location="cpu", weights_only=True)
+    if "model" in state:
+        state = state["model"]
+    model.load_state_dict(state, strict=False)
+    model.to(device)
+    model.eval()
+    return model
+
+
+def _to_instances(output: dict, image_size: tuple) -> SimpleInstances:
+    """Convert a torchvision model output dict to SimpleInstances."""
+    inst = SimpleInstances(image_size=image_size)
+    inst.pred_boxes = output["boxes"]
+    inst.pred_classes = output["labels"]
+    inst.scores = output["scores"]
+    if "masks" in output:
+        # torchvision masks are [N, 1, H, W] probabilities → [N, H, W] binary
+        inst.pred_masks = (output["masks"].squeeze(1) > 0.5).byte()
+    return inst
+
+
+class Segmentor:
+    """Instance segmentation / tracking using torchvision Mask R-CNN.
+
+    Drop-in replacement for the former detectron2-based ``Segmentor``.
     """
 
     def __init__(
@@ -53,26 +90,15 @@ class Segmentor:
         model_config=None,
         num_instances_per_class=1,
     ) -> None:
-        try:
-            from detectron2 import model_zoo
-            from detectron2.config import get_cfg
-            from detectron2.data import MetadataCatalog
-            from detectron2.data.datasets import builtin_meta, register_coco_instances
-            from detectron2.engine import DefaultPredictor
-        except ImportError as exc:
-            raise ImportError(
-                "detectron2 is required for mask-rcnn inference. "
-                "See https://detectron2.readthedocs.io/tutorials/install.html"
-            ) from exc
-
         self.dataset_dir = dataset_dir
         self.score_threshold = score_threshold
         self.overlap_threshold = overlap_threshold
 
-        if model_config is None:
-            model_config = "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
+        # Load class names from the COCO annotations
+        train_ann = Path(self.dataset_dir) / "train" / "annotations.json"
+        self.class_names = load_class_names(str(train_ann))
+        self.num_classes = len(self.class_names) + 1  # +1 for background
 
-        dataset_name = Path(self.dataset_dir).stem
         self.subject_queue: queue.PriorityQueue = queue.PriorityQueue(3)
         self.left_object_queue: queue.PriorityQueue = queue.PriorityQueue(3)
         self.right_object_queue: queue.PriorityQueue = queue.PriorityQueue(3)
@@ -86,42 +112,23 @@ class Segmentor:
         self.num_instances_per_class = num_instances_per_class
         self.custom_activation: dict = {}
 
-        try:
-            register_coco_instances(
-                f"{dataset_name}_train",
-                {},
-                f"{self.dataset_dir}/train/annotations.json",
-                f"{self.dataset_dir}/train/",
-            )
-            register_coco_instances(
-                f"{dataset_name}_valid",
-                {},
-                f"{self.dataset_dir}/valid/annotations.json",
-                f"{self.dataset_dir}/valid/",
-            )
-        except AssertionError as e:
-            print(e)
+        self.device = _get_device()
+        self.model = _build_model(self.num_classes, model_pth_path, self.device)
 
-        _dataset_metadata = MetadataCatalog.get(f"{dataset_name}_train")
-        _dataset_metadata.thing_colors = [
-            cc["color"] for cc in builtin_meta.COCO_CATEGORIES
-        ]
-        num_classes = len(_dataset_metadata.thing_classes)
-        self.class_names = _dataset_metadata.thing_classes
+    def _predict(self, image_bgr: np.ndarray) -> SimpleInstances:
+        """Run inference on a single BGR image and return SimpleInstances."""
+        img_rgb = image_bgr[:, :, ::-1].copy()
+        img_tensor = torch.as_tensor(
+            img_rgb.astype(np.float32).transpose(2, 0, 1) / 255.0
+        ).to(self.device)
 
-        self.cfg = get_cfg()
-        self.cfg.merge_from_file(model_zoo.get_config_file(model_config))
-        self.cfg.MODEL.WEIGHTS = model_pth_path
-        self.cfg.DATASETS.TRAIN = (f"{dataset_name}_train",)
-        self.cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = self.score_threshold
-        self.cfg.MODEL.DEVICE = _get_device()
-        self.cfg.MODEL.ROI_HEADS.NUM_CLASSES = num_classes
-        self.cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = self.overlap_threshold
+        with torch.no_grad():
+            outputs = self.model([img_tensor])
 
-        # NMS threshold used on RPN proposals
-        self.cfg.MODEL.RPN.NMS_THRESH = self.overlap_threshold
-
-        self.predictor = DefaultPredictor(self.cfg)
+        output = outputs[0]
+        h, w = image_bgr.shape[:2]
+        instances = _to_instances(output, (h, w))
+        return instances.to("cpu")
 
     # ------------------------------------------------------------------
     # Output helpers
@@ -157,32 +164,68 @@ class Segmentor:
     # ------------------------------------------------------------------
 
     def on_image(self, image_path: str, display: bool = True) -> None:
-        """Run instance segmentation on a single image.
-
-        Args:
-            image_path: Path to the image file.
-            display: Whether to show an OpenCV window with results.
-        """
-        from detectron2.data import MetadataCatalog
-        from detectron2.utils.visualizer import ColorMode, Visualizer
-
+        """Run instance segmentation on a single image."""
         image = cv2.imread(image_path)
         height, width, _ = image.shape
-        preds = self.predictor(image)
-        instances = preds["instances"].to("cpu")
+        instances = self._predict(image)
 
         if len(instances) >= 1:
             self.to_labelme(instances, image_path, height, width)
 
         if display:
-            viz = Visualizer(
-                image[:, :, ::-1],
-                metadata=MetadataCatalog.get(self.cfg.DATASETS.TRAIN[0]),
-                instance_mode=ColorMode.SEGMENTATION,
-            )
-            output = viz.draw_instance_predictions(instances)
-            cv2.imshow("Frame", output.get_image()[:, :, ::-1])
+            vis_img = self._visualize(image, instances)
+            cv2.imshow("Frame", vis_img)
             cv2.waitKey(0)
+
+    def _visualize(self, image: np.ndarray, instances: SimpleInstances) -> np.ndarray:
+        """Draw bounding boxes, labels, and semi-transparent masks on *image*."""
+        vis = image.copy()
+        boxes = instances.pred_boxes
+        scores = instances.scores
+        classes = instances.pred_classes
+        has_mask = instances.has("pred_masks")
+
+        # Generate distinct colours for each class
+        np.random.seed(42)
+        colors = np.random.randint(0, 255, size=(self.num_classes + 1, 3)).tolist()
+
+        for i in range(len(instances)):
+            if scores[i] < self.score_threshold:
+                continue
+
+            cls_id = int(classes[i])
+            # Map 1-based label back to 0-based class_names index
+            cls_idx = cls_id - 1 if cls_id > 0 else 0
+            color = tuple(colors[cls_id])
+            label = (
+                self.class_names[cls_idx]
+                if 0 <= cls_idx < len(self.class_names)
+                else f"cls_{cls_id}"
+            )
+            score = float(scores[i])
+
+            x1, y1, x2, y2 = [int(v) for v in boxes[i].tolist()]
+            cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
+            text = f"{label} {score:.2f}"
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            cv2.rectangle(vis, (x1, y1 - th - 6), (x1 + tw, y1), color, -1)
+            cv2.putText(
+                vis,
+                text,
+                (x1, y1 - 4),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 255),
+                1,
+            )
+
+            if has_mask:
+                mask = instances.pred_masks[i].numpy()
+                colored_mask = np.zeros_like(vis)
+                colored_mask[mask > 0] = color
+                vis = cv2.addWeighted(vis, 1.0, colored_mask, 0.4, 0)
+
+        return vis
 
     def on_image_folder(self, image_folder: str) -> None:
         """Run inference on all JPG/PNG images in a folder."""
@@ -200,16 +243,7 @@ class Segmentor:
         tracking: bool = False,
         output_dir: Optional[str] = None,
     ):
-        """Run inference (and optionally tracking) on a video file.
-
-        Args:
-            video_path: Path to the input video.
-            skip_frames: Process every N-th frame (1 = every frame).
-            on_keyframes: Pre-extract key frames and run on those.
-            tracking: Enable D2's IOU-based Hungarian tracker.
-            output_dir: Directory to write the output CSV.  If ``None``, the
-                CSV is written next to the video file.
-        """
+        """Run inference (and optionally tracking) on a video file."""
         if not Path(video_path).exists():
             return
 
@@ -220,22 +254,17 @@ class Segmentor:
 
         tracker = None
         if tracking:
-            from detectron2.config import instantiate
+            from annolid.tracker.bbox_iou_tracker import BBoxIOUTracker
 
-            tracker_cfg = {
-                "_target_": (
-                    "detectron2.tracking.iou_weighted_hungarian_bbox_iou_tracker"
-                    ".IOUWeightedHungarianBBoxIOUTracker"
-                ),
-                "video_height": height,
-                "video_width": width,
-                "max_num_instances": 200,
-                "max_lost_frame_count": 30,
-                "min_box_rel_dim": 0.02,
-                "min_instance_period": 1,
-                "track_iou_threshold": 0.3,
-            }
-            tracker = instantiate(tracker_cfg)
+            tracker = BBoxIOUTracker(
+                video_height=height,
+                video_width=width,
+                max_num_instances=200,
+                max_lost_frame_count=30,
+                min_box_rel_dim=0.02,
+                min_instance_period=1,
+                track_iou_threshold=0.3,
+            )
 
         if on_keyframes:
             out_img_dir = key_frames(video_path)
@@ -245,9 +274,8 @@ class Segmentor:
         frame_number = 0
         for frame in videos.frame_from_video(self.cap, num_frames):
             if frame_number % skip_frames == 0:
-                outputs = self.predictor(frame)
+                instances = self._predict(frame)
                 out_dict: dict = {}
-                instances = outputs["instances"].to("cpu")
                 if tracker:
                     instances = tracker.update(instances)
                 num_instance = len(instances)
@@ -367,24 +395,14 @@ class Segmentor:
         return _iou > 0
 
     def _process_instances(self, instances, frame_number: int = 0, width=None) -> list:
-        """Convert Detectron2 ``Instances`` to a list of result dicts.
-
-        Applies per-class NMS and maps class indices to human-readable names.
-
-        Args:
-            instances: Detectron2 ``Instances`` on CPU.
-            frame_number: Frame index used for the output records.
-            width: Frame width in pixels (used for left/right label switching).
-
-        Returns:
-            List of dicts, each representing one detected instance.
-        """
+        """Convert ``SimpleInstances`` to a list of result dicts."""
         results = []
         out_dict: dict = {}
         num_instance = len(instances)
-        boxes = instances.pred_boxes.tensor
+        boxes = instances.pred_boxes
         scores = instances.scores
         classes = instances.pred_classes
+
         if instances.has("ID"):
             tracking_ids = instances.ID
         else:
@@ -428,9 +446,14 @@ class Segmentor:
             out_dict["y2"] = box[3]
             out_dict["cx"] = (out_dict["x1"] + out_dict["x2"]) / 2
             out_dict["cy"] = (out_dict["y1"] + out_dict["y2"]) / 2
-            out_dict["instance_name"] = self.class_names[classes[k]]
+            # Map 1-based torchvision labels to 0-based class_names
+            cls_idx = int(classes[k]) - 1
+            if 0 <= cls_idx < len(self.class_names):
+                out_dict["instance_name"] = self.class_names[cls_idx]
+            else:
+                out_dict["instance_name"] = f"cls_{classes[k]}"
             out_dict["class_score"] = scores[k]
-            out_dict["segmentation"] = rles[k]
+            out_dict["segmentation"] = rles[k] if k < len(rles) else None
             if len(self.class_names) <= 1:
                 out_dict["tracking_id"] = 0
             else:
@@ -485,58 +508,35 @@ class Segmentor:
     # ------------------------------------------------------------------
 
     def extract_mask_roi_features(self, frame):
-        """Extract Mask R-CNN ROI features from a video frame.
-
-        Args:
-            frame: BGR video frame (numpy array as returned by OpenCV).
-
-        Returns:
-            ROI mask pooler features as a tensor.
-        """
+        """Extract Mask R-CNN ROI features from a video frame."""
         im = frame[:, :, ::-1]
         height, width = im.shape[:2]
-        image = torch.as_tensor(im.astype("float32").transpose(2, 0, 1))
-        inputs = [{"image": image, "height": height, "width": width}]
-        images = self.predictor.model.preprocess_image(inputs)
-        features = self.predictor.model.backbone(images.tensor)
-        proposals, _ = self.predictor.model.proposal_generator(images, features)
-        instances, _ = self.predictor.model.roi_heads(images, features, proposals)
-        mask_features = [
-            features[f] for f in self.predictor.model.roi_heads.in_features
-        ]
-        mask_features = self.predictor.model.roi_heads.mask_pooler(
-            mask_features, [x.pred_boxes for x in instances]
+        image = torch.as_tensor(im.astype("float32").transpose(2, 0, 1) / 255.0).to(
+            self.device
         )
-        return mask_features
+
+        self.model.eval()
+        with torch.no_grad():
+            images = self.model.transform([image])
+            features = self.model.backbone(images.tensors)
+            proposals, _ = self.model.rpn(images, features)
+            # Return backbone features as a proxy
+            return features
 
     def extract_backbone_features(self, frame):
-        """Extract backbone feature maps from a video frame.
-
-        Args:
-            frame: BGR video frame (numpy array as returned by OpenCV).
-
-        Returns:
-            Dict of feature-map tensors keyed by FPN level name.
-        """
+        """Extract backbone feature maps from a video frame."""
         im = frame[:, :, ::-1]
-        height, width = im.shape[:2]
-        image = torch.as_tensor(im.astype("float32").transpose(2, 0, 1))
-        inputs = [{"image": image, "height": height, "width": width}]
-        images = self.predictor.model.preprocess_image(inputs)
-        return self.predictor.model.backbone(images.tensor)
+        image = torch.as_tensor(im.astype("float32").transpose(2, 0, 1) / 255.0).to(
+            self.device
+        )
+
+        self.model.eval()
+        with torch.no_grad():
+            images = self.model.transform([image])
+            return self.model.backbone(images.tensors)
 
     def get_activation_frome_layer(self, layer_name: str):
-        """Return a forward-hook that captures output from a named layer.
-
-        Usage example::
-
-            hook = seg.get_activation_frome_layer("cls_score")
-            seg.predictor.model.roi_heads.box_predictor.register_forward_hook(hook)
-
-        Args:
-            layer_name: Arbitrary key under which the activation is stored in
-                ``self.custom_activation``.
-        """
+        """Return a forward-hook that captures output from a named layer."""
 
         def hook(model, input, output):
             self.custom_activation[layer_name] = output

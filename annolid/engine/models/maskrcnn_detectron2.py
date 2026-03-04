@@ -9,13 +9,8 @@ from annolid.engine.registry import ModelPluginBase, register_model
 from annolid.engine.run_config import get_cfg_value, load_run_config
 
 
-# Map of friendly arch names → Detectron2 model-zoo config paths
-_ARCH_TO_CONFIG: Dict[str, str] = {
-    "mask_rcnn_R_50_FPN_3x": "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml",
-    "mask_rcnn_R_101_FPN_3x": "COCO-InstanceSegmentation/mask_rcnn_R_101_FPN_3x.yaml",
-    "vitdet_b": "new_baselines/mask_rcnn_vitdet_b_100ep.py",
-    "mvitv2_t": "new_baselines/mask_rcnn_mvitv2_t_100ep.py",
-}
+# Available torchvision backbone choices
+_ARCH_CHOICES = ["resnet50_fpn_v2", "resnet50_fpn"]
 
 
 @dataclass(frozen=True)
@@ -34,7 +29,7 @@ class Detectron2TrainSettings:
     roi_batch_size_per_image: int
     sampler_train: str
     repeat_threshold: float
-    model_arch: str = "mask_rcnn_R_50_FPN_3x"
+    model_arch: str = "resnet50_fpn_v2"
     export_torchscript: bool = False
 
 
@@ -44,7 +39,7 @@ def _resolve_train_settings(args: argparse.Namespace) -> Detectron2TrainSettings
         payload = load_run_config(str(args.run_config))
 
     defaults = {
-        "model_config": "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml",
+        "model_config": None,  # no longer used; torchvision handles model selection
         "max_iterations": 3000,
         "batch_size": 8,
         "score_threshold": 0.15,
@@ -82,21 +77,12 @@ def _resolve_train_settings(args: argparse.Namespace) -> Detectron2TrainSettings
 
     output_dir = args.output_dir if args.output_dir is not None else output_dir_cfg
 
-    # Resolve model_config: prefer explicit --model-config; then map from --model-arch
-    model_arch = str(getattr(args, "model_arch", None) or "mask_rcnn_R_50_FPN_3x")
-    if getattr(args, "model_config", None):
-        model_config = str(args.model_config)
-    else:
-        cfg_model_config = get_cfg_value(
-            payload, "model_config", "train.model_config", "model.config"
-        )
-        if cfg_model_config:
-            model_config = str(cfg_model_config)
-        else:
-            model_config = _ARCH_TO_CONFIG.get(
-                model_arch,
-                "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml",
-            )
+    # Resolve model_arch (torchvision backbone name)
+    model_arch = str(getattr(args, "model_arch", None) or "resnet50_fpn_v2")
+    # model_config is kept for backward compat but no longer drives model selection
+    model_config = getattr(args, "model_config", None) or get_cfg_value(
+        payload, "model_config", "train.model_config", "model.config"
+    )
 
     settings = Detectron2TrainSettings(
         dataset_dir=str(Path(dataset_dir).expanduser().resolve()),
@@ -190,7 +176,7 @@ class MaskRCNNDetectron2Plugin(ModelPluginBase):
         parser.add_argument(
             "--model-config",
             default=None,
-            help="Detectron2 model zoo config",
+            help="Legacy model config (ignored; torchvision is used)",
         )
         parser.add_argument("--score-threshold", type=float, default=None)
         parser.add_argument("--overlap-threshold", type=float, default=None)
@@ -203,20 +189,12 @@ class MaskRCNNDetectron2Plugin(ModelPluginBase):
         parser.add_argument(
             "--model-arch",
             default=None,
-            choices=list(_ARCH_TO_CONFIG.keys()),
-            help=(
-                "Architecture shorthand.  Ignored when --model-config is set explicitly.  "
-                "Choices: " + ", ".join(_ARCH_TO_CONFIG.keys())
-            ),
+            choices=_ARCH_CHOICES,
+            help="Torchvision backbone architecture.",
         )
 
     def train(self, args: argparse.Namespace) -> int:
-        try:
-            from annolid.segmentation.maskrcnn.detectron2_train import Segmentor
-        except Exception as exc:
-            raise RuntimeError(
-                "maskrcnn_detectron2 training requires the optional dependency 'detectron2'."
-            ) from exc
+        from annolid.segmentation.maskrcnn.detectron2_train import Segmentor
 
         settings = _resolve_train_settings(args)
         seg = Segmentor(
@@ -246,19 +224,19 @@ class MaskRCNNDetectron2Plugin(ModelPluginBase):
             help="Dataset directory containing train/valid COCO folders",
         )
         parser.add_argument(
-            "--weights", required=True, help="Trained detectron2 model weights (.pth)"
+            "--weights", required=True, help="Trained model weights (.pth)"
         )
         parser.add_argument("--image", required=True, help="Image path")
         parser.add_argument("--score-threshold", type=float, default=0.15)
         parser.add_argument("--overlap-threshold", type=float, default=0.95)
         parser.add_argument(
-            "--model-config", default=None, help="Override detectron2 model zoo config"
+            "--model-config", default=None, help="Legacy config (ignored)"
         )
         parser.add_argument(
             "--model-arch",
             default=None,
-            choices=list(_ARCH_TO_CONFIG.keys()),
-            help="Architecture shorthand (ignored when --model-config is set).",
+            choices=_ARCH_CHOICES,
+            help="Torchvision backbone architecture.",
         )
         parser.add_argument(
             "--no-display", action="store_true", help="Do not open an OpenCV window"
@@ -270,27 +248,13 @@ class MaskRCNNDetectron2Plugin(ModelPluginBase):
         )
 
     def predict(self, args: argparse.Namespace) -> int:
-        try:
-            from annolid.inference.predict import Segmentor
-        except Exception as exc:
-            raise RuntimeError(
-                "maskrcnn_detectron2 inference requires the optional dependency 'detectron2'."
-            ) from exc
-
-        # Resolve model config: explicit flag > arch shorthand
-        if getattr(args, "model_config", None):
-            model_config = str(args.model_config)
-        elif getattr(args, "model_arch", None):
-            model_config = _ARCH_TO_CONFIG.get(args.model_arch)
-        else:
-            model_config = None
+        from annolid.inference.predict import Segmentor
 
         seg = Segmentor(
             dataset_dir=str(Path(args.dataset_dir).expanduser().resolve()),
             model_pth_path=str(Path(args.weights).expanduser().resolve()),
             score_threshold=float(args.score_threshold),
             overlap_threshold=float(args.overlap_threshold),
-            model_config=model_config,
         )
         seg.on_image(
             str(Path(args.image).expanduser().resolve()),
@@ -300,22 +264,14 @@ class MaskRCNNDetectron2Plugin(ModelPluginBase):
         if getattr(args, "export_torchscript", False):
             try:
                 import torch
-                from detectron2.export import TracingAdapter
+                import cv2
 
-                image = __import__("cv2").imread(
-                    str(Path(args.image).expanduser().resolve())
+                image = cv2.imread(str(Path(args.image).expanduser().resolve()))
+                img_tensor = torch.as_tensor(
+                    image[:, :, ::-1].copy().astype("float32").transpose(2, 0, 1)
+                    / 255.0
                 )
-                inputs = [
-                    {
-                        "image": torch.as_tensor(
-                            image.astype("float32").transpose(2, 0, 1)
-                        )
-                    }
-                ]
-                tracer = TracingAdapter(
-                    seg.predictor.model, inputs, inference_func=lambda m, x: m(x)
-                )
-                script_model = torch.jit.trace(tracer, (inputs,))
+                script_model = torch.jit.trace(seg.model, ([img_tensor],))
                 out_path = str(Path(args.weights).with_suffix(".torchscript.pt"))
                 script_model.save(out_path)
                 print(f"TorchScript model saved to {out_path}")
