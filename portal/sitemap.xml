@@ -1,35 +1,35 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
-         <loc>https://annolid.com/</loc>
+         <loc>https://annolid.com/portal/</loc>
          <lastmod>2026-03-05</lastmod>
     </url>
     <url>
-         <loc>https://annolid.com/deployment/</loc>
+         <loc>https://annolid.com/portal/deployment/</loc>
          <lastmod>2026-03-05</lastmod>
     </url>
     <url>
-         <loc>https://annolid.com/installation/</loc>
+         <loc>https://annolid.com/portal/installation/</loc>
          <lastmod>2026-03-05</lastmod>
     </url>
     <url>
-         <loc>https://annolid.com/migration/</loc>
+         <loc>https://annolid.com/portal/migration/</loc>
          <lastmod>2026-03-05</lastmod>
     </url>
     <url>
-         <loc>https://annolid.com/redirects/</loc>
+         <loc>https://annolid.com/portal/redirects/</loc>
          <lastmod>2026-03-05</lastmod>
     </url>
     <url>
-         <loc>https://annolid.com/reference/</loc>
+         <loc>https://annolid.com/portal/reference/</loc>
          <lastmod>2026-03-05</lastmod>
     </url>
     <url>
-         <loc>https://annolid.com/tutorials/</loc>
+         <loc>https://annolid.com/portal/tutorials/</loc>
          <lastmod>2026-03-05</lastmod>
     </url>
     <url>
-         <loc>https://annolid.com/workflows/</loc>
+         <loc>https://annolid.com/portal/workflows/</loc>
          <lastmod>2026-03-05</lastmod>
     </url>
 </urlset>

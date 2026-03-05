@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://annolid.com/deployment/">
+        <link rel="canonical" href="https://annolid.com/portal/deployment/">
       
       
         <link rel="prev" href="../tutorials/">
@@ -781,21 +781,20 @@
 <p>Annolid currently uses automated GitHub Actions pipelines for website, book, and documentation publishing.</p>
 <h2 id="pipelines">Pipelines<a class="headerlink" href="#pipelines" title="Permanent link">&para;</a></h2>
 <ul>
-<li><code>docs-quality.yml</code>: validates combined site/doc sources and enforces markdown + strict portal build checks.</li>
+<li><code>website-pages.yml</code>: deploys <code>website/</code> updates.</li>
 <li><code>book-pages.yml</code>: builds and deploys Jupyter Book to <code>/book</code>.</li>
-<li><code>CI.yml</code>: builds/tests and publishes Sphinx docs in this repository.</li>
-<li><code>docs-portal-pages.yml</code>: builds and deploys this MkDocs portal to <code>gh-pages/portal</code>.</li>
-<li><code>healthonrails-site-sync.yml</code>: deploys the combined public site to <code>annolid.com</code>.</li>
+<li><code>CI.yml</code>: builds and publishes Sphinx docs.</li>
+<li><code>docs-portal-pages.yml</code>: builds and deploys this MkDocs portal to <code>/portal</code>.</li>
 </ul>
 <h2 id="deployment-targets">Deployment Targets<a class="headerlink" href="#deployment-targets" title="Permanent link">&para;</a></h2>
 <ul>
-<li>This repository <code>gh-pages</code> branch (<code>/portal</code> for MkDocs artifact publishing)</li>
+<li>This repository <code>gh-pages</code> branch</li>
 <li>Optional external site repo: <code>healthonrails/healthonrails.github.io</code></li>
 </ul>
 <h2 id="design-principles">Design Principles<a class="headerlink" href="#design-principles" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Keep sources in this repository.</li>
-<li>Publish the portal as the root site (<code>/</code>) and keep <code>/portal</code> as a compatibility path.</li>
+<li>Publish by path (<code>/</code>, <code>/book</code>, <code>/portal</code>) to avoid duplication.</li>
 <li>Use path filters so workflows run only on relevant changes.</li>
 <li>Use deterministic sync (<code>rsync --delete</code>) for reproducible outputs.</li>
 </ul>
