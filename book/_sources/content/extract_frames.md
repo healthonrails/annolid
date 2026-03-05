@@ -1,7 +1,7 @@
 # Extract frames
 
 > Canonical workflow docs now live in the Annolid Docs Portal:
-> <https://annolid.com/portal/workflows/>
+> <https://annolid.com/workflows/>
 
 Frame extraction is optional. Use this workflow when you prefer an image-directory pipeline instead of labeling directly from an opened video.
 
