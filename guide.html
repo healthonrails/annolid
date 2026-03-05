@@ -45,21 +45,6 @@
               <ul class="current">
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Annolid User Guide</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#overview">Overview</a></li>
-<li class="toctree-l2"><a class="reference internal" href="#video-guide">Video guide</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="#pose-estimation">Pose estimation</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#optical-flow-estimation">Optical flow estimation</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#extract-frames">Extract frames</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#label-zones">Label Zones</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#save-labels">Save labels</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#create-your-coco-format-dataset">Create your COCO format dataset</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#install-and-run-detectron2-in-google-colab">Install and run Detectron2 in Google Colab</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#upload-and-visualize-your-dataset-in-detectron2-colab">Upload and visualize your dataset in Detectron2 Colab</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#train-and-fine-tune-a-coco-pretrained-mask-r-cnn-model-in-detectron2-colab">Train and fine-tune a COCO-pretrained Mask R-CNN model in Detectron2 Colab</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#inference-on-a-test-video-in-detectron2-colab">Inference on a test video in Detectron2 Colab</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#save-and-download-the-tracking-results-from-detectron2-colab">Save and download the tracking results from Detectron2 Colab</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#convert-instance-segmentation-results-to-glitter2-format">Convert instance segmentation results to Glitter2 format</a></li>
-</ul>
-</li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="install.html">Install Annolid</a></li>
@@ -109,124 +94,26 @@
              
   <section id="annolid-user-guide">
 <h1>Annolid User Guide<a class="headerlink" href="#annolid-user-guide" title="Link to this heading"></a></h1>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Canonical user-facing docs now live in the Annolid Docs Portal:
+<a class="reference external" href="https://annolid.com/portal/">https://annolid.com/portal/</a></p>
+</div>
 <section id="overview">
 <h2>Overview<a class="headerlink" href="#overview" title="Link to this heading"></a></h2>
-<p>Annolid is an instance segmentation based tracking and behavioral analysis package for videos.</p>
-<p>It supports instance segmentation based tracking, and behavioral analysis.</p>
-<img alt="https://raw.githubusercontent.com/healthonrails/annolid/master/docs/imgs/annolid_workflow.png" src="https://raw.githubusercontent.com/healthonrails/annolid/master/docs/imgs/annolid_workflow.png" />
-<p>Figure 1. Overview of Annolid workflow.</p>
-<p>The tracking result CSV files can be imported
-into Glitter2 for correction or analysis.</p>
-</section>
-<section id="video-guide">
-<h2>Video guide<a class="headerlink" href="#video-guide" title="Link to this heading"></a></h2>
-<p>Following is a video for instance segmentation based pose estimation.</p>
-<p>Please see <a class="reference internal" href="install.html"><span class="doc">Install Annolid</span></a> for instructions on how to download and install Annolid.</p>
-<section id="pose-estimation">
-<h3>Pose estimation<a class="headerlink" href="#pose-estimation" title="Link to this heading"></a></h3>
-<p>This video shows pose estimation results based on instance segmentation methods.</p>
-<iframe width="560" height="315" src="https://www.youtube.com/embed/op3A4_LuVj8" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
-<div class="line"><br /></div>
-<div class="line"><br /></div>
-</div>
-</section>
-<section id="optical-flow-estimation">
-<h3>Optical flow estimation<a class="headerlink" href="#optical-flow-estimation" title="Link to this heading"></a></h3>
-<p>This video shows self-supervised optical flow estimation in Annolid.</p>
-<iframe width="560" height="315" src="https://www.youtube.com/embed/EpQ9JPZgcYE" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
-<div class="line"><br /></div>
-<div class="line"><br /></div>
-</div>
-</section>
-<section id="extract-frames">
-<h3>Extract frames<a class="headerlink" href="#extract-frames" title="Link to this heading"></a></h3>
-<p>In this video, we’ll show you how to extract frames from a video.
-This step is optional if you prefer opening a video directly and labeling specific frames in Annolid.</p>
-<p>First, start the <cite>Annolid</cite> GUI. Click Extract frames in the toolbar list when you want an image-directory workflow.
-When the dialog opens, click the and select the video file.
-You can choose the start and end seconds if you want extract frames in the given time interval.
-Use random algorithm and select the desired number of frames.
-The waiting time depends on the video length, and the algorimth that were selected. It might take a while to finish.
-When the process is done, it will load all extracted images into the canvas for labeling.
-You can check the extracted frames by clicking files in the file list.</p>
-<iframe width="560" height="315" src="https://www.youtube.com/embed/fx0ryaXpdEc" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
-<div class="line"><br /></div>
-<div class="line"><br /></div>
-</div>
-</section>
-<section id="label-zones">
-<h3>Label Zones<a class="headerlink" href="#label-zones" title="Link to this heading"></a></h3>
-<p>In this video, we’ll show you how to label zones and non-moving objects in a video frame
-(from either extracted images or directly from an opened video).</p>
-<iframe width="560" height="315" src="https://www.youtube.com/embed/zX8cUImRI_s" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
-<div class="line"><br /></div>
-<div class="line"><br /></div>
-</div>
-</section>
-<section id="save-labels">
-<h3>Save labels<a class="headerlink" href="#save-labels" title="Link to this heading"></a></h3>
-<p>In this video, we’ll show you how to save labels for your dataset.</p>
-<iframe width="560" height="315" src="https://www.youtube.com/embed/pb8X4bqLRZ0" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
-<div class="line"><br /></div>
-<div class="line"><br /></div>
-</div>
-</section>
-<section id="create-your-coco-format-dataset">
-<h3>Create your COCO format dataset<a class="headerlink" href="#create-your-coco-format-dataset" title="Link to this heading"></a></h3>
-<p>In this video, we’ll show you how to create your dataset in COCO format.</p>
-<iframe width="560" height="315" src="https://www.youtube.com/embed/_oNGc_44eZ8" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
-<div class="line"><br /></div>
-<div class="line"><br /></div>
-</div>
-</section>
-<section id="install-and-run-detectron2-in-google-colab">
-<h3>Install and run Detectron2 in Google Colab<a class="headerlink" href="#install-and-run-detectron2-in-google-colab" title="Link to this heading"></a></h3>
-<p>In this video, we’ll show you how to install and run Detectron2 in Google Colab.</p>
-<iframe width="560" height="315" src="https://www.youtube.com/embed/iQRVR7GPBH0" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
-<div class="line"><br /></div>
-<div class="line"><br /></div>
-</div>
-</section>
-<section id="upload-and-visualize-your-dataset-in-detectron2-colab">
-<h3>Upload and visualize your dataset in Detectron2 Colab<a class="headerlink" href="#upload-and-visualize-your-dataset-in-detectron2-colab" title="Link to this heading"></a></h3>
-<p>In this video, we’ll show you how to upload and visualize your dataset in Detectron2 Colab.</p>
-<iframe width="560" height="315" src="https://www.youtube.com/embed/7zYNRfY0yy4" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
-<div class="line"><br /></div>
-<div class="line"><br /></div>
-</div>
-</section>
-<section id="train-and-fine-tune-a-coco-pretrained-mask-r-cnn-model-in-detectron2-colab">
-<h3>Train and fine-tune a COCO-pretrained Mask R-CNN model in Detectron2 Colab<a class="headerlink" href="#train-and-fine-tune-a-coco-pretrained-mask-r-cnn-model-in-detectron2-colab" title="Link to this heading"></a></h3>
-<p>In this video, we’ll show you how to train and fine-tune a COCO-pretrained Mask R-CNN model in Detectron2 Colab.</p>
-<iframe width="560" height="315" src="https://www.youtube.com/embed/n7VDmh3LFRk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
-<div class="line"><br /></div>
-<div class="line"><br /></div>
-</div>
-</section>
-<section id="inference-on-a-test-video-in-detectron2-colab">
-<h3>Inference on a test video in Detectron2 Colab<a class="headerlink" href="#inference-on-a-test-video-in-detectron2-colab" title="Link to this heading"></a></h3>
-<p>In this video, we’ll show you how to perform instance segmentation on a test video in Detectron2 Colab.</p>
-<iframe width="560" height="315" src="https://www.youtube.com/embed/eiF5TpZ796E" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
-<div class="line"><br /></div>
-<div class="line"><br /></div>
-</div>
-</section>
-<section id="save-and-download-the-tracking-results-from-detectron2-colab">
-<h3>Save and download the tracking results from Detectron2 Colab<a class="headerlink" href="#save-and-download-the-tracking-results-from-detectron2-colab" title="Link to this heading"></a></h3>
-<p>In this video, we’ll show you how to download and save the tracking results from Detectron2 Colab.</p>
-<iframe width="560" height="315" src="https://www.youtube.com/embed/vshDSMpYhgw" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
-<div class="line"><br /></div>
-<div class="line"><br /></div>
-</div>
-</section>
-<section id="convert-instance-segmentation-results-to-glitter2-format">
-<h3>Convert instance segmentation results to Glitter2 format<a class="headerlink" href="#convert-instance-segmentation-results-to-glitter2-format" title="Link to this heading"></a></h3>
-<p>In this video, we’ll show you how to convert instance segmentation results to Glitter2 format.</p>
-<iframe width="560" height="315" src="https://www.youtube.com/embed/QW8dhAVNsk0" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe><div class="line-block">
-<div class="line"><br /></div>
-<div class="line"><br /></div>
-</div>
-</section>
+<p>Annolid supports a video-first workflow: open a video, jump to informative frames,
+label, track, review corrections, and export.</p>
+<p>Use this page as a compatibility entry point for legacy Sphinx docs. For updated
+installation and workflow guidance, use the portal pages:</p>
+<ul class="simple">
+<li><p>Installation: <a class="reference external" href="https://annolid.com/portal/installation/">https://annolid.com/portal/installation/</a></p></li>
+<li><p>Workflows: <a class="reference external" href="https://annolid.com/portal/workflows/">https://annolid.com/portal/workflows/</a></p></li>
+<li><p>Tutorials: <a class="reference external" href="https://annolid.com/portal/tutorials/">https://annolid.com/portal/tutorials/</a></p></li>
+</ul>
+<p>Legacy tutorial videos remain available at:</p>
+<ul class="simple">
+<li><p><a class="reference external" href="https://www.youtube.com/&#64;annolid/videos">https://www.youtube.com/&#64;annolid/videos</a></p></li>
+</ul>
 </section>
 </section>
 
