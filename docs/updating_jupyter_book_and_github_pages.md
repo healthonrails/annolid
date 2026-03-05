@@ -78,7 +78,8 @@ Website deployment (`website-pages.yml`):
 Portal deployment (`docs-portal-pages.yml`):
 
 1. Build `docs_portal/` using MkDocs Material.
-2. Update `gh-pages/portal/`.
+2. Enforce strict MkDocs build (`--strict`) before deploy.
+3. Update `gh-pages/portal/`.
 
 External site sync (`healthonrails-site-sync.yml`):
 

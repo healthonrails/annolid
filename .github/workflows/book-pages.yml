@@ -20,6 +20,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: annolid-book-pages-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-book:
     runs-on: ubuntu-latest
