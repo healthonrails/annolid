@@ -50,3 +50,8 @@ jobs:
 
       - name: Lint Markdown
         uses: DavidAnson/markdownlint-cli2-action@v20
+        with:
+          config: .markdownlint-cli2.jsonc
+          globs: |
+            docs_portal/**/*.md
+            docs/updating_jupyter_book_and_github_pages.md
