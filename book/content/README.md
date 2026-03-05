@@ -3,43 +3,43 @@
 [![Annolid CI](https://github.com/healthonrails/annolid/actions/workflows/CI.yml/badge.svg)](https://github.com/healthonrails/annolid/actions/workflows/CI.yml)
 [![Release](https://github.com/healthonrails/annolid/actions/workflows/release.yml/badge.svg)](https://github.com/healthonrails/annolid/actions/workflows/release.yml)
 [![Publish to PyPI](https://github.com/healthonrails/annolid/actions/workflows/annolid-publish.yml/badge.svg)](https://github.com/healthonrails/annolid/actions/workflows/annolid-publish.yml)
-[![DOI](https://zenodo.org/badge/290017987.svg)](https://zenodo.org/badge/latestdoi/290017987)
-[![PyPI version](https://badge.fury.io/py/annolid.svg)](https://badge.fury.io/py/annolid)
-[![Downloads](https://pepy.tech/badge/annolid)](https://pepy.tech/project/annolid)
-[![Downloads](https://pepy.tech/badge/annolid/month)](https://pepy.tech/project/annolid)
 
+Annolid is a practical toolkit for annotation, segmentation, tracking, and behavior analysis in research videos.
+This book gives a guided path from installation to reproducible end-to-end workflows.
 
-## Overview of Annolid
-Annolid is an annotation and instance segmentation-based multiple animal tracking and behavior analysis package.
-Annolid treats keypoints-based pose estimation as a special case of instance segmentation.
-Instance mask area and perimeter can be tracked, as well as keypoints.
+## Start Here
 
+1. [Install Annolid](how_to_install.md)
+2. [Prepare your videos](video_preparation.md)
+3. [Extract frames](extract_frames.md)
+4. [Label images](labelling_images.md)
+5. [Track with Cutie](tracking_with_Cutie.md)
+6. [Train and evaluate models](model_training.md)
 
-## Getting Started
-Learning yet another tool for behavior tracking and analysis is tough and takes time. With this in mind we tried to make it as simple as possible for you to evaluate if annolid is the right fit for your research needs.
+## Tutorials and Use Cases
 
+- Place preference analysis
+- Behavior classification
+- Freezing and motion assays
+- DINOv3 keypoint tracking
+- Post hoc distance analysis
 
-## Examples
-* keypoint detection based on body parts segmentation:
+## CLI and Agent Workflows
 
-<figure class="video_container">
-  <iframe width="720" height="480" src="https://www.youtube.com/embed/op3A4_LuVj8" frameborder="0" allowfullscreen="true"> </iframe>
-</figure>
+- [Expert mode CLI tools](Expert_mode_CLI_tools.md)
+- [Prediction review agent workflow](prediction_review_agent.md)
 
-* Detecting interactions:
+## Learn More
 
-![](../images/interaction_raw.gif)
-![](../images/interaction_analyzed.gif)
+- [High-level overview](high_level_overview.md)
+- [Model combinations](combining_models.md)
+- [Annolid Zoo](annolid_zoo.md)
+- [Video Depth Anything](video_depth_anything.md)
 
-* Tracking urine deposit:
+## Community and Citation
 
-![](../images/urine_tracking.png)
-
-* Tracking multiple animals:
-
-![](../images/mutiple_animal_tracking.png)
-
-* Optical flow estimation
-<figure class="video_container">
-  <iframe width="720" height="480" src="https://www.youtube.com/embed/EpQ9JPZgcYE" frameborder="0" allowfullscreen="true"> </iframe>
-</figure>
+- [Get in touch](get_in_touch.md)
+- [Contributing](contributing.md)
+- [Work based on Annolid](work_based_on_annolid.md)
+- [Cite Annolid](cite_annolid.md)
+- [License](licence.md)

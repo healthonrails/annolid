@@ -139,6 +139,7 @@ dmypy.json
 *.onnx
 *.pt
 *.github.io
+book/healthonrails.github.io/
 *_secret_key
 *.mlpackage
 *TODO*

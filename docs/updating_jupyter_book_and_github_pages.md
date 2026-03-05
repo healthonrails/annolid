@@ -1,140 +1,92 @@
-# Updating the Annolid Jupyter Book + GitHub Pages Site
+# Updating Annolid Jupyter Book + GitHub Pages
 
-Annolid’s documentation site (`https://annolid.com`) is deployed from a separate repository:
+This repository contains two documentation surfaces:
 
-- Website repo: `https://github.com/healthonrails/healthonrails.github.io`
+- Sphinx docs from `docs/` (published at site root).
+- Jupyter Book from `book/` (published under `/book/`).
+- Landing page source in `website/` (`index.html` + `assets/`) for `annolid.com`.
 
-That repo contains both the website landing page and the Jupyter Book output used for docs pages like `https://annolid.com/content/how_to_install.html`.
+They are deployed by separate workflows:
 
-This guide shows a safe, repeatable workflow:
+- `.github/workflows/CI.yml` deploys Sphinx docs.
+- `.github/workflows/book-pages.yml` builds Jupyter Book once and deploys to:
+  - this repo `gh-pages/book/`
+  - `healthonrails/healthonrails.github.io` (when token is configured)
 
-1. Update book content (Markdown, TOC, images).
-2. Build the Jupyter Book locally.
-3. Publish the built HTML to GitHub Pages without overwriting the landing page.
+## Local workflow
 
-## Repo layout (website repo)
-
-The website repo uses two branches:
-
-- `main`: Jupyter Book sources + a checked-in built copy under `html/` (useful for review/diffs).
-- `gh-pages`: the published site root (what GitHub Pages serves).
-
-The `gh-pages` branch contains:
-
-- Website landing page: `index.html` + `assets/`
-- Jupyter Book output: `content/`, `tutorials/`, `_static/`, `_sources/`, etc.
-- Custom domain config: `CNAME`
-- A required `.nojekyll` file (so GitHub Pages serves underscore directories like `_static/`)
-
-## One-time setup
-
-Clone the website repo (suggested location inside this repo’s `book/` folder):
+Use the project virtual environment:
 
 ```bash
-git clone https://github.com/healthonrails/healthonrails.github.io.git book/healthonrails.github.io
-```
-
-Create a Python environment and install book build deps:
-
-```bash
-cd book/healthonrails.github.io
-python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
 ```
 
-## 1) Update book content
-
-Edit/add pages in the website repo:
-
-- `content/*.md`
-- `tutorials/*.md`
-- `_toc.yml` (navigation)
-- `_config.yml` (book config)
-- `images/` (book images)
-
-Tip: keep filenames stable where possible; published URLs are filename-based.
-
-## 2) Build the Jupyter Book locally
+Install or refresh docs dependencies:
 
 ```bash
-cd book/healthonrails.github.io
-source .venv/bin/activate
-
-git checkout main
-jupyter-book build .
+pip install -r docs/requirements.txt
+pip install -r book/requirements.txt
 ```
 
-Preview the build:
+Build Sphinx docs:
 
 ```bash
-open _build/html/index.html
+make -C docs html
 ```
 
-## 3) Update `main` branch build artifacts (`html/`)
-
-The website repo keeps a copy of the generated book in `html/` on `main`.
+Build Jupyter Book:
 
 ```bash
-cd book/healthonrails.github.io
-git checkout main
-
-jupyter-book build .
-rsync -a --delete _build/html/ html/
-
-git add -A
-git commit -m "Update Jupyter Book sources and rebuild"
-git push origin main
+jupyter-book build book
 ```
 
-## 4) Publish to GitHub Pages (`gh-pages`)
-
-Publishing means copying the built HTML into the `gh-pages` branch root.
-
-Important: the `gh-pages` branch also hosts the website landing page. When syncing book output, do **not** overwrite:
-
-- `index.html`
-- `assets/`
-- `CNAME`
-
-Recommended workflow:
+Preview the Jupyter Book locally:
 
 ```bash
-cd book/healthonrails.github.io
-
-# Build on main (or rebuild if needed)
-git checkout main
-jupyter-book build .
-
-# Copy build output aside so it survives the branch switch
-tmp_dir="$(mktemp -d)"
-rsync -a --delete _build/html/ "${tmp_dir}/"
-
-# Switch to the published branch and sync, preserving the landing page
-git checkout gh-pages
-rsync -a --delete \
-  --exclude 'index.html' \
-  --exclude 'assets/' \
-  --exclude 'CNAME' \
-  "${tmp_dir}/" .
-
-# Critical: ensures GitHub Pages serves `_static/`, `_sources/`, etc.
-touch .nojekyll
-
-git add -A
-git commit -m "Publish Jupyter Book"
-git push origin gh-pages
-
-# Return to main for normal work
-git checkout main
+open book/_build/html/index.html
 ```
 
-## Verify deployment
+## GitHub Pages deployment
 
-After GitHub Pages finishes rebuilding (often ~1–2 minutes), verify that `_static` assets load:
+Sphinx deployment (`CI.yml`):
 
-```bash
-curl -I https://annolid.com/_static/styles/theme.css
-```
+1. Build `docs/` HTML.
+2. Update `gh-pages` branch root.
+3. Ensure `.nojekyll` exists.
 
-If this returns `404`, the most common issue is that `.nojekyll` is missing from the published root (`gh-pages`).
+Book deployment (`book-pages.yml`):
+
+1. Build `book/` HTML.
+2. Update `gh-pages/book/`.
+3. Ensure `.nojekyll` exists.
+4. Optionally sync to `healthonrails/healthonrails.github.io` if `HEALTHONRAILS_GHIO_TOKEN` is present.
+5. Sync landing page from `website/` to the target site root `index.html` + `assets/`.
+
+No manual branch switching or rsync steps are required for either flow.
+
+## Deploy to `healthonrails.github.io` (custom-domain flow)
+
+If you still publish `annolid.com` from `healthonrails/healthonrails.github.io`:
+
+1. Add secret `HEALTHONRAILS_GHIO_TOKEN` in this repo.
+2. Push updates under `book/**` (or run `book-pages.yml` manually).
+3. The workflow syncs output into the target repo root while preserving:
+   - `index.html`
+   - `assets/`
+   - `CNAME`
+
+It uses `scripts/sync_book_build_to_site_root.sh` to make the sync behavior explicit and reproducible.
+Landing updates use `scripts/sync_landing_page_to_site_root.sh`.
+
+## Source of truth
+
+- `book/` is the only source of truth for Jupyter Book content.
+- `website/` is the source of truth for the public landing page (`annolid.com` root).
+- Local mirror folders like `book/healthonrails.github.io/` are deprecated and ignored by git to prevent divergence.
+
+## Published URLs
+
+- Main docs: `https://<org-or-user>.github.io/<repo>/` (or custom domain root).
+- Annolid Book: `https://<org-or-user>.github.io/<repo>/book/`.
+
+If this repo is mapped to `annolid.com`, the book URL is `https://annolid.com/book/`.

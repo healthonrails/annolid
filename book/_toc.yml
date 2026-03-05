@@ -10,23 +10,24 @@ parts:
     - file: content/high_level_overview
     - file: content/how_to_install
     - file: content/video_preparation
+    - file: content/downsample_and_crop_videos
     - file: content/extract_frames
     - file: content/labelling_images
-    - file: content/labeling_instances_under_the_hood.md
-    - file: content/tracking_with_Cutie.md
-    - file: content/video_depth_anything.md
-    - file: content/model_training.md
-    - file: content/combining_models.md
-    - file: content/Annolid_on_Google_Colab.md
-    - file: content/Expert_mode_CLI_tools.md
+    - file: content/labeling_instances_under_the_hood
+    - file: content/tracking_with_Cutie
+    - file: content/video_depth_anything
+    - file: content/model_training
+    - file: content/combining_models
+    - file: content/Annolid_on_Google_Colab
+    - file: content/Expert_mode_CLI_tools
 
 
   - caption: Tutorials
     chapters:
-      - file: tutorials/Place_preference.md
-      - file: tutorials/Behavior_classification.md
-      - file: tutorials/Freezing_and motion_assays.md
-      - file: tutorials/DINOv3_keypoint_tracking.md
+      - file: tutorials/Place_preference
+      - file: tutorials/Behavior_classification
+      - file: tutorials/Freezing_and motion_assays
+      - file: tutorials/DINOv3_keypoint_tracking
 
     # - file: tutorials/Annolid_on_Detectron2_Tutorial_1_Introduction_to_Detectron2
     # - file: tutorials/Annolid_on_Detectron2_Tutorial_2_Train_a_Model
@@ -36,7 +37,11 @@ parts:
     # - file: tutorials/Annolid_post_processing_distances
   - caption: Post hoc analysis methods
     chapters:
-      - file: tutorials/Calculate_distances_between_instances.md
+      - file: tutorials/Calculate_distances_between_instances
+
+  - caption: Agent and CLI workflows
+    chapters:
+      - file: content/prediction_review_agent
 
   - caption: Annolid libraries
     chapters:

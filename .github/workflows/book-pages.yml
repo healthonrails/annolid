@@ -1,0 +1,111 @@
+name: Annolid Book Pages
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "book/**"
+      - "website/**"
+      - ".github/workflows/book-pages.yml"
+      - "scripts/sync_book_build_to_site_root.sh"
+      - "scripts/sync_landing_page_to_site_root.sh"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "book/**"
+      - "website/**"
+      - ".github/workflows/book-pages.yml"
+      - "scripts/sync_book_build_to_site_root.sh"
+      - "scripts/sync_landing_page_to_site_root.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-book:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Jupyter Book dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir -r book/requirements.txt
+
+      - name: Build Annolid Jupyter Book
+        run: |
+          jupyter-book build book
+      - name: Upload book build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: annolid-book-html
+          path: book/_build/html
+          if-no-files-found: error
+
+  deploy-gh-pages:
+    needs: build-book
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download book build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: annolid-book-html
+          path: book-html
+      - name: Publish book to gh-pages/book
+        run: |
+          git clone https://github.com/${{ github.repository }}.git --branch gh-pages --single-branch gh-pages
+          mkdir -p gh-pages/book
+          rsync -a --delete book-html/ gh-pages/book/
+          cd gh-pages
+          touch .nojekyll
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add book .nojekyll
+          git commit -m "Update Annolid book" || true
+          git push origin gh-pages
+
+  deploy-healthonrails:
+    needs: build-book
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HEALTHONRAILS_GHIO_TOKEN != ''
+    runs-on: ubuntu-latest
+    env:
+      SITE_REPO: healthonrails/healthonrails.github.io
+      SITE_BRANCH: gh-pages
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download book build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: annolid-book-html
+          path: book-html
+      - name: Clone site repository
+        run: |
+          git clone --depth 1 --branch "${SITE_BRANCH}" \
+            "https://x-access-token:${{ secrets.HEALTHONRAILS_GHIO_TOKEN }}@github.com/${SITE_REPO}.git" \
+            site-repo
+      - name: Sync book output into site root
+        run: |
+          ./scripts/sync_landing_page_to_site_root.sh website site-repo
+          ./scripts/sync_book_build_to_site_root.sh book-html site-repo
+      - name: Commit and push site update
+        run: |
+          cd site-repo
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git add -A
+          git commit -m "Update Annolid book from ${GITHUB_REPOSITORY}@${GITHUB_SHA}" || exit 0
+          git push origin "${SITE_BRANCH}"

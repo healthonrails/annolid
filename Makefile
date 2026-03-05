@@ -1,4 +1,4 @@
-.PHONY: release release-patch release-minor release-major
+.PHONY: release release-patch release-minor release-major book-build book-preview
 
 release:
 	@if [ -z "$(VERSION)" ]; then \
@@ -27,3 +27,9 @@ release-major:
 	if [ "$(PUSH)" = "1" ]; then args="$$args --push"; fi; \
 	if [ "$(SKIP_CHECKS)" = "1" ]; then args="$$args --skip-checks"; fi; \
 	./scripts/release.sh major $$args
+
+book-build:
+	@source .venv/bin/activate && jupyter-book build book
+
+book-preview: book-build
+	@open book/_build/html/index.html

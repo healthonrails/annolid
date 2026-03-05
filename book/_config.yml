@@ -10,6 +10,9 @@ logo: images/cpl_logo.png
 execute:
   execute_notebooks: 'off' #force
 
+# Build only pages listed in _toc.yml and ignore local artifacts.
+only_build_toc_files: true
+
 # Define the name of the latex output file for PDF builds
 latex:
   latex_documents:
@@ -30,3 +33,9 @@ repository:
 html:
   use_issues_button: true
   use_repository_button: true
+
+sphinx:
+  config:
+    exclude_patterns:
+      - "_build"
+      - "healthonrails.github.io"
