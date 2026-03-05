@@ -32,37 +32,3 @@ jobs:
         run: |
           test -f website/index.html
           test -d website/assets
-
-  deploy-healthonrails-website:
-    needs: validate-website
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HEALTHONRAILS_GHIO_TOKEN != ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    concurrency:
-      group: healthonrails-gh-pages
-      cancel-in-progress: false
-    env:
-      SITE_REPO: healthonrails/healthonrails.github.io
-      SITE_BRANCH: gh-pages
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      - name: Clone site repository
-        run: |
-          git clone --depth 1 --branch "${SITE_BRANCH}" \
-            "https://x-access-token:${{ secrets.HEALTHONRAILS_GHIO_TOKEN }}@github.com/${SITE_REPO}.git" \
-            site-repo
-      - name: Sync landing page into site root
-        run: |
-          ./scripts/sync_landing_page_to_site_root.sh website site-repo
-      - name: Commit and push website update
-        run: |
-          cd site-repo
-          git config user.email "action@github.com"
-          git config user.name "GitHub Action"
-          git add -A
-          git diff --cached --quiet && echo "No external site website changes." && exit 0
-          git commit -m "Update Annolid website from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
-          git push origin "${SITE_BRANCH}"

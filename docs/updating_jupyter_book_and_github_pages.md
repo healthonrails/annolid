@@ -10,13 +10,10 @@ This repository contains two documentation surfaces:
 They are deployed by separate workflows:
 
 - `.github/workflows/CI.yml`: Sphinx docs (`docs/`) to this repo `gh-pages` root.
-- `.github/workflows/book-pages.yml`: Jupyter Book (`book/`) to:
-  - this repo `gh-pages/book/`
-  - `healthonrails/healthonrails.github.io` (optional)
-- `.github/workflows/docs-portal-pages.yml`: MkDocs portal (`docs_portal/`) to:
-  - this repo `gh-pages/portal/`
-  - `healthonrails/healthonrails.github.io/portal/` (optional)
-- `.github/workflows/website-pages.yml`: landing page (`website/`) to `healthonrails/healthonrails.github.io`.
+- `.github/workflows/book-pages.yml`: Jupyter Book (`book/`) to this repo `gh-pages/book/`.
+- `.github/workflows/docs-portal-pages.yml`: MkDocs portal (`docs_portal/`) to this repo `gh-pages/portal/`.
+- `.github/workflows/website-pages.yml`: validates `website/` source files.
+- `.github/workflows/healthonrails-site-sync.yml`: single source of truth for syncing `annolid.com` content to `healthonrails/healthonrails.github.io`.
 - `.github/workflows/docs-quality.yml`: quality gate for portal docs (strict MkDocs build + markdown lint).
 
 ## Local workflow
@@ -72,29 +69,33 @@ Book deployment (`book-pages.yml`):
 1. Build `book/` HTML.
 2. Update `gh-pages/book/`.
 3. Ensure `.nojekyll` exists.
-4. Optionally sync to `healthonrails/healthonrails.github.io` when `HEALTHONRAILS_GHIO_TOKEN` is set.
 
 Website deployment (`website-pages.yml`):
 
 1. Trigger on any `website/**` change.
 2. Validate website files.
-3. Sync `website/index.html` + `website/assets/` to the target site root.
 
 Portal deployment (`docs-portal-pages.yml`):
 
 1. Build `docs_portal/` using MkDocs Material.
 2. Update `gh-pages/portal/`.
-3. Optionally sync built output to external site repo at `/portal/`.
+
+External site sync (`healthonrails-site-sync.yml`):
+
+1. Detect which surfaces changed (`website`, `book`, `portal`).
+2. Build only changed surfaces.
+3. Sync them into `healthonrails/healthonrails.github.io` in one atomic deploy commit.
+4. Ensure legacy redirect stubs are written on every deploy.
 
 No manual branch switching or rsync steps are required.
 
 ## Deploy to `healthonrails.github.io` (custom-domain flow)
 
-If you publish `annolid.com` from `healthonrails/healthonrails.github.io`:
+`annolid.com` is synced by `.github/workflows/healthonrails-site-sync.yml`:
 
 1. Add secret `HEALTHONRAILS_GHIO_TOKEN` in this repo.
-2. Push updates under `book/**` for book content or `website/**` for landing page.
-3. The workflows sync output into the target repo root while preserving:
+2. Push changes under `website/**`, `book/**`, or `docs_portal/**`.
+3. The workflow syncs output into the target repo root while preserving:
    - `index.html`
    - `assets/`
    - `CNAME`
