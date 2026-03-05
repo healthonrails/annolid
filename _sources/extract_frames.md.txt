@@ -1,5 +1,10 @@
 # Extract Frames
 
+> Canonical workflow docs now live in the Annolid Docs Portal:
+> <https://annolid.com/portal/workflows/>
+
+Frame extraction is optional. Use this page when you want an image-directory workflow instead of labeling directly from a loaded video.
+
 ## Extract desired number of frames from a video based on optical flow
 
 ```bash

@@ -1,5 +1,13 @@
 # Install Annolid
 
+> Canonical installation docs now live in the Annolid Docs Portal:
+> <https://annolid.com/portal/installation/>
+
+For the maintained, canonical installation guide (Conda, pip, uv, Docker, troubleshooting), see:
+
+- `docs/installation.md` in this repository
+- `docs/one_line_install_choices.md` for one-line installer flags
+
 ## Requirements
 - Ubuntu / macOS / Windows
 - Python >= 3.10
@@ -26,7 +34,7 @@ git clone --recurse-submodules https://github.com/healthonrails/annolid.git
 cd annolid
 
 # install the package (be sure to include the space and the period after the -e)
-pip install -e .
+pip install -e ".[gui]"
 ```
 Install [ffmpeg](https://ffmpeg.org/) (for example with `conda install -c conda-forge ffmpeg`) to ensure OpenCV can decode a wide range of video formats during playback.
 
@@ -128,7 +136,7 @@ After restart, you can cd to detectron2 folder and run the following command.
 `pip install -e .`.
 
 ## Install Detectron2 on Google Colab
-Instructions will be posted here presently.  (Colab uses CUDA 10.2 + torch 1.9.0).
+Use the maintained Annolid Colab tutorial for a compatible runtime.
 <a href="https://colab.research.google.com/github/healthonrails/annolid/blob/master/docs/tutorials/Annolid_on_Detectron2_Tutorial.ipynb" target="_blank"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
 
 ## Optional: Install older version of Pytorch for YOLACT
