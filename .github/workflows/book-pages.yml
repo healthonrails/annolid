@@ -5,18 +5,14 @@ on:
     branches: [ main ]
     paths:
       - "book/**"
-      - "website/**"
       - ".github/workflows/book-pages.yml"
       - "scripts/sync_book_build_to_site_root.sh"
-      - "scripts/sync_landing_page_to_site_root.sh"
   pull_request:
     branches: [ main ]
     paths:
       - "book/**"
-      - "website/**"
       - ".github/workflows/book-pages.yml"
       - "scripts/sync_book_build_to_site_root.sh"
-      - "scripts/sync_landing_page_to_site_root.sh"
   workflow_dispatch:
 
 permissions:
@@ -25,10 +21,12 @@ permissions:
 jobs:
   build-book:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 1
           submodules: recursive
 
       - name: Set up Python 3.11
@@ -55,6 +53,10 @@ jobs:
     needs: build-book
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: annolid-gh-pages-book
+      cancel-in-progress: true
     permissions:
       contents: write
 
@@ -66,7 +68,8 @@ jobs:
           path: book-html
       - name: Publish book to gh-pages/book
         run: |
-          git clone https://github.com/${{ github.repository }}.git --branch gh-pages --single-branch gh-pages
+          git clone --depth 1 --branch gh-pages \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gh-pages
           mkdir -p gh-pages/book
           rsync -a --delete book-html/ gh-pages/book/
           cd gh-pages
@@ -74,19 +77,26 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add book .nojekyll
-          git commit -m "Update Annolid book" || true
+          git diff --cached --quiet && echo "No gh-pages book changes." && exit 0
+          git commit -m "Update Annolid book"
           git push origin gh-pages
 
   deploy-healthonrails:
     needs: build-book
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HEALTHONRAILS_GHIO_TOKEN != ''
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: healthonrails-gh-pages
+      cancel-in-progress: false
     env:
       SITE_REPO: healthonrails/healthonrails.github.io
       SITE_BRANCH: gh-pages
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - name: Download book build artifact
         uses: actions/download-artifact@v4
         with:
@@ -99,7 +109,6 @@ jobs:
             site-repo
       - name: Sync book output into site root
         run: |
-          ./scripts/sync_landing_page_to_site_root.sh website site-repo
           ./scripts/sync_book_build_to_site_root.sh book-html site-repo
       - name: Commit and push site update
         run: |
@@ -107,5 +116,6 @@ jobs:
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
           git add -A
-          git commit -m "Update Annolid book from ${GITHUB_REPOSITORY}@${GITHUB_SHA}" || exit 0
+          git diff --cached --quiet && echo "No external site book changes." && exit 0
+          git commit -m "Update Annolid book from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
           git push origin "${SITE_BRANCH}"

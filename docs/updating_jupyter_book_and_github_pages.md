@@ -9,9 +9,10 @@ This repository contains two documentation surfaces:
 They are deployed by separate workflows:
 
 - `.github/workflows/CI.yml` deploys Sphinx docs.
-- `.github/workflows/book-pages.yml` builds Jupyter Book once and deploys to:
+- `.github/workflows/book-pages.yml` deploys Jupyter Book to:
   - this repo `gh-pages/book/`
-  - `healthonrails/healthonrails.github.io` (when token is configured)
+  - `healthonrails/healthonrails.github.io` (optional, when token is configured)
+- `.github/workflows/website-pages.yml` deploys landing page updates from `website/` to `healthonrails/healthonrails.github.io`.
 
 ## Local workflow
 
@@ -60,17 +61,22 @@ Book deployment (`book-pages.yml`):
 2. Update `gh-pages/book/`.
 3. Ensure `.nojekyll` exists.
 4. Optionally sync to `healthonrails/healthonrails.github.io` if `HEALTHONRAILS_GHIO_TOKEN` is present.
-5. Sync landing page from `website/` to the target site root `index.html` + `assets/`.
 
-No manual branch switching or rsync steps are required for either flow.
+Website deployment (`website-pages.yml`):
+
+1. Trigger on any `website/**` change.
+2. Validate website files.
+3. Sync `website/index.html` + `website/assets/` to the target site root.
+
+No manual branch switching or rsync steps are required.
 
 ## Deploy to `healthonrails.github.io` (custom-domain flow)
 
 If you still publish `annolid.com` from `healthonrails/healthonrails.github.io`:
 
 1. Add secret `HEALTHONRAILS_GHIO_TOKEN` in this repo.
-2. Push updates under `book/**` (or run `book-pages.yml` manually).
-3. The workflow syncs output into the target repo root while preserving:
+2. Push updates under `book/**` for book content or `website/**` for landing page.
+3. The workflows sync output into the target repo root while preserving:
    - `index.html`
    - `assets/`
    - `CNAME`
