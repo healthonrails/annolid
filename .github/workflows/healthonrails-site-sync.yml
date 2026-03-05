@@ -124,6 +124,7 @@ jobs:
         run: |
           source .venv/bin/activate
           uv pip install --no-cache -r docs/requirements_mkdocs.txt
+          export NO_MKDOCS_2_WARNING=1
           mkdocs build --strict --clean --config-file mkdocs.yml --site-dir "$DOCS_BUILD_DIR"
 
       - name: Prepare site repository checkout
