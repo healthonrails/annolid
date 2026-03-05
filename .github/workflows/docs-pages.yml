@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      DOCS_BUILD_DIR: ${{ runner.temp }}/annolid-docs-html
+      DOCS_BUILD_DIR: /tmp/annolid-docs-html
 
     steps:
       - uses: actions/checkout@v4

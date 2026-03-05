@@ -44,7 +44,7 @@ jobs:
       group: healthonrails-site-sync
       cancel-in-progress: true
     env:
-      DOCS_BUILD_DIR: ${{ runner.temp }}/annolid-docs-html
+      DOCS_BUILD_DIR: /tmp/annolid-docs-html
       SITE_REPO: healthonrails/healthonrails.github.io
       SITE_BRANCH: gh-pages
 
