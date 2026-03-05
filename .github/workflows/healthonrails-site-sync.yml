@@ -78,23 +78,16 @@ jobs:
             fi
           fi
 
-          # Always attempt external sync on main pushes/workflow_dispatch.
-          # Changed-surface flags still control which expensive builds run.
-          DEPLOY_NEEDED=true
-
           echo "website_changed=$WEBSITE_CHANGED" >> "$GITHUB_OUTPUT"
           echo "book_changed=$BOOK_CHANGED" >> "$GITHUB_OUTPUT"
           echo "docs_changed=$DOCS_CHANGED" >> "$GITHUB_OUTPUT"
-          echo "deploy_needed=$DEPLOY_NEEDED" >> "$GITHUB_OUTPUT"
 
           echo "website_changed=$WEBSITE_CHANGED"
           echo "book_changed=$BOOK_CHANGED"
           echo "docs_changed=$DOCS_CHANGED"
-          echo "deploy_needed=$DEPLOY_NEEDED"
 
       - name: Validate deploy token is configured
         id: token
-        if: steps.changes.outputs.deploy_needed == 'true'
         run: |
           if [[ -n "${{ secrets.HEALTHONRAILS_GHIO_TOKEN }}" ]]; then
             echo "has_token=true" >> "$GITHUB_OUTPUT"
@@ -103,40 +96,35 @@ jobs:
             echo "::error::Missing HEALTHONRAILS_GHIO_TOKEN; cannot deploy to ${SITE_REPO}."
           fi
 
-      - name: Skip when no deployable surface changed
-        if: steps.changes.outputs.deploy_needed != 'true'
-        run: |
-          echo "No book/docs deployable changes detected. Exiting without external sync."
-
       - name: Fail when deploy token is missing
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token != 'true'
+        if: steps.token.outputs.has_token != 'true'
         run: |
-          echo "Deployable changes detected but HEALTHONRAILS_GHIO_TOKEN is not configured."
-          echo "Configure the secret in the Annolid repository before merging docs/book deployment changes."
+          echo "Main-branch sync requires HEALTHONRAILS_GHIO_TOKEN."
+          echo "Configure the secret in the Annolid repository so pushes to main can sync ${SITE_REPO}."
           exit 1
 
       - name: Set up Python 3.11
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
+        if: steps.token.outputs.has_token == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Set up uv and virtual environment
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
+        if: steps.token.outputs.has_token == 'true'
         run: |
           python -m pip install --upgrade pip
           python -m pip install --no-cache-dir uv
           uv venv .venv
 
       - name: Build Jupyter Book
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && steps.changes.outputs.book_changed == 'true'
+        if: steps.token.outputs.has_token == 'true' && steps.changes.outputs.book_changed == 'true'
         run: |
           source .venv/bin/activate
           uv pip install --no-cache -r book/requirements.txt
           jupyter-book build book
 
       - name: Build docs site
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
+        if: steps.token.outputs.has_token == 'true'
         run: |
           source .venv/bin/activate
           uv pip install --no-cache -r docs/requirements_mkdocs.txt
@@ -144,7 +132,7 @@ jobs:
           mkdocs build --strict --clean --config-file mkdocs.yml --site-dir "$DOCS_BUILD_DIR"
 
       - name: Prepare site repository checkout
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
+        if: steps.token.outputs.has_token == 'true'
         run: |
           SITE_URL="https://x-access-token:${{ secrets.HEALTHONRAILS_GHIO_TOKEN }}@github.com/${SITE_REPO}.git"
 
@@ -162,7 +150,7 @@ jobs:
 
       - name: Detect missing /book surface in site repo
         id: book_surface
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
+        if: steps.token.outputs.has_token == 'true'
         run: |
           if [[ -f site-repo/book/index.html ]]; then
             echo "missing_book=false" >> "$GITHUB_OUTPUT"
@@ -172,39 +160,39 @@ jobs:
           fi
 
       - name: Build Jupyter Book (bootstrap missing /book)
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && steps.changes.outputs.book_changed != 'true' && steps.book_surface.outputs.missing_book == 'true'
+        if: steps.token.outputs.has_token == 'true' && steps.changes.outputs.book_changed != 'true' && steps.book_surface.outputs.missing_book == 'true'
         run: |
           source .venv/bin/activate
           uv pip install --no-cache -r book/requirements.txt
           jupyter-book build book
 
       - name: Sync book content
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && (steps.changes.outputs.book_changed == 'true' || steps.book_surface.outputs.missing_book == 'true')
+        if: steps.token.outputs.has_token == 'true' && (steps.changes.outputs.book_changed == 'true' || steps.book_surface.outputs.missing_book == 'true')
         run: |
           ./scripts/sync_book_build_to_site_root.sh book/_build/html site-repo
 
       - name: Sync docs content to site root
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
+        if: steps.token.outputs.has_token == 'true'
         run: |
           ./scripts/sync_docs_to_site_root.sh "$DOCS_BUILD_DIR" site-repo /
 
       - name: Sync docs compatibility path
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
+        if: steps.token.outputs.has_token == 'true'
         run: |
           ./scripts/sync_docs_to_site_root.sh "$DOCS_BUILD_DIR" site-repo portal
 
       - name: Sync landing page to site root
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
+        if: steps.token.outputs.has_token == 'true'
         run: |
           ./scripts/sync_landing_page_to_site_root.sh website site-repo
 
       - name: Ensure legacy redirect stubs
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
+        if: steps.token.outputs.has_token == 'true'
         run: |
           ./scripts/write_legacy_redirects.sh site-repo
 
       - name: Verify landing page remains site default
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
+        if: steps.token.outputs.has_token == 'true'
         run: |
           test -f site-repo/index.html
           grep -Fq "Annolid | Research-Grade Animal Behavior AI" site-repo/index.html
@@ -212,7 +200,7 @@ jobs:
           test -f site-repo/portal/index.html
 
       - name: Commit and push external site update
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
+        if: steps.token.outputs.has_token == 'true'
         run: |
           cd site-repo
           test -d .git
