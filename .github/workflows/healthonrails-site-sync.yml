@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Determine changed surfaces
         id: changes
@@ -35,6 +35,23 @@ jobs:
           WEBSITE_CHANGED=false
           BOOK_CHANGED=false
           DOCS_CHANGED=false
+          CHANGED_FILES=""
+
+          collect_changed_files() {
+            local before_sha="$1"
+            local after_sha="$2"
+            local files=""
+
+            files=$(git diff --name-only "$before_sha" "$after_sha" || true)
+            if [[ -z "$files" ]]; then
+              files=$(git diff-tree --no-commit-id --name-only -r -m "$after_sha" || true)
+            fi
+            if [[ -z "$files" ]]; then
+              files=$(git show --name-only --pretty="" "$after_sha" || true)
+            fi
+
+            echo "$files" | sed '/^$/d' | sort -u
+          }
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             WEBSITE_CHANGED=true
@@ -46,7 +63,7 @@ jobs:
             if [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
               BEFORE="HEAD~1"
             fi
-            CHANGED_FILES=$(git diff --name-only "$BEFORE" "$AFTER" || true)
+            CHANGED_FILES=$(collect_changed_files "$BEFORE" "$AFTER")
             echo "Changed files:"
             echo "$CHANGED_FILES"
 

@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Debug changed files
         run: |
@@ -45,29 +45,40 @@ jobs:
           RELEVANT_CHANGED=false
           CHANGED_FILES=""
 
+          collect_changed_files() {
+            local before_sha="$1"
+            local after_sha="$2"
+            local files=""
+
+            files=$(git diff --name-only "$before_sha" "$after_sha" || true)
+            if [[ -z "$files" ]]; then
+              files=$(git diff-tree --no-commit-id --name-only -r -m "$after_sha" || true)
+            fi
+            if [[ -z "$files" ]]; then
+              files=$(git show --name-only --pretty="" "$after_sha" || true)
+            fi
+
+            echo "$files" | sed '/^$/d' | sort -u
+          }
+
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             RELEVANT_CHANGED=true
           elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            CHANGED_FILES=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" || true)
+            CHANGED_FILES=$(collect_changed_files "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
           else
             BEFORE="${{ github.event.before }}"
             AFTER="${{ github.sha }}"
             if [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
               BEFORE="HEAD~1"
             fi
-            CHANGED_FILES=$(git diff --name-only "$BEFORE" "$AFTER" || true)
-          fi
-
-          # Fallback for shallow-history or unusual merge situations where diff may be empty.
-          if [[ "${RELEVANT_CHANGED}" != "true" && -z "${CHANGED_FILES}" ]]; then
-            CHANGED_FILES=$(git show --name-only --pretty="" "${{ github.sha }}" || true)
+            CHANGED_FILES=$(collect_changed_files "$BEFORE" "$AFTER")
           fi
 
           echo "Changed files considered by docs-quality:"
           echo "${CHANGED_FILES}"
 
           if [[ "${RELEVANT_CHANGED}" != "true" ]]; then
-            if echo "${CHANGED_FILES}" | grep -Eq '^(website/|docs/|mkdocs.yml|docs/requirements_mkdocs\.txt|\.markdownlint-cli2\.jsonc|\.github/workflows/docs-quality\.yml|\.github/workflows/docs-pages\.yml|\.github/workflows/healthonrails-site-sync\.yml)'; then
+            if echo "${CHANGED_FILES}" | grep -Eq '^(website/|docs/|mkdocs.yml|docs/requirements_mkdocs\.txt|scripts/sync_landing_page_to_site_root\.sh|scripts/sync_docs_to_site_root\.sh|scripts/write_legacy_redirects\.sh|\.markdownlint-cli2\.jsonc|\.github/workflows/docs-quality\.yml|\.github/workflows/docs-pages\.yml|\.github/workflows/healthonrails-site-sync\.yml)'; then
               RELEVANT_CHANGED=true
             fi
           fi
