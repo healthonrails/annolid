@@ -3,26 +3,8 @@ name: Docs Quality
 on:
   push:
     branches: [ main ]
-    paths:
-      - "website/**"
-      - "docs/**"
-      - "mkdocs.yml"
-      - "docs/requirements_mkdocs.txt"
-      - ".markdownlint-cli2.jsonc"
-      - ".github/workflows/docs-quality.yml"
-      - ".github/workflows/docs-pages.yml"
-      - ".github/workflows/healthonrails-site-sync.yml"
   pull_request:
     branches: [ main ]
-    paths:
-      - "website/**"
-      - "docs/**"
-      - "mkdocs.yml"
-      - "docs/requirements_mkdocs.txt"
-      - ".markdownlint-cli2.jsonc"
-      - ".github/workflows/docs-quality.yml"
-      - ".github/workflows/docs-pages.yml"
-      - ".github/workflows/healthonrails-site-sync.yml"
   workflow_dispatch:
 
 permissions:
@@ -56,7 +38,41 @@ jobs:
             git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | sed '/^$/d' || true
           fi
 
+      - name: Determine docs and website changes
+        id: changes
+        run: |
+          set -euo pipefail
+          RELEVANT_CHANGED=false
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            RELEVANT_CHANGED=true
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            CHANGED_FILES=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" || true)
+          else
+            BEFORE="${{ github.event.before }}"
+            AFTER="${{ github.sha }}"
+            if [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+              BEFORE="HEAD~1"
+            fi
+            CHANGED_FILES=$(git diff --name-only "$BEFORE" "$AFTER" || true)
+          fi
+
+          if [[ "${RELEVANT_CHANGED}" != "true" ]]; then
+            if echo "${CHANGED_FILES}" | grep -Eq '^(website/|docs/|mkdocs.yml|docs/requirements_mkdocs\.txt|\.markdownlint-cli2\.jsonc|\.github/workflows/docs-quality\.yml|\.github/workflows/docs-pages\.yml|\.github/workflows/healthonrails-site-sync\.yml)'; then
+              RELEVANT_CHANGED=true
+            fi
+          fi
+
+          echo "relevant_changed=${RELEVANT_CHANGED}" >> "$GITHUB_OUTPUT"
+          echo "relevant_changed=${RELEVANT_CHANGED}"
+
+      - name: Skip when no website/docs surface changed
+        if: steps.changes.outputs.relevant_changed != 'true'
+        run: |
+          echo "No website/docs surface changed. Exiting docs-quality early."
+
       - name: Validate combined site source
+        if: steps.changes.outputs.relevant_changed == 'true'
         run: |
           test -f website/index.html
           test -f docs/index.md
@@ -64,28 +80,33 @@ jobs:
           test -f mkdocs.yml
 
       - name: Set up Python 3.11
+        if: steps.changes.outputs.relevant_changed == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Set up uv and virtual environment
+        if: steps.changes.outputs.relevant_changed == 'true'
         run: |
           python -m pip install --upgrade pip
           python -m pip install --no-cache-dir uv
           uv venv .venv
 
       - name: Install MkDocs dependencies
+        if: steps.changes.outputs.relevant_changed == 'true'
         run: |
           source .venv/bin/activate
           uv pip install --no-cache -r docs/requirements_mkdocs.txt
 
       - name: Build docs in strict mode
+        if: steps.changes.outputs.relevant_changed == 'true'
         run: |
           source .venv/bin/activate
           DOCS_BUILD_DIR="$(mktemp -d /tmp/annolid-docs-html.XXXXXX)"
           mkdocs build --strict --clean --config-file mkdocs.yml --site-dir "$DOCS_BUILD_DIR"
 
       - name: Lint Markdown
+        if: steps.changes.outputs.relevant_changed == 'true'
         uses: DavidAnson/markdownlint-cli2-action@v20
         with:
           config: .markdownlint-cli2.jsonc
