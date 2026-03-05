@@ -1,0 +1,686 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Getting Started: Opening the Tool &#8212; Annolid Start Here</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/sphinx-book-theme.css?v=eba8b062" />
+    <link rel="stylesheet" type="text/css" href="../_static/togglebutton.css?v=9c3e77be" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/mystnb.11b39860a7a0cbfd473a3ad8a317855267ff0bd372690045ca344a6b62be495e.css" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-thebe.css?v=4fa983c6" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../_static/documentation_options.js?v=9eb32ce0"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/scripts/sphinx-book-theme.js?v=887ef09a"></script>
+    <script>let toggleHintShow = 'Click to show';</script>
+    <script>let toggleHintHide = 'Click to hide';</script>
+    <script>let toggleOpenOnPrint = 'true';</script>
+    <script src="../_static/togglebutton.js?v=1ae7504c"></script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script>const THEBE_JS_URL = "https://unpkg.com/thebe@0.8.2/lib/index.js"; const thebe_selector = ".thebe,.cell"; const thebe_selector_input = "pre"; const thebe_selector_output = ".output, .cell_output"</script>
+    <script async="async" src="../_static/sphinx-thebe.js?v=c100c467"></script>
+    <script>var togglebuttonSelector = '.toggle, .admonition.dropdown';</script>
+    <script>const THEBE_JS_URL = "https://unpkg.com/thebe@0.8.2/lib/index.js"; const thebe_selector = ".thebe,.cell"; const thebe_selector_input = "pre"; const thebe_selector_output = ".output, .cell_output"</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'content/downsample_and_crop_videos';</script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Extract frames" href="extract_frames.html" />
+    <link rel="prev" title="Video preparation" href="video_preparation.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search this book..."
+         aria-label="Search this book..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <div class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="README.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/cpl_logo.png" class="logo__image only-light" alt="Annolid Start Here - Home"/>
+    <script>document.write(`<img src="../_static/cpl_logo.png" class="logo__image only-dark" alt="Annolid Start Here - Home"/>`);</script>
+  
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+ <script>
+ document.write(`
+   <button class="btn search-button-field search-button__button" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass"></i>
+    <span class="search-button__default-text">Search</span>
+    <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+   </button>
+ `);
+ </script></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        
+        <ul class="nav bd-sidenav bd-sidenav__home-link">
+            <li class="toctree-l1">
+                <a class="reference internal" href="README.html">
+                    Annolid: Start Here
+                </a>
+            </li>
+        </ul>
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="introduction.html">Introduction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="high_level_overview.html">Technical overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="how_to_install.html">Installation Options</a></li>
+<li class="toctree-l1"><a class="reference internal" href="video_preparation.html">Video preparation</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Getting Started: Opening the Tool</a></li>
+
+
+<li class="toctree-l1"><a class="reference internal" href="extract_frames.html">Extract frames</a></li>
+<li class="toctree-l1"><a class="reference internal" href="labelling_images.html">Labeling Instances</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="labeling_instances_under_the_hood.html">Labeling instances:  under the hood</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tracking_with_Cutie.html">Tracking with Cutie</a></li>
+<li class="toctree-l1"><a class="reference internal" href="video_depth_anything.html">Video Depth Anything (Depth Estimation)</a></li>
+<li class="toctree-l1"><a class="reference internal" href="model_training.html">Model training</a></li>
+<li class="toctree-l1"><a class="reference internal" href="combining_models.html">Combining models</a></li>
+<li class="toctree-l1"><a class="reference internal" href="Annolid_on_Google_Colab.html">Annolid on Google Colab</a></li>
+<li class="toctree-l1"><a class="reference internal" href="Expert_mode_CLI_tools.html">Expert mode: CLI tools</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Tutorials</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/Place_preference.html">Place preference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/Behavior_classification.html">Behavior classification</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/Freezing_and%20motion_assays.html">Freezing and motion assays</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/DINOv3_keypoint_tracking.html">DINOv3 Keypoint Tracking</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Post hoc analysis methods</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/Calculate_distances_between_instances.html">Calculate distances between instances</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Annolid libraries</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="annolid_zoo.html">Annolid ModelZoo</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Annolid on Youtube</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://www.youtube.com/@annolid/videos">https://www.youtube.com/@annolid/videos</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Community</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="get_in_touch.html">Get in touch</a></li>
+<li class="toctree-l1"><a class="reference internal" href="cite_annolid.html">How to cite Annolid</a></li>
+<li class="toctree-l1"><a class="reference internal" href="work_based_on_annolid.html">Annolid bibliography</a></li>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">New contributor guide</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+
+
+
+<div class="dropdown dropdown-source-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Source repositories">
+    <i class="fab fa-github"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="https://github.com/healthonrails/annolid" target="_blank"
+   class="btn btn-sm btn-source-repository-button dropdown-item"
+   title="Source repository"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+<span class="btn__text-container">Repository</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/healthonrails/annolid/issues/new?title=Issue%20on%20page%20%2Fcontent/downsample_and_crop_videos.html&body=Your%20issue%20content%20here." target="_blank"
+   class="btn btn-sm btn-source-issues-button dropdown-item"
+   title="Open an issue"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-lightbulb"></i>
+  </span>
+<span class="btn__text-container">Open issue</span>
+</a>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="../_sources/content/downsample_and_crop_videos.md" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.md</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script>
+
+
+<script>
+document.write(`
+  <button class="btn btn-sm pst-navbar-icon search-button search-button__button" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+  </button>
+`);
+</script>
+<button class="sidebar-toggle secondary-toggle btn btn-sm" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>Getting Started: Opening the Tool</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="visible nav section-nav flex-column">
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#">Getting Started: Opening the Tool</a></li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#step-by-step-guide">Step-by-Step Guide</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-1-select-your-input-and-output-folders">Step 1: Select Your Input and Output Folders</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-2-configure-resizing-and-frame-rate-fps">Step 2: Configure Resizing and Frame Rate (FPS)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-3-crop-your-videos-the-interactive-method">Step 3: Crop Your Videos (The Interactive Method)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-4-choose-final-options-and-run">Step 4: Choose Final Options and Run</a></li>
+</ul>
+</li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#understanding-your-results">Understanding Your Results</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#example-markdown-report-my-video-md">Example Markdown Report (<code class="docutils literal notranslate"><span class="pre">my_video.md</span></code>)</a></li>
+</ul>
+</li>
+</ul>
+
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <p>This guide will walk you through using the <strong>Video Rescaling Tool</strong> in Annolid. This powerful feature allows you to prepare your video files for analysis by resizing (downsampling), changing the frame rate, denoising, and cropping them in batches.</p>
+<p>The tool ensures that all your processing steps are logged, making your workflow reproducible and easy to track.</p>
+<section id="getting-started-opening-the-tool">
+<h1>Getting Started: Opening the Tool<a class="headerlink" href="#getting-started-opening-the-tool" title="Link to this heading">#</a></h1>
+<p>First, you need to open the Video Rescaling dialog from the Annolid main window.</p>
+<ol class="arabic simple">
+<li><p>Launch the Annolid application.</p></li>
+<li><p>From the top menu bar, navigate to <strong><code class="docutils literal notranslate"><span class="pre">File</span></code></strong> &gt; <strong><code class="docutils literal notranslate"><span class="pre">Downsample</span> <span class="pre">Videos</span></code></strong>.</p></li>
+</ol>
+<p>This will open the <strong>Video Rescaling</strong> dialog window, where you will configure all the settings.</p>
+<hr class="docutils" />
+</section>
+<section id="step-by-step-guide">
+<h1>Step-by-Step Guide<a class="headerlink" href="#step-by-step-guide" title="Link to this heading">#</a></h1>
+<p>Follow these steps to configure and run the video processing task.</p>
+<section id="step-1-select-your-input-and-output-folders">
+<h2>Step 1: Select Your Input and Output Folders<a class="headerlink" href="#step-1-select-your-input-and-output-folders" title="Link to this heading">#</a></h2>
+<p>This is the most important first step. You need to tell the tool where to find your original videos and where to save the new, processed ones.</p>
+<ul class="simple">
+<li><p><strong>Input Folder:</strong> Click the <code class="docutils literal notranslate"><span class="pre">Select</span> <span class="pre">Folder</span></code> button and choose the directory containing the videos you want to process.</p></li>
+<li><p><strong>Output Folder:</strong> Click the <code class="docutils literal notranslate"><span class="pre">Select</span> <span class="pre">Folder</span></code> button and choose the directory where you want the new videos to be saved.</p></li>
+</ul>
+<blockquote>
+<div><p><strong>💡 Tip:</strong> It is highly recommended to use a different folder for your output to avoid overwriting your original files.</p>
+</div></blockquote>
+</section>
+<section id="step-2-configure-resizing-and-frame-rate-fps">
+<h2>Step 2: Configure Resizing and Frame Rate (FPS)<a class="headerlink" href="#step-2-configure-resizing-and-frame-rate-fps" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>Scale Factor:</strong> This determines the new size of your videos.</p>
+<ul>
+<li><p>Use the <strong>slider</strong> for a quick estimate.</p></li>
+<li><p>For precision, type a decimal value into the <strong>text box</strong>. For example, <code class="docutils literal notranslate"><span class="pre">0.5</span></code> will make the videos half of their original width and height, while <code class="docutils literal notranslate"><span class="pre">0.25</span></code> will make them a quarter of the size.</p></li>
+</ul>
+</li>
+<li><p><strong>Frames Per Second (FPS):</strong></p>
+<ul>
+<li><p>To force all videos to a new, consistent frame rate (e.g., <code class="docutils literal notranslate"><span class="pre">30</span></code> FPS), enter the number and check the box for <strong><code class="docutils literal notranslate"><span class="pre">Use</span> <span class="pre">specified</span> <span class="pre">FPS</span> <span class="pre">for</span> <span class="pre">all</span> <span class="pre">videos</span></code></strong>.</p></li>
+<li><p>If you leave this box unchecked, each video will be processed while retaining its own original frame rate.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="step-3-crop-your-videos-the-interactive-method">
+<h2>Step 3: Crop Your Videos (The Interactive Method)<a class="headerlink" href="#step-3-crop-your-videos-the-interactive-method" title="Link to this heading">#</a></h2>
+<p>The interactive crop feature is the easiest way to select a specific region of interest to keep.</p>
+<ol class="arabic simple">
+<li><p><strong>Launch the Cropper:</strong> Click the <strong><code class="docutils literal notranslate"><span class="pre">Preview</span> <span class="pre">&amp;</span> <span class="pre">Crop</span> <span class="pre">First</span> <span class="pre">Frame</span></code></strong> button. (You must have an input folder selected for this to work).</p></li>
+<li><p><strong>Draw Your Region:</strong> A new window will pop up, showing the first frame of your first video. <strong>Click and drag your mouse</strong> over the image to draw a rectangle. You’ll see a red dashed box representing your crop area.</p></li>
+<li><p><strong>Confirm Selection:</strong> When you are happy with the region, click the <code class="docutils literal notranslate"><span class="pre">OK</span></code> button in the preview window. The <code class="docutils literal notranslate"><span class="pre">x</span></code>, <code class="docutils literal notranslate"><span class="pre">y</span></code>, <code class="docutils literal notranslate"><span class="pre">width</span></code>, and <code class="docutils literal notranslate"><span class="pre">height</span></code> coordinates will now be filled in for you automatically.</p></li>
+<li><p><strong>Activate the Crop:</strong> <strong>This is a crucial step!</strong> You must check the <strong><code class="docutils literal notranslate"><span class="pre">Enable</span> <span class="pre">Crop</span> <span class="pre">Region</span></code></strong> checkbox. If you do not check this box, the cropping will be ignored, even if the coordinates are filled in.</p></li>
+</ol>
+</section>
+<section id="step-4-choose-final-options-and-run">
+<h2>Step 4: Choose Final Options and Run<a class="headerlink" href="#step-4-choose-final-options-and-run" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><strong>Apply Denoise:</strong> Check this box if your videos have visual noise that you’d like to reduce.</p></li>
+<li><p><strong>Select Run Mode:</strong></p>
+<ul>
+<li><p>✅ <strong><code class="docutils literal notranslate"><span class="pre">Rescale</span> <span class="pre">Video</span></code></strong>: Choose this for the main task. It will apply all your settings (scaling, cropping, etc.) and create new video files in the output folder.</p></li>
+<li><p>✅ <strong><code class="docutils literal notranslate"><span class="pre">Collect</span> <span class="pre">Metadata</span> <span class="pre">Only</span></code></strong>: Use this if you only want to generate a report (<code class="docutils literal notranslate"><span class="pre">metadata.csv</span></code>) of the properties of your <em>original</em> videos without changing them.</p></li>
+</ul>
+</li>
+</ul>
+<p>Finally, click the <strong><code class="docutils literal notranslate"><span class="pre">Run</span> <span class="pre">Rescaling</span></code></strong> button. The button will change to “Processing…” and you will see a confirmation message when the task is complete.</p>
+<hr class="docutils" />
+</section>
+</section>
+<section id="understanding-your-results">
+<h1>Understanding Your Results<a class="headerlink" href="#understanding-your-results" title="Link to this heading">#</a></h1>
+<p>After the process finishes, navigate to your chosen <strong>Output Folder</strong>. You will find:</p>
+<ol class="arabic simple">
+<li><p><strong>Processed Video Files:</strong> Your new, smaller, and/or cropped videos.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">metadata.csv</span></code>:</strong> A single spreadsheet file that lists the technical details (like new dimensions, duration, FPS) of all the videos you just created. This is great for data management.</p></li>
+<li><p><strong>Markdown Reports (<code class="docutils literal notranslate"><span class="pre">.md</span></code> files):</strong> For <em>every</em> video processed, there will be a matching <code class="docutils literal notranslate"><span class="pre">.md</span></code> report file. This file is your permanent record and contains:</p>
+<ul class="simple">
+<li><p>The exact parameters you used (scale factor, crop coordinates).</p></li>
+<li><p>The full <code class="docutils literal notranslate"><span class="pre">FFmpeg</span></code> command that was executed.</p></li>
+<li><p>The final metadata of the new video.</p></li>
+</ul>
+</li>
+</ol>
+<section id="example-markdown-report-my-video-md">
+<h2>Example Markdown Report (<code class="docutils literal notranslate"><span class="pre">my_video.md</span></code>)<a class="headerlink" href="#example-markdown-report-my-video-md" title="Link to this heading">#</a></h2>
+<div class="highlight-markdown notranslate"><div class="highlight"><pre><span></span><span class="gh"># Metadata and Processing Info for my_video.mp4</span>
+
+<span class="gs">**Processing Parameters:**</span>
+<span class="k">-</span><span class="w"> </span>Scale Factor: 0.5
+<span class="k">-</span><span class="w"> </span>FPS: 30
+<span class="k">-</span><span class="w"> </span>Apply Denoise: True
+<span class="k">-</span><span class="w"> </span>Crop Region: x=120, y=200, width=640, height=480
+
+<span class="gs">**FFmpeg Command:**</span>
+</pre></div>
+</div>
+<p>ffmpeg -i /path/to/input/my_video.mp4 -vf “crop=640:480:120:200,scale=iw0.5:ih0.5,hqdn3d” -r 30 -c:v libx264 -y /path/to/output/my_video.mp4</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
+<span class="o">**</span><span class="n">Video</span> <span class="n">Metadata</span><span class="p">:</span><span class="o">**</span>
+<span class="o">-</span> <span class="o">**</span><span class="n">filename</span><span class="o">**</span><span class="p">:</span> <span class="n">my_video</span><span class="o">.</span><span class="n">mp4</span>
+<span class="o">-</span> <span class="o">**</span><span class="n">width</span><span class="o">**</span><span class="p">:</span> <span class="mi">320</span>
+<span class="o">-</span> <span class="o">**</span><span class="n">height</span><span class="o">**</span><span class="p">:</span> <span class="mi">240</span>
+<span class="o">-</span> <span class="o">**</span><span class="n">duration</span><span class="o">**</span><span class="p">:</span> <span class="mf">60.5</span>
+<span class="o">-</span> <span class="o">**</span><span class="n">fps</span><span class="o">**</span><span class="p">:</span> <span class="mf">30.0</span>
+<span class="o">-</span> <span class="o">**</span><span class="n">codec_name</span><span class="o">**</span><span class="p">:</span> <span class="n">h264</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+    <script type="text/x-thebe-config">
+    {
+        requestKernel: true,
+        binderOptions: {
+            repo: "binder-examples/jupyter-stacks-datascience",
+            ref: "master",
+        },
+        codeMirrorConfig: {
+            theme: "abcdef",
+            mode: "python"
+        },
+        kernelOptions: {
+            name: "python3",
+            path: "./content"
+        },
+        predefinedOutput: true
+    }
+    </script>
+    <script>kernelName = 'python3'</script>
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="video_preparation.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Video preparation</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="extract_frames.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Extract frames</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+  <div class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav class="bd-toc-nav page-toc">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#">Getting Started: Opening the Tool</a></li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#step-by-step-guide">Step-by-Step Guide</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-1-select-your-input-and-output-folders">Step 1: Select Your Input and Output Folders</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-2-configure-resizing-and-frame-rate-fps">Step 2: Configure Resizing and Frame Rate (FPS)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-3-crop-your-videos-the-interactive-method">Step 3: Crop Your Videos (The Interactive Method)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-4-choose-final-options-and-run">Step 4: Choose Final Options and Run</a></li>
+</ul>
+</li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#understanding-your-results">Understanding Your Results</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#example-markdown-report-my-video-md">Example Markdown Report (<code class="docutils literal notranslate"><span class="pre">my_video.md</span></code>)</a></li>
+</ul>
+</li>
+</ul>
+
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By Chen Yang, Jeremy Forest, Matthew Einhorn, Thomas Cleland
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2023.
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>
