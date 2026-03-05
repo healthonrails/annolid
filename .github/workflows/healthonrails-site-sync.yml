@@ -136,7 +136,7 @@ jobs:
           jupyter-book build book
 
       - name: Build docs site
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && steps.changes.outputs.docs_changed == 'true'
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
         run: |
           source .venv/bin/activate
           uv pip install --no-cache -r docs/requirements_mkdocs.txt
@@ -184,12 +184,12 @@ jobs:
           ./scripts/sync_book_build_to_site_root.sh book/_build/html site-repo
 
       - name: Sync docs content to site root
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && steps.changes.outputs.docs_changed == 'true'
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
         run: |
           ./scripts/sync_docs_to_site_root.sh "$DOCS_BUILD_DIR" site-repo /
 
       - name: Sync docs compatibility path
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && steps.changes.outputs.docs_changed == 'true'
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
         run: |
           ./scripts/sync_docs_to_site_root.sh "$DOCS_BUILD_DIR" site-repo portal
 
