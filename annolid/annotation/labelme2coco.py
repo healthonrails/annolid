@@ -266,10 +266,10 @@ def convert(
     Args:
         radius_ratio: Fraction of the shorter image dimension used as the
             circle radius when converting a ``point`` shape to a polygon mask
-            (segmentation mode only).  Defaults to ``0.01`` (1 %%), which
-            produces a small ~5 px dot on a 512-pixel image.  The old default
-            of 0.2 created enormous 100-pixel blobs; reduce this value if you
-            still see oversized circular masks.
+            (segmentation mode), and as the padding for fallback bounding boxes
+            in keypoints mode when no instance polygon is present. Defaults
+            to ``0.01`` (1 %), which produces a small ~5 px dot or ~10x10 px box
+            on a 512-pixel image.
         output_mode: ``"segmentation"`` (default) or ``"keypoints"``.
 
     Yields:
@@ -582,9 +582,10 @@ def convert(
                 elif xy_visible:
                     xs = [xy[0] for xy in xy_visible]
                     ys = [xy[1] for xy in xy_visible]
-                    # Scale padding with image size so the fallback bbox is not
-                    # unrealistically tiny (e.g. just 4×4 px with pad=2).
-                    pad = max(10.0, float(min(w, h)) * 0.05)
+                    # Use radius_ratio to determine the fallback padding.
+                    # Defaults to 1% of image size, producing a small but
+                    # non-tiny box (e.g. 10x10px area for a 500px image).
+                    pad = max(5.0, float(min(w, h)) * float(radius_ratio))
                     x0 = max(0.0, min(xs) - pad)
                     y0 = max(0.0, min(ys) - pad)
                     x1 = min(float(w), max(xs) + pad)

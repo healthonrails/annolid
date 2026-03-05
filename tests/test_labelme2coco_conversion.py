@@ -227,8 +227,9 @@ def test_keypoints_only_fallback_area_reasonable(tmp_path: Path) -> None:
         assert len(anns) == 1, "Expected one annotation per image"
         ann = anns[0]
 
-        # Area must be much larger than the old 4x4=16 px^2 fallback.
-        assert ann["area"] > 100, (
+        # Area must be reasonable (e.g. at least 10x10=100 px^2 for a single point).
+        # For this test with multiple points, it should be even larger.
+        assert ann["area"] >= 100, (
             f"Fallback area is unrealistically small: {ann['area']}"
         )
 

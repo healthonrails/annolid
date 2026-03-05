@@ -424,6 +424,7 @@ class TrainingWorkflowMixin:
                 f"--dataset-dir={dataset_dir}",
                 f"--max-iterations={max_iterations}",
                 f"--batch-size={batch_size}",
+                "--num-workers=0",
             ]
             if model_path:
                 cmd.append(f"--weights={model_path}")
