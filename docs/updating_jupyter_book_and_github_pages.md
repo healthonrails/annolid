@@ -60,9 +60,10 @@ open book/_build/html/index.html
 
 Sphinx deployment (`CI.yml`):
 
-1. Build `docs/` HTML.
-2. Update `gh-pages` branch root.
-3. Ensure `.nojekyll` exists.
+1. Detect whether docs-related paths changed.
+2. Build `docs/` HTML only when docs changed.
+3. Update `gh-pages` branch root.
+4. Ensure `.nojekyll` exists.
 
 Book deployment (`book-pages.yml`):
 
@@ -87,6 +88,7 @@ External site sync (`healthonrails-site-sync.yml`):
 2. Build only changed surfaces.
 3. Sync portal build into site root (`/`) and compatibility path (`/portal/`) in one atomic deploy commit.
 4. Ensure legacy redirect stubs are written on every deploy.
+5. Skip external sync entirely when no deployable surface changed.
 
 No manual branch switching or rsync steps are required.
 

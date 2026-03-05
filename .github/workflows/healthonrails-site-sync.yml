@@ -75,71 +75,88 @@ jobs:
             PORTAL_CHANGED=true
           fi
 
+          DEPLOY_NEEDED=false
+          if [[ "$BOOK_CHANGED" == "true" || "$PORTAL_CHANGED" == "true" ]]; then
+            DEPLOY_NEEDED=true
+          fi
+
           echo "website_changed=$WEBSITE_CHANGED" >> "$GITHUB_OUTPUT"
           echo "book_changed=$BOOK_CHANGED" >> "$GITHUB_OUTPUT"
           echo "portal_changed=$PORTAL_CHANGED" >> "$GITHUB_OUTPUT"
+          echo "deploy_needed=$DEPLOY_NEEDED" >> "$GITHUB_OUTPUT"
 
           echo "website_changed=$WEBSITE_CHANGED"
           echo "book_changed=$BOOK_CHANGED"
           echo "portal_changed=$PORTAL_CHANGED"
+          echo "deploy_needed=$DEPLOY_NEEDED"
 
       - name: Validate deploy token is configured
+        if: steps.changes.outputs.deploy_needed == 'true'
         run: |
           test -n "${{ secrets.HEALTHONRAILS_GHIO_TOKEN }}" || {
             echo "Missing HEALTHONRAILS_GHIO_TOKEN secret; cannot deploy to ${SITE_REPO}." >&2
             exit 1
           }
 
+      - name: Skip when no deployable surface changed
+        if: steps.changes.outputs.deploy_needed != 'true'
+        run: |
+          echo "No book/portal deployable changes detected. Exiting without external sync."
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Set up uv and virtual environment
+        if: steps.changes.outputs.deploy_needed == 'true'
         run: |
           python -m pip install --upgrade pip
           python -m pip install --no-cache-dir uv
           uv venv .venv
 
       - name: Build Jupyter Book
-        if: steps.changes.outputs.book_changed == 'true'
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.changes.outputs.book_changed == 'true'
         run: |
           source .venv/bin/activate
           uv pip install --no-cache -r book/requirements.txt
           jupyter-book build book
 
       - name: Build docs portal
-        if: steps.changes.outputs.portal_changed == 'true'
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.changes.outputs.portal_changed == 'true'
         run: |
           source .venv/bin/activate
           uv pip install --no-cache -r docs/requirements_mkdocs.txt
           mkdocs build --strict --clean --config-file mkdocs.yml
 
       - name: Clone site repository
+        if: steps.changes.outputs.deploy_needed == 'true'
         run: |
           git clone --depth 1 --branch "${SITE_BRANCH}" \
             "https://x-access-token:${{ secrets.HEALTHONRAILS_GHIO_TOKEN }}@github.com/${SITE_REPO}.git" \
             site-repo
 
       - name: Sync book content
-        if: steps.changes.outputs.book_changed == 'true'
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.changes.outputs.book_changed == 'true'
         run: |
           ./scripts/sync_book_build_to_site_root.sh book/_build/html site-repo
 
       - name: Sync portal content to site root
-        if: steps.changes.outputs.portal_changed == 'true'
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.changes.outputs.portal_changed == 'true'
         run: |
           ./scripts/sync_docs_portal_to_site_root.sh site_portal site-repo /
 
       - name: Sync portal compatibility path
-        if: steps.changes.outputs.portal_changed == 'true'
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.changes.outputs.portal_changed == 'true'
         run: |
           ./scripts/sync_docs_portal_to_site_root.sh site_portal site-repo portal
 
       - name: Ensure legacy redirect stubs
+        if: steps.changes.outputs.deploy_needed == 'true'
         run: |
           ./scripts/write_legacy_redirects.sh site-repo
 
       - name: Commit and push external site update
+        if: steps.changes.outputs.deploy_needed == 'true'
         run: |
           cd site-repo
           git config user.email "action@github.com"

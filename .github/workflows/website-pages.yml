@@ -20,6 +20,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: annolid-site-surface-check-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate-site-surface:
     runs-on: ubuntu-latest

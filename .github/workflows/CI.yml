@@ -95,18 +95,40 @@ jobs:
           --report /tmp/agent_eval_report.json \
           --max-regressions 0 \
           --min-pass-rate 0.0
+    - name: Detect docs changes
+      id: docs_changes
+      run: |
+        set -euo pipefail
+        DOCS_CHANGED=false
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          CHANGED_FILES=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" || true)
+        else
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+          if [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            BEFORE="HEAD~1"
+          fi
+          CHANGED_FILES=$(git diff --name-only "$BEFORE" "$AFTER" || true)
+        fi
+        if echo "$CHANGED_FILES" | grep -Eq '^(docs/|scripts/write_legacy_redirects.sh|\.github/workflows/CI\.yml)'; then
+          DOCS_CHANGED=true
+        fi
+        echo "docs_changed=$DOCS_CHANGED" >> "$GITHUB_OUTPUT"
+        echo "docs_changed=$DOCS_CHANGED"
     - name: Install Sphinx docs dependencies
+      if: steps.docs_changes.outputs.docs_changed == 'true'
       run: |
         source .venv/bin/activate
         uv pip install --no-cache -r docs/requirements.txt
     - name: Build Sphinx docs
+      if: steps.docs_changes.outputs.docs_changed == 'true'
       run: |
         source .venv/bin/activate
         make -C docs html
     # Publish built docs to gh-pages branch.
     # ===============================
     - name: Commit documentation changes
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.docs_changes.outputs.docs_changed == 'true'
       run: |
         git clone https://github.com/${{ github.repository }}.git --branch gh-pages --single-branch gh-pages
         cp -r docs/build/html/* gh-pages/
@@ -121,7 +143,7 @@ jobs:
         # that.
     - name: Push changes
       uses: ad-m/github-push-action@v0.8.0
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.docs_changes.outputs.docs_changed == 'true'
       with:
         branch: gh-pages
         directory: gh-pages
