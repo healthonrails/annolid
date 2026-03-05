@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Sync a Jupyter Book build output directory into a site repo root while
-# preserving a landing page and custom domain files.
+# Sync a Jupyter Book build output directory into a site repo subpath while
+# preserving root landing/docs surfaces.
 #
 # Defaults assume:
 # - source build: book/_build/html
 # - destination repo root: book/healthonrails.github.io
+# - destination book subpath: book
 
 SRC_DIR="${1:-book/_build/html}"
 DEST_DIR="${2:-book/healthonrails.github.io}"
+BOOK_SUBPATH="${3:-book}"
 
 if [[ ! -d "$SRC_DIR" ]]; then
   echo "Source build directory does not exist: $SRC_DIR" >&2
@@ -21,13 +23,13 @@ if [[ ! -d "$DEST_DIR" ]]; then
   exit 1
 fi
 
-echo "Syncing book build from '$SRC_DIR' -> '$DEST_DIR'"
+BOOK_DEST_DIR="$DEST_DIR/$BOOK_SUBPATH"
+mkdir -p "$BOOK_DEST_DIR"
+
+echo "Syncing book build from '$SRC_DIR' -> '$BOOK_DEST_DIR'"
 rsync -a --delete \
   --exclude '.git/' \
-  --exclude 'index.html' \
-  --exclude 'assets/' \
-  --exclude 'CNAME' \
-  "$SRC_DIR"/ "$DEST_DIR"/
+  "$SRC_DIR"/ "$BOOK_DEST_DIR"/
 
 # Required so Pages serves underscore paths like _static.
 touch "$DEST_DIR/.nojekyll"

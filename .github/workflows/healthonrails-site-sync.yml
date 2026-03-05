@@ -161,8 +161,26 @@ jobs:
             cd ..
           fi
 
+      - name: Detect missing /book surface in site repo
+        id: book_surface
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
+        run: |
+          if [[ -f site-repo/book/index.html ]]; then
+            echo "missing_book=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "missing_book=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::site-repo/book/index.html is missing; forcing book rebuild/sync."
+          fi
+
+      - name: Build Jupyter Book (bootstrap missing /book)
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && steps.changes.outputs.book_changed != 'true' && steps.book_surface.outputs.missing_book == 'true'
+        run: |
+          source .venv/bin/activate
+          uv pip install --no-cache -r book/requirements.txt
+          jupyter-book build book
+
       - name: Sync book content
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && steps.changes.outputs.book_changed == 'true'
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && (steps.changes.outputs.book_changed == 'true' || steps.book_surface.outputs.missing_book == 'true')
         run: |
           ./scripts/sync_book_build_to_site_root.sh book/_build/html site-repo
 
