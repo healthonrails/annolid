@@ -669,3 +669,87 @@ def test_keypoints_out_of_bounds_are_clamped_visible(tmp_path: Path) -> None:
             # Must still be marked as visible.
             assert kp[nose_idx * 3 + 2] == 2.0
             assert kp[tail_idx * 3 + 2] == 2.0
+
+
+def test_keypoints_ungrouped_points_merged_into_one_annotation(tmp_path: Path) -> None:
+    """Regression test: keypoints labeled without group_id must be merged into
+    a single COCO annotation with all keypoints filled in.
+
+    Before the fix, each point shape created its own annotation (num_keypoints=1).
+    After the fix, all ungrouped point shapes in one Labelme JSON are placed into
+    the same ``_default_instance_`` group, producing one annotation with all
+    keypoints present.
+    """
+    pytest.importorskip("pycocotools.mask")
+
+    src = tmp_path / "src"
+    src.mkdir()
+    out = tmp_path / "out"
+
+    W, H = 200, 150
+    Image.new("RGB", (W, H)).save(src / "frame0001.png")
+
+    # All 4 keypoints in one file, intentionally NO group_id (the user's bug scenario).
+    payload = {
+        "version": "5.0",
+        "imagePath": "frame0001.png",
+        "imageHeight": H,
+        "imageWidth": W,
+        "shapes": [
+            {
+                "label": "nose",
+                "shape_type": "point",
+                "points": [[100.0, 80.0]],
+                "group_id": None,
+            },
+            {
+                "label": "leftear",
+                "shape_type": "point",
+                "points": [[85.0, 60.0]],
+                "group_id": None,
+            },
+            {
+                "label": "rightear",
+                "shape_type": "point",
+                "points": [[115.0, 60.0]],
+                "group_id": None,
+            },
+            {
+                "label": "tailbase",
+                "shape_type": "point",
+                "points": [[100.0, 140.0]],
+                "group_id": None,
+            },
+        ],
+    }
+    (src / "frame0001.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    list(
+        labelme2coco.convert(
+            str(src),
+            str(out),
+            labels_file=None,
+            train_valid_split=0.0,  # all to valid
+            output_mode="keypoints",
+        )
+    )
+
+    ann_data = json.loads((out / "valid" / "annotations.json").read_text())
+    annotations = ann_data["annotations"]
+    kp_names = ann_data["categories"][0]["keypoints"]
+
+    # One image → exactly ONE annotation (not 4 separate ones).
+    assert len(annotations) == 1, (
+        f"Expected 1 merged annotation but got {len(annotations)}. "
+        "Each ungrouped keypoint is being written as a separate annotation."
+    )
+
+    ann = annotations[0]
+    assert ann["num_keypoints"] == 4, (
+        f"Expected 4 keypoints in the annotation, got {ann['num_keypoints']}"
+    )
+
+    kps = ann["keypoints"]
+    for name in ("nose", "leftear", "rightear", "tailbase"):
+        idx = kp_names.index(name)
+        assert kps[idx * 3 + 2] == 2.0, f"Keypoint '{name}' should be visible (v=2)"

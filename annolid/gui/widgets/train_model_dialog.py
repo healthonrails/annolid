@@ -214,6 +214,12 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.radio_btn_dino_kpseg.toggled.connect(self.on_radio_button_checked)
         row.addWidget(self.radio_btn_dino_kpseg)
 
+        self.radio_btn_keypoint_rcnn = QtWidgets.QRadioButton(
+            "Keypoint RCNN", self.groupBoxAlgo
+        )
+        self.radio_btn_keypoint_rcnn.toggled.connect(self.on_radio_button_checked)
+        row.addWidget(self.radio_btn_keypoint_rcnn)
+
         row.addStretch(1)
 
     def _build_shared_inputs(self) -> None:
@@ -658,7 +664,8 @@ class TrainModelDialog(QtWidgets.QDialog):
     def update_ui_for_algorithm(self) -> None:
         yolo_selected = self.algo == "YOLO"
         dino_selected = self.algo == "DINO KPSEG"
-        classic_selected = not (yolo_selected or dino_selected)
+        keypoint_selected = self.algo == "Keypoint RCNN"
+        classic_selected = not (yolo_selected or dino_selected or keypoint_selected)
 
         if yolo_selected or dino_selected:
             target_epochs = int(self.yolo_epochs if yolo_selected else self.dino_epochs)
@@ -686,7 +693,9 @@ class TrainModelDialog(QtWidgets.QDialog):
             self._training_form, self.epochs_spin, yolo_selected or dino_selected
         )
         self._set_form_row_visible(
-            self._training_form, self.max_iter_spin, classic_selected
+            self._training_form,
+            self.max_iter_spin,
+            classic_selected or keypoint_selected,
         )
         self._set_form_row_visible(
             self._training_form, self.yolo_plots_checkbox, yolo_selected
@@ -704,18 +713,20 @@ class TrainModelDialog(QtWidgets.QDialog):
 
         # IO labels
         self._io_config_label.setText(
-            "Dataset YAML" if (yolo_selected or dino_selected) else "Config file"
+            "Dataset YAML" if (yolo_selected or dino_selected) else "Config folder"
         )
+        if keypoint_selected:
+            self._io_config_label.setText("Dataset folder (COCO keypoints)")
         self._io_model_label.setText(
-            "Resume from (.pt)" if yolo_selected else "Model weights (.pt)"
+            "Resume from (.pt)" if yolo_selected else "Model weights (.pth)"
         )
         self.configFileButton.setText(
-            "Browse YAML…" if (yolo_selected or dino_selected) else "Browse…"
+            "Browse YAML\u2026" if (yolo_selected or dino_selected) else "Browse\u2026"
         )
 
-        # Resume row only for YOLO
+        # Resume / model weights row — show for YOLO and Keypoint RCNN
         self._set_form_row_visible(
-            self._io_form, self._io_model_row, bool(yolo_selected)
+            self._io_form, self._io_model_row, bool(yolo_selected or keypoint_selected)
         )
         self._set_form_row_visible(
             self._io_form, self.dino_data_format_combo, bool(dino_selected)

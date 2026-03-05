@@ -490,3 +490,75 @@ class TrainingWorkflowMixin:
                         f"Could not open TensorBoard viewer:\n{exc}",
                     )
             self.statusBar().showMessage(self.tr("Training..."))
+
+        elif algo == "Keypoint RCNN":
+            # Keypoint R-CNN training: torchvision keypointrcnn_resnet50_fpn.
+            # config_file here is the dataset folder (COCO keypoints format).
+            dataset_dir = str(Path(config_file).parent)
+            cmd = [
+                "annolid-run",
+                "train",
+                "keypoint_rcnn",
+                f"--dataset-dir={dataset_dir}",
+                f"--max-iterations={max_iterations}",
+                f"--batch-size={batch_size}",
+                "--num-workers=0",
+            ]
+            if model_path:
+                cmd.append(f"--weights={model_path}")
+            if out_dir:
+                cmd.append(f"--output-dir={out_dir}")
+
+            if out_dir is None:
+                out_runs_dir = shared_runs_root() / "keypoint_rcnn"
+                tb_log_dir = out_runs_dir
+            else:
+                out_runs_dir = Path(out_dir)
+                tb_log_dir = out_runs_dir / "tensorboard"
+
+            out_runs_dir.mkdir(exist_ok=True, parents=True)
+            tb_log_dir.mkdir(exist_ok=True, parents=True)
+
+            try:
+                proc = subprocess.Popen(cmd)
+                if not hasattr(self, "_active_training_subprocesses"):
+                    self._active_training_subprocesses = []
+                self._active_training_subprocesses.append(proc)
+            except FileNotFoundError:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "annolid-run CLI not found",
+                    "Could not launch 'annolid-run train keypoint_rcnn'.\n"
+                    "Please ensure the annolid-run CLI is on your PATH.\n\n"
+                    "Try: pip install -e .",
+                )
+                return
+
+            msg_box = QtWidgets.QMessageBox(self)
+            msg_box.setWindowTitle("Keypoint RCNN Training Started")
+            msg_box.setText(
+                "Keypoint R-CNN training started in background...\n"
+                f"Results will be saved under: {str(out_runs_dir)}\n\n"
+                "Click 'View TensorBoard' to monitor training metrics.\n"
+                "(Metrics appear after the first checkpoint.)"
+            )
+            tb_button = msg_box.addButton(
+                "View TensorBoard", QtWidgets.QMessageBox.ActionRole
+            )
+            msg_box.addButton(QtWidgets.QMessageBox.Ok)
+            msg_box.exec_()
+
+            if msg_box.clickedButton() is tb_button:
+                try:
+                    import webbrowser
+                    from annolid.gui.tensorboard import ensure_tensorboard
+
+                    _, url = ensure_tensorboard(log_dir=tb_log_dir)
+                    webbrowser.open_new_tab(url)
+                except Exception as exc:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "TensorBoard unavailable",
+                        f"Could not open TensorBoard viewer:\n{exc}",
+                    )
+            self.statusBar().showMessage(self.tr("Training..."))

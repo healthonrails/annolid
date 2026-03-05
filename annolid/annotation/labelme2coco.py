@@ -493,12 +493,30 @@ def convert(
                     valid_ann_id += 1
         else:
             # Group by instance id only so one COCO annotation is emitted per instance.
+            # Group by instance id so one COCO annotation is emitted per instance.
+            #
+            # When group_id is None on a **point** shape we fall it into a shared
+            # "_default_instance_" bucket so all ungrouped keypoints in the same
+            # Labelme JSON (same image) are merged into a single COCO annotation.
+            # This is the correct behaviour when the annotator labeled body parts
+            # as individual points without setting group_id (single-animal frames).
+            #
+            # For non-point shapes (polygon / rectangle) lacking group_id we still
+            # use a per-shape unique key so separate instance masks are not merged.
             grouped: Dict[str, List[Dict[str, object]]] = {}
             for sidx, shape in enumerate(payload.get("shapes", [])):
                 if not isinstance(shape, dict):
                     continue
                 gid = shape.get("group_id")
-                gid_key = str(gid) if gid is not None else f"shape_{sidx}"
+                st = str(shape.get("shape_type") or "polygon").lower().strip()
+                if gid is not None:
+                    gid_key = str(gid)
+                elif st == "point":
+                    # All ungrouped keypoint points belong to the same instance.
+                    gid_key = "_default_instance_"
+                else:
+                    # Ungrouped non-point shapes get unique per-shape keys.
+                    gid_key = f"shape_{sidx}"
                 grouped.setdefault(gid_key, []).append(shape)
 
             for _gid, shapes in grouped.items():
