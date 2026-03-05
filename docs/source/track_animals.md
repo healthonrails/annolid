@@ -14,7 +14,7 @@ Provide the data.yaml file path in the COCO dataset folder
 
 The output result folder is optional.
 
-Note. You need to [install `Detectron2`](https://healthonrails.github.io/annolid/install.html#install-detectron2-locally) on your local device. If your workstation does not have a GPU card, it will only extract the key frames from the provided video and will save predicted results as json format in the same png image folder.
+Note. You need to [install `Detectron2`](install.html#install-detectron2-locally) on your local device for this Detectron2-based workflow. On CPU-only machines, inference can be slower and you may prefer frame-sampling workflows for faster iteration.
 Here is an example of predicted polygon annotations.
 
 ![](../imgs/predicted_polygons.png)

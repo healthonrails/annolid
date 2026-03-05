@@ -3,7 +3,7 @@
 This guide shows how to set up Annolid using [uv](https://docs.astral.sh/uv/), Astral's fast drop-in replacement for `pip` and `virtualenv`. The workflow lets you create lightweight environments, install the package editable for development, and reproduce dependencies with a lock file.
 
 ## Prerequisites
-- Python 3.9–3.11 available on your PATH (Annolid targets 3.6+, but newer releases are tested on 3.11).
+- Python 3.10–3.13 available on your PATH (recommended: 3.11).
 - `git` for cloning this repository.
 - `ffmpeg` (recommended) from your system package manager or Conda.
 - `uv` installed. You can grab the standalone binary from Astral or install it into your user site-packages:

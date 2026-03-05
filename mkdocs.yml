@@ -1,0 +1,44 @@
+site_name: Annolid Documentation Portal
+site_description: Unified docs portal for Annolid installation, workflows, and references.
+site_url: https://annolid.com/portal/
+repo_url: https://github.com/healthonrails/annolid
+repo_name: healthonrails/annolid
+docs_dir: docs_portal
+site_dir: site_portal
+
+theme:
+  name: material
+  language: en
+  logo: assets/images/icon_annolid.png
+  favicon: assets/images/icon_annolid.png
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  palette:
+    - scheme: default
+      primary: teal
+      accent: orange
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - tables
+  - fenced_code
+  - attr_list
+  - md_in_html
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Workflows: workflows.md
+  - Deployment: deployment.md
+  - Migration Plan: migration.md
+  - Redirect Map: redirects.md

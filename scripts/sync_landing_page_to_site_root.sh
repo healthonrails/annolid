@@ -24,4 +24,8 @@ mkdir -p "$DEST_DIR/assets"
 rsync -a --delete "$SRC_DIR/assets/" "$DEST_DIR/assets/"
 cp "$SRC_DIR/index.html" "$DEST_DIR/index.html"
 
+# Keep legacy URLs forwarding to canonical portal pages.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$SCRIPT_DIR/write_legacy_redirects.sh" "$DEST_DIR"
+
 echo "Landing page synced."

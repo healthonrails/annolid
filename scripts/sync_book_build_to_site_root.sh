@@ -31,4 +31,8 @@ rsync -a --delete \
 # Required so Pages serves underscore paths like _static.
 touch "$DEST_DIR/.nojekyll"
 
+# Keep legacy URLs forwarding to canonical portal pages.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$SCRIPT_DIR/write_legacy_redirects.sh" "$DEST_DIR"
+
 echo "Sync complete."

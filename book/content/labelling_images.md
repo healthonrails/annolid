@@ -10,7 +10,12 @@ Here is an example image :
 ![](../images/labelling_0.png)
 
 
-Labeling is done on a frame-by-frame basis. We'll show you how to label zones in a given frame. Start the Annolid GUI. Click the 'Open dir' button and select the directory where you exported your images in the previous [step](extract_frames). All the extracted images are shown in File List in the bottom right. Select the first image you want to annotate. Click the 'Create Polygon' button and delineate the structure/zone you want to label. When you finish labeling your zone, you can give it a name that will appear in the 'Polygon Labels'. Repeat until all the desired zones are labeled. You can adjust or delete the polygons by clicking on the 'Edit Polygon' button. Then click the polygon to be edited and directly edit the nodes. If you want to delete it, once you selected it, just click the 'delete Polygon' button.
+Labeling is done on a frame-by-frame basis. You can start from either:
+
+- a video opened directly in Annolid (navigate to an informative frame), or
+- an extracted image directory from the optional [Extract frames](extract_frames) workflow.
+
+We'll show you how to label zones in a given frame. Start the Annolid GUI. If you are labeling extracted images, click the 'Open dir' button and select the directory containing them. Otherwise, open your video and move to the frame you want to annotate. Click the 'Create Polygon' button and delineate the structure/zone you want to label. When you finish labeling your zone, you can give it a name that will appear in the 'Polygon Labels'. Repeat until all the desired zones are labeled. You can adjust or delete the polygons by clicking on the 'Edit Polygon' button. Then click the polygon to be edited and directly edit the nodes. If you want to delete it, once you selected it, just click the 'delete Polygon' button.
 When done, save the zone information to a json file by clicking the Save icon.
 
 ```{note}

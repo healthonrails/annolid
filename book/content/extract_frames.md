@@ -1,11 +1,13 @@
 # Extract frames
 
-First you need to extract the frames from your video.
+> Canonical workflow docs now live in the Annolid Docs Portal:
+> <https://annolid.com/portal/workflows/>
 
-Start the Annolid GUI (as a reminder type `annolid` in the terminal).
-Click Extract frames in the toolbar list. When the dialog opens, click and select the video file. You can choose the start and the end (in seconds) if you want extract frames in the given time interval. Select your desired algorithm to extract the frames (e.g. random) and select the desired number of frames.
+Frame extraction is optional. Use this workflow when you prefer an image-directory pipeline instead of labeling directly from an opened video.
 
-The waiting time depends on the video length, and the algorimth that was selected. **It might take a while to finish**. When the process is done, it will load all the images for labelling. You can check the extract frames by clicking the files in the file list.
+For the maintained detailed commands and options (CLI + GUI), see the canonical docs page:
+
+- [Extract Frames (Docs)](https://annolid.com/extract_frames.html)
 
 Here is a video summary to help guide you in this process:
 <figure class="video_container">

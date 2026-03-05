@@ -6,12 +6,14 @@ on:
     paths:
       - "website/**"
       - "scripts/sync_landing_page_to_site_root.sh"
+      - "scripts/write_legacy_redirects.sh"
       - ".github/workflows/website-pages.yml"
   pull_request:
     branches: [ main ]
     paths:
       - "website/**"
       - "scripts/sync_landing_page_to_site_root.sh"
+      - "scripts/write_legacy_redirects.sh"
       - ".github/workflows/website-pages.yml"
   workflow_dispatch:
 

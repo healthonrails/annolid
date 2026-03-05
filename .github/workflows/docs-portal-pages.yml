@@ -1,90 +1,99 @@
-name: Annolid Book Pages
+name: Annolid Docs Portal Pages
 
 on:
   push:
     branches: [ main ]
     paths:
-      - "book/**"
-      - ".github/workflows/book-pages.yml"
-      - "scripts/sync_book_build_to_site_root.sh"
+      - "docs_portal/**"
+      - "mkdocs.yml"
+      - "docs/requirements_mkdocs.txt"
+      - "scripts/sync_docs_portal_to_site_root.sh"
       - "scripts/write_legacy_redirects.sh"
+      - ".github/workflows/docs-portal-pages.yml"
   pull_request:
     branches: [ main ]
     paths:
-      - "book/**"
-      - ".github/workflows/book-pages.yml"
-      - "scripts/sync_book_build_to_site_root.sh"
+      - "docs_portal/**"
+      - "mkdocs.yml"
+      - "docs/requirements_mkdocs.txt"
+      - "scripts/sync_docs_portal_to_site_root.sh"
       - "scripts/write_legacy_redirects.sh"
+      - ".github/workflows/docs-portal-pages.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build-book:
+  build-portal:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          submodules: recursive
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install Jupyter Book dependencies
+      - name: Install MkDocs dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --no-cache-dir -r book/requirements.txt
+          python -m pip install --no-cache-dir -r docs/requirements_mkdocs.txt
 
-      - name: Build Annolid Jupyter Book
+      - name: Build docs portal
         run: |
-          jupyter-book build book
-      - name: Upload book build artifact
+          mkdocs build --clean --config-file mkdocs.yml
+
+      - name: Upload portal artifact
         uses: actions/upload-artifact@v4
         with:
-          name: annolid-book-html
-          path: book/_build/html
+          name: annolid-docs-portal-html
+          path: site_portal
           if-no-files-found: error
 
   deploy-gh-pages:
-    needs: build-book
+    needs: build-portal
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: annolid-gh-pages-book
+      group: annolid-gh-pages-portal
       cancel-in-progress: true
     permissions:
       contents: write
 
     steps:
-      - name: Download book build artifact
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Download portal artifact
         uses: actions/download-artifact@v4
         with:
-          name: annolid-book-html
-          path: book-html
-      - name: Publish book to gh-pages/book
+          name: annolid-docs-portal-html
+          path: portal-html
+
+      - name: Publish portal to gh-pages/portal
         run: |
           git clone --depth 1 --branch gh-pages \
             "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gh-pages
-          mkdir -p gh-pages/book
-          rsync -a --delete book-html/ gh-pages/book/
+          mkdir -p gh-pages/portal
+          rsync -a --delete portal-html/ gh-pages/portal/
+          ./scripts/write_legacy_redirects.sh gh-pages
           cd gh-pages
           touch .nojekyll
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add book .nojekyll
-          git diff --cached --quiet && echo "No gh-pages book changes." && exit 0
-          git commit -m "Update Annolid book"
+          git add portal .nojekyll
+          git diff --cached --quiet && echo "No gh-pages portal changes." && exit 0
+          git commit -m "Update Annolid docs portal"
           git push origin gh-pages
 
-  deploy-healthonrails:
-    needs: build-book
+  deploy-healthonrails-portal:
+    needs: build-portal
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.HEALTHONRAILS_GHIO_TOKEN != ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -99,25 +108,29 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - name: Download book build artifact
+
+      - name: Download portal artifact
         uses: actions/download-artifact@v4
         with:
-          name: annolid-book-html
-          path: book-html
+          name: annolid-docs-portal-html
+          path: portal-html
+
       - name: Clone site repository
         run: |
           git clone --depth 1 --branch "${SITE_BRANCH}" \
             "https://x-access-token:${{ secrets.HEALTHONRAILS_GHIO_TOKEN }}@github.com/${SITE_REPO}.git" \
             site-repo
-      - name: Sync book output into site root
+
+      - name: Sync portal output into site /portal
         run: |
-          ./scripts/sync_book_build_to_site_root.sh book-html site-repo
-      - name: Commit and push site update
+          ./scripts/sync_docs_portal_to_site_root.sh portal-html site-repo
+
+      - name: Commit and push portal update
         run: |
           cd site-repo
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
           git add -A
-          git diff --cached --quiet && echo "No external site book changes." && exit 0
-          git commit -m "Update Annolid book from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
+          git diff --cached --quiet && echo "No external site portal changes." && exit 0
+          git commit -m "Update Annolid docs portal from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
           git push origin "${SITE_BRANCH}"

@@ -11,10 +11,11 @@ This book gives a guided path from installation to reproducible end-to-end workf
 
 1. [Install Annolid](how_to_install.md)
 2. [Prepare your videos](video_preparation.md)
-3. [Extract frames](extract_frames.md)
-4. [Label images](labelling_images.md)
-5. [Track with Cutie](tracking_with_Cutie.md)
-6. [Train and evaluate models](model_training.md)
+3. Open a video, navigate to an informative frame, and [label images](labelling_images.md)
+4. [Track with Cutie](tracking_with_Cutie.md)
+5. [Train and evaluate models](model_training.md)
+
+`extract_frames.md` remains available for workflows where frame sampling is preferred, but it is optional for standard video-first labeling.
 
 ## Tutorials and Use Cases
 

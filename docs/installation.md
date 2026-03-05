@@ -82,7 +82,6 @@ conda create -n annolid-env python=3.11
 conda activate annolid-env
 git clone --recurse-submodules https://github.com/healthonrails/annolid.git
 cd annolid
-source .venv/bin/activate
 pip install -e ".[gui]"
 annolid
 ```

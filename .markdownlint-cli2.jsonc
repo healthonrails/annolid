@@ -1,0 +1,12 @@
+{
+  "config": {
+    "default": true,
+    "MD013": false,
+    "MD033": false,
+    "MD041": false
+  },
+  "globs": [
+    "docs_portal/**/*.md",
+    "docs/updating_jupyter_book_and_github_pages.md"
+  ]
+}

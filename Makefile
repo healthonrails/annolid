@@ -1,4 +1,4 @@
-.PHONY: release release-patch release-minor release-major book-build book-preview
+.PHONY: release release-patch release-minor release-major book-build book-preview portal-build portal-preview
 
 release:
 	@if [ -z "$(VERSION)" ]; then \
@@ -33,3 +33,9 @@ book-build:
 
 book-preview: book-build
 	@open book/_build/html/index.html
+
+portal-build:
+	@source .venv/bin/activate && mkdocs build --clean --config-file mkdocs.yml
+
+portal-preview:
+	@source .venv/bin/activate && mkdocs serve --config-file mkdocs.yml
