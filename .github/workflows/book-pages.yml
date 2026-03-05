@@ -60,35 +60,3 @@ jobs:
           name: annolid-book-html
           path: book/_build/html
           if-no-files-found: error
-
-  deploy-gh-pages:
-    needs: build-book
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    concurrency:
-      group: annolid-gh-pages-book
-      cancel-in-progress: true
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download book build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: annolid-book-html
-          path: book-html
-      - name: Publish book to gh-pages/book
-        run: |
-          git clone --depth 1 --branch gh-pages \
-            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gh-pages
-          mkdir -p gh-pages/book
-          rsync -a --delete book-html/ gh-pages/book/
-          cd gh-pages
-          touch .nojekyll
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add book .nojekyll
-          git diff --cached --quiet && echo "No gh-pages book changes." && exit 0
-          git commit -m "Update Annolid book"
-          git push origin gh-pages

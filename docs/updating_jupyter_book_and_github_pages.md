@@ -9,8 +9,8 @@ This repository uses a unified documentation source plus legacy references:
 ## Active Workflows
 
 - `.github/workflows/docs-quality.yml`: source validation, strict MkDocs build, markdown lint.
-- `.github/workflows/docs-pages.yml`: build and publish docs to repository `gh-pages` root and `/portal`.
-- `.github/workflows/book-pages.yml`: build and publish Jupyter Book to `gh-pages/book`.
+- `.github/workflows/docs-pages.yml`: build and validate the MkDocs site, then upload the HTML artifact.
+- `.github/workflows/book-pages.yml`: build and validate the Jupyter Book output, then upload the HTML artifact.
 - `.github/workflows/healthonrails-site-sync.yml`: sync `annolid.com` output to `healthonrails/healthonrails.github.io`.
 - `.github/workflows/CI.yml`: core tests plus conditional strict docs build verification.
 
@@ -43,16 +43,15 @@ jupyter-book build book
 
 ## Deployment Behavior
 
-Docs deployment (`docs-pages.yml`):
+Docs build (`docs-pages.yml`):
 
 1. Build `docs/` with strict MkDocs checks.
-2. Publish docs to repository `gh-pages` root.
-3. Mirror the same docs output to `gh-pages/portal` for compatibility.
+2. Upload the generated HTML as a workflow artifact for inspection/debugging.
 
-Book deployment (`book-pages.yml`):
+Book build (`book-pages.yml`):
 
 1. Build `book/` HTML.
-2. Publish to `gh-pages/book/`.
+2. Upload the generated HTML as a workflow artifact for inspection/debugging.
 
 External site sync (`healthonrails-site-sync.yml`):
 
@@ -68,8 +67,10 @@ External site sync (`healthonrails-site-sync.yml`):
 To publish `annolid.com` from `healthonrails/healthonrails.github.io`:
 
 1. Set repository secret `HEALTHONRAILS_GHIO_TOKEN`.
-2. Push changes under `docs/**` and/or `book/**`.
-3. Workflows sync outputs while preserving `CNAME` and compatibility paths.
+2. Ensure the target repository exists at `healthonrails/healthonrails.github.io`.
+3. Push changes under `docs/**` and/or `book/**`.
+4. The sync workflow will create the target `gh-pages` branch on first deploy if it does not exist yet.
+5. The workflow fails fast when the deploy token is missing instead of silently skipping publication.
 
 ## Source of Truth
 

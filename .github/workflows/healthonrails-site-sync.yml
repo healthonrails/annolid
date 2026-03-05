@@ -102,7 +102,7 @@ jobs:
             echo "has_token=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_token=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Missing HEALTHONRAILS_GHIO_TOKEN; skipping external sync to ${SITE_REPO}."
+            echo "::error::Missing HEALTHONRAILS_GHIO_TOKEN; cannot deploy to ${SITE_REPO}."
           fi
 
       - name: Skip when no deployable surface changed
@@ -110,11 +110,12 @@ jobs:
         run: |
           echo "No book/docs deployable changes detected. Exiting without external sync."
 
-      - name: Skip when deploy token is missing
+      - name: Fail when deploy token is missing
         if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token != 'true'
         run: |
           echo "Deployable changes detected but HEALTHONRAILS_GHIO_TOKEN is not configured."
-          echo "Skipping external site sync."
+          echo "Configure the secret in the Annolid repository before merging docs/book deployment changes."
+          exit 1
 
       - name: Set up Python 3.11
         if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
@@ -143,12 +144,22 @@ jobs:
           uv pip install --no-cache -r docs/requirements_mkdocs.txt
           mkdocs build --strict --clean --config-file mkdocs.yml
 
-      - name: Clone site repository
+      - name: Prepare site repository checkout
         if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
         run: |
-          git clone --depth 1 --branch "${SITE_BRANCH}" \
-            "https://x-access-token:${{ secrets.HEALTHONRAILS_GHIO_TOKEN }}@github.com/${SITE_REPO}.git" \
-            site-repo
+          SITE_URL="https://x-access-token:${{ secrets.HEALTHONRAILS_GHIO_TOKEN }}@github.com/${SITE_REPO}.git"
+
+          if git ls-remote --exit-code --heads "$SITE_URL" "${SITE_BRANCH}" >/dev/null 2>&1; then
+            git clone --depth 1 --branch "${SITE_BRANCH}" "$SITE_URL" site-repo
+          else
+            echo "::warning::Branch ${SITE_BRANCH} does not exist in ${SITE_REPO}; bootstrapping it."
+            git clone --depth 1 "$SITE_URL" site-repo
+            cd site-repo
+            git checkout --orphan "${SITE_BRANCH}"
+            git rm -rf . >/dev/null 2>&1 || true
+            find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+            cd ..
+          fi
 
       - name: Sync book content
         if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && steps.changes.outputs.book_changed == 'true'
