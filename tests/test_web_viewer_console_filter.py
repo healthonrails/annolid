@@ -6,16 +6,31 @@ from annolid.gui.widgets.web_viewer import (
 
 
 def test_ignorable_console_noise_markers() -> None:
+    shader_warning = (
+        "THREE.WebGLProgram: gl.getProgramInfoLog() WARNING: "
+        "Output of vertex shader 'worldPosition' not read by fragment shader"
+    )
+    integrity_warning = (
+        "Failed to find a valid digest in the 'integrity' attribute for resource "
+        "'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css'."
+    )
+    preload_warning = (
+        "The resource https://accounts.google.com/gsi/client was preloaded "
+        "using link preload but not used within a few seconds from the window's load event."
+    )
+    cors_warning = (
+        "Access to font at "
+        "'https://static.arxiv.org/MathJax-2.7.3/fonts/HTML-CSS/TeX/woff/MathJax_Math-Italic.woff?V=2.7.3' "
+        "from origin 'https://arxiv.org' has been blocked by CORS policy: "
+        "No 'Access-Control-Allow-Origin' header is present on the requested resource."
+    )
+
     assert _is_ignorable_js_console_message("Deprecated API for given entry type.")
     assert _is_ignorable_js_console_message(
         "Unrecognized feature: 'attribution-reporting'."
     )
-    assert _is_ignorable_js_console_message(
-        "THREE.WebGLProgram: gl.getProgramInfoLog() WARNING: Output of vertex shader 'worldPosition' not read by fragment shader"
-    )
-    assert _is_ignorable_js_console_message(
-        "Failed to find a valid digest in the 'integrity' attribute for resource 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css'."
-    )
+    assert _is_ignorable_js_console_message(shader_warning)
+    assert _is_ignorable_js_console_message(integrity_warning)
     assert _is_ignorable_js_console_message(
         "Uncaught ReferenceError: solveSimpleChallenge is not defined"
     )
@@ -28,20 +43,18 @@ def test_ignorable_console_noise_markers() -> None:
     assert _is_ignorable_js_console_message(
         "RangeError: Value longOffset out of range for Intl.DateTimeFormat options property timeZoneName"
     )
-    assert _is_ignorable_js_console_message(
-        "The resource https://accounts.google.com/gsi/client was preloaded using link preload but not used within a few seconds from the window's load event."
-    )
+    assert _is_ignorable_js_console_message(preload_warning)
     assert _is_ignorable_js_console_message("Error")
     assert _is_ignorable_js_console_message("[object Object]")
     # CORS errors for external site fonts - these are external site issues, not actionable
+    assert _is_ignorable_js_console_message(cors_warning)
     assert _is_ignorable_js_console_message(
-        "Access to font at 'https://static.arxiv.org/MathJax-2.7.3/fonts/HTML-CSS/TeX/woff/MathJax_Math-Italic.woff?V=2.7.3' from origin 'https://arxiv.org' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource."
+        "Access to font at 'https://static.example.com/font.woff' from origin "
+        "'https://example.com' has been blocked by CORS policy"
     )
     assert _is_ignorable_js_console_message(
-        "Access to font at 'https://static.example.com/font.woff' from origin 'https://example.com' has been blocked by CORS policy"
-    )
-    assert _is_ignorable_js_console_message(
-        "Access to font at 'https://cdn.example.com/fonts/MyFont.ttf' from origin 'https://arxiv.org' has been blocked by cors policy"
+        "Access to font at 'https://cdn.example.com/fonts/MyFont.ttf' from "
+        "origin 'https://arxiv.org' has been blocked by cors policy"
     )
 
 
@@ -62,30 +75,34 @@ def test_non_ignorable_console_errors() -> None:
 
 def test_ignorable_weather_com_console_noise() -> None:
     src = "https://weather.com/weather/today/l/Ithaca+NY"
+    enrolled_warning = (
+        "For 'enrolled-in-experiment', the corresponding attribute value of "
+        "'schemaVersion' must be a string, number, boolean, or null."
+    )
+    page_view_warning = (
+        "For 'page-viewed', the corresponding attribute value of "
+        "'premiumContent' must be a string, number, boolean, or null."
+    )
+    react_418 = (
+        "Error: Minified React error #418; visit "
+        "https://reactjs.org/docs/error-decoder.html?invariant=418"
+    )
+
     assert _is_ignorable_js_console_message(
         "Identity value for 'email' is falsy (). This value will be removed from the request.",
         src,
     )
-    assert _is_ignorable_js_console_message(
-        "For 'enrolled-in-experiment', the corresponding attribute value of 'schemaVersion' must be a string, number, boolean, or null.",
-        src,
-    )
+    assert _is_ignorable_js_console_message(enrolled_warning, src)
     assert _is_ignorable_js_console_message(
         "Position latitude and/or longitude must both be of type number",
         src,
     )
-    assert _is_ignorable_js_console_message(
-        "For 'page-viewed', the corresponding attribute value of 'premiumContent' must be a string, number, boolean, or null.",
-        src,
-    )
+    assert _is_ignorable_js_console_message(page_view_warning, src)
     assert _is_ignorable_js_console_message(
         "[object Object] Google Accounts SDK is not available",
         src,
     )
-    assert _is_ignorable_js_console_message(
-        "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418",
-        src,
-    )
+    assert _is_ignorable_js_console_message(react_418, src)
     assert _is_ignorable_js_console_message(
         "Geolocation failed in saga: Error: Geolocation request timed out.",
         src,
@@ -94,8 +111,12 @@ def test_ignorable_weather_com_console_noise() -> None:
 
 def test_weather_like_message_not_ignored_for_non_weather_source() -> None:
     src = "https://example.org/app"
+    react_418 = (
+        "Error: Minified React error #418; visit "
+        "https://reactjs.org/docs/error-decoder.html?invariant=418"
+    )
     assert not _is_ignorable_js_console_message(
-        "Error: Minified React error #418; visit https://reactjs.org/docs/error-decoder.html?invariant=418",
+        react_418,
         src,
     )
 

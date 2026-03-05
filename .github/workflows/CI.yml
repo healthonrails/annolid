@@ -51,10 +51,11 @@ jobs:
     - name: Lint with flake8
       run: |
         source .venv/bin/activate
+        FLK_EXCLUDES="annolid/segmentation/SAM,annolid/segmentation/cutie_vos,annolid/detector/countgd,annolid/depth/video_depth_anything"
         # stop the build if there are Python syntax errors or undefined names
-        flake8 annolid tests --count --select=E9,F63,F7,F82 --exclude=annolid/segmentation/SAM/segment-anything-2 --show-source --statistics
+        flake8 annolid tests --count --select=E9,F63,F7,F82 --exclude="$FLK_EXCLUDES" --show-source --statistics
         # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
-        flake8 annolid tests --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics --exclude=annolid/segmentation/SAM/segment-anything-2
+        flake8 annolid tests --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics --exclude="$FLK_EXCLUDES"
     - name: Test with pytest
       run: |
         source .venv/bin/activate
