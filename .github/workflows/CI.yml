@@ -110,7 +110,7 @@ jobs:
           fi
           CHANGED_FILES=$(git diff --name-only "$BEFORE" "$AFTER" || true)
         fi
-        if echo "$CHANGED_FILES" | grep -Eq '^(docs/|mkdocs.yml|scripts/write_legacy_redirects.sh|\.github/workflows/CI\.yml)'; then
+        if echo "$CHANGED_FILES" | grep -Eq '^(docs/|mkdocs.yml|docs/requirements_mkdocs\.txt|scripts/write_legacy_redirects.sh|\.github/workflows/CI\.yml|\.github/workflows/docs-pages\.yml|\.github/workflows/docs-quality\.yml|\.github/workflows/healthonrails-site-sync\.yml)'; then
           DOCS_CHANGED=true
         fi
         echo "docs_changed=$DOCS_CHANGED" >> "$GITHUB_OUTPUT"
