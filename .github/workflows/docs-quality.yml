@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 2
 
       - name: Debug changed files
         run: |
@@ -43,6 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           RELEVANT_CHANGED=false
+          CHANGED_FILES=""
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             RELEVANT_CHANGED=true
@@ -56,6 +57,14 @@ jobs:
             fi
             CHANGED_FILES=$(git diff --name-only "$BEFORE" "$AFTER" || true)
           fi
+
+          # Fallback for shallow-history or unusual merge situations where diff may be empty.
+          if [[ "${RELEVANT_CHANGED}" != "true" && -z "${CHANGED_FILES}" ]]; then
+            CHANGED_FILES=$(git show --name-only --pretty="" "${{ github.sha }}" || true)
+          fi
+
+          echo "Changed files considered by docs-quality:"
+          echo "${CHANGED_FILES}"
 
           if [[ "${RELEVANT_CHANGED}" != "true" ]]; then
             if echo "${CHANGED_FILES}" | grep -Eq '^(website/|docs/|mkdocs.yml|docs/requirements_mkdocs\.txt|\.markdownlint-cli2\.jsonc|\.github/workflows/docs-quality\.yml|\.github/workflows/docs-pages\.yml|\.github/workflows/healthonrails-site-sync\.yml)'; then
