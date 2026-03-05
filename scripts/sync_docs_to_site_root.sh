@@ -23,9 +23,12 @@ if [[ ! -d "$DEST_DIR" ]]; then
 fi
 
 if [[ "$TARGET_PATH" == "/" || "$TARGET_PATH" == "." || "$TARGET_PATH" == "root" ]]; then
-  # Root sync powers annolid.com directly; preserve /book and CNAME.
+  # Root sync publishes compatibility docs routes while preserving the
+  # canonical landing page and landing-only assets at annolid.com/.
   rsync -a --delete \
     --exclude '.git/' \
+    --exclude 'index.html' \
+    --exclude 'website-assets/' \
     --exclude 'book/' \
     --exclude 'CNAME' \
     "$SRC_DIR/" "$DEST_DIR/"

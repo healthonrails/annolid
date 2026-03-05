@@ -203,6 +203,14 @@ jobs:
         run: |
           ./scripts/write_legacy_redirects.sh site-repo
 
+      - name: Verify landing page remains site default
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
+        run: |
+          test -f site-repo/index.html
+          grep -Fq "Annolid | Research-Grade Animal Behavior AI" site-repo/index.html
+          test -d site-repo/website-assets
+          test -f site-repo/portal/index.html
+
       - name: Commit and push external site update
         if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
         run: |

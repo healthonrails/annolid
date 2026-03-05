@@ -346,15 +346,47 @@
 
     .capability-grid,
     .path-grid,
-    .surface-grid {
+    .surface-grid,
+    .docs-grid {
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .card,
     .path,
-    .surface {
+    .surface,
+    .docs-link {
       padding: 22px;
       border-radius: 20px;
+    }
+
+    .docs-grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .docs-link {
+      display: block;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+    }
+
+    .docs-link:hover {
+      transform: translateY(-2px);
+      border-color: rgba(97, 208, 255, 0.38);
+      background: rgba(14, 26, 44, 0.96);
+    }
+
+    .docs-link strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 1.08rem;
+    }
+
+    .docs-link span {
+      color: var(--muted);
+      line-height: 1.7;
     }
 
     .kicker {
@@ -639,6 +671,50 @@
       </div>
     </section>
 
+    <section>
+      <div class="shell">
+        <div class="section-heading">
+          <h2>Go straight to the docs surface you need</h2>
+          <p>
+            The landing page stays at <code>annolid.com</code>. Product documentation lives under
+            the docs portal and book paths so users can move directly into the right surface.
+          </p>
+        </div>
+        <div class="docs-grid">
+          <a class="docs-link" href="/portal/">
+            <span class="kicker">Docs portal</span>
+            <strong>Open the documentation hub</strong>
+            <span>Start from the canonical MkDocs entry point for installation, workflows, deployment, and reference material.</span>
+          </a>
+          <a class="docs-link" href="/portal/installation/">
+            <span class="kicker">Installation</span>
+            <strong>Get Annolid running</strong>
+            <span>Jump directly to platform-specific setup guidance without going through the full docs index first.</span>
+          </a>
+          <a class="docs-link" href="/portal/tutorials/">
+            <span class="kicker">Tutorials</span>
+            <strong>Follow practical walkthroughs</strong>
+            <span>Open curated tutorials for real labeling, segmentation, tracking, and behavior analysis workflows.</span>
+          </a>
+          <a class="docs-link" href="/portal/reference/">
+            <span class="kicker">Reference</span>
+            <strong>Find operational details fast</strong>
+            <span>Use the reference surface for deployment notes, technical links, and high-signal operational guidance.</span>
+          </a>
+          <a class="docs-link" href="/portal/deployment/">
+            <span class="kicker">Deployment</span>
+            <strong>Understand the publication model</strong>
+            <span>Inspect how landing page, docs, redirects, and external site sync are deployed to the public site.</span>
+          </a>
+          <a class="docs-link" href="/book/">
+            <span class="kicker">Book</span>
+            <strong>Open the Jupyter Book</strong>
+            <span>Go directly to the notebook-oriented Annolid book that is published separately under <code>/book/</code>.</span>
+          </a>
+        </div>
+      </div>
+    </section>
+
     <section class="cta">
       <div class="shell">
         <div class="cta-panel">
@@ -652,6 +728,7 @@
           <div class="hero-actions">
             <a class="button button-primary" href="/portal/installation/">Install Annolid</a>
             <a class="button" href="/portal/">Open Docs Portal</a>
+            <a class="button" href="/book/">Open Book</a>
           </div>
         </div>
       </div>
