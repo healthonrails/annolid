@@ -2,15 +2,26 @@ name: Sync Annolid Site to healthonrails.github.io
 
 on:
   push:
-    branches: [ main ]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  trigger-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report trigger context
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "ref=${{ github.ref }}"
+          echo "sha=${{ github.sha }}"
+
   deploy-site:
-    if: github.ref == 'refs/heads/main'
+    needs: trigger-check
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 35
     concurrency:
