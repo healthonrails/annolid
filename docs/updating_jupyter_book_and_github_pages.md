@@ -12,9 +12,8 @@ They are deployed by separate workflows:
 - `.github/workflows/CI.yml`: Sphinx docs (`docs/`) to this repo `gh-pages` root.
 - `.github/workflows/book-pages.yml`: Jupyter Book (`book/`) to this repo `gh-pages/book/`.
 - `.github/workflows/docs-portal-pages.yml`: MkDocs portal (`docs_portal/`) to this repo `gh-pages/portal/`.
-- `.github/workflows/website-pages.yml`: validates combined site source files (`docs_portal/` + `mkdocs.yml`).
 - `.github/workflows/healthonrails-site-sync.yml`: single source of truth for syncing `annolid.com` content to `healthonrails/healthonrails.github.io`.
-- `.github/workflows/docs-quality.yml`: quality gate for portal docs (strict MkDocs build + markdown lint).
+- `.github/workflows/docs-quality.yml`: quality gate for combined site/docs source (surface checks + strict MkDocs build + markdown lint).
 
 ## Local workflow
 
@@ -71,10 +70,11 @@ Book deployment (`book-pages.yml`):
 2. Update `gh-pages/book/`.
 3. Ensure `.nojekyll` exists.
 
-Website deployment (`website-pages.yml`):
+Docs quality (`docs-quality.yml`):
 
-1. Trigger on `docs_portal/**` and `mkdocs.yml` changes.
-2. Validate combined site source files.
+1. Validate combined site/doc source files.
+2. Enforce strict MkDocs build (`--strict`).
+3. Lint markdown content for portal/process docs.
 
 Portal deployment (`docs-portal-pages.yml`):
 

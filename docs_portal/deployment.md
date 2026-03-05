@@ -4,7 +4,7 @@ Annolid currently uses automated GitHub Actions pipelines for website, book, and
 
 ## Pipelines
 
-- `website-pages.yml`: validates the combined site source (`docs_portal/` + `mkdocs.yml`).
+- `docs-quality.yml`: validates combined site/doc sources and enforces markdown + strict portal build checks.
 - `book-pages.yml`: builds and deploys Jupyter Book to `/book`.
 - `CI.yml`: builds/tests and publishes Sphinx docs in this repository.
 - `docs-portal-pages.yml`: builds and deploys this MkDocs portal to `gh-pages/portal`.

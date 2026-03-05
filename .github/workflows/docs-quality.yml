@@ -4,6 +4,7 @@ on:
   push:
     branches: [ main ]
     paths:
+      - "website/**"
       - "docs_portal/**"
       - "mkdocs.yml"
       - "docs/requirements_mkdocs.txt"
@@ -13,6 +14,7 @@ on:
   pull_request:
     branches: [ main ]
     paths:
+      - "website/**"
       - "docs_portal/**"
       - "mkdocs.yml"
       - "docs/requirements_mkdocs.txt"
@@ -37,6 +39,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+      - name: Validate combined site source
+        run: |
+          test -f docs_portal/index.md
+          test -f mkdocs.yml
+          test -f website/index.html
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
