@@ -161,7 +161,7 @@ def _shape_to_polygon_points(
             return None
         x, y = p
         h, w = image_hw
-        r = max(1.0, float(min(h, w)) * float(radius_ratio))
+        r = max(3.0, float(min(h, w)) * float(radius_ratio))
         num = 20
         return [
             [
@@ -258,13 +258,19 @@ def convert(
     vis: bool = False,  # kept for backward compatibility
     save_mask: bool = True,  # kept for backward compatibility
     train_valid_split: float = 0.7,
-    radius_ratio: float = 0.2,
+    radius_ratio: float = 0.01,
     output_mode: str = "segmentation",
 ) -> Iterator[Tuple[int, str]]:
     """Convert LabelMe directory to train/valid COCO JSON files.
 
     Args:
-        output_mode: "segmentation" (default) or "keypoints".
+        radius_ratio: Fraction of the shorter image dimension used as the
+            circle radius when converting a ``point`` shape to a polygon mask
+            (segmentation mode only).  Defaults to ``0.01`` (1 %%), which
+            produces a small ~5 px dot on a 512-pixel image.  The old default
+            of 0.2 created enormous 100-pixel blobs; reduce this value if you
+            still see oversized circular masks.
+        output_mode: ``"segmentation"`` (default) or ``"keypoints"``.
 
     Yields:
         (progress_percent, json_path)
@@ -576,14 +582,22 @@ def convert(
                 elif xy_visible:
                     xs = [xy[0] for xy in xy_visible]
                     ys = [xy[1] for xy in xy_visible]
-                    pad = 2.0
+                    # Scale padding with image size so the fallback bbox is not
+                    # unrealistically tiny (e.g. just 4×4 px with pad=2).
+                    pad = max(10.0, float(min(w, h)) * 0.05)
                     x0 = max(0.0, min(xs) - pad)
                     y0 = max(0.0, min(ys) - pad)
-                    x1 = min(float(w - 1), max(xs) + pad)
-                    y1 = min(float(h - 1), max(ys) + pad)
-                    bbox = [x0, y0, max(1.0, x1 - x0), max(1.0, y1 - y0)]
-                    area = float(bbox[2] * bbox[3])
-                    segmentations = []
+                    x1 = min(float(w), max(xs) + pad)
+                    y1 = min(float(h), max(ys) + pad)
+                    bw = max(1.0, x1 - x0)
+                    bh = max(1.0, y1 - y0)
+                    bbox = [x0, y0, bw, bh]
+                    area = float(bw * bh)
+                    # Provide a rectangular segmentation polygon so downstream
+                    # COCO tools never receive an empty segmentation list.
+                    segmentations = [
+                        [x0, y0, x0 + bw, y0, x0 + bw, y0 + bh, x0, y0 + bh]
+                    ]
                 else:
                     # No geometry and no keypoints => skip.
                     continue
