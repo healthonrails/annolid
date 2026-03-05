@@ -115,12 +115,12 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
 - To cap slow tool calls in the agent loop, tune `Agent Runtime → Agent tool timeout` (seconds).
 - To force browser-first web handling, keep `Agent Runtime → Prefer MCP browser for web tasks` enabled.
 - Annolid Bot can now run model inference directly on videos via tools: use `video_list_inference_models` to discover compatible `predict` plugins, then `video_run_model_inference` to execute `annolid-run predict <model>` against a video path.
-- **ClawHub Skills**: Search and install agent skills from ClawHub directly in Annolid Bot. See the [ClawHub Skills Tutorial](docs/source/agent_clawhub_tutorial.md).
+- **ClawHub Skills**: Search and install agent skills from ClawHub directly in Annolid Bot. See the tutorials hub at <https://annolid.com/tutorials/>.
 - **Model Context Protocol (MCP)**: Extend Annolid Bot with external tools and data sources. See the [MCP Configuration and Usage Tutorial](docs/mcp.md) for details.
 - **Annolid Bot Extras Bundle**: Install common Annolid Bot optional integrations (WhatsApp + Google Calendar + MCP) with `pip install "annolid[annolid_bot]"`.
-- **WhatsApp Channel**: Configure Annolid Bot with default local QR bridge mode (safer, no public webhook) or optional Cloud API mode using the [WhatsApp Setup Tutorial](docs/source/agent_whatsapp_tutorial.md).
-- **Zulip Channel**: Configure Annolid Bot for Zulip stream/PM messaging with the [Zulip Setup Tutorial](docs/source/agent_zulip_tutorial.md).
-- **Background Services Setup**: For optional Email/WhatsApp/Google Calendar startup and troubleshooting, see the [Background Services Tutorial](docs/source/agent_background_services_tutorial.md).
+- **WhatsApp Channel**: Configure Annolid Bot with default local QR bridge mode (safer, no public webhook) or optional Cloud API mode. See <https://annolid.com/tutorials/>.
+- **Zulip Channel**: Configure Annolid Bot for Zulip stream/PM messaging. See <https://annolid.com/tutorials/>.
+- **Background Services Setup**: For optional Email/WhatsApp/Google Calendar startup and troubleshooting, see <https://annolid.com/tutorials/>.
 - Summarise annotated behavior events into a timebudget report (GUI: *File → Behavior Time Budget*; CLI example with 60 s bins and a project schema):
   ```bash
   python -m annolid.behavior.time_budget exported_events.csv \
@@ -145,7 +145,7 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
 - The GUI runner now auto-downloads whichever checkpoint you select in the dialog, so you only need to invoke the helper when you want to prefetch models ahead of time.
 - Depth run now streams inference frame-by-frame, emits a single `depth.ndjson` record alongside the video (with per-frame base64 depth PNGs plus scale metadata) instead of writing separate JSON files per frame, and still shows a live blended overlay while processing. Enable `save_depth_video` or `save_depth_frames` only if you also need rendered outputs.
 - Optional exports include `depth_frames/`, `<video_stem>_vis.mp4`, point cloud CSVs, `*.npz`, and `*_depths_exr/` (EXR requires `OpenEXR`/`Imath`).
-- Full walkthrough: `docs/source/video_depth_anything.md`.
+- Full walkthrough and updates: <https://annolid.com/workflows/>.
 
 ## CoWTracker Setup
 
@@ -219,7 +219,7 @@ required vendored file list and packaging notes.
 - If you see `qtpy.QtBindingsNotFoundError`, install GUI dependencies in the active environment: `pip install -e ".[gui]"` (source) or `pip install "annolid[gui]"` (PyPI).
 - For model training/inference from the terminal, use `annolid-run list-models`, `annolid-run train <model> --help-model`, and `annolid-run predict <model> --help-model`.
 - Shared YAML run-configs are supported for multiple training plugins (for example `dino_kpseg`, `maskrcnn_detectron2`, `yolo`, `behavior_classifier`): `annolid-run train <model> --run-config annolid/configs/runs/<template>.yaml` (CLI flags still override YAML fields).
-- YOLOE-26 prompting (text, visual, prompt-free) is available via `annolid-run predict yolo_labelme` and in the GUI video inference workflow (see `docs/source/yoloe_prompting.md`).
+- YOLOE-26 prompting (text, visual, prompt-free) is available via `annolid-run predict yolo_labelme` and in the GUI video inference workflow (see <https://annolid.com/workflows/>).
 - For an interactive TensorBoard embedding projector view of DinoKPSEG DINOv3 patch features, run `annolid-run dino-kpseg-embeddings --data /path/to/data.yaml [--weights /path/to/best.pt]` and then `tensorboard --logdir <run_dir>/tensorboard` (some DINOv3 checkpoints require a Hugging Face token).
 
 ## Docker

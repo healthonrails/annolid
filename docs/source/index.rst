@@ -4,7 +4,7 @@ Welcome to annolid's documentation!
 .. note::
 
    The modern, canonical docs are now published at:
-   https://annolid.com/portal/
+   https://annolid.com/
 
 Annolid supports a video-first workflow: open a video, jump to informative frames, label, track, and export.
 Frame extraction is still available as an optional image-directory workflow when needed.
@@ -13,23 +13,6 @@ Frame extraction is still available as an optional image-directory workflow when
    :maxdepth: 2
 
    guide
-   install
-   read_pdf_with_ai_voice
-   extract_frames
-   track_animals
-   video_depth_anything
-   image_editing
-   dino_kpseg
-   agent_tools
-   agent_provider_setup
-   agent_background_services_tutorial
-   agent_google_calendar_tutorial
-   agent_clawhub_tutorial
-   agent_whatsapp_tutorial
-   llm_key_security
-   yoloe_prompting
-   keypoints_definitions
-   faqs
 
 Indices and tables
 ==================

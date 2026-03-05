@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Sync a built MkDocs portal into a site repository.
+# Sync a built MkDocs docs site into a target repository.
 #
 # Defaults:
-# - source build dir: site_portal
+# - source build dir: site_docs
 # - destination repo root: book/healthonrails.github.io
 # - target path in destination: portal (use "/" to sync into site root)
 
-SRC_DIR="${1:-site_portal}"
+SRC_DIR="${1:-site_docs}"
 DEST_DIR="${2:-book/healthonrails.github.io}"
 TARGET_PATH="${3:-portal}"
 
 if [[ ! -d "$SRC_DIR" ]]; then
-  echo "Source portal build directory does not exist: $SRC_DIR" >&2
+  echo "Source docs build directory does not exist: $SRC_DIR" >&2
   exit 1
 fi
 
@@ -35,8 +35,8 @@ fi
 
 touch "$DEST_DIR/.nojekyll"
 
-# Keep legacy URLs forwarding to canonical portal pages.
+# Keep legacy URLs forwarding to canonical docs pages.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 "$SCRIPT_DIR/write_legacy_redirects.sh" "$DEST_DIR"
 
-echo "Portal docs synced."
+echo "Docs site synced."

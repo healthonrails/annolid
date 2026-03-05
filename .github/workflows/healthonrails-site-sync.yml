@@ -6,14 +6,14 @@ on:
     paths:
       - "website/**"
       - "book/**"
-      - "docs_portal/**"
+      - "docs/**"
       - "mkdocs.yml"
       - "book/requirements.txt"
-      - "docs/requirements_mkdocs.txt"
       - "scripts/sync_book_build_to_site_root.sh"
+      - "scripts/sync_docs_to_site_root.sh"
       - "scripts/sync_landing_page_to_site_root.sh"
-      - "scripts/sync_docs_portal_to_site_root.sh"
       - "scripts/write_legacy_redirects.sh"
+      - ".github/workflows/docs-pages.yml"
       - ".github/workflows/healthonrails-site-sync.yml"
   workflow_dispatch:
 
@@ -45,12 +45,12 @@ jobs:
 
           WEBSITE_CHANGED=false
           BOOK_CHANGED=false
-          PORTAL_CHANGED=false
+          DOCS_CHANGED=false
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             WEBSITE_CHANGED=true
             BOOK_CHANGED=true
-            PORTAL_CHANGED=true
+            DOCS_CHANGED=true
           else
             BEFORE="${{ github.event.before }}"
             AFTER="${{ github.sha }}"
@@ -65,29 +65,29 @@ jobs:
             if echo "$CHANGED_FILES" | grep -Eq '^(book/|scripts/sync_book_build_to_site_root.sh|scripts/write_legacy_redirects.sh)'; then
               BOOK_CHANGED=true
             fi
-            if echo "$CHANGED_FILES" | grep -Eq '^(docs_portal/|mkdocs.yml|docs/requirements_mkdocs.txt|scripts/sync_docs_portal_to_site_root.sh|scripts/write_legacy_redirects.sh)'; then
-              PORTAL_CHANGED=true
+            if echo "$CHANGED_FILES" | grep -Eq '^(docs/|mkdocs.yml|scripts/sync_docs_to_site_root.sh|scripts/write_legacy_redirects.sh)'; then
+              DOCS_CHANGED=true
             fi
           fi
 
-          # Backward compatibility: website-surface changes trigger a portal rebuild/deploy.
+          # Backward compatibility: website-surface changes trigger docs rebuild/deploy.
           if [[ "$WEBSITE_CHANGED" == "true" ]]; then
-            PORTAL_CHANGED=true
+            DOCS_CHANGED=true
           fi
 
           DEPLOY_NEEDED=false
-          if [[ "$BOOK_CHANGED" == "true" || "$PORTAL_CHANGED" == "true" ]]; then
+          if [[ "$BOOK_CHANGED" == "true" || "$DOCS_CHANGED" == "true" ]]; then
             DEPLOY_NEEDED=true
           fi
 
           echo "website_changed=$WEBSITE_CHANGED" >> "$GITHUB_OUTPUT"
           echo "book_changed=$BOOK_CHANGED" >> "$GITHUB_OUTPUT"
-          echo "portal_changed=$PORTAL_CHANGED" >> "$GITHUB_OUTPUT"
+          echo "docs_changed=$DOCS_CHANGED" >> "$GITHUB_OUTPUT"
           echo "deploy_needed=$DEPLOY_NEEDED" >> "$GITHUB_OUTPUT"
 
           echo "website_changed=$WEBSITE_CHANGED"
           echo "book_changed=$BOOK_CHANGED"
-          echo "portal_changed=$PORTAL_CHANGED"
+          echo "docs_changed=$DOCS_CHANGED"
           echo "deploy_needed=$DEPLOY_NEEDED"
 
       - name: Validate deploy token is configured
@@ -101,12 +101,14 @@ jobs:
       - name: Skip when no deployable surface changed
         if: steps.changes.outputs.deploy_needed != 'true'
         run: |
-          echo "No book/portal deployable changes detected. Exiting without external sync."
+          echo "No book/docs deployable changes detected. Exiting without external sync."
 
       - name: Set up Python 3.11
+        if: steps.changes.outputs.deploy_needed == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Set up uv and virtual environment
         if: steps.changes.outputs.deploy_needed == 'true'
         run: |
@@ -121,8 +123,8 @@ jobs:
           uv pip install --no-cache -r book/requirements.txt
           jupyter-book build book
 
-      - name: Build docs portal
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.changes.outputs.portal_changed == 'true'
+      - name: Build docs site
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.changes.outputs.docs_changed == 'true'
         run: |
           source .venv/bin/activate
           uv pip install --no-cache -r docs/requirements_mkdocs.txt
@@ -140,15 +142,15 @@ jobs:
         run: |
           ./scripts/sync_book_build_to_site_root.sh book/_build/html site-repo
 
-      - name: Sync portal content to site root
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.changes.outputs.portal_changed == 'true'
+      - name: Sync docs content to site root
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.changes.outputs.docs_changed == 'true'
         run: |
-          ./scripts/sync_docs_portal_to_site_root.sh site_portal site-repo /
+          ./scripts/sync_docs_to_site_root.sh site_docs site-repo /
 
-      - name: Sync portal compatibility path
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.changes.outputs.portal_changed == 'true'
+      - name: Sync docs compatibility path
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.changes.outputs.docs_changed == 'true'
         run: |
-          ./scripts/sync_docs_portal_to_site_root.sh site_portal site-repo portal
+          ./scripts/sync_docs_to_site_root.sh site_docs site-repo portal
 
       - name: Ensure legacy redirect stubs
         if: steps.changes.outputs.deploy_needed == 'true'

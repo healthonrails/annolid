@@ -1,10 +1,26 @@
-site_name: Annolid Documentation Portal
-site_description: Unified docs portal for Annolid installation, workflows, and references.
+site_name: Annolid Docs
+site_description: Unified Annolid documentation.
 site_url: https://annolid.com/
 repo_url: https://github.com/healthonrails/annolid
 repo_name: healthonrails/annolid
-docs_dir: docs_portal
-site_dir: site_portal
+docs_dir: docs
+site_dir: site_docs
+
+exclude_docs: |
+  source/
+  tutorials/
+  _build/
+  examples/
+  TODO_Qwen3VL_Ollama.md
+  event_labeling_plan.md
+  gui_decomposition_plan.md
+  install_with_uv.md
+  mcp.md
+  one_line_install_choices.md
+  sam3d.md
+  updating_jupyter_book_and_github_pages.md
+  Makefile
+  make.bat
 
 theme:
   name: material

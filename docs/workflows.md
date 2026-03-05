@@ -20,6 +20,4 @@ Annolid supports direct video labeling without mandatory frame extraction.
 
 ## Advanced References
 
-- Tracking guide: [docs/source/track_animals.md](https://github.com/healthonrails/annolid/blob/main/docs/source/track_animals.md)
-- Frame extraction reference: [docs/source/extract_frames.md](https://github.com/healthonrails/annolid/blob/main/docs/source/extract_frames.md)
 - Book walkthrough: [book/content/README.md](https://github.com/healthonrails/annolid/blob/main/book/content/README.md)

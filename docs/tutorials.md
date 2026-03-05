@@ -23,5 +23,3 @@ This page centralizes practical Annolid tutorials in the new portal design.
 ## Additional Learning Paths
 
 - Book start page: [book/content/README.md](https://github.com/healthonrails/annolid/blob/main/book/content/README.md)
-- Sphinx track guide: [docs/source/track_animals.md](https://github.com/healthonrails/annolid/blob/main/docs/source/track_animals.md)
-- Agent workflows: [docs/source/agent_tools.md](https://github.com/healthonrails/annolid/blob/main/docs/source/agent_tools.md)

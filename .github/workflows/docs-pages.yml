@@ -1,35 +1,33 @@
-name: Annolid Docs Portal Pages
+name: Annolid Docs Pages
 
 on:
   push:
     branches: [ main ]
     paths:
-      - "docs_portal/**"
+      - "docs/**"
       - "mkdocs.yml"
-      - "docs/requirements_mkdocs.txt"
-      - "scripts/sync_docs_portal_to_site_root.sh"
+      - "scripts/sync_docs_to_site_root.sh"
       - "scripts/write_legacy_redirects.sh"
-      - ".github/workflows/docs-portal-pages.yml"
+      - ".github/workflows/docs-pages.yml"
   pull_request:
     branches: [ main ]
     paths:
-      - "docs_portal/**"
+      - "docs/**"
       - "mkdocs.yml"
-      - "docs/requirements_mkdocs.txt"
-      - "scripts/sync_docs_portal_to_site_root.sh"
+      - "scripts/sync_docs_to_site_root.sh"
       - "scripts/write_legacy_redirects.sh"
-      - ".github/workflows/docs-portal-pages.yml"
+      - ".github/workflows/docs-pages.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: annolid-docs-portal-pages-${{ github.ref }}
+  group: annolid-docs-pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-portal:
+  build-docs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -42,6 +40,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Set up uv and virtual environment
         run: |
           python -m pip install --upgrade pip
@@ -53,25 +52,25 @@ jobs:
           source .venv/bin/activate
           uv pip install --no-cache -r docs/requirements_mkdocs.txt
 
-      - name: Build docs portal
+      - name: Build docs site
         run: |
           source .venv/bin/activate
           mkdocs build --strict --clean --config-file mkdocs.yml
 
-      - name: Upload portal artifact
+      - name: Upload docs artifact
         uses: actions/upload-artifact@v4
         with:
-          name: annolid-docs-portal-html
-          path: site_portal
+          name: annolid-docs-html
+          path: site_docs
           if-no-files-found: error
 
   deploy-gh-pages:
-    needs: build-portal
+    needs: build-docs
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: annolid-gh-pages-portal
+      group: annolid-gh-pages-docs
       cancel-in-progress: true
     permissions:
       contents: write
@@ -80,24 +79,35 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - name: Download portal artifact
+
+      - name: Download docs artifact
         uses: actions/download-artifact@v4
         with:
-          name: annolid-docs-portal-html
-          path: portal-html
+          name: annolid-docs-html
+          path: docs-html
 
-      - name: Publish portal to gh-pages/portal
+      - name: Publish docs to gh-pages root and /portal
         run: |
           git clone --depth 1 --branch gh-pages \
             "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gh-pages
+
+          # Root docs site (preserve /book and CNAME)
+          rsync -a --delete \
+            --exclude 'book/' \
+            --exclude 'CNAME' \
+            docs-html/ gh-pages/
+
+          # Compatibility mirror at /portal
           mkdir -p gh-pages/portal
-          rsync -a --delete portal-html/ gh-pages/portal/
+          rsync -a --delete docs-html/ gh-pages/portal/
+
           ./scripts/write_legacy_redirects.sh gh-pages
+
           cd gh-pages
           touch .nojekyll
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add portal .nojekyll
-          git diff --cached --quiet && echo "No gh-pages portal changes." && exit 0
-          git commit -m "Update Annolid docs portal"
+          git add -A
+          git diff --cached --quiet && echo "No gh-pages docs changes." && exit 0
+          git commit -m "Update Annolid docs site"
           git push origin gh-pages

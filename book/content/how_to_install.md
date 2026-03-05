@@ -1,7 +1,7 @@
 # Installation Options
 
 > Canonical installation docs now live in the Annolid Docs Portal:
-> <https://annolid.com/portal/installation/>
+> <https://annolid.com/installation/>
 
 This page is a quick-start summary.
 The canonical, detailed install instructions live in:
