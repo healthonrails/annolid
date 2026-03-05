@@ -23,6 +23,7 @@ fi
 
 echo "Syncing book build from '$SRC_DIR' -> '$DEST_DIR'"
 rsync -a --delete \
+  --exclude '.git/' \
   --exclude 'index.html' \
   --exclude 'assets/' \
   --exclude 'CNAME' \

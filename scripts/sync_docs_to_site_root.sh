@@ -25,12 +25,15 @@ fi
 if [[ "$TARGET_PATH" == "/" || "$TARGET_PATH" == "." || "$TARGET_PATH" == "root" ]]; then
   # Root sync powers annolid.com directly; preserve /book and CNAME.
   rsync -a --delete \
+    --exclude '.git/' \
     --exclude 'book/' \
     --exclude 'CNAME' \
     "$SRC_DIR/" "$DEST_DIR/"
 else
   mkdir -p "$DEST_DIR/$TARGET_PATH"
-  rsync -a --delete "$SRC_DIR/" "$DEST_DIR/$TARGET_PATH/"
+  rsync -a --delete \
+    --exclude '.git/' \
+    "$SRC_DIR/" "$DEST_DIR/$TARGET_PATH/"
 fi
 
 touch "$DEST_DIR/.nojekyll"

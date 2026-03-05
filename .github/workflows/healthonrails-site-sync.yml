@@ -185,6 +185,8 @@ jobs:
         if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
         run: |
           cd site-repo
+          test -d .git
+          git remote get-url origin | grep -F "${SITE_REPO}.git"
           git config user.email "action@github.com"
           git config user.name "GitHub Action"
           git add -A
