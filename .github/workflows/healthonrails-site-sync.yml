@@ -89,6 +89,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Set up uv and virtual environment
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir uv
+          uv venv .venv
 
       - name: Validate website source
         if: steps.changes.outputs.website_changed == 'true'
@@ -99,15 +104,15 @@ jobs:
       - name: Build Jupyter Book
         if: steps.changes.outputs.book_changed == 'true'
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install --no-cache-dir -r book/requirements.txt
+          source .venv/bin/activate
+          uv pip install --no-cache -r book/requirements.txt
           jupyter-book build book
 
       - name: Build docs portal
         if: steps.changes.outputs.portal_changed == 'true'
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install --no-cache-dir -r docs/requirements_mkdocs.txt
+          source .venv/bin/activate
+          uv pip install --no-cache -r docs/requirements_mkdocs.txt
           mkdocs build --clean --config-file mkdocs.yml
 
       - name: Clone site repository

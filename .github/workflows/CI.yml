@@ -31,25 +31,33 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: 3.11
-    - name: Install dependencies
+    - name: Set up uv and virtual environment
       run: |
         python -m pip install --upgrade pip
-        python -m pip install --no-cache-dir flake8 pytest
+        python -m pip install --no-cache-dir uv
+        uv venv .venv
+    - name: Install dependencies
+      run: |
+        source .venv/bin/activate
+        uv pip install --no-cache flake8 pytest
         # Avoid pulling huge CUDA runtime wheels in CI: install CPU-only PyTorch explicitly,
         # then install Annolid (and its declared dependencies) from pyproject.toml.
-        python -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
-        python -m pip install --no-cache-dir ".[gui]"
+        uv pip install --no-cache --index-url https://download.pytorch.org/whl/cpu torch torchvision
+        uv pip install --no-cache ".[gui]"
     - name: Lint with flake8
       run: |
+        source .venv/bin/activate
         # stop the build if there are Python syntax errors or undefined names
         flake8 annolid tests --count --select=E9,F63,F7,F82 --exclude=annolid/segmentation/SAM/segment-anything-2 --show-source --statistics
         # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
         flake8 annolid tests --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics --exclude=annolid/segmentation/SAM/segment-anything-2
     - name: Test with pytest
       run: |
+        source .venv/bin/activate
         pytest
     - name: Agent/update integration smoke tests
       run: |
+        source .venv/bin/activate
         pytest -q \
           tests/test_agent_skill_precedence.py \
           tests/test_agent_memory_flush.py \
@@ -57,6 +65,7 @@ jobs:
           tests/test_update_rollback.py
     - name: Agent eval gate (skills/routing/prompt changes)
       run: |
+        source .venv/bin/activate
         if [ "${{ github.event_name }}" = "pull_request" ]; then
           git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.sha }}" > /tmp/changed_files.txt
         else
@@ -82,9 +91,14 @@ jobs:
           --report /tmp/agent_eval_report.json \
           --max-regressions 0 \
           --min-pass-rate 0.0
-    - uses: ammaraskar/sphinx-action@0.4
-      with:
-        docs-folder: "docs/"
+    - name: Install Sphinx docs dependencies
+      run: |
+        source .venv/bin/activate
+        uv pip install --no-cache -r docs/requirements.txt
+    - name: Build Sphinx docs
+      run: |
+        source .venv/bin/activate
+        make -C docs html
     # Publish built docs to gh-pages branch.
     # ===============================
     - name: Commit documentation changes

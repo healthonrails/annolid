@@ -27,9 +27,9 @@ source .venv/bin/activate
 Install or refresh docs dependencies:
 
 ```bash
-pip install -r docs/requirements.txt
-pip install -r docs/requirements_mkdocs.txt
-pip install -r book/requirements.txt
+uv pip install -r docs/requirements.txt
+uv pip install -r docs/requirements_mkdocs.txt
+uv pip install -r book/requirements.txt
 ```
 
 Build Sphinx docs:
