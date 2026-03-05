@@ -39,6 +39,8 @@ nav:
   - Home: index.md
   - Installation: installation.md
   - Workflows: workflows.md
+  - Tutorials: tutorials.md
   - Deployment: deployment.md
   - Migration Plan: migration.md
   - Redirect Map: redirects.md
+  - References: reference.md

@@ -1,19 +1,23 @@
 # Annolid: Start Here
 
+> Canonical docs now live in the Annolid Docs Portal:
+> <https://annolid.com/portal/>
+
 [![Annolid CI](https://github.com/healthonrails/annolid/actions/workflows/CI.yml/badge.svg)](https://github.com/healthonrails/annolid/actions/workflows/CI.yml)
 [![Release](https://github.com/healthonrails/annolid/actions/workflows/release.yml/badge.svg)](https://github.com/healthonrails/annolid/actions/workflows/release.yml)
 [![Publish to PyPI](https://github.com/healthonrails/annolid/actions/workflows/annolid-publish.yml/badge.svg)](https://github.com/healthonrails/annolid/actions/workflows/annolid-publish.yml)
 
 Annolid is a practical toolkit for annotation, segmentation, tracking, and behavior analysis in research videos.
-This book gives a guided path from installation to reproducible end-to-end workflows.
+This book remains available as a compatibility layer and curated walkthrough collection.
+For the latest, unified user docs, use the Docs Portal.
 
 ## Start Here
 
-1. [Install Annolid](how_to_install.md)
-2. [Prepare your videos](video_preparation.md)
-3. Open a video, navigate to an informative frame, and [label images](labelling_images.md)
-4. [Track with Cutie](tracking_with_Cutie.md)
-5. [Train and evaluate models](model_training.md)
+1. [Open the Docs Portal](https://annolid.com/portal/)
+2. [Install Annolid](https://annolid.com/portal/installation/)
+3. [Run the video-first workflow](https://annolid.com/portal/workflows/)
+4. [Explore tutorials](https://annolid.com/portal/tutorials/)
+5. Use this book for legacy chapter-style walkthroughs when needed.
 
 `extract_frames.md` remains available for workflows where frame sampling is preferred, but it is optional for standard video-first labeling.
 
