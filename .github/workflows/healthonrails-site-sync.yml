@@ -173,7 +173,7 @@ jobs:
           ./scripts/sync_docs_to_site_root.sh "$DOCS_BUILD_DIR" site-repo portal
 
       - name: Sync landing page to site root
-        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && steps.changes.outputs.website_changed == 'true'
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
         run: |
           ./scripts/sync_landing_page_to_site_root.sh website site-repo
 
