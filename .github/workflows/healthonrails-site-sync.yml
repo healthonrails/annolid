@@ -78,10 +78,9 @@ jobs:
             fi
           fi
 
-          DEPLOY_NEEDED=false
-          if [[ "$WEBSITE_CHANGED" == "true" || "$BOOK_CHANGED" == "true" || "$DOCS_CHANGED" == "true" ]]; then
-            DEPLOY_NEEDED=true
-          fi
+          # Always attempt external sync on main pushes/workflow_dispatch.
+          # Changed-surface flags still control which expensive builds run.
+          DEPLOY_NEEDED=true
 
           echo "website_changed=$WEBSITE_CHANGED" >> "$GITHUB_OUTPUT"
           echo "book_changed=$BOOK_CHANGED" >> "$GITHUB_OUTPUT"
