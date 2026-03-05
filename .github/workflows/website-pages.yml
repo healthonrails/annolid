@@ -1,19 +1,17 @@
-name: Annolid Website Pages
+name: Annolid Site Surface Check
 
 on:
   push:
     branches: [ main ]
     paths:
-      - "website/**"
-      - "scripts/sync_landing_page_to_site_root.sh"
-      - "scripts/write_legacy_redirects.sh"
+      - "docs_portal/**"
+      - "mkdocs.yml"
       - ".github/workflows/website-pages.yml"
   pull_request:
     branches: [ main ]
     paths:
-      - "website/**"
-      - "scripts/sync_landing_page_to_site_root.sh"
-      - "scripts/write_legacy_redirects.sh"
+      - "docs_portal/**"
+      - "mkdocs.yml"
       - ".github/workflows/website-pages.yml"
   workflow_dispatch:
 
@@ -21,14 +19,14 @@ permissions:
   contents: read
 
 jobs:
-  validate-website:
+  validate-site-surface:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - name: Validate landing files
+      - name: Validate combined site source
         run: |
-          test -f website/index.html
-          test -d website/assets
+          test -f docs_portal/index.md
+          test -f mkdocs.yml

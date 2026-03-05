@@ -19,9 +19,9 @@ This portal is the modern documentation entry point. It gives you a clean path f
 
 Annolid currently publishes docs from multiple sources while migration is in progress:
 
-- `website/`: public landing page
+- `docs_portal/`: canonical user-facing site at `annolid.com`
 - `book/`: Jupyter Book content
 - `docs/`: Sphinx technical docs
-- `docs_portal/`: MkDocs Material portal (this site)
+- `website/`: legacy landing source retained for backward compatibility
 
-The long-term direction is to use this portal as the canonical user-facing entry point and keep deep technical references in focused sections.
+The current direction is to keep this portal as the canonical entry point and retain deep technical references in focused legacy sections during migration.

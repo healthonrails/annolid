@@ -15,7 +15,7 @@ Move from fragmented documentation sources to a professional, maintainable porta
 ## Immediate Status
 
 - MkDocs Material portal added.
-- Automated deployment added for `/portal`.
+- Automated deployment added for site root (`/`) with a compatibility mirror at `/portal`.
 - Installation and workflow guidance consolidated at portal level.
 - Tutorials and reference index migrated into portal-native pages.
 

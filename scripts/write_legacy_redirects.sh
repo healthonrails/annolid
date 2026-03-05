@@ -34,10 +34,10 @@ write_redirect() {
 HTML
 }
 
-write_redirect "content/README.html" "https://annolid.com/portal/"
-write_redirect "content/how_to_install.html" "https://annolid.com/portal/installation/"
-write_redirect "extract_frames.html" "https://annolid.com/portal/workflows/"
-write_redirect "install.html" "https://annolid.com/portal/installation/"
+write_redirect "content/README.html" "https://annolid.com/"
+write_redirect "content/how_to_install.html" "https://annolid.com/installation/"
+write_redirect "extract_frames.html" "https://annolid.com/workflows/"
+write_redirect "install.html" "https://annolid.com/installation/"
 
 touch "$DEST_DIR/.nojekyll"
 

@@ -1,6 +1,6 @@
 site_name: Annolid Documentation Portal
 site_description: Unified docs portal for Annolid installation, workflows, and references.
-site_url: https://annolid.com/portal/
+site_url: https://annolid.com/
 repo_url: https://github.com/healthonrails/annolid
 repo_name: healthonrails/annolid
 docs_dir: docs_portal

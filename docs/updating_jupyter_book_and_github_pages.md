@@ -4,15 +4,15 @@ This repository contains two documentation surfaces:
 
 - Sphinx docs from `docs/` (published at site root).
 - Jupyter Book from `book/` (published under `/book/`).
-- MkDocs portal from `docs_portal/` (published under `/portal/`).
-- Landing page source in `website/` (`index.html` + `assets/`) for `annolid.com`.
+- MkDocs portal from `docs_portal/` (canonical for `annolid.com` root, mirrored at `/portal/` for compatibility).
+- `website/` is now a legacy surface and is no longer the primary deploy source for `annolid.com`.
 
 They are deployed by separate workflows:
 
 - `.github/workflows/CI.yml`: Sphinx docs (`docs/`) to this repo `gh-pages` root.
 - `.github/workflows/book-pages.yml`: Jupyter Book (`book/`) to this repo `gh-pages/book/`.
 - `.github/workflows/docs-portal-pages.yml`: MkDocs portal (`docs_portal/`) to this repo `gh-pages/portal/`.
-- `.github/workflows/website-pages.yml`: validates `website/` source files.
+- `.github/workflows/website-pages.yml`: validates combined site source files (`docs_portal/` + `mkdocs.yml`).
 - `.github/workflows/healthonrails-site-sync.yml`: single source of truth for syncing `annolid.com` content to `healthonrails/healthonrails.github.io`.
 - `.github/workflows/docs-quality.yml`: quality gate for portal docs (strict MkDocs build + markdown lint).
 
@@ -72,8 +72,8 @@ Book deployment (`book-pages.yml`):
 
 Website deployment (`website-pages.yml`):
 
-1. Trigger on any `website/**` change.
-2. Validate website files.
+1. Trigger on `docs_portal/**` and `mkdocs.yml` changes.
+2. Validate combined site source files.
 
 Portal deployment (`docs-portal-pages.yml`):
 
@@ -83,9 +83,9 @@ Portal deployment (`docs-portal-pages.yml`):
 
 External site sync (`healthonrails-site-sync.yml`):
 
-1. Detect which surfaces changed (`website`, `book`, `portal`).
+1. Detect which surfaces changed (`book`, `portal`).
 2. Build only changed surfaces.
-3. Sync them into `healthonrails/healthonrails.github.io` in one atomic deploy commit.
+3. Sync portal build into site root (`/`) and compatibility path (`/portal/`) in one atomic deploy commit.
 4. Ensure legacy redirect stubs are written on every deploy.
 
 No manual branch switching or rsync steps are required.
@@ -95,7 +95,7 @@ No manual branch switching or rsync steps are required.
 `annolid.com` is synced by `.github/workflows/healthonrails-site-sync.yml`:
 
 1. Add secret `HEALTHONRAILS_GHIO_TOKEN` in this repo.
-2. Push changes under `website/**`, `book/**`, or `docs_portal/**`.
+2. Push changes under `book/**` or `docs_portal/**`.
 3. The workflow syncs output into the target repo root while preserving:
    - `index.html`
    - `assets/`
@@ -113,8 +113,8 @@ to make sync behavior explicit and reproducible.
 ## Source of truth
 
 - `book/` is the only source of truth for Jupyter Book content.
-- `website/` is the source of truth for the public landing page (`annolid.com` root).
-- `docs_portal/` is the source of truth for the unified docs portal (`/portal`).
+- `docs_portal/` is the source of truth for the public `annolid.com` site.
+- `website/` is a legacy source kept for compatibility and reference.
 - Redirect/deprecation mapping is maintained in `docs_portal/redirects.md`.
 - Local mirror folders like `book/healthonrails.github.io/` are deprecated and ignored by git to prevent divergence.
 
@@ -125,4 +125,4 @@ to make sync behavior explicit and reproducible.
 - Annolid Docs Portal: `https://<org-or-user>.github.io/<repo>/portal/`.
 
 If this repo is mapped to `annolid.com`, the book URL is `https://annolid.com/book/`.
-If this repo is mapped to `annolid.com`, the portal URL is `https://annolid.com/portal/`.
+If this repo is mapped to `annolid.com`, the canonical docs URL is `https://annolid.com/`.
