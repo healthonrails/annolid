@@ -20,10 +20,10 @@ if [[ ! -d "$DEST_DIR" ]]; then
   exit 1
 fi
 
-mkdir -p "$DEST_DIR/assets"
+mkdir -p "$DEST_DIR/website-assets"
 rsync -a --delete \
   --exclude '.git/' \
-  "$SRC_DIR/assets/" "$DEST_DIR/assets/"
+  "$SRC_DIR/assets/" "$DEST_DIR/website-assets/"
 cp "$SRC_DIR/index.html" "$DEST_DIR/index.html"
 
 # Keep legacy URLs forwarding to canonical portal pages.

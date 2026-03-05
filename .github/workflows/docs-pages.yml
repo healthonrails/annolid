@@ -36,6 +36,8 @@ jobs:
   build-docs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      DOCS_BUILD_DIR: ${{ runner.temp }}/annolid-docs-html
 
     steps:
       - uses: actions/checkout@v4
@@ -75,11 +77,11 @@ jobs:
       - name: Build docs site
         run: |
           source .venv/bin/activate
-          mkdocs build --strict --clean --config-file mkdocs.yml
+          mkdocs build --strict --clean --config-file mkdocs.yml --site-dir "$DOCS_BUILD_DIR"
 
       - name: Upload docs artifact
         uses: actions/upload-artifact@v4
         with:
           name: annolid-docs-html
-          path: site_docs
+          path: ${{ env.DOCS_BUILD_DIR }}
           if-no-files-found: error

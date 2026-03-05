@@ -125,4 +125,5 @@ jobs:
       if: steps.docs_changes.outputs.docs_changed == 'true'
       run: |
         source .venv/bin/activate
-        mkdocs build --strict --clean --config-file mkdocs.yml
+        DOCS_BUILD_DIR="$(mktemp -d /tmp/annolid-docs-html.XXXXXX)"
+        mkdocs build --strict --clean --config-file mkdocs.yml --site-dir "$DOCS_BUILD_DIR"

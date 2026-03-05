@@ -31,6 +31,7 @@ jobs:
       group: healthonrails-site-sync
       cancel-in-progress: true
     env:
+      DOCS_BUILD_DIR: ${{ runner.temp }}/annolid-docs-html
       SITE_REPO: healthonrails/healthonrails.github.io
       SITE_BRANCH: gh-pages
 
@@ -63,7 +64,7 @@ jobs:
             echo "Changed files:"
             echo "$CHANGED_FILES"
 
-            if echo "$CHANGED_FILES" | grep -Eq '^(website/|scripts/sync_landing_page_to_site_root.sh|scripts/write_legacy_redirects.sh)'; then
+            if echo "$CHANGED_FILES" | grep -Eq '^(website/|scripts/sync_landing_page_to_site_root.sh|scripts/write_legacy_redirects.sh|\.github/workflows/healthonrails-site-sync\.yml)'; then
               WEBSITE_CHANGED=true
             fi
             if echo "$CHANGED_FILES" | grep -Eq '^(book/|scripts/sync_book_build_to_site_root.sh|scripts/write_legacy_redirects.sh)'; then
@@ -74,13 +75,8 @@ jobs:
             fi
           fi
 
-          # Backward compatibility: website-surface changes trigger docs rebuild/deploy.
-          if [[ "$WEBSITE_CHANGED" == "true" ]]; then
-            DOCS_CHANGED=true
-          fi
-
           DEPLOY_NEEDED=false
-          if [[ "$BOOK_CHANGED" == "true" || "$DOCS_CHANGED" == "true" ]]; then
+          if [[ "$WEBSITE_CHANGED" == "true" || "$BOOK_CHANGED" == "true" || "$DOCS_CHANGED" == "true" ]]; then
             DEPLOY_NEEDED=true
           fi
 
@@ -142,7 +138,7 @@ jobs:
         run: |
           source .venv/bin/activate
           uv pip install --no-cache -r docs/requirements_mkdocs.txt
-          mkdocs build --strict --clean --config-file mkdocs.yml
+          mkdocs build --strict --clean --config-file mkdocs.yml --site-dir "$DOCS_BUILD_DIR"
 
       - name: Prepare site repository checkout
         if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'
@@ -169,12 +165,17 @@ jobs:
       - name: Sync docs content to site root
         if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && steps.changes.outputs.docs_changed == 'true'
         run: |
-          ./scripts/sync_docs_to_site_root.sh site_docs site-repo /
+          ./scripts/sync_docs_to_site_root.sh "$DOCS_BUILD_DIR" site-repo /
 
       - name: Sync docs compatibility path
         if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && steps.changes.outputs.docs_changed == 'true'
         run: |
-          ./scripts/sync_docs_to_site_root.sh site_docs site-repo portal
+          ./scripts/sync_docs_to_site_root.sh "$DOCS_BUILD_DIR" site-repo portal
+
+      - name: Sync landing page to site root
+        if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true' && steps.changes.outputs.website_changed == 'true'
+        run: |
+          ./scripts/sync_landing_page_to_site_root.sh website site-repo
 
       - name: Ensure legacy redirect stubs
         if: steps.changes.outputs.deploy_needed == 'true' && steps.token.outputs.has_token == 'true'

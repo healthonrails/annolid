@@ -4,11 +4,11 @@ set -euo pipefail
 # Sync a built MkDocs docs site into a target repository.
 #
 # Defaults:
-# - source build dir: site_docs
+# - source build dir: site
 # - destination repo root: book/healthonrails.github.io
 # - target path in destination: portal (use "/" to sync into site root)
 
-SRC_DIR="${1:-site_docs}"
+SRC_DIR="${1:-site}"
 DEST_DIR="${2:-book/healthonrails.github.io}"
 TARGET_PATH="${3:-portal}"
 

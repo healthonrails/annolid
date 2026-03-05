@@ -2,9 +2,9 @@
 
 This repository uses a unified documentation source plus legacy references:
 
+- Custom landing page from `website/` (published at `annolid.com/`).
 - MkDocs docs from `docs/` (canonical for `annolid.com`, mirrored at `/portal/` for compatibility).
 - Jupyter Book from `book/` (published under `/book/`).
-- `website/` retained as a legacy compatibility surface.
 
 ## Active Workflows
 
@@ -31,7 +31,7 @@ uv pip install -r docs/requirements_mkdocs.txt
 Build docs locally:
 
 ```bash
-mkdocs build --strict --clean --config-file mkdocs.yml
+mkdocs build --strict --clean --config-file mkdocs.yml --site-dir /tmp/annolid-docs-html
 ```
 
 Build book locally:
@@ -55,12 +55,13 @@ Book build (`book-pages.yml`):
 
 External site sync (`healthonrails-site-sync.yml`):
 
-1. Detect changed surfaces (`docs`, `book`, legacy `website`).
+1. Detect changed surfaces (`website`, `docs`, `book`).
 2. Build only changed surfaces.
-3. Sync docs to custom-domain root (`/`) and compatibility path (`/portal`).
-4. Sync book output to `/book`.
-5. Write legacy redirect stubs.
-6. Skip external sync completely if nothing deployable changed.
+3. Sync docs to the root docs mirror and compatibility path (`/portal`).
+4. Sync the `website/` landing page into site root and its static files into `/website-assets/`.
+5. Sync book output to `/book`.
+6. Write legacy redirect stubs.
+7. Skip external sync completely if nothing deployable changed.
 
 ## Deploy to `healthonrails.github.io`
 
@@ -68,18 +69,21 @@ To publish `annolid.com` from `healthonrails/healthonrails.github.io`:
 
 1. Set repository secret `HEALTHONRAILS_GHIO_TOKEN`.
 2. Ensure the target repository exists at `healthonrails/healthonrails.github.io`.
-3. Push changes under `docs/**` and/or `book/**`.
+3. Push changes under `website/**`, `docs/**`, and/or `book/**`.
 4. The sync workflow will create the target `gh-pages` branch on first deploy if it does not exist yet.
 5. The workflow fails fast when the deploy token is missing instead of silently skipping publication.
 
 ## Source of Truth
 
-- `docs/` is the source of truth for the public docs site.
+- `website/` is the source of truth for the standalone landing page at `annolid.com/`.
+- `docs/` is the source of truth for the MkDocs docs site published at `/portal/` and mirrored at root docs routes for compatibility.
 - `book/` is the source of truth for Jupyter Book content.
 - Redirect/deprecation mapping lives in `docs/redirects.md`.
 
 ## Published URLs
 
-- Canonical docs: `https://annolid.com/`
-- Docs compatibility path: `https://annolid.com/portal/`
+- Landing page: `https://annolid.com/`
+- Landing-page assets: `https://annolid.com/website-assets/`
+- Docs homepage: `https://annolid.com/portal/`
+- Root docs route compatibility examples: `https://annolid.com/installation/`, `https://annolid.com/reference/`
 - Book: `https://annolid.com/book/`

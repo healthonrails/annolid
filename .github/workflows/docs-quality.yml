@@ -58,10 +58,10 @@ jobs:
 
       - name: Validate combined site source
         run: |
+          test -f website/index.html
           test -f docs/index.md
           test -f docs/requirements_mkdocs.txt
           test -f mkdocs.yml
-          test -f website/index.html
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -82,7 +82,8 @@ jobs:
       - name: Build docs in strict mode
         run: |
           source .venv/bin/activate
-          mkdocs build --strict --clean --config-file mkdocs.yml
+          DOCS_BUILD_DIR="$(mktemp -d /tmp/annolid-docs-html.XXXXXX)"
+          mkdocs build --strict --clean --config-file mkdocs.yml --site-dir "$DOCS_BUILD_DIR"
 
       - name: Lint Markdown
         uses: DavidAnson/markdownlint-cli2-action@v20

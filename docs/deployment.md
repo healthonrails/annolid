@@ -15,8 +15,10 @@ Annolid documentation uses a unified MkDocs source under `docs/`.
 - External site repo: `healthonrails/healthonrails.github.io`
 - External site branch: `gh-pages`
 - Published paths:
-  - root (`/`) for docs
-  - `/portal` compatibility mirror
+  - root (`/`) for the landing page from `website/`
+  - `/website-assets` for landing-page-only static assets
+  - `/portal` for the MkDocs docs homepage
+  - root docs routes (`/installation`, `/reference`, etc.) mirrored for compatibility
   - `/book` Jupyter Book
 
 ## Design Principles
@@ -27,3 +29,5 @@ Annolid documentation uses a unified MkDocs source under `docs/`.
 - Use deterministic sync (`rsync --delete`) for reproducible output.
 - Fail fast when external deploy credentials are missing.
 - Bootstrap the external `gh-pages` branch automatically on first deploy.
+- Keep generated MkDocs HTML ephemeral instead of relying on a repo-local `site_docs/` directory.
+- Keep the landing page in `website/` and the MkDocs homepage in `docs/index.md`.
