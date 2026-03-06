@@ -85,8 +85,7 @@ class AgentAnalysisMixin:
             pred_worker: Optional[FlexibleWorker] = None,
             stop_event: Optional[object] = None,
         ):
-            from annolid.core.agent.runner import AgentRunConfig
-            from annolid.core.agent.service import run_agent_to_results
+            from annolid.services.agent import AgentPipelineRequest, run_agent_pipeline
 
             if bool(config.get("anchor_rerun")):
                 try:
@@ -94,67 +93,21 @@ class AgentAnalysisMixin:
                 except Exception as exc:
                     logger.warning("Failed to apply anchor rerun: %s", exc)
 
-            vision_model = None
-            if str(config.get("vision_adapter") or "").strip().lower() == "maskrcnn":
-                from annolid.core.models.adapters.maskrcnn_torchvision import (
-                    TorchvisionMaskRCNNAdapter,
-                )
-
-                vision_model = TorchvisionMaskRCNNAdapter(
-                    pretrained=bool(config.get("vision_pretrained", False)),
-                    score_threshold=float(config.get("vision_score_threshold", 0.5)),
-                    device=str(config.get("vision_device"))
-                    if config.get("vision_device")
-                    else None,
-                )
-            elif (
-                str(config.get("vision_adapter") or "").strip().lower() == "dino_kpseg"
-            ):
-                from annolid.core.models.adapters.dino_kpseg_adapter import (
-                    DinoKPSEGAdapter,
-                )
-
-                weight_path = self._resolve_dino_kpseg_weight(
-                    config.get("vision_weights") or ""
-                )
+            vision_adapter = str(config.get("vision_adapter") or "none")
+            vision_weights = config.get("vision_weights") or None
+            if vision_adapter.strip().lower() == "dino_kpseg":
+                weight_path = self._resolve_dino_kpseg_weight(str(vision_weights or ""))
                 if not weight_path:
                     raise ValueError(
                         "DinoKPSEG weights could not be resolved. "
                         "Select a checkpoint or train a DinoKPSEG model."
                     )
-                vision_model = DinoKPSEGAdapter(
-                    weight_path=weight_path,
-                    device=str(config.get("vision_device"))
-                    if config.get("vision_device")
-                    else None,
-                    score_threshold=float(config.get("vision_score_threshold", 0.5)),
-                )
-
-            llm_model = None
-            if str(config.get("llm_adapter") or "").strip().lower() == "llm_chat":
-                from annolid.core.models.adapters.llm_chat import LLMChatAdapter
-
-                llm_model = LLMChatAdapter(
-                    profile=config.get("llm_profile"),
-                    provider=config.get("llm_provider"),
-                    model=config.get("llm_model"),
-                    persist=bool(config.get("llm_persist", False)),
-                )
-
-            run_config = AgentRunConfig(
-                max_frames=config.get("max_frames"),
-                stride=int(config.get("stride", 1)),
-                include_llm_summary=bool(config.get("include_llm_summary", False)),
-                llm_summary_prompt=str(
-                    config.get("llm_summary_prompt")
-                    or "Summarize the behaviors defined in this behavior spec."
-                ),
-            )
+                vision_weights = str(weight_path)
 
             def _progress(frame_idx: int, written: int, total: int | None) -> None:
                 if total and total > 0:
                     total_frames = total
-                    max_frames = run_config.max_frames
+                    max_frames = config.get("max_frames")
                     if max_frames is not None:
                         total_frames = min(total_frames, int(max_frames))
                     percent = int(round((written / max(total_frames, 1)) * 100))
@@ -165,13 +118,52 @@ class AgentAnalysisMixin:
                 if pred_worker is not None:
                     pred_worker.report_progress(max(0, min(100, percent)))
 
-            return run_agent_to_results(
-                video_path=self.video_file,
-                behavior_spec_path=config.get("schema_path"),
-                results_dir=results_dir,
-                vision_model=vision_model,
-                llm_model=llm_model,
-                config=run_config,
+            return run_agent_pipeline(
+                AgentPipelineRequest(
+                    video_path=str(self.video_file),
+                    behavior_spec_path=(
+                        str(config.get("schema_path"))
+                        if config.get("schema_path")
+                        else None
+                    ),
+                    results_dir=(str(results_dir) if results_dir else None),
+                    max_frames=config.get("max_frames"),
+                    stride=int(config.get("stride", 1)),
+                    include_llm_summary=bool(config.get("include_llm_summary", False)),
+                    llm_summary_prompt=str(
+                        config.get("llm_summary_prompt")
+                        or "Summarize the behaviors defined in this behavior spec."
+                    ),
+                    vision_adapter=vision_adapter,
+                    vision_pretrained=bool(config.get("vision_pretrained", False)),
+                    vision_score_threshold=float(
+                        config.get("vision_score_threshold", 0.5)
+                    ),
+                    vision_device=(
+                        str(config.get("vision_device"))
+                        if config.get("vision_device")
+                        else None
+                    ),
+                    vision_weights=(str(vision_weights) if vision_weights else None),
+                    llm_adapter=str(config.get("llm_adapter") or "none"),
+                    llm_profile=(
+                        str(config.get("llm_profile"))
+                        if config.get("llm_profile")
+                        else None
+                    ),
+                    llm_provider=(
+                        str(config.get("llm_provider"))
+                        if config.get("llm_provider")
+                        else None
+                    ),
+                    llm_model=(
+                        str(config.get("llm_model"))
+                        if config.get("llm_model")
+                        else None
+                    ),
+                    llm_persist=bool(config.get("llm_persist", False)),
+                    reuse_cache=not bool(config.get("no_cache", False)),
+                ),
                 progress_callback=_progress,
                 stop_event=stop_event,
             )

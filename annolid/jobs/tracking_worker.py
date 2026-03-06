@@ -7,12 +7,12 @@ from typing import List, Dict, Optional
 from qtpy.QtCore import QThread, Signal, Slot, QObject
 
 from .tracking_jobs import VideoProcessingJob, JobType
-
-from annolid.segmentation.cutie_vos.processor import SegmentedCutieExecutor
-from annolid.segmentation.cutie_vos.engine import CutieEngine
-from annolid.segmentation.cutie_vos.runtime import (
+from annolid.services.tracking import (
+    create_cutie_engine,
+    create_segmented_cutie_executor,
     is_cutie_model_name,
     resolve_tracking_video_processor_class,
+    run_video_processor_frames,
 )
 
 # Utilities
@@ -278,14 +278,14 @@ class TrackingWorker(QThread):
         num_segments_in_job = len(tracking_segments)
         segments_processed_successfully_count = 0
 
-        shared_cutie_engine: Optional[CutieEngine] = None
+        shared_cutie_engine = None
         if is_cutie_model_name(model_name):
             cutie_engine_config_overrides = {
                 "mem_every": job_config.get("mem_every", 5),
                 "max_mem_frames": job_config.get("t_max_value", 5),
             }
             try:
-                shared_cutie_engine = CutieEngine(
+                shared_cutie_engine = create_cutie_engine(
                     cutie_config_overrides=cutie_engine_config_overrides,
                     device=device,
                 )
@@ -333,7 +333,7 @@ class TrackingWorker(QThread):
                     # Allow video config to override job_config for this segment
                     segment_config = {**job_config, **job.video_specific_config}
 
-                    segment_executor = SegmentedCutieExecutor(
+                    segment_executor = create_segmented_cutie_executor(
                         video_path_str=str(job.video_path),
                         segment_annotated_frame=segment_obj.annotated_frame,
                         segment_start_frame=segment_obj.segment_start_frame,
@@ -499,12 +499,13 @@ class TrackingWorker(QThread):
             # Call existing VideoProcessor.process_video_frames
             # Its `start_frame` must be the actual annotated frame.
             # Its `end_frame` is used for conceptual end; Cutie path inside VP might override.
-            message = vp_instance.process_video_frames(
+            message = run_video_processor_frames(
+                processor=vp_instance,
                 start_frame=annotated_frame_for_vp,
                 end_frame=total_video_frames - 1,
                 is_cutie=use_cutie_backend,
                 is_new_segment=True,  # Treat as a new processing task for VP's internal state mgt
-                **job_config,  # Pass other relevant parameters from job_config
+                extra_kwargs=job_config,  # Pass other relevant parameters from job_config
             )
 
             if (

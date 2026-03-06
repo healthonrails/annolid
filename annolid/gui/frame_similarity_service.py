@@ -9,6 +9,7 @@ import numpy as np
 from qtpy import QtCore
 
 from annolid.core.media.video import CV2Video
+from annolid.services.embedding_search import run_embedding_search
 
 
 @dataclass(frozen=True)
@@ -455,33 +456,11 @@ class _FrameSimilarityWorker(QtCore.QObject):
                     query_frame_index=int(request.query_frame_index),
                 )
 
-            threshold = float(request.threshold)
-            top_k = int(request.top_k)
-            stride = max(1, int(request.stride))
-            max_frames = request.max_frames
-
-            matches: List[FrameSimilarityMatch] = []
             video = CV2Video(video_path)
             try:
                 total_frames = int(video.total_frames())
-                if total_frames <= 0:
-                    raise ValueError("No frames selected for search.")
-                max_steps = (total_frames + stride - 1) // stride
-                if max_frames is not None:
-                    max_steps = min(max_steps, max(1, int(max_frames)))
-                total = int(max_steps)
-                if total <= 0:
-                    raise ValueError("No frames selected for search.")
 
-                step = 0
-                for frame_idx in range(0, total_frames, stride):
-                    if self._stop.stopped():
-                        break
-                    if step >= total:
-                        break
-                    step += 1
-                    if int(frame_idx) == int(request.query_frame_index):
-                        continue
+                def _embed_at_frame(frame_idx: int) -> np.ndarray:
                     frame_rgb = video.load_frame(int(frame_idx))
                     if overlay_shapes and annotation_dir is not None:
                         try:
@@ -496,26 +475,32 @@ class _FrameSimilarityWorker(QtCore.QObject):
                                 )
                         except Exception:
                             pass
-                    vec = backend.embed_frame_rgb(frame_rgb)
-                    sim = float(vec @ query_vec)
-                    if sim >= threshold:
-                        match = FrameSimilarityMatch(
-                            frame_index=int(frame_idx), similarity=sim
-                        )
-                        matches.append(match)
-                        self.matchFound.emit(int(frame_idx), float(sim))
-                    if step % 10 == 0 or step == total:
-                        self.progress.emit(step, total)
+                    return backend.embed_frame_rgb(frame_rgb)
+
+                matches = run_embedding_search(
+                    query_vector=query_vec,
+                    query_frame_index=int(request.query_frame_index),
+                    total_frames=total_frames,
+                    stride=int(request.stride),
+                    max_frames=request.max_frames,
+                    threshold=float(request.threshold),
+                    top_k=int(request.top_k),
+                    embed_frame=_embed_at_frame,
+                    is_stopped=self._stop.stopped,
+                    on_match=lambda m: self.matchFound.emit(
+                        int(m.frame_index), float(m.similarity)
+                    ),
+                    on_progress=lambda step, total: self.progress.emit(step, total),
+                )
             finally:
                 video.release()
 
-            matches.sort(key=lambda m: m.similarity, reverse=True)
             payload = [
                 {
                     "frame_index": int(m.frame_index),
                     "similarity": float(m.similarity),
                 }
-                for m in matches[:top_k]
+                for m in matches
             ]
             self.finished.emit(payload)
         except Exception as exc:  # pragma: no cover - GUI surface

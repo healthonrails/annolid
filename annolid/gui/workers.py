@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import glob
 import json
 import logging
 import os
@@ -24,6 +23,13 @@ from annolid.annotation.labelme2csv import convert_json_to_csv
 from annolid.data.videos import extract_frames_from_videos
 from annolid.gui.label_file import LabelFile
 from annolid.jobs.tracking_jobs import TrackingSegment
+from annolid.services.tracking import (
+    build_tracking_video_processor,
+    create_cutie_engine,
+    create_segmented_cutie_executor,
+    has_tracking_completion_artifacts,
+    run_tracking_video_frames,
+)
 from annolid.utils.files import (
     find_manual_labeled_json_files,
     get_frame_number_from_json,
@@ -212,26 +218,20 @@ class TrackAllWorker(QThread):
         successful_segments = 0
 
         shared_cutie_engine = None
+        cutie_engine_config_overrides = {
+            "mem_every": self.config.get("mem_every", 5),
+            "max_mem_frames": self.config.get("t_max_value", 5),
+        }
         try:
-            from annolid.segmentation.cutie_vos.engine import CutieEngine
-        except Exception:
-            CutieEngine = None  # type: ignore[assignment]
-
-        if CutieEngine is not None:
-            cutie_engine_config_overrides = {
-                "mem_every": self.config.get("mem_every", 5),
-                "max_mem_frames": self.config.get("t_max_value", 5),
-            }
-            try:
-                shared_cutie_engine = CutieEngine(
-                    cutie_config_overrides=cutie_engine_config_overrides,
-                    device=device,
-                )
-            except Exception as exc:
-                error_msg = f"Failed to initialize CutieEngine for {video_name}: {exc}"
-                self.error.emit(error_msg)
-                self.logger.error(error_msg, exc_info=True)
-                return False
+            shared_cutie_engine = create_cutie_engine(
+                cutie_config_overrides=cutie_engine_config_overrides,
+                device=device,
+            )
+        except Exception as exc:
+            error_msg = f"Failed to initialize CutieEngine for {video_name}: {exc}"
+            self.error.emit(error_msg)
+            self.logger.error(error_msg, exc_info=True)
+            return False
 
         for seg_idx, segment in enumerate(segments, start=1):
             if not self.is_running:
@@ -260,20 +260,7 @@ class TrackAllWorker(QThread):
 
             segment_executor = None
             try:
-                try:
-                    from annolid.segmentation.cutie_vos.processor import (
-                        SegmentedCutieExecutor,
-                    )
-                except Exception as exc:
-                    error_msg = (
-                        "Segmented Cutie tracking backend is unavailable. "
-                        f"Install the full Annolid dependencies to enable tracking.\n\n{exc}"
-                    )
-                    self.error.emit(error_msg)
-                    self.logger.error(error_msg, exc_info=True)
-                    return False
-
-                segment_executor = SegmentedCutieExecutor(
+                segment_executor = create_segmented_cutie_executor(
                     video_path_str=str(video_path),
                     segment_annotated_frame=segment.annotated_frame,
                     segment_start_frame=segment.segment_start_frame,
@@ -376,16 +363,12 @@ class TrackAllWorker(QThread):
 
     def is_video_finished(self, video_path, total_frames):
         """Check if a video is already processed."""
-        video_name = Path(video_path).stem
         output_folder = Path(video_path).with_suffix("")
-        csv_pattern = str(output_folder / f"{video_name}*_tracking.csv")
-        csv_files = glob.glob(csv_pattern)
-        if csv_files:
-            self.logger.info(f"Found tracking CSV for {video_name}: {csv_files[0]}")
-            return True
-        last_frame = total_frames - 1
-        json_filename = output_folder / f"{video_name}_{last_frame:09d}.json"
-        return json_filename.exists()
+        return has_tracking_completion_artifacts(
+            video_path=str(video_path),
+            output_folder=str(output_folder),
+            total_frames=int(total_frames),
+        )
 
     def process_single_video(self, video_path, idx, total_videos):
         """Process a single video either via saved segments or whole-video tracking."""
@@ -517,20 +500,6 @@ class TrackAllWorker(QThread):
                 return False
 
             try:
-                from annolid.segmentation.cutie_vos.runtime import (
-                    build_tracking_video_processor,
-                )
-            except Exception as exc:
-                self.error.emit(
-                    f"Failed to load Cutie tracking backend for {video_name}: {exc}"
-                )
-                self.logger.error(
-                    f"Cutie tracking backend import error for {video_name}: {exc}",
-                    exc_info=True,
-                )
-                return False
-
-            try:
                 processor = build_tracking_video_processor(
                     video_path=str(video_path),
                     model_name="Cutie",
@@ -593,17 +562,11 @@ class TrackAllWorker(QThread):
             )
 
             with torch.no_grad():
-                message = processor.process_video_frames(
+                message = run_tracking_video_frames(
+                    processor=processor,
                     start_frame=start_frame,
                     end_frame=end_frame,
-                    step=1,
-                    is_cutie=True,
-                    mem_every=self.config["mem_every"],
-                    point_tracking=False,
-                    has_occlusion=self.config["has_occlusion"],
-                    save_video_with_color_mask=self.config[
-                        "save_video_with_color_mask"
-                    ],
+                    config=self.config,
                 )
             if "No valid polygon" in message or "No label file" in message:
                 self.error.emit(f"Failed to process {video_name}: {message}")

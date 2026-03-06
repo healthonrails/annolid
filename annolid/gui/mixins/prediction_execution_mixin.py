@@ -548,7 +548,7 @@ class PredictionExecutionMixin:
                     return
             else:
                 from annolid.motion.optical_flow import optical_flow_settings_from
-                from annolid.segmentation.cutie_vos.runtime import (
+                from annolid.services.tracking import (
                     build_tracking_video_processor,
                 )
 

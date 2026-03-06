@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 from pathlib import Path
 from typing import List, Tuple
 
@@ -8,13 +7,12 @@ from qtpy import QtGui, QtWidgets
 
 from annolid.behavior.time_budget import (
     TimeBudgetComputationError,
-    compute_time_budget,
     format_category_summary,
-    format_time_budget_table,
-    summarize_by_category,
-    write_time_budget_csv,
 )
-from annolid.utils.logger import logger
+from annolid.services.time_budget import (
+    compute_behavior_time_budget_report,
+    write_behavior_time_budget_report_csv,
+)
 
 
 class BehaviorTimeBudgetMixin:
@@ -33,43 +31,11 @@ class BehaviorTimeBudgetMixin:
             )
             return
 
-        data_rows = []
-        local_warnings = []
-        for trial_time, recording_time, subject, behavior, event_label in rows:
-            if recording_time is None:
-                local_warnings.append(
-                    self.tr(
-                        "Skipping '%s' event for behavior '%s' because no timestamp could be determined."
-                    )
-                    % (event_label or "?", behavior or "?")
-                )
-                continue
-
-            data_rows.append(
-                {
-                    "trial time": trial_time,
-                    "recording time": recording_time,
-                    "subject": (subject or "").strip(),
-                    "behavior": (behavior or "").strip(),
-                    "event": (event_label or "").strip(),
-                }
-            )
-
-        if not data_rows:
-            message = self.tr(
-                "No timestamped events remain after filtering out rows without timing information."
-            )
-            if local_warnings:
-                message += "\n\n" + self.tr("Warnings:\n") + "\n".join(local_warnings)
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("Behavior Time Budget"),
-                message,
-            )
-            return
-
         try:
-            summary, compute_warnings = compute_time_budget(data_rows)
+            report = compute_behavior_time_budget_report(
+                rows,
+                schema=self.project_schema,
+            )
         except TimeBudgetComputationError as exc:
             QtWidgets.QMessageBox.critical(
                 self,
@@ -78,15 +44,10 @@ class BehaviorTimeBudgetMixin:
             )
             return
 
-        warnings: List[str] = local_warnings + compute_warnings
+        summary = list(report.summary)
+        warnings: List[str] = list(report.warnings)
         schema_for_dialog = self.project_schema
-        category_summary: List[Tuple[str, float, int]] = []
-        if schema_for_dialog is not None and summary:
-            try:
-                category_summary = summarize_by_category(summary, schema_for_dialog)
-            except Exception as exc:
-                logger.warning("Failed to summarize categories: %s", exc)
-                category_summary = []
+        category_summary: List[Tuple[str, float, int]] = list(report.category_summary)
 
         if not summary:
             message = self.tr(
@@ -101,7 +62,7 @@ class BehaviorTimeBudgetMixin:
             )
             return
 
-        report_text = format_time_budget_table(summary, schema=schema_for_dialog)
+        report_text = report.table_text
 
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle(self.tr("Behavior Time Budget"))
@@ -163,18 +124,9 @@ class BehaviorTimeBudgetMixin:
                 return
             try:
                 output_path = Path(path_str)
-                write_time_budget_csv(summary, output_path, schema=schema_for_dialog)
-                if schema_for_dialog is not None and category_summary:
-                    category_path = output_path.with_name(
-                        output_path.stem + "_categories" + output_path.suffix
-                    )
-                    with category_path.open(
-                        "w", newline="", encoding="utf-8"
-                    ) as handle:
-                        writer = csv.writer(handle)
-                        writer.writerow(["Category", "TotalSeconds", "Occurrences"])
-                        for name, total, occurrences in category_summary:
-                            writer.writerow([name, f"{total:.6f}", occurrences])
+                write_behavior_time_budget_report_csv(
+                    report, output_path, schema=schema_for_dialog
+                )
             except OSError as exc:
                 QtWidgets.QMessageBox.critical(
                     self,

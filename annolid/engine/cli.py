@@ -548,48 +548,7 @@ def _cmd_citations_format(args: argparse.Namespace) -> int:
 def _cmd_agent(args: argparse.Namespace) -> int:
     import time
 
-    from annolid.core.agent.runner import AgentRunConfig
-    from annolid.core.agent.service import run_agent_to_results
-
-    vision_model = None
-    if str(args.vision_adapter or "").strip().lower() == "maskrcnn":
-        from annolid.core.models.adapters.maskrcnn_torchvision import (
-            TorchvisionMaskRCNNAdapter,
-        )
-
-        vision_model = TorchvisionMaskRCNNAdapter(
-            pretrained=bool(args.vision_pretrained),
-            score_threshold=float(args.vision_score_threshold),
-            device=str(args.vision_device) if args.vision_device else None,
-        )
-    elif str(args.vision_adapter or "").strip().lower() == "dino_kpseg":
-        from annolid.core.models.adapters.dino_kpseg_adapter import DinoKPSEGAdapter
-
-        if not args.vision_weights:
-            raise ValueError("DinoKPSEG adapter requires --vision-weights.")
-        vision_model = DinoKPSEGAdapter(
-            weight_path=str(args.vision_weights),
-            device=str(args.vision_device) if args.vision_device else None,
-            score_threshold=float(args.vision_score_threshold),
-        )
-
-    llm_model = None
-    if str(args.llm_adapter or "").strip().lower() == "llm_chat":
-        from annolid.core.models.adapters.llm_chat import LLMChatAdapter
-
-        llm_model = LLMChatAdapter(
-            profile=str(args.llm_profile) if args.llm_profile else None,
-            provider=str(args.llm_provider) if args.llm_provider else None,
-            model=str(args.llm_model) if args.llm_model else None,
-            persist=bool(args.llm_persist),
-        )
-
-    config = AgentRunConfig(
-        max_frames=args.max_frames,
-        stride=int(args.stride),
-        include_llm_summary=bool(args.include_llm_summary),
-        llm_summary_prompt=str(args.llm_summary_prompt),
-    )
+    from annolid.services.agent import AgentPipelineRequest, run_agent_pipeline
 
     last_print = 0.0
 
@@ -613,16 +572,29 @@ def _cmd_agent(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
-    result = run_agent_to_results(
-        video_path=args.video,
-        behavior_spec_path=args.schema,
-        results_dir=args.results_dir,
-        out_ndjson_name=str(args.ndjson_name),
-        vision_model=vision_model,
-        llm_model=llm_model,
-        config=config,
+    result = run_agent_pipeline(
+        AgentPipelineRequest(
+            video_path=str(args.video),
+            behavior_spec_path=(str(args.schema) if args.schema else None),
+            results_dir=(str(args.results_dir) if args.results_dir else None),
+            out_ndjson_name=str(args.ndjson_name),
+            max_frames=args.max_frames,
+            stride=int(args.stride),
+            include_llm_summary=bool(args.include_llm_summary),
+            llm_summary_prompt=str(args.llm_summary_prompt),
+            vision_adapter=str(args.vision_adapter or "none"),
+            vision_pretrained=bool(args.vision_pretrained),
+            vision_score_threshold=float(args.vision_score_threshold),
+            vision_device=(str(args.vision_device) if args.vision_device else None),
+            vision_weights=(str(args.vision_weights) if args.vision_weights else None),
+            llm_adapter=str(args.llm_adapter or "none"),
+            llm_profile=(str(args.llm_profile) if args.llm_profile else None),
+            llm_provider=(str(args.llm_provider) if args.llm_provider else None),
+            llm_model=(str(args.llm_model) if args.llm_model else None),
+            llm_persist=bool(args.llm_persist),
+            reuse_cache=not bool(args.no_cache),
+        ),
         progress_callback=_progress,
-        reuse_cache=not bool(args.no_cache),
     )
 
     summary = {
