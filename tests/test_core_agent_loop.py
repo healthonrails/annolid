@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -1103,6 +1104,90 @@ def test_agent_loop_retries_once_when_final_response_empty_after_tools() -> None
     assert result.content == "final answer"
     assert result.iterations == 2
     assert state["repair_tools"] == []
+
+
+def test_agent_loop_compacts_oversized_tool_result_for_llm_messages() -> None:
+    state = {"n": 0, "tool_content_len": 0, "tool_content": ""}
+    huge_text = "A" * 50000
+
+    class _LargePdfTool(FunctionTool):
+        @property
+        def name(self) -> str:
+            return "extract_pdf_text"
+
+        @property
+        def description(self) -> str:
+            return "Return oversized PDF text payload."
+
+        @property
+        def parameters(self) -> dict[str, Any]:
+            return {"type": "object", "properties": {}, "required": []}
+
+        async def execute(self, **kwargs: Any) -> str:
+            del kwargs
+            return json.dumps({"text": huge_text, "ok": True})
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del tools, model, on_token
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "extract_pdf_text", "arguments": {}}
+                ],
+            }
+        for msg in messages:
+            if str(msg.get("role") or "") == "tool":
+                state["tool_content"] = str(msg.get("content") or "")
+                state["tool_content_len"] = len(state["tool_content"])
+                break
+        return {"content": "ok", "tool_calls": []}
+
+    registry = FunctionToolRegistry()
+    registry.register(_LargePdfTool())
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    result = asyncio.run(loop.run("read pdf", session_id="s-tool-compact"))
+    assert result.content == "ok"
+    assert state["tool_content_len"] > 0
+    assert state["tool_content_len"] <= loop._MAX_TOOL_RESULT_CHARS_FOR_LLM + 300  # type: ignore[attr-defined]
+    payload = json.loads(state["tool_content"])
+    assert payload.get("truncated_for_llm") is True
+    assert int(payload.get("original_text_length") or 0) == len(huge_text)
+
+
+def test_agent_loop_uses_tool_fallback_when_repair_response_still_empty() -> None:
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "echo", "arguments": {"text": "hello"}}
+                ],
+            }
+        return {"content": "   ", "tool_calls": []}
+
+    registry = FunctionToolRegistry()
+    registry.register(_EchoTool())
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    result = asyncio.run(loop.run("hello", session_id="s-empty-repair-fallback"))
+    assert "empty final response" in result.content.lower()
+    assert "tool result excerpt" in result.content.lower()
+    assert state["n"] == 3
 
 
 def test_agent_loop_consolidates_large_history_into_history_file(

@@ -229,6 +229,7 @@ class AgentLoop:
         "Provide the final user-facing answer now using only the tool results above. "
         "Do not call any more tools. Keep it concise, concrete, and directly actionable."
     )
+    _MAX_TOOL_RESULT_CHARS_FOR_LLM = 32000
 
     def __init__(
         self,
@@ -715,6 +716,17 @@ class AgentLoop:
                         on_token=_on_llm_token,
                     )
                     llm_total_ms += repair_llm_ms
+                    if not str(final_content or "").strip():
+                        final_content = self._build_tool_only_fallback_answer(
+                            tool_runs=tool_runs
+                        )
+                        self._logger.warning(
+                            "annolid-bot synthesized fallback final response session=%s model=%s iteration=%d tool_runs=%d",
+                            session_id,
+                            self.model,
+                            iteration,
+                            len(tool_runs),
+                        )
                 if memory_enabled and str(final_content).strip():
                     tools_used = self._extract_tools_used(tool_runs)
                     self._memory_store.append_history(
@@ -1092,11 +1104,70 @@ class AgentLoop:
                     "role": "tool",
                     "tool_call_id": call_id,
                     "name": name,
-                    "content": str(result),
+                    "content": self._compact_tool_result_for_llm(
+                        name=name, result=str(result)
+                    ),
                 }
             )
         self._append_post_tool_guidance(messages)
         return cycle_exec_ms, cycle_call_count
+
+    def _compact_tool_result_for_llm(self, *, name: str, result: str) -> str:
+        text = str(result or "")
+        limit = int(self._MAX_TOOL_RESULT_CHARS_FOR_LLM)
+        if len(text) <= limit:
+            return text
+
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                raw_text = payload.get("text")
+                if isinstance(raw_text, str) and raw_text:
+                    reserve = 400
+                    max_text = max(1000, limit - reserve)
+                    if len(raw_text) > max_text:
+                        payload["text"] = raw_text[:max_text]
+                        payload["truncated_for_llm"] = True
+                        payload["original_text_length"] = len(raw_text)
+                        return json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            pass
+
+        omitted = max(0, len(text) - limit)
+        return (
+            text[:limit]
+            + f"\n...[tool output truncated for LLM; omitted {omitted} chars]"
+        )
+
+    @staticmethod
+    def _build_tool_only_fallback_answer(*, tool_runs: Sequence[AgentToolRun]) -> str:
+        if not tool_runs:
+            return ""
+        last = tool_runs[-1]
+        base = (
+            f"I ran `{last.name}` but the model returned an empty final response. "
+            "Please retry with a narrower request."
+        )
+        raw = str(last.result or "").strip()
+        if not raw:
+            return base
+
+        preview = ""
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                if payload.get("error"):
+                    preview = str(payload.get("error") or "")
+                elif isinstance(payload.get("text"), str):
+                    preview = str(payload.get("text") or "")
+        except Exception:
+            preview = raw
+
+        preview = re.sub(r"\s+", " ", str(preview or "")).strip()
+        if preview:
+            preview = preview[:600]
+            return f"{base}\n\nTool result excerpt:\n{preview}"
+        return base
 
     async def _repair_empty_final_answer(
         self,
