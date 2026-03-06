@@ -19,6 +19,7 @@ irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 | i
 ```
 
 What the installer does:
+
 - Clones Annolid.
 - Creates an isolated environment (`.venv` by default).
 - Installs dependencies and Annolid.
@@ -30,18 +31,19 @@ What the installer does:
 Choose the flag set that matches your goal.
 
 | Goal | macOS / Linux | Windows (PowerShell) |
-|---|---|---|
-| Default install | `... | bash` | `... | iex` |
-| Skip GPU detection | `... | bash -s -- --no-gpu` | `...; install.ps1 -NoGpu` |
-| Non-interactive install | `... | bash -s -- --no-interactive` | `...; install.ps1 -NoInteractive` |
-| Install to custom folder | `... | bash -s -- --install-dir /path/to/annolid` | `...; install.ps1 -InstallDir C:\path\to\annolid` |
-| Custom venv location | `... | bash -s -- --venv-dir /path/to/.venv` | `...; install.ps1 -VenvDir C:\path\to\.venv` |
-| Use Conda env (Linux/macOS only) | `... | bash -s -- --use-conda` | Not supported in `install.ps1` |
-| Enable optional extras | `... | bash -s -- --extras sam3,text_to_speech` | `...; install.ps1 -Extras sam3,text_to_speech` |
+| --- | --- | --- |
+| Default install | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash` | `irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 \| iex` |
+| Skip GPU detection | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --no-gpu` | `.\install.ps1 -NoGpu` |
+| Non-interactive install | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --no-interactive` | `.\install.ps1 -NoInteractive` |
+| Install to custom folder | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --install-dir /path/to/annolid` | `.\install.ps1 -InstallDir C:\\path\\to\\annolid` |
+| Custom venv location | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --venv-dir /path/to/.venv` | `.\install.ps1 -VenvDir C:\\path\\to\\.venv` |
+| Use Conda env | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --use-conda` | `Not supported in install.ps1` |
+| Enable optional extras | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --extras sam3,text_to_speech` | `.\install.ps1 -Extras sam3,text_to_speech` |
 
 ## Linux/macOS options in detail
 
 `install.sh` supports:
+
 - `--install-dir DIR`
 - `--venv-dir DIR`
 - `--extras EXTRAS`
@@ -69,6 +71,7 @@ curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.s
 ## Windows options in detail
 
 `install.ps1` supports:
+
 - `-InstallDir DIR`
 - `-VenvDir DIR`
 - `-Extras EXTRAS`
@@ -97,6 +100,7 @@ Examples:
 `gui` is installed by default by the one-line installers, so `annolid` launches without additional flags.
 
 Current supported extras:
+
 - `sam3`
 - `image_editing`
 - `text_to_speech`
@@ -174,6 +178,7 @@ If `annolid` is not found, activate the environment printed by the installer and
 ## Security note
 
 Piping scripts from the internet is convenient but trust-based. For stricter security:
+
 - download script first,
 - inspect it,
 - then run locally with explicit options.

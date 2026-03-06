@@ -16,24 +16,29 @@ You do not need to do any manual configuration within Annolid for this to work!
 To enable container isolation, you must install and start Docker on your computer:
 
 ### macOS
+
 1. Download **Docker Desktop for Mac** from [docker.com](https://www.docker.com/products/docker-desktop/).
 2. Run the installer and move Docker to your Applications folder.
 3. Open Docker Desktop and follow the setup wizard.
 4. Keep the Docker app running in your menu bar when using Annolid.
 
 ### Windows (WSL 2)
+
 1. Install **Docker Desktop for Windows**.
 2. Ensure you have the WSL 2 backend enabled during installation.
 3. Keep Docker Desktop running when you use Annolid.
 
 ### Linux (Ubuntu/Debian)
+
 1. Run the following commands in your terminal:
+
    ```bash
    sudo apt-get update
    sudo apt-get install docker.io
    sudo systemctl enable --now docker
    sudo usermod -aG docker $USER
    ```
+
 2. You will need to log out and log back in for the user group changes to take effect.
 
 ## Verifying It Works

@@ -99,7 +99,7 @@ Both paths emit the same dataset layout.
 
 ## Step 5 – Inspect the Output
 
-```
+```text
 labelme_dataset/
 └── YOLO_dataset/
     ├── images/{train,val,test}/
