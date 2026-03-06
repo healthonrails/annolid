@@ -107,6 +107,89 @@ def test_persistent_session_store_compacts_empty_messages(tmp_path: Path) -> Non
     assert history[1]["content"] == "world"
 
 
+def test_persistent_session_store_sanitizes_tool_metadata_on_append(
+    tmp_path: Path,
+) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    store = PersistentSessionStore(manager)
+    session_id = "gui:tool-sanitize"
+
+    store.append_history(
+        session_id,
+        [
+            {
+                "role": "assistant",
+                "content": "calling tool",
+                "tool_calls": [
+                    {
+                        "id": "bad id!!",
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": {"text": "hi"}},
+                    },
+                    {
+                        "id": "c2",
+                        "type": "function",
+                        "function": {"name": "bad tool name", "arguments": "{}"},
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "result id!!",
+                "name": "echo",
+                "content": '{"ok": true}',
+            },
+        ],
+        max_messages=20,
+    )
+
+    history = store.get_history(session_id)
+    assert history[0]["tool_calls"] == [
+        {
+            "id": "bad_id",
+            "type": "function",
+            "function": {"name": "echo", "arguments": '{"text": "hi"}'},
+        }
+    ]
+    assert history[1]["tool_call_id"] == "result_id"
+
+
+def test_persistent_session_store_sanitizes_loaded_polluted_history(
+    tmp_path: Path,
+) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    session = manager.get_or_create("gui:loaded-tools")
+    session.add_message(
+        {
+            "role": "assistant",
+            "content": "calling tool",
+            "tool_calls": [
+                {
+                    "id": "call:1|item:2",
+                    "type": "function",
+                    "function": {"name": "echo", "arguments": "{}"},
+                },
+                {
+                    "id": "bad",
+                    "type": "function",
+                    "function": {"name": "not allowed!", "arguments": "{}"},
+                },
+            ],
+        }
+    )
+    manager.save(session)
+
+    store = PersistentSessionStore(manager)
+    history = store.get_history("gui:loaded-tools")
+    assert history[0]["tool_calls"] == [
+        {
+            "id": "call_1|item_2",
+            "type": "function",
+            "function": {"name": "echo", "arguments": "{}"},
+        }
+    ]
+
+
 def test_session_manager_overview_includes_counts_and_paths(tmp_path: Path) -> None:
     manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
     session = manager.get_or_create("gui:chat/overview")

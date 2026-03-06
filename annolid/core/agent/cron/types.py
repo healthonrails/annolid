@@ -19,11 +19,15 @@ class CronSchedule:
 class CronPayload:
     """Payload executed by cron runner."""
 
-    kind: Literal["agent_turn", "system_event"] = "agent_turn"
+    kind: Literal["agent_turn", "system_event", "send_email"] = "agent_turn"
     message: str = ""
     deliver: bool = False
     channel: Optional[str] = None
     to: Optional[str] = None
+    email_to: Optional[str] = None
+    email_subject: Optional[str] = None
+    email_content: Optional[str] = None
+    attachment_paths: list[str] = field(default_factory=list)
 
 
 @dataclass

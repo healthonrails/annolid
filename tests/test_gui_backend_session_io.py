@@ -157,6 +157,48 @@ def test_load_history_messages_preserves_tool_metadata() -> None:
     assert history[1] == {"role": "assistant", "content": "done"}
 
 
+def test_load_history_messages_sanitizes_tool_metadata() -> None:
+    class _Store:
+        def get_history(self, _session_id: str):
+            return [
+                {
+                    "role": "assistant",
+                    "content": "calling tool",
+                    "tool_calls": [
+                        {
+                            "id": "call:1|item:2",
+                            "type": "function",
+                            "function": {"name": "camera_snapshot", "arguments": "{}"},
+                        },
+                        {
+                            "id": "bad",
+                            "type": "function",
+                            "function": {"name": "not allowed!", "arguments": "{}"},
+                        },
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": "done",
+                    "tool_call_id": "result id!!",
+                },
+            ]
+
+    history = session_io.load_history_messages(
+        session_store=_Store(),
+        session_id="gui:test",
+        max_history_messages=20,
+    )
+    assert history[0]["tool_calls"] == [
+        {
+            "id": "call_1|item_2",
+            "type": "function",
+            "function": {"name": "camera_snapshot", "arguments": "{}"},
+        }
+    ]
+    assert history[1]["tool_call_id"] == "result_id"
+
+
 def test_replay_session_debug_events_and_format_text() -> None:
     class _Store:
         def replay_events(self, session_id: str, *, direction: str, limit: int):

@@ -120,6 +120,70 @@ def test_collect_ollama_stream_merges_tool_calls_across_chunks() -> None:
     assert names == {"read_file", "exec"}
 
 
+def test_ollama_llm_callable_sanitizes_stream_tool_calls(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    backend._OLLAMA_TOOL_SUPPORT_CACHE.clear()
+
+    class DummyOllama:
+        def chat(self, *, model, messages, tools=None, stream=True):
+            assert stream is True
+            del model, messages, tools
+            return iter(
+                [
+                    {
+                        "done_reason": "stop",
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call:1|item:2",
+                                    "function": {
+                                        "name": "exec",
+                                        "arguments": {"command": "pwd"},
+                                    },
+                                },
+                                {
+                                    "id": "bad id!!",
+                                    "function": {
+                                        "name": "bad tool name",
+                                        "arguments": {},
+                                    },
+                                },
+                            ],
+                        },
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(backend.importlib, "import_module", lambda name: DummyOllama())
+
+    task = StreamingChatTask(
+        "hi", widget=None, settings={"ollama": {}}, provider="ollama"
+    )
+    llm = task._build_ollama_llm_callable()
+    resp = asyncio.run(
+        llm(
+            [{"role": "user", "content": "hi"}],
+            [
+                {
+                    "type": "function",
+                    "function": {"name": "exec", "parameters": {"type": "object"}},
+                }
+            ],
+            "m",
+        )
+    )
+    assert resp["content"] == ""
+    assert resp["tool_calls"] == [
+        {
+            "id": "call_1|item_2",
+            "name": "exec",
+            "arguments": {"command": "pwd"},
+        }
+    ]
+
+
 def test_ollama_llm_callable_preserves_stream_tool_calls(monkeypatch) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
 

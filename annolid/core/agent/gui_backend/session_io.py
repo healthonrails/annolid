@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from qtpy import QtCore
 from qtpy.QtCore import QMetaObject
+from ..tool_call_utils import sanitize_tool_call_id, sanitize_tool_call_requests
 from .turn_state import (
     ERROR_TYPE_INTERNAL,
     ERROR_TYPE_NONE,
@@ -259,10 +260,45 @@ def load_history_messages(
         entry: Dict[str, Any] = {"role": role, "content": text}
         tool_calls = msg.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
-            entry["tool_calls"] = tool_calls
+            raw_calls: List[Dict[str, Any]] = []
+            for item in tool_calls:
+                if not isinstance(item, dict):
+                    continue
+                function = item.get("function")
+                if isinstance(function, dict):
+                    raw_calls.append(
+                        {
+                            "id": item.get("id"),
+                            "name": function.get("name"),
+                            "arguments": function.get("arguments"),
+                        }
+                    )
+                    continue
+                raw_calls.append(
+                    {
+                        "id": item.get("id"),
+                        "name": item.get("name"),
+                        "arguments": item.get("arguments"),
+                    }
+                )
+            cleaned_calls = sanitize_tool_call_requests(raw_calls)
+            if cleaned_calls:
+                entry["tool_calls"] = [
+                    {
+                        "id": item["id"],
+                        "type": "function",
+                        "function": {
+                            "name": item["name"],
+                            "arguments": json.dumps(
+                                item["arguments"], ensure_ascii=False
+                            ),
+                        },
+                    }
+                    for item in cleaned_calls
+                ]
         tool_call_id = msg.get("tool_call_id")
         if isinstance(tool_call_id, str) and tool_call_id.strip():
-            entry["tool_call_id"] = tool_call_id.strip()
+            entry["tool_call_id"] = sanitize_tool_call_id(tool_call_id)
         name = msg.get("name")
         if isinstance(name, str) and name.strip():
             entry["name"] = name.strip()

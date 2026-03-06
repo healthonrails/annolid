@@ -13,6 +13,7 @@ from threading import Event as ThreadEvent
 from annolid.utils.llm_settings import LLMConfig
 from annolid.utils.llm_settings import provider_definitions, provider_kind
 
+from ..tool_call_utils import sanitize_tool_call_requests, tool_names_from_schemas
 from .codex_cli_provider import CodexCLIProvider, resolve_codex_cli
 from .openai_codex_provider import OpenAICodexProvider, resolve_openai_codex
 from .openai_compat import OpenAICompatProvider, resolve_openai_compat
@@ -540,14 +541,25 @@ def build_ollama_llm_callable(
             "The python 'ollama' package is required for Ollama agent mode."
         ) from exc
 
-    def _coerce_tool_calls(tool_calls_payload: Any) -> List[Dict[str, Any]]:
+    def _coerce_tool_calls(
+        tool_calls_payload: Any,
+        *,
+        allowed_tool_names: Optional[set[str]] = None,
+    ) -> List[Dict[str, Any]]:
         if not isinstance(tool_calls_payload, list):
             return []
         if tool_calls_payload and all(
             isinstance(item, dict) and "name" in item for item in tool_calls_payload
         ):
-            return [dict(item) for item in tool_calls_payload if isinstance(item, dict)]
-        return parse_tool_calls(tool_calls_payload)
+            raw_calls = [
+                dict(item) for item in tool_calls_payload if isinstance(item, dict)
+            ]
+        else:
+            raw_calls = parse_tool_calls(tool_calls_payload)
+        return sanitize_tool_call_requests(
+            raw_calls,
+            allowed_tool_names=allowed_tool_names,
+        )
 
     async def _call(
         messages: List[Dict[str, Any]],
@@ -568,6 +580,7 @@ def build_ollama_llm_callable(
         effective_tools = (
             [dict(t) for t in tools] if (tools and supports_tools) else None
         )
+        allowed_tool_names = tool_names_from_schemas(effective_tools or []) or None
         logger.info(
             "annolid-bot ollama request model=%s effective_tools_sent=%d supports_tools=%s",
             model_id,
@@ -610,10 +623,11 @@ def build_ollama_llm_callable(
                                     pass
                         raw_tool_calls = msg.get("tool_calls")
                         if raw_tool_calls:
-                            for call in parse_tool_calls(raw_tool_calls):
-                                call_id = str(
-                                    call.get("id") or f"call_{len(tool_calls_by_id)}"
-                                )
+                            for call in sanitize_tool_call_requests(
+                                parse_tool_calls(raw_tool_calls),
+                                allowed_tool_names=allowed_tool_names,
+                            ):
+                                call_id = call["id"]
                                 tool_calls_by_id[call_id] = call
                 content = "".join(chunks).strip()
                 tool_calls = list(tool_calls_by_id.values())
@@ -647,7 +661,10 @@ def build_ollama_llm_callable(
             else:
                 raise
         msg = dict(response.get("message") or {})
-        tool_calls = _coerce_tool_calls(msg.get("tool_calls"))
+        tool_calls = _coerce_tool_calls(
+            msg.get("tool_calls"),
+            allowed_tool_names=allowed_tool_names,
+        )
         content = extract_text(response)
         logger.info(
             "annolid-bot ollama raw response model=%s done_reason=%s content_chars=%d tool_calls=%d",
@@ -670,7 +687,10 @@ def build_ollama_llm_callable(
                     asyncio.to_thread(_invoke_chat_stream, None), plain_timeout
                 )
                 msg2 = dict(response2.get("message") or {})
-                tool_calls2 = _coerce_tool_calls(msg2.get("tool_calls"))
+                tool_calls2 = _coerce_tool_calls(
+                    msg2.get("tool_calls"),
+                    allowed_tool_names=allowed_tool_names,
+                )
                 content2 = extract_text(response2)
                 logger.info(
                     "annolid-bot ollama no-tools retry model=%s done_reason=%s content_chars=%d tool_calls=%d",

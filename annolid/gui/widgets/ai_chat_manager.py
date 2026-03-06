@@ -20,8 +20,6 @@ from annolid.core.agent.cron import (
     CronJob,
     CronService,
     default_cron_store_path,
-    legacy_cron_store_path,
-    migrate_legacy_cron_store,
 )
 from annolid.core.agent.loop import AgentLoop
 from annolid.core.agent.scheduler import ScheduledTask, TaskScheduler
@@ -48,6 +46,52 @@ def _resolve_zulip_background_runtime(
     missing = missing_zulip_config_fields(zulip_config)
     enabled = bool(zulip_config.get("enabled", False))
     return enabled and not bool(missing), missing
+
+
+async def _execute_cron_job_payload(
+    job: CronJob,
+    *,
+    tools: FunctionToolRegistry | None,
+    background_bus: Optional[MessageBus],
+) -> Optional[str]:
+    if str(job.payload.kind or "") == "send_email":
+        if tools is None:
+            return "Error: tool registry unavailable"
+        email_to = str(job.payload.email_to or "").strip()
+        email_content = str(job.payload.email_content or "").strip()
+        if not email_to or not email_content:
+            return "Error: scheduled email payload is missing recipient or content"
+        return await tools.execute(
+            "email",
+            {
+                "to": email_to,
+                "subject": str(job.payload.email_subject or "").strip()
+                or "Scheduled message from Annolid Bot",
+                "content": email_content,
+                "attachment_paths": list(job.payload.attachment_paths or []),
+            },
+        )
+    if background_bus is None:
+        return "Error: background bus unavailable"
+    channel = str(job.payload.channel or "cli")
+    chat_id = str(job.payload.to or "direct")
+    msg = str(job.payload.message or "").strip()
+    if msg:
+        await background_bus.publish_inbound(
+            InboundMessage(
+                channel=channel,
+                sender_id="cron_scheduler",
+                chat_id=chat_id,
+                content=msg,
+                metadata={
+                    "cron_job_id": str(job.id),
+                    "cron_job_name": str(job.name or ""),
+                    "cron_schedule_kind": str(job.schedule.kind or ""),
+                    "cron_next_run_at_ms": job.state.next_run_at_ms,
+                },
+            )
+        )
+    return "Inbound generated"
 
 
 class AIChatManager(QtCore.QObject):
@@ -264,11 +308,6 @@ class AIChatManager(QtCore.QObject):
                     await self._task_scheduler.start()
                     workspace = get_agent_workspace_path()
                     cron_store_path = default_cron_store_path()
-                    migrate_legacy_cron_store(
-                        store_path=cron_store_path,
-                        legacy_path=legacy_cron_store_path(),
-                        logger=logger,
-                    )
                     await register_nanobot_style_tools(
                         tools,
                         allowed_dir=workspace,
@@ -311,29 +350,11 @@ class AIChatManager(QtCore.QObject):
                     )
 
                     async def _on_cron_job(job: CronJob) -> Optional[str]:
-                        if not self._background_bus:
-                            return "Error: background bus unavailable"
-                        channel = str(job.payload.channel or "cli")
-                        chat_id = str(job.payload.to or "direct")
-                        msg = str(job.payload.message or "").strip()
-                        if msg:
-                            await self._background_bus.publish_inbound(
-                                InboundMessage(
-                                    channel=channel,
-                                    sender_id="cron_scheduler",
-                                    chat_id=chat_id,
-                                    content=msg,
-                                    metadata={
-                                        "cron_job_id": str(job.id),
-                                        "cron_job_name": str(job.name or ""),
-                                        "cron_schedule_kind": str(
-                                            job.schedule.kind or ""
-                                        ),
-                                        "cron_next_run_at_ms": job.state.next_run_at_ms,
-                                    },
-                                )
-                            )
-                        return "Inbound generated"
+                        return await _execute_cron_job_payload(
+                            job,
+                            tools=tools,
+                            background_bus=self._background_bus,
+                        )
 
                     self._cron_service = CronService(
                         store_path=cron_store_path,

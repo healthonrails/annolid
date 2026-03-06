@@ -932,6 +932,68 @@ def test_cron_tool_rejects_past_at_schedule(tmp_path: Path) -> None:
     assert "must be in the future" in result
 
 
+def test_cron_tool_add_direct_scheduled_email(tmp_path: Path) -> None:
+    tool = CronTool(store_path=tmp_path / "cron" / "jobs.json")
+    tool.set_context("local", "user1")
+    added = asyncio.run(
+        tool.execute(
+            action="add",
+            message="weekly update email",
+            every_seconds=3600,
+            email_to="user@example.com",
+            email_subject="Weekly Update",
+            email_content="Status looks good.",
+        )
+    )
+    assert "Created scheduled email job to user@example.com" in added
+    job_id = added.split("id: ")[-1].rstrip(")")
+    rows = tool._service.list_jobs(include_disabled=True)
+    job = next(row for row in rows if row.id == job_id)
+    assert job.payload.kind == "send_email"
+    assert job.payload.email_to == "user@example.com"
+    assert job.payload.email_subject == "Weekly Update"
+    assert job.payload.email_content == "Status looks good."
+
+
+def test_cron_tool_add_direct_scheduled_email_defaults_recipient_from_chat_id(
+    tmp_path: Path,
+) -> None:
+    tool = CronTool(store_path=tmp_path / "cron" / "jobs.json")
+    tool.set_context("email", "recipient@example.com")
+    added = asyncio.run(
+        tool.execute(
+            action="add",
+            message="follow up",
+            every_seconds=300,
+            email_content="Checking in.",
+        )
+    )
+    assert "Created scheduled email job to recipient@example.com" in added
+
+
+def test_cron_tool_default_store_path_does_not_use_cwd_annolid(monkeypatch) -> None:
+    default_path = Path("/var/nonwritable/agent-workspace/cron/jobs.json")
+    tmp_path = Path("/tmp/annolid/cron/jobs.json")
+
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.cron.default_cron_store_path",
+        lambda: default_path,
+    )
+
+    def _fake_writable(path: Path) -> bool:
+        return path == tmp_path
+
+    monkeypatch.setattr(
+        CronTool,
+        "_is_store_path_writable",
+        staticmethod(_fake_writable),
+    )
+
+    resolved = CronTool._resolve_default_store_path()
+    assert resolved == tmp_path
+    assert ".annolid/cron/jobs.json" not in str(resolved).replace("\\", "/")
+
+
 def test_memory_search_and_get_tools(tmp_path: Path) -> None:
     memory_dir = tmp_path / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)

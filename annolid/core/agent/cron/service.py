@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
-from annolid.core.agent.utils import get_agent_data_path, get_agent_workspace_path
+from annolid.core.agent.utils import get_agent_workspace_path
 
 from .types import CronJob, CronJobState, CronPayload, CronSchedule, CronStore
 
@@ -27,73 +27,6 @@ def _now_ms() -> int:
 def default_cron_store_path() -> Path:
     """Return the canonical cron store path under agent workspace."""
     return get_agent_workspace_path() / "cron" / "jobs.json"
-
-
-def legacy_cron_store_path() -> Path:
-    """Return the legacy cron store path kept for migration compatibility."""
-    return get_agent_data_path() / "cron" / "jobs.json"
-
-
-def migrate_legacy_cron_store(
-    *,
-    store_path: Path,
-    legacy_path: Path | None = None,
-    logger: Optional[logging.Logger] = None,
-) -> int:
-    """Merge jobs from legacy store into canonical store, deduplicated by id."""
-    source = Path(legacy_path) if legacy_path is not None else legacy_cron_store_path()
-    target = Path(store_path)
-    if source == target or not source.exists():
-        return 0
-    try:
-        legacy_payload = json.loads(source.read_text(encoding="utf-8"))
-    except Exception:
-        return 0
-    legacy_jobs = list(legacy_payload.get("jobs") or [])
-    if not legacy_jobs:
-        return 0
-
-    current_payload: dict[str, Any] = {"version": 1, "jobs": []}
-    if target.exists():
-        try:
-            loaded = json.loads(target.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                current_payload = loaded
-        except Exception:
-            pass
-    current_jobs = list(current_payload.get("jobs") or [])
-    existing_ids = {
-        str(row.get("id") or "").strip()
-        for row in current_jobs
-        if isinstance(row, dict)
-    }
-    merged_jobs = list(current_jobs)
-    migrated = 0
-    for row in legacy_jobs:
-        if not isinstance(row, dict):
-            continue
-        job_id = str(row.get("id") or "").strip()
-        if not job_id or job_id in existing_ids:
-            continue
-        merged_jobs.append(row)
-        existing_ids.add(job_id)
-        migrated += 1
-    if migrated <= 0:
-        return 0
-    target.parent.mkdir(parents=True, exist_ok=True)
-    current_payload["jobs"] = merged_jobs
-    target.write_text(
-        json.dumps(current_payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    if logger is not None:
-        logger.info(
-            "Migrated %s cron job(s) from legacy store %s to %s",
-            migrated,
-            source,
-            target,
-        )
-    return migrated
 
 
 def compute_next_run(schedule: CronSchedule, now_ms: int) -> Optional[int]:
@@ -232,6 +165,16 @@ class CronService:
                         deliver=bool(row.get("payload", {}).get("deliver", False)),
                         channel=row.get("payload", {}).get("channel"),
                         to=row.get("payload", {}).get("to"),
+                        email_to=row.get("payload", {}).get("emailTo"),
+                        email_subject=row.get("payload", {}).get("emailSubject"),
+                        email_content=row.get("payload", {}).get("emailContent"),
+                        attachment_paths=[
+                            str(item)
+                            for item in list(
+                                row.get("payload", {}).get("attachmentPaths") or []
+                            )
+                            if str(item or "").strip()
+                        ],
                     ),
                     state=CronJobState(
                         next_run_at_ms=row.get("state", {}).get("nextRunAtMs"),
@@ -274,6 +217,10 @@ class CronService:
                             "deliver": j.payload.deliver,
                             "channel": j.payload.channel,
                             "to": j.payload.to,
+                            "emailTo": j.payload.email_to,
+                            "emailSubject": j.payload.email_subject,
+                            "emailContent": j.payload.email_content,
+                            "attachmentPaths": list(j.payload.attachment_paths or []),
                         },
                         "state": {
                             "nextRunAtMs": j.state.next_run_at_ms,

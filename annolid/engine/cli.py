@@ -647,17 +647,9 @@ def _default_agent_cron_store_path() -> Path:
 def _agent_cron_service():
     from annolid.core.agent.cron import (
         CronService,
-        default_cron_store_path,
-        legacy_cron_store_path,
-        migrate_legacy_cron_store,
     )
 
     store_path = _default_agent_cron_store_path()
-    if store_path == default_cron_store_path():
-        migrate_legacy_cron_store(
-            store_path=store_path,
-            legacy_path=legacy_cron_store_path(),
-        )
     return CronService(store_path=store_path)
 
 

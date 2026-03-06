@@ -8,6 +8,11 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from .tool_call_utils import (
+    sanitize_tool_call_id,
+    sanitize_tool_call_id_segment,
+    sanitize_tool_call_requests,
+)
 from .utils import get_sessions_path
 
 
@@ -209,6 +214,7 @@ class PersistentSessionStore:
     _DEFAULT_LONG_TERM_MEMORY_MAX_CHARS = 32768
     _DEFAULT_MEMORY_AUDIT_MAX_ENTRIES = 200
     _DEFAULT_EVENT_LOG_MAX_ENTRIES = 500
+    _MAX_TOOL_CALLS_PER_MESSAGE = 32
 
     def __init__(
         self,
@@ -229,7 +235,7 @@ class PersistentSessionStore:
     def get_history(self, session_id: str) -> List[Dict[str, Any]]:
         with self._lock:
             session = self._manager.get_or_create(session_id)
-            return [dict(m) for m in session.messages]
+            return self._compact_messages(session.messages)
 
     def append_history(
         self,
@@ -242,12 +248,9 @@ class PersistentSessionStore:
             session = self._manager.get_or_create(session_id)
             session.messages = self._compact_messages(session.messages)
             for message in messages:
-                msg = dict(message)
-                role = str(msg.get("role") or "")
-                content = msg.get("content")
-                if role in {"user", "assistant", "system"}:
-                    if not isinstance(content, str) or not content.strip():
-                        continue
+                msg = self._sanitize_history_message(message)
+                if msg is None:
+                    continue
                 session.add_message(msg)
             keep = max(1, int(max_messages))
             if len(session.messages) > keep:
@@ -523,14 +526,89 @@ class PersistentSessionStore:
     ) -> List[Dict[str, Any]]:
         cleaned: List[Dict[str, Any]] = []
         for message in messages:
-            msg = dict(message)
-            role = str(msg.get("role") or "")
-            content = msg.get("content")
-            if role in {"user", "assistant", "system"}:
-                if not isinstance(content, str) or not content.strip():
-                    continue
-            cleaned.append(msg)
+            msg = PersistentSessionStore._sanitize_history_message(message)
+            if msg is not None:
+                cleaned.append(msg)
         return cleaned
+
+    @classmethod
+    def _sanitize_history_message(
+        cls, message: Mapping[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        msg = dict(message)
+        role = str(msg.get("role") or "")
+        content = msg.get("content")
+        if role in {"user", "assistant", "system"}:
+            if not isinstance(content, str) or not content.strip():
+                return None
+        if role == "assistant":
+            tool_calls = cls._sanitize_assistant_tool_calls(msg.get("tool_calls"))
+            if tool_calls:
+                msg["tool_calls"] = tool_calls
+            else:
+                msg.pop("tool_calls", None)
+        elif role == "tool":
+            raw_tool_call_id = str(msg.get("tool_call_id") or "").strip()
+            if raw_tool_call_id:
+                tool_call_id = cls._sanitize_tool_call_id(raw_tool_call_id)
+                msg["tool_call_id"] = tool_call_id
+            else:
+                msg.pop("tool_call_id", None)
+        return msg
+
+    @classmethod
+    def _sanitize_assistant_tool_calls(cls, payload: Any) -> List[Dict[str, Any]]:
+        if not isinstance(payload, list):
+            return []
+        raw_calls: List[Dict[str, Any]] = []
+        for item in payload[: cls._MAX_TOOL_CALLS_PER_MESSAGE]:
+            if not isinstance(item, Mapping):
+                continue
+            function = item.get("function")
+            if isinstance(function, Mapping):
+                raw_calls.append(
+                    {
+                        "id": item.get("id"),
+                        "name": function.get("name"),
+                        "arguments": cls._coerce_json_safe(function.get("arguments")),
+                    }
+                )
+                continue
+            raw_calls.append(
+                {
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "arguments": cls._coerce_json_safe(item.get("arguments")),
+                }
+            )
+        cleaned = sanitize_tool_call_requests(
+            raw_calls, max_calls=cls._MAX_TOOL_CALLS_PER_MESSAGE
+        )
+        return [
+            {
+                "id": item["id"],
+                "type": "function",
+                "function": {
+                    "name": item["name"],
+                    "arguments": json.dumps(item["arguments"], ensure_ascii=False),
+                },
+            }
+            for item in cleaned
+        ]
+
+    @classmethod
+    def _sanitize_tool_call_id(cls, raw_id: Any, default_index: int = 0) -> str:
+        return sanitize_tool_call_id(raw_id, default_index=default_index)
+
+    @classmethod
+    def _sanitize_tool_call_id_segment(cls, value: Any) -> str:
+        return sanitize_tool_call_id_segment(value)
+
+    @staticmethod
+    def _coerce_json_safe(value: Any) -> Any:
+        if isinstance(value, (dict, list, str, int, float, bool)) or value is None:
+            return value
+        return str(value)
 
     @staticmethod
     def _truncate_text(value: str, max_chars: int) -> str:

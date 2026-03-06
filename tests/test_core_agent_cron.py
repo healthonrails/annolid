@@ -187,3 +187,28 @@ def test_cron_service_rejects_invalid_cron_expression(tmp_path: Path) -> None:
         assert False, "expected ValueError for invalid cron expression"
     except ValueError as exc:
         assert "invalid cron schedule" in str(exc)
+
+
+def test_cron_service_persists_scheduled_email_payload(tmp_path: Path) -> None:
+    store_path = tmp_path / "jobs.json"
+    svc = CronService(store_path=store_path)
+    job = svc.add_job(
+        name="email-job",
+        schedule=CronSchedule(kind="every", every_ms=1000),
+        payload=CronPayload(
+            kind="send_email",
+            message="send update",
+            email_to="user@example.com",
+            email_subject="Status",
+            email_content="All good",
+            attachment_paths=["/tmp/report.txt"],
+        ),
+    )
+
+    loaded = CronService(store_path=store_path).list_jobs(include_disabled=True)
+    restored = next(row for row in loaded if row.id == job.id)
+    assert restored.payload.kind == "send_email"
+    assert restored.payload.email_to == "user@example.com"
+    assert restored.payload.email_subject == "Status"
+    assert restored.payload.email_content == "All good"
+    assert restored.payload.attachment_paths == ["/tmp/report.txt"]

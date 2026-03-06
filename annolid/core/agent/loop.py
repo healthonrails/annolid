@@ -56,6 +56,13 @@ from .tools.function_builtin import (
     SpawnTool,
 )
 from annolid.core.agent.tools.swarm_tool import SwarmTool
+from .tool_call_utils import (
+    normalize_tool_arguments,
+    sanitize_tool_call_id,
+    sanitize_tool_call_id_segment,
+    sanitize_tool_call_requests,
+    sanitize_tool_name,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from .subagent import SubagentManager
@@ -217,6 +224,7 @@ class AgentLoop:
         {"email", "list_emails", "read_email", "message", "camera_snapshot"}
     )
     _HIGH_RISK_TOOL_AUTOMATION = frozenset({"cron", "automation_schedule", "spawn"})
+    _HIGH_RISK_TOOL_RUNTIME_AUTOMATION = frozenset({"automation_schedule", "spawn"})
     _FINAL_ANSWER_REPAIR_PROMPT = (
         "Provide the final user-facing answer now using only the tool results above. "
         "Do not call any more tools. Keep it concise, concrete, and directly actionable."
@@ -1309,14 +1317,17 @@ class AgentLoop:
         has_exec = "exec" in candidate
         has_messaging = bool(candidate.intersection(self._HIGH_RISK_TOOL_MESSAGING))
         has_automation = bool(candidate.intersection(self._HIGH_RISK_TOOL_AUTOMATION))
+        has_runtime_automation = bool(
+            candidate.intersection(self._HIGH_RISK_TOOL_RUNTIME_AUTOMATION)
+        )
         if has_exec and (has_messaging or has_automation):
             return (
                 "Blocked by safety policy: exec cannot be combined with "
                 "messaging/automation tools without explicit high-risk intent."
             )
-        if "read_file" in candidate and has_messaging and has_automation:
+        if "read_file" in candidate and has_messaging and has_runtime_automation:
             return (
-                "Blocked by safety policy: read_file + messaging + automation "
+                "Blocked by safety policy: read_file + messaging + runtime automation "
                 "requires explicit high-risk intent."
             )
         return ""
@@ -1996,7 +2007,10 @@ class AgentLoop:
             save_memory_tool,
             self.model,
         )
-        for call in self._sanitize_tool_calls(self._extract_tool_calls(resp)):
+        for call in self._sanitize_tool_calls(
+            self._extract_tool_calls(resp),
+            allowed_tool_names=("save_memory",),
+        ):
             if str(call.get("name") or "").strip() != "save_memory":
                 continue
             args = self._normalize_args(call.get("arguments"))
@@ -2654,27 +2668,32 @@ class AgentLoop:
         return selected or [dict(t) for t in tools[: cls._DEFAULT_TOOL_SELECTION_MAX]]
 
     def _sanitize_tool_calls(
-        self, tool_calls: Sequence[Mapping[str, Any]]
+        self,
+        tool_calls: Sequence[Mapping[str, Any]],
+        *,
+        allowed_tool_names: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
-        deduped: List[Dict[str, Any]] = []
-        seen: set[str] = set()
-        for item in tool_calls:
-            call_id = str(item.get("id") or "").strip()
-            name = str(item.get("name") or "").strip()
-            if not name:
-                continue
-            args = self._normalize_args(item.get("arguments"))
-            if not call_id:
-                call_id = f"call_{len(deduped)}"
-            signature = (
-                f"{call_id}:{name}:"
-                f"{json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)}"
-            )
-            if signature in seen:
-                continue
-            seen.add(signature)
-            deduped.append({"id": call_id, "name": name, "arguments": args})
-        return deduped
+        names = set(self._tools.tool_names)
+        for name in allowed_tool_names or ():
+            clean = sanitize_tool_name(name)
+            if clean:
+                names.add(clean)
+        return sanitize_tool_call_requests(
+            tool_calls,
+            allowed_tool_names=sorted(names),
+        )
+
+    def _is_registered_tool_name(self, name: str) -> bool:
+        tool_name = sanitize_tool_name(name)
+        return bool(tool_name) and self._tools.has(tool_name)
+
+    @classmethod
+    def _sanitize_tool_call_id(cls, raw_id: Any, *, default_index: int) -> str:
+        return sanitize_tool_call_id(raw_id, default_index=default_index)
+
+    @classmethod
+    def _sanitize_tool_call_id_segment(cls, value: Any) -> str:
+        return sanitize_tool_call_id_segment(value)
 
     def _append_post_tool_guidance(self, messages: List[Dict[str, Any]]) -> None:
         if not self._interleave_post_tool_guidance:
@@ -2801,22 +2820,7 @@ class AgentLoop:
 
     @staticmethod
     def _normalize_args(raw_args: Any) -> Dict[str, Any]:
-        if raw_args is None:
-            return {}
-        if isinstance(raw_args, dict):
-            return dict(raw_args)
-        if isinstance(raw_args, str):
-            text = raw_args.strip()
-            if not text:
-                return {}
-            try:
-                parsed = json.loads(text)
-                if isinstance(parsed, dict):
-                    return dict(parsed)
-            except Exception:
-                return {"_raw": raw_args}
-            return {"_raw": raw_args}
-        return {"_raw": raw_args}
+        return normalize_tool_arguments(raw_args)
 
     def _build_default_llm_callable(
         self,

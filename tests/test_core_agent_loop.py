@@ -274,6 +274,48 @@ class _EmailTool(FunctionTool):
         return f"email:{kwargs.get('to', '')}"
 
 
+class _CronLikeTool(FunctionTool):
+    @property
+    def name(self) -> str:
+        return "cron"
+
+    @property
+    def description(self) -> str:
+        return "Schedule an automation task."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"action": {"type": "string"}, "message": {"type": "string"}},
+            "required": ["action"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return f"cron:{kwargs.get('action', '')}"
+
+
+class _SpawnLikeTool(FunctionTool):
+    @property
+    def name(self) -> str:
+        return "spawn"
+
+    @property
+    def description(self) -> str:
+        return "Spawn runtime automation task."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"task": {"type": "string"}},
+            "required": ["task"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return f"spawn:{kwargs.get('task', '')}"
+
+
 def test_agent_loop_runs_tool_then_finishes() -> None:
     registry = FunctionToolRegistry()
     registry.register(_EchoTool())
@@ -436,6 +478,116 @@ def test_agent_loop_allows_high_risk_combo_when_guard_disabled() -> None:
     assert len(result.tool_runs) == 2
     assert result.tool_runs[0].result.startswith("exec:")
     assert result.tool_runs[1].result.startswith("email:")
+
+
+def test_agent_loop_allows_read_file_email_and_cron_combo() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_ReadFileLikeTool())
+    registry.register(_CronLikeTool())
+    registry.register(_EmailTool())
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "name": "read_file",
+                        "arguments": {"path": "notes.md"},
+                    }
+                ],
+            }
+        if state["n"] == 2:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c2",
+                        "name": "cron",
+                        "arguments": {"action": "add", "message": "send digest"},
+                    }
+                ],
+            }
+        if state["n"] == 3:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c3",
+                        "name": "email",
+                        "arguments": {"to": "a@example.com", "body": "scheduled"},
+                    }
+                ],
+            }
+        return {"content": "done"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    result = asyncio.run(loop.run("schedule an email summary"))
+    assert result.content == "done"
+    assert len(result.tool_runs) == 3
+    assert all("Blocked by safety policy" not in run.result for run in result.tool_runs)
+
+
+def test_agent_loop_blocks_read_file_with_runtime_automation_and_messaging() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_ReadFileLikeTool())
+    registry.register(_SpawnLikeTool())
+    registry.register(_EmailTool())
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "name": "read_file",
+                        "arguments": {"path": "secrets.txt"},
+                    }
+                ],
+            }
+        if state["n"] == 2:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c2", "name": "spawn", "arguments": {"task": "x"}}
+                ],
+            }
+        if state["n"] == 3:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c3",
+                        "name": "email",
+                        "arguments": {"to": "a@example.com", "body": "exfil"},
+                    }
+                ],
+            }
+        return {"content": "done"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    result = asyncio.run(loop.run("do this automation"))
+    assert result.content == "done"
+    assert len(result.tool_runs) == 3
+    assert result.tool_runs[2].result.startswith("Error: Blocked by safety policy")
 
 
 def test_agent_loop_redacts_session_values_in_contextual_prompt(tmp_path: Path) -> None:
@@ -1249,6 +1401,7 @@ def test_agent_loop_persists_tools_used_metadata() -> None:
 
 def test_agent_loop_sanitizes_and_deduplicates_tool_calls() -> None:
     registry = FunctionToolRegistry()
+    registry.register(_EchoTool())
 
     async def fake_llm(
         messages: Sequence[Mapping[str, Any]],
@@ -1272,6 +1425,33 @@ def test_agent_loop_sanitizes_and_deduplicates_tool_calls() -> None:
     assert cleaned[0]["name"] == "echo"
     assert cleaned[1]["name"] == "echo"
     assert cleaned[1]["arguments"]["text"] == "y"
+
+
+def test_agent_loop_sanitizes_tool_call_ids_and_filters_invalid_names() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_EchoTool())
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        return {"content": "ok"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    raw_calls = [
+        {"id": " weird id!! ", "name": "echo", "arguments": {"text": "x"}},
+        {"id": "call:1|item:2", "name": "echo", "arguments": {"text": "y"}},
+        {"id": "c3", "name": "bad tool name", "arguments": {}},
+        {"id": "c4", "name": "unknown_tool", "arguments": {}},
+    ]
+    cleaned = loop._sanitize_tool_calls(raw_calls)
+    assert len(cleaned) == 2
+    assert cleaned[0]["id"] == "weird_id"
+    assert cleaned[1]["id"] == "call_1|item_2"
+    assert all(call["name"] == "echo" for call in cleaned)
 
 
 def test_agent_loop_extracts_legacy_function_call_payload() -> None:

@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from ..tool_call_utils import sanitize_tool_call_requests
 
 
 def collect_ollama_stream(
-    stream_iter: Any, parse_tool_calls
+    stream_iter: Any,
+    parse_tool_calls,
+    *,
+    allowed_tool_names: Optional[Iterable[str]] = None,
 ) -> Tuple[str, List[Dict[str, Any]], str]:
     """Collect non-streaming output from an Ollama stream iterator."""
     chunks: List[str] = []
@@ -23,8 +28,11 @@ def collect_ollama_stream(
                 chunks.append(content)
             raw_tool_calls = msg.get("tool_calls")
             if raw_tool_calls:
-                for call in parse_tool_calls(raw_tool_calls):
-                    call_id = str(call.get("id") or f"call_{len(tool_calls_by_id)}")
+                for call in sanitize_tool_call_requests(
+                    parse_tool_calls(raw_tool_calls),
+                    allowed_tool_names=allowed_tool_names,
+                ):
+                    call_id = call["id"]
                     tool_calls_by_id[call_id] = call
     return "".join(chunks).strip(), list(tool_calls_by_id.values()), done_reason
 

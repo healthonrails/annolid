@@ -4,6 +4,7 @@ import asyncio
 import os
 import uuid
 from datetime import datetime
+from email.utils import parseaddr
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -12,8 +13,6 @@ from annolid.core.agent.cron import (
     CronSchedule,
     CronService,
     default_cron_store_path,
-    legacy_cron_store_path,
-    migrate_legacy_cron_store,
 )
 
 from .function_base import FunctionTool
@@ -31,18 +30,12 @@ class CronTool(FunctionTool):
         self._send_callback = send_callback
         if store_path is None:
             store_path = self._resolve_default_store_path()
-            migrate_legacy_cron_store(
-                store_path=store_path,
-                legacy_path=legacy_cron_store_path(),
-            )
         self._service = CronService(store_path=store_path, on_job=self._on_job)
 
     @staticmethod
     def _resolve_default_store_path() -> Path:
         candidates = [
             default_cron_store_path(),
-            legacy_cron_store_path(),
-            Path.cwd() / ".annolid" / "cron" / "jobs.json",
             Path("/tmp") / "annolid" / "cron" / "jobs.json",
         ]
         for path in candidates:
@@ -108,6 +101,13 @@ class CronTool(FunctionTool):
                 "at_ms": {"type": "integer"},
                 "deliver": {"type": "boolean"},
                 "job_id": {"type": "string"},
+                "email_to": {"type": "string"},
+                "email_subject": {"type": "string"},
+                "email_content": {"type": "string"},
+                "attachment_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
             },
             "required": ["action"],
         }
@@ -123,6 +123,10 @@ class CronTool(FunctionTool):
         at_ms: int | None = None,
         deliver: bool = False,
         job_id: str | None = None,
+        email_to: str | None = None,
+        email_subject: str | None = None,
+        email_content: str | None = None,
+        attachment_paths: list[str] | None = None,
         **kwargs: Any,
     ) -> str:
         del kwargs
@@ -135,6 +139,10 @@ class CronTool(FunctionTool):
                 at=at,
                 at_ms=at_ms,
                 deliver=bool(deliver),
+                email_to=email_to,
+                email_subject=email_subject,
+                email_content=email_content,
+                attachment_paths=attachment_paths,
             )
         if action == "list":
             return self._list_jobs()
@@ -162,8 +170,20 @@ class CronTool(FunctionTool):
         at: str | None,
         at_ms: int | None,
         deliver: bool,
+        email_to: str | None,
+        email_subject: str | None,
+        email_content: str | None,
+        attachment_paths: list[str] | None,
     ) -> str:
-        if not message:
+        normalized_email_to = (
+            str(email_to or "").strip() or self._default_email_recipient()
+        )
+        normalized_email_content = str(email_content or "").strip()
+        normalized_attachments = self._normalize_attachment_paths(attachment_paths)
+        direct_email_requested = bool(
+            normalized_email_to or normalized_email_content or normalized_attachments
+        )
+        if not message and not direct_email_requested:
             return "Error: message is required for add"
         if not self._channel or not self._chat_id:
             return "Error: no session context (channel/chat_id)"
@@ -192,23 +212,50 @@ class CronTool(FunctionTool):
                 tz=(str(tz).strip() if tz else None),
             )
 
-        payload = CronPayload(
-            kind="agent_turn",
-            message=message,
-            deliver=bool(deliver),
-            channel=self._channel,
-            to=self._chat_id,
-        )
+        payload_message = str(message or "").strip()
+        if direct_email_requested:
+            if not normalized_email_to:
+                return (
+                    "Error: email_to is required for scheduled email jobs "
+                    "unless the current chat_id is an email address."
+                )
+            if not normalized_email_content:
+                normalized_email_content = payload_message
+            if not normalized_email_content:
+                return "Error: email_content or message is required for scheduled email jobs"
+            payload_message = payload_message or normalized_email_content
+            payload = CronPayload(
+                kind="send_email",
+                message=payload_message,
+                deliver=bool(deliver),
+                channel=self._channel,
+                to=self._chat_id,
+                email_to=normalized_email_to,
+                email_subject=str(email_subject or "").strip()
+                or "Scheduled message from Annolid Bot",
+                email_content=normalized_email_content,
+                attachment_paths=normalized_attachments,
+            )
+        else:
+            payload = CronPayload(
+                kind="agent_turn",
+                message=payload_message,
+                deliver=bool(deliver),
+                channel=self._channel,
+                to=self._chat_id,
+            )
         try:
             job = self._service.add_job(
-                name=message[:40],
+                name=payload_message[:40],
                 schedule=schedule,
                 payload=payload,
                 delete_after_run=(schedule.kind == "at"),
             )
         except ValueError as exc:
             return f"Error: {exc}"
-        return f"Created job '{message[:30]}' (id: {job.id})"
+        if payload.kind == "send_email":
+            return f"Created scheduled email job to {payload.email_to} (id: {job.id})"
+        return f"Created job '{payload_message[:30]}' (id: {job.id})"
 
     def _list_jobs(self) -> str:
         jobs = self._service.list_jobs(include_disabled=True)
@@ -299,6 +346,21 @@ class CronTool(FunctionTool):
                 if asyncio.iscoroutine(result):
                     await result
         return message
+
+    def _default_email_recipient(self) -> str:
+        _, addr = parseaddr(str(self._chat_id or "").strip())
+        return addr if "@" in addr else ""
+
+    @staticmethod
+    def _normalize_attachment_paths(paths: list[str] | None) -> list[str]:
+        if not isinstance(paths, list):
+            return []
+        normalized: list[str] = []
+        for item in paths:
+            text = str(item or "").strip()
+            if text:
+                normalized.append(text)
+        return normalized
 
     @staticmethod
     def _parse_iso_datetime_ms(value: str) -> int | None:

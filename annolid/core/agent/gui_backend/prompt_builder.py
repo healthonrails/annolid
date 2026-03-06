@@ -73,8 +73,10 @@ def build_compact_system_prompt(
     )
     parts.append(
         "CRITICAL INSTRUCTION ON AUTOMATION: You DO have native capabilities for both email and scheduling. "
-        "If a user asks you to schedule an email, you MUST use the `cron` tool (action='add') and set its `message` "
-        "to a prompt instructing yourself to send the email (e.g. 'Send an email to user@example...'). "
+        "If a user asks you to schedule an email, you MUST use the `cron` tool (action='add'). "
+        "Prefer direct scheduled-email fields: `email_to`, `email_subject`, `email_content`, and optional `attachment_paths`. "
+        "Use `message` as the human-readable job summary. "
+        "Only fall back to scheduling a future agent prompt in `message` when the email body truly must be generated at send time. "
         "Do NOT claim you lack an email scheduling tool, and do NOT offer to create shell scripts or calendar exports."
     )
     parts.append(
