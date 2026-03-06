@@ -894,6 +894,23 @@ def _cmd_agent_security_check(_: argparse.Namespace) -> int:
     return 0 if status == "ok" else 1
 
 
+def _cmd_agent_security_audit(args: argparse.Namespace) -> int:
+    from annolid.core.agent.config import get_config_path
+    from annolid.core.agent.security_audit import run_agent_security_audit
+
+    config_path = (
+        Path(args.config).expanduser()
+        if getattr(args, "config", None)
+        else get_config_path()
+    )
+    payload = run_agent_security_audit(
+        config_path=config_path,
+        fix=bool(getattr(args, "fix", False)),
+    )
+    print(json.dumps(payload, indent=2))
+    return 0 if payload.get("status") == "ok" else 1
+
+
 def _cmd_agent_secrets_audit(args: argparse.Namespace) -> int:
     from annolid.core.agent.config import get_config_path
     from annolid.core.agent.config.secrets import (
@@ -1627,6 +1644,19 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
         args = p.parse_args(argv[3:])
         return _cmd_agent_secrets_migrate(args)
 
+    # annolid-run agent security audit
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "security"
+        and argv[2] == "audit"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent security audit")
+        p.add_argument("--config", default=None)
+        p.add_argument("--fix", action="store_true")
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_security_audit(args)
+
     # annolid-run update check|run|rollback
     if len(argv) >= 2 and argv[0] == "update":
         action = argv[1]
@@ -2317,6 +2347,18 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Check agent key/config security posture (permissions + secret persistence).",
     )
     security_check_p.set_defaults(_handler=_cmd_agent_security_check)
+
+    security_audit_p = sub.add_parser(
+        "agent-security-audit",
+        help="Audit agent security posture and optionally fix local permission issues.",
+    )
+    security_audit_p.add_argument("--config", default=None)
+    security_audit_p.add_argument(
+        "--fix",
+        action="store_true",
+        help="Apply safe permission fixes for local agent state files.",
+    )
+    security_audit_p.set_defaults(_handler=_cmd_agent_security_audit)
 
     secrets_audit_p = sub.add_parser(
         "agent-secrets-audit",

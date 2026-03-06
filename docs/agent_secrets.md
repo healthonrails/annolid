@@ -2,6 +2,8 @@
 
 Annolid agent config can now reference secrets instead of storing raw credentials in `~/.annolid/config.json`.
 
+For broader posture checks around session routing, tool policy, permissions, and channel exposure, see [Agent Security](agent_security.md).
+
 This is intended for:
 
 - provider API keys,

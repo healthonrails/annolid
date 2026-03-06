@@ -17,6 +17,7 @@ The current codebase includes:
 - [Tutorials](tutorials.md): jump to practical notebooks, videos, and focused guides.
 - [MCP](mcp.md): extend Annolid Bot with Model Context Protocol servers.
 - [Agent Secrets](agent_secrets.md): keep agent/provider credentials out of plaintext `config.json`.
+- [Agent Security](agent_security.md): audit session scope, tool policy, channel exposure, and local agent state.
 - [SAM 3D](sam3d.md): configure the optional 3D reconstruction integration.
 - [Reference](reference.md): commands, config files, and operational paths.
 - [Deployment](deployment.md): understand how docs and the website are published.
@@ -34,4 +35,5 @@ The current codebase includes:
 - The primary entry points are `annolid` for the GUI and `annolid-run` for model/plugin workflows.
 - Annolid Bot is an active part of the GUI and now includes a Zulip draft/send workflow in the bot dock when Zulip is configured.
 - Agent/provider credentials can now be managed through `annolid-run agent-secrets-audit`, `agent-secrets-set`, and `agent-secrets-migrate` so `config.json` can reference environment or local private secrets instead of storing plaintext.
+- Agent security posture can now be reviewed through `annolid-run agent-security-check` and `annolid-run agent-security-audit`, with `--fix` available for safe local permission repairs.
 - Docs are built with MkDocs in strict mode through the `docs-quality` and `docs-pages` GitHub Actions workflows.

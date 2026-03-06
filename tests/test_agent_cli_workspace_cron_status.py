@@ -307,6 +307,89 @@ def test_agent_secrets_migrate_and_audit(tmp_path: Path, monkeypatch, capsys) ->
     assert audit["resolved_ref_paths"] == ["tools.zulip.apiKey"]
 
 
+def test_agent_security_audit_reports_risky_config(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import annolid.core.agent.utils as utils_mod
+    from annolid.core.agent import config as agent_config_mod
+
+    data_dir = tmp_path / "data"
+    config_path = data_dir / "config.json"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {
+                        "session": {"dmScope": "main"},
+                        "strictRuntimeToolGuard": False,
+                    }
+                },
+                "tools": {
+                    "profile": "coding",
+                    "allow": ["group:automation"],
+                    "zulip": {
+                        "enabled": True,
+                        "serverUrl": "https://zulip.example.com",
+                        "user": "annolid@example.com",
+                        "apiKey": "plain-zulip-secret",
+                        "allowFrom": [],
+                    },
+                },
+                "update": {"auto": {"enabled": True, "requireSignature": False}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.chmod(data_dir, 0o755)
+    os.chmod(config_path, 0o644)
+
+    monkeypatch.setattr(utils_mod, "get_agent_data_path", lambda: data_dir)
+    monkeypatch.setattr(agent_config_mod, "get_config_path", lambda: config_path)
+    monkeypatch.setenv("ANNOLID_REQUIRE_SIGNED_SKILLS", "0")
+    monkeypatch.setenv("ANNOLID_REQUIRE_SIGNED_UPDATES", "0")
+
+    rc = annolid_run(["agent-security-audit"])
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    finding_ids = {item["check_id"] for item in payload["findings"]}
+    assert "plaintext-config-secrets" in finding_ids
+    assert "dm-scope-main" in finding_ids
+    assert "channel-allowlist-zulip" in finding_ids
+    assert "strict-runtime-tool-guard-disabled" in finding_ids
+    assert "runtime-with-messaging-or-automation" in finding_ids
+    assert "unsigned-auto-update" in finding_ids
+
+
+def test_agent_security_audit_fix_repairs_permissions(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import annolid.core.agent.utils as utils_mod
+    from annolid.core.agent import config as agent_config_mod
+
+    data_dir = tmp_path / "data"
+    config_path = data_dir / "config.json"
+    sessions_dir = data_dir / "sessions"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps({}), encoding="utf-8")
+    os.chmod(data_dir, 0o755)
+    os.chmod(config_path, 0o644)
+    os.chmod(sessions_dir, 0o755)
+
+    monkeypatch.setattr(utils_mod, "get_agent_data_path", lambda: data_dir)
+    monkeypatch.setattr(agent_config_mod, "get_config_path", lambda: config_path)
+
+    rc = annolid_run(["agent-security-audit", "--fix"])
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert any("chmod 700" in item for item in payload["fixes_applied"])
+    assert any("chmod 600" in item for item in payload["fixes_applied"])
+    assert oct(config_path.stat().st_mode & 0o777) == "0o600"
+    assert oct(data_dir.stat().st_mode & 0o777) == "0o700"
+    assert oct(sessions_dir.stat().st_mode & 0o777) == "0o700"
+
+
 def test_agent_update_check_command(monkeypatch, capsys) -> None:
     import annolid.core.agent.updater as updater_mod
     from annolid.core.agent.updater import UpdateReport

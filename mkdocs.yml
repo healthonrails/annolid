@@ -59,6 +59,7 @@ nav:
       - Sandboxed Shell: tutorials/sandboxed_shell.md
   - MCP: mcp.md
   - Agent Secrets: agent_secrets.md
+  - Agent Security: agent_security.md
   - SAM 3D: sam3d.md
   - Deployment: deployment.md
   - Migration Plan: migration.md

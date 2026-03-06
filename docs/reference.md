@@ -19,6 +19,15 @@ annolid-run train <model> --help-model
 annolid-run predict <model> --help-model
 ```
 
+Security-focused agent commands:
+
+```bash
+annolid-run agent-security-check
+annolid-run agent-security-audit
+annolid-run agent-security-audit --fix
+annolid-run agent-secrets-audit
+```
+
 ## Important Config Files
 
 - LLM and Annolid Bot model settings:
@@ -27,6 +36,8 @@ annolid-run predict <model> --help-model
   `~/.annolid/config.json`
 - Annolid agent local private secret store:
   `~/.annolid/agent_secrets.json`
+- Annolid agent sessions directory:
+  `~/.annolid/sessions/`
 - LabelMe/GUI-style user config:
   `~/.labelmerc`
 
@@ -39,6 +50,7 @@ annolid-run predict <model> --help-model
 - [Tutorials](tutorials.md)
 - [MCP](mcp.md)
 - [Agent Secrets](agent_secrets.md)
+- [Agent Security](agent_security.md)
 - [SAM 3D](sam3d.md)
 - [Deployment](deployment.md)
 
