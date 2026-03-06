@@ -99,6 +99,8 @@ class CronTool(FunctionTool):
                 "tz": {"type": "string"},
                 "at": {"type": "string"},
                 "at_ms": {"type": "integer"},
+                "schedule_time": {"type": "string"},
+                "schedule_time_ms": {"type": "integer"},
                 "deliver": {"type": "boolean"},
                 "job_id": {"type": "string"},
                 "email_to": {"type": "string"},
@@ -121,6 +123,8 @@ class CronTool(FunctionTool):
         tz: str | None = None,
         at: str | None = None,
         at_ms: int | None = None,
+        schedule_time: str | None = None,
+        schedule_time_ms: int | None = None,
         deliver: bool = False,
         job_id: str | None = None,
         email_to: str | None = None,
@@ -129,7 +133,21 @@ class CronTool(FunctionTool):
         attachment_paths: list[str] | None = None,
         **kwargs: Any,
     ) -> str:
-        del kwargs
+        # Compatibility aliases used by some models/runtimes.
+        if not at and schedule_time:
+            at = str(schedule_time)
+        if at_ms is None and schedule_time_ms is not None:
+            try:
+                at_ms = int(schedule_time_ms)
+            except Exception:
+                at_ms = None
+        if not at and isinstance(kwargs.get("scheduleAt"), str):
+            at = str(kwargs.get("scheduleAt") or "")
+        if at_ms is None and kwargs.get("scheduleAtMs") is not None:
+            try:
+                at_ms = int(kwargs.get("scheduleAtMs"))
+            except Exception:
+                at_ms = None
         if action == "add":
             return self._add_job(
                 message=message,

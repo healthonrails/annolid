@@ -1481,6 +1481,77 @@ def test_agent_loop_extracts_legacy_function_call_payload() -> None:
     assert calls[0]["arguments"] == '{"text":"hi"}'
 
 
+def test_agent_loop_executes_raw_tool_calls_section_cron_schedule_time_payload() -> (
+    None
+):
+    registry = FunctionToolRegistry()
+    captured_calls: list[dict[str, Any]] = []
+
+    class _CronCaptureTool(FunctionTool):
+        @property
+        def name(self) -> str:
+            return "cron"
+
+        @property
+        def description(self) -> str:
+            return "Schedule automation jobs."
+
+        @property
+        def parameters(self) -> dict[str, Any]:
+            return {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "message": {"type": "string"},
+                    "schedule_time": {"type": "string"},
+                    "email_to": {"type": "string"},
+                    "email_subject": {"type": "string"},
+                    "email_content": {"type": "string"},
+                },
+                "required": ["action"],
+            }
+
+        async def execute(self, **kwargs: Any) -> str:
+            captured_calls.append(dict(kwargs))
+            return "Created scheduled email job to cy384@cornell.edu (id: abc123)"
+
+    registry.register(_CronCaptureTool())
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": (
+                    "I'll reschedule that Annolid joke email for you right away. "
+                    "<|tool_calls_section_begin|> "
+                    "<|tool_call_begin|> functions.cron:0 "
+                    "<|tool_call_argument_begin|> "
+                    '{"action":"add","email_to":"cy384@cornell.edu","email_subject":"Annolid Joke","email_content":"Here is your Annolid joke","message":"Resent Annolid joke email to cy384@cornell.edu","schedule_time":"2026-03-06T15:43:40-05:00"} '
+                    "<|tool_call_end|> "
+                    "<|tool_calls_section_end|>"
+                )
+            }
+        return {"content": "Done. Scheduled it."}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    result = asyncio.run(loop.run("reschedule the joke email"))
+    assert state["n"] == 2
+    assert result.content == "Done. Scheduled it."
+    assert len(result.tool_runs) == 1
+    assert result.tool_runs[0].name == "cron"
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["action"] == "add"
+    assert captured_calls[0]["email_to"] == "cy384@cornell.edu"
+    assert captured_calls[0]["schedule_time"] == "2026-03-06T15:43:40-05:00"
+
+
 def test_agent_loop_stops_on_repeated_identical_tool_cycles() -> None:
     registry = FunctionToolRegistry()
     registry.register(_EchoTool())

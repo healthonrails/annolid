@@ -971,6 +971,30 @@ def test_cron_tool_add_direct_scheduled_email_defaults_recipient_from_chat_id(
     assert "Created scheduled email job to recipient@example.com" in added
 
 
+def test_cron_tool_add_direct_scheduled_email_with_schedule_time_alias(
+    tmp_path: Path,
+) -> None:
+    tool = CronTool(store_path=tmp_path / "cron" / "jobs.json")
+    tool.set_context("local", "user1")
+    future_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    added = asyncio.run(
+        tool.execute(
+            action="add",
+            message="Annolid joke email",
+            schedule_time=future_at,
+            email_to="cy384@cornell.edu",
+            email_subject="Annolid Joke",
+            email_content="Why did the segmentation model go to therapy?",
+        )
+    )
+    assert "Created scheduled email job to cy384@cornell.edu" in added
+    job_id = added.split("id: ")[-1].rstrip(")")
+    rows = tool._service.list_jobs(include_disabled=True)
+    job = next(row for row in rows if row.id == job_id)
+    assert job.schedule.kind == "at"
+    assert int(job.schedule.at_ms or 0) > 0
+
+
 def test_cron_tool_default_store_path_does_not_use_cwd_annolid(monkeypatch) -> None:
     default_path = Path("/var/nonwritable/agent-workspace/cron/jobs.json")
     tmp_path = Path("/tmp/annolid/cron/jobs.json")

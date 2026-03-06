@@ -83,6 +83,7 @@ async def execute_direct_gui_command(
     save_citation: Callable[..., Any],
     generate_annolid_tutorial: Callable[..., Any],
     automation_schedule: Callable[..., Any],
+    cron: Callable[..., Any],
     list_dir: Callable[..., Any],
     read_file: Callable[..., Any],
     exec_command: Callable[..., Any],
@@ -770,6 +771,17 @@ async def execute_direct_gui_command(
             result = str(payload.get("result") or "").strip()
             return result or "Automation command completed."
         return str(payload.get("error") or "Failed to execute automation command.")
+
+    if name == "cron":
+        payload = await _run(
+            cron,
+            action=str(args.get("action") or ""),
+            job_id=str(args.get("job_id") or ""),
+        )
+        if payload.get("ok"):
+            result = str(payload.get("result") or "").strip()
+            return result or "Cron command completed."
+        return str(payload.get("error") or "Failed to execute cron command.")
 
     if name == "list_dir":
         payload = await _run(list_dir, str(args.get("path") or ""))

@@ -54,6 +54,7 @@ from annolid.core.agent.tools.pdf import DownloadPdfTool
 from annolid.core.agent.tools.filesystem import RenameFileTool
 from annolid.core.agent.tools.email import EmailTool
 from annolid.core.agent.tools.automation_scheduler import AutomationSchedulerTool
+from annolid.core.agent.tools.cron import CronTool
 from annolid.core.agent.tools.camera import (
     _annotate_snapshot_frame,
     build_camera_mission_status,
@@ -1113,6 +1114,9 @@ class StreamingChatTask(QRunnable):
             workspace,
             allowed_read_roots=allowed_read_roots,
             allow_web_tools=bool(include_tools and self.enable_web_tools),
+            available_tool_names=list(tools.tool_names),
+            tool_policy_profile=policy_profile,
+            tool_policy_source=policy_source,
             include_workspace_docs=bool(include_tools),
         )
         t_after_prompt = time.perf_counter()
@@ -1992,6 +1996,7 @@ class StreamingChatTask(QRunnable):
             "save_citation": self._tool_gui_save_citation,
             "generate_annolid_tutorial": self._tool_gui_generate_annolid_tutorial,
             "automation_schedule": self._tool_gui_automation_schedule,
+            "cron": self._tool_gui_cron,
             "list_dir": self._tool_gui_list_dir,
             "read_file": self._tool_gui_read_file,
             "exec_command": self._tool_gui_exec_command,
@@ -2877,6 +2882,37 @@ class StreamingChatTask(QRunnable):
             return {"ok": False, "error": str(result)}
         return {"ok": True, "result": str(result)}
 
+    async def _tool_gui_cron(
+        self,
+        *,
+        action: str = "",
+        job_id: str = "",
+    ) -> Dict[str, Any]:
+        host = getattr(self.widget, "host_window_widget", None) if self.widget else None
+        if host is None and self.widget is not None:
+            with contextlib.suppress(Exception):
+                host = self.widget.window()
+        manager = getattr(host, "ai_chat_manager", None) if host is not None else None
+        store_path = None
+        if manager is not None:
+            service = getattr(manager, "_cron_service", None)
+            if service is not None:
+                store_path = getattr(service, "_store_path", None)
+        tool = CronTool(store_path=store_path)
+        channel = "gui"
+        chat_id = "annolid_bot"
+        if isinstance(self.inbound, BusInboundMessage):
+            channel = str(self.inbound.channel or channel).strip() or channel
+            chat_id = str(self.inbound.chat_id or chat_id).strip() or chat_id
+        tool.set_context(channel, chat_id)
+        result = await tool.execute(
+            action=str(action or "").strip(),
+            job_id=str(job_id or "").strip(),
+        )
+        if str(result or "").startswith("Error:"):
+            return {"ok": False, "error": str(result)}
+        return {"ok": True, "result": str(result)}
+
     @staticmethod
     def _annolid_project_root() -> Path:
         return Path(__file__).resolve().parents[3]
@@ -3640,6 +3676,9 @@ class StreamingChatTask(QRunnable):
         *,
         allowed_read_roots: Optional[List[str]] = None,
         allow_web_tools: Optional[bool] = None,
+        available_tool_names: Optional[List[str]] = None,
+        tool_policy_profile: str = "",
+        tool_policy_source: str = "",
         include_workspace_docs: bool = True,
     ) -> str:
         return build_gui_compact_system_prompt(
@@ -3650,6 +3689,9 @@ class StreamingChatTask(QRunnable):
                 enable_ollama_fallback=getattr(self, "enable_ollama_fallback", False),
                 allowed_read_roots=allowed_read_roots,
                 allow_web_tools=allow_web_tools,
+                available_tool_names=available_tool_names,
+                tool_policy_profile=tool_policy_profile,
+                tool_policy_source=tool_policy_source,
                 include_workspace_docs=include_workspace_docs,
                 now=datetime.now(),
             ),
