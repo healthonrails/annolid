@@ -47,6 +47,13 @@ from .shell_sessions import ExecProcessTool, ExecStartTool
 from .email import EmailTool, ListEmailsTool, ReadEmailTool
 from .calendar import GoogleCalendarTool
 from .camera import CameraSnapshotTool
+from .coding_harness import (
+    CodingSessionCloseTool,
+    CodingSessionListTool,
+    CodingSessionPollTool,
+    CodingSessionSendTool,
+    CodingSessionStartTool,
+)
 from .automation_scheduler import AutomationSchedulerTool
 from .function_admin import (
     AdminEvalRunTool,
@@ -188,6 +195,11 @@ async def register_nanobot_style_tools(
         )
     )
     registry.register(CameraSnapshotTool(allowed_dir=allowed_dir))
+    registry.register(CodingSessionStartTool(workspace=allowed_dir))
+    registry.register(CodingSessionSendTool())
+    registry.register(CodingSessionPollTool())
+    registry.register(CodingSessionListTool())
+    registry.register(CodingSessionCloseTool())
     registry.register(AutomationSchedulerTool(scheduler=task_scheduler))
     registry.register(AdminSkillsRefreshTool())
     registry.register(AdminMemoryFlushTool())

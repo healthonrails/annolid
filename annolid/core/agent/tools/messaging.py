@@ -85,7 +85,7 @@ class SpawnTool(FunctionTool):
 
     @property
     def description(self) -> str:
-        return "Spawn a subagent/background task."
+        return "Spawn a background task using either the native subagent runtime or the ACP runtime."
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -94,11 +94,27 @@ class SpawnTool(FunctionTool):
             "properties": {
                 "task": {"type": "string"},
                 "label": {"type": "string"},
+                "runtime": {
+                    "type": "string",
+                    "enum": ["subagent", "acp"],
+                },
+                "provider": {"type": "string"},
+                "model": {"type": "string"},
+                "workspace": {"type": "string"},
             },
             "required": ["task"],
         }
 
-    async def execute(self, task: str, label: str | None = None, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        task: str,
+        label: str | None = None,
+        runtime: str = "subagent",
+        provider: str = "",
+        model: str = "",
+        workspace: str = "",
+        **kwargs: Any,
+    ) -> str:
         del kwargs
         if self._spawn_callback is None:
             return "Error: spawn callback not configured"
@@ -106,6 +122,10 @@ class SpawnTool(FunctionTool):
             ret = self._spawn_callback(
                 task=task,
                 label=label,
+                runtime=runtime,
+                provider=provider,
+                model=model,
+                workspace=workspace,
                 origin_channel=self._origin_channel,
                 origin_chat_id=self._origin_chat_id,
             )
@@ -197,6 +217,8 @@ class CancelTaskTool(FunctionTool):
             success = self._cancel_callback(task_id)
         except Exception as exc:
             return f"Error cancelling task {task_id}: {exc}"
+        if asyncio.iscoroutine(success):
+            success = await success
 
         if success:
             return f"Successfully initiated cancellation for task {task_id}."

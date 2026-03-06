@@ -27,6 +27,23 @@ def format_dependency_error(
             "Install it in your Annolid environment, for example: "
             "`.venv/bin/pip install openai`."
         )
+    if kind == "openai_codex" and "oauth_cli_kit" in message:
+        return (
+            "OpenAI Codex provider requires `oauth_cli_kit`. "
+            "Install it in your Annolid environment, for example: "
+            "`.venv/bin/pip install oauth-cli-kit`."
+        )
+    if kind == "openai_codex" and "httpx" in message:
+        return (
+            "OpenAI Codex provider requires `httpx`. "
+            "Install it in your Annolid environment, for example: "
+            "`.venv/bin/pip install httpx`."
+        )
+    if kind == "codex_cli" and "codex executable" in message.lower():
+        return (
+            "Codex CLI provider requires the `codex` executable. "
+            "Install Codex and ensure `codex` is available on PATH."
+        )
     if kind == "gemini" and "google-generativeai" in message:
         return (
             "Gemini provider requires `google-generativeai`. "

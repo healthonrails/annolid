@@ -58,6 +58,7 @@ nav:
       - LabelMe to YOLO Class Map: tutorials/Labelme_to_YOLO_class_map.md
       - Sandboxed Shell: tutorials/sandboxed_shell.md
   - MCP: mcp.md
+  - Codex and ACP: codex_and_acp.md
   - Agent Calendar: agent_calendar.md
   - Agent Secrets: agent_secrets.md
   - Agent Security: agent_security.md

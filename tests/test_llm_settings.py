@@ -76,6 +76,13 @@ def test_default_settings_include_agent_runtime_timeout_keys() -> None:
     from annolid.utils import llm_settings as mod
 
     settings = mod.default_settings()
+    assert "openai_codex" in settings
+    assert "codex_cli" in settings
+    assert settings["openai_codex"]["preferred_models"] == ["openai-codex/gpt-5.4"]
+    assert settings["openai_codex"]["transport"] == "auto"
+    assert settings["codex_cli"]["preferred_models"] == ["codex-cli/gpt-5.1-codex"]
+    assert mod.provider_kind(settings, "openai_codex") == "openai_codex"
+    assert mod.provider_kind(settings, "codex_cli") == "codex_cli"
     agent = dict(settings.get("agent") or {})
     assert agent.get("fast_mode_timeout_seconds") == 60
     assert agent.get("fallback_retry_timeout_seconds") == 20
@@ -85,6 +92,42 @@ def test_default_settings_include_agent_runtime_timeout_keys() -> None:
     assert agent.get("ollama_plain_timeout_seconds") == 90
     assert agent.get("ollama_plain_recovery_timeout_seconds") == 45
     assert agent.get("ollama_plain_recovery_nudge_timeout_seconds") == 20
+
+
+def test_resolve_llm_config_normalizes_openai_codex_default_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from annolid.utils import llm_settings as mod
+
+    monkeypatch.setattr(mod, "_SETTINGS_DIR", tmp_path)
+    monkeypatch.setattr(mod, "_SETTINGS_FILE", tmp_path / "llm_settings.json")
+    monkeypatch.setattr(mod, "_GLOBAL_DOTENV_FILE", tmp_path / ".env")
+
+    mod.save_llm_settings(
+        {
+            "provider": "openai_codex",
+            "last_models": {"openai_codex": "openai/gpt-4o"},
+            "openai_codex": {"transport": "sse"},
+        }
+    )
+
+    cfg = mod.resolve_llm_config(provider="openai_codex", persist=False)
+    assert cfg.model == "openai-codex/gpt-5.4"
+    assert cfg.params["transport"] == "sse"
+
+
+def test_detect_openai_codex_auth_state_returns_safe_metadata() -> None:
+    from annolid.utils import llm_settings as mod
+
+    class _Token:
+        account_id = "acct_123456"
+        access = "tok_live"
+
+    state = mod.detect_openai_codex_auth_state(token_getter=lambda: _Token())
+    assert state["authenticated"] is True
+    assert state["mode"] == "oauth_cli_kit"
+    assert state["account_id_suffix"] == "123456"
+    assert "access" not in state
 
 
 def test_save_llm_settings_scrubs_nested_secrets(tmp_path: Path, monkeypatch) -> None:

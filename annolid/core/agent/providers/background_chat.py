@@ -6,11 +6,15 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import importlib
 import mimetypes
 import os
+import shutil
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from threading import Event as ThreadEvent
 
 from annolid.utils.llm_settings import LLMConfig
 from annolid.utils.llm_settings import provider_definitions, provider_kind
 
+from .codex_cli_provider import CodexCLIProvider, resolve_codex_cli
+from .openai_codex_provider import OpenAICodexProvider, resolve_openai_codex
 from .openai_compat import OpenAICompatProvider, resolve_openai_compat
 
 OLLAMA_PLAIN_MODE_COOLDOWN_TURNS = 2
@@ -25,6 +29,25 @@ def dependency_error_for_kind(kind: str) -> Optional[str]:
                 "OpenAI-compatible provider requires the `openai` package. "
                 "Install it in your Annolid environment, for example: "
                 "`.venv/bin/pip install openai`."
+            )
+    if kind == "openai_codex":
+        if importlib.util.find_spec("oauth_cli_kit") is None:
+            return (
+                "OpenAI Codex provider requires `oauth_cli_kit`. "
+                "Install it in your Annolid environment, for example: "
+                "`.venv/bin/pip install oauth-cli-kit`."
+            )
+        if importlib.util.find_spec("httpx") is None:
+            return (
+                "OpenAI Codex provider requires `httpx`. "
+                "Install it in your Annolid environment, for example: "
+                "`.venv/bin/pip install httpx`."
+            )
+    if kind == "codex_cli":
+        if shutil.which("codex") is None:
+            return (
+                "Codex CLI provider requires the `codex` executable. "
+                "Install Codex and ensure `codex` is available on PATH."
             )
     if kind == "gemini":
         if importlib.util.find_spec("google.generativeai") is None:
@@ -206,6 +229,128 @@ def run_openai_compat_chat(
         limit = float(timeout_s) if timeout_s is not None else 0.0
         raise TimeoutError(
             f"Provider request timed out after {limit:.0f}s for {provider_key}:{model}."
+        ) from exc
+    return user_prompt, text
+
+
+def run_openai_codex_chat(
+    *,
+    prompt: str,
+    image_path: str,
+    model: str,
+    provider_name: str,
+    settings: Dict[str, Any],
+    load_history_messages: Callable[[], List[Dict[str, Any]]],
+    max_tokens: int = 4096,
+    timeout_s: Optional[float] = None,
+) -> Tuple[str, str]:
+    provider_key = str(provider_name or "openai_codex").strip().lower()
+    provider_block = dict(settings.get(provider_key, {}) or {})
+    cfg = LLMConfig(provider=provider_key, model=model, params=provider_block)
+    resolved = resolve_openai_codex(cfg)
+    provider = OpenAICodexProvider(resolved=resolved)
+
+    user_prompt = str(prompt or "")
+    messages = load_history_messages()
+    user_content: Any = user_prompt
+    if image_path and os.path.exists(image_path):
+        mime, _ = mimetypes.guess_type(image_path)
+        mime = str(mime or "").strip().lower()
+        if mime.startswith("image/"):
+            with open(image_path, "rb") as f:
+                raw = base64.b64encode(f.read()).decode("utf-8")
+            user_content = [
+                {"type": "text", "text": user_prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{raw}"},
+                },
+            ]
+    messages.append({"role": "user", "content": user_content})
+
+    async def _chat_once() -> str:
+        resp = await provider.chat(
+            messages=messages,
+            model=model,
+            max_tokens=int(max_tokens),
+            timeout_seconds=timeout_s,
+        )
+        if str(resp.finish_reason or "").strip().lower() == "error":
+            detail = str(resp.content or "").strip() or "Error calling Codex."
+            if "timed out" in detail.lower():
+                raise TimeoutError(detail)
+            raise RuntimeError(detail)
+        return str(resp.content or "")
+
+    try:
+        text = asyncio.run(_chat_once())
+    except asyncio.TimeoutError as exc:
+        limit = float(timeout_s) if timeout_s is not None else 0.0
+        raise TimeoutError(
+            f"Provider request timed out after {limit:.0f}s for {provider_key}:{model}."
+        ) from exc
+    return user_prompt, text
+
+
+def run_codex_cli_chat(
+    *,
+    prompt: str,
+    image_path: str,
+    model: str,
+    provider_name: str,
+    settings: Dict[str, Any],
+    load_history_messages: Callable[[], List[Dict[str, Any]]],
+    session_id: str = "",
+    runtime: str = "",
+    cancel_event: Optional[ThreadEvent] = None,
+    max_tokens: int = 4096,
+    timeout_s: Optional[float] = None,
+) -> Tuple[str, str]:
+    provider_key = str(provider_name or "codex_cli").strip().lower()
+    provider_block = dict(settings.get(provider_key, {}) or {})
+    if session_id:
+        provider_block["session_id"] = session_id
+    if runtime:
+        provider_block["runtime"] = runtime
+    cfg = LLMConfig(provider=provider_key, model=model, params=provider_block)
+    resolved = resolve_codex_cli(cfg)
+    provider = CodexCLIProvider(resolved=resolved)
+
+    user_prompt = str(prompt or "")
+    messages = load_history_messages()
+    user_content: Any = user_prompt
+    if image_path and os.path.exists(image_path):
+        user_content = [
+            {"type": "text", "text": user_prompt},
+            {"type": "input_image", "image_path": image_path},
+        ]
+    messages.append({"role": "user", "content": user_content})
+
+    async def _chat_once() -> str:
+        coro = provider.chat(
+            messages=messages,
+            model=model,
+            max_tokens=int(max_tokens),
+            timeout_seconds=timeout_s,
+            cancel_event=cancel_event,
+        )
+        if timeout_s is not None and float(timeout_s) > 0:
+            resp = await asyncio.wait_for(coro, timeout=float(timeout_s) + 5.0)
+        else:
+            resp = await coro
+        if str(resp.finish_reason or "").strip().lower() == "error":
+            detail = str(resp.content or "").strip() or "Error calling Codex CLI."
+            if "timed out" in detail.lower():
+                raise TimeoutError(detail)
+            raise RuntimeError(detail)
+        return str(resp.content or "")
+
+    try:
+        text = asyncio.run(_chat_once())
+    except asyncio.TimeoutError as exc:
+        limit = float(timeout_s) if timeout_s is not None else 0.0
+        raise TimeoutError(
+            f"Codex CLI request timed out after {limit:.0f}s for {provider_key}:{model}."
         ) from exc
     return user_prompt, text
 

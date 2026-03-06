@@ -244,6 +244,39 @@ def test_run_provider_fallback_timeout_is_graceful(monkeypatch) -> None:
     assert called["exception_logged"] is False
 
 
+def test_codex_cli_bypasses_agent_loop_for_plain_runtime(monkeypatch) -> None:
+    task = StreamingChatTask(
+        prompt="summarize this",
+        widget=None,
+        provider="codex_cli",
+        model="codex-cli/gpt-5.1-codex",
+    )
+    calls = {"provider_runtime": 0, "agent_loop": 0}
+
+    async def _no_direct_command() -> bool:
+        return False
+
+    monkeypatch.setattr(task, "_try_execute_direct_gui_command", _no_direct_command)
+    monkeypatch.setattr(
+        task,
+        "_run_openai",
+        lambda provider_name, timeout_s=None, max_tokens=4096: calls.__setitem__(
+            "provider_runtime", calls["provider_runtime"] + 1
+        ),
+    )
+    monkeypatch.setattr(
+        task,
+        "_build_agent_execution_context",
+        lambda include_tools=True: calls.__setitem__(
+            "agent_loop", calls["agent_loop"] + 1
+        ),
+    )
+
+    ai_chat_backend.gui_run_awaitable_sync(task._run_agent_loop_async())
+    assert calls["provider_runtime"] == 1
+    assert calls["agent_loop"] == 0
+
+
 def test_streaming_chat_task_cancel_emits_stopped_message(monkeypatch) -> None:
     task = StreamingChatTask(
         prompt="hello",

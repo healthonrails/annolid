@@ -19,6 +19,13 @@ from .common import (
 from .cron import CronTool
 from .automation_scheduler import AutomationSchedulerTool
 from .camera import CameraSnapshotTool
+from .coding_harness import (
+    CodingSessionCloseTool,
+    CodingSessionListTool,
+    CodingSessionPollTool,
+    CodingSessionSendTool,
+    CodingSessionStartTool,
+)
 from .filesystem import (
     EditFileTool,
     ListDirTool,
@@ -108,6 +115,11 @@ __all__ = [
     "CronTool",
     "AutomationSchedulerTool",
     "CameraSnapshotTool",
+    "CodingSessionStartTool",
+    "CodingSessionSendTool",
+    "CodingSessionPollTool",
+    "CodingSessionListTool",
+    "CodingSessionCloseTool",
     "AdminSkillsRefreshTool",
     "AdminMemoryFlushTool",
     "AdminEvalRunTool",

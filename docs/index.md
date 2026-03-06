@@ -16,6 +16,7 @@ The current codebase includes:
 - [Workflows](workflows.md): follow the main GUI, CLI, and analysis flows.
 - [Tutorials](tutorials.md): jump to practical notebooks, videos, and focused guides.
 - [MCP](mcp.md): extend Annolid Bot with Model Context Protocol servers.
+- [Codex and ACP](codex_and_acp.md): choose between cloud Codex, local Codex CLI, and long-lived ACP coding sessions.
 - [Agent Calendar](agent_calendar.md): configure Google Calendar auth, cached tokens, and token renewal.
 - [Agent Secrets](agent_secrets.md): keep agent/provider credentials out of plaintext `config.json`.
 - [Agent Security](agent_security.md): audit session scope, tool policy, channel exposure, and local agent state.

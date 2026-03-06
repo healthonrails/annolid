@@ -48,3 +48,38 @@ def test_llm_settings_dialog_constructs_without_runtime_tab_name_error() -> None
     )
     assert dialog._tabs.count() >= 1
     dialog.close()
+
+
+def test_llm_settings_dialog_openai_codex_uses_auth_status_not_api_key(
+    monkeypatch,
+) -> None:
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+
+    monkeypatch.setattr(
+        "annolid.gui.widgets.llm_settings_dialog.detect_openai_codex_auth_state",
+        lambda: {
+            "authenticated": True,
+            "mode": "oauth_cli_kit",
+            "account_id_suffix": "654321",
+        },
+    )
+
+    dialog = LLMSettingsDialog(
+        None,
+        settings={
+            "provider": "openai_codex",
+            "openai_codex": {
+                "base_url": "https://chatgpt.com/backend-api/codex/responses",
+                "preferred_models": ["openai-codex/gpt-5.4"],
+            },
+            "agent": {},
+        },
+    )
+    assert dialog._provider_widgets["openai_codex"]["key_edit"] is None
+    dialog.accept()
+    status = dialog._provider_widgets["openai_codex"]["auth_status_label"].text()
+    assert "Local Codex OAuth detected" in status
+    updated = dialog.get_settings()
+    assert updated["openai_codex"]["auth"]["authenticated"] is True
+    dialog.close()

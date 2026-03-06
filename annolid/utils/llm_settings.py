@@ -4,8 +4,10 @@ import json
 import os
 from dataclasses import dataclass, field
 from copy import deepcopy
+from datetime import datetime, timezone
+import importlib.util
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 _SETTINGS_DIR = Path.home() / ".annolid"
@@ -23,10 +25,15 @@ _SECRET_KEY_NAMES = {
 }
 _SECRET_KEY_MARKERS = ("api_key", "token", "secret", "password", "access_key")
 _SAFE_METADATA_KEYS = {"api_key_env"}
+OPENAI_CODEX_DEFAULT_MODEL = "openai-codex/gpt-5.4"
+CODEX_CLI_DEFAULT_MODEL = "codex-cli/gpt-5.1-codex"
+_OPENAI_CODEX_DEFAULT_TRANSPORT = "auto"
 
 _DEFAULT_MODEL_FALLBACKS: Dict[str, str] = {
     "ollama": "qwen3-vl",  # prefer a tool-friendly local VLM
     "openai": "gpt-4o-mini",
+    "openai_codex": OPENAI_CODEX_DEFAULT_MODEL,
+    "codex_cli": CODEX_CLI_DEFAULT_MODEL,
     "openrouter": "openai/gpt-4o-mini",
     "gemini": "gemini-1.5-flash",
 }
@@ -47,6 +54,27 @@ _DEFAULT_PROVIDER_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "base_url_default": "https://api.openai.com/v1",
         "base_url_env": "OPENAI_BASE_URL",
         "model_placeholder": "Type model name (e.g. gpt-4o-mini) and press Add",
+    },
+    "openai_codex": {
+        "label": "OpenAI Codex (OAuth)",
+        "kind": "openai_codex",
+        "env_keys": [],
+        "api_key_env": [],
+        "base_url_default": "https://chatgpt.com/backend-api/codex/responses",
+        "base_url_env": "",
+        "transport_default": _OPENAI_CODEX_DEFAULT_TRANSPORT,
+        "model_placeholder": (
+            "Type model name (e.g. openai-codex/gpt-5.4) and press Add"
+        ),
+    },
+    "codex_cli": {
+        "label": "Codex CLI (local)",
+        "kind": "codex_cli",
+        "env_keys": [],
+        "api_key_env": [],
+        "model_placeholder": (
+            "Type model name (e.g. codex-cli/gpt-5.1-codex) and press Add"
+        ),
     },
     "openrouter": {
         "label": "OpenRouter",
@@ -86,6 +114,18 @@ def _build_default_settings() -> Dict[str, Any]:
                 "gpt-4o",
                 "gpt-4.1-mini",
                 "gpt-3.5-turbo",
+            ],
+        },
+        "openai_codex": {
+            "base_url": "https://chatgpt.com/backend-api/codex/responses",
+            "transport": _OPENAI_CODEX_DEFAULT_TRANSPORT,
+            "preferred_models": [
+                OPENAI_CODEX_DEFAULT_MODEL,
+            ],
+        },
+        "codex_cli": {
+            "preferred_models": [
+                CODEX_CLI_DEFAULT_MODEL,
             ],
         },
         "openrouter": {
@@ -219,7 +259,13 @@ def _normalize_provider_definitions(
             base.update(block)
             base["label"] = str(base.get("label") or provider_id.title()).strip()
             kind = str(base.get("kind") or "openai_compat").strip().lower()
-            if kind not in {"ollama", "openai_compat", "gemini"}:
+            if kind not in {
+                "ollama",
+                "openai_compat",
+                "gemini",
+                "openai_codex",
+                "codex_cli",
+            }:
                 kind = "openai_compat"
             base["kind"] = kind
 
@@ -242,6 +288,11 @@ def _normalize_provider_definitions(
                 base["api_key_env"] = list(base["env_keys"])
             base["base_url_default"] = str(base.get("base_url_default") or "").strip()
             base["base_url_env"] = str(base.get("base_url_env") or "").strip()
+            if kind == "openai_codex":
+                base["transport_default"] = _normalize_openai_codex_transport(
+                    base.get("transport_default"),
+                    fallback=_OPENAI_CODEX_DEFAULT_TRANSPORT,
+                )
             base["model_placeholder"] = str(
                 base.get("model_placeholder") or "Type model name and press Add"
             ).strip()
@@ -360,6 +411,28 @@ def _fallback_model_for(provider: str) -> str:
     return _DEFAULT_MODEL_FALLBACKS.get(provider, "")
 
 
+def _normalize_openai_codex_transport(
+    value: Any, *, fallback: str = _OPENAI_CODEX_DEFAULT_TRANSPORT
+) -> str:
+    transport = str(value or "").strip().lower()
+    if transport in {"auto", "sse", "websocket"}:
+        return transport
+    return fallback
+
+
+def _normalize_resolved_model(provider: str, model: Any) -> str:
+    raw = str(model or "").strip()
+    provider_name = str(provider or "").strip().lower()
+    if provider_name == "openai_codex":
+        lowered = raw.lower()
+        if not raw or lowered.startswith("openai/") or lowered in {"gpt", "gpt-mini"}:
+            return OPENAI_CODEX_DEFAULT_MODEL
+        return raw
+    if provider_name == "codex_cli":
+        return raw or CODEX_CLI_DEFAULT_MODEL
+    return raw
+
+
 def provider_definitions(settings: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return dict(_normalise_settings(settings).get("provider_definitions", {}) or {})
 
@@ -379,7 +452,7 @@ def provider_kind(settings: Dict[str, Any], provider: str) -> str:
     defs = provider_definitions(settings)
     spec = defs.get(str(provider or "").strip().lower(), {})
     kind = str(spec.get("kind") or "").strip().lower()
-    if kind in {"ollama", "openai_compat", "gemini"}:
+    if kind in {"ollama", "openai_compat", "gemini", "openai_codex", "codex_cli"}:
         return kind
     return "openai_compat"
 
@@ -422,7 +495,7 @@ def _inject_env_defaults(
         openrouter_key = str(os.getenv("OPENROUTER_API_KEY") or "").strip()
         if openrouter_key:
             params["api_key"] = openrouter_key
-    if p_kind == "openai_compat" and not params.get("base_url"):
+    if p_kind in {"openai_compat", "openai_codex"} and not params.get("base_url"):
         env_base_url = str(spec.get("base_url_env") or "").strip()
         if env_base_url:
             value = str(os.getenv(env_base_url) or "").strip()
@@ -432,6 +505,13 @@ def _inject_env_defaults(
             default_base = str(spec.get("base_url_default") or "").strip()
             if default_base:
                 params["base_url"] = default_base
+    if p_kind == "openai_codex":
+        params["transport"] = _normalize_openai_codex_transport(
+            params.get("transport"),
+            fallback=str(
+                spec.get("transport_default") or _OPENAI_CODEX_DEFAULT_TRANSPORT
+            ),
+        )
     if p_kind == "gemini" and not params.get("api_key"):
         if not params.get("api_key"):
             env_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -662,6 +742,52 @@ def default_settings() -> Dict[str, Any]:
     return deepcopy(defaults)
 
 
+def detect_openai_codex_auth_state(
+    token_getter: Optional[Callable[[], Any]] = None,
+) -> Dict[str, Any]:
+    """Return non-secret local Codex auth metadata for UI/status use."""
+    checked_at = datetime.now(timezone.utc).isoformat()
+    if token_getter is None:
+        if importlib.util.find_spec("oauth_cli_kit") is None:
+            return {
+                "authenticated": False,
+                "mode": "oauth_cli_kit",
+                "checked_at": checked_at,
+                "error": "oauth_cli_kit_not_installed",
+            }
+        try:
+            from oauth_cli_kit import get_token as get_codex_token  # type: ignore
+        except Exception:
+            return {
+                "authenticated": False,
+                "mode": "oauth_cli_kit",
+                "checked_at": checked_at,
+                "error": "oauth_cli_kit_unavailable",
+            }
+        token_getter = get_codex_token
+
+    try:
+        token = token_getter()
+    except Exception as exc:
+        return {
+            "authenticated": False,
+            "mode": "oauth_cli_kit",
+            "checked_at": checked_at,
+            "error": str(exc).strip() or "token_lookup_failed",
+        }
+
+    account_id = str(getattr(token, "account_id", "") or "").strip()
+    has_access = bool(str(getattr(token, "access", "") or "").strip())
+    state: Dict[str, Any] = {
+        "authenticated": bool(account_id and has_access),
+        "mode": "oauth_cli_kit",
+        "checked_at": checked_at,
+    }
+    if account_id:
+        state["account_id_suffix"] = account_id[-6:]
+    return state
+
+
 def resolve_llm_config(
     profile: Optional[str] = None,
     provider: Optional[str] = None,
@@ -703,6 +829,7 @@ def resolve_llm_config(
 
     if not resolved_model:
         resolved_model = _fallback_model_for(resolved_provider)
+    resolved_model = _normalize_resolved_model(resolved_provider, resolved_model)
 
     if not resolved_model:
         raise ValueError(
@@ -804,7 +931,7 @@ def ensure_provider_env(config: LLMConfig) -> None:
         host = config.params.get("host")
         if host:
             os.environ["OLLAMA_HOST"] = host
-    elif p_kind == "openai_compat":
+    elif p_kind in {"openai_compat", "openai_codex"}:
         api_key = config.params.get("api_key")
         env_vars = spec.get("api_key_env", [])
         if isinstance(env_vars, str):

@@ -1404,6 +1404,12 @@ def _cmd_agent_memory_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_agent_acp_bridge(args: argparse.Namespace) -> int:
+    from annolid.core.agent.acp_stdio_bridge import run_stdio_acp_bridge
+
+    return int(run_stdio_acp_bridge(workspace=getattr(args, "workspace", None)))
+
+
 def _cmd_update_check(args: argparse.Namespace) -> int:
     from annolid.core.agent.update_manager.manager import SignedUpdateManager
 
@@ -1531,6 +1537,18 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
         p.add_argument("--workspace", default=None)
         args = p.parse_args(argv[3:])
         return _cmd_agent_memory_inspect(args)
+
+    # annolid-run agent acp bridge
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "acp"
+        and argv[2] == "bridge"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent acp bridge")
+        p.add_argument("--workspace", default=None)
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_acp_bridge(args)
 
     # annolid-run agent eval run
     if len(argv) >= 3 and argv[0] == "agent" and argv[1] == "eval" and argv[2] == "run":

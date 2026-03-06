@@ -760,6 +760,7 @@ class StreamingChatTask(QRunnable):
             model=self.model,
             provider=self.provider,
             settings=self.settings,
+            session_id=self.session_id,
             include_image=include_image,
             include_history=include_history,
             load_history_messages=self._load_history_messages,
@@ -918,6 +919,17 @@ class StreamingChatTask(QRunnable):
         if await self._try_execute_direct_gui_command():
             return True
         self._raise_if_cancelled()
+        provider_kind_name = provider_kind(self.settings, self.provider)
+        if provider_kind_name == "codex_cli":
+            self._emit_progress("Using Codex CLI runtime")
+            self._run_openai(
+                provider_name=self.provider,
+                timeout_s=self._agent_loop_llm_timeout_seconds(
+                    prompt_needs_tools=False
+                ),
+                max_tokens=2400,
+            )
+            return True
 
         prompt_needs_tools = self._prompt_may_need_tools(self.prompt)
         context = await self._build_agent_execution_context(
@@ -2914,7 +2926,7 @@ class StreamingChatTask(QRunnable):
                 return text
             raise RuntimeError("Model returned empty tutorial content.")
 
-        if kind == "openai_compat":
+        if kind in {"openai_compat", "openai_codex", "codex_cli"}:
             _user_prompt, text = await asyncio.to_thread(
                 gui_run_openai_chat,
                 prompt=f"{system_prompt}\n\n{user_prompt}",
@@ -2923,6 +2935,7 @@ class StreamingChatTask(QRunnable):
                 provider_name=self.provider,
                 settings=self.settings,
                 load_history_messages=lambda: [],
+                session_id=self.session_id,
                 timeout_s=self._agent_loop_llm_timeout_seconds(
                     prompt_needs_tools=False
                 ),
@@ -3759,6 +3772,7 @@ class StreamingChatTask(QRunnable):
             provider_name=provider_name,
             settings=self.settings,
             load_history_messages=self._load_history_messages,
+            session_id=self.session_id,
             timeout_s=timeout_s,
             max_tokens=max_tokens,
         )

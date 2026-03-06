@@ -32,7 +32,15 @@ from .context import AgentContextBuilder
 from .eval.telemetry import RunTraceStore
 from .memory import AgentMemoryStore
 from .memory_store.flush import append_pre_compaction_flush
-from .providers import LiteLLMProvider, OpenAICompatProvider, resolve_openai_compat
+from .providers import (
+    CodexCLIProvider,
+    LiteLLMProvider,
+    OpenAICodexProvider,
+    OpenAICompatProvider,
+    resolve_codex_cli,
+    resolve_openai_codex,
+    resolve_openai_compat,
+)
 from .web_intents import (
     LIVE_WEB_INTENT_TOKENS,
     WEATHER_INTENT_TOKENS,
@@ -2067,30 +2075,31 @@ class AgentLoop:
 
     def _wire_tools(self) -> None:
         self._set_tool_context(channel="cli", chat_id="direct")
+        runtime_router = None
         if self._subagent_manager is None and (
             isinstance(self._tools.get("spawn"), SpawnTool)
             or isinstance(self._tools.get("list_tasks"), ListTasksTool)
             or isinstance(self._tools.get("cancel_task"), CancelTaskTool)
         ):
             self._subagent_manager = self._create_default_subagent_manager()
+        if self._subagent_manager is not None and (
+            isinstance(self._tools.get("spawn"), SpawnTool)
+            or isinstance(self._tools.get("list_tasks"), ListTasksTool)
+            or isinstance(self._tools.get("cancel_task"), CancelTaskTool)
+        ):
+            runtime_router = self._create_default_runtime_router()
 
         spawn_tool = self._tools.get("spawn")
-        if isinstance(spawn_tool, SpawnTool) and self._subagent_manager is not None:
-            spawn_tool.set_spawn_callback(self._subagent_manager.spawn)
+        if isinstance(spawn_tool, SpawnTool) and runtime_router is not None:
+            spawn_tool.set_spawn_callback(runtime_router.spawn)
 
         list_tasks_tool = self._tools.get("list_tasks")
-        if (
-            isinstance(list_tasks_tool, ListTasksTool)
-            and self._subagent_manager is not None
-        ):
-            list_tasks_tool._list_tasks_callback = self._subagent_manager.list_tasks
+        if isinstance(list_tasks_tool, ListTasksTool) and runtime_router is not None:
+            list_tasks_tool._list_tasks_callback = runtime_router.list_tasks
 
         cancel_task_tool = self._tools.get("cancel_task")
-        if (
-            isinstance(cancel_task_tool, CancelTaskTool)
-            and self._subagent_manager is not None
-        ):
-            cancel_task_tool._cancel_callback = self._subagent_manager.cancel
+        if isinstance(cancel_task_tool, CancelTaskTool) and runtime_router is not None:
+            cancel_task_tool._cancel_callback = runtime_router.cancel
 
         swarm_tool = self._tools.get("run_swarm")
         if isinstance(swarm_tool, SwarmTool):
@@ -2149,6 +2158,21 @@ class AgentLoop:
 
         workspace_path = Path(self._workspace) if self._workspace else None
         return SubagentManager(loop_factory=_loop_factory, workspace=workspace_path)
+
+    def _create_default_runtime_router(self) -> Optional[Any]:
+        if self._subagent_manager is None:
+            return None
+        try:
+            from .acp import get_acp_runtime_manager
+            from .subagent import RuntimeSessionRouter
+        except Exception:
+            return None
+        workspace_path = Path(self._workspace) if self._workspace else None
+        return RuntimeSessionRouter(
+            subagent_manager=self._subagent_manager,
+            acp_manager=get_acp_runtime_manager(),
+            workspace=workspace_path,
+        )
 
     async def _create_swarm_manager_and_run(
         self, task: str, max_turns: int = 5, agents: list[str] | None = None
@@ -2810,7 +2834,15 @@ class AgentLoop:
         provider_name = str(cfg.provider or "").strip().lower()
         openai_compat_names = {"openai", "ollama", "openrouter", "aihubmix", "vllm"}
         model_name = str(cfg.model)
-        if provider_name in openai_compat_names:
+        if provider_name == "openai_codex":
+            resolved = resolve_openai_codex(cfg)
+            model_name = resolved.model
+            provider_impl = OpenAICodexProvider(resolved=resolved)
+        elif provider_name == "codex_cli":
+            resolved = resolve_codex_cli(cfg)
+            model_name = resolved.model
+            provider_impl = CodexCLIProvider(resolved=resolved)
+        elif provider_name in openai_compat_names:
             resolved = resolve_openai_compat(cfg)
             model_name = resolved.model
             provider_impl = OpenAICompatProvider(resolved=resolved)

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional, Sequence
 
+from .acp import ACPRuntimeManager
 from .loop import AgentLoop
 from .tools import (
     EditFileTool,
@@ -59,9 +60,14 @@ class SubagentManager:
         self,
         task: str,
         label: Optional[str] = None,
+        runtime: str = "subagent",
+        provider: str = "",
+        model: str = "",
+        workspace: str = "",
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
     ) -> str:
+        del runtime, provider, model, workspace
         task_id = str(uuid.uuid4())[:8]
         display_label = label or (task[:30] + ("..." if len(task) > 30 else ""))
         meta = SubagentTask(
@@ -72,7 +78,6 @@ class SubagentManager:
             origin_chat_id=origin_chat_id,
         )
 
-        # Evict old tasks to prevent memory leak in long-running sessions
         if len(self._tasks) >= 100:
             finished = [
                 tid
@@ -120,7 +125,6 @@ class SubagentManager:
         return True
 
     async def send_message(self, task_id: str, message: str) -> bool:
-        """Send a message to a running subagent's inbox."""
         meta = self._tasks.get(task_id)
         if meta is None or meta.status != "running":
             return False
@@ -196,6 +200,63 @@ class SubagentManager:
         )
 
 
+class RuntimeSessionRouter:
+    """Dispatch background work to either native subagents or ACP sessions."""
+
+    def __init__(
+        self,
+        *,
+        subagent_manager: SubagentManager,
+        acp_manager: ACPRuntimeManager,
+        workspace: Optional[Path] = None,
+    ) -> None:
+        self._subagent_manager = subagent_manager
+        self._acp_manager = acp_manager
+        self._workspace = Path(workspace) if workspace is not None else None
+
+    async def spawn(
+        self,
+        task: str,
+        label: Optional[str] = None,
+        runtime: str = "subagent",
+        provider: str = "",
+        model: str = "",
+        workspace: str = "",
+        origin_channel: str = "cli",
+        origin_chat_id: str = "direct",
+    ) -> str:
+        selected_runtime = str(runtime or "subagent").strip().lower()
+        if selected_runtime == "acp":
+            resolved_workspace = workspace or str(self._workspace or Path.cwd())
+            resolved_provider = str(provider or "codex_cli").strip().lower()
+            resolved_model = str(model or "codex-cli/gpt-5.1-codex").strip()
+            return await self._acp_manager.start(
+                task=task,
+                label=label,
+                provider=resolved_provider,
+                model=resolved_model,
+                workspace=resolved_workspace,
+                origin_channel=origin_channel,
+                origin_chat_id=origin_chat_id,
+            )
+        return await self._subagent_manager.spawn(
+            task=task,
+            label=label,
+            origin_channel=origin_channel,
+            origin_chat_id=origin_chat_id,
+        )
+
+    def list_tasks(self) -> Dict[str, Any]:
+        rows: Dict[str, Any] = dict(self._subagent_manager.list_tasks())
+        rows.update(self._acp_manager.list_sessions())
+        return rows
+
+    async def cancel(self, task_id: str) -> bool:
+        if self._subagent_manager.cancel(task_id):
+            return True
+        return await self._acp_manager.close(task_id)
+
+
 async def build_subagent_tools_registry(
     workspace: Optional[Path] = None,
     allowed_read_roots: Optional[Sequence[str | Path]] = None,
@@ -221,8 +282,12 @@ async def build_subagent_tools_registry(
     registry.register(
         ListDirTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )
-    # Subagents should stay focused and not recursively spawn or send messages.
     registry.unregister("spawn")
     registry.unregister("message")
     registry.unregister("cron")
+    registry.unregister("coding_session_start")
+    registry.unregister("coding_session_send")
+    registry.unregister("coding_session_poll")
+    registry.unregister("coding_session_list")
+    registry.unregister("coding_session_close")
     return registry

@@ -4,7 +4,9 @@ import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from annolid.core.agent.providers import (
+    run_codex_cli_chat,
     run_gemini_chat,
+    run_openai_codex_chat,
     run_ollama_streaming_chat,
     run_openai_compat_chat,
 )
@@ -34,6 +36,7 @@ def run_fast_provider_chat(
     model: str,
     provider: str,
     settings: Dict[str, Any],
+    session_id: str,
     include_image: bool,
     include_history: bool,
     load_history_messages: Callable[[], List[Dict[str, Any]]],
@@ -70,6 +73,35 @@ def run_fast_provider_chat(
             provider_name=provider,
             settings=settings,
             load_history_messages=load_history,
+            max_tokens=320 if include_image else 640,
+            timeout_s=timeout_s,
+        )
+        persist_turn(user_prompt, text)
+        emit_final(text, False)
+        return
+    if kind == "openai_codex":
+        user_prompt, text = run_openai_codex_chat(
+            prompt=prompt,
+            image_path=image,
+            model=model,
+            provider_name=provider,
+            settings=settings,
+            load_history_messages=load_history,
+            max_tokens=320 if include_image else 640,
+            timeout_s=timeout_s,
+        )
+        persist_turn(user_prompt, text)
+        emit_final(text, False)
+        return
+    if kind == "codex_cli":
+        user_prompt, text = run_codex_cli_chat(
+            prompt=prompt,
+            image_path=image,
+            model=model,
+            provider_name=provider,
+            settings=settings,
+            load_history_messages=load_history,
+            session_id=session_id,
             max_tokens=320 if include_image else 640,
             timeout_s=timeout_s,
         )
@@ -123,9 +155,34 @@ def run_openai_chat(
     provider_name: str,
     settings: Dict[str, Any],
     load_history_messages: Callable[[], List[Dict[str, Any]]],
+    session_id: str = "",
     timeout_s: Optional[float] = None,
     max_tokens: int = 4096,
 ) -> Tuple[str, str]:
+    kind = provider_kind(settings, provider_name)
+    if kind == "codex_cli":
+        return run_codex_cli_chat(
+            prompt=prompt,
+            image_path=str(image_path or ""),
+            model=model,
+            provider_name=provider_name,
+            settings=settings,
+            load_history_messages=load_history_messages,
+            session_id=session_id,
+            timeout_s=timeout_s,
+            max_tokens=max_tokens,
+        )
+    if kind == "openai_codex":
+        return run_openai_codex_chat(
+            prompt=prompt,
+            image_path=str(image_path or ""),
+            model=model,
+            provider_name=provider_name,
+            settings=settings,
+            load_history_messages=load_history_messages,
+            timeout_s=timeout_s,
+            max_tokens=max_tokens,
+        )
     return run_openai_compat_chat(
         prompt=prompt,
         image_path=image_path,

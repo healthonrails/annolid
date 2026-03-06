@@ -34,6 +34,13 @@ from .citation import (
 from .cron import CronTool
 from .automation_scheduler import AutomationSchedulerTool
 from .camera import CameraSnapshotTool
+from .coding_harness import (
+    CodingSessionCloseTool,
+    CodingSessionListTool,
+    CodingSessionPollTool,
+    CodingSessionSendTool,
+    CodingSessionStartTool,
+)
 from .calendar import GoogleCalendarTool
 from .clawhub import (
     ClawHubInstallSkillTool,
@@ -243,6 +250,11 @@ __all__ = [
     "CronTool",
     "AutomationSchedulerTool",
     "CameraSnapshotTool",
+    "CodingSessionStartTool",
+    "CodingSessionSendTool",
+    "CodingSessionPollTool",
+    "CodingSessionListTool",
+    "CodingSessionCloseTool",
     "GoogleCalendarTool",
     "register_nanobot_style_tools",
     "register_annolid_gui_tools",

@@ -5,15 +5,22 @@ import hashlib
 import hmac
 import platform
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 import pytest
 
 from annolid.core.agent.context import AgentContextBuilder
+from annolid.core.agent.coding_harness import CodingHarnessManager
 from annolid.core.agent.loop import AgentLoop
+from annolid.core.agent.session_manager import AgentSessionManager
 from annolid.core.agent import skills as skills_module
 from annolid.core.agent.skills import AgentSkillsLoader
-from annolid.core.agent.subagent import SubagentManager, build_subagent_tools_registry
+from annolid.core.agent.subagent import (
+    RuntimeSessionRouter,
+    SubagentManager,
+    build_subagent_tools_registry,
+)
 from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_registry import FunctionToolRegistry
 
@@ -306,6 +313,229 @@ def test_subagent_manager_runs_background_task(tmp_path: Path) -> None:
     asyncio.run(_run())
 
 
+def test_coding_harness_manager_processes_long_lived_session_messages(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def _fake_invoke_turn(
+        *,
+        prompt: str,
+        image_path: str,
+        model: str,
+        provider_name: str,
+        settings: dict[str, Any],
+        load_history_messages: Callable[[], list[dict[str, Any]]],
+        session_id: str = "",
+        runtime: str = "",
+        timeout_s: float | None = None,
+        max_tokens: int = 4096,
+    ) -> tuple[str, str]:
+        del image_path, provider_name, settings, timeout_s, max_tokens
+        history = load_history_messages()
+        calls.append((session_id, prompt))
+        assert runtime == "acp"
+        return prompt, f"reply-{len(history)}-{model}"
+
+    manager = CodingHarnessManager(
+        session_manager=AgentSessionManager(sessions_dir=tmp_path / "sessions"),
+        invoke_turn=_fake_invoke_turn,
+    )
+
+    async def _run() -> None:
+        started = await manager.start(
+            task="inspect repo",
+            label="coder",
+            workspace=str(tmp_path),
+            origin_channel="local",
+            origin_chat_id="u1",
+        )
+        session_id = started.split("id: ")[-1].split(",")[0]
+        await asyncio.wait_for(
+            _wait_for_status(manager, session_id, "idle"), timeout=2.0
+        )
+        ok = await manager.send_message(session_id, "apply fix")
+        assert ok is True
+        await asyncio.wait_for(
+            _wait_for_status(manager, session_id, "idle", turns=2), timeout=2.0
+        )
+        payload = await manager.poll(session_id, tail_messages=4)
+        assert payload["ok"] is True
+        assert payload["turn_count"] == 2
+        assert payload["last_response"] == "reply-3-codex-cli/gpt-5.1-codex"
+        tail = payload["tail_messages"]
+        assert tail[-1]["role"] == "assistant"
+        assert calls[0][0].startswith("acp:")
+        closed = await manager.close(session_id)
+        assert closed is True
+        await asyncio.wait_for(
+            _wait_for_status(manager, session_id, "closed"), timeout=2.0
+        )
+
+    asyncio.run(_run())
+
+
+def test_coding_harness_manager_persists_error_and_stays_open(tmp_path: Path) -> None:
+    seen = {"count": 0}
+
+    def _fake_invoke_turn(**kwargs: Any) -> tuple[str, str]:
+        seen["count"] += 1
+        if seen["count"] == 1:
+            raise RuntimeError("boom")
+        return kwargs["prompt"], "ok-after-error"
+
+    manager = CodingHarnessManager(
+        session_manager=AgentSessionManager(sessions_dir=tmp_path / "sessions"),
+        invoke_turn=_fake_invoke_turn,
+    )
+
+    async def _run() -> None:
+        started = await manager.start(task="first task", workspace=str(tmp_path))
+        session_id = started.split("id: ")[-1].split(",")[0]
+        await asyncio.wait_for(
+            _wait_for_status(manager, session_id, "error"), timeout=2.0
+        )
+        payload = await manager.poll(session_id)
+        assert payload["last_error"] == "boom"
+        queued = await manager.send_message(session_id, "retry")
+        assert queued is True
+        await asyncio.wait_for(
+            _wait_for_status(manager, session_id, "idle", turns=1), timeout=2.0
+        )
+        payload = await manager.poll(session_id)
+        assert payload["last_response"] == "ok-after-error"
+
+    asyncio.run(_run())
+
+
+async def _wait_for_status(
+    manager: CodingHarnessManager,
+    session_id: str,
+    expected: str,
+    *,
+    turns: int | None = None,
+) -> None:
+    while True:
+        payload = await manager.poll(session_id)
+        if payload.get("ok") and payload.get("status") == expected:
+            if turns is None or int(payload.get("turn_count") or 0) >= turns:
+                return
+        await asyncio.sleep(0.01)
+
+
+def test_runtime_session_router_dispatches_subagent_and_acp(tmp_path: Path) -> None:
+    subagent_calls: list[str] = []
+
+    class _FakeSubagent:
+        async def spawn(
+            self,
+            task: str,
+            label: str | None = None,
+            origin_channel: str = "cli",
+            origin_chat_id: str = "direct",
+        ) -> str:
+            del label, origin_channel, origin_chat_id
+            subagent_calls.append(task)
+            return "subagent-ok"
+
+        def list_tasks(self) -> dict[str, Any]:
+            return {"sub_1": SimpleNamespace(status="ok", label="sub", result="ok")}
+
+        def cancel(self, task_id: str) -> bool:
+            return task_id == "sub_1"
+
+    class _FakeACP:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def start(self, **kwargs: Any) -> str:
+            self.calls.append(dict(kwargs))
+            return "acp-ok"
+
+        def list_sessions(self) -> dict[str, Any]:
+            return {"acp_1": SimpleNamespace(status="idle", label="acp")}
+
+        async def close(self, task_id: str) -> bool:
+            return task_id == "acp_1"
+
+    router = RuntimeSessionRouter(
+        subagent_manager=_FakeSubagent(),  # type: ignore[arg-type]
+        acp_manager=_FakeACP(),  # type: ignore[arg-type]
+        workspace=tmp_path,
+    )
+
+    async def _run() -> None:
+        subagent_reply = await router.spawn(task="inspect", runtime="subagent")
+        acp_reply = await router.spawn(
+            task="code",
+            runtime="acp",
+            provider="codex_cli",
+            model="codex-cli/gpt-5.1-codex",
+        )
+        assert subagent_reply == "subagent-ok"
+        assert acp_reply == "acp-ok"
+        assert subagent_calls == ["inspect"]
+        rows = router.list_tasks()
+        assert "sub_1" in rows
+        assert "acp_1" in rows
+        assert await router.cancel("sub_1") is True
+        assert await router.cancel("acp_1") is True
+
+    asyncio.run(_run())
+
+
+def test_coding_harness_manager_abort_cancels_active_turn_without_closing(
+    tmp_path: Path,
+) -> None:
+    from threading import Event as ThreadEvent
+    import time
+
+    sessions_dir = tmp_path / "sessions"
+    session_manager = AgentSessionManager(sessions_dir=sessions_dir)
+    started = ThreadEvent()
+
+    def _invoke_turn(**kwargs):
+        prompt = str(kwargs.get("prompt") or "")
+        cancel_event = kwargs.get("cancel_event")
+        if prompt != "run forever":
+            return prompt, "follow-up-ok"
+        assert cancel_event is not None
+        started.set()
+        while not cancel_event.is_set():
+            time.sleep(0.01)
+        raise RuntimeError("Codex CLI request cancelled.")
+
+    manager = CodingHarnessManager(
+        session_manager=session_manager,
+        invoke_turn=_invoke_turn,
+    )
+
+    async def _run() -> None:
+        meta = await manager.start_session(
+            task="run forever",
+            workspace=str(tmp_path),
+        )
+        for _ in range(20):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert started.is_set()
+        assert meta.status == "running"
+        assert await manager.abort(meta.session_id) is True
+        for _ in range(20):
+            if meta.status == "idle" and meta.active_cancel_event is None:
+                break
+            await asyncio.sleep(0.05)
+        assert meta.status == "idle"
+        assert meta.close_requested is False
+        assert await manager.send_message(meta.session_id, "follow-up") is True
+        assert await manager.close(meta.session_id) is True
+        assert meta.worker_task is not None
+        await asyncio.wait_for(meta.worker_task, timeout=1.0)
+
+    asyncio.run(_run())
+
+
 def test_build_subagent_tools_registry_excludes_recursive_tools(
     tmp_path: Path,
 ) -> None:
@@ -318,6 +548,7 @@ def test_build_subagent_tools_registry_excludes_recursive_tools(
     assert not registry.has("spawn")
     assert not registry.has("message")
     assert not registry.has("cron")
+    assert not registry.has("coding_session_start")
 
 
 def test_subagent_prompt_includes_time_and_skills_path(tmp_path: Path) -> None:

@@ -65,7 +65,11 @@ def run_provider_fallback(
         # Keep backward-compatible fallback behavior if agent loop setup fails.
         emit_progress("Agent loop failed, trying provider fallback")
         kind = provider_kind(settings, provider)
-        if kind == "openai_compat" and is_provider_timeout_error(original_error):
+        if kind in {
+            "openai_compat",
+            "openai_codex",
+            "codex_cli",
+        } and is_provider_timeout_error(original_error):
             retry_timeout_s = fallback_timeout_retry_seconds()
             emit_progress("Provider timeout detected; running one bounded retry")
             run_openai(provider, retry_timeout_s, 512)
@@ -78,7 +82,7 @@ def run_provider_fallback(
             return
         if kind == "ollama":
             run_ollama()
-        elif kind == "openai_compat":
+        elif kind in {"openai_compat", "openai_codex", "codex_cli"}:
             run_openai(provider, fallback_retry_timeout_seconds(), 512)
         elif kind == "gemini":
             run_gemini()

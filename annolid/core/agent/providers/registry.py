@@ -19,6 +19,7 @@ class ProviderSpec:
     env_extras: Tuple[Tuple[str, str], ...] = ()
     strip_model_prefix: bool = False
     model_overrides: Tuple[Tuple[str, dict[str, Any]], ...] = ()
+    aliases: Tuple[str, ...] = ()
 
 
 PROVIDERS: Tuple[ProviderSpec, ...] = (
@@ -62,6 +63,20 @@ PROVIDERS: Tuple[ProviderSpec, ...] = (
         keywords=("openai", "gpt"),
         env_key="OPENAI_API_KEY",
         default_api_base="https://api.openai.com/v1",
+    ),
+    ProviderSpec(
+        name="openai_codex",
+        keywords=("openai-codex", "gpt-5.1-codex", "gpt-5-codex"),
+        env_key="",
+        default_api_base="https://chatgpt.com/backend-api/codex/responses",
+        aliases=("openai-codex",),
+    ),
+    ProviderSpec(
+        name="codex_cli",
+        keywords=("codex-cli", "gpt-5.1-codex", "gpt-5-codex"),
+        env_key="",
+        is_local=True,
+        aliases=("codex-cli",),
     ),
     ProviderSpec(
         name="anthropic",
@@ -136,9 +151,11 @@ PROVIDERS: Tuple[ProviderSpec, ...] = (
 
 
 def find_by_name(name: str) -> Optional[ProviderSpec]:
-    normalized = str(name or "").strip().lower()
+    normalized = _normalize_provider_token(name)
     for spec in PROVIDERS:
-        if spec.name == normalized:
+        if spec.name == normalized or normalized in {
+            _normalize_provider_token(alias) for alias in spec.aliases
+        }:
             return spec
     return None
 
@@ -148,9 +165,14 @@ def find_by_model(model: str) -> Optional[ProviderSpec]:
 
     # Check for explicit provider/prefix first (e.g. nvidia/ or moonshot/)
     if "/" in model_lower:
-        prefix = model_lower.split("/", 1)[0]
+        prefix = _normalize_provider_token(model_lower.split("/", 1)[0])
         for spec in PROVIDERS:
-            if spec.name == prefix or spec.litellm_prefix == prefix:
+            alias_tokens = {_normalize_provider_token(alias) for alias in spec.aliases}
+            if (
+                spec.name == prefix
+                or spec.litellm_prefix == prefix
+                or prefix in alias_tokens
+            ):
                 return spec
 
     for spec in PROVIDERS:
@@ -183,3 +205,7 @@ def find_gateway(
             if spec.detect_by_base_keyword and spec.detect_by_base_keyword in base:
                 return spec
     return None
+
+
+def _normalize_provider_token(value: str) -> str:
+    return str(value or "").strip().lower().replace("-", "_")

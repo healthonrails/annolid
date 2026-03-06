@@ -28,6 +28,12 @@ annolid-run agent-security-audit --fix
 annolid-run agent-secrets-audit
 ```
 
+ACP bridge command:
+
+```bash
+annolid-run agent acp bridge --workspace /path/to/repo
+```
+
 ## Important Config Files
 
 - LLM and Annolid Bot model settings:
@@ -53,6 +59,7 @@ annolid-run agent-secrets-audit
 - [Workflows](workflows.md)
 - [Tutorials](tutorials.md)
 - [MCP](mcp.md)
+- [Codex and ACP](codex_and_acp.md)
 - [Agent Calendar](agent_calendar.md)
 - [Agent Secrets](agent_secrets.md)
 - [Agent Security](agent_security.md)

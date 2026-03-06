@@ -7,6 +7,7 @@ from qtpy import QtCore, QtWidgets
 
 from annolid.core.agent.config import load_config, save_config
 from annolid.utils.llm_settings import (
+    detect_openai_codex_auth_state,
     default_settings,
     global_env_path,
     persist_global_env_vars,
@@ -140,7 +141,8 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         info_label = QtWidgets.QLabel(
             "API keys entered here are session-only and are not persisted to "
             "~/.annolid/llm_settings.json.\n"
-            "Use environment variables for durable credentials."
+            "Use environment variables for durable credentials. OpenAI Codex uses "
+            "local OAuth auth and does not require an API key here."
         )
         info_label.setWordWrap(True)
         main_layout.addWidget(info_label)
@@ -238,15 +240,23 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         provider_cfg = dict(self._settings.get(provider, {}) or {})
         kind = str(spec.get("kind") or "openai_compat").strip().lower()
         self._provider_widgets.setdefault(provider, {})["tab_widget"] = tab_widget
-        key_edit = self._add_api_key_controls(
-            layout,
-            provider=provider,
-            initial_value=self._resolve_initial_api_key(provider, provider_cfg),
-        )
+        key_edit: Optional[QtWidgets.QLineEdit] = None
+        if kind == "openai_codex":
+            self._add_openai_codex_auth_controls(
+                layout,
+                provider=provider,
+                provider_cfg=provider_cfg,
+            )
+        else:
+            key_edit = self._add_api_key_controls(
+                layout,
+                provider=provider,
+                initial_value=self._resolve_initial_api_key(provider, provider_cfg),
+            )
         self._provider_widgets.setdefault(provider, {})["key_edit"] = key_edit
 
         base_url_edit: Optional[QtWidgets.QLineEdit] = None
-        if kind == "openai_compat":
+        if kind in {"openai_compat", "openai_codex"}:
             default_base_url = str(spec.get("base_url_default") or "").strip()
             base_url_edit = QtWidgets.QLineEdit(
                 str(provider_cfg.get("base_url") or default_base_url)
@@ -990,6 +1000,80 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         self._update_api_key_status(provider)
         return key_edit
 
+    def _add_openai_codex_auth_controls(
+        self,
+        layout: QtWidgets.QFormLayout,
+        *,
+        provider: str,
+        provider_cfg: Dict[str, Any],
+    ) -> None:
+        row_widget = QtWidgets.QWidget(self)
+        row_layout = QtWidgets.QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+
+        status_label = QtWidgets.QLabel(row_widget)
+        status_label.setWordWrap(True)
+        status_label.setStyleSheet("color: #6b7280;")
+        row_layout.addWidget(status_label, 1)
+
+        refresh_button = QtWidgets.QToolButton(row_widget)
+        refresh_button.setText("Refresh")
+        refresh_button.clicked.connect(
+            lambda _checked=False, p=provider: self._refresh_openai_codex_auth_status(p)
+        )
+        row_layout.addWidget(refresh_button, 0)
+
+        layout.addRow("Authentication:", row_widget)
+
+        note_label = QtWidgets.QLabel(
+            "Annolid auto-detects local Codex OAuth credentials and stores only "
+            "non-secret status metadata."
+        )
+        note_label.setWordWrap(True)
+        note_label.setStyleSheet("color: #6b7280;")
+        layout.addRow("", note_label)
+
+        self._provider_widgets.setdefault(provider, {})["auth_status_label"] = (
+            status_label
+        )
+        cached_state = dict(provider_cfg.get("auth") or {})
+        self._set_openai_codex_auth_status(provider, cached_state)
+
+    def _refresh_openai_codex_auth_status(
+        self,
+        provider: str,
+    ) -> None:
+        state = detect_openai_codex_auth_state()
+        provider_payload = self._settings.setdefault(provider, {})
+        provider_payload["auth"] = dict(state)
+        self._set_openai_codex_auth_status(provider, state)
+
+    def _set_openai_codex_auth_status(
+        self, provider: str, state: Optional[Dict[str, Any]]
+    ) -> None:
+        label = self._provider_widgets.get(provider, {}).get("auth_status_label")
+        if not isinstance(label, QtWidgets.QLabel):
+            return
+        state = dict(state or {})
+        if bool(state.get("authenticated")):
+            suffix = str(state.get("account_id_suffix") or "").strip()
+            detail = f" account …{suffix}" if suffix else ""
+            label.setText(f"Local Codex OAuth detected.{detail}")
+            return
+        error = str(state.get("error") or "").strip()
+        if error == "oauth_cli_kit_not_installed":
+            label.setText(
+                "Codex OAuth helper is not installed. Install `oauth_cli_kit` to enable auto-detection."
+            )
+            return
+        if error:
+            label.setText(f"Codex OAuth not detected yet: {error}")
+            return
+        label.setText(
+            "Codex OAuth status will be detected automatically on Save, or check it now with Refresh."
+        )
+
     def _fill_key_from_env(self, provider: str, edit: QtWidgets.QLineEdit) -> None:
         for env_name in self._provider_env_keys.get(provider, []):
             value = str(os.getenv(env_name) or "").strip()
@@ -1270,7 +1354,13 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         provider_defs_out: Dict[str, Dict[str, Any]] = {}
         for provider, spec in self._provider_specs.items():
             kind = str(spec.get("kind") or "openai_compat").strip().lower()
-            if kind not in {"ollama", "openai_compat", "gemini"}:
+            if kind not in {
+                "ollama",
+                "openai_compat",
+                "gemini",
+                "openai_codex",
+                "codex_cli",
+            }:
                 kind = "openai_compat"
             if kind == "ollama":
                 provider_defs_out[provider] = {
@@ -1301,13 +1391,17 @@ class LLMSettingsDialog(QtWidgets.QDialog):
                     )
 
             base_url_edit = provider_state.get("base_url_edit")
-            if kind == "openai_compat" and isinstance(
+            if kind in {"openai_compat", "openai_codex"} and isinstance(
                 base_url_edit, QtWidgets.QLineEdit
             ):
                 default_base_url = str(spec.get("base_url_default") or "").strip()
                 provider_payload["base_url"] = (
                     base_url_edit.text().strip() or default_base_url
                 )
+            if kind == "openai_codex":
+                auth_state = detect_openai_codex_auth_state()
+                provider_payload["auth"] = auth_state
+                self._set_openai_codex_auth_status(provider, auth_state)
 
             updated[provider] = provider_payload
 
@@ -1317,14 +1411,15 @@ class LLMSettingsDialog(QtWidgets.QDialog):
                 if isinstance(key_edit, QtWidgets.QLineEdit)
                 else ""
             )
-            for env_name in spec.get("api_key_env", []) or []:
-                env_key = str(env_name).strip()
-                self._set_env_if_present(env_key, key_value)
-                if env_key and key_value and self.persist_env_checkbox.isChecked():
-                    persistent_env_values[env_key] = key_value
+            if kind != "openai_codex":
+                for env_name in spec.get("api_key_env", []) or []:
+                    env_key = str(env_name).strip()
+                    self._set_env_if_present(env_key, key_value)
+                    if env_key and key_value and self.persist_env_checkbox.isChecked():
+                        persistent_env_values[env_key] = key_value
             base_url_env = str(spec.get("base_url_env") or "").strip()
             if (
-                kind == "openai_compat"
+                kind in {"openai_compat", "openai_codex"}
                 and isinstance(base_url_edit, QtWidgets.QLineEdit)
                 and base_url_env
             ):
