@@ -21,6 +21,8 @@ from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import QThreadPool
 
 from annolid.core.agent.bus import InboundMessage, MessageBus, OutboundMessage
+from annolid.core.agent.channels.zulip import ZulipChannel
+from annolid.core.agent.config import get_config_path, load_config
 from annolid.core.agent.session_manager import (
     AgentSessionManager,
     PersistentSessionStore,
@@ -46,6 +48,10 @@ from annolid.core.agent.gui_backend.turn_state import (
     TURN_STATUS_CANCELLED,
 )
 from annolid.gui.widgets.ai_chat_session_dialog import ChatSessionManagerDialog
+from annolid.gui.widgets.ai_chat_zulip import (
+    build_zulip_draft_target,
+    missing_zulip_config_fields,
+)
 from annolid.gui.widgets.citation_manager_widget import CitationManagerDialog
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
 from annolid.gui.widgets.provider_registry import ProviderRegistry
@@ -171,6 +177,57 @@ def _tail_text_from_file(
         tail_text = tail_text[-int(max_chars) :]
         truncated = True
     return tail_text, truncated
+
+
+class _ZulipSendTask(QtCore.QRunnable):
+    def __init__(
+        self,
+        widget: "AIChatWidget",
+        *,
+        config: Dict[str, Any],
+        chat_id: str,
+        content: str,
+        target_summary: str,
+    ) -> None:
+        super().__init__()
+        self._widget = widget
+        self._config = dict(config or {})
+        self._chat_id = str(chat_id or "").strip()
+        self._content = str(content or "")
+        self._target_summary = str(target_summary or "").strip()
+
+    def run(self) -> None:  # pragma: no cover
+        try:
+            asyncio.run(self._send())
+        except Exception as exc:
+            QtCore.QMetaObject.invokeMethod(
+                self._widget,
+                "_finish_zulip_send",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(bool, False),
+                QtCore.Q_ARG(str, str(exc)),
+                QtCore.Q_ARG(str, self._target_summary),
+            )
+        else:
+            QtCore.QMetaObject.invokeMethod(
+                self._widget,
+                "_finish_zulip_send",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(bool, True),
+                QtCore.Q_ARG(str, ""),
+                QtCore.Q_ARG(str, self._target_summary),
+            )
+
+    async def _send(self) -> None:
+        channel = ZulipChannel(self._config, MessageBus())
+        await channel.send(
+            OutboundMessage(
+                channel="zulip",
+                chat_id=self._chat_id,
+                content=self._content,
+                metadata={"source": "annolid_bot_ui"},
+            )
+        )
 
 
 class _ChatBubble(QtWidgets.QFrame):
@@ -631,6 +688,8 @@ class AIChatWidget(QtWidgets.QWidget):
         self._last_final_message_text: str = ""
         self._last_final_message_is_error: bool = False
         self._last_final_message_ts: float = 0.0
+        self._zulip_send_active = False
+        self._zulip_target_summary = ""
         self._seen_event_keys: "OrderedDict[str, float]" = OrderedDict()
         self._seen_event_key_limit = 512
 
@@ -842,12 +901,17 @@ class AIChatWidget(QtWidgets.QWidget):
         self.share_canvas_button = self._create_input_icon("🎨", "Share Canvas")
         self.share_window_button = self._create_input_icon("🪟", "Share Window")
         self.citation_button = self._create_input_icon("📚", "Manage citations")
+        self.zulip_button = self._create_input_icon("✉️", "Draft and send to Zulip")
 
         tools_layout.addWidget(self.attach_file_button)
         tools_layout.addWidget(self.share_canvas_button)
         tools_layout.addWidget(self.share_window_button)
         tools_layout.addWidget(self.citation_button)
+        tools_layout.addWidget(self.zulip_button)
         input_row.addLayout(tools_layout)
+
+        self.zulip_panel = self._build_zulip_panel()
+        layout.addWidget(self.zulip_panel)
 
         # Text Input
         self.prompt_text_edit = QtWidgets.QPlainTextEdit(self)
@@ -911,6 +975,69 @@ class AIChatWidget(QtWidgets.QWidget):
         font.setPointSize(14)
         btn.setFont(font)
         return btn
+
+    def _build_zulip_panel(self) -> QtWidgets.QFrame:
+        panel = QtWidgets.QFrame(self)
+        panel.setObjectName("zulipDraftPanel")
+        panel.setVisible(False)
+
+        layout = QtWidgets.QVBoxLayout(panel)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setSpacing(6)
+
+        self.zulip_target_type_combo = QtWidgets.QComboBox(panel)
+        self.zulip_target_type_combo.addItem("Stream", userData="stream")
+        self.zulip_target_type_combo.addItem("Direct Message", userData="dm")
+        top_row.addWidget(self.zulip_target_type_combo, 0)
+
+        self.zulip_stream_edit = QtWidgets.QLineEdit(panel)
+        self.zulip_stream_edit.setPlaceholderText("Stream")
+        top_row.addWidget(self.zulip_stream_edit, 1)
+
+        self.zulip_topic_edit = QtWidgets.QLineEdit(panel)
+        self.zulip_topic_edit.setPlaceholderText("Topic")
+        top_row.addWidget(self.zulip_topic_edit, 1)
+
+        self.zulip_recipients_edit = QtWidgets.QLineEdit(panel)
+        self.zulip_recipients_edit.setPlaceholderText(
+            "email@example.com, teammate@example.com"
+        )
+        self.zulip_recipients_edit.setVisible(False)
+        top_row.addWidget(self.zulip_recipients_edit, 1)
+
+        self.zulip_defaults_button = QtWidgets.QPushButton("Defaults", panel)
+        self.zulip_defaults_button.setObjectName("quickActionButton")
+        top_row.addWidget(self.zulip_defaults_button, 0)
+
+        layout.addLayout(top_row)
+
+        bottom_row = QtWidgets.QHBoxLayout()
+        bottom_row.setSpacing(6)
+
+        self.zulip_last_reply_button = QtWidgets.QPushButton("Use Last Reply", panel)
+        self.zulip_last_reply_button.setObjectName("quickActionButton")
+        self.zulip_last_reply_button.setToolTip(
+            "Copy the latest Annolid Bot reply into the current draft."
+        )
+        bottom_row.addWidget(self.zulip_last_reply_button, 0)
+
+        self.zulip_info_label = QtWidgets.QLabel(
+            f"Uses the current draft in the prompt box. Configure Zulip in {get_config_path()}",
+            panel,
+        )
+        self.zulip_info_label.setObjectName("chatStatusLabel")
+        self.zulip_info_label.setWordWrap(True)
+        bottom_row.addWidget(self.zulip_info_label, 1)
+
+        self.zulip_send_button = QtWidgets.QPushButton("Send to Zulip", panel)
+        self.zulip_send_button.setObjectName("sendButton")
+        bottom_row.addWidget(self.zulip_send_button, 0)
+
+        layout.addLayout(bottom_row)
+        return panel
 
     def _create_hidden_toggles(self, layout):
         # We might want to expose these via a menu later, but for now defaults
@@ -985,11 +1112,118 @@ class AIChatWidget(QtWidgets.QWidget):
         self.share_canvas_button.clicked.connect(self._share_canvas_now)
         self.share_window_button.clicked.connect(self._share_window_now)
         self.citation_button.clicked.connect(self._open_citation_manager)
+        self.zulip_button.clicked.connect(self._toggle_zulip_panel)
+        self.zulip_target_type_combo.currentIndexChanged.connect(
+            self._sync_zulip_target_field_visibility
+        )
+        self.zulip_defaults_button.clicked.connect(self._load_zulip_defaults)
+        self.zulip_last_reply_button.clicked.connect(self._use_last_reply_for_zulip)
+        self.zulip_send_button.clicked.connect(self._send_current_draft_to_zulip)
         self.attach_file_button.clicked.connect(self._attach_file)
         self.talk_button.clicked.connect(self.toggle_recording)
         self.clear_chat_button.clicked.connect(self.clear_chat_conversation)
         self.sessions_button.clicked.connect(self.open_session_manager_dialog)
         self._on_prompt_text_changed()
+        self._sync_zulip_target_field_visibility()
+
+    def _toggle_zulip_panel(self) -> None:
+        visible = not bool(self.zulip_panel.isVisible())
+        self.zulip_panel.setVisible(visible)
+        if visible:
+            self._load_zulip_defaults()
+            if self.zulip_target_type_combo.currentData() == "dm":
+                self.zulip_recipients_edit.setFocus()
+            else:
+                self.zulip_stream_edit.setFocus()
+            self.status_label.setText("Zulip draft panel opened.")
+        else:
+            self.status_label.setText("Zulip draft panel hidden.")
+
+    def _sync_zulip_target_field_visibility(self) -> None:
+        target_type = str(self.zulip_target_type_combo.currentData() or "stream")
+        is_dm = target_type == "dm"
+        self.zulip_stream_edit.setVisible(not is_dm)
+        self.zulip_topic_edit.setVisible(not is_dm)
+        self.zulip_recipients_edit.setVisible(is_dm)
+
+    def _load_zulip_defaults(self) -> None:
+        cfg = load_config().tools.zulip
+        if self.zulip_target_type_combo.currentData() == "dm":
+            return
+        if not self.zulip_stream_edit.text().strip():
+            self.zulip_stream_edit.setText(str(cfg.stream or "").strip())
+        if not self.zulip_topic_edit.text().strip():
+            self.zulip_topic_edit.setText(str(cfg.topic or "").strip())
+
+    def _use_last_reply_for_zulip(self) -> None:
+        text = self._last_assistant_text()
+        if not text:
+            self.status_label.setText("No assistant reply available for Zulip.")
+            return
+        self.prompt_text_edit.setPlainText(text)
+        self.prompt_text_edit.setFocus()
+        self.status_label.setText("Loaded last assistant reply into the draft.")
+
+    def _send_current_draft_to_zulip(self) -> None:
+        if self._zulip_send_active:
+            self.status_label.setText("Zulip send already in progress.")
+            return
+        content = self.prompt_text_edit.toPlainText().strip()
+        if not content:
+            self.status_label.setText("Write a draft before sending to Zulip.")
+            return
+
+        zulip_cfg = load_config().tools.zulip.to_dict()
+        missing = missing_zulip_config_fields(zulip_cfg)
+        if missing:
+            detail = ", ".join(missing)
+            self.status_label.setText(f"Configure Zulip first: {detail}")
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Zulip not configured",
+                f"Annolid Bot needs a valid Zulip configuration before it can send.\n\nMissing: {detail}\n\nConfig file: {get_config_path()}",
+            )
+            return
+
+        try:
+            target = build_zulip_draft_target(
+                str(self.zulip_target_type_combo.currentData() or "stream"),
+                stream=self.zulip_stream_edit.text(),
+                topic=self.zulip_topic_edit.text(),
+                recipients=self.zulip_recipients_edit.text(),
+                default_stream=str(zulip_cfg.get("stream") or ""),
+                default_topic=str(zulip_cfg.get("topic") or ""),
+            )
+        except ValueError as exc:
+            self.status_label.setText(str(exc))
+            return
+
+        self._zulip_send_active = True
+        self._zulip_target_summary = target.summary
+        self.zulip_send_button.setEnabled(False)
+        self.status_label.setText(f"Sending to {target.summary}...")
+        self.thread_pool.start(
+            _ZulipSendTask(
+                self,
+                config=zulip_cfg,
+                chat_id=target.chat_id,
+                content=content,
+                target_summary=target.summary,
+            )
+        )
+
+    @QtCore.Slot(bool, str, str)
+    def _finish_zulip_send(
+        self, success: bool, detail: str, target_summary: str
+    ) -> None:
+        self._zulip_send_active = False
+        self.zulip_send_button.setEnabled(True)
+        summary = str(target_summary or self._zulip_target_summary or "Zulip").strip()
+        if success:
+            self.status_label.setText(f"Sent draft to {summary}.")
+            self.prompt_text_edit.clear()
+        else:
+            self.status_label.setText(f"Zulip send failed: {detail}")
 
     def _apply_quick_action(self, text: str) -> None:
         prompt_text = str(text or "").strip()
@@ -1206,6 +1440,9 @@ class AIChatWidget(QtWidgets.QWidget):
         self.prompt_count_label.style().polish(self.prompt_count_label)
         can_send = bool(text.strip()) and not self.is_streaming_chat
         self.send_button.setEnabled(can_send)
+        zulip_button = getattr(self, "zulip_send_button", None)
+        if zulip_button is not None:
+            zulip_button.setEnabled(bool(text.strip()) and not self._zulip_send_active)
 
     def _start_typing_indicator(self) -> None:
         self._typing_tick = 0
@@ -1317,6 +1554,14 @@ class AIChatWidget(QtWidgets.QWidget):
                     min-height: 24px;
                     padding: 3px 8px;
                 }}
+                QLineEdit {{
+                    border: 1px solid {border_main};
+                    border-radius: 8px;
+                    background: {bg_input};
+                    color: {fg_main};
+                    min-height: 24px;
+                    padding: 3px 8px;
+                }}
                 QScrollArea {{
                     border: none;
                     background: {bg_main};
@@ -1357,6 +1602,17 @@ class AIChatWidget(QtWidgets.QWidget):
                 }}
                 QPushButton#quickActionButton:hover {{
                     background: {bubble_assistant_border};
+                }}
+                QPushButton#sendButton {{
+                    border: 1px solid {bubble_user_border};
+                    border-radius: 12px;
+                    padding: 6px 12px;
+                    background: {bubble_user_bg};
+                    color: {fg_main};
+                    font-weight: 600;
+                }}
+                QPushButton#sendButton:disabled {{
+                    color: {subtitle_fg};
                 }}
                 /* Input Bar Icons */
                 QToolButton#chatInputButton {{
@@ -1409,6 +1665,11 @@ class AIChatWidget(QtWidgets.QWidget):
                     border-top: 1px solid {border_main};
                     border-bottom-left-radius: 12px;
                     border-bottom-right-radius: 12px;
+                }}
+                QFrame#zulipDraftPanel {{
+                    background: {bg_main};
+                    border: 1px solid {border_main};
+                    border-radius: 12px;
                 }}
                 QLabel#chatStatusLabel {{
                     color: {subtitle_fg};
