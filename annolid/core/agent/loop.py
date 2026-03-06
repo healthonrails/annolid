@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 import inspect
 import json
 import os
@@ -209,6 +209,10 @@ class AgentLoop:
         {"email", "list_emails", "read_email", "message", "camera_snapshot"}
     )
     _HIGH_RISK_TOOL_AUTOMATION = frozenset({"cron", "automation_schedule", "spawn"})
+    _FINAL_ANSWER_REPAIR_PROMPT = (
+        "Provide the final user-facing answer now using only the tool results above. "
+        "Do not call any more tools. Keep it concise, concrete, and directly actionable."
+    )
 
     def __init__(
         self,
@@ -254,6 +258,10 @@ class AgentLoop:
         self._mcp_servers = mcp_servers or {}
         self._mcp_stack: Optional[AsyncExitStack] = None
         self._mcp_connected = False
+        self._mcp_connecting = False
+        self._mcp_ref_count = 0
+        self._mcp_lock = asyncio.Lock()
+        self._exclusive_mcp_run_lock = asyncio.Lock()
         self._interleave_post_tool_guidance = bool(interleave_post_tool_guidance)
         self._llm_timeout_seconds = (
             float(llm_timeout_seconds)
@@ -307,6 +315,36 @@ class AgentLoop:
         return self._resolved_model
 
     async def run(
+        self,
+        user_message: str,
+        *,
+        session_id: str = "default",
+        history: Optional[Sequence[Mapping[str, Any]]] = None,
+        system_prompt: Optional[str] = None,
+        use_memory: Optional[bool] = None,
+        channel: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        media: Optional[List[str]] = None,
+        skill_names: Optional[List[str]] = None,
+        on_progress: Optional[ProgressCallback] = None,
+        inbound_metadata: Optional[Mapping[str, Any]] = None,
+    ) -> AgentLoopResult:
+        async with self._mcp_run_guard():
+            return await self._run_impl(
+                user_message,
+                session_id=session_id,
+                history=history,
+                system_prompt=system_prompt,
+                use_memory=use_memory,
+                channel=channel,
+                chat_id=chat_id,
+                media=media,
+                skill_names=skill_names,
+                on_progress=on_progress,
+                inbound_metadata=inbound_metadata,
+            )
+
+    async def _run_impl(
         self,
         user_message: str,
         *,
@@ -642,27 +680,25 @@ class AgentLoop:
                     not str(final_content or "").strip()
                     and tool_runs
                     and not empty_final_repair_used
-                    and iteration < self._max_iterations
                 ):
                     empty_final_repair_used = True
                     empty_final_repair_passes += 1
                     self._logger.warning(
-                        "annolid-bot empty final response session=%s model=%s iteration=%d; requesting one repair pass",
+                        "annolid-bot empty final response session=%s model=%s iteration=%d; requesting no-tool finalization pass",
                         session_id,
                         self.model,
                         iteration,
                     )
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "Please provide a concise final answer for the user "
-                                "based on the tool results above. Avoid additional "
-                                "tool calls unless absolutely necessary."
-                            ),
-                        }
+                    (
+                        final_content,
+                        repair_llm_ms,
+                    ) = await self._repair_empty_final_answer(
+                        session_id=session_id,
+                        iteration=iteration,
+                        messages=messages,
+                        on_token=_on_llm_token,
                     )
-                    continue
+                    llm_total_ms += repair_llm_ms
                 if memory_enabled and str(final_content).strip():
                     tools_used = self._extract_tools_used(tool_runs)
                     self._memory_store.append_history(
@@ -832,24 +868,61 @@ class AgentLoop:
             )
             await self._disconnect_mcp()
 
+    @asynccontextmanager
+    async def _mcp_run_guard(self):
+        if not self._requires_exclusive_mcp_run():
+            yield
+            return
+        async with self._exclusive_mcp_run_lock:
+            yield
+
     async def _connect_mcp(self) -> None:
-        """Connect to configured MCP servers (one-time, lazy)."""
-        if self._mcp_connected or not self._mcp_servers:
+        """Acquire a shared MCP connection for the current run."""
+        if not self._mcp_servers:
             return
         from .tools.mcp import connect_mcp_servers
 
-        self._mcp_stack = AsyncExitStack()
-        await self._mcp_stack.__aenter__()
-        try:
-            await connect_mcp_servers(self._mcp_servers, self._tools, self._mcp_stack)
-        except Exception:
+        if not self._can_share_mcp_session():
+            self._mcp_stack = AsyncExitStack()
+            await self._mcp_stack.__aenter__()
             try:
-                await self._mcp_stack.aclose()
+                await connect_mcp_servers(
+                    self._mcp_servers, self._tools, self._mcp_stack
+                )
             except Exception:
-                pass
-            self._mcp_stack = None
-            raise
-        self._mcp_connected = True
+                try:
+                    await self._mcp_stack.aclose()
+                except Exception:
+                    pass
+                self._mcp_stack = None
+                raise
+            self._mcp_connected = True
+            self._mcp_connecting = False
+            self._mcp_ref_count = 1
+            return
+
+        async with self._mcp_lock:
+            self._mcp_ref_count += 1
+            if self._mcp_connected:
+                return
+            self._mcp_connecting = True
+            self._mcp_stack = AsyncExitStack()
+            await self._mcp_stack.__aenter__()
+            try:
+                await connect_mcp_servers(
+                    self._mcp_servers, self._tools, self._mcp_stack
+                )
+            except Exception:
+                try:
+                    await self._mcp_stack.aclose()
+                except Exception:
+                    pass
+                self._mcp_stack = None
+                self._mcp_ref_count = max(0, self._mcp_ref_count - 1)
+                raise
+            finally:
+                self._mcp_connecting = False
+            self._mcp_connected = True
 
     async def _execute_llm_cycle(
         self,
@@ -1008,6 +1081,37 @@ class AgentLoop:
             )
         self._append_post_tool_guidance(messages)
         return cycle_exec_ms, cycle_call_count
+
+    async def _repair_empty_final_answer(
+        self,
+        *,
+        session_id: str,
+        iteration: int,
+        messages: List[Dict[str, Any]],
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> tuple[str, float]:
+        repair_prompt = {
+            "role": "user",
+            "content": self._FINAL_ANSWER_REPAIR_PROMPT,
+        }
+        repair_messages = [*messages, repair_prompt]
+        response, llm_elapsed_ms = await self._execute_llm_cycle(
+            session_id=session_id,
+            iteration=iteration,
+            messages=repair_messages,
+            tool_definitions=[],
+            on_token=on_token,
+        )
+        assistant_text = str(response.get("content") or "")
+        reasoning = str(response.get("reasoning_content") or "").strip()
+        if reasoning and not assistant_text.startswith("<think>"):
+            assistant_text = (
+                f"<think>\n{reasoning}\n</think>\n\n{assistant_text}".strip()
+            )
+        final_content = self._strip_think(assistant_text)
+        messages.append(repair_prompt)
+        messages.append({"role": "assistant", "content": assistant_text})
+        return final_content, llm_elapsed_ms
 
     async def _build_initial_messages(
         self,
@@ -1210,15 +1314,35 @@ class AgentLoop:
         return ""
 
     async def _disconnect_mcp(self) -> None:
-        if self._mcp_stack is None:
+        if not self._can_share_mcp_session():
+            stack = self._mcp_stack
+            self._mcp_stack = None
             self._mcp_connected = False
+            self._mcp_connecting = False
+            self._mcp_ref_count = 0
+            if stack is None:
+                return
+            try:
+                await stack.aclose()
+            except Exception:
+                pass
+            return
+
+        async with self._mcp_lock:
+            if self._mcp_ref_count > 0:
+                self._mcp_ref_count -= 1
+            if self._mcp_ref_count > 0:
+                return
+            stack = self._mcp_stack
+            self._mcp_stack = None
+            self._mcp_connected = False
+            self._mcp_connecting = False
+        if stack is None:
             return
         try:
-            await self._mcp_stack.aclose()
+            await stack.aclose()
         except Exception:
             pass
-        self._mcp_stack = None
-        self._mcp_connected = False
 
     def remember(self, session_id: str, key: str, value: str) -> None:
         self._memory_store.set_fact(session_id, key, value)
@@ -1286,7 +1410,17 @@ class AgentLoop:
             close_fn = getattr(provider, "close", None)
             if callable(close_fn):
                 await close_fn()
-        await self._disconnect_mcp()
+        async with self._mcp_lock:
+            self._mcp_ref_count = 0
+            stack = self._mcp_stack
+            self._mcp_stack = None
+            self._mcp_connected = False
+            self._mcp_connecting = False
+        if stack is not None:
+            try:
+                await stack.aclose()
+            except Exception:
+                pass
 
     def set_subagent_manager(self, manager: Optional["SubagentManager"]) -> None:
         self._subagent_manager = manager
@@ -1750,6 +1884,24 @@ class AgentLoop:
             setter(session_id, {"last_consolidated": int(max(0, value))})
         except Exception:
             return
+
+    def _requires_exclusive_mcp_run(self) -> bool:
+        return bool(self._mcp_servers) and not self._can_share_mcp_session()
+
+    def _can_share_mcp_session(self) -> bool:
+        if not self._mcp_servers:
+            return False
+        for raw_cfg in self._mcp_servers.values():
+            command = str(getattr(raw_cfg, "command", "") or "").strip()
+            url = str(getattr(raw_cfg, "url", "") or "").strip()
+            if not command and isinstance(raw_cfg, Mapping):
+                command = str(raw_cfg.get("command", "") or "").strip()
+                url = str(raw_cfg.get("url", "") or "").strip()
+            if command:
+                return False
+            if not url:
+                return False
+        return True
 
     def _replace_session_history(
         self,

@@ -198,7 +198,7 @@ def test_nvidia_timeout_floors_for_agent_loop_and_retry() -> None:
         },
     )
     assert task._agent_loop_llm_timeout_seconds(prompt_needs_tools=True) == 420
-    assert task._agent_loop_llm_timeout_seconds(prompt_needs_tools=False) == 120
+    assert task._agent_loop_llm_timeout_seconds(prompt_needs_tools=False) == 180
     assert task._fallback_retry_timeout_seconds() == 60
 
 

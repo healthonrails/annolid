@@ -466,6 +466,118 @@ def test_agent_loop_redacts_session_values_in_contextual_prompt(tmp_path: Path) 
     assert "pe***n@example.com" in observed["system"]
 
 
+def test_agent_loop_shares_mcp_connection_across_overlapping_runs(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def _fake_connect(mcp_servers, registry, stack) -> None:  # type: ignore[no-untyped-def]
+        del registry, stack
+        calls.append(dict(mcp_servers))
+        await asyncio.sleep(0.05)
+
+    import annolid.core.agent.tools.mcp as mcp_tools
+
+    original = mcp_tools.connect_mcp_servers
+    mcp_tools.connect_mcp_servers = _fake_connect
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        await asyncio.sleep(0.05)
+        return {"content": "done"}
+
+    loop = AgentLoop(
+        tools=FunctionToolRegistry(),
+        llm_callable=fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+        mcp_servers={"demo": {"url": "http://localhost:8123/mcp"}},
+    )
+
+    async def _run_pair() -> tuple[str, str]:
+        first, second = await asyncio.gather(
+            loop.run("hello", session_id="s1", use_memory=False),
+            loop.run("world", session_id="s2", use_memory=False),
+        )
+        return first.content, second.content
+
+    try:
+        content1, content2 = asyncio.run(_run_pair())
+    finally:
+        mcp_tools.connect_mcp_servers = original
+
+    assert content1 == "done"
+    assert content2 == "done"
+    assert len(calls) == 1
+    assert loop._mcp_connected is False
+    assert loop._mcp_stack is None
+    assert loop._mcp_ref_count == 0
+
+
+def test_agent_loop_serializes_overlapping_runs_for_stdio_mcp(tmp_path: Path) -> None:
+    calls: list[dict[str, Any]] = []
+    llm_active = 0
+    llm_max_active = 0
+
+    async def _fake_connect(mcp_servers, registry, stack) -> None:  # type: ignore[no-untyped-def]
+        del registry, stack
+        calls.append(dict(mcp_servers))
+
+    import annolid.core.agent.tools.mcp as mcp_tools
+
+    original = mcp_tools.connect_mcp_servers
+    mcp_tools.connect_mcp_servers = _fake_connect
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        nonlocal llm_active, llm_max_active
+        del messages, tools, model, on_token
+        llm_active += 1
+        llm_max_active = max(llm_max_active, llm_active)
+        try:
+            await asyncio.sleep(0.05)
+            return {"content": "done"}
+        finally:
+            llm_active -= 1
+
+    loop = AgentLoop(
+        tools=FunctionToolRegistry(),
+        llm_callable=fake_llm,
+        model="fake",
+        workspace=str(tmp_path),
+        mcp_servers={"demo": {"command": "echo", "args": ["ok"]}},
+    )
+
+    async def _run_pair() -> tuple[str, str]:
+        first, second = await asyncio.gather(
+            loop.run("hello", session_id="s1", use_memory=False),
+            loop.run("world", session_id="s2", use_memory=False),
+        )
+        return first.content, second.content
+
+    try:
+        content1, content2 = asyncio.run(_run_pair())
+    finally:
+        mcp_tools.connect_mcp_servers = original
+
+    assert content1 == "done"
+    assert content2 == "done"
+    assert len(calls) == 2
+    assert llm_max_active == 1
+    assert loop._mcp_connected is False
+    assert loop._mcp_stack is None
+    assert loop._mcp_ref_count == 0
+
+
 def test_agent_loop_emits_intermediate_progress_for_tool_calls() -> None:
     registry = FunctionToolRegistry()
     registry.register(_EchoTool())
@@ -809,7 +921,7 @@ def test_agent_loop_does_not_persist_empty_assistant_reply() -> None:
 
 
 def test_agent_loop_retries_once_when_final_response_empty_after_tools() -> None:
-    state = {"n": 0}
+    state = {"n": 0, "repair_tools": None}
 
     async def fake_llm(
         messages: Sequence[Mapping[str, Any]],
@@ -817,7 +929,7 @@ def test_agent_loop_retries_once_when_final_response_empty_after_tools() -> None
         model: str,
         on_token: Optional[Callable[[str], None]] = None,
     ) -> Mapping[str, Any]:
-        del messages, tools, model, on_token
+        del messages, model, on_token
         state["n"] += 1
         if state["n"] == 1:
             return {
@@ -828,6 +940,7 @@ def test_agent_loop_retries_once_when_final_response_empty_after_tools() -> None
             }
         if state["n"] == 2:
             return {"content": "   ", "tool_calls": []}
+        state["repair_tools"] = list(tools)
         return {"content": "final answer", "tool_calls": []}
 
     registry = FunctionToolRegistry()
@@ -836,7 +949,8 @@ def test_agent_loop_retries_once_when_final_response_empty_after_tools() -> None
 
     result = asyncio.run(loop.run("hello", session_id="s-empty-repair"))
     assert result.content == "final answer"
-    assert result.iterations == 3
+    assert result.iterations == 2
+    assert state["repair_tools"] == []
 
 
 def test_agent_loop_consolidates_large_history_into_history_file(

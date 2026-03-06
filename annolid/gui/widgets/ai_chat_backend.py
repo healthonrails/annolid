@@ -783,7 +783,7 @@ class StreamingChatTask(QRunnable):
         )
         provider = str(self.provider or "").strip().lower()
         if provider == "nvidia":
-            return max(base, 420.0 if prompt_needs_tools else 120.0)
+            return max(base, 420.0 if prompt_needs_tools else 180.0)
         return base
 
     def _ollama_agent_tool_timeout_seconds(self) -> float:
