@@ -141,10 +141,15 @@ jobs:
           globs: |
             docs/index.md
             docs/installation.md
+            docs/install_with_uv.md
+            docs/one_line_install_choices.md
             docs/workflows.md
             docs/tutorials.md
+            docs/mcp.md
+            docs/sam3d.md
             docs/deployment.md
             docs/migration.md
             docs/redirects.md
             docs/reference.md
+            docs/tutorials/*.md
             docs/updating_jupyter_book_and_github_pages.md

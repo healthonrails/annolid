@@ -7,16 +7,12 @@ docs_dir: docs
 
 exclude_docs: |
   source/
-  tutorials/
+  tutorials/*.ipynb
   _build/
   examples/
   TODO_Qwen3VL_Ollama.md
   event_labeling_plan.md
   gui_decomposition_plan.md
-  install_with_uv.md
-  mcp.md
-  one_line_install_choices.md
-  sam3d.md
   updating_jupyter_book_and_github_pages.md
   Makefile
   make.bat
@@ -53,8 +49,16 @@ plugins:
 nav:
   - Home: index.md
   - Installation: installation.md
+  - uv Setup: install_with_uv.md
+  - One-Line Installer: one_line_install_choices.md
   - Workflows: workflows.md
-  - Tutorials: tutorials.md
+  - Tutorials:
+      - Overview: tutorials.md
+      - Segment-based Batch Tracking: tutorials/segment-based-batch-tracking.md
+      - LabelMe to YOLO Class Map: tutorials/Labelme_to_YOLO_class_map.md
+      - Sandboxed Shell: tutorials/sandboxed_shell.md
+  - MCP: mcp.md
+  - SAM 3D: sam3d.md
   - Deployment: deployment.md
   - Migration Plan: migration.md
   - Redirect Map: redirects.md

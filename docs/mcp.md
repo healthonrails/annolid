@@ -1,56 +1,16 @@
-# Model Context Protocol (MCP) Tutorial
+# Model Context Protocol (MCP)
 
-Annolid supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), allowing you to extend the AI Chat's capabilities with external tools and data sources.
+Annolid Bot can register tools and resources from Model Context Protocol servers.
 
-## Configuration
+## Current Config Path
 
-MCP servers are configured in your Annolid configuration file, typically located at `~/.annolid/config.json`.
+Configure MCP in the Annolid agent config:
 
-If the file does not exist, you can create it with the following structure:
+`~/.annolid/agent/config.json`
 
-```json
-{
-  "tools": {
-    "mcpServers": {
-      "google-search": {
-        "command": "npx",
-        "args": [
-          "-y",
-          "@modelcontextprotocol/server-google-search"
-        ],
-        "env": {
-          "GOOGLE_API_KEY": "your_api_key",
-          "GOOGLE_SEARCH_ENGINE_ID": "your_engine_id"
-        }
-      }
-    }
-  }
-}
-```
+The schema currently stores MCP servers under the agent tools block as `mcpServers` / `mcp_servers`.
 
-### Server Configuration Options
-
-- `command`: The command to run the MCP server (e.g., `npx`, `python`, `node`).
-- `args`: A list of arguments to pass to the command.
-- `env`: (Optional) A dictionary of environment variables required by the server.
-- `url`: (Optional) The URL of a remote MCP server (using SSE/HTTP).
-
-## Using MCP Tools
-
-Once configured, Annolid will automatically connect to the MCP servers when you start a chat session. The tools provided by these servers will be registered and made available to the AI agent.
-
-You can use them by simply asking the bot to perform a task that requires them, for example:
-
-- "Search Google for the latest version of MediaPipe."
-- "What is the weather in New York?" (if a weather MCP server is configured)
-
-## Common MCP Servers
-
-You can find a variety of MCP servers in the [MCP GitHub organization](https://github.com/modelcontextprotocol/servers) or other community repositories.
-
-### Example: File System
-
-To give the agent access to specific parts of your file system:
+## Minimal Example
 
 ```json
 {
@@ -69,8 +29,34 @@ To give the agent access to specific parts of your file system:
 }
 ```
 
+## Supported Shape
+
+Each server entry can define:
+
+- `command`: executable to launch the server
+- `args`: argument list
+- `env`: optional environment variables
+- `url`: optional remote server URL for HTTP/SSE-style MCP servers
+
+## How It Is Used
+
+Once configured, Annolid Bot can connect to those MCP servers during chat sessions and expose their tools/resources to the agent.
+
+Typical uses:
+
+- restricted filesystem access
+- external search or data APIs
+- research or lab-specific internal tooling
+
+## Practical Notes
+
+- Install the `annolid_bot` extra if you want the common Annolid Bot integration stack.
+- Make sure the runtime needed by your MCP server exists locally, for example `node`, `npx`, or `python`.
+- Prefer narrow filesystem/server scopes over broad access.
+
 ## Troubleshooting
 
-- **Logs**: Check the Annolid console or logs for messages prefixed with `MCP:`.
-- **Dependencies**: Ensure the required runtimes (Node.js, Python, etc.) are installed on your system if you are running servers via `npx` or `python`.
-- **API Keys**: Verified that all necessary environment variables are correctly set in the `env` section.
+- Check Annolid Bot logs and startup output for MCP registration failures.
+- Verify the config path is correct: `~/.annolid/agent/config.json`.
+- Confirm required environment variables are present in the server definition.
+- If a server starts but tools do not appear useful, test the server independently outside Annolid first.
