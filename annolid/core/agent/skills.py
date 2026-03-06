@@ -4,7 +4,6 @@ import json
 import os
 import platform
 import re
-import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -247,14 +246,18 @@ class AgentSkillsLoader:
         bins = requires.get("bins", [])
         if isinstance(bins, str):
             bins = [bins]
+
+        if bins or requires.get("any_bins", requires.get("anyBins", [])):
+            from annolid.core.agent.tools.resolve import resolve_command
+
         for b in bins:
-            if not shutil.which(str(b)):
+            if not resolve_command(str(b)):
                 return False
         any_bins = requires.get("any_bins", requires.get("anyBins", []))
         if isinstance(any_bins, str):
             any_bins = [any_bins]
         if isinstance(any_bins, list) and any_bins:
-            if not any(shutil.which(str(b)) for b in any_bins):
+            if not any(resolve_command(str(b)) for b in any_bins):
                 return False
         env_list = requires.get("env", [])
         if isinstance(env_list, str):
@@ -289,14 +292,18 @@ class AgentSkillsLoader:
         bins = requires.get("bins", [])
         if isinstance(bins, str):
             bins = [bins]
+
+        if bins or requires.get("any_bins", requires.get("anyBins", [])):
+            from annolid.core.agent.tools.resolve import resolve_command
+
         for b in bins:
-            if not shutil.which(str(b)):
+            if not resolve_command(str(b)):
                 missing.append(f"CLI: {b}")
         any_bins = requires.get("any_bins", requires.get("anyBins", []))
         if isinstance(any_bins, str):
             any_bins = [any_bins]
         if isinstance(any_bins, list) and any_bins:
-            if not any(shutil.which(str(b)) for b in any_bins):
+            if not any(resolve_command(str(b)) for b in any_bins):
                 missing.append(f"CLI(any): {'|'.join(str(b) for b in any_bins)}")
         env_list = requires.get("env", [])
         if isinstance(env_list, str):

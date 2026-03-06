@@ -64,12 +64,14 @@ async def prepare_context_tools(
     t_before_register = time.perf_counter()
     if include_tools:
         calendar_cfg = getattr(agent_cfg.tools, "calendar", None)
+        gws_cfg = getattr(agent_cfg.tools, "gws", None)
         await register_nanobot_style_tools(
             tools,
             allowed_dir=workspace,
             allowed_read_roots=allowed_read_roots,
             email_cfg=agent_cfg.tools.email,
             calendar_cfg=calendar_cfg,
+            gws_cfg=gws_cfg,
         )
         register_gui_tools(tools)
     t_after_register = time.perf_counter()

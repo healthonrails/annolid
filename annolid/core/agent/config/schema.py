@@ -611,6 +611,40 @@ class ToolPolicyConfig:
 
 
 @dataclass
+class GWSToolConfig:
+    enabled: bool = False
+    auto_install: bool = False
+    services: list[str] = field(
+        default_factory=lambda: ["drive", "gmail", "calendar", "sheets"]
+    )
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GWSToolConfig":
+        payload = data or {}
+        services_raw = payload.get(
+            "services", ["drive", "gmail", "calendar", "sheets", "slides"]
+        )
+        if isinstance(services_raw, (list, tuple)):
+            services = [str(s).strip().lower() for s in services_raw if str(s).strip()]
+        else:
+            services = ["drive", "gmail", "calendar", "sheets", "slides"]
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            auto_install=bool(
+                payload.get("auto_install", payload.get("autoInstall", False))
+            ),
+            services=services,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "auto_install": self.auto_install,
+            "services": list(self.services),
+        }
+
+
+@dataclass
 class ToolsConfig:
     exec: ExecToolConfig = field(default_factory=ExecToolConfig)
     restrict_to_workspace: bool = False
@@ -623,6 +657,7 @@ class ToolsConfig:
     whatsapp: WhatsAppChannelConfig = field(default_factory=WhatsAppChannelConfig)
     zulip: ZulipChannelConfig = field(default_factory=ZulipChannelConfig)
     calendar: CalendarToolConfig = field(default_factory=CalendarToolConfig)
+    gws: GWSToolConfig = field(default_factory=GWSToolConfig)
     by_provider: Dict[str, ToolPolicyConfig] = field(default_factory=dict)
 
     @classmethod
@@ -671,6 +706,7 @@ class ToolsConfig:
         whatsapp_cfg = WhatsAppChannelConfig.from_dict(payload.get("whatsapp"))
         zulip_cfg = ZulipChannelConfig.from_dict(payload.get("zulip"))
         calendar_cfg = CalendarToolConfig.from_dict(payload.get("calendar"))
+        gws_cfg = GWSToolConfig.from_dict(payload.get("gws"))
         exec_cfg = ExecToolConfig.from_dict(payload.get("exec"))
         return cls(
             exec=exec_cfg,
@@ -684,6 +720,7 @@ class ToolsConfig:
             whatsapp=whatsapp_cfg,
             zulip=zulip_cfg,
             calendar=calendar_cfg,
+            gws=gws_cfg,
             by_provider=by_provider,
         )
 
@@ -699,6 +736,7 @@ class ToolsConfig:
             "whatsapp": self.whatsapp.to_dict(),
             "zulip": self.zulip.to_dict(),
             "calendar": self.calendar.to_dict(),
+            "gws": self.gws.to_dict(),
             "mcp_servers": {
                 name: cfg.to_dict() for name, cfg in self.mcp_servers.items()
             },

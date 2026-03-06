@@ -46,6 +46,8 @@ from .sandboxed_shell import SandboxedExecTool
 from .shell_sessions import ExecProcessTool, ExecStartTool
 from .email import EmailTool, ListEmailsTool, ReadEmailTool
 from .calendar import GoogleCalendarTool
+from .workspace import GoogleWorkspaceTool
+from .gws_setup import GWSSetupTool
 from .camera import CameraSnapshotTool
 from .coding_harness import (
     CodingSessionCloseTool,
@@ -65,7 +67,11 @@ from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
 from .swarm_tool import SwarmTool
 
 if TYPE_CHECKING:
-    from annolid.core.agent.config.schema import CalendarToolConfig, EmailChannelConfig
+    from annolid.core.agent.config.schema import (
+        CalendarToolConfig,
+        EmailChannelConfig,
+        GWSToolConfig,
+    )
     from annolid.core.agent.scheduler import TaskScheduler
 
 
@@ -81,6 +87,7 @@ async def register_nanobot_style_tools(
     stack: Any | None = None,
     email_cfg: EmailChannelConfig | None = None,
     calendar_cfg: CalendarToolConfig | None = None,
+    gws_cfg: "GWSToolConfig | None" = None,
     task_scheduler: "TaskScheduler | None" = None,
     ignored_tools: Sequence[str] = (),
 ) -> None:
@@ -296,11 +303,43 @@ async def register_nanobot_style_tools(
                     "Calendar tool is enabled but Google dependencies are missing. "
                     'Install optional extras with `pip install "annolid[google_calendar]"`.'
                 )
+        elif provider_name == "gws":
+            if GoogleWorkspaceTool.is_available():
+                registry.register(GoogleWorkspaceTool(allowed_services=["calendar"]))
+                logger.info("Calendar tool using gws CLI backend.")
+            else:
+                logger.warning(
+                    "Calendar tool provider is gws but gws is not on PATH. "
+                    "Install with: npm install -g @googleworkspace/cli"
+                )
         else:
             logger.warning(
-                "Calendar tool provider %r is not supported. Supported providers: google",
+                "Calendar tool provider %r is not supported. Supported providers: google, gws",
                 provider_name,
             )
+
+    # -- Google Workspace CLI tools --
+    if gws_cfg and gws_cfg.enabled:
+        if GoogleWorkspaceTool.is_available():
+            registry.register(
+                GoogleWorkspaceTool(
+                    allowed_services=gws_cfg.services or None,
+                )
+            )
+            registry.register(GWSSetupTool())
+            logger.info("Google Workspace CLI tools registered.")
+        else:
+            if gws_cfg.auto_install:
+                logger.info(
+                    "gws CLI not found but auto_install is enabled. "
+                    "The gws_setup tool can install it at runtime."
+                )
+                registry.register(GWSSetupTool())
+            else:
+                logger.warning(
+                    "Google Workspace CLI tool is enabled but gws is not on PATH. "
+                    "Install with: npm install -g @googleworkspace/cli"
+                )
 
     if mcp_servers and stack:
         await connect_mcp_servers(mcp_servers, registry, stack)

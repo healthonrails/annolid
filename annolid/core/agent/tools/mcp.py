@@ -10,6 +10,7 @@ from annolid.utils.logger import logger
 
 from .function_base import FunctionTool
 from .function_registry import FunctionToolRegistry
+from .resolve import ensure_node_env, resolve_command
 
 
 class MCPToolWrapper(FunctionTool):
@@ -152,8 +153,22 @@ async def connect_mcp_servers(
                 c = MCPServerConfig.from_dict(cfg)
 
             if c.command:
+                resolved_cmd = resolve_command(c.command)
+                if resolved_cmd is None:
+                    logger.warning(
+                        "MCP server '%s': command '%s' not found on PATH, skipping",
+                        name,
+                        c.command,
+                    )
+                    continue
+
+                # Combine custom env with augmented node env
+                server_env = ensure_node_env()
+                if c.env:
+                    server_env.update(c.env)
+
                 params = StdioServerParameters(
-                    command=c.command, args=c.args, env=c.env or None
+                    command=resolved_cmd, args=c.args, env=server_env
                 )
                 read, write = await stack.enter_async_context(stdio_client(params))
             elif c.url:
