@@ -316,6 +316,7 @@ class CalendarToolConfig:
     provider: str = "google"
     credentials_file: str = "~/.annolid/agent/google_calendar_credentials.json"
     token_file: str = "~/.annolid/agent/google_calendar_token.json"
+    allow_interactive_auth: bool = False
     calendar_id: str = "primary"
     timezone: str = ""
     default_event_duration_minutes: int = 30
@@ -336,6 +337,12 @@ class CalendarToolConfig:
                 or payload.get("tokenFile")
                 or "~/.annolid/agent/google_calendar_token.json"
             ),
+            allow_interactive_auth=bool(
+                payload.get(
+                    "allow_interactive_auth",
+                    payload.get("allowInteractiveAuth", False),
+                )
+            ),
             calendar_id=str(
                 payload.get("calendar_id") or payload.get("calendarId") or "primary"
             ),
@@ -355,6 +362,7 @@ class CalendarToolConfig:
             "provider": self.provider,
             "credentials_file": self.credentials_file,
             "token_file": self.token_file,
+            "allow_interactive_auth": self.allow_interactive_auth,
             "calendar_id": self.calendar_id,
             "timezone": self.timezone,
             "default_event_duration_minutes": self.default_event_duration_minutes,

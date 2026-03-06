@@ -253,10 +253,27 @@ async def register_nanobot_style_tools(
                     exc,
                 )
             if calendar_available:
+                calendar_ready, calendar_reason = GoogleCalendarTool.preflight(
+                    credentials_file=calendar_cfg.credentials_file,
+                    token_file=calendar_cfg.token_file,
+                    allow_interactive_auth=bool(calendar_cfg.allow_interactive_auth),
+                )
+                if not calendar_ready:
+                    logger.warning(
+                        "Calendar tool is enabled but not ready: %s "
+                        "Set a valid token, add credentials, or enable "
+                        "`allow_interactive_auth` for first-run authorization.",
+                        calendar_reason,
+                    )
+                    calendar_available = False
+            if calendar_available:
                 registry.register(
                     GoogleCalendarTool(
                         credentials_file=calendar_cfg.credentials_file,
                         token_file=calendar_cfg.token_file,
+                        allow_interactive_auth=bool(
+                            calendar_cfg.allow_interactive_auth
+                        ),
                         calendar_id=calendar_cfg.calendar_id,
                         timezone_name=calendar_cfg.timezone,
                         default_event_duration_minutes=calendar_cfg.default_event_duration_minutes,

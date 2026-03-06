@@ -97,6 +97,7 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     cfg.tools.calendar.provider = "google"
     cfg.tools.calendar.credentials_file = "~/calendar_credentials.json"
     cfg.tools.calendar.token_file = "~/calendar_token.json"
+    cfg.tools.calendar.allow_interactive_auth = True
     cfg.tools.calendar.calendar_id = "primary"
     cfg.tools.calendar.timezone = "America/Los_Angeles"
     cfg.tools.calendar.default_event_duration_minutes = 45
@@ -164,6 +165,7 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     assert loaded.tools.calendar.provider == "google"
     assert loaded.tools.calendar.credentials_file == "~/calendar_credentials.json"
     assert loaded.tools.calendar.token_file == "~/calendar_token.json"
+    assert loaded.tools.calendar.allow_interactive_auth is True
     assert loaded.tools.calendar.calendar_id == "primary"
     assert loaded.tools.calendar.timezone == "America/Los_Angeles"
     assert loaded.tools.calendar.default_event_duration_minutes == 45

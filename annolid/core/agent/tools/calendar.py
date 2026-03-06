@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -27,18 +28,21 @@ class GoogleCalendarTool(FunctionTool):
         *,
         credentials_file: str = "~/.annolid/agent/google_calendar_credentials.json",
         token_file: str = "~/.annolid/agent/google_calendar_token.json",
+        allow_interactive_auth: bool = False,
         calendar_id: str = "primary",
         timezone_name: str = "",
         default_event_duration_minutes: int = 30,
     ) -> None:
         self._credentials_file = str(credentials_file or "").strip()
         self._token_file = str(token_file or "").strip()
+        self._allow_interactive_auth = bool(allow_interactive_auth)
         self._calendar_id = str(calendar_id or "primary").strip() or "primary"
         self._timezone_name = str(timezone_name or "").strip()
         self._default_event_duration_minutes = max(
             1, int(default_event_duration_minutes or 30)
         )
         self._service_cache: Any = None
+        self._service_cache_key: tuple[Any, ...] | None = None
 
     @property
     def name(self) -> str:
@@ -122,6 +126,12 @@ class GoogleCalendarTool(FunctionTool):
                 'Install optional extras with `pip install "annolid[google_calendar]"`. '
                 f"Details: {exc}"
             )
+        except FileNotFoundError as exc:
+            return f"Error: {exc}"
+        except PermissionError as exc:
+            return f"Error: Google Calendar file permissions prevent access: {exc}"
+        except RuntimeError as exc:
+            return f"Error: {exc}"
         except Exception as exc:
             return f"Error: Failed to initialize Google Calendar service: {exc}"
 
@@ -179,19 +189,118 @@ class GoogleCalendarTool(FunctionTool):
 
         return Request, Credentials, InstalledAppFlow, build
 
+    @classmethod
+    def preflight(
+        cls,
+        *,
+        credentials_file: str,
+        token_file: str,
+        allow_interactive_auth: bool = False,
+    ) -> tuple[bool, str]:
+        token_path = Path(str(token_file or "").strip()).expanduser()
+        credentials_path = Path(str(credentials_file or "").strip()).expanduser()
+        if token_path.exists():
+            return True, ""
+        if credentials_path.exists():
+            if bool(allow_interactive_auth):
+                return True, ""
+            return (
+                False,
+                "Google Calendar credentials exist but interactive auth is disabled "
+                "and no cached token is available.",
+            )
+        return (
+            False,
+            "Google Calendar token and credentials files are both missing.",
+        )
+
+    def _resolve_credentials_path(self) -> Path:
+        return Path(self._credentials_file).expanduser()
+
+    def _resolve_token_path(self) -> Path:
+        return Path(self._token_file).expanduser()
+
+    def _service_files_key(self) -> tuple[Any, ...]:
+        token_path = self._resolve_token_path()
+        credentials_path = self._resolve_credentials_path()
+        return (
+            self._path_version(token_path),
+            self._path_version(credentials_path),
+            self._calendar_id,
+            self._timezone_name,
+            self._allow_interactive_auth,
+        )
+
+    @staticmethod
+    def _path_version(path: Path) -> tuple[bool, int | None]:
+        if not path.exists():
+            return (False, None)
+        try:
+            return (True, path.stat().st_mtime_ns)
+        except OSError:
+            return (True, None)
+
+    @staticmethod
+    def _ensure_private_parent(path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.chmod(0o700)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _ensure_private_file(path: Path) -> None:
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _interactive_auth_possible() -> bool:
+        stdin = getattr(sys, "stdin", None)
+        stdout = getattr(sys, "stdout", None)
+        return bool(
+            stdin is not None
+            and stdout is not None
+            and hasattr(stdin, "isatty")
+            and hasattr(stdout, "isatty")
+            and stdin.isatty()
+            and stdout.isatty()
+        )
+
     def _get_service(self) -> Any:
-        if self._service_cache is not None:
+        cache_key = self._service_files_key()
+        if self._service_cache is not None and self._service_cache_key == cache_key:
             return self._service_cache
         Request, Credentials, InstalledAppFlow, build = self._import_google_modules()
         creds = None
-        token_path = Path(self._token_file).expanduser()
-        credentials_path = Path(self._credentials_file).expanduser()
+        token_path = self._resolve_token_path()
+        credentials_path = self._resolve_credentials_path()
+        self._ensure_private_parent(token_path)
+        if credentials_path.exists():
+            self._ensure_private_file(credentials_path)
         if token_path.exists():
-            creds = Credentials.from_authorized_user_file(str(token_path), self._SCOPES)
+            try:
+                creds = Credentials.from_authorized_user_file(
+                    str(token_path), self._SCOPES
+                )
+            except Exception:
+                creds = None
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             else:
+                if not self._allow_interactive_auth:
+                    raise RuntimeError(
+                        "Google Calendar token is unavailable. Enable "
+                        "`allow_interactive_auth` to authorize once from an "
+                        "interactive session, or provide a valid cached token file."
+                    )
+                if not self._interactive_auth_possible():
+                    raise RuntimeError(
+                        "Google Calendar requires interactive OAuth, but no TTY is "
+                        "available for local authorization."
+                    )
                 if not credentials_path.exists():
                     raise FileNotFoundError(
                         "Google Calendar credentials file not found at "
@@ -201,13 +310,10 @@ class GoogleCalendarTool(FunctionTool):
                     str(credentials_path), self._SCOPES
                 )
                 creds = flow.run_local_server(port=0)
-            token_path.parent.mkdir(parents=True, exist_ok=True)
             token_path.write_text(creds.to_json(), encoding="utf-8")
-            try:
-                token_path.chmod(0o600)
-            except OSError:
-                pass
+            self._ensure_private_file(token_path)
         self._service_cache = build("calendar", "v3", credentials=creds)
+        self._service_cache_key = cache_key
         return self._service_cache
 
     def _list_events(self, service: Any, max_results: int) -> str:
@@ -331,8 +437,16 @@ class GoogleCalendarTool(FunctionTool):
             text = text[:-1] + "+00:00"
         dt = datetime.fromisoformat(text)
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
+            return dt.replace(tzinfo=self._default_timezone())
         return dt
+
+    def _default_timezone(self):
+        if self._timezone_name:
+            try:
+                return ZoneInfo(self._timezone_name)
+            except Exception:
+                pass
+        return timezone.utc
 
     def _format_event_time(self, dt: datetime) -> dict[str, str]:
         payload = {"dateTime": dt.isoformat()}

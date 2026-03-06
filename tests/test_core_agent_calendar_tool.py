@@ -158,3 +158,47 @@ def test_google_calendar_tool_update_requires_fields() -> None:
         assert "at least one field to update" in result.lower()
 
     asyncio.run(_run())
+
+
+def test_google_calendar_tool_preflight_requires_token_or_explicit_interactive_auth(
+    tmp_path,
+) -> None:
+    credentials_path = tmp_path / "credentials.json"
+    credentials_path.write_text("{}", encoding="utf-8")
+    token_path = tmp_path / "token.json"
+
+    ready, reason = GoogleCalendarTool.preflight(
+        credentials_file=str(credentials_path),
+        token_file=str(token_path),
+        allow_interactive_auth=False,
+    )
+    assert ready is False
+    assert "interactive auth is disabled" in reason.lower()
+
+    ready_interactive, reason_interactive = GoogleCalendarTool.preflight(
+        credentials_file=str(credentials_path),
+        token_file=str(token_path),
+        allow_interactive_auth=True,
+    )
+    assert ready_interactive is True
+    assert reason_interactive == ""
+
+
+def test_google_calendar_tool_uses_configured_timezone_for_naive_datetimes() -> None:
+    tool = GoogleCalendarTool(timezone_name="America/Los_Angeles")
+    parsed = tool._parse_iso_datetime("2026-03-01T10:00:00")
+    payload = tool._format_event_time(parsed)
+    assert payload["timeZone"] == "America/Los_Angeles"
+    assert payload["dateTime"].endswith("-08:00")
+
+
+def test_google_calendar_tool_noninteractive_auth_returns_actionable_error() -> None:
+    async def _run() -> None:
+        tool = GoogleCalendarTool(allow_interactive_auth=False)
+        tool._get_service = lambda: (_ for _ in ()).throw(
+            RuntimeError("Google Calendar token is unavailable.")
+        )
+        result = await tool.execute(action="list_events")
+        assert "token is unavailable" in result.lower()
+
+    asyncio.run(_run())

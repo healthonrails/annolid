@@ -1275,6 +1275,30 @@ def test_register_nanobot_style_tools_skips_calendar_when_deps_missing(
     assert registry.has("google_calendar") is False
 
 
+def test_register_nanobot_style_tools_skips_calendar_when_not_preflight_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = FunctionToolRegistry()
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.nanobot.GoogleCalendarTool.is_available",
+        lambda: True,
+    )
+    asyncio.run(
+        register_nanobot_style_tools(
+            registry,
+            allowed_dir=tmp_path,
+            calendar_cfg=CalendarToolConfig(
+                enabled=True,
+                provider="google",
+                credentials_file=str(tmp_path / "missing_credentials.json"),
+                token_file=str(tmp_path / "missing_token.json"),
+                allow_interactive_auth=False,
+            ),
+        )
+    )
+    assert registry.has("google_calendar") is False
+
+
 def test_register_nanobot_style_tools_skips_calendar_when_availability_check_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1295,6 +1319,32 @@ def test_register_nanobot_style_tools_skips_calendar_when_availability_check_rai
         )
     )
     assert registry.has("google_calendar") is False
+
+
+def test_register_nanobot_style_tools_registers_calendar_when_interactive_auth_allowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = FunctionToolRegistry()
+    credentials_path = tmp_path / "credentials.json"
+    credentials_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.nanobot.GoogleCalendarTool.is_available",
+        lambda: True,
+    )
+    asyncio.run(
+        register_nanobot_style_tools(
+            registry,
+            allowed_dir=tmp_path,
+            calendar_cfg=CalendarToolConfig(
+                enabled=True,
+                provider="google",
+                credentials_file=str(credentials_path),
+                token_file=str(tmp_path / "token.json"),
+                allow_interactive_auth=True,
+            ),
+        )
+    )
+    assert registry.has("google_calendar") is True
 
 
 def test_mcp_tool_wrapper_sanitizes_name_and_schema() -> None:

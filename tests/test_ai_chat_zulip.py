@@ -7,6 +7,7 @@ from annolid.gui.widgets.ai_chat_zulip import (
     missing_zulip_config_fields,
     parse_zulip_recipients,
 )
+from annolid.gui.widgets.ai_chat_manager import _resolve_zulip_background_runtime
 
 
 def test_parse_zulip_recipients_normalizes_and_deduplicates() -> None:
@@ -52,3 +53,27 @@ def test_missing_zulip_config_fields_reports_required_values() -> None:
         }
     )
     assert missing == ["enabled", "server_url", "api_key"]
+
+
+def test_zulip_background_runtime_requires_complete_config() -> None:
+    ready, missing = _resolve_zulip_background_runtime(
+        {
+            "enabled": True,
+            "server_url": "https://zulip.example.com",
+            "user": "annolid-bot@example.com",
+            "api_key": "",
+        }
+    )
+    assert ready is False
+    assert missing == ["api_key"]
+
+    ready_complete, missing_complete = _resolve_zulip_background_runtime(
+        {
+            "enabled": True,
+            "server_url": "https://zulip.example.com",
+            "user": "annolid-bot@example.com",
+            "api_key": "secret",
+        }
+    )
+    assert ready_complete is True
+    assert missing_complete == []

@@ -31,6 +31,7 @@ from annolid.core.agent.tools import (
 )
 from annolid.core.agent.utils import get_agent_workspace_path
 from annolid.gui.widgets.ai_chat_widget import AIChatWidget
+from annolid.gui.widgets.ai_chat_zulip import missing_zulip_config_fields
 
 
 def _missing_whatsapp_python_bridge_deps() -> list[str]:
@@ -39,6 +40,14 @@ def _missing_whatsapp_python_bridge_deps() -> list[str]:
     if importlib.util.find_spec("websockets") is None:
         missing.append("websockets")
     return missing
+
+
+def _resolve_zulip_background_runtime(
+    zulip_config: dict,
+) -> tuple[bool, list[str]]:
+    missing = missing_zulip_config_fields(zulip_config)
+    enabled = bool(zulip_config.get("enabled", False))
+    return enabled and not bool(missing), missing
 
 
 class AIChatManager(QtCore.QObject):
@@ -152,16 +161,18 @@ class AIChatManager(QtCore.QObject):
                     whatsapp_enabled = bool(config.tools.whatsapp.enabled)
                     whatsapp_auto_start = bool(config.tools.whatsapp.auto_start)
                     whatsapp_start_runtime = whatsapp_enabled and whatsapp_auto_start
-                    zulip_enabled = bool(
-                        getattr(config.tools, "zulip", None)
-                        and config.tools.zulip.enabled
+                    zulip_cfg = config.tools.zulip.to_dict()
+                    zulip_enabled = bool(config.tools.zulip.enabled)
+                    zulip_start_runtime, zulip_missing = (
+                        _resolve_zulip_background_runtime(zulip_cfg)
                     )
                     logger.info(
-                        "Background services config: email_enabled=%s whatsapp_enabled=%s whatsapp_auto_start=%s zulip_enabled=%s bridge_mode=%s webhook_enabled=%s max_parallel_sessions=%s max_pending_messages=%s collapse_superseded_pending=%s transient_retry_attempts=%s",
+                        "Background services config: email_enabled=%s whatsapp_enabled=%s whatsapp_auto_start=%s zulip_enabled=%s zulip_start_runtime=%s bridge_mode=%s webhook_enabled=%s max_parallel_sessions=%s max_pending_messages=%s collapse_superseded_pending=%s transient_retry_attempts=%s",
                         bool(config.tools.email.enabled),
                         whatsapp_enabled,
                         whatsapp_auto_start,
                         zulip_enabled,
+                        zulip_start_runtime,
                         str(config.tools.whatsapp.bridge_mode or "python"),
                         bool(config.tools.whatsapp.webhook_enabled),
                         int(
@@ -185,10 +196,15 @@ class AIChatManager(QtCore.QObject):
                             )
                         ),
                     )
+                    if zulip_enabled and zulip_missing:
+                        logger.info(
+                            "Zulip background polling disabled until config is complete. Missing: %s",
+                            ", ".join(zulip_missing),
+                        )
                     if not (
                         config.tools.email.enabled
                         or whatsapp_start_runtime
-                        or zulip_enabled
+                        or zulip_start_runtime
                     ):
                         logger.info(
                             "Email/WhatsApp/Zulip channels disabled by config; starting core bot services for local automation scheduler."
@@ -287,7 +303,10 @@ class AIChatManager(QtCore.QObject):
                         channels_config={
                             "email": config.tools.email.to_dict(),
                             "whatsapp": whatsapp_cfg,
-                            "zulip": config.tools.zulip.to_dict(),
+                            "zulip": {
+                                **zulip_cfg,
+                                "enabled": bool(zulip_start_runtime),
+                            },
                         },
                     )
 

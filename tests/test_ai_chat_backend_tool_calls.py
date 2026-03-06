@@ -238,6 +238,7 @@ def test_compact_system_prompt_includes_allowed_read_roots(tmp_path: Path) -> No
     assert "schedule camera check every 5 minutes" in prompt
     assert "list automation tasks" in prompt
     assert "gui_web_describe_view" in prompt
+    assert "`google_calendar`" in prompt
 
 
 def test_workspace_skill_name_cache_invalidation_detects_new_skill_file(
@@ -1393,6 +1394,12 @@ def test_resolve_video_path_uses_active_video_even_if_missing_on_disk(
 def test_prompt_may_need_tools_heuristic() -> None:
     assert StreamingChatTask._prompt_may_need_tools("use tool to open video") is True
     assert StreamingChatTask._prompt_may_need_tools("please list_dir workspace") is True
+    assert (
+        StreamingChatTask._prompt_may_need_tools(
+            "Create a Google Calendar event tomorrow at 10 AM"
+        )
+        is True
+    )
     assert (
         StreamingChatTask._prompt_may_need_tools("segment mouse with text prompt")
         is True

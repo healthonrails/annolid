@@ -78,6 +78,11 @@ def build_compact_system_prompt(
         "Do NOT claim you lack an email scheduling tool, and do NOT offer to create shell scripts or calendar exports."
     )
     parts.append(
+        "For calendar requests, if the `google_calendar` tool is available, use it for listing, creating, updating, "
+        "or deleting events. Do NOT claim you lack direct Google Calendar access or fall back to manual quick-add, "
+        "ICS export, or browser-only instructions before attempting `google_calendar`."
+    )
+    parts.append(
         "For camera checks and snapshots, use `gui_check_stream_source` with `save_snapshot=true`. "
         "For sending results by email, use the `email` tool; it supports `attachment_paths` for local files "
         "(for example saved camera snapshots). Do not claim these capabilities are unavailable."

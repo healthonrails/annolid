@@ -35,9 +35,12 @@ Current bot workflow highlights:
 
 When you use background integrations such as Zulip, WhatsApp, or calendar services, the agent config is loaded from the Annolid agent config path, not the LLM settings file.
 
+For Google Calendar, Annolid now prefers an existing cached token by default. If you want the agent to perform first-run OAuth authorization, set `tools.calendar.allow_interactive_auth=true` explicitly in the agent config and run that flow from an interactive session.
+
 See:
 
 - [MCP](mcp.md)
+- [Agent Calendar](agent_calendar.md)
 - [Tutorials](tutorials.md)
 
 ## 3. CLI Model Workflow
