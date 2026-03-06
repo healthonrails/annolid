@@ -6,6 +6,7 @@ from pathlib import Path
 from annolid.core.agent.config import (
     AgentConfig,
     ProviderConfig,
+    SecretRefConfig,
     SessionRoutingConfig,
     ToolPolicyConfig,
     load_config,
@@ -205,3 +206,63 @@ def test_agent_config_loads_legacy_session_defaults(tmp_path: Path) -> None:
     loaded = load_config(cfg_path)
     assert loaded.agents.defaults.session.dm_scope == "per-peer"
     assert loaded.agents.defaults.session.main_session_key == "main"
+
+
+def test_agent_config_resolves_env_secret_refs_without_persisting_plaintext(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cfg_path = tmp_path / "config.json"
+    payload = {
+        "providers": {
+            "gemini": {
+                "api_key": "",
+            }
+        },
+        "tools": {
+            "zulip": {
+                "enabled": True,
+                "server_url": "https://zulip.example.com",
+                "user": "annolid@example.com",
+                "api_key": "",
+            }
+        },
+        "secrets": {
+            "refs": {
+                "providers.gemini.api_key": {"source": "env", "name": "GEMINI_API_KEY"},
+                "tools.zulip.api_key": {"source": "env", "name": "ZULIP_API_KEY"},
+            }
+        },
+    }
+    cfg_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-secret")
+    monkeypatch.setenv("ZULIP_API_KEY", "zulip-secret")
+
+    loaded = load_config(cfg_path)
+
+    assert loaded.providers["gemini"].api_key == "gemini-secret"
+    assert loaded.tools.zulip.api_key == "zulip-secret"
+
+    save_config(loaded, cfg_path)
+    persisted = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert persisted["providers"]["gemini"]["apiKey"] == ""
+    assert persisted["tools"]["zulip"]["apiKey"] == ""
+    assert persisted["secrets"]["refs"]["providers.gemini.api_key"]["source"] == "env"
+
+
+def test_agent_config_saves_local_secret_refs_without_plaintext(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.json"
+    cfg = AgentConfig()
+    cfg.tools.whatsapp.access_token = "live-token"
+    cfg.secrets.refs["tools.whatsapp.access_token"] = SecretRefConfig(
+        source="local",
+        name="tools.whatsapp.access_token",
+    )
+
+    save_config(cfg, cfg_path)
+
+    persisted = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert persisted["tools"]["whatsapp"]["accessToken"] == ""
+    assert (
+        persisted["secrets"]["refs"]["tools.whatsapp.access_token"]["name"]
+        == "tools.whatsapp.access_token"
+    )

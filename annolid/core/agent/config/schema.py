@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from .secrets import SecretsConfig
 from annolid.core.agent.providers.registry import PROVIDERS
 
 
@@ -843,6 +844,7 @@ class AgentConfig:
     skills: SkillsConfig = field(default_factory=SkillsConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
+    secrets: SecretsConfig = field(default_factory=SecretsConfig)
 
     @property
     def workspace_path(self) -> Path:
@@ -865,6 +867,7 @@ class AgentConfig:
             skills=SkillsConfig.from_dict(payload.get("skills")),
             memory=MemoryConfig.from_dict(payload.get("memory")),
             update=UpdateConfig.from_dict(payload.get("update")),
+            secrets=SecretsConfig.from_dict(payload.get("secrets")),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -875,6 +878,7 @@ class AgentConfig:
             "skills": self.skills.to_dict(),
             "memory": self.memory.to_dict(),
             "update": self.update.to_dict(),
+            "secrets": self.secrets.to_dict(),
         }
 
     def _provider_candidates(self) -> Tuple[str, ...]:

@@ -14,6 +14,7 @@ from .schema import (
     ExecToolConfig,
     MemoryConfig,
     ProviderConfig,
+    SecretsConfig,
     SessionRoutingConfig,
     SkillsConfig,
     SkillsLoadConfig,
@@ -22,10 +23,21 @@ from .schema import (
     UpdateConfig,
     WhatsAppChannelConfig,
 )
+from .secrets import (
+    SecretRefConfig,
+    apply_secret_ref,
+    get_secret_store_path,
+    inspect_secret_posture,
+    load_secret_store,
+    remove_secret_ref,
+    save_secret_store,
+)
 
 __all__ = [
     "AgentConfig",
     "ProviderConfig",
+    "SecretsConfig",
+    "SecretRefConfig",
     "AgentDefaults",
     "AgentsConfig",
     "AutoUpdateConfig",
@@ -44,4 +56,10 @@ __all__ = [
     "save_config",
     "convert_keys_to_snake",
     "convert_keys_to_camel",
+    "get_secret_store_path",
+    "load_secret_store",
+    "save_secret_store",
+    "inspect_secret_posture",
+    "apply_secret_ref",
+    "remove_secret_ref",
 ]

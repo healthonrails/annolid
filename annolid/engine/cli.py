@@ -748,7 +748,51 @@ def _find_persisted_secret_keys(data: object, prefix: str = "") -> list[str]:
     return []
 
 
+def _find_agent_config_plaintext_secret_paths(
+    data: object, prefix: str = ""
+) -> list[str]:
+    secret_names = {
+        "access_token",
+        "accesstoken",
+        "api_key",
+        "apikey",
+        "bridge_token",
+        "bridgetoken",
+        "password",
+        "secret",
+        "token",
+        "verify_token",
+        "verifytoken",
+    }
+    if isinstance(data, dict):
+        hits: list[str] = []
+        for key, value in data.items():
+            key_text = str(key or "").strip().lower()
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if path == "secrets" or path.startswith("secrets."):
+                continue
+            if key_text in secret_names and str(value or "").strip():
+                hits.append(path)
+            hits.extend(_find_agent_config_plaintext_secret_paths(value, path))
+        return hits
+    if isinstance(data, list):
+        hits: list[str] = []
+        for idx, item in enumerate(data):
+            item_prefix = f"{prefix}[{idx}]" if prefix else f"[{idx}]"
+            hits.extend(_find_agent_config_plaintext_secret_paths(item, item_prefix))
+        return hits
+    return []
+
+
 def _cmd_agent_security_check(_: argparse.Namespace) -> int:
+    from annolid.core.agent.config import get_config_path
+    from annolid.core.agent.config.secrets import (
+        SecretsConfig,
+        get_secret_store_path,
+        inspect_secret_posture,
+        load_secret_store,
+        read_raw_agent_config,
+    )
     from annolid.core.agent.utils import get_agent_data_path
     from annolid.utils.llm_settings import (
         has_provider_api_key,
@@ -774,6 +818,16 @@ def _cmd_agent_security_check(_: argparse.Namespace) -> int:
     # Use persisted payload for inspection so this command does not mutate
     # permissions via load_llm_settings() side effects before reporting.
     settings = persisted_payload if isinstance(persisted_payload, dict) else {}
+    agent_config_path = get_config_path()
+    agent_raw_payload = read_raw_agent_config(agent_config_path)
+    agent_secrets = SecretsConfig.from_dict(agent_raw_payload.get("secrets"))
+    secret_store_path = get_secret_store_path()
+    secret_store = load_secret_store(secret_store_path)
+    agent_secret_posture = inspect_secret_posture(
+        agent_raw_payload,
+        agent_secrets.refs,
+        store=secret_store,
+    )
 
     checks = {
         "settings_dir_exists": settings_dir.exists(),
@@ -782,6 +836,15 @@ def _cmd_agent_security_check(_: argparse.Namespace) -> int:
         "settings_file_private": _is_private_file_mode(settings_file),
         "persisted_secrets_found": bool(persisted_secret_keys),
         "settings_json_parse_ok": parse_error is None,
+        "agent_config_exists": agent_config_path.exists(),
+        "agent_secret_store_exists": secret_store_path.exists(),
+        "agent_secret_store_private": _is_private_file_mode(secret_store_path),
+        "agent_plaintext_config_secrets_found": bool(
+            agent_secret_posture["plaintext_paths"]
+        ),
+        "agent_secret_refs_unresolved": bool(
+            agent_secret_posture["unresolved_ref_paths"]
+        ),
     }
     status = "ok"
     if not all(
@@ -796,15 +859,29 @@ def _cmd_agent_security_check(_: argparse.Namespace) -> int:
         status = "warning"
     if checks["persisted_secrets_found"]:
         status = "warning"
+    if (
+        checks["agent_plaintext_config_secrets_found"]
+        or checks["agent_secret_refs_unresolved"]
+    ):
+        status = "warning"
 
     summary = {
         "status": status,
         "data_dir": str(data_dir),
         "llm_settings_path": str(settings_file),
+        "agent_config_path": str(agent_config_path),
+        "agent_secret_store_path": str(secret_store_path),
         "llm_settings_dir_mode": _mode_octal(settings_dir),
         "llm_settings_file_mode": _mode_octal(settings_file),
+        "agent_secret_store_mode": _mode_octal(secret_store_path),
         "checks": checks,
         "persisted_secret_keys": persisted_secret_keys,
+        "agent_plaintext_secret_keys": agent_secret_posture["plaintext_paths"],
+        "agent_shadowed_plaintext_secret_keys": agent_secret_posture[
+            "shadowed_plaintext_paths"
+        ],
+        "agent_unresolved_secret_refs": agent_secret_posture["unresolved_ref_paths"],
+        "agent_resolved_secret_refs": agent_secret_posture["resolved_ref_paths"],
         "provider_key_presence": {
             "openai": bool(has_provider_api_key(settings, "openai")),
             "gemini": bool(has_provider_api_key(settings, "gemini")),
@@ -815,6 +892,203 @@ def _cmd_agent_security_check(_: argparse.Namespace) -> int:
 
     print(json.dumps(summary, indent=2))
     return 0 if status == "ok" else 1
+
+
+def _cmd_agent_secrets_audit(args: argparse.Namespace) -> int:
+    from annolid.core.agent.config import get_config_path
+    from annolid.core.agent.config.secrets import (
+        SecretsConfig,
+        get_secret_store_path,
+        inspect_secret_posture,
+        load_secret_store,
+        read_raw_agent_config,
+    )
+
+    config_path = (
+        Path(args.config).expanduser()
+        if getattr(args, "config", None)
+        else get_config_path()
+    )
+    raw_payload = read_raw_agent_config(config_path)
+    secrets = SecretsConfig.from_dict(raw_payload.get("secrets"))
+    store_path = get_secret_store_path()
+    store = load_secret_store(store_path)
+    posture = inspect_secret_posture(raw_payload, secrets.refs, store=store)
+    payload = {
+        "config_path": str(config_path),
+        "secret_store_path": str(store_path),
+        "secret_store_mode": _mode_octal(store_path),
+        "ref_count": posture["ref_count"],
+        "resolved_ref_paths": posture["resolved_ref_paths"],
+        "unresolved_ref_paths": posture["unresolved_ref_paths"],
+        "plaintext_paths": posture["plaintext_paths"],
+        "shadowed_plaintext_paths": posture["shadowed_plaintext_paths"],
+    }
+    status = "ok"
+    if posture["plaintext_paths"] or posture["unresolved_ref_paths"]:
+        status = "warning"
+    payload["status"] = status
+    print(json.dumps(payload, indent=2))
+    return 0 if status == "ok" else 1
+
+
+def _cmd_agent_secrets_set(args: argparse.Namespace) -> int:
+    from annolid.core.agent.config import get_config_path
+    from annolid.core.agent.config.secrets import (
+        SecretRefConfig,
+        apply_secret_ref,
+        get_secret_store_path,
+        load_secret_store,
+        read_raw_agent_config,
+        save_secret_store,
+    )
+
+    source_count = int(bool(args.env)) + int(bool(args.local))
+    if source_count != 1:
+        raise SystemExit("Choose exactly one of --env or --local.")
+    config_path = (
+        Path(args.config).expanduser()
+        if getattr(args, "config", None)
+        else get_config_path()
+    )
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_payload = read_raw_agent_config(config_path)
+    path = str(args.path or "").strip()
+    if not path:
+        raise SystemExit("--path is required.")
+    if args.env:
+        ref = SecretRefConfig(source="env", name=str(args.env).strip())
+        next_payload = apply_secret_ref(raw_payload, path=path, ref=ref)
+    else:
+        local_name = str(args.local).strip()
+        if not local_name:
+            raise SystemExit("--local requires a non-empty key.")
+        store_path = get_secret_store_path()
+        secrets = load_secret_store(store_path)
+        secrets[local_name] = str(args.value or "")
+        save_secret_store(secrets, store_path)
+        ref = SecretRefConfig(source="local", name=local_name)
+        next_payload = apply_secret_ref(raw_payload, path=path, ref=ref)
+    config_path.write_text(json.dumps(next_payload, indent=2), encoding="utf-8")
+    print(
+        json.dumps(
+            {
+                "updated": True,
+                "config_path": str(config_path),
+                "path": path,
+                "ref": ref.to_dict(),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _cmd_agent_secrets_remove(args: argparse.Namespace) -> int:
+    from annolid.core.agent.config import get_config_path
+    from annolid.core.agent.config.secrets import (
+        SecretsConfig,
+        get_secret_store_path,
+        load_secret_store,
+        read_raw_agent_config,
+        remove_secret_ref,
+        save_secret_store,
+    )
+
+    config_path = (
+        Path(args.config).expanduser()
+        if getattr(args, "config", None)
+        else get_config_path()
+    )
+    raw_payload = read_raw_agent_config(config_path)
+    secrets = SecretsConfig.from_dict(raw_payload.get("secrets"))
+    path = str(args.path or "").strip()
+    ref = secrets.refs.get(path)
+    next_payload = remove_secret_ref(raw_payload, path=path)
+    config_path.write_text(json.dumps(next_payload, indent=2), encoding="utf-8")
+    deleted_local_value = False
+    if bool(args.delete_local_value) and ref and ref.source == "local" and ref.name:
+        store_path = get_secret_store_path()
+        store = load_secret_store(store_path)
+        if ref.name in store:
+            store.pop(ref.name, None)
+            save_secret_store(store, store_path)
+            deleted_local_value = True
+    print(
+        json.dumps(
+            {
+                "updated": True,
+                "config_path": str(config_path),
+                "path": path,
+                "deleted_local_value": deleted_local_value,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _cmd_agent_secrets_migrate(args: argparse.Namespace) -> int:
+    from annolid.core.agent.config import get_config_path
+    from annolid.core.agent.config.secrets import (
+        SecretRefConfig,
+        SecretsConfig,
+        apply_secret_ref,
+        get_secret_store_path,
+        load_secret_store,
+        read_raw_agent_config,
+        save_secret_store,
+    )
+
+    config_path = (
+        Path(args.config).expanduser()
+        if getattr(args, "config", None)
+        else get_config_path()
+    )
+    raw_payload = read_raw_agent_config(config_path)
+    secrets_cfg = SecretsConfig.from_dict(raw_payload.get("secrets"))
+    existing_refs = secrets_cfg.refs
+    plaintext_paths = [
+        path
+        for path in _find_agent_config_plaintext_secret_paths(raw_payload)
+        if path != "secrets" and path not in existing_refs
+    ]
+    payload = {
+        "config_path": str(config_path),
+        "candidate_paths": plaintext_paths,
+        "apply": bool(args.apply),
+        "migrated": [],
+    }
+    if not args.apply:
+        print(json.dumps(payload, indent=2))
+        return 0 if not plaintext_paths else 1
+
+    store_path = get_secret_store_path()
+    store = load_secret_store(store_path)
+    next_payload = dict(raw_payload)
+    for path in plaintext_paths:
+        value = ""
+        current = raw_payload
+        for part in path.split("."):
+            if not isinstance(current, dict):
+                current = {}
+                break
+            current = current.get(part)
+        value = str(current or "")
+        if not value:
+            continue
+        local_name = path
+        store[local_name] = value
+        next_payload = apply_secret_ref(
+            next_payload,
+            path=path,
+            ref=SecretRefConfig(source="local", name=local_name),
+        )
+        payload["migrated"].append({"path": path, "local_key": local_name})
+    save_secret_store(store, store_path)
+    config_path.write_text(json.dumps(next_payload, indent=2), encoding="utf-8")
+    print(json.dumps(payload, indent=2))
+    return 0
 
 
 def _cmd_agent_update(args: argparse.Namespace) -> int:
@@ -1297,6 +1571,61 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
         p.add_argument("--expected-substring", default="")
         args = p.parse_args(argv[3:])
         return _cmd_agent_feedback_add(args)
+
+    # annolid-run agent secrets audit
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "secrets"
+        and argv[2] == "audit"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent secrets audit")
+        p.add_argument("--config", default=None)
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_secrets_audit(args)
+
+    # annolid-run agent secrets set
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "secrets"
+        and argv[2] == "set"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent secrets set")
+        p.add_argument("--config", default=None)
+        p.add_argument("--path", required=True)
+        p.add_argument("--env", default=None)
+        p.add_argument("--local", default=None)
+        p.add_argument("--value", default="")
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_secrets_set(args)
+
+    # annolid-run agent secrets remove
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "secrets"
+        and argv[2] == "remove"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent secrets remove")
+        p.add_argument("--config", default=None)
+        p.add_argument("--path", required=True)
+        p.add_argument("--delete-local-value", action="store_true")
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_secrets_remove(args)
+
+    # annolid-run agent secrets migrate
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "secrets"
+        and argv[2] == "migrate"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent secrets migrate")
+        p.add_argument("--config", default=None)
+        p.add_argument("--apply", action="store_true")
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_secrets_migrate(args)
 
     # annolid-run update check|run|rollback
     if len(argv) >= 2 and argv[0] == "update":
@@ -1988,6 +2317,49 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Check agent key/config security posture (permissions + secret persistence).",
     )
     security_check_p.set_defaults(_handler=_cmd_agent_security_check)
+
+    secrets_audit_p = sub.add_parser(
+        "agent-secrets-audit",
+        help="Audit agent config plaintext secrets and secret references.",
+    )
+    secrets_audit_p.add_argument("--config", default=None)
+    secrets_audit_p.set_defaults(_handler=_cmd_agent_secrets_audit)
+
+    secrets_set_p = sub.add_parser(
+        "agent-secrets-set",
+        help="Attach a secret reference to an agent config path.",
+    )
+    secrets_set_p.add_argument("--config", default=None)
+    secrets_set_p.add_argument("--path", required=True)
+    secrets_set_p.add_argument("--env", default=None)
+    secrets_set_p.add_argument("--local", default=None)
+    secrets_set_p.add_argument(
+        "--value",
+        default="",
+        help="Secret value to store when using --local.",
+    )
+    secrets_set_p.set_defaults(_handler=_cmd_agent_secrets_set)
+
+    secrets_remove_p = sub.add_parser(
+        "agent-secrets-remove",
+        help="Remove a secret reference from an agent config path.",
+    )
+    secrets_remove_p.add_argument("--config", default=None)
+    secrets_remove_p.add_argument("--path", required=True)
+    secrets_remove_p.add_argument("--delete-local-value", action="store_true")
+    secrets_remove_p.set_defaults(_handler=_cmd_agent_secrets_remove)
+
+    secrets_migrate_p = sub.add_parser(
+        "agent-secrets-migrate",
+        help="Migrate plaintext agent config secrets into the local secret store.",
+    )
+    secrets_migrate_p.add_argument("--config", default=None)
+    secrets_migrate_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write local secret refs and scrub plaintext values.",
+    )
+    secrets_migrate_p.set_defaults(_handler=_cmd_agent_secrets_migrate)
 
     update_p = sub.add_parser(
         "agent-update",

@@ -162,12 +162,14 @@ def test_agent_cron_add_accepts_at_with_z_suffix(
 def test_agent_security_check_ok_for_private_clean_settings(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
+    from annolid.core.agent import config as agent_config_mod
     import annolid.core.agent.utils as utils_mod
     from annolid.utils import llm_settings as settings_mod
 
     data_dir = tmp_path / "data"
     settings_dir = data_dir / "settings"
     settings_file = settings_dir / "llm_settings.json"
+    agent_config_path = data_dir / "config.json"
     settings_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(settings_dir, 0o700)
     settings_file.write_text(
@@ -181,8 +183,10 @@ def test_agent_security_check_ok_for_private_clean_settings(
         encoding="utf-8",
     )
     os.chmod(settings_file, 0o600)
+    agent_config_path.write_text(json.dumps({}), encoding="utf-8")
 
     monkeypatch.setattr(utils_mod, "get_agent_data_path", lambda: data_dir)
+    monkeypatch.setattr(agent_config_mod, "get_config_path", lambda: agent_config_path)
     monkeypatch.setattr(settings_mod, "_SETTINGS_DIR", settings_dir)
     monkeypatch.setattr(settings_mod, "_SETTINGS_FILE", settings_file)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -202,11 +206,13 @@ def test_agent_security_check_detects_persisted_secrets_and_permissions(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     import annolid.core.agent.utils as utils_mod
+    from annolid.core.agent import config as agent_config_mod
     from annolid.utils import llm_settings as settings_mod
 
     data_dir = tmp_path / "data"
     settings_dir = data_dir / "settings"
     settings_file = settings_dir / "llm_settings.json"
+    agent_config_path = data_dir / "config.json"
     settings_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(settings_dir, 0o755)
     settings_file.write_text(
@@ -220,8 +226,24 @@ def test_agent_security_check_detects_persisted_secrets_and_permissions(
         encoding="utf-8",
     )
     os.chmod(settings_file, 0o644)
+    agent_config_path.write_text(
+        json.dumps(
+            {
+                "tools": {
+                    "zulip": {
+                        "enabled": True,
+                        "serverUrl": "https://zulip.example.com",
+                        "user": "annolid@example.com",
+                        "apiKey": "plain-zulip-secret",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     monkeypatch.setattr(utils_mod, "get_agent_data_path", lambda: data_dir)
+    monkeypatch.setattr(agent_config_mod, "get_config_path", lambda: agent_config_path)
     monkeypatch.setattr(settings_mod, "_SETTINGS_DIR", settings_dir)
     monkeypatch.setattr(settings_mod, "_SETTINGS_FILE", settings_file)
 
@@ -230,9 +252,59 @@ def test_agent_security_check_detects_persisted_secrets_and_permissions(
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "warning"
     assert payload["checks"]["persisted_secrets_found"] is True
+    assert payload["checks"]["agent_plaintext_config_secrets_found"] is True
     assert payload["checks"]["settings_dir_private"] is False
     assert payload["checks"]["settings_file_private"] is False
     assert "openai.api_key" in payload["persisted_secret_keys"]
+    assert "tools.zulip.apiKey" in payload["agent_plaintext_secret_keys"]
+
+
+def test_agent_secrets_migrate_and_audit(tmp_path: Path, monkeypatch, capsys) -> None:
+    import annolid.core.agent.utils as utils_mod
+    from annolid.core.agent import config as agent_config_mod
+
+    data_dir = tmp_path / "data"
+    config_path = data_dir / "config.json"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "tools": {
+                    "zulip": {
+                        "enabled": True,
+                        "serverUrl": "https://zulip.example.com",
+                        "user": "annolid@example.com",
+                        "apiKey": "zulip-plain",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(utils_mod, "get_agent_data_path", lambda: data_dir)
+    monkeypatch.setattr(agent_config_mod, "get_config_path", lambda: config_path)
+
+    rc_preview = annolid_run(["agent-secrets-migrate"])
+    assert rc_preview == 1
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["candidate_paths"] == ["tools.zulip.apiKey"]
+
+    rc_apply = annolid_run(["agent-secrets-migrate", "--apply"])
+    assert rc_apply == 0
+    migrated = json.loads(capsys.readouterr().out)
+    assert migrated["migrated"] == [
+        {
+            "path": "tools.zulip.apiKey",
+            "local_key": "tools.zulip.apiKey",
+        }
+    ]
+
+    rc_audit = annolid_run(["agent-secrets-audit"])
+    assert rc_audit == 0
+    audit = json.loads(capsys.readouterr().out)
+    assert audit["plaintext_paths"] == []
+    assert audit["resolved_ref_paths"] == ["tools.zulip.apiKey"]
 
 
 def test_agent_update_check_command(monkeypatch, capsys) -> None:

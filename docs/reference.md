@@ -24,7 +24,9 @@ annolid-run predict <model> --help-model
 - LLM and Annolid Bot model settings:
   `~/.annolid/llm_settings.json`
 - Annolid agent runtime and channel config:
-  `~/.annolid/agent/config.json`
+  `~/.annolid/config.json`
+- Annolid agent local private secret store:
+  `~/.annolid/agent_secrets.json`
 - LabelMe/GUI-style user config:
   `~/.labelmerc`
 
@@ -36,6 +38,7 @@ annolid-run predict <model> --help-model
 - [Workflows](workflows.md)
 - [Tutorials](tutorials.md)
 - [MCP](mcp.md)
+- [Agent Secrets](agent_secrets.md)
 - [SAM 3D](sam3d.md)
 - [Deployment](deployment.md)
 
@@ -49,7 +52,7 @@ Annolid Bot currently spans:
 - browser/web tooling when configured,
 - automation scheduling and auxiliary services defined in the agent config.
 
-The current Zulip UI flow is part of the Annolid Bot dock and depends on the Zulip channel block in `~/.annolid/agent/config.json`.
+The current Zulip UI flow is part of the Annolid Bot dock and depends on the Zulip channel block in `~/.annolid/config.json`.
 
 ## Selected Repository Paths
 

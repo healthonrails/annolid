@@ -58,6 +58,7 @@ nav:
       - LabelMe to YOLO Class Map: tutorials/Labelme_to_YOLO_class_map.md
       - Sandboxed Shell: tutorials/sandboxed_shell.md
   - MCP: mcp.md
+  - Agent Secrets: agent_secrets.md
   - SAM 3D: sam3d.md
   - Deployment: deployment.md
   - Migration Plan: migration.md

@@ -16,6 +16,7 @@ The current codebase includes:
 - [Workflows](workflows.md): follow the main GUI, CLI, and analysis flows.
 - [Tutorials](tutorials.md): jump to practical notebooks, videos, and focused guides.
 - [MCP](mcp.md): extend Annolid Bot with Model Context Protocol servers.
+- [Agent Secrets](agent_secrets.md): keep agent/provider credentials out of plaintext `config.json`.
 - [SAM 3D](sam3d.md): configure the optional 3D reconstruction integration.
 - [Reference](reference.md): commands, config files, and operational paths.
 - [Deployment](deployment.md): understand how docs and the website are published.
@@ -32,4 +33,5 @@ The current codebase includes:
 - Python support in the package metadata is `>=3.10`; current docs and CI focus on Python 3.10 to 3.13.
 - The primary entry points are `annolid` for the GUI and `annolid-run` for model/plugin workflows.
 - Annolid Bot is an active part of the GUI and now includes a Zulip draft/send workflow in the bot dock when Zulip is configured.
+- Agent/provider credentials can now be managed through `annolid-run agent-secrets-audit`, `agent-secrets-set`, and `agent-secrets-migrate` so `config.json` can reference environment or local private secrets instead of storing plaintext.
 - Docs are built with MkDocs in strict mode through the `docs-quality` and `docs-pages` GitHub Actions workflows.

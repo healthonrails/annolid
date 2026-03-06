@@ -7,6 +7,12 @@ from typing import Any, Dict
 from annolid.core.agent.utils import get_agent_data_path
 
 from .schema import AgentConfig
+from .secrets import (
+    SecretsConfig,
+    load_secret_store,
+    resolve_secret_refs,
+    scrub_ref_backed_secrets,
+)
 
 
 def get_config_path() -> Path:
@@ -75,7 +81,13 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
         if not isinstance(raw, dict):
             return AgentConfig()
         migrated = _migrate_config(convert_keys_to_snake(raw))
-        return AgentConfig.from_dict(migrated)
+        secrets = SecretsConfig.from_dict(migrated.get("secrets"))
+        resolved_payload, _ = resolve_secret_refs(
+            migrated,
+            secrets.refs,
+            store=load_secret_store(),
+        )
+        return AgentConfig.from_dict(resolved_payload)
     except (OSError, json.JSONDecodeError, ValueError, TypeError):
         return AgentConfig()
 
@@ -85,5 +97,10 @@ def save_config(config: AgentConfig, config_path: Path | None = None) -> None:
         Path(config_path).expanduser() if config_path is not None else get_config_path()
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = convert_keys_to_camel(config.to_dict())
+    payload = config.to_dict()
+    refs = getattr(getattr(config, "secrets", None), "refs", {}) or {}
+    if refs:
+        payload = scrub_ref_backed_secrets(payload, refs)
+    payload = convert_keys_to_camel(payload)
+    payload["secrets"] = config.secrets.to_dict()
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
