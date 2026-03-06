@@ -79,7 +79,13 @@ def test_workspace_tool_drive_list():
             proc.returncode = 0
             return proc
 
-        with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+        with (
+            patch(
+                "annolid.core.agent.tools.workspace.resolve_command",
+                lambda name: "/usr/local/bin/gws" if name == "gws" else None,
+            ),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+        ):
             result = await tool.execute(
                 service="drive",
                 resource="files",
@@ -101,7 +107,13 @@ def test_workspace_tool_handles_missing_binary():
         async def _raise_fnf(*args, **kwargs):
             raise FileNotFoundError("gws not found")
 
-        with patch("asyncio.create_subprocess_exec", side_effect=_raise_fnf):
+        with (
+            patch(
+                "annolid.core.agent.tools.workspace.resolve_command",
+                lambda name: "/usr/local/bin/gws" if name == "gws" else None,
+            ),
+            patch("asyncio.create_subprocess_exec", side_effect=_raise_fnf),
+        ):
             result = await tool.execute(
                 service="drive", resource="files", method="list"
             )
@@ -124,7 +136,13 @@ def test_workspace_tool_handles_nonzero_exit():
             proc.returncode = 1
             return proc
 
-        with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+        with (
+            patch(
+                "annolid.core.agent.tools.workspace.resolve_command",
+                lambda name: "/usr/local/bin/gws" if name == "gws" else None,
+            ),
+            patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
+        ):
             result = await tool.execute(
                 service="drive", resource="files", method="list"
             )
