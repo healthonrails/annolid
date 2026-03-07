@@ -52,6 +52,14 @@ def test_memory_append_history_auto_prefixes_timestamp(tmp_path: Path) -> None:
     assert "[" in content and "]" in content
 
 
+def test_memory_append_history_skips_chat_transcript_dump(tmp_path: Path) -> None:
+    store = AgentMemoryStore(tmp_path)
+    store.append_history(
+        "## 13:01:28 [gui:test-plain-mode]\n\nUser: hello\n\nAssistant: sunny"
+    )
+    assert not (store.memory_dir / "HISTORY.md").exists()
+
+
 def test_memory_get_guards_path_scope(tmp_path: Path) -> None:
     store = AgentMemoryStore(tmp_path)
     (store.memory_dir / "MEMORY.md").write_text(

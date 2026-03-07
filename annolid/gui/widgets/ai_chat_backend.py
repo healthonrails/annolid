@@ -79,6 +79,7 @@ from annolid.services.chat_backend_support import (
     gui_apply_direct_gui_fallback,
     gui_apply_empty_ollama_recovery,
     gui_apply_pdf_response_fallback,
+    gui_sanitize_final_response_text,
     gui_apply_web_response_fallbacks,
     gui_ensure_non_empty_final_text,
     gui_log_agent_result,
@@ -1280,6 +1281,7 @@ class StreamingChatTask(QRunnable):
             prompt=self.prompt,
             tool_runs=tool_runs,
         )
+        text = gui_sanitize_final_response_text(text)
         text = self._ensure_non_empty_final_text(text)
         if self.show_tool_trace:
             trace = self._format_tool_trace(tool_runs)

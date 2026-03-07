@@ -20,6 +20,8 @@ class WorkspaceMemoryStore:
     """Workspace markdown memory store with pluggable retrieval."""
 
     _DAILY_FILE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
+    _CHAT_TRANSCRIPT_HEADER_RE = re.compile(r"^##\s+\d{2}:\d{2}:\d{2}\s+\[[^\]]+\]\s*$")
+    _LEADING_STAMP_RE = re.compile(r"^\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\]\s*")
 
     def __init__(
         self,
@@ -71,6 +73,8 @@ class WorkspaceMemoryStore:
 
     def append_history(self, content: str) -> None:
         path = self.history_file
+        if self._is_chat_transcript_dump(content):
+            return
         text = self._normalize_history_entry(content)
         if not text:
             return
@@ -102,6 +106,23 @@ class WorkspaceMemoryStore:
             return text
         stamp = datetime.now().strftime("[%Y-%m-%d %H:%M]")
         return f"{stamp} {text}"
+
+    @classmethod
+    def _is_chat_transcript_dump(cls, content: str) -> bool:
+        text = str(content or "").strip()
+        if not text:
+            return False
+        text = cls._LEADING_STAMP_RE.sub("", text, count=1).lstrip()
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return False
+        if not cls._CHAT_TRANSCRIPT_HEADER_RE.match(lines[0]):
+            return False
+        has_user_or_assistant = any(
+            line.startswith("User:") or line.startswith("Assistant:")
+            for line in lines[1:]
+        )
+        return has_user_or_assistant
 
     def read_long_term(self) -> str:
         if self.memory_file.exists():

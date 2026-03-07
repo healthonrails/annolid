@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -317,8 +318,8 @@ def persist_turn(
     workspace_memory: Any,
     persist_session_history: bool = True,
 ) -> None:
-    user_msg = str(user_text or "").strip()
-    assistant_msg = str(assistant_text or "").strip()
+    user_msg = _sanitize_persisted_turn_text(user_text)
+    assistant_msg = _sanitize_persisted_turn_text(assistant_text)
     if not user_msg and not assistant_msg:
         return
     entries: List[Dict[str, str]] = []
@@ -352,18 +353,19 @@ def persist_turn(
             payload={"text": assistant_msg},
         )
 
-    try:
-        stamp = datetime.now().strftime("%H:%M:%S")
-        parts: List[str] = [f"## {stamp} [{session_id}]"]
-        if user_msg:
-            parts.append(f"User: {user_msg}")
-        if assistant_msg:
-            parts.append(f"Assistant: {assistant_msg}")
-        entry = "\n\n".join(parts)
-        workspace_memory.append_today(entry)
-        workspace_memory.append_history(entry)
-    except Exception:
-        pass
+    if not _is_gui_test_session_id(session_id):
+        try:
+            stamp = datetime.now().strftime("%H:%M:%S")
+            parts: List[str] = [f"## {stamp} [{session_id}]"]
+            if user_msg:
+                parts.append(f"User: {user_msg}")
+            if assistant_msg:
+                parts.append(f"Assistant: {assistant_msg}")
+            entry = "\n\n".join(parts)
+            workspace_memory.append_today(entry)
+            workspace_memory.append_history(entry)
+        except Exception:
+            pass
 
 
 def _record_session_event(
@@ -388,6 +390,30 @@ def _record_session_event(
         )
     except Exception:
         return
+
+
+def _is_gui_test_session_id(session_id: str) -> bool:
+    token = str(session_id or "").strip().lower()
+    return token.startswith("gui:test")
+
+
+def _sanitize_persisted_turn_text(text: Any) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    value = re.sub(r"<think>[\s\S]*?</think>", "", value, flags=re.IGNORECASE)
+    value = re.sub(
+        r"<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"<\|tool_call_begin\|>[\s\S]*?<\|tool_call_end\|>", "", value)
+    value = re.sub(r"<\|tool_call_argument_begin\|>", "", value)
+    value = re.sub(r"<\|tool_calls_section_(?:begin|end)\|>", "", value)
+    value = re.sub(r"<\|tool_call_(?:begin|end)\|>", "", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
 
 
 def replay_session_debug_events(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Optional, Tuple
 
 from annolid.core.agent.web_intents import (
@@ -79,6 +80,25 @@ def ensure_non_empty_final_text(text: str, *, provider: str, model: str) -> str:
         "Model returned empty output after multiple attempts. "
         f"Provider={provider}, model={model}. " + suggestion
     )
+
+
+def sanitize_final_response_text(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    value = re.sub(r"<think>[\s\S]*?</think>", "", value, flags=re.IGNORECASE)
+    value = re.sub(
+        r"<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"<\|tool_call_begin\|>[\s\S]*?<\|tool_call_end\|>", "", value)
+    value = re.sub(r"<\|tool_call_argument_begin\|>", "", value)
+    value = re.sub(r"<\|tool_calls_section_(?:begin|end)\|>", "", value)
+    value = re.sub(r"<\|tool_call_(?:begin|end)\|>", "", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
 
 
 async def apply_direct_gui_fallback(

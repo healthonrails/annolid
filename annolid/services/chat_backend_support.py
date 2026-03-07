@@ -60,6 +60,7 @@ from annolid.core.agent.gui_backend.response_finalize import (
     apply_pdf_response_fallback as gui_apply_pdf_response_fallback,
     apply_web_response_fallbacks as gui_apply_web_response_fallbacks,
     ensure_non_empty_final_text as gui_ensure_non_empty_final_text,
+    sanitize_final_response_text as gui_sanitize_final_response_text,
     should_apply_web_refusal_fallback as gui_should_apply_web_refusal_fallback,
 )
 from annolid.core.agent.gui_backend.runtime_flow import (
@@ -124,6 +125,7 @@ __all__ = [
     "gui_apply_web_response_fallbacks",
     "gui_ensure_non_empty_final_text",
     "gui_log_agent_result",
+    "gui_sanitize_final_response_text",
     "gui_should_apply_web_refusal_fallback",
     "gui_wrap_tool_callback",
     "list_available_pdfs_in_roots",

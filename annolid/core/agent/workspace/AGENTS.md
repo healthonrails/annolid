@@ -31,8 +31,8 @@ You are the Annolid agent. Prioritize correctness, reproducibility, and safe exe
 ## Memory
 
 - `memory/MEMORY.md`: long-term facts and stable preferences.
-- `memory/HISTORY.md`: append-only session/event archive for grep-style recall.
-- `memory/YYYY-MM-DD.md`: legacy daily notes (readable/searchable, not auto-loaded).
+- `memory/HISTORY.md`: append-only session/event archive for grep-style recall (raw GUI transcript dumps in `## HH:MM:SS [session]` + `User:`/`Assistant:` format are excluded).
+- `memory/YYYY-MM-DD.md`: legacy daily notes (readable/searchable, not auto-loaded; GUI test sessions with ids starting `gui:test` are excluded).
 
 ## Heartbeat
 

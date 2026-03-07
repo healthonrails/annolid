@@ -1144,30 +1144,83 @@ class AgentLoop:
         if not tool_runs:
             return ""
         last = tool_runs[-1]
-        base = (
-            f"I ran `{last.name}` but the model returned an empty final response. "
-            "Please retry with a narrower request."
+        preview = AgentLoop._extract_tool_result_preview(last.result)
+        if preview:
+            if AgentLoop._tool_result_looks_user_ready(last.name, preview):
+                return preview[:800]
+            return (
+                f"I ran `{last.name}` and recovered the tool output below because the "
+                "model returned an empty final response.\n\n"
+                f"{preview[:800]}"
+            )
+        return (
+            f"I ran `{last.name}` but the model returned an empty final response and "
+            "the tool did not provide readable output. Please retry."
         )
-        raw = str(last.result or "").strip()
-        if not raw:
-            return base
 
+    @staticmethod
+    def _extract_tool_result_preview(raw_result: Any) -> str:
+        raw = str(raw_result or "").strip()
+        if not raw:
+            return ""
         preview = ""
         try:
             payload = json.loads(raw)
-            if isinstance(payload, dict):
-                if payload.get("error"):
-                    preview = str(payload.get("error") or "")
-                elif isinstance(payload.get("text"), str):
-                    preview = str(payload.get("text") or "")
+            preview = AgentLoop._extract_tool_result_preview_from_payload(payload)
         except Exception:
             preview = raw
+        preview = re.sub(r"<think>[\s\S]*?</think>", "", str(preview or ""))
+        preview = re.sub(
+            r"<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>",
+            "",
+            preview,
+            flags=re.IGNORECASE,
+        )
+        preview = re.sub(r"\s+", " ", preview).strip()
+        return preview
 
-        preview = re.sub(r"\s+", " ", str(preview or "")).strip()
-        if preview:
-            preview = preview[:600]
-            return f"{base}\n\nTool result excerpt:\n{preview}"
-        return base
+    @staticmethod
+    def _extract_tool_result_preview_from_payload(payload: Any) -> str:
+        if isinstance(payload, dict):
+            for key in ("error", "text", "content", "message", "result"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+                if isinstance(value, dict):
+                    nested = AgentLoop._extract_tool_result_preview_from_payload(value)
+                    if nested:
+                        return nested
+            if isinstance(payload.get("items"), list):
+                parts: list[str] = []
+                for item in payload.get("items")[:3]:
+                    nested = AgentLoop._extract_tool_result_preview_from_payload(item)
+                    if nested:
+                        parts.append(nested)
+                if parts:
+                    return "\n".join(parts)
+        if isinstance(payload, list):
+            parts = []
+            for item in payload[:3]:
+                nested = AgentLoop._extract_tool_result_preview_from_payload(item)
+                if nested:
+                    parts.append(nested)
+            if parts:
+                return "\n".join(parts)
+        return ""
+
+    @staticmethod
+    def _tool_result_looks_user_ready(tool_name: str, preview: str) -> bool:
+        name = str(tool_name or "").strip().lower()
+        text = str(preview or "").strip()
+        if not text:
+            return False
+        if name in {"web_search", "gui_web_get_dom_text", "gui_pdf_get_text"}:
+            return True
+        if name in {"read_file", "extract_pdf_text", "open_pdf"} and len(text) >= 80:
+            return True
+        if text.lower().startswith(("results for:", "current conditions", "weather")):
+            return True
+        return False
 
     async def _repair_empty_final_answer(
         self,

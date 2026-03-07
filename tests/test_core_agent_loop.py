@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from annolid.core.agent.loop import AgentLoop, AgentMemoryConfig
+from annolid.core.agent.loop import AgentLoop, AgentMemoryConfig, AgentToolRun
 from annolid.core.agent.session_manager import (
     AgentSessionManager,
     PersistentSessionStore,
@@ -1185,9 +1185,42 @@ def test_agent_loop_uses_tool_fallback_when_repair_response_still_empty() -> Non
     registry.register(_EchoTool())
     loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
     result = asyncio.run(loop.run("hello", session_id="s-empty-repair-fallback"))
-    assert "empty final response" in result.content.lower()
-    assert "tool result excerpt" in result.content.lower()
+    assert "recovered the tool output below" in result.content.lower()
+    assert "tool:hello" in result.content.lower()
     assert state["n"] == 3
+
+
+def test_agent_loop_tool_only_fallback_returns_user_ready_web_result() -> None:
+    fallback = AgentLoop._build_tool_only_fallback_answer(
+        tool_runs=(
+            AgentToolRun(
+                call_id="c1",
+                name="web_search",
+                arguments={"query": "weather in Ithaca NY"},
+                result=json.dumps(
+                    {
+                        "text": "Current conditions in Ithaca NY: 39 F, light rain, wind 6 mph."
+                    }
+                ),
+            ),
+        )
+    )
+    assert fallback == "Current conditions in Ithaca NY: 39 F, light rain, wind 6 mph."
+
+
+def test_agent_loop_tool_only_fallback_wraps_non_ready_tool_output() -> None:
+    fallback = AgentLoop._build_tool_only_fallback_answer(
+        tool_runs=(
+            AgentToolRun(
+                call_id="c1",
+                name="read_file",
+                arguments={"path": "skill.yaml"},
+                result='{"content":"name: weather\\ndescription: fetch weather data"}',
+            ),
+        )
+    )
+    assert "I ran `read_file` and recovered the tool output below" in fallback
+    assert "name: weather" in fallback
 
 
 def test_agent_loop_consolidates_large_history_into_history_file(

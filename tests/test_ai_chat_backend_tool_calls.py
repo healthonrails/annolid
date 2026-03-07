@@ -2118,6 +2118,30 @@ def test_finalize_agent_text_uses_web_search_fallback_on_empty_weather_output() 
     assert "39 F, light rain" in text
 
 
+def test_finalize_agent_text_strips_raw_tool_call_markup() -> None:
+    class _Result:
+        content = (
+            "<|tool_calls_section_begin|> <|tool_call_begin|> functions.read_file:0 "
+            '<|tool_call_argument_begin|> {"file_path": '
+            '"/Users/chenyang/.annolid/workspace/skills/weather/skill.yaml"} '
+            "<|tool_call_end|> <|tool_calls_section_end|>"
+        )
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "check today's weather",
+        widget=None,
+        provider="nvidia",
+        model="moonshotai/kimi-k2.5",
+    )
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(_Result())
+    assert used_recovery is False
+    assert used_direct_gui_fallback is False
+    assert "<|tool_calls_section_begin|>" not in text
+    assert "functions.read_file" not in text
+    assert "Model returned empty output after multiple attempts." in text
+
+
 def test_finalize_agent_text_does_not_force_web_search_for_non_web_empty_output() -> (
     None
 ):

@@ -128,7 +128,7 @@ def test_persist_turn_writes_workspace_daily_memory(
         widget=None,
         provider="openai",
         model="gpt-4o-mini",
-        session_id="gui:test-memory-daily",
+        session_id="gui:annolid_bot:memory-daily",
         session_store=store,
     )
 
@@ -137,7 +137,7 @@ def test_persist_turn_writes_workspace_daily_memory(
     today_file = workspace / "memory" / f"{date.today().strftime('%Y-%m-%d')}.md"
     assert today_file.exists()
     text = today_file.read_text(encoding="utf-8")
-    assert "gui:test-memory-daily" in text
+    assert "gui:annolid_bot:memory-daily" in text
     assert "User: how are you?" in text
     assert "Assistant: all good" in text
 
@@ -163,7 +163,100 @@ def test_persist_turn_can_skip_session_history_write(
 
     assert task._load_history_messages() == []
     today_file = workspace / "memory" / f"{date.today().strftime('%Y-%m-%d')}.md"
-    assert today_file.exists()
+    assert not today_file.exists()
+
+
+def test_persist_turn_does_not_write_chat_transcript_dump_to_history(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(ai_chat_backend, "get_chat_workspace", lambda: workspace)
+    store = PersistentSessionStore(
+        AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    )
+    task = StreamingChatTask(
+        prompt="hello",
+        widget=None,
+        provider="openai",
+        model="gpt-4o-mini",
+        session_id="gui:test-plain-mode",
+        session_store=store,
+    )
+
+    task._persist_turn("hello", "sunny")
+
+    history_file = workspace / "memory" / "HISTORY.md"
+    if history_file.exists():
+        text = history_file.read_text(encoding="utf-8")
+        assert "## " not in text
+        assert "User: hello" not in text
+        assert "Assistant: sunny" not in text
+
+
+def test_persist_turn_skips_daily_md_for_gui_test_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(ai_chat_backend, "get_chat_workspace", lambda: workspace)
+    store = PersistentSessionStore(
+        AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    )
+    task = StreamingChatTask(
+        prompt="hello",
+        widget=None,
+        provider="openai",
+        model="gpt-4o-mini",
+        session_id="gui:test-session",
+        session_store=store,
+    )
+
+    task._persist_turn("hi", "hello there")
+
+    today_file = workspace / "memory" / f"{date.today().strftime('%Y-%m-%d')}.md"
+    if today_file.exists():
+        text = today_file.read_text(encoding="utf-8")
+        assert "gui:test-session" not in text
+        assert "User: hi" not in text
+        assert "Assistant: hello there" not in text
+
+
+def test_persist_turn_strips_raw_tool_call_markup_from_saved_text(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(ai_chat_backend, "get_chat_workspace", lambda: workspace)
+    store = PersistentSessionStore(
+        AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    )
+    task = StreamingChatTask(
+        prompt="check today's weather",
+        widget=None,
+        provider="nvidia",
+        model="moonshotai/kimi-k2.5",
+        session_id="gui:annolid_bot:weather",
+        session_store=store,
+    )
+
+    task._persist_turn(
+        "check today's weather",
+        (
+            "<|tool_calls_section_begin|> <|tool_call_begin|> functions.read_file:0 "
+            '<|tool_call_argument_begin|> {"file_path": '
+            '"/Users/chenyang/.annolid/workspace/skills/weather/skill.yaml"} '
+            "<|tool_call_end|> <|tool_calls_section_end|>"
+        ),
+    )
+
+    history = task._load_history_messages()
+    assert len(history) == 1
+    assert history[0]["role"] == "user"
+    assert history[0]["content"] == "check today's weather"
+
+    today_file = workspace / "memory" / f"{date.today().strftime('%Y-%m-%d')}.md"
+    text = today_file.read_text(encoding="utf-8")
+    assert "functions.read_file" not in text
+    assert "<|tool_calls_section_begin|>" not in text
+    assert "Assistant:" not in text
 
 
 def test_fallback_timeout_retry_uses_at_least_loop_timeout() -> None:
