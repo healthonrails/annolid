@@ -1,41 +1,90 @@
-# Annolid Docs
+<section class="ann-hero">
+  <span class="ann-kicker">Annolid Documentation Portal</span>
+  <h1>Ship annotation and tracking workflows faster.</h1>
+  <p>
+    Annolid combines a desktop GUI, a composable CLI, and agent-assisted tools
+    for real-world behavior analysis projects.
+  </p>
+  <p>
+    Start with a stable local setup, then move into repeatable workflows,
+    memory-backed context, and deployment-ready operations.
+  </p>
+  <div class="ann-quick">
+    <a href="getting_started/">Getting Started in 20 minutes</a>
+    <a href="installation/">Install Annolid</a>
+    <a href="install_with_uv/">Use <code>.venv</code> for development</a>
+    <a href="workflows/">Follow core workflows</a>
+    <a href="tutorials/">Explore tutorials</a>
+    <a href="memory/">Enable memory subsystem</a>
+  </div>
+</section>
 
-Annolid is a practical toolkit for annotation, segmentation, tracking, behavior analysis, and model-assisted workflows in real research settings.
+## Choose Your Path
 
-The current codebase includes:
+<div class="ann-paths">
+  <article class="ann-path">
+    <strong>New Users</strong>
+    Start from installation and one-line setup paths, then run your first GUI project.
+    <br />
+    <a href="installation/">Installation</a> |
+    <a href="one_line_install_choices/">One-Line Installer</a>
+  </article>
+  <article class="ann-path">
+    <strong>Power Users</strong>
+    Use <code>annolid-run</code>, MCP integrations, and automation-friendly CLI flows.
+    <br />
+    <a href="workflows/">Workflows</a> |
+    <a href="mcp/">MCP</a> |
+    <a href="reference/">Reference</a>
+  </article>
+  <article class="ann-path">
+    <strong>Maintainers</strong>
+    Keep deployment, migration, and release workflows predictable and documented.
+    <br />
+    <a href="deployment/">Deployment</a> |
+    <a href="migration/">Migration Plan</a>
+  </article>
+</div>
 
-- the desktop GUI launched with `annolid`,
-- the plugin-based CLI launched with `annolid-run`,
-- Annolid Bot in the GUI, including multimodal chat and optional background integrations,
-- deployment pipelines for the landing page, docs portal, and notebook-style tutorial book.
+## Core Areas
 
-## Start Here
+<div class="ann-grid">
+  <article class="ann-card">
+    <h3>Setup</h3>
+    <p>Pick the right environment path for your platform and development mode.</p>
+    <a href="installation/">Open installation guide</a>
+  </article>
+  <article class="ann-card">
+    <h3>Workflow Execution</h3>
+    <p>Run GUI and CLI tasks with explicit, reproducible command patterns.</p>
+    <a href="workflows/">Open workflows</a>
+  </article>
+  <article class="ann-card">
+    <h3>Tutorials</h3>
+    <p>Jump into focused guides for tracking, segmentation, and model operations.</p>
+    <a href="tutorials/">Open tutorials</a>
+  </article>
+  <article class="ann-card">
+    <h3>Memory System</h3>
+    <p>Store reusable context, use scoped retrieval, and migrate legacy memory data.</p>
+    <a href="memory/">Open memory docs</a>
+  </article>
+  <article class="ann-card">
+    <h3>Agents and Security</h3>
+    <p>Configure agents, isolate secrets, and validate local security posture.</p>
+    <a href="agent_security/">Open security docs</a>
+  </article>
+  <article class="ann-card">
+    <h3>Operations</h3>
+    <p>Deploy docs/site assets and keep release and migration flows in sync.</p>
+    <a href="deployment/">Open deployment guide</a>
+  </article>
+</div>
 
-- [Installation](installation.md): choose the right install path for your platform.
-- [uv Setup](install_with_uv.md): create a local development environment with `.venv`.
-- [Workflows](workflows.md): follow the main GUI, CLI, and analysis flows.
-- [Tutorials](tutorials.md): jump to practical notebooks, videos, and focused guides.
-- [MCP](mcp.md): extend Annolid Bot with Model Context Protocol servers.
-- [Codex and ACP](codex_and_acp.md): choose between cloud Codex, local Codex CLI, and long-lived ACP coding sessions.
-- [Agent Calendar](agent_calendar.md): configure Google Calendar auth, cached tokens, and token renewal.
-- [Agent Secrets](agent_secrets.md): keep agent/provider credentials out of plaintext `config.json`.
-- [Agent Security](agent_security.md): audit session scope, tool policy, channel exposure, and local agent state.
-- [SAM 3D](sam3d.md): configure the optional 3D reconstruction integration.
-- [Reference](reference.md): commands, config files, and operational paths.
-- [Deployment](deployment.md): understand how docs and the website are published.
+## Product Snapshot
 
-## Current Documentation Surfaces
-
-- `README.md`: repository overview and quick-start guidance.
-- `docs/`: canonical MkDocs content published to the docs portal and mirrored root routes.
-- `website/`: the landing page source for `annolid.com/`.
-- `docs/tutorials/`: notebook tutorials tracked in the repository.
-
-## Current Product Status
-
-- Python support in the package metadata is `>=3.10`; current docs and CI focus on Python 3.10 to 3.13.
-- The primary entry points are `annolid` for the GUI and `annolid-run` for model/plugin workflows.
-- Annolid Bot is an active part of the GUI and now includes a Zulip draft/send workflow in the bot dock when Zulip is configured.
-- Agent/provider credentials can now be managed through `annolid-run agent-secrets-audit`, `agent-secrets-set`, and `agent-secrets-migrate` so `config.json` can reference environment or local private secrets instead of storing plaintext.
-- Agent security posture can now be reviewed through `annolid-run agent-security-check` and `annolid-run agent-security-audit`, with `--fix` available for safe local permission repairs.
-- Docs are built with MkDocs in strict mode through the `docs-quality` and `docs-pages` GitHub Actions workflows.
+- Python package metadata supports `>=3.10`; CI/docs currently target Python 3.10-3.13.
+- Primary entry points are `annolid` (GUI) and `annolid-run` (CLI/plugins).
+- Memory subsystem includes GUI CRUD manager, structured settings profiles, and legacy-source migration tooling.
+- Annolid Bot supports multimodal chat and optional provider integrations in the GUI.
+- Docs are built with MkDocs Material in strict mode and published through GitHub Actions.

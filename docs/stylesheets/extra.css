@@ -1,0 +1,190 @@
+/* Annolid docs portal enhancements */
+
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Source+Serif+4:wght@400;600&display=swap");
+
+:root {
+  --ann-bg: radial-gradient(circle at 6% 2%, #dff6ff 0%, #f5fcff 28%, #f8fbf8 100%);
+  --ann-accent: #0f8f92;
+  --ann-warm: #e87d2f;
+  --ann-panel: #ffffff;
+  --ann-line: #d5e4e8;
+  --ann-ink: #173744;
+}
+
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #f5f9fa;
+  --md-text-font: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+  --md-code-font: "JetBrains Mono", "Fira Code", "SFMono-Regular", monospace;
+}
+
+.md-main {
+  background: var(--ann-bg);
+}
+
+.md-main h1,
+.md-main h2,
+.md-main h3 {
+  font-family: "Source Serif 4", Georgia, serif;
+  letter-spacing: 0.01em;
+  color: var(--ann-ink);
+}
+
+.md-content p,
+.md-content li {
+  color: #2a4956;
+}
+
+.md-typeset a {
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.14em;
+}
+
+.ann-hero {
+  background: linear-gradient(135deg, #ffffff 0%, #f4fcfe 40%, #fdf8f2 100%);
+  border: 1px solid var(--ann-line);
+  border-radius: 1.2rem;
+  box-shadow: 0 14px 44px rgba(16, 77, 89, 0.09);
+  padding: 1.6rem 1.4rem;
+  margin-bottom: 1.3rem;
+  animation: ann-fade-up 380ms ease;
+}
+
+.ann-kicker {
+  display: inline-block;
+  background: #e6f7fa;
+  color: #11696d;
+  border: 1px solid #b7e5ea;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.25rem 0.6rem;
+  margin-bottom: 0.6rem;
+}
+
+.ann-hero h1 {
+  margin-top: 0.1rem;
+  margin-bottom: 0.5rem;
+  font-size: clamp(2rem, 3.3vw, 2.8rem);
+  line-height: 1.03;
+}
+
+.ann-hero p {
+  margin-bottom: 0.7rem;
+  color: #254552;
+}
+
+.ann-quick {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin-top: 0.9rem;
+}
+
+.ann-quick a {
+  display: block;
+  border: 1px solid var(--ann-line);
+  border-radius: 0.8rem;
+  background: #fff;
+  padding: 0.62rem 0.7rem;
+  font-weight: 600;
+  color: #1e3f4d;
+  transition: all 180ms ease;
+}
+
+.ann-quick a:hover {
+  border-color: #8bd0db;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(15, 143, 146, 0.12);
+}
+
+.ann-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+.ann-card {
+  background: var(--ann-panel);
+  border: 1px solid var(--ann-line);
+  border-radius: 0.95rem;
+  padding: 0.9rem 0.85rem;
+  box-shadow: 0 8px 24px rgba(13, 70, 83, 0.08);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.ann-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 26px rgba(13, 70, 83, 0.12);
+}
+
+.ann-card h3 {
+  margin-top: 0;
+  margin-bottom: 0.35rem;
+  color: #164757;
+}
+
+.ann-card p {
+  margin-top: 0;
+  margin-bottom: 0.55rem;
+  color: #395766;
+  font-size: 0.9rem;
+}
+
+.ann-card a {
+  color: var(--ann-accent);
+  font-weight: 600;
+}
+
+.ann-paths {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin-bottom: 1rem;
+}
+
+.ann-path {
+  background: #fff;
+  border: 1px solid var(--ann-line);
+  border-radius: 0.85rem;
+  padding: 0.8rem;
+  box-shadow: 0 8px 18px rgba(18, 70, 78, 0.06);
+}
+
+.ann-path strong {
+  color: var(--ann-warm);
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+@media (max-width: 1000px) {
+  .ann-grid,
+  .ann-paths {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  .ann-quick,
+  .ann-grid,
+  .ann-paths {
+    grid-template-columns: 1fr;
+  }
+
+  .ann-hero {
+    padding: 1.1rem 1rem;
+  }
+}
+
+@keyframes ann-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

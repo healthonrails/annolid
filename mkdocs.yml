@@ -23,12 +23,19 @@ theme:
   logo: assets/images/icon_annolid.png
   favicon: assets/images/icon_annolid.png
   features:
+    - navigation.instant
+    - navigation.instant.progress
     - navigation.tabs
     - navigation.sections
+    - navigation.expand
+    - navigation.indexes
     - navigation.top
+    - toc.follow
     - search.suggest
     - search.highlight
     - content.code.copy
+    - content.action.edit
+    - content.action.view
   palette:
     - scheme: default
       primary: teal
@@ -56,8 +63,24 @@ markdown_extensions:
 plugins:
   - search
 
+edit_uri: edit/main/docs/
+
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/healthonrails/annolid
+      name: Annolid on GitHub
+    - icon: fontawesome/solid/globe
+      link: https://annolid.com/
+      name: Annolid website
+
+extra_css:
+  - stylesheets/extra.css
+
 nav:
   - Home: index.md
+  - Getting Started: getting_started.md
   - Installation: installation.md
   - uv Setup: install_with_uv.md
   - One-Line Installer: one_line_install_choices.md
@@ -77,5 +100,6 @@ nav:
   - SAM 3D: sam3d.md
   - Deployment: deployment.md
   - Migration Plan: migration.md
+  - Architecture Layers: architecture_layers.md
   - Redirect Map: redirects.md
   - References: reference.md

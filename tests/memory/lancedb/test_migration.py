@@ -2,7 +2,10 @@ from typing import Any, Dict, List, Optional
 
 from annolid.domain.memory.models import MemoryHit, MemoryRecord
 from annolid.domain.memory.protocols import MemoryBackend
-from annolid.infrastructure.memory.lancedb.migration import import_records
+from annolid.infrastructure.memory.lancedb.migration import (
+    collect_legacy_records,
+    import_records,
+)
 
 
 class _DummyBackend(MemoryBackend):
@@ -64,3 +67,35 @@ def test_import_records_counts_imported() -> None:
     )
     assert result.imported == 2
     assert result.failed == 0
+
+
+def test_collect_legacy_records_scans_json_markdown_and_project_schema(
+    tmp_path,
+) -> None:
+    json_file = tmp_path / "legacy_memory.json"
+    json_file.write_text(
+        '{"text":"Legacy rule","scope":"dataset:1","category":"annotation_rule"}',
+        encoding="utf-8",
+    )
+
+    memory_dir = tmp_path / "workspace_a" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text(
+        "# Memory\n- Use vole_1, vole_2 naming\n", encoding="utf-8"
+    )
+    (memory_dir / "HISTORY.md").write_text(
+        "# History\n- Model X failed on infrared\n", encoding="utf-8"
+    )
+
+    project_dir = tmp_path / "project_alpha"
+    project_dir.mkdir()
+    (project_dir / "project.annolid.json").write_text(
+        '{"name":"alpha","categories":["mouse"],"behaviors":["grooming","digging"]}',
+        encoding="utf-8",
+    )
+
+    records, stats = collect_legacy_records(tmp_path)
+    assert stats["json"] == 1
+    assert stats["markdown"] == 2
+    assert stats["project_schema"] == 1
+    assert len(records) == 4

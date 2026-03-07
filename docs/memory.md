@@ -18,12 +18,28 @@ Implemented:
 - Persistence helpers and interface adapters
 - `annolid-run memory ...` CLI commands (`stats`, `search`, `delete`, `distill`, `cleanup`)
 - Maintenance scripts for export/import, migration, and re-embedding
+- GUI Memory Manager with CRUD operations
+- Structured settings profiles (`SettingsProfile`) in addition to snapshots
+- Automated multi-source migration collectors (JSON, markdown memory logs, project schemas)
 
 Not yet complete:
 
-- Full GUI CRUD workflows
-- Rich structured settings model beyond snapshot-style storage
-- End-to-end automated migration from all legacy memory sources
+- One-click profile apply flows for every GUI settings panel
+- In-app migration report dashboard
+
+## GUI Workflow
+
+Open the Memory Manager from the desktop app:
+
+1. `Settings -> Memory Manager...`
+2. Search by query and optional scope (`workspace:<id>`, `project:<id>`, `dataset:<id>`)
+3. Use `Add`, `Edit`, and `Delete` for CRUD operations
+
+Notes:
+
+- edits are validated before write (required text/scope, metadata JSON validation)
+- delete requires confirmation
+- operations refresh the result table immediately
 
 ## Quick Start
 
@@ -173,6 +189,27 @@ Available interface adapters:
 
 Adapters isolate callers from backend-specific implementation details.
 
+`WorkspaceMemoryAdapter` now supports both:
+
+- `SettingsSnapshot` for point-in-time captures
+- `SettingsProfile` for reusable typed workflow configurations
+
+Minimal profile example:
+
+```python
+from annolid.interfaces.memory.adapters.settings_model import SettingsProfile
+from annolid.interfaces.memory.adapters.workspace import WorkspaceMemoryAdapter
+
+adapter = WorkspaceMemoryAdapter("default")
+profile = SettingsProfile(
+    name="Infrared tracking preset",
+    workflow="tracking",
+    settings={"tracker": "bytetrack", "confidence": 0.45},
+    tags=["infrared", "tracking"],
+)
+adapter.store_settings_profile(profile)
+```
+
 ## Maintenance Operations
 
 Scripts:
@@ -188,8 +225,14 @@ python scripts/reembed_memory.py
 Purpose:
 
 - `export_memory.py`: export/import JSONL memory records
-- `migrate_memory.py`: import legacy JSON records into the active backend
+- `migrate_memory.py`: recursively collect and import legacy memory sources
 - `reembed_memory.py`: regenerate vectors using current embedding settings
+
+`migrate_memory.py` source coverage:
+
+- JSON memory records with top-level `text`
+- `memory/MEMORY.md` and `memory/HISTORY.md`
+- `project.annolid.json|yaml|yml`
 
 ## JSONL Format
 

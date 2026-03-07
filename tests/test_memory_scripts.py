@@ -92,7 +92,8 @@ def test_migrate_memory_script_migrates_valid_json_only(tmp_path, monkeypatch) -
     assert migrate_memory.migrate_legacy_memories(source_dir) == 0
     assert len(captured["records"]) == 1
     assert captured["records"][0].text == "Project note"
-    assert captured["records"][0].metadata["migrated_from_file"] == "good.json"
+    assert captured["records"][0].metadata["legacy_source"] == "json"
+    assert captured["records"][0].metadata["legacy_path"].endswith("good.json")
 
 
 def test_reembed_memory_script_runs_backend_reembed(monkeypatch) -> None:

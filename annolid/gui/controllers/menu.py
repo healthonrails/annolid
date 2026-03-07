@@ -271,6 +271,14 @@ class MenuController:
                 "icon_path": here / "icons/icon_annolid.png",
             },
             {
+                "name": "open_memory_manager",
+                "text": w.tr("&Memory Manager…"),
+                "slot": self._open_memory_manager,
+                "tip": w.tr(
+                    "Create, browse, edit, and delete memory records across scopes"
+                ),
+            },
+            {
                 "name": "open_florence2",
                 "text": w.tr("Florence-&2 Assistant"),
                 "slot": w.openFlorence2,
@@ -1031,6 +1039,7 @@ class MenuController:
                 actions["advance_params"],
                 actions["project_schema"],
                 actions["pose_schema"],
+                actions["open_memory_manager"],
             ),
             (actions["toggle_pose_bbox_save"],),
             (
@@ -1245,6 +1254,18 @@ class MenuController:
             webbrowser.open(url)
         except Exception:
             pass
+
+    def _open_memory_manager(self) -> None:
+        w = self._window
+        dialog = getattr(w, "_memory_manager_dialog", None)
+        if dialog is None:
+            from annolid.gui.widgets.memory_manager_dialog import MemoryManagerDialog
+
+            dialog = MemoryManagerDialog(w)
+            w._memory_manager_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _close_3d_viewer(self) -> None:
         """Close the Three.js 3D view and return to canvas."""
