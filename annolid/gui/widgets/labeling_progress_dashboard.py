@@ -13,7 +13,7 @@ from annolid.datasets.label_index_stats import (
     load_label_stats_snapshot,
 )
 from annolid.datasets.labelme_collection import default_label_index_path
-from annolid.utils.annotation_store import load_labelme_json
+from annolid.infrastructure import load_labelme_json
 
 
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}

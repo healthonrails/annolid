@@ -20,8 +20,8 @@ from annolid.gui.workers import (
     ProcessVideosWorker,
     TrackAllWorker,
 )
-from annolid.utils.files import find_most_recent_file
-from annolid.utils.annotation_store import AnnotationStore
+from annolid.infrastructure import AnnotationStore
+from annolid.infrastructure.filesystem import find_most_recent_file
 from annolid.utils.logger import logger
 
 

@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from qtpy import QtWidgets
 
-from annolid.core.behavior.spec import (
+from annolid.domain import (
     BehaviorDefinition,
     CategoryDefinition,
     ModifierDefinition,

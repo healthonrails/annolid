@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
 
-from annolid.utils.annotation_store import AnnotationStore
+from annolid.infrastructure import AnnotationStore
 
 
 class EmbeddingSearchWidget(QtWidgets.QWidget):

@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 import pandas as pd
 
 from annolid.annotation.pose_schema import PoseSchema
-from annolid.core.behavior.spec import (
+from annolid.domain import (
     DEFAULT_SCHEMA_FILENAME,
     default_behavior_spec,
     load_behavior_spec,

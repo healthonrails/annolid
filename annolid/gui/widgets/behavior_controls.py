@@ -4,7 +4,7 @@ from typing import Dict, Iterable, Optional, Sequence, Set
 
 from qtpy import QtCore, QtWidgets
 
-from annolid.core.behavior.spec import ModifierDefinition, SubjectDefinition
+from annolid.domain import ModifierDefinition, SubjectDefinition
 
 
 class BehaviorControlsWidget(QtWidgets.QWidget):

@@ -12,8 +12,8 @@ from qtpy import QtCore, QtWidgets
 
 from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
 from annolid.gui.workers import FlexibleWorker
-from annolid.utils.annotation_store import AnnotationStore
-from annolid.utils.files import (
+from annolid.infrastructure import AnnotationStore
+from annolid.infrastructure.filesystem import (
     find_manual_labeled_json_files,
     get_frame_number_from_json,
     should_start_predictions_from_frame0,

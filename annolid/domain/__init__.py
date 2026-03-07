@@ -5,6 +5,7 @@ from __future__ import annotations
 from importlib import import_module
 
 _EXPORTS = {
+    "DEFAULT_SCHEMA_FILENAME": "annolid.domain.project_schema",
     "BehaviorDefinition": "annolid.domain.project_schema",
     "BehaviorEvent": "annolid.domain.behavior_events",
     "BehaviorInterval": "annolid.domain.timelines",

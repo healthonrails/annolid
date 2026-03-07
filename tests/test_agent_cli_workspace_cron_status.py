@@ -22,7 +22,7 @@ def test_agent_onboard_creates_workspace_templates(tmp_path: Path) -> None:
 
 
 def test_agent_status_uses_patched_paths(tmp_path: Path, monkeypatch, capsys) -> None:
-    import annolid.engine.cli as cli_mod
+    import annolid.services.agent_cron as cron_mod
     import annolid.core.agent.utils as utils_mod
 
     data_dir = tmp_path / "data"
@@ -36,7 +36,7 @@ def test_agent_status_uses_patched_paths(tmp_path: Path, monkeypatch, capsys) ->
     )
     monkeypatch.setattr(utils_mod, "get_agent_data_path", lambda: data_dir)
     monkeypatch.setattr(
-        cli_mod,
+        cron_mod,
         "_default_agent_cron_store_path",
         lambda: data_dir / "cron" / "jobs.json",
     )
@@ -55,11 +55,11 @@ def test_agent_status_uses_patched_paths(tmp_path: Path, monkeypatch, capsys) ->
 
 
 def test_agent_cron_add_list_remove(tmp_path: Path, monkeypatch, capsys) -> None:
-    import annolid.engine.cli as cli_mod
+    import annolid.services.agent_cron as cron_mod
 
     data_dir = tmp_path / "data"
     monkeypatch.setattr(
-        cli_mod,
+        cron_mod,
         "_default_agent_cron_store_path",
         lambda: data_dir / "cron" / "jobs.json",
     )
@@ -93,11 +93,11 @@ def test_agent_cron_add_list_remove(tmp_path: Path, monkeypatch, capsys) -> None
 
 
 def test_agent_cron_add_with_timezone(tmp_path: Path, monkeypatch, capsys) -> None:
-    import annolid.engine.cli as cli_mod
+    import annolid.services.agent_cron as cron_mod
 
     data_dir = tmp_path / "data"
     monkeypatch.setattr(
-        cli_mod,
+        cron_mod,
         "_default_agent_cron_store_path",
         lambda: data_dir / "cron" / "jobs.json",
     )
@@ -129,11 +129,11 @@ def test_agent_cron_add_with_timezone(tmp_path: Path, monkeypatch, capsys) -> No
 def test_agent_cron_add_accepts_at_with_z_suffix(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    import annolid.engine.cli as cli_mod
+    import annolid.services.agent_cron as cron_mod
 
     data_dir = tmp_path / "data"
     monkeypatch.setattr(
-        cli_mod,
+        cron_mod,
         "_default_agent_cron_store_path",
         lambda: data_dir / "cron" / "jobs.json",
     )

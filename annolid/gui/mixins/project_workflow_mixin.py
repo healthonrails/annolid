@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 from qtpy import QtCore, QtWidgets
 
-from annolid.core.behavior.spec import (
+from annolid.domain import (
     DEFAULT_SCHEMA_FILENAME,
     default_behavior_spec,
     save_behavior_spec,

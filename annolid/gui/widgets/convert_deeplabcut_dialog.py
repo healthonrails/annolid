@@ -7,10 +7,8 @@ from typing import Any, Dict, Optional
 from qtpy import QtCore, QtWidgets
 
 from annolid.annotation.deeplabcut2labelme import deeplabcut_to_labelme_json
-from annolid.datasets.importers.deeplabcut_training_data import (
-    DeepLabCutTrainingImportConfig,
-    import_deeplabcut_training_data,
-)
+from annolid.domain import DeepLabCutTrainingImportConfig
+from annolid.services.export import import_deeplabcut_dataset
 
 
 class _ConversionWorker(QtCore.QObject):
@@ -282,7 +280,7 @@ class ConvertDLCDialog(QtWidgets.QDialog):
         instance_separator = self.instance_separator_edit.text().strip() or "_"
 
         def task() -> Dict[str, Any]:
-            return import_deeplabcut_training_data(
+            return import_deeplabcut_dataset(
                 DeepLabCutTrainingImportConfig(
                     source_dir=dataset_root,
                     labeled_data_root=labeled_data,

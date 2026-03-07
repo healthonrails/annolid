@@ -119,7 +119,7 @@ def test_persist_turn_writes_workspace_daily_memory(
     tmp_path: Path, monkeypatch
 ) -> None:
     workspace = tmp_path / "workspace"
-    monkeypatch.setattr(ai_chat_backend, "get_agent_workspace_path", lambda: workspace)
+    monkeypatch.setattr(ai_chat_backend, "get_chat_workspace", lambda: workspace)
     store = PersistentSessionStore(
         AgentSessionManager(sessions_dir=tmp_path / "sessions")
     )
@@ -146,7 +146,7 @@ def test_persist_turn_can_skip_session_history_write(
     tmp_path: Path, monkeypatch
 ) -> None:
     workspace = tmp_path / "workspace"
-    monkeypatch.setattr(ai_chat_backend, "get_agent_workspace_path", lambda: workspace)
+    monkeypatch.setattr(ai_chat_backend, "get_chat_workspace", lambda: workspace)
     store = PersistentSessionStore(
         AgentSessionManager(sessions_dir=tmp_path / "sessions")
     )
@@ -272,7 +272,7 @@ def test_codex_cli_bypasses_agent_loop_for_plain_runtime(monkeypatch) -> None:
         ),
     )
 
-    ai_chat_backend.gui_run_awaitable_sync(task._run_agent_loop_async())
+    ai_chat_backend.run_chat_awaitable_sync(task._run_agent_loop_async())
     assert calls["provider_runtime"] == 1
     assert calls["agent_loop"] == 0
 
@@ -289,7 +289,7 @@ def test_streaming_chat_task_cancel_emits_stopped_message(monkeypatch) -> None:
     monkeypatch.setattr(task, "_provider_dependency_error", lambda: None)
     monkeypatch.setattr(
         ai_chat_backend,
-        "gui_emit_final",
+        "emit_chat_final",
         lambda **kwargs: emitted.update(
             {
                 "message": str(kwargs.get("message") or ""),

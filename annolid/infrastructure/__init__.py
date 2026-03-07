@@ -16,6 +16,7 @@ _EXPORTS = {
     "ensure_provider_env": "annolid.infrastructure.external_apis",
     "ensure_ultralytics_asset_cached": "annolid.infrastructure.model_downloads",
     "find_manual_labeled_json_files": "annolid.infrastructure.filesystem",
+    "find_most_recent_file": "annolid.infrastructure.filesystem",
     "get_cache_root": "annolid.infrastructure.model_downloads",
     "get_frame_number_from_json": "annolid.infrastructure.filesystem",
     "load_labelme_json": "annolid.infrastructure.persistence",

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
-import datetime
 import json
 import sys
 from pathlib import Path
@@ -84,97 +82,11 @@ def _cmd_validate_agent_output(args: argparse.Namespace) -> int:
 
 
 def _cmd_agent_validate_tools(_: argparse.Namespace) -> int:
-    import tempfile
+    from annolid.services.agent_tooling import validate_agent_tools
 
-    summary: dict[str, object] = {"status": "ok", "checks": []}
-
-    def _record(name: str, *, ok: bool, detail: str) -> None:
-        summary["checks"].append({"name": name, "ok": ok, "detail": detail})
-        if not ok:
-            summary["status"] = "error"
-
-    try:
-        from annolid.core.agent.tools.artifacts import FileArtifactStore, content_hash
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            store = FileArtifactStore(base_dir=Path(tmpdir), run_id="validate")
-            meta_path = store.resolve("agent_cache.json", kind="cache")
-            payload = {"hello": "world"}
-            store.write_meta(meta_path, {"content_hash": content_hash(payload)})
-            ok = store.should_reuse_cache(meta_path, content_hash(payload))
-            _record("artifacts", ok=bool(ok), detail="cache metadata round-trip")
-    except Exception as exc:
-        _record("artifacts", ok=False, detail=str(exc))
-
-    try:
-        from annolid.core.agent.tools.sampling import (
-            FPSampler,
-            RandomSampler,
-            UniformSampler,
-        )
-
-        uniform = UniformSampler(step=2).sample_indices(10)
-        fps = FPSampler(target_fps=5).sample_indices(30, fps=30)
-        random = RandomSampler(count=2, seed=1).sample_indices(5)
-        ok = bool(uniform) and bool(fps) and bool(random)
-        _record("sampling", ok=ok, detail="uniform/fps/random sampling")
-    except Exception as exc:
-        _record("sampling", ok=False, detail=str(exc))
-
-    try:
-        from annolid.core.agent.tools.registry import ToolRegistry
-        from annolid.core.agent.tools.base import Tool, ToolContext
-        from annolid.core.agent.tools.function_registry import FunctionToolRegistry
-        from annolid.core.agent.tools.function_builtin import (
-            register_nanobot_style_tools,
-        )
-        from annolid.core.agent.tools.utility import register_builtin_utility_tools
-
-        class _DummyTool(Tool[int, int]):
-            name = "dummy"
-
-            def run(self, ctx: ToolContext, payload: int) -> int:
-                _ = ctx
-                return payload + 1
-
-        registry = ToolRegistry()
-        registry.register("dummy", _DummyTool)
-        register_builtin_utility_tools(registry)
-        fn_registry = FunctionToolRegistry()
-        asyncio.run(register_nanobot_style_tools(fn_registry))
-        instance = registry.create("dummy")
-        ok = (
-            isinstance(instance, _DummyTool)
-            and registry.has("calculator")
-            and fn_registry.has("read_file")
-            and fn_registry.has("exec")
-        )
-        _record(
-            "registry",
-            ok=ok,
-            detail="register/create tool + utility + nanobot-style function tools",
-        )
-    except Exception as exc:
-        _record("registry", ok=False, detail=str(exc))
-
-    try:
-        from annolid.core.agent.tools.vector_index import NumpyEmbeddingIndex
-        from annolid.core.types import FrameRef
-
-        index = NumpyEmbeddingIndex(
-            embeddings=[[0.1, 0.0], [0.0, 1.0]],
-            frames=[FrameRef(frame_index=0), FrameRef(frame_index=1)],
-        )
-        results = index.search([0.2, 0.1], top_k=1)
-        ok = bool(results)
-        _record("vector_index", ok=ok, detail="numpy cosine search")
-    except ImportError as exc:
-        _record("vector_index", ok=True, detail=f"skipped: {exc}")
-    except Exception as exc:
-        _record("vector_index", ok=False, detail=str(exc))
-
+    summary, exit_code = validate_agent_tools()
     print(json.dumps(summary, indent=2))
-    return 0 if summary.get("status") == "ok" else 1
+    return exit_code
 
 
 def _cmd_collect_labels(args: argparse.Namespace) -> int:
@@ -245,9 +157,9 @@ def _cmd_collect_labels(args: argparse.Namespace) -> int:
 
 
 def _cmd_index_to_yolo(args: argparse.Namespace) -> int:
-    from annolid.datasets.builders.label_index_yolo import build_yolo_from_label_index
+    from annolid.services.export import build_yolo_dataset_from_index
 
-    summary = build_yolo_from_label_index(
+    summary = build_yolo_dataset_from_index(
         index_file=Path(args.index_file),
         output_dir=Path(args.output_dir),
         dataset_name=str(args.dataset_name),
@@ -263,11 +175,9 @@ def _cmd_index_to_yolo(args: argparse.Namespace) -> int:
 
 
 def _cmd_import_deeplabcut_training_data(args: argparse.Namespace) -> int:
-    from annolid.datasets.importers.deeplabcut_training_data import (
-        DeepLabCutTrainingImportConfig,
-        import_deeplabcut_training_data,
-    )
+    from annolid.domain import DeepLabCutTrainingImportConfig
     from annolid.datasets.labelme_collection import index_labelme_dataset
+    from annolid.services.export import import_deeplabcut_dataset
 
     source_dir = Path(args.source_dir).expanduser().resolve()
     labeled_data = Path(args.labeled_data)
@@ -275,7 +185,7 @@ def _cmd_import_deeplabcut_training_data(args: argparse.Namespace) -> int:
         labeled_data if labeled_data.is_absolute() else (source_dir / labeled_data)
     )
 
-    summary = import_deeplabcut_training_data(
+    summary = import_deeplabcut_dataset(
         DeepLabCutTrainingImportConfig(
             source_dir=source_dir,
             labeled_data_root=Path(args.labeled_data),
@@ -610,60 +520,21 @@ def _cmd_agent(args: argparse.Namespace) -> int:
     return 0
 
 
-def _default_agent_cron_store_path() -> Path:
-    from annolid.core.agent.cron import default_cron_store_path
-
-    return default_cron_store_path()
-
-
-def _agent_cron_service():
-    from annolid.core.agent.cron import (
-        CronService,
-    )
-
-    store_path = _default_agent_cron_store_path()
-    return CronService(store_path=store_path)
-
-
 def _cmd_agent_onboard(args: argparse.Namespace) -> int:
-    from annolid.core.agent import bootstrap_workspace
-    from annolid.core.agent.utils import get_agent_workspace_path
+    from annolid.services.agent_cron import onboard_agent_workspace
 
-    workspace = get_agent_workspace_path(args.workspace)
-    outcomes = bootstrap_workspace(workspace, overwrite=bool(args.overwrite))
-    summary = {
-        "workspace": str(workspace),
-        "overwrite": bool(args.overwrite),
-        "files": outcomes,
-    }
+    summary = onboard_agent_workspace(
+        workspace=getattr(args, "workspace", None),
+        overwrite=bool(args.overwrite),
+    )
     print(json.dumps(summary, indent=2))
     return 0
 
 
 def _cmd_agent_status(_: argparse.Namespace) -> int:
-    from annolid.core.agent.cron import CronService
-    from annolid.core.agent.utils import get_agent_data_path, get_agent_workspace_path
+    from annolid.services.agent_cron import get_agent_status
 
-    data_dir = get_agent_data_path()
-    workspace = get_agent_workspace_path()
-    store_path = _default_agent_cron_store_path()
-    cron = CronService(store_path=store_path)
-    cron_status = cron.status()
-    summary = {
-        "data_dir": str(data_dir),
-        "workspace": str(workspace),
-        "workspace_templates": {
-            "AGENTS.md": (workspace / "AGENTS.md").exists(),
-            "SOUL.md": (workspace / "SOUL.md").exists(),
-            "USER.md": (workspace / "USER.md").exists(),
-            "TOOLS.md": (workspace / "TOOLS.md").exists(),
-            "HEARTBEAT.md": (workspace / "HEARTBEAT.md").exists(),
-            "memory/MEMORY.md": (workspace / "memory" / "MEMORY.md").exists(),
-            "memory/HISTORY.md": (workspace / "memory" / "HISTORY.md").exists(),
-        },
-        "cron_store_path": str(store_path),
-        "cron": cron_status,
-    }
+    summary = get_agent_status()
     print(json.dumps(summary, indent=2))
     return 0
 
@@ -749,126 +620,18 @@ def _find_agent_config_plaintext_secret_paths(
 
 
 def _cmd_agent_security_check(_: argparse.Namespace) -> int:
-    from annolid.core.agent.config import get_config_path
-    from annolid.core.agent.config.secrets import (
-        SecretsConfig,
-        get_secret_store_path,
-        inspect_secret_posture,
-        load_secret_store,
-        read_raw_agent_config,
-    )
-    from annolid.core.agent.utils import get_agent_data_path
-    from annolid.utils.llm_settings import (
-        has_provider_api_key,
-        settings_path,
-    )
+    from annolid.services.agent_admin import run_agent_security_check
 
-    data_dir = get_agent_data_path()
-    settings_file = settings_path()
-    settings_dir = settings_file.parent
-
-    persisted_payload: dict = {}
-    parse_error: Optional[str] = None
-    if settings_file.exists():
-        try:
-            persisted_payload = json.loads(settings_file.read_text(encoding="utf-8"))
-            if not isinstance(persisted_payload, dict):
-                persisted_payload = {}
-                parse_error = "llm_settings.json content is not a JSON object."
-        except Exception as exc:
-            parse_error = str(exc)
-
-    persisted_secret_keys = _find_persisted_secret_keys(persisted_payload)
-    # Use persisted payload for inspection so this command does not mutate
-    # permissions via load_llm_settings() side effects before reporting.
-    settings = persisted_payload if isinstance(persisted_payload, dict) else {}
-    agent_config_path = get_config_path()
-    agent_raw_payload = read_raw_agent_config(agent_config_path)
-    agent_secrets = SecretsConfig.from_dict(agent_raw_payload.get("secrets"))
-    secret_store_path = get_secret_store_path()
-    secret_store = load_secret_store(secret_store_path)
-    agent_secret_posture = inspect_secret_posture(
-        agent_raw_payload,
-        agent_secrets.refs,
-        store=secret_store,
-    )
-
-    checks = {
-        "settings_dir_exists": settings_dir.exists(),
-        "settings_file_exists": settings_file.exists(),
-        "settings_dir_private": _is_private_dir_mode(settings_dir),
-        "settings_file_private": _is_private_file_mode(settings_file),
-        "persisted_secrets_found": bool(persisted_secret_keys),
-        "settings_json_parse_ok": parse_error is None,
-        "agent_config_exists": agent_config_path.exists(),
-        "agent_secret_store_exists": secret_store_path.exists(),
-        "agent_secret_store_private": _is_private_file_mode(secret_store_path),
-        "agent_plaintext_config_secrets_found": bool(
-            agent_secret_posture["plaintext_paths"]
-        ),
-        "agent_secret_refs_unresolved": bool(
-            agent_secret_posture["unresolved_ref_paths"]
-        ),
-    }
-    status = "ok"
-    if not all(
-        [
-            checks["settings_dir_exists"],
-            checks["settings_file_exists"],
-            checks["settings_dir_private"],
-            checks["settings_file_private"],
-            checks["settings_json_parse_ok"],
-        ]
-    ):
-        status = "warning"
-    if checks["persisted_secrets_found"]:
-        status = "warning"
-    if (
-        checks["agent_plaintext_config_secrets_found"]
-        or checks["agent_secret_refs_unresolved"]
-    ):
-        status = "warning"
-
-    summary = {
-        "status": status,
-        "data_dir": str(data_dir),
-        "llm_settings_path": str(settings_file),
-        "agent_config_path": str(agent_config_path),
-        "agent_secret_store_path": str(secret_store_path),
-        "llm_settings_dir_mode": _mode_octal(settings_dir),
-        "llm_settings_file_mode": _mode_octal(settings_file),
-        "agent_secret_store_mode": _mode_octal(secret_store_path),
-        "checks": checks,
-        "persisted_secret_keys": persisted_secret_keys,
-        "agent_plaintext_secret_keys": agent_secret_posture["plaintext_paths"],
-        "agent_shadowed_plaintext_secret_keys": agent_secret_posture[
-            "shadowed_plaintext_paths"
-        ],
-        "agent_unresolved_secret_refs": agent_secret_posture["unresolved_ref_paths"],
-        "agent_resolved_secret_refs": agent_secret_posture["resolved_ref_paths"],
-        "provider_key_presence": {
-            "openai": bool(has_provider_api_key(settings, "openai")),
-            "gemini": bool(has_provider_api_key(settings, "gemini")),
-        },
-    }
-    if parse_error is not None:
-        summary["settings_json_error"] = parse_error
-
-    print(json.dumps(summary, indent=2))
-    return 0 if status == "ok" else 1
+    payload = run_agent_security_check()
+    print(json.dumps(payload, indent=2))
+    return 0 if payload.get("status") == "ok" else 1
 
 
 def _cmd_agent_security_audit(args: argparse.Namespace) -> int:
-    from annolid.core.agent.config import get_config_path
-    from annolid.core.agent.security_audit import run_agent_security_audit
+    from annolid.services.agent_admin import run_agent_security_audit
 
-    config_path = (
-        Path(args.config).expanduser()
-        if getattr(args, "config", None)
-        else get_config_path()
-    )
     payload = run_agent_security_audit(
-        config_path=config_path,
+        config_path=getattr(args, "config", None),
         fix=bool(getattr(args, "fix", False)),
     )
     print(json.dumps(payload, indent=2))
@@ -876,563 +639,215 @@ def _cmd_agent_security_audit(args: argparse.Namespace) -> int:
 
 
 def _cmd_agent_secrets_audit(args: argparse.Namespace) -> int:
-    from annolid.core.agent.config import get_config_path
-    from annolid.core.agent.config.secrets import (
-        SecretsConfig,
-        get_secret_store_path,
-        inspect_secret_posture,
-        load_secret_store,
-        read_raw_agent_config,
-    )
+    from annolid.services.agent_admin import audit_agent_secrets
 
-    config_path = (
-        Path(args.config).expanduser()
-        if getattr(args, "config", None)
-        else get_config_path()
-    )
-    raw_payload = read_raw_agent_config(config_path)
-    secrets = SecretsConfig.from_dict(raw_payload.get("secrets"))
-    store_path = get_secret_store_path()
-    store = load_secret_store(store_path)
-    posture = inspect_secret_posture(raw_payload, secrets.refs, store=store)
-    payload = {
-        "config_path": str(config_path),
-        "secret_store_path": str(store_path),
-        "secret_store_mode": _mode_octal(store_path),
-        "ref_count": posture["ref_count"],
-        "resolved_ref_paths": posture["resolved_ref_paths"],
-        "unresolved_ref_paths": posture["unresolved_ref_paths"],
-        "plaintext_paths": posture["plaintext_paths"],
-        "shadowed_plaintext_paths": posture["shadowed_plaintext_paths"],
-    }
-    status = "ok"
-    if posture["plaintext_paths"] or posture["unresolved_ref_paths"]:
-        status = "warning"
-    payload["status"] = status
+    payload = audit_agent_secrets(config_path=getattr(args, "config", None))
     print(json.dumps(payload, indent=2))
-    return 0 if status == "ok" else 1
+    return 0 if payload.get("status") == "ok" else 1
 
 
 def _cmd_agent_secrets_set(args: argparse.Namespace) -> int:
-    from annolid.core.agent.config import get_config_path
-    from annolid.core.agent.config.secrets import (
-        SecretRefConfig,
-        apply_secret_ref,
-        get_secret_store_path,
-        load_secret_store,
-        read_raw_agent_config,
-        save_secret_store,
-    )
+    from annolid.services.agent_admin import set_agent_secret
 
-    source_count = int(bool(args.env)) + int(bool(args.local))
-    if source_count != 1:
-        raise SystemExit("Choose exactly one of --env or --local.")
-    config_path = (
-        Path(args.config).expanduser()
-        if getattr(args, "config", None)
-        else get_config_path()
+    payload = set_agent_secret(
+        path=str(args.path or ""),
+        env=getattr(args, "env", None),
+        local=getattr(args, "local", None),
+        value=getattr(args, "value", None),
+        config_path=getattr(args, "config", None),
     )
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    raw_payload = read_raw_agent_config(config_path)
-    path = str(args.path or "").strip()
-    if not path:
-        raise SystemExit("--path is required.")
-    if args.env:
-        ref = SecretRefConfig(source="env", name=str(args.env).strip())
-        next_payload = apply_secret_ref(raw_payload, path=path, ref=ref)
-    else:
-        local_name = str(args.local).strip()
-        if not local_name:
-            raise SystemExit("--local requires a non-empty key.")
-        store_path = get_secret_store_path()
-        secrets = load_secret_store(store_path)
-        secrets[local_name] = str(args.value or "")
-        save_secret_store(secrets, store_path)
-        ref = SecretRefConfig(source="local", name=local_name)
-        next_payload = apply_secret_ref(raw_payload, path=path, ref=ref)
-    config_path.write_text(json.dumps(next_payload, indent=2), encoding="utf-8")
-    print(
-        json.dumps(
-            {
-                "updated": True,
-                "config_path": str(config_path),
-                "path": path,
-                "ref": ref.to_dict(),
-            },
-            indent=2,
-        )
-    )
+    print(json.dumps(payload, indent=2))
     return 0
 
 
 def _cmd_agent_secrets_remove(args: argparse.Namespace) -> int:
-    from annolid.core.agent.config import get_config_path
-    from annolid.core.agent.config.secrets import (
-        SecretsConfig,
-        get_secret_store_path,
-        load_secret_store,
-        read_raw_agent_config,
-        remove_secret_ref,
-        save_secret_store,
-    )
+    from annolid.services.agent_admin import remove_agent_secret
 
-    config_path = (
-        Path(args.config).expanduser()
-        if getattr(args, "config", None)
-        else get_config_path()
+    payload = remove_agent_secret(
+        path=str(args.path or ""),
+        config_path=getattr(args, "config", None),
+        delete_local_value=bool(args.delete_local_value),
     )
-    raw_payload = read_raw_agent_config(config_path)
-    secrets = SecretsConfig.from_dict(raw_payload.get("secrets"))
-    path = str(args.path or "").strip()
-    ref = secrets.refs.get(path)
-    next_payload = remove_secret_ref(raw_payload, path=path)
-    config_path.write_text(json.dumps(next_payload, indent=2), encoding="utf-8")
-    deleted_local_value = False
-    if bool(args.delete_local_value) and ref and ref.source == "local" and ref.name:
-        store_path = get_secret_store_path()
-        store = load_secret_store(store_path)
-        if ref.name in store:
-            store.pop(ref.name, None)
-            save_secret_store(store, store_path)
-            deleted_local_value = True
-    print(
-        json.dumps(
-            {
-                "updated": True,
-                "config_path": str(config_path),
-                "path": path,
-                "deleted_local_value": deleted_local_value,
-            },
-            indent=2,
-        )
-    )
+    print(json.dumps(payload, indent=2))
     return 0
 
 
 def _cmd_agent_secrets_migrate(args: argparse.Namespace) -> int:
-    from annolid.core.agent.config import get_config_path
-    from annolid.core.agent.config.secrets import (
-        SecretRefConfig,
-        SecretsConfig,
-        apply_secret_ref,
-        get_secret_store_path,
-        load_secret_store,
-        read_raw_agent_config,
-        save_secret_store,
-    )
+    from annolid.services.agent_admin import migrate_agent_secrets
 
-    config_path = (
-        Path(args.config).expanduser()
-        if getattr(args, "config", None)
-        else get_config_path()
+    payload, exit_code = migrate_agent_secrets(
+        config_path=getattr(args, "config", None),
+        apply=bool(args.apply),
     )
-    raw_payload = read_raw_agent_config(config_path)
-    secrets_cfg = SecretsConfig.from_dict(raw_payload.get("secrets"))
-    existing_refs = secrets_cfg.refs
-    plaintext_paths = [
-        path
-        for path in _find_agent_config_plaintext_secret_paths(raw_payload)
-        if path != "secrets" and path not in existing_refs
-    ]
-    payload = {
-        "config_path": str(config_path),
-        "candidate_paths": plaintext_paths,
-        "apply": bool(args.apply),
-        "migrated": [],
-    }
-    if not args.apply:
-        print(json.dumps(payload, indent=2))
-        return 0 if not plaintext_paths else 1
-
-    store_path = get_secret_store_path()
-    store = load_secret_store(store_path)
-    next_payload = dict(raw_payload)
-    for path in plaintext_paths:
-        value = ""
-        current = raw_payload
-        for part in path.split("."):
-            if not isinstance(current, dict):
-                current = {}
-                break
-            current = current.get(part)
-        value = str(current or "")
-        if not value:
-            continue
-        local_name = path
-        store[local_name] = value
-        next_payload = apply_secret_ref(
-            next_payload,
-            path=path,
-            ref=SecretRefConfig(source="local", name=local_name),
-        )
-        payload["migrated"].append({"path": path, "local_key": local_name})
-    save_secret_store(store, store_path)
-    config_path.write_text(json.dumps(next_payload, indent=2), encoding="utf-8")
     print(json.dumps(payload, indent=2))
-    return 0
+    return exit_code
 
 
 def _cmd_agent_update(args: argparse.Namespace) -> int:
-    from annolid.core.agent.updater import apply_update, check_for_updates
+    from annolid.services.agent_update import run_legacy_agent_update
 
-    channel = str(args.channel or "stable").strip().lower()
-    timeout_s = float(args.timeout_s)
-    execute = bool(args.execute and args.apply)
-    require_signature = bool(args.require_signature)
-    report = check_for_updates(
-        channel=channel,
-        timeout_s=timeout_s,
-        require_signature=require_signature,
+    payload, exit_code = run_legacy_agent_update(
+        channel=str(args.channel or "stable"),
+        timeout_s=float(args.timeout_s),
+        apply=bool(args.apply),
+        execute=bool(args.execute),
+        skip_doctor=bool(args.skip_doctor),
+        require_signature=bool(args.require_signature),
     )
-    payload = report.to_dict()
-    if bool(args.apply):
-        payload = apply_update(
-            report,
-            execute=execute,
-            run_doctor=not bool(args.skip_doctor),
-        )
     print(json.dumps(payload, indent=2))
-    if bool(args.apply) and execute:
-        steps = payload.get("steps")
-        if isinstance(steps, list):
-            for item in steps:
-                if isinstance(item, dict) and not bool(item.get("ok", True)):
-                    return 1
-    return 0
+    return exit_code
 
 
 def _cmd_agent_eval(args: argparse.Namespace) -> int:
-    from annolid.core.agent.eval.run_agent_eval import run_eval
+    from annolid.services.agent_eval import run_agent_eval
 
-    report = run_eval(
-        traces_path=Path(args.traces).expanduser().resolve(),
-        candidate_responses_path=Path(args.candidate_responses).expanduser().resolve(),
-        baseline_responses_path=(
-            Path(args.baseline_responses).expanduser().resolve()
-            if args.baseline_responses
-            else None
-        ),
+    payload, exit_code = run_agent_eval(
+        traces=args.traces,
+        candidate_responses=args.candidate_responses,
+        baseline_responses=args.baseline_responses,
+        out=args.out,
+        max_regressions=int(args.max_regressions),
     )
-    out_path = Path(args.out).expanduser().resolve()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    regressions = report.get("regressions")
-    regression_count = len(regressions) if isinstance(regressions, list) else 0
-    gate_limit = int(args.max_regressions)
-    gate_passed = regression_count <= gate_limit
-    if isinstance(report, dict):
-        report["regression_gate"] = {
-            "max_regressions": gate_limit,
-            "regression_count": regression_count,
-            "passed": gate_passed,
-        }
-    out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(json.dumps({"out": str(out_path), "report": report}, indent=2))
-    return 0 if gate_passed else 1
+    print(json.dumps(payload, indent=2))
+    return exit_code
 
 
 def _cmd_agent_eval_build_regression(args: argparse.Namespace) -> int:
-    from annolid.core.agent.eval.telemetry import (
-        RunTraceStore,
-        build_regression_eval_rows,
-    )
-    from annolid.core.agent.utils import get_agent_workspace_path
+    from annolid.services.agent_eval import build_agent_regression_eval
 
-    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
-    store = RunTraceStore(workspace)
-    rows = build_regression_eval_rows(
-        trace_rows=store.load_traces(),
-        feedback_rows=store.load_feedback(),
+    payload = build_agent_regression_eval(
+        workspace=getattr(args, "workspace", None),
+        out=args.out,
         min_abs_rating=int(args.min_abs_rating),
     )
-    out_path = Path(args.out).expanduser().resolve()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_text = "\n".join(json.dumps(row, ensure_ascii=True) for row in rows)
-    out_path.write_text((out_text + "\n") if out_text else "", encoding="utf-8")
-    payload = {
-        "workspace": str(workspace),
-        "out": str(out_path),
-        "count": len(rows),
-    }
     print(json.dumps(payload, indent=2))
     return 0
 
 
 def _cmd_agent_eval_gate(args: argparse.Namespace) -> int:
-    from annolid.core.agent.eval.gate import (
-        eval_gate_required,
-        evaluate_report_gate,
-        load_changed_files,
+    from annolid.services.agent_eval import evaluate_agent_eval_gate
+
+    payload, exit_code = evaluate_agent_eval_gate(
+        report=args.report,
+        changed_files=args.changed_files,
+        max_regressions=int(args.max_regressions),
+        min_pass_rate=float(args.min_pass_rate),
     )
-
-    changed_files: list[str] = []
-    if args.changed_files:
-        changed_files = load_changed_files(Path(args.changed_files))
-    required = eval_gate_required(changed_files)
-
-    report_payload: dict = {}
-    if args.report:
-        report_payload = json.loads(
-            Path(args.report).expanduser().resolve().read_text(encoding="utf-8")
-        )
-
-    if report_payload:
-        gate = evaluate_report_gate(
-            report_payload,
-            max_regressions=int(args.max_regressions),
-            min_pass_rate=float(args.min_pass_rate),
-        )
-    else:
-        gate = {
-            "passed": not required,
-            "max_regressions": int(args.max_regressions),
-            "regression_count": 0,
-            "min_pass_rate": float(args.min_pass_rate),
-            "pass_rate": 0.0,
-        }
-        if required:
-            gate["reason"] = "eval_required_report_missing"
-
-    payload = {
-        "required": bool(required),
-        "changed_files_count": len(changed_files),
-        "gate": gate,
-    }
     print(json.dumps(payload, indent=2))
-    return 0 if bool(gate.get("passed", False)) else 1
+    return exit_code
 
 
 def _cmd_agent_skills_refresh(args: argparse.Namespace) -> int:
-    from annolid.core.agent.observability import emit_governance_event
-    from annolid.core.agent.skills import AgentSkillsLoader
-    from annolid.core.agent.utils import get_agent_workspace_path
+    from annolid.services.agent_workspace import refresh_agent_skills
 
-    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
-    loader = AgentSkillsLoader(workspace=workspace)
-    before = loader.list_skills(filter_unavailable=False)
-    before_names = sorted(str(s.get("name") or "") for s in before)
-    loader.refresh_snapshot()
-    skills = loader.list_skills(filter_unavailable=False)
-    after_names = sorted(str(s.get("name") or "") for s in skills)
-    added = [name for name in after_names if name not in set(before_names)]
-    removed = [name for name in before_names if name not in set(after_names)]
-    payload = {
-        "workspace": str(workspace),
-        "refreshed": True,
-        "count": len(skills),
-        "names": [str(s.get("name") or "") for s in skills],
-        "added": added,
-        "removed": removed,
-    }
-    emit_governance_event(
-        event_type="skills",
-        action="refresh",
-        outcome="ok",
-        actor="operator",
-        details={
-            "workspace": str(workspace),
-            "count_before": len(before_names),
-            "count_after": len(after_names),
-            "added": added,
-            "removed": removed,
-        },
-    )
+    payload = refresh_agent_skills(workspace=getattr(args, "workspace", None))
     print(json.dumps(payload, indent=2))
     return 0
 
 
 def _cmd_agent_skills_inspect(args: argparse.Namespace) -> int:
-    from annolid.core.agent.skills import AgentSkillsLoader
-    from annolid.core.agent.utils import get_agent_workspace_path
+    from annolid.services.agent_workspace import inspect_agent_skills
 
-    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
-    loader = AgentSkillsLoader(workspace=workspace)
-    skills = loader.list_skills(filter_unavailable=False)
-    workspace_skills = [s for s in skills if str(s.get("source") or "") == "workspace"]
-    invalid = []
-    for row in workspace_skills:
-        if bool(row.get("manifest_valid", True)):
-            continue
-        invalid.append(
-            {
-                "name": str(row.get("name") or ""),
-                "path": str(row.get("path") or ""),
-                "manifest_errors": list(row.get("manifest_errors") or []),
-            }
-        )
-    payload = {
-        "workspace": str(workspace),
-        "workspace_skill_count": len(workspace_skills),
-        "invalid_manifest_count": len(invalid),
-        "invalid_skills": invalid,
-    }
+    payload = inspect_agent_skills(workspace=getattr(args, "workspace", None))
     print(json.dumps(payload, indent=2))
     return 0
 
 
 def _cmd_agent_skills_shadow(args: argparse.Namespace) -> int:
-    from annolid.core.agent.skill_registry import (
-        compare_skill_pack_shadow,
-        flatten_skills_by_name,
-    )
-    from annolid.core.agent.skills import AgentSkillsLoader
-    from annolid.core.agent.utils import get_agent_workspace_path
+    from annolid.services.agent_workspace import shadow_agent_skills
 
-    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
-    loader = AgentSkillsLoader(workspace=workspace)
-    active = flatten_skills_by_name(loader.list_skills(filter_unavailable=False))
-    payload = compare_skill_pack_shadow(
-        active_skills=active,
-        candidate_pack_dir=Path(args.candidate_pack),
+    payload = shadow_agent_skills(
+        workspace=getattr(args, "workspace", None),
+        candidate_pack=args.candidate_pack,
     )
-    payload["workspace"] = str(workspace)
     print(json.dumps(payload, indent=2))
     return 0
 
 
 def _cmd_agent_feedback_add(args: argparse.Namespace) -> int:
-    from annolid.core.agent.eval.telemetry import RunTraceStore
-    from annolid.core.agent.utils import get_agent_workspace_path
+    from annolid.services.agent_workspace import add_agent_feedback
 
-    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
-    store = RunTraceStore(workspace)
-    row = store.capture_feedback(
+    payload = add_agent_feedback(
+        workspace=getattr(args, "workspace", None),
         session_id=str(getattr(args, "session_id", "") or "default"),
         rating=int(args.rating),
         comment=str(getattr(args, "comment", "") or ""),
         trace_id=str(getattr(args, "trace_id", "") or ""),
         expected_substring=str(getattr(args, "expected_substring", "") or ""),
     )
-    payload = {
-        "workspace": str(workspace),
-        "saved": bool(row),
-        "feedback": row,
-    }
     print(json.dumps(payload, indent=2))
     return 0
 
 
 def _cmd_agent_memory_flush(args: argparse.Namespace) -> int:
-    from annolid.core.agent.observability import emit_governance_event
-    from annolid.core.agent.memory import AgentMemoryStore
-    from annolid.core.agent.utils import get_agent_workspace_path
+    from annolid.services.agent_workspace import flush_agent_memory
 
-    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
-    store = AgentMemoryStore(workspace)
-    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    note = str(getattr(args, "note", "") or "").strip() or "operator memory flush"
-    session_id = str(getattr(args, "session_id", "") or "").strip()
-    entry = (
-        f"[{stamp}] {note}"
-        if not session_id
-        else f"[{stamp}] {note} (session_id={session_id})"
-    )
-    store.append_today(entry)
-    store.append_history(entry)
-    payload = {
-        "workspace": str(workspace),
-        "flushed": True,
-        "today_file": str(store.get_today_file()),
-        "history_file": str(store.history_file),
-        "entry": entry,
-    }
-    emit_governance_event(
-        event_type="memory",
-        action="operator_flush",
-        outcome="ok",
-        actor="operator",
-        details={
-            "workspace": str(workspace),
-            "session_id": session_id,
-            "entry_chars": len(entry),
-        },
+    payload = flush_agent_memory(
+        workspace=getattr(args, "workspace", None),
+        session_id=getattr(args, "session_id", None),
+        note=getattr(args, "note", None),
     )
     print(json.dumps(payload, indent=2))
     return 0
 
 
 def _cmd_agent_memory_inspect(args: argparse.Namespace) -> int:
-    from annolid.core.agent.memory import AgentMemoryStore
-    from annolid.core.agent.utils import get_agent_workspace_path
+    from annolid.services.agent_workspace import inspect_agent_memory
 
-    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
-    store = AgentMemoryStore(workspace)
-    payload = {
-        "workspace": str(workspace),
-        "memory_dir": str(store.memory_dir),
-        "retrieval_plugin": store.retrieval_plugin_name,
-        "today_file": str(store.get_today_file()),
-        "long_term_file": str(store.memory_file),
-        "history_file": str(store.history_file),
-    }
+    payload = inspect_agent_memory(workspace=getattr(args, "workspace", None))
     print(json.dumps(payload, indent=2))
     return 0
 
 
 def _cmd_agent_acp_bridge(args: argparse.Namespace) -> int:
-    from annolid.core.agent.acp_stdio_bridge import run_stdio_acp_bridge
+    from annolid.services.agent_bridge import run_agent_acp_bridge
 
-    return int(run_stdio_acp_bridge(workspace=getattr(args, "workspace", None)))
+    return run_agent_acp_bridge(workspace=getattr(args, "workspace", None))
 
 
 def _cmd_update_check(args: argparse.Namespace) -> int:
-    from annolid.core.agent.update_manager.manager import SignedUpdateManager
+    from annolid.services.agent_update import check_for_agent_update
 
-    manager = SignedUpdateManager(project=str(args.project or "annolid"))
-    plan = manager.stage(
+    payload = check_for_agent_update(
+        project=str(args.project or "annolid"),
         channel=str(args.channel or "stable"),
         timeout_s=float(args.timeout_s),
         require_signature=bool(args.require_signature),
     )
-    print(json.dumps(plan.to_dict(), indent=2))
+    print(json.dumps(payload, indent=2))
     return 0
 
 
 def _cmd_update_run(args: argparse.Namespace) -> int:
-    from annolid.core.agent.update_manager.canary import CanaryPolicy
-    from annolid.core.agent.update_manager.manager import SignedUpdateManager
+    from annolid.services.agent_update import run_agent_update
 
-    manager = SignedUpdateManager(project=str(args.project or "annolid"))
-    plan = manager.stage(
+    payload, exit_code = run_agent_update(
+        project=str(args.project or "annolid"),
         channel=str(args.channel or "stable"),
         timeout_s=float(args.timeout_s),
         require_signature=bool(args.require_signature),
-    )
-    canary_metrics = None
-    if args.canary_metrics:
-        canary_metrics = json.loads(
-            Path(args.canary_metrics).expanduser().resolve().read_text(encoding="utf-8")
-        )
-    canary_policy = CanaryPolicy(
-        min_samples=int(args.canary_min_samples),
-        max_failure_rate=float(args.canary_max_failure_rate),
-        max_regressions=int(args.canary_max_regressions),
-    )
-    payload = manager.run(
-        plan,
         execute=bool(args.execute),
-        run_post_check=not bool(args.skip_post_check),
-        canary_metrics=canary_metrics,
-        canary_policy=canary_policy,
+        skip_post_check=bool(args.skip_post_check),
+        canary_metrics=args.canary_metrics,
+        canary_min_samples=int(args.canary_min_samples),
+        canary_max_failure_rate=float(args.canary_max_failure_rate),
+        canary_max_regressions=int(args.canary_max_regressions),
     )
     print(json.dumps(payload, indent=2))
-    status = str(payload.get("status") or "").strip().lower()
-    return 0 if status in {"staged", "updated"} else 1
+    return exit_code
 
 
 def _cmd_update_rollback(args: argparse.Namespace) -> int:
-    from annolid.core.agent.update_manager.rollback import (
-        build_rollback_plan,
-        execute_rollback,
-    )
+    from annolid.services.agent_update import rollback_agent_update
 
-    plan = build_rollback_plan(
+    payload, exit_code = rollback_agent_update(
         install_mode=str(args.install_mode or "package"),
         project=str(args.project or "annolid"),
         previous_version=str(args.previous_version or ""),
+        execute=bool(args.execute),
     )
-    payload = execute_rollback(plan, execute=bool(args.execute))
     print(json.dumps(payload, indent=2))
-    return 0 if bool(payload.get("ok", False)) else 1
+    return exit_code
 
 
 def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
@@ -1684,138 +1099,59 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
 
 
 def _cmd_agent_cron_list(args: argparse.Namespace) -> int:
-    service = _agent_cron_service()
-    jobs = service.list_jobs(include_disabled=bool(args.all))
-    rows = []
-    for j in jobs:
-        rows.append(
-            {
-                "id": j.id,
-                "name": j.name,
-                "enabled": j.enabled,
-                "schedule": {
-                    "kind": j.schedule.kind,
-                    "at_ms": j.schedule.at_ms,
-                    "every_ms": j.schedule.every_ms,
-                    "expr": j.schedule.expr,
-                    "tz": j.schedule.tz,
-                },
-                "payload": {
-                    "message": j.payload.message,
-                    "deliver": j.payload.deliver,
-                    "channel": j.payload.channel,
-                    "to": j.payload.to,
-                },
-                "state": {
-                    "next_run_at_ms": j.state.next_run_at_ms,
-                    "last_run_at_ms": j.state.last_run_at_ms,
-                    "last_status": j.state.last_status,
-                    "last_error": j.state.last_error,
-                },
-            }
-        )
+    from annolid.services.agent_cron import list_agent_cron_jobs
+
+    rows = list_agent_cron_jobs(include_all=bool(args.all))
     print(json.dumps(rows, indent=2))
     return 0
 
 
 def _cmd_agent_cron_add(args: argparse.Namespace) -> int:
-    from annolid.core.agent.cron import CronPayload, CronSchedule
+    from annolid.services.agent_cron import add_agent_cron_job
 
-    def _parse_iso_datetime_ms(raw: str) -> int:
-        text = str(raw or "").strip()
-        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
-        dt = datetime.datetime.fromisoformat(normalized)
-        if dt.tzinfo is None:
-            dt = dt.astimezone()
-        return int(dt.timestamp() * 1000)
-
-    if args.every is None and args.cron_expr is None and args.at is None:
-        raise SystemExit("Specify one of --every, --cron, or --at.")
-    if args.tz is not None and args.cron_expr is None:
-        raise SystemExit("--tz can only be used with --cron.")
-
-    if args.at is not None:
-        try:
-            at_ms = _parse_iso_datetime_ms(str(args.at))
-        except ValueError as exc:
-            raise SystemExit(f"Invalid --at value: {args.at}") from exc
-        schedule = CronSchedule(kind="at", at_ms=at_ms)
-        delete_after_run = True
-    elif args.every is not None:
-        every = int(args.every)
-        if every <= 0:
-            raise SystemExit("--every must be > 0")
-        schedule = CronSchedule(kind="every", every_ms=every * 1000)
-        delete_after_run = False
-    else:
-        schedule = CronSchedule(
-            kind="cron",
-            expr=str(args.cron_expr),
-            tz=(str(args.tz) if args.tz else None),
-        )
-        delete_after_run = False
-
-    payload = CronPayload(
-        kind="agent_turn",
+    payload = add_agent_cron_job(
+        name=str(args.name),
         message=str(args.message),
         deliver=bool(args.deliver),
         channel=(str(args.channel) if args.channel else None),
         to=(str(args.to) if args.to else None),
+        every=args.every,
+        cron_expr=args.cron_expr,
+        at=args.at,
+        tz=args.tz,
     )
-    service = _agent_cron_service()
-    try:
-        job = service.add_job(
-            name=str(args.name),
-            schedule=schedule,
-            payload=payload,
-            delete_after_run=delete_after_run,
-        )
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
-    print(
-        json.dumps(
-            {
-                "id": job.id,
-                "name": job.name,
-                "enabled": job.enabled,
-                "next_run_at_ms": job.state.next_run_at_ms,
-            },
-            indent=2,
-        )
-    )
+    print(json.dumps(payload, indent=2))
     return 0
 
 
 def _cmd_agent_cron_remove(args: argparse.Namespace) -> int:
-    service = _agent_cron_service()
-    ok = service.remove_job(str(args.job_id))
-    print(json.dumps({"removed": bool(ok), "job_id": str(args.job_id)}, indent=2))
-    return 0 if ok else 1
+    from annolid.services.agent_cron import remove_agent_cron_job
+
+    payload, exit_code = remove_agent_cron_job(job_id=str(args.job_id))
+    print(json.dumps(payload, indent=2))
+    return exit_code
 
 
 def _cmd_agent_cron_enable(args: argparse.Namespace) -> int:
-    service = _agent_cron_service()
-    job = service.enable_job(str(args.job_id), enabled=not bool(args.disable))
-    if job is None:
-        print(json.dumps({"updated": False, "job_id": str(args.job_id)}, indent=2))
-        return 1
-    print(
-        json.dumps(
-            {"updated": True, "job_id": job.id, "enabled": bool(job.enabled)}, indent=2
-        )
+    from annolid.services.agent_cron import set_agent_cron_job_enabled
+
+    payload, exit_code = set_agent_cron_job_enabled(
+        job_id=str(args.job_id),
+        enabled=not bool(args.disable),
     )
-    return 0
+    print(json.dumps(payload, indent=2))
+    return exit_code
 
 
 def _cmd_agent_cron_run(args: argparse.Namespace) -> int:
-    service = _agent_cron_service()
+    from annolid.services.agent_cron import run_agent_cron_job
 
-    async def _run() -> bool:
-        return await service.run_job(str(args.job_id), force=bool(args.force))
-
-    ok = bool(asyncio.run(_run()))
-    print(json.dumps({"ran": ok, "job_id": str(args.job_id)}, indent=2))
-    return 0 if ok else 1
+    payload, exit_code = run_agent_cron_job(
+        job_id=str(args.job_id),
+        force=bool(args.force),
+    )
+    print(json.dumps(payload, indent=2))
+    return exit_code
 
 
 def _build_root_parser() -> argparse.ArgumentParser:

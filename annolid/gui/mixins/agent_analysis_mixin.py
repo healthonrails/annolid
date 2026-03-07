@@ -248,7 +248,7 @@ class AgentAnalysisMixin:
                 return
 
             try:
-                from annolid.core.behavior.spec import load_behavior_spec
+                from annolid.domain import load_behavior_spec
 
                 schema, _ = load_behavior_spec(
                     path=config.get("schema_path"),

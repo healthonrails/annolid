@@ -15,8 +15,8 @@ from qtpy.QtCore import Qt
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.gui.label_file import LabelFile, LabelFileError
 from annolid.gui.window_base import PY2, utils
-from annolid.utils.annotation_store import AnnotationStore
-from annolid.utils.files import (
+from annolid.infrastructure import AnnotationStore
+from annolid.infrastructure.filesystem import (
     find_manual_labeled_json_files,
     get_frame_number_from_json,
 )

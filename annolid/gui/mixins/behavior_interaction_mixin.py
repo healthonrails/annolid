@@ -8,9 +8,9 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 from qtpy import QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
-from annolid.core.behavior.spec import ProjectSchema
+from annolid.domain import ProjectSchema
 from annolid.gui.behavior_controller import BehaviorEvent
-from annolid.utils.annotation_store import AnnotationStore
+from annolid.infrastructure import AnnotationStore
 from annolid.utils.logger import logger
 
 

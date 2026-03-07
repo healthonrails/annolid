@@ -9,8 +9,8 @@ from qtpy import QtCore
 
 from annolid.gui.label_file import LabelFile, LabelFileError
 from annolid.gui.shape import Shape
+from annolid.infrastructure import AnnotationStore
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
-from annolid.utils.annotation_store import AnnotationStore
 from annolid.utils.logger import logger
 
 

@@ -19,7 +19,6 @@ from typing import Mapping
 from qtpy import QtCore
 from qtpy.QtCore import QRunnable
 
-from annolid.core.agent.loop import AgentLoop
 from annolid.core.agent.config import load_config
 from annolid.core.agent.memory import AgentMemoryStore
 from annolid.core.agent.providers import (
@@ -36,10 +35,6 @@ from annolid.core.agent.providers.background_chat import (
 )
 from annolid.core.agent.providers.background_chat import (
     _OLLAMA_TOOL_SUPPORT_CACHE as _PROVIDER_OLLAMA_TOOL_SUPPORT_CACHE,
-)
-from annolid.core.agent.session_manager import (
-    AgentSessionManager,
-    PersistentSessionStore,
 )
 from annolid.core.agent.bus import InboundMessage as BusInboundMessage
 from annolid.core.agent.tools import (
@@ -69,10 +64,6 @@ from annolid.core.agent.gui_backend.context_blocks import (
     build_live_pdf_context_prompt_block,
     build_live_web_context_prompt_block,
 )
-from annolid.core.agent.gui_backend.context_setup import (
-    load_execution_prerequisites as load_gui_execution_prerequisites,
-    prepare_context_tools as prepare_gui_context_tools,
-)
 from annolid.core.agent.gui_backend.fallbacks import (
     candidate_web_urls_for_prompt,
     extract_page_text_from_web_steps,
@@ -97,49 +88,16 @@ from annolid.core.agent.gui_backend.heuristics import (
     topic_tokens,
 )
 from annolid.core.agent.gui_backend.paths import (
-    build_pdf_search_roots,
     build_workspace_roots,
     extract_pdf_path_candidates,
     extract_video_path_candidates,
     find_video_by_basename_in_roots,
     list_available_pdfs_in_roots,
-    resolve_pdf_path_for_roots,
     resolve_video_path_for_roots,
 )
-from annolid.core.agent.gui_backend.router import execute_direct_gui_command
 from annolid.core.agent.gui_backend.runtime_flow import (
     emit_agent_loop_result,
     maybe_handle_ollama_plain_mode,
-)
-from annolid.core.agent.gui_backend.tool_registration import register_chat_gui_tools
-from annolid.core.agent.gui_backend.tool_handlers_web_pdf import (
-    web_capture_screenshot as gui_web_capture_screenshot,
-    pdf_find_sections as gui_pdf_find_sections,
-    pdf_get_state as gui_pdf_get_state,
-    pdf_get_text as gui_pdf_get_text,
-    web_click as gui_web_click,
-    web_describe_view as gui_web_describe_view,
-    web_extract_structured as gui_web_extract_structured,
-    web_find_forms as gui_web_find_forms,
-    web_get_dom_text as gui_web_get_dom_text,
-    web_get_state as gui_web_get_state,
-    web_run_steps as gui_web_run_steps,
-    web_scroll as gui_web_scroll,
-    web_type as gui_web_type,
-)
-from annolid.core.agent.gui_backend.tool_handlers_openers import (
-    extract_first_web_url as gui_extract_first_web_url,
-    open_in_browser_tool as gui_open_in_browser_tool,
-    open_pdf_tool as gui_open_pdf_tool,
-    open_url_tool as gui_open_url_tool,
-)
-from annolid.core.agent.gui_backend.tool_handlers_video import (
-    open_video_tool as gui_open_video_tool,
-    resolve_video_path_for_gui_tool as gui_resolve_video_path_for_gui_tool,
-)
-from annolid.core.agent.gui_backend.tool_handlers_video_workflow import (
-    label_behavior_segments_tool as gui_label_behavior_segments_tool,
-    segment_track_video_tool as gui_segment_track_video_tool,
 )
 from annolid.core.agent.gui_backend.tool_handlers_chat_controls import (
     run_ai_text_segmentation_tool as gui_run_ai_text_segmentation_tool,
@@ -195,31 +153,6 @@ from annolid.core.agent.gui_backend.tool_handlers_shape_files import (
     list_shapes_in_annotation_tool as gui_list_shapes_in_annotation_tool,
     relabel_shapes_in_annotation_tool as gui_relabel_shapes_in_annotation_tool,
 )
-from annolid.core.agent.gui_backend.session_io import (
-    emit_chunk as gui_emit_chunk,
-    emit_final as gui_emit_final,
-    emit_progress as gui_emit_progress,
-    load_history_messages as gui_load_history_messages,
-    persist_turn as gui_persist_turn,
-)
-from annolid.core.agent.gui_backend.provider_fallback import (
-    format_provider_config_error as gui_format_provider_config_error,
-    is_provider_config_error as gui_is_provider_config_error,
-    is_provider_timeout_error as gui_is_provider_timeout_error,
-    run_provider_fallback as gui_run_provider_fallback,
-)
-from annolid.core.agent.gui_backend.provider_runtime import (
-    has_image_context as gui_has_image_context,
-    run_fast_mode as gui_run_fast_mode,
-    run_fast_provider_chat as gui_run_fast_provider_chat,
-    run_gemini_provider_chat as gui_run_gemini_provider_chat,
-    run_ollama_chat as gui_run_ollama_chat,
-    run_openai_chat as gui_run_openai_chat,
-)
-from annolid.core.agent.gui_backend.provider_dependencies import (
-    format_dependency_error as gui_format_dependency_error,
-    provider_dependency_error as gui_provider_dependency_error,
-)
 from annolid.core.agent.gui_backend.ollama_adapter import (
     build_gui_ollama_llm_callable,
     collect_gui_ollama_stream,
@@ -227,24 +160,6 @@ from annolid.core.agent.gui_backend.ollama_adapter import (
     format_gui_tool_trace,
     normalize_gui_messages_for_ollama,
     parse_gui_ollama_tool_calls,
-)
-from annolid.core.agent.gui_backend.runtime_config import (
-    agent_loop_llm_timeout_seconds as gui_agent_loop_llm_timeout_seconds,
-    agent_loop_tool_timeout_seconds as gui_agent_loop_tool_timeout_seconds,
-    browser_first_for_web as gui_browser_first_for_web,
-    fallback_retry_timeout_seconds as gui_fallback_retry_timeout_seconds,
-    fallback_timeout_retry_seconds as gui_fallback_timeout_retry_seconds,
-    fast_mode_timeout_seconds as gui_fast_mode_timeout_seconds,
-    ollama_agent_plain_timeout_seconds as gui_ollama_agent_plain_timeout_seconds,
-    ollama_agent_tool_timeout_seconds as gui_ollama_agent_tool_timeout_seconds,
-    ollama_plain_recovery_nudge_timeout_seconds as gui_ollama_plain_recovery_nudge_timeout_seconds,
-    ollama_plain_recovery_timeout_seconds as gui_ollama_plain_recovery_timeout_seconds,
-)
-from annolid.core.agent.gui_backend.widget_bridge import (
-    build_gui_context_payload as gui_build_gui_context_payload,
-    get_widget_action_result as gui_get_widget_action_result,
-    invoke_widget_json_slot as gui_invoke_widget_json_slot,
-    invoke_widget_slot as gui_invoke_widget_slot,
 )
 from annolid.core.agent.gui_backend.response_finalize import (
     apply_direct_gui_fallback as gui_apply_direct_gui_fallback,
@@ -262,11 +177,7 @@ from annolid.core.agent.gui_backend.tutorials import (
 )
 from annolid.core.agent.gui_backend.telemetry import (
     log_agent_result as gui_log_agent_result,
-    log_runtime_timeouts as gui_log_runtime_timeouts,
     wrap_tool_callback as gui_wrap_tool_callback,
-)
-from annolid.core.agent.gui_backend.direct_commands import (
-    run_awaitable_sync as gui_run_awaitable_sync,
 )
 from annolid.core.agent.gui_backend.prompt_builder import (
     PromptBuildInputs,
@@ -284,6 +195,93 @@ from annolid.core.agent.gui_backend.turn_state import (
     TURN_STATUS_RUNNING,
 )
 from annolid.gui.realtime_launch import build_realtime_launch_payload
+from annolid.services.chat_runtime import (
+    build_chat_pdf_search_roots,
+    build_chat_vcs_read_roots,
+    get_chat_attachment_roots,
+    get_chat_camera_snapshots_dir,
+    get_chat_email_defaults,
+    get_chat_realtime_defaults,
+    get_chat_tutorials_dir,
+    get_chat_workspace,
+    read_chat_memory_text,
+    resolve_chat_pdf_path,
+)
+from annolid.services.chat_context import (
+    load_chat_execution_prerequisites,
+    prepare_chat_context_tools,
+    register_chat_gui_toolset,
+)
+from annolid.services.chat_provider_runtime import (
+    build_chat_agent_loop,
+    chat_agent_loop_llm_timeout_seconds,
+    chat_agent_loop_tool_timeout_seconds,
+    chat_browser_first_for_web,
+    chat_fallback_retry_timeout_seconds,
+    chat_fallback_timeout_retry_seconds,
+    chat_fast_mode_timeout_seconds,
+    chat_ollama_agent_plain_timeout_seconds,
+    chat_ollama_agent_tool_timeout_seconds,
+    chat_ollama_plain_recovery_nudge_timeout_seconds,
+    chat_ollama_plain_recovery_timeout_seconds,
+    chat_provider_dependency_error,
+    format_chat_dependency_error,
+    format_chat_provider_config_error,
+    has_chat_image_context,
+    is_chat_provider_config_error,
+    is_chat_provider_timeout_error,
+    log_chat_runtime_timeouts,
+    resolve_chat_provider_kind,
+    run_chat_fast_mode,
+    run_chat_fast_provider_chat,
+    run_chat_gemini,
+    run_chat_ollama,
+    run_chat_openai,
+    run_chat_provider_fallback,
+)
+from annolid.services.chat_session import (
+    PersistentSessionStore,
+    clear_chat_session as clear_chat_session_service,
+    emit_chat_chunk,
+    emit_chat_final,
+    emit_chat_progress,
+    get_chat_session_store,
+    load_chat_history_messages,
+    persist_chat_turn,
+)
+from annolid.services.chat_widget_bridge import (
+    build_chat_gui_context_payload,
+    execute_chat_direct_gui_command,
+    get_chat_widget_action_result,
+    invoke_chat_widget_json_slot,
+    invoke_chat_widget_slot,
+    run_chat_awaitable_sync,
+)
+from annolid.services.chat_web_pdf import (
+    capture_chat_web_screenshot,
+    click_chat_web,
+    describe_chat_web_view,
+    extract_chat_first_web_url,
+    extract_chat_web_structured,
+    find_chat_pdf_sections,
+    find_chat_web_forms,
+    get_chat_pdf_state,
+    get_chat_pdf_text,
+    get_chat_web_dom_text,
+    get_chat_web_state,
+    open_chat_in_browser_tool,
+    open_chat_pdf_tool,
+    open_chat_url_tool,
+    run_chat_web_steps,
+    scroll_chat_web,
+    type_chat_web,
+)
+from annolid.services.chat_video import (
+    label_chat_behavior_segments_tool,
+    open_chat_video_tool,
+    resolve_chat_video_path_for_gui_tool,
+    segment_track_chat_video_tool,
+)
 from annolid.utils.llm_settings import resolve_agent_runtime_config
 from annolid.utils.citations import (
     BibEntry,
@@ -298,13 +296,11 @@ from annolid.utils.citations import (
     validate_citation_metadata,
 )
 from annolid.utils.logger import logger
-from annolid.utils.llm_settings import provider_kind
 
 # Backward-compat alias used by tests that monkeypatch invokeMethod.
 QMetaObject = QtCore.QMetaObject
 
 
-_SESSION_STORE: Optional[PersistentSessionStore] = None
 _GUI_ALWAYS_DISABLED_TOOLS = {"spawn", "message"}
 _GUI_WEB_TOOLS = {"web_search", "web_fetch"}
 # Backward-compat aliases retained for tests/internal callers that reference
@@ -316,13 +312,6 @@ _PROMPT_FILE_CACHE_LOCK = Lock()
 _PROMPT_FILE_CACHE: Dict[Tuple[str, int], Tuple[int, int, str]] = {}
 _SKILL_DIR_CACHE_LOCK = Lock()
 _SKILL_DIR_CACHE: Dict[str, Tuple[int, List[str]]] = {}
-
-
-def _get_session_store() -> PersistentSessionStore:
-    global _SESSION_STORE
-    if _SESSION_STORE is None:
-        _SESSION_STORE = PersistentSessionStore(AgentSessionManager())
-    return _SESSION_STORE
 
 
 def _read_text_limited_cached(path: Path, max_chars: int) -> str:
@@ -400,7 +389,7 @@ def _list_workspace_skill_names_cached(skills_dir: Path) -> List[str]:
 
 def clear_chat_session(session_id: str) -> None:
     """Clear persisted chat history/facts for a specific GUI session."""
-    _get_session_store().clear_session(str(session_id or "gui:annolid_bot:default"))
+    clear_chat_session_service(session_id)
 
 
 @dataclass(frozen=True)
@@ -506,8 +495,8 @@ class StreamingChatTask(QRunnable):
             self.enable_web_tools = bool(enable_web_tools)
             self.chat_mode = str(chat_mode or "default").strip().lower() or "default"
         self.widget = widget
-        self.session_store = session_store or _get_session_store()
-        self.workspace = get_agent_workspace_path()
+        self.session_store = session_store or get_chat_session_store()
+        self.workspace = get_chat_workspace()
         self.workspace_memory = AgentMemoryStore(self.workspace)
         runtime_cfg = resolve_agent_runtime_config(profile="playground")
         self.max_history_messages = int(runtime_cfg.max_history_messages)
@@ -548,7 +537,7 @@ class StreamingChatTask(QRunnable):
             return
         self._cancelled_notice_emitted = True
         self._set_turn_status(TURN_STATUS_CANCELLED)
-        gui_emit_final(
+        emit_chat_final(
             widget=self.widget,
             message="Stopped by user.",
             is_error=False,
@@ -700,7 +689,7 @@ class StreamingChatTask(QRunnable):
             self._run_provider_fallback(exc)
 
     def _run_provider_fallback(self, original_error: Exception) -> None:
-        gui_run_provider_fallback(
+        run_chat_provider_fallback(
             original_error=original_error,
             settings=self.settings,
             provider=self.provider,
@@ -725,17 +714,17 @@ class StreamingChatTask(QRunnable):
 
     @staticmethod
     def _is_provider_config_error(exc: Exception | str) -> bool:
-        return gui_is_provider_config_error(exc)
+        return is_chat_provider_config_error(exc)
 
     def _format_provider_config_error(self, raw_error: str) -> str:
-        return gui_format_provider_config_error(raw_error, provider=self.provider)
+        return format_chat_provider_config_error(raw_error, provider=self.provider)
 
     @staticmethod
     def _is_provider_timeout_error(exc: Exception | str) -> bool:
-        return gui_is_provider_timeout_error(exc)
+        return is_chat_provider_timeout_error(exc)
 
     def _has_image_context(self) -> bool:
-        return gui_has_image_context(self.image_path)
+        return has_chat_image_context(self.image_path)
 
     def _should_run_fast_mode(self) -> bool:
         if self.chat_mode == "vision_describe":
@@ -743,7 +732,7 @@ class StreamingChatTask(QRunnable):
         return False
 
     def _run_fast_mode(self) -> None:
-        gui_run_fast_mode(
+        run_chat_fast_mode(
             chat_mode=self.chat_mode,
             run_fast_provider_chat=lambda include_image,
             include_history: self._run_fast_provider_chat(
@@ -755,7 +744,7 @@ class StreamingChatTask(QRunnable):
     def _run_fast_provider_chat(
         self, *, include_image: bool, include_history: bool
     ) -> None:
-        gui_run_fast_provider_chat(
+        run_chat_fast_provider_chat(
             prompt=self.prompt,
             image_path=self.image_path,
             model=self.model,
@@ -777,63 +766,56 @@ class StreamingChatTask(QRunnable):
         )
 
     def _fast_mode_timeout_seconds(self) -> float:
-        return gui_fast_mode_timeout_seconds(self.settings)
+        return chat_fast_mode_timeout_seconds(self.settings)
 
     def _agent_loop_llm_timeout_seconds(self, *, prompt_needs_tools: bool) -> float:
-        base = gui_agent_loop_llm_timeout_seconds(
-            self.settings, prompt_needs_tools=prompt_needs_tools
+        return chat_agent_loop_llm_timeout_seconds(
+            settings=self.settings,
+            provider=self.provider,
+            prompt_needs_tools=prompt_needs_tools,
         )
-        provider = str(self.provider or "").strip().lower()
-        if provider == "nvidia":
-            return max(base, 420.0 if prompt_needs_tools else 180.0)
-        return base
 
     def _ollama_agent_tool_timeout_seconds(self) -> float:
-        return gui_ollama_agent_tool_timeout_seconds(self.settings)
+        return chat_ollama_agent_tool_timeout_seconds(self.settings)
 
     def _agent_loop_tool_timeout_seconds(self) -> float:
-        base = gui_agent_loop_tool_timeout_seconds(
-            self.settings, provider=self.provider
+        return chat_agent_loop_tool_timeout_seconds(
+            settings=self.settings,
+            provider=self.provider,
+            prompt=self.prompt,
         )
-        if self.prompt and (
-            "swarm" in self.prompt.lower() or "agents" in self.prompt.lower()
-        ):
-            # Enforce a 10-minute floor for swarm-related tool calls to prevent timeouts
-            return max(base, 600.0)
-        return base
 
     def _browser_first_for_web(self) -> bool:
-        return gui_browser_first_for_web(self.settings)
+        return chat_browser_first_for_web(self.settings)
 
     def _ollama_agent_plain_timeout_seconds(self) -> float:
-        return gui_ollama_agent_plain_timeout_seconds(self.settings)
+        return chat_ollama_agent_plain_timeout_seconds(self.settings)
 
     def _ollama_plain_recovery_timeout_seconds(self) -> float:
-        return gui_ollama_plain_recovery_timeout_seconds(self.settings)
+        return chat_ollama_plain_recovery_timeout_seconds(self.settings)
 
     def _ollama_plain_recovery_nudge_timeout_seconds(self) -> float:
-        return gui_ollama_plain_recovery_nudge_timeout_seconds(self.settings)
+        return chat_ollama_plain_recovery_nudge_timeout_seconds(self.settings)
 
     def _fallback_retry_timeout_seconds(self) -> float:
-        base = gui_fallback_retry_timeout_seconds(self.settings)
-        provider = str(self.provider or "").strip().lower()
-        if provider == "nvidia":
-            return max(base, 60.0)
-        return base
+        return chat_fallback_retry_timeout_seconds(
+            settings=self.settings,
+            provider=self.provider,
+        )
 
     def _fallback_timeout_retry_seconds(self) -> float:
-        return gui_fallback_timeout_retry_seconds(
-            self.settings,
+        return chat_fallback_timeout_retry_seconds(
+            settings=self.settings,
             prompt_needs_tools=self._prompt_may_need_tools(self.prompt),
         )
 
     def _provider_dependency_error(self) -> Optional[str]:
-        return gui_provider_dependency_error(
+        return chat_provider_dependency_error(
             settings=self.settings, provider=self.provider
         )
 
     def _format_dependency_error(self, raw_error: str) -> str:
-        return gui_format_dependency_error(
+        return format_chat_dependency_error(
             raw_error=raw_error,
             settings=self.settings,
             provider=self.provider,
@@ -842,12 +824,12 @@ class StreamingChatTask(QRunnable):
     def _emit_chunk(self, chunk: str) -> None:
         if self._is_cancel_requested():
             return
-        gui_emit_chunk(widget=self.widget, chunk=chunk, turn_id=self.turn_id)
+        emit_chat_chunk(widget=self.widget, chunk=chunk, turn_id=self.turn_id)
 
     def _emit_progress(self, update: str) -> None:
         if self._is_cancel_requested():
             return
-        self._last_progress_update = gui_emit_progress(
+        self._last_progress_update = emit_chat_progress(
             widget=self.widget,
             update=update,
             last_progress_update=self._last_progress_update,
@@ -875,7 +857,7 @@ class StreamingChatTask(QRunnable):
             self._set_turn_status(
                 TURN_STATUS_FAILED if is_error else TURN_STATUS_COMPLETED
             )
-        gui_emit_final(
+        emit_chat_final(
             widget=self.widget,
             message=message,
             is_error=is_error,
@@ -886,7 +868,7 @@ class StreamingChatTask(QRunnable):
         )
 
     def _load_history_messages(self) -> List[Dict[str, Any]]:
-        return gui_load_history_messages(
+        return load_chat_history_messages(
             session_store=self.session_store,
             session_id=self.session_id,
             max_history_messages=self.max_history_messages,
@@ -901,7 +883,7 @@ class StreamingChatTask(QRunnable):
     ) -> None:
         if self._is_cancel_requested():
             return
-        gui_persist_turn(
+        persist_chat_turn(
             user_text=user_text,
             assistant_text=assistant_text,
             session_id=self.session_id,
@@ -920,7 +902,9 @@ class StreamingChatTask(QRunnable):
         if await self._try_execute_direct_gui_command():
             return True
         self._raise_if_cancelled()
-        provider_kind_name = provider_kind(self.settings, self.provider)
+        provider_kind_name = resolve_chat_provider_kind(
+            settings=self.settings, provider=self.provider
+        )
         if provider_kind_name == "codex_cli":
             self._emit_progress("Using Codex CLI runtime")
             self._run_openai(
@@ -1018,7 +1002,7 @@ class StreamingChatTask(QRunnable):
         return {}
 
     def _log_runtime_timeouts(self, *, prompt_needs_tools: bool) -> None:
-        gui_log_runtime_timeouts(
+        log_chat_runtime_timeouts(
             logger=logger,
             session_id=self.session_id,
             model=self.model,
@@ -1038,13 +1022,12 @@ class StreamingChatTask(QRunnable):
         context: _AgentExecutionContext,
         prompt_needs_tools: bool,
         mcp_servers: Dict[str, Any],
-    ) -> AgentLoop:
-        return AgentLoop(
+    ):
+        return build_chat_agent_loop(
             tools=context.tools,
             llm_callable=self._resolve_loop_llm_callable(),
             provider=self.provider,
             model=self.model,
-            profile="playground",
             memory_store=self.session_store,
             workspace=str(context.workspace),
             allowed_read_roots=context.allowed_read_roots,
@@ -1174,7 +1157,7 @@ class StreamingChatTask(QRunnable):
         profile_t0: float,
     ) -> Tuple[Path, Any, List[str], float, float]:
         del profile_t0
-        prepared = load_gui_execution_prerequisites()
+        prepared = load_chat_execution_prerequisites()
         return (
             prepared.workspace,
             prepared.agent_cfg,
@@ -1191,7 +1174,7 @@ class StreamingChatTask(QRunnable):
         allowed_read_roots: List[str],
         agent_cfg: Any,
     ) -> Tuple[FunctionToolRegistry, str, str, float, float, float, float]:
-        prepared = await prepare_gui_context_tools(
+        prepared = await prepare_chat_context_tools(
             include_tools=include_tools,
             workspace=workspace,
             allowed_read_roots=allowed_read_roots,
@@ -1215,7 +1198,7 @@ class StreamingChatTask(QRunnable):
         )
 
     def _register_gui_tools(self, tools: FunctionToolRegistry) -> None:
-        register_chat_gui_tools(
+        register_chat_gui_toolset(
             tools,
             context_callback=self._build_gui_context_payload,
             image_path_callback=self._get_shared_image_path,
@@ -1518,7 +1501,7 @@ class StreamingChatTask(QRunnable):
         return str(self.image_path or "")
 
     def _build_gui_context_payload(self) -> Dict[str, Any]:
-        return gui_build_gui_context_payload(
+        return build_chat_gui_context_payload(
             session_id=self.session_id,
             provider=self.provider,
             model=self.model,
@@ -1530,7 +1513,7 @@ class StreamingChatTask(QRunnable):
         )
 
     def _invoke_widget_slot(self, slot_name: str, *qargs: Any) -> bool:
-        return gui_invoke_widget_slot(
+        return invoke_chat_widget_slot(
             widget=self.widget,
             session_id=self.session_id,
             slot_name=slot_name,
@@ -1539,7 +1522,7 @@ class StreamingChatTask(QRunnable):
         )
 
     def _invoke_widget_json_slot(self, slot_name: str, *qargs: Any) -> Dict[str, Any]:
-        return gui_invoke_widget_json_slot(
+        return invoke_chat_widget_json_slot(
             widget=self.widget,
             invoke_slot=self._invoke_widget_slot,
             slot_name=slot_name,
@@ -1547,7 +1530,7 @@ class StreamingChatTask(QRunnable):
         )
 
     def _tool_gui_open_video(self, path: str) -> Dict[str, Any]:
-        return gui_open_video_tool(
+        return open_chat_video_tool(
             path,
             resolve_video_path=self._resolve_video_path_for_gui_tool,
             invoke_open_video=lambda video_path: self._invoke_widget_slot(
@@ -1556,7 +1539,7 @@ class StreamingChatTask(QRunnable):
         )
 
     async def _tool_gui_open_url(self, url: str) -> Dict[str, Any]:
-        return await gui_open_url_tool(
+        return await open_chat_url_tool(
             url,
             extract_first_web_url_fn=self._extract_first_web_url,
             emit_progress=self._emit_progress,
@@ -1567,7 +1550,7 @@ class StreamingChatTask(QRunnable):
         )
 
     def _tool_gui_open_in_browser(self, url: str) -> Dict[str, Any]:
-        return gui_open_in_browser_tool(
+        return open_chat_in_browser_tool(
             url,
             extract_first_web_url_fn=self._extract_first_web_url,
             invoke_open_in_browser=lambda target_url: self._invoke_widget_slot(
@@ -1596,22 +1579,22 @@ class StreamingChatTask(QRunnable):
         return {"ok": True, "queued": True, "example_id": resolved}
 
     def _tool_gui_web_get_dom_text(self, max_chars: int = 8000) -> Dict[str, Any]:
-        return gui_web_get_dom_text(
+        return get_chat_web_dom_text(
             invoke_widget_json_slot=self._invoke_widget_json_slot,
             max_chars=max_chars,
         )
 
     def _tool_gui_web_get_state(self) -> Dict[str, Any]:
-        return gui_web_get_state(invoke_widget_json_slot=self._invoke_widget_json_slot)
+        return get_chat_web_state(invoke_widget_json_slot=self._invoke_widget_json_slot)
 
     def _tool_gui_web_capture_screenshot(self, max_width: int = 1600) -> Dict[str, Any]:
-        return gui_web_capture_screenshot(
+        return capture_chat_web_screenshot(
             invoke_widget_json_slot=self._invoke_widget_json_slot,
             max_width=max_width,
         )
 
     def _tool_gui_web_describe_view(self, max_width: int = 1600) -> Dict[str, Any]:
-        return gui_web_describe_view(
+        return describe_chat_web_view(
             invoke_widget_json_slot=self._invoke_widget_json_slot,
             max_width=max_width,
         )
@@ -1625,7 +1608,7 @@ class StreamingChatTask(QRunnable):
         max_chars: int = 9000,
         include_excerpt: bool = True,
     ) -> Dict[str, Any]:
-        return gui_web_extract_structured(
+        return extract_chat_web_structured(
             get_state=self._tool_gui_web_get_state,
             get_dom_text=self._tool_gui_web_get_dom_text,
             fields=fields,
@@ -1637,7 +1620,7 @@ class StreamingChatTask(QRunnable):
         )
 
     def _tool_gui_web_click(self, selector: str) -> Dict[str, Any]:
-        return gui_web_click(
+        return click_chat_web(
             invoke_widget_json_slot=self._invoke_widget_json_slot,
             selector=selector,
         )
@@ -1645,7 +1628,7 @@ class StreamingChatTask(QRunnable):
     def _tool_gui_web_type(
         self, selector: str, text: str, submit: bool = False
     ) -> Dict[str, Any]:
-        return gui_web_type(
+        return type_chat_web(
             invoke_widget_json_slot=self._invoke_widget_json_slot,
             selector=selector,
             text=text,
@@ -1653,13 +1636,15 @@ class StreamingChatTask(QRunnable):
         )
 
     def _tool_gui_web_scroll(self, delta_y: int = 800) -> Dict[str, Any]:
-        return gui_web_scroll(
+        return scroll_chat_web(
             invoke_widget_json_slot=self._invoke_widget_json_slot,
             delta_y=delta_y,
         )
 
     def _tool_gui_web_find_forms(self) -> Dict[str, Any]:
-        return gui_web_find_forms(invoke_widget_json_slot=self._invoke_widget_json_slot)
+        return find_chat_web_forms(
+            invoke_widget_json_slot=self._invoke_widget_json_slot
+        )
 
     async def _tool_gui_web_run_steps(
         self,
@@ -1667,7 +1652,7 @@ class StreamingChatTask(QRunnable):
         stop_on_error: bool = True,
         max_steps: int = 12,
     ) -> Dict[str, Any]:
-        return await gui_web_run_steps(
+        return await run_chat_web_steps(
             steps=steps,
             stop_on_error=stop_on_error,
             max_steps=max_steps,
@@ -1685,7 +1670,7 @@ class StreamingChatTask(QRunnable):
 
     @staticmethod
     def _extract_first_web_url(text: str) -> str:
-        return gui_extract_first_web_url(
+        return extract_chat_first_web_url(
             text,
             extract_web_urls=StreamingChatTask._extract_web_urls,
         )
@@ -1695,32 +1680,13 @@ class StreamingChatTask(QRunnable):
         return extract_pdf_path_candidates(raw)
 
     def _resolve_pdf_path_for_gui_tool(self, raw_path: str) -> Optional[Path]:
-        try:
-            cfg = load_config()
-            read_roots_cfg = list(getattr(cfg.tools, "allowed_read_roots", []) or [])
-        except Exception:
-            read_roots_cfg = []
-        roots = build_workspace_roots(get_agent_workspace_path(), read_roots_cfg)
-        return resolve_pdf_path_for_roots(raw_path, roots)
+        return resolve_chat_pdf_path(raw_path)
 
     def _pdf_search_roots(self) -> List[Path]:
-        workspace = get_agent_workspace_path()
-        try:
-            cfg = load_config()
-            read_roots_cfg = list(getattr(cfg.tools, "allowed_read_roots", []) or [])
-        except Exception:
-            read_roots_cfg = []
-        return build_pdf_search_roots(workspace, read_roots_cfg)
+        return build_chat_pdf_search_roots()
 
     def _vcs_read_roots(self) -> List[str]:
-        workspace = get_agent_workspace_path()
-        try:
-            cfg = load_config()
-            read_roots_cfg = list(getattr(cfg.tools, "allowed_read_roots", []) or [])
-        except Exception:
-            read_roots_cfg = []
-        roots = build_workspace_roots(workspace, read_roots_cfg)
-        return [str(p) for p in roots]
+        return build_chat_vcs_read_roots()
 
     def _list_available_pdfs(
         self, *, limit: int = 8, max_scan: int = 40000
@@ -1732,7 +1698,7 @@ class StreamingChatTask(QRunnable):
         )
 
     async def _tool_gui_open_pdf(self, path: str = "") -> Dict[str, Any]:
-        return await gui_open_pdf_tool(
+        return await open_chat_pdf_tool(
             path,
             extract_pdf_path_candidates=self._extract_pdf_path_candidates,
             extract_web_urls=self._extract_web_urls,
@@ -1745,12 +1711,12 @@ class StreamingChatTask(QRunnable):
         )
 
     def _tool_gui_pdf_get_state(self) -> Dict[str, Any]:
-        return gui_pdf_get_state(invoke_widget_json_slot=self._invoke_widget_json_slot)
+        return get_chat_pdf_state(invoke_widget_json_slot=self._invoke_widget_json_slot)
 
     def _tool_gui_pdf_get_text(
         self, max_chars: int = 8000, pages: int = 2
     ) -> Dict[str, Any]:
-        return gui_pdf_get_text(
+        return get_chat_pdf_text(
             invoke_widget_json_slot=self._invoke_widget_json_slot,
             max_chars=max_chars,
             pages=pages,
@@ -1761,7 +1727,7 @@ class StreamingChatTask(QRunnable):
         max_sections: int = 20,
         max_pages: int = 12,
     ) -> Dict[str, Any]:
-        return gui_pdf_find_sections(
+        return find_chat_pdf_sections(
             invoke_widget_json_slot=self._invoke_widget_json_slot,
             max_sections=max_sections,
             max_pages=max_pages,
@@ -1790,14 +1756,14 @@ class StreamingChatTask(QRunnable):
 
     @staticmethod
     def _run_async(awaitable: Any) -> Any:
-        return gui_run_awaitable_sync(awaitable)
+        return run_chat_awaitable_sync(awaitable)
 
     @staticmethod
     def _extract_path_candidates(raw: str) -> List[str]:
         return extract_video_path_candidates(raw)
 
     def _resolve_video_path_for_gui_tool(self, raw_path: str) -> Optional[Path]:
-        return gui_resolve_video_path_for_gui_tool(
+        return resolve_chat_video_path_for_gui_tool(
             raw_path,
             widget=self.widget,
             load_config_fn=load_config,
@@ -1823,9 +1789,10 @@ class StreamingChatTask(QRunnable):
         command = self._parse_direct_gui_command_with_defaults(prompt)
         if not command:
             return ""
-        result = await execute_direct_gui_command(
-            command,
-            **self._direct_command_handlers(),
+        result = await execute_chat_direct_gui_command(
+            prompt=self.prompt,
+            parse_direct_gui_command=lambda _prompt: command,
+            handlers=self._direct_command_handlers(),
         )
         if isinstance(result, dict):
             message = str(result.get("message") or "").strip()
@@ -1927,14 +1894,10 @@ class StreamingChatTask(QRunnable):
                         candidates.append(str(text_getter() or ""))
 
         with contextlib.suppress(Exception):
-            cfg = load_config()
-            tools_cfg = getattr(cfg, "tools", None)
-            realtime_cfg = getattr(tools_cfg, "realtime", None)
-            if isinstance(realtime_cfg, dict):
-                candidates.append(str(realtime_cfg.get("bot_email_to", "") or ""))
-            email_cfg = getattr(tools_cfg, "email", None)
-            if email_cfg is not None:
-                candidates.append(str(getattr(email_cfg, "default_to", "") or ""))
+            realtime_cfg = get_chat_realtime_defaults()
+            candidates.append(str(realtime_cfg.get("bot_email_to", "") or ""))
+            email_cfg = get_chat_email_defaults()
+            candidates.append(str(email_cfg.get("default_to", "") or ""))
 
         for candidate in candidates:
             normalized = self._normalize_email_recipient(candidate)
@@ -2322,7 +2285,7 @@ class StreamingChatTask(QRunnable):
         model_name: str = "",
         to_frame: Optional[int] = None,
     ) -> Dict[str, Any]:
-        return gui_segment_track_video_tool(
+        return segment_track_chat_video_tool(
             path=path,
             text_prompt=text_prompt,
             mode=mode,
@@ -2361,7 +2324,7 @@ class StreamingChatTask(QRunnable):
         llm_provider: str = "",
         llm_model: str = "",
     ) -> Dict[str, Any]:
-        return gui_label_behavior_segments_tool(
+        return label_chat_behavior_segments_tool(
             path=path,
             behavior_labels=behavior_labels,
             segment_mode=segment_mode,
@@ -2399,7 +2362,9 @@ class StreamingChatTask(QRunnable):
         )
 
     def _get_widget_action_result(self, action_name: str) -> Dict[str, Any]:
-        return gui_get_widget_action_result(widget=self.widget, action_name=action_name)
+        return get_chat_widget_action_result(
+            widget=self.widget, action_name=action_name
+        )
 
     async def _safe_run_arxiv_search(self, query: str) -> None:
         await gui_safe_run_arxiv_search(
@@ -2946,7 +2911,9 @@ class StreamingChatTask(QRunnable):
             evidence_rows=evidence_rows,
             references=references,
         )
-        kind = provider_kind(self.settings, self.provider)
+        kind = resolve_chat_provider_kind(
+            settings=self.settings, provider=self.provider
+        )
         if kind == "ollama":
             llm_callable = self._build_ollama_llm_callable()
             response = await llm_callable(
@@ -2964,7 +2931,7 @@ class StreamingChatTask(QRunnable):
 
         if kind in {"openai_compat", "openai_codex", "codex_cli"}:
             _user_prompt, text = await asyncio.to_thread(
-                gui_run_openai_chat,
+                run_chat_openai,
                 prompt=f"{system_prompt}\n\n{user_prompt}",
                 image_path="",
                 model=self.model,
@@ -2984,7 +2951,7 @@ class StreamingChatTask(QRunnable):
 
         if kind == "gemini":
             _user_prompt, text = await asyncio.to_thread(
-                gui_run_gemini_provider_chat,
+                run_chat_gemini,
                 prompt=f"{system_prompt}\n\n{user_prompt}",
                 image_path="",
                 model=self.model,
@@ -3051,9 +3018,7 @@ class StreamingChatTask(QRunnable):
             if not safe_topic:
                 safe_topic = "annolid"
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            workspace = get_agent_workspace_path()
-            out_dir = workspace / "tutorials"
-            out_dir.mkdir(parents=True, exist_ok=True)
+            out_dir = get_chat_tutorials_dir()
             out_file = out_dir / f"annolid_tutorial_{safe_topic}_{stamp}.md"
             out_file.write_text(tutorial + "\n", encoding="utf-8")
             output_path = str(out_file)
@@ -3188,21 +3153,18 @@ class StreamingChatTask(QRunnable):
                     candidates.append(configured)
 
         with contextlib.suppress(Exception):
-            cfg = load_config()
-            cfg_realtime = getattr(getattr(cfg, "tools", None), "realtime", None)
-            if isinstance(cfg_realtime, dict):
-                configured = str(cfg_realtime.get("camera_index", "") or "").strip()
-                if configured:
-                    candidates.append(configured)
+            configured = str(
+                get_chat_realtime_defaults().get("camera_index", "") or ""
+            ).strip()
+            if configured:
+                candidates.append(configured)
 
         with contextlib.suppress(Exception):
-            workspace = get_agent_workspace_path()
-            memory_file = workspace / "memory" / "MEMORY.md"
-            if memory_file.exists():
-                text = memory_file.read_text(encoding="utf-8")
-                remembered = self._extract_camera_source_from_memory_text(text)
-                if remembered:
-                    candidates.append(remembered)
+            remembered = self._extract_camera_source_from_memory_text(
+                read_chat_memory_text("MEMORY.md")
+            )
+            if remembered:
+                candidates.append(remembered)
 
         unique_candidates: list[str] = []
         seen: set[str] = set()
@@ -3240,10 +3202,8 @@ class StreamingChatTask(QRunnable):
                 "result": f"Error: Snapshot not found: {snapshot_file}",
             }
 
-        cfg = load_config()
-        tools_cfg = getattr(cfg, "tools", None)
-        email_cfg = getattr(tools_cfg, "email", None)
-        if email_cfg is None or not bool(getattr(email_cfg, "enabled", False)):
+        email_cfg = get_chat_email_defaults()
+        if not bool(email_cfg.get("enabled", False)):
             return {
                 "ok": False,
                 "result": (
@@ -3252,20 +3212,14 @@ class StreamingChatTask(QRunnable):
                 ),
             }
 
-        workspace = get_agent_workspace_path()
-        attachment_roots: list[str | Path] = [workspace]
-        for root in list(getattr(tools_cfg, "allowed_read_roots", []) or []):
-            if str(root).strip():
-                attachment_roots.append(root)
-
         tool = EmailTool(
-            smtp_host=str(getattr(email_cfg, "smtp_host", "")),
-            smtp_port=int(getattr(email_cfg, "smtp_port", 587) or 587),
-            imap_host=str(getattr(email_cfg, "imap_host", "")),
-            imap_port=int(getattr(email_cfg, "imap_port", 993) or 993),
-            user=str(getattr(email_cfg, "user", "")),
-            password=str(getattr(email_cfg, "password", "")),
-            allowed_attachment_roots=attachment_roots,
+            smtp_host=str(email_cfg.get("smtp_host", "") or ""),
+            smtp_port=int(email_cfg.get("smtp_port", 587) or 587),
+            imap_host=str(email_cfg.get("imap_host", "") or ""),
+            imap_port=int(email_cfg.get("imap_port", 993) or 993),
+            user=str(email_cfg.get("user", "") or ""),
+            password=str(email_cfg.get("password", "") or ""),
+            allowed_attachment_roots=get_chat_attachment_roots(),
         )
         body = str(content or "").strip()
         if not body:
@@ -3351,9 +3305,7 @@ class StreamingChatTask(QRunnable):
             annotated_snapshot = False
             if bool(got_frame) and bool(save_snapshot):
                 try:
-                    workspace = get_agent_workspace_path()
-                    snapshots_dir = workspace / "camera_snapshots"
-                    snapshots_dir.mkdir(parents=True, exist_ok=True)
+                    snapshots_dir = get_chat_camera_snapshots_dir()
                     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     snapshot_file = snapshots_dir / f"camera_probe_{stamp}.jpg"
                     if frame is not None:
@@ -3785,7 +3737,7 @@ class StreamingChatTask(QRunnable):
         return prompt_may_need_mcp(prompt)
 
     def _run_ollama(self) -> None:
-        gui_run_ollama_chat(
+        run_chat_ollama(
             prompt=self.prompt,
             image_path=self.image_path,
             model=self.model,
@@ -3807,7 +3759,7 @@ class StreamingChatTask(QRunnable):
         timeout_s: Optional[float] = None,
         max_tokens: int = 4096,
     ) -> None:
-        user_prompt, text = gui_run_openai_chat(
+        user_prompt, text = run_chat_openai(
             prompt=self.prompt,
             image_path=self.image_path,
             model=self.model,
@@ -3822,7 +3774,7 @@ class StreamingChatTask(QRunnable):
         self._emit_final(text, is_error=False)
 
     def _run_gemini(self) -> None:
-        user_prompt, text = gui_run_gemini_provider_chat(
+        user_prompt, text = run_chat_gemini(
             prompt=self.prompt,
             image_path=self.image_path,
             model=self.model,

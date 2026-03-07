@@ -10,7 +10,7 @@ from pathlib import Path
 from qtpy import QtCore
 
 from annolid.gui.widgets.video_slider import VideoSliderMark
-from annolid.utils.annotation_store import AnnotationStore
+from annolid.infrastructure import AnnotationStore
 from annolid.utils.logger import logger
 
 

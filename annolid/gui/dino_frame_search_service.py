@@ -10,7 +10,7 @@ from PIL import Image
 from qtpy import QtCore
 
 from annolid.features import Dinov3Config, Dinov3FeatureExtractor
-from annolid.utils.annotation_store import AnnotationStore
+from annolid.infrastructure import AnnotationStore
 
 
 @dataclass(frozen=True)

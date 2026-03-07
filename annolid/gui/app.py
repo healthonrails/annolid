@@ -18,7 +18,9 @@ from pathlib import Path
 # QtWebEngine at module-load time (for example PDF/Web viewer managers).
 if sys.platform == "darwin":
     try:
-        from annolid.utils.macos_fixes import apply_macos_webengine_sandbox_patch
+        from annolid.infrastructure.runtime import (
+            apply_macos_webengine_sandbox_patch,
+        )
 
         apply_macos_webengine_sandbox_patch()
     except Exception as exc:
@@ -41,9 +43,7 @@ from annolid.gui.workers import (
 )
 from annolid.utils.logger import configure_logging, logger
 from annolid.gui.widgets.canvas import Canvas
-from annolid.core.behavior.spec import (
-    ProjectSchema,
-)
+from annolid.domain import ProjectSchema
 from annolid.gui.widgets.behavior_controls import BehaviorControlsWidget
 from annolid.gui.widgets import FlagTableWidget
 from annolid.gui.widgets import AnnolidLabelDialog
@@ -81,8 +81,7 @@ from annolid.gui.keypoint_catalog import extract_labels_from_uniq_label_list
 from annolid.gui.yolo_training_manager import YOLOTrainingManager
 from annolid.gui.dino_kpseg_training_manager import DinoKPSEGTrainingManager
 from annolid.gui.cli import parse_cli
-from annolid.gui.application import create_qapp
-from annolid.gui.qt_env import sanitize_qt_plugin_env
+from annolid.infrastructure.runtime import create_qapp, sanitize_qt_plugin_env
 from annolid.gui.controllers import (
     AnnotationController,
     DinoController,

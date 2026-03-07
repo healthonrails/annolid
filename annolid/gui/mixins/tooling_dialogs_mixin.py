@@ -7,7 +7,7 @@ from pathlib import Path
 from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.annotation.pose_schema import PoseSchema
-from annolid.core.behavior.spec import (
+from annolid.domain import (
     DEFAULT_SCHEMA_FILENAME,
     default_behavior_spec,
     save_behavior_spec,

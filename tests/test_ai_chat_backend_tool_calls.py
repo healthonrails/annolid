@@ -447,6 +447,8 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
     # Isolate PDF discovery to this tmp workspace so real local PDFs do not leak into the test.
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+    monkeypatch.setattr(backend, "build_chat_pdf_search_roots", lambda: [tmp_path])
 
     task = StreamingChatTask("hi", widget=None)
     calls: list[str] = []
@@ -585,6 +587,7 @@ def test_gui_web_extract_structured_from_active_page(
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("extract weather fields", widget=None)
     task._tool_gui_web_get_state = lambda: {  # type: ignore[method-assign]
@@ -632,6 +635,7 @@ def test_gui_web_extract_structured_uses_selector_hints_mode(
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("extract product card", widget=None)
     task._tool_gui_web_get_state = lambda: {  # type: ignore[method-assign]
@@ -676,6 +680,8 @@ def test_gui_shape_tool_callbacks_validate_and_queue(
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+    monkeypatch.setattr(backend, "build_chat_pdf_search_roots", lambda: [tmp_path])
 
     task = StreamingChatTask("hi", widget=None)
     calls: list[str] = []
@@ -735,6 +741,7 @@ def test_gui_shape_file_tools_handle_json_annotations(
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     ann_path = tmp_path / "frame_00001.json"
     ann_path.write_text(
@@ -938,6 +945,7 @@ def test_gui_label_behavior_segments_with_widget_result(
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("hi", widget=_Widget())
     calls: list[str] = []
@@ -1149,6 +1157,8 @@ def test_gui_open_video_accepts_tool_style_text(monkeypatch, tmp_path: Path) -> 
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+    monkeypatch.setattr(backend, "build_chat_pdf_search_roots", lambda: [tmp_path])
 
     task = StreamingChatTask("hi", widget=None)
     calls: list[str] = []
@@ -1178,6 +1188,8 @@ def test_gui_open_video_resolves_by_basename_in_roots(
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+    monkeypatch.setattr(backend, "build_chat_pdf_search_roots", lambda: [tmp_path])
 
     task = StreamingChatTask("hi", widget=None)
     task._invoke_widget_slot = lambda *args, **kwargs: True  # type: ignore[method-assign]
@@ -1204,6 +1216,7 @@ def test_gui_open_video_resolves_by_basename_recursively_in_allowed_root(
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("hi", widget=None)
     task._invoke_widget_slot = lambda *args, **kwargs: True  # type: ignore[method-assign]
@@ -1222,6 +1235,7 @@ def test_gui_open_pdf_downloads_url_then_queues(monkeypatch, tmp_path: Path) -> 
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("hi", widget=None)
     calls: list[str] = []
@@ -1258,6 +1272,7 @@ def test_gui_open_pdf_downloads_non_suffix_url_then_queues(
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("hi", widget=None)
     calls: list[str] = []
@@ -1290,6 +1305,7 @@ def test_gui_open_url_queues(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("hi", widget=None)
     calls: list[str] = []
@@ -1321,6 +1337,7 @@ def test_gui_open_url_queues_for_domain_without_scheme(
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("hi", widget=None)
     calls: list[str] = []
@@ -1343,6 +1360,7 @@ def test_gui_open_url_queues_for_local_html_file(monkeypatch, tmp_path: Path) ->
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     html_file = tmp_path / "ai_studio_code (1).html"
     html_file.write_text("<html><body>ok</body></html>", encoding="utf-8")
@@ -1368,6 +1386,7 @@ def test_gui_open_url_blocks_file_scheme(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("hi", widget=None)
     payload = asyncio.run(task._tool_gui_open_url("file:///etc/passwd"))
@@ -1385,6 +1404,7 @@ def test_gui_web_run_steps_executes_sequence(monkeypatch, tmp_path: Path) -> Non
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("hi", widget=None)
     calls: list[str] = []
@@ -1447,6 +1467,7 @@ def test_resolve_video_path_uses_active_video_basename(
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: workspace)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: workspace)
 
     task = StreamingChatTask("hi", widget=_Widget())
     resolved = task._resolve_video_path_for_gui_tool("track mouse in video mouse.mp4")
@@ -1476,6 +1497,7 @@ def test_resolve_video_path_uses_active_video_even_if_missing_on_disk(
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: workspace)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: workspace)
 
     task = StreamingChatTask("hi", widget=_Widget())
     resolved = task._resolve_video_path_for_gui_tool("track mouse in video mouse.mp4")
@@ -1606,6 +1628,7 @@ def test_direct_gui_fallback_opens_video_from_prompt(
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("hi", widget=None)
     task._invoke_widget_slot = lambda *args, **kwargs: True  # type: ignore[method-assign]
@@ -2787,6 +2810,7 @@ def test_gui_generate_tutorial_saves_and_opens_markdown_in_web_viewer(
     )
 
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("hi", widget=None)
     task._annolid_project_root = lambda: tmp_path  # type: ignore[method-assign]
@@ -2847,9 +2871,15 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
 
     monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("hi", widget=None)
     task._invoke_widget_slot = lambda *args, **kwargs: True  # type: ignore[method-assign]
+    task._tool_gui_open_pdf = lambda path="": {  # type: ignore[method-assign]
+        "ok": True,
+        "queued": True,
+        "path": str(pdf_file),
+    }
     task._tool_clawhub_search_skills = lambda **kwargs: {  # type: ignore[method-assign]
         "ok": True,
         "query": kwargs.get("query", ""),
@@ -3195,14 +3225,14 @@ def test_direct_camera_email_to_me_uses_default_recipient(
 ) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
 
-    class _Cfg:
-        class tools:  # noqa: N801
-            email = None
-            allowed_read_roots = []
-            realtime = {"bot_email_to": "recipient@example.com"}
-
-    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+    monkeypatch.setattr(
+        backend,
+        "get_chat_realtime_defaults",
+        lambda: {"bot_email_to": "recipient@example.com"},
+    )
+    monkeypatch.setattr(backend, "get_chat_email_defaults", lambda: {})
 
     task = StreamingChatTask("hi", widget=None)
     command = task._parse_direct_gui_command_with_defaults(
@@ -3218,14 +3248,10 @@ def test_direct_camera_email_without_recipient_adds_clear_note(
 ) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
 
-    class _Cfg:
-        class tools:  # noqa: N801
-            email = None
-            allowed_read_roots = []
-            realtime = {}
-
-    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_realtime_defaults", lambda: {})
+    monkeypatch.setattr(backend, "get_chat_email_defaults", lambda: {})
 
     task = StreamingChatTask("hi", widget=None)
 
@@ -3253,6 +3279,7 @@ def test_tool_gui_save_citation_from_active_pdf(monkeypatch, tmp_path: Path) -> 
     import annolid.gui.widgets.ai_chat_backend as backend
 
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
     task = StreamingChatTask("save citation", widget=None)
     pdf_path = tmp_path / "paper.pdf"
     pdf_path.write_bytes(b"%PDF-1.4 fake")
@@ -3281,6 +3308,7 @@ def test_tool_gui_add_citation_raw_upserts_entry(monkeypatch, tmp_path: Path) ->
     from annolid.utils.citations import load_bibtex
 
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
     task = StreamingChatTask("add citation", widget=None)
     payload = task._tool_gui_add_citation_raw(
         bibtex=(
@@ -3303,6 +3331,7 @@ def test_tool_gui_list_citations_returns_entries(monkeypatch, tmp_path: Path) ->
     import annolid.gui.widgets.ai_chat_backend as backend
 
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
     task = StreamingChatTask("list citations", widget=None)
     refs = tmp_path / "refs.bib"
     refs.write_text(
@@ -3327,6 +3356,7 @@ def test_tool_gui_save_citation_strict_validation_blocks_save(
     import annolid.gui.widgets.ai_chat_backend as backend
 
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
     monkeypatch.setattr(
         backend,
         "validate_citation_metadata",
@@ -3362,6 +3392,7 @@ def test_tool_gui_save_citation_skip_validation(monkeypatch, tmp_path: Path) -> 
     import annolid.gui.widgets.ai_chat_backend as backend
 
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     calls = {"count": 0}
 
@@ -3402,6 +3433,7 @@ def test_tool_gui_save_citation_uses_scholar_bibkey_and_fields(
     import annolid.gui.widgets.ai_chat_backend as backend
 
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
     monkeypatch.setattr(
         backend,
         "validate_citation_metadata",
@@ -3452,6 +3484,7 @@ def test_tool_gui_clawhub_search_install_payload(monkeypatch, tmp_path: Path) ->
     import annolid.gui.widgets.ai_chat_backend as backend
 
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
     task = StreamingChatTask("hi", widget=None)
     progress: list[str] = []
     task._emit_progress = lambda message: progress.append(message)  # type: ignore[method-assign]
@@ -3498,6 +3531,7 @@ def test_tool_gui_rename_file_uses_active_pdf(monkeypatch, tmp_path: Path) -> No
     pdf_file.write_bytes(b"%PDF-1.4 fake")
 
     monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
 
     task = StreamingChatTask("hi", widget=None)
     task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]

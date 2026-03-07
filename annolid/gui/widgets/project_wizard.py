@@ -14,7 +14,7 @@ from typing import List, Optional
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
-from annolid.core.behavior.spec import (
+from annolid.domain import (
     BehaviorDefinition,
     ProjectSchema,
     SubjectDefinition,

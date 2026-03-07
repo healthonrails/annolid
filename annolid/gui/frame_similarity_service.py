@@ -206,7 +206,7 @@ def _load_shapes_for_frame(
     for candidate in (primary, legacy):
         try:
             if candidate.exists() and candidate.stat().st_size > 0:
-                from annolid.utils.annotation_store import load_labelme_json
+                from annolid.infrastructure import load_labelme_json
 
                 data = load_labelme_json(candidate)
                 shapes = data.get("shapes") if isinstance(data, dict) else None
@@ -417,7 +417,7 @@ class _FrameSimilarityWorker(QtCore.QObject):
             store = None
             if annotation_dir.exists():
                 try:
-                    from annolid.utils.annotation_store import AnnotationStore
+                    from annolid.infrastructure import AnnotationStore
 
                     stub = annotation_dir / f"{annotation_dir.name}_000000000.json"
                     store = AnnotationStore.for_frame_path(stub)

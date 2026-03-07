@@ -30,7 +30,7 @@ from annolid.services.tracking import (
     has_tracking_completion_artifacts,
     run_tracking_video_frames,
 )
-from annolid.utils.files import (
+from annolid.infrastructure.filesystem import (
     find_manual_labeled_json_files,
     get_frame_number_from_json,
 )

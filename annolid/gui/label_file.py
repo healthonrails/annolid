@@ -12,7 +12,7 @@ from annolid.utils.annotation_compat import __version__
 from annolid.utils.logger import logger
 from annolid.utils.annotation_compat import utils
 
-from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json
+from annolid.infrastructure import AnnotationStoreError, load_labelme_json
 
 PIL.Image.MAX_IMAGE_PIXELS = None
 

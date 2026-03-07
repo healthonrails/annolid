@@ -39,8 +39,40 @@ Annolid now defines four top-level layers with explicit intent:
   - Used by GUI frame-similarity/embedding search worker.
 - Shared service in place: `annolid.services.tracking.*`
   - Used by GUI and background tracking setup/execution paths (`prediction_execution_mixin`, `TrackAllWorker`, `jobs/tracking_worker.py`).
+- Shared service in place: `annolid.services.agent_admin.*`
+  - Used by the CLI agent security/secret-management commands instead of direct `core.agent` imports in `annolid/engine/cli.py`.
+- Shared service in place: `annolid.services.agent_workspace.*`
+  - Used by the CLI agent skills/feedback/memory commands instead of direct `core.agent` imports in `annolid/engine/cli.py`.
+- Shared service in place: `annolid.services.agent_eval.*`
+  - Used by the CLI agent eval commands instead of direct `core.agent.eval.*` imports in `annolid/engine/cli.py`.
+- Shared service in place: `annolid.services.agent_update.*`
+  - Used by the CLI update commands instead of direct `core.agent.update_manager.*` imports in `annolid/engine/cli.py`.
+- Shared service in place: `annolid.services.agent_bridge.run_agent_acp_bridge`
+  - Used by the CLI ACP bridge command instead of direct `core.agent.acp_stdio_bridge` imports in `annolid/engine/cli.py`.
+- Shared service in place: `annolid.services.agent_cron.*`
+  - Used by the CLI agent onboard/status/cron commands instead of direct `core.agent.cron`, workspace bootstrap, and utils imports in `annolid/engine/cli.py`.
+- Shared service in place: `annolid.services.agent_tooling.validate_agent_tools`
+  - Used by the CLI agent tool validation command instead of direct `core.agent.tools.*` imports in `annolid/engine/cli.py`.
+- Shared service in place: `annolid.services.chat_runtime.*`
+  - Used by the GUI chat backend for workspace/config root resolution instead of embedding that bootstrap logic directly in `annolid/gui/widgets/ai_chat_backend.py`.
+- Shared service in place: `annolid.services.chat_provider_runtime.*`
+  - Used by the GUI chat backend for provider kind resolution, fast-mode execution, provider fallback, and direct provider chat calls instead of importing `core.agent.gui_backend.provider_*` modules directly.
+- Shared service in place: `annolid.services.chat_session.*`
+  - Used by the GUI chat backend for session-store bootstrap, outbound chat event emission, history loading, and turn persistence instead of importing `core.agent.session_manager` and `core.agent.gui_backend.session_io` directly.
+- Shared service in place: `annolid.services.chat_widget_bridge.*`
+  - Used by the GUI chat backend for widget slot invocation, GUI context payload assembly, direct-command dispatch, and sync-awaitable bridging instead of importing `core.agent.gui_backend.widget_bridge`, `direct_commands`, and the direct-command router directly.
+- Shared service in place: `annolid.services.chat_web_pdf.*`
+  - Used by the GUI chat backend for web view actions, PDF actions, and URL/PDF opener orchestration instead of importing `core.agent.gui_backend.tool_handlers_web_pdf` and `tool_handlers_openers` directly.
+- Shared service in place: `annolid.services.chat_video.*`
+  - Used by the GUI chat backend for video open/resolve flow and segment-track/behavior-label workflow orchestration instead of importing `core.agent.gui_backend.tool_handlers_video` and `tool_handlers_video_workflow` directly.
 - Stable architecture wrappers in place:
   - `annolid.domain.*` re-exports canonical schema/event/track/keypoint/timeline/dataset types.
   - `annolid.services.*` exposes inference/training/export/search/tracking/agent APIs.
   - `annolid.interfaces.*` exposes GUI/CLI/background/bot entry points.
   - `annolid.infrastructure.*` exposes filesystem/persistence/runtime/download/API adapters.
+
+## Next migration tranche
+
+- Continue decomposing `annolid/gui/widgets/ai_chat_backend.py`, with the remaining realtime, shape/action, and citation/arXiv tool-handler clusters as the next service seams.
+- Keep moving GUI modules toward `annolid.domain`, `annolid.services`, and `annolid.infrastructure` wrappers instead of direct `core` or `utils` imports.
+- Keep `annolid/interfaces.*` as the public entry surfaces; avoid importing `annolid.interfaces` from the concrete GUI/CLI implementation modules themselves to prevent cycles.
