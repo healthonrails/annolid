@@ -17,6 +17,8 @@ class ModelPluginBase(ABC):
 
     name: str
     description: str = ""
+    train_help_sections: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    predict_help_sections: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     def add_train_args(self, parser: argparse.ArgumentParser) -> None:
         raise NotImplementedError
@@ -29,6 +31,14 @@ class ModelPluginBase(ABC):
 
     def predict(self, args: argparse.Namespace) -> int:
         raise NotImplementedError
+
+    def get_help_sections(self, mode: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        label = str(mode or "").strip().lower()
+        if label == "train":
+            return tuple(self.train_help_sections)
+        if label == "predict":
+            return tuple(self.predict_help_sections)
+        return ()
 
     @classmethod
     def supports_train(cls) -> bool:

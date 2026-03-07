@@ -14,6 +14,7 @@
     <a href="installation/">Install Annolid</a>
     <a href="install_with_uv/">Use <code>.venv</code> for development</a>
     <a href="workflows/">Follow core workflows</a>
+    <a href="agent_annolid_run/">Run <code>annolid-run</code> from Annolid agents</a>
     <a href="tutorials/">Explore tutorials</a>
     <a href="memory/">Enable memory subsystem</a>
   </div>
@@ -34,6 +35,7 @@
     Use <code>annolid-run</code>, MCP integrations, and automation-friendly CLI flows.
     <br />
     <a href="workflows/">Workflows</a> |
+    <a href="agent_annolid_run/">Agent CLI</a> |
     <a href="mcp/">MCP</a> |
     <a href="reference/">Reference</a>
   </article>
@@ -58,6 +60,11 @@
     <h3>Workflow Execution</h3>
     <p>Run GUI and CLI tasks with explicit, reproducible command patterns.</p>
     <a href="workflows/">Open workflows</a>
+  </article>
+  <article class="ann-card">
+    <h3>Agent CLI</h3>
+    <p>Use the typed <code>annolid_run</code> tool for safe agent-driven CLI operations.</p>
+    <a href="agent_annolid_run/">Open agent CLI guide</a>
   </article>
   <article class="ann-card">
     <h3>Tutorials</h3>

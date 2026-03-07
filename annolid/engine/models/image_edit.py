@@ -13,6 +13,61 @@ from annolid.engine.registry import ModelPluginBase, register_model
 class ImageEditPlugin(ModelPluginBase):
     name = "image-edit"
     description = "Generate/edit images via Diffusers or stable-diffusion.cpp (supports GGUF presets like Qwen-Image-2512)."
+    predict_help_sections = (
+        (
+            "Required inputs",
+            (
+                "--prompt",
+                "--mode",
+                "--init-img",
+                "--mask",
+                "--ref-image",
+            ),
+        ),
+        (
+            "Outputs and run location",
+            (
+                "--output",
+                "--num-images",
+            ),
+        ),
+        (
+            "Generation controls",
+            (
+                "--backend",
+                "--width",
+                "--height",
+                "--steps",
+                "--cfg-scale",
+                "--seed",
+                "--strength",
+                "--negative-prompt",
+            ),
+        ),
+        (
+            "Diffusers backend",
+            (
+                "--model-id",
+                "--device",
+                "--dtype",
+                "--local-files-only",
+            ),
+        ),
+        (
+            "stable-diffusion.cpp backend",
+            (
+                "--sd-cli",
+                "--preset",
+                "--quant",
+                "--llm-quant",
+                "--diffusion-model",
+                "--vae",
+                "--llm",
+                "--llm-vision",
+                "--extra-arg",
+            ),
+        ),
+    )
 
     def add_predict_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(

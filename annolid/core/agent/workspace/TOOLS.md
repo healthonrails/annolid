@@ -23,6 +23,7 @@ This workspace is intended for the Annolid agent tool stack.
 - `exec(command, working_dir?)`
 - `exec_start(command, working_dir?, background?, timeout_s?, pty?)`
 - `exec_process(action, session_id?, wait_ms?, tail_lines?, text?, submit?)`
+- `annolid_run(command?, argv?, working_dir?, allow_mutation?)`
 
 Safety notes:
 
@@ -30,6 +31,7 @@ Safety notes:
 - Keep command scope limited to relevant directories.
 - Treat external downloads and scripts as untrusted until verified.
 - For multi-step shell workflows, prefer `exec_start` + `exec_process` instead of chaining large one-shot shell commands.
+- Prefer `annolid_run` over shelling out when the task maps to `annolid-run` CLI functionality. Mutating subcommands require `allow_mutation=true`.
 
 ## Git and GitHub
 

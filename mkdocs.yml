@@ -26,9 +26,11 @@ theme:
     - navigation.instant
     - navigation.instant.progress
     - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.sections
     - navigation.expand
     - navigation.indexes
+    - navigation.path
     - navigation.top
     - toc.follow
     - search.suggest
@@ -80,26 +82,34 @@ extra_css:
 
 nav:
   - Home: index.md
-  - Getting Started: getting_started.md
-  - Installation: installation.md
-  - uv Setup: install_with_uv.md
-  - One-Line Installer: one_line_install_choices.md
-  - Workflows: workflows.md
-  - Tutorials:
-      - Overview: tutorials.md
+  - Start Here:
+      - Getting Started: getting_started.md
+      - Installation: installation.md
+      - uv Setup: install_with_uv.md
+      - One-Line Installer: one_line_install_choices.md
+  - Workflows:
+      - Workflow Overview: workflows.md
+      - Tutorials Overview: tutorials.md
       - Segment-based Batch Tracking: tutorials/segment-based-batch-tracking.md
       - LabelMe to YOLO Class Map: tutorials/Labelme_to_YOLO_class_map.md
       - Sandboxed Shell: tutorials/sandboxed_shell.md
-  - MCP: mcp.md
-  - Codex and ACP: codex_and_acp.md
-  - Agent Calendar: agent_calendar.md
-  - Google Workspace: agent_workspace.md
-  - Agent Secrets: agent_secrets.md
-  - Agent Security: agent_security.md
-  - Memory Subsystem: memory.md
-  - SAM 3D: sam3d.md
-  - Deployment: deployment.md
-  - Migration Plan: migration.md
-  - Architecture Layers: architecture_layers.md
-  - Redirect Map: redirects.md
-  - References: reference.md
+      - SAM 3D: sam3d.md
+  - Agent and Automation:
+      - Overview: agent_and_automation.md
+      - Agent CLI with annolid-run: agent_annolid_run.md
+      - MCP: mcp.md
+      - Codex and ACP: codex_and_acp.md
+      - Agent Calendar: agent_calendar.md
+      - Google Workspace: agent_workspace.md
+      - Agent Secrets: agent_secrets.md
+      - Agent Security: agent_security.md
+      - Memory Subsystem: memory.md
+  - Operations:
+      - Overview: operations.md
+      - Deployment: deployment.md
+      - Migration Plan: migration.md
+      - Architecture Layers: architecture_layers.md
+      - Redirect Map: redirects.md
+  - Reference: reference.md
+  - Developer Notes:
+      - Model Plugin Help: model_plugin_help.md

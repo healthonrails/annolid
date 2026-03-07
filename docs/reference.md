@@ -15,9 +15,23 @@ Common CLI discovery commands:
 annolid --help
 annolid-run --help
 annolid-run list-models
-annolid-run train <model> --help-model
-annolid-run predict <model> --help-model
+annolid-run help train
+annolid-run help predict
+annolid-run help train <model>
+annolid-run help predict <model>
 ```
+
+Model help details:
+
+- Built-in model plugins now show curated quick-reference groups before the
+  full flag list.
+- Older forms such as `annolid-run train <model> --help-model` remain
+  supported.
+- Plugin-author contract and examples: [Model Plugin Help](model_plugin_help.md)
+
+Agent-side CLI execution:
+
+- [Annolid Agent and annolid-run](agent_annolid_run.md)
 
 Security-focused agent commands:
 
@@ -59,6 +73,7 @@ annolid-run agent acp bridge --workspace /path/to/repo
 - [Workflows](workflows.md)
 - [Tutorials](tutorials.md)
 - [MCP](mcp.md)
+- [Model Plugin Help](model_plugin_help.md)
 - [Codex and ACP](codex_and_acp.md)
 - [Agent Calendar](agent_calendar.md)
 - [Agent Secrets](agent_secrets.md)

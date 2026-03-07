@@ -246,6 +246,7 @@ from annolid.services.chat_web_pdf import (
     type_chat_web,
 )
 from annolid.services.chat_devtools import (
+    chat_annolid_run,
     chat_exec_command,
     chat_exec_process,
     chat_exec_start,
@@ -1945,6 +1946,7 @@ class StreamingChatTask(QRunnable):
             "list_dir": self._tool_gui_list_dir,
             "read_file": self._tool_gui_read_file,
             "exec_command": self._tool_gui_exec_command,
+            "annolid_run": self._tool_gui_annolid_run,
             "exec_start": self._tool_gui_exec_start,
             "exec_process": self._tool_gui_exec_process,
         }
@@ -3339,6 +3341,18 @@ class StreamingChatTask(QRunnable):
 
     async def _tool_gui_exec_command(self, command: str) -> Dict[str, Any]:
         return await chat_exec_command(command)
+
+    async def _tool_gui_annolid_run(
+        self,
+        command: str,
+        working_dir: str = "",
+        allow_mutation: bool = False,
+    ) -> Dict[str, Any]:
+        return await chat_annolid_run(
+            command=command,
+            working_dir=working_dir,
+            allow_mutation=allow_mutation,
+        )
 
     async def _tool_gui_git_status(
         self, repo_path: str = ".", short: bool = True

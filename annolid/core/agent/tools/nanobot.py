@@ -57,6 +57,7 @@ from .coding_harness import (
     CodingSessionStartTool,
 )
 from .automation_scheduler import AutomationSchedulerTool
+from .annolid_run import AnnolidRunTool
 from .function_admin import (
     AdminEvalRunTool,
     AdminMemoryFlushTool,
@@ -207,6 +208,12 @@ async def register_nanobot_style_tools(
     registry.register(CodingSessionPollTool())
     registry.register(CodingSessionListTool())
     registry.register(CodingSessionCloseTool())
+    registry.register(
+        AnnolidRunTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
     registry.register(AutomationSchedulerTool(scheduler=task_scheduler))
     registry.register(AdminSkillsRefreshTool())
     registry.register(AdminMemoryFlushTool())

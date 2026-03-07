@@ -61,6 +61,7 @@ _EXPORTS = {
     "chat_ollama_plain_recovery_nudge_timeout_seconds": "annolid.services.chat_provider_runtime",
     "chat_ollama_plain_recovery_timeout_seconds": "annolid.services.chat_provider_runtime",
     "chat_provider_dependency_error": "annolid.services.chat_provider_runtime",
+    "chat_annolid_run": "annolid.services.chat_devtools",
     "chat_exec_command": "annolid.services.chat_devtools",
     "chat_exec_process": "annolid.services.chat_devtools",
     "chat_exec_start": "annolid.services.chat_devtools",

@@ -52,17 +52,26 @@ Useful commands:
 ```bash
 annolid-run --help
 annolid-run list-models
-annolid-run train <model> --help-model
-annolid-run predict <model> --help-model
+annolid-run help train
+annolid-run help predict
+annolid-run help train <model>
+annolid-run help predict <model>
 ```
 
 Annolid supports plugin-oriented train/predict flows for multiple backends. Shared YAML run-config templates live under `annolid/configs/runs/`.
+
+Built-in model help now starts with curated groups such as `Required inputs`,
+`Model and runtime`, and `Training controls` before the full flag list.
 
 Example:
 
 ```bash
 annolid-run train dino_kpseg --run-config annolid/configs/runs/dino_kpseg_train.yaml
 ```
+
+If you want the GUI agent to perform read-only CLI inspection or explicitly
+invoke Annolid-native commands, use the dedicated typed tool flow described in
+[Annolid Agent and annolid-run](agent_annolid_run.md).
 
 ## 4. Behavior Analysis Workflow
 

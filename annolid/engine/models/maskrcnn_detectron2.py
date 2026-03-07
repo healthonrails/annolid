@@ -153,6 +153,75 @@ def _resolve_train_settings(args: argparse.Namespace) -> Detectron2TrainSettings
 class MaskRCNNDetectron2Plugin(ModelPluginBase):
     name = "maskrcnn_detectron2"
     description = "Detectron2 Mask R-CNN train/predict wrapper."
+    train_help_sections = (
+        (
+            "Required inputs",
+            (
+                "--dataset-dir",
+                "--run-config",
+            ),
+        ),
+        (
+            "Outputs and run location",
+            (
+                "--output-dir",
+                "--weights",
+            ),
+        ),
+        (
+            "Model and runtime",
+            (
+                "--model-arch",
+                "--model-config",
+            ),
+        ),
+        (
+            "Training controls",
+            (
+                "--max-iterations",
+                "--batch-size",
+                "--base-lr",
+                "--checkpoint-period",
+                "--num-workers",
+                "--score-threshold",
+                "--overlap-threshold",
+                "--roi-batch-size-per-image",
+                "--sampler-train",
+                "--repeat-threshold",
+            ),
+        ),
+    )
+    predict_help_sections = (
+        (
+            "Required inputs",
+            (
+                "--dataset-dir",
+                "--weights",
+                "--image",
+            ),
+        ),
+        (
+            "Model and runtime",
+            (
+                "--model-arch",
+                "--model-config",
+            ),
+        ),
+        (
+            "Inference controls",
+            (
+                "--score-threshold",
+                "--overlap-threshold",
+            ),
+        ),
+        (
+            "Outputs and display",
+            (
+                "--no-display",
+                "--export-torchscript",
+            ),
+        ),
+    )
 
     def add_train_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(

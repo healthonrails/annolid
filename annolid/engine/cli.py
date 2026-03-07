@@ -6,17 +6,306 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from annolid.engine.registry import (
-    get_load_failures,
-    get_model,
-    list_models,
-    load_builtin_models,
+
+class _AnnolidHelpFormatter(
+    argparse.ArgumentDefaultsHelpFormatter,
+    argparse.RawDescriptionHelpFormatter,
+):
+    pass
+
+
+_ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Models", ("list-models", "train", "predict")),
+    (
+        "Agent",
+        (
+            "agent",
+            "agent-onboard",
+            "agent-status",
+            "agent-security-check",
+            "agent-security-audit",
+            "agent-secrets-audit",
+            "agent-secrets-set",
+            "agent-secrets-remove",
+            "agent-secrets-migrate",
+            "agent-update",
+            "agent-eval",
+            "agent-cron-list",
+            "agent-cron-add",
+            "agent-cron-remove",
+            "agent-cron-enable",
+            "agent-cron-run",
+        ),
+    ),
+    (
+        "Data",
+        (
+            "collect-labels",
+            "index-to-yolo",
+            "import-deeplabcut-training-data",
+            "dino-kpseg-embeddings",
+            "dino-kpseg-audit",
+            "dino-kpseg-split",
+            "dino-kpseg-precompute",
+        ),
+    ),
+    (
+        "Utilities",
+        (
+            "validate-agent-output",
+            "validate-agent-tools",
+            "citations-list",
+            "citations-upsert",
+            "citations-remove",
+            "citations-format",
+            "memory",
+        ),
+    ),
 )
-from annolid.engine.run_config import expand_argv_with_run_config
-from annolid.utils.logger import configure_logging
+
+
+def _root_help_epilog() -> str:
+    return (
+        "Quick start:\n"
+        "  annolid-run list-models\n"
+        "  annolid-run train <model> --help-model\n"
+        "  annolid-run predict <model> --help-model\n"
+        "  annolid-run agent-status\n"
+        "  annolid-run help train\n\n"
+        "Common areas:\n"
+        "  Models: train, predict, list-models\n"
+        "  Agent: agent, agent-status, agent-security-*, agent-cron-*\n"
+        "  Data: collect-labels, index-to-yolo, import-deeplabcut-training-data\n"
+        "  Utilities: citations-*, validate-agent-output, validate-agent-tools"
+    )
+
+
+def _mode_help_epilog(mode: str) -> str:
+    label = str(mode or "").strip().lower()
+    if label == "train":
+        return (
+            "Examples:\n"
+            "  annolid-run train dino_kpseg --help-model\n"
+            "  annolid-run help train dino_kpseg\n"
+            "  annolid-run list-models"
+        )
+    return (
+        "Examples:\n"
+        "  annolid-run predict dino_kpseg --help-model\n"
+        "  annolid-run help predict dino_kpseg\n"
+        "  annolid-run list-models"
+    )
+
+
+_PLUGIN_HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Required inputs",
+        (
+            "--data",
+            "--source",
+            "--weights",
+            "--run-config",
+        ),
+    ),
+    (
+        "Outputs and run location",
+        (
+            "--output",
+            "--runs-root",
+            "--run-name",
+            "--project",
+            "--name",
+        ),
+    ),
+    (
+        "Model and runtime",
+        (
+            "--model-name",
+            "--device",
+            "--imgsz",
+            "--short-side",
+            "--layers",
+        ),
+    ),
+    (
+        "Training controls",
+        (
+            "--epochs",
+            "--batch",
+            "--lr",
+            "--accumulate",
+            "--grad-clip",
+            "--threshold",
+            "--conf",
+            "--iou",
+        ),
+    ),
+    (
+        "Data and augmentation",
+        (
+            "--data-format",
+            "--instance-mode",
+            "--bbox-scale",
+            "--augment",
+            "--no-augment",
+            "--hflip",
+            "--degrees",
+            "--translate",
+            "--scale",
+        ),
+    ),
+    (
+        "Saving and reporting",
+        (
+            "--save",
+            "--save-txt",
+            "--plots",
+            "--log-every-steps",
+            "--tb-projector",
+            "--tb-add-graph",
+        ),
+    ),
+)
+
+
+def _summarize_action_help(action: argparse.Action) -> str:
+    help_text = str(getattr(action, "help", "") or "").strip()
+    if not help_text:
+        return "See full flag list below."
+    return help_text.rstrip(".")
+
+
+def _action_option_strings(action: argparse.Action) -> tuple[str, ...]:
+    return tuple(str(token) for token in getattr(action, "option_strings", ()) if token)
+
+
+def _build_plugin_help_summary(
+    parser: argparse.ArgumentParser,
+    *,
+    mode: str,
+    help_sections: tuple[tuple[str, tuple[str, ...]], ...] = (),
+) -> str:
+    optional_actions = [
+        action
+        for action in getattr(parser, "_actions", [])
+        if getattr(action, "option_strings", None)
+        and "--help" not in set(action.option_strings)
+    ]
+    lines: list[str] = []
+    seen_dests: set[str] = set()
+    section_groups = help_sections or _PLUGIN_HELP_GROUPS
+    for group_name, preferred_options in section_groups:
+        matched: list[argparse.Action] = []
+        for option in preferred_options:
+            for action in optional_actions:
+                if action.dest in seen_dests:
+                    continue
+                if option in _action_option_strings(action):
+                    matched.append(action)
+                    seen_dests.add(str(action.dest))
+                    break
+        if not matched:
+            continue
+        lines.append(f"{group_name}:")
+        for action in matched:
+            primary = next(
+                (opt for opt in _action_option_strings(action) if opt.startswith("--")),
+                _action_option_strings(action)[0],
+            )
+            lines.append(f"  {primary:<24} {_summarize_action_help(action)}")
+        lines.append("")
+    if not lines:
+        return ""
+    header = (
+        "Quick reference:\n"
+        "  Start with the flags in these groups, then use the full flag list below for advanced tuning.\n\n"
+    )
+    return header + "\n".join(lines).rstrip()
+
+
+def _plugin_help_description(
+    *,
+    mode: str,
+    model_name: str,
+    plugin_description: str,
+    parser: argparse.ArgumentParser,
+    help_sections: tuple[tuple[str, tuple[str, ...]], ...] = (),
+) -> str:
+    mode_label = "training" if mode == "train" else "inference"
+    lines = [
+        f"Model-specific {mode_label} help for `{model_name}`.",
+    ]
+    detail = str(plugin_description or "").strip()
+    if detail:
+        lines.append(detail)
+    lines.append("Flags below are provided by the plugin.")
+    summary = _build_plugin_help_summary(
+        parser,
+        mode=mode,
+        help_sections=help_sections,
+    )
+    if summary:
+        lines.extend(["", summary])
+    return "\n".join(lines)
+
+
+def _collect_root_command_help(
+    parser: argparse.ArgumentParser,
+) -> dict[str, str]:
+    command_help: dict[str, str] = {}
+    for action in getattr(parser, "_actions", []):
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        for choice_action in getattr(action, "_choices_actions", []):
+            command_help[str(choice_action.dest)] = str(
+                choice_action.help or ""
+            ).strip()
+    command_help.setdefault("memory", "Memory inspection and maintenance commands.")
+    return command_help
+
+
+def _format_root_help(parser: argparse.ArgumentParser) -> str:
+    command_help = _collect_root_command_help(parser)
+    lines = [
+        "usage: annolid-run <command> [options]",
+        "",
+        "Annolid command-line interface for models, agent workflows, datasets, validation, and maintenance tasks.",
+        "",
+        "Quick start:",
+        "  annolid-run list-models",
+        "  annolid-run train <model> --help-model",
+        "  annolid-run predict <model> --help-model",
+        "  annolid-run agent-status",
+        "  annolid-run help train",
+        "",
+    ]
+    for group_name, commands in _ROOT_COMMAND_GROUPS:
+        lines.append(f"{group_name}:")
+        for command in commands:
+            help_text = command_help.get(command, "")
+            lines.append(f"  {command:<34} {help_text}")
+        lines.append("")
+    lines.extend(
+        [
+            "Options:",
+            "  -h, --help                         Show this grouped root help.",
+            "",
+            "Examples:",
+            "  annolid-run help",
+            "  annolid-run help predict",
+            "  annolid-run memory stats --scope global",
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _cmd_list_models(_: argparse.Namespace) -> int:
+    from annolid.engine.registry import (
+        get_load_failures,
+        list_models,
+        load_builtin_models,
+    )
+
     failures = load_builtin_models()
     if failures:
         details = get_load_failures()
@@ -1163,7 +1452,12 @@ def _cmd_agent_cron_run(args: argparse.Namespace) -> int:
 def _build_root_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="annolid-run",
-        description="Unified training/inference CLI (plugin-based).",
+        description=(
+            "Annolid command-line interface for models, agent workflows, datasets, "
+            "validation, and maintenance tasks."
+        ),
+        epilog=_root_help_epilog(),
+        formatter_class=_AnnolidHelpFormatter,
     )
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -1856,6 +2150,12 @@ def _build_root_parser() -> argparse.ArgumentParser:
     cron_run_p.set_defaults(_handler=_cmd_agent_cron_run)
 
     train_p = sub.add_parser("train", help="Train a model.")
+    train_p.description = (
+        "Train an Annolid model plugin. Use `list-models` to discover model names, "
+        "then use `--help-model` for plugin-specific arguments."
+    )
+    train_p.epilog = _mode_help_epilog("train")
+    train_p.formatter_class = _AnnolidHelpFormatter
     train_p.add_argument("model", help="Model plugin name (see list-models).")
     train_p.add_argument(
         "--help-model", action="store_true", help="Show model-specific help."
@@ -1863,6 +2163,12 @@ def _build_root_parser() -> argparse.ArgumentParser:
     train_p.set_defaults(_handler="train")
 
     pred_p = sub.add_parser("predict", help="Run inference.")
+    pred_p.description = (
+        "Run inference with an Annolid model plugin. Use `list-models` to discover "
+        "model names, then use `--help-model` for plugin-specific arguments."
+    )
+    pred_p.epilog = _mode_help_epilog("predict")
+    pred_p.formatter_class = _AnnolidHelpFormatter
     pred_p.add_argument("model", help="Model plugin name (see list-models).")
     pred_p.add_argument(
         "--help-model", action="store_true", help="Show model-specific help."
@@ -1877,6 +2183,8 @@ def _dispatch_model_subcommand(
     base_args: argparse.Namespace,
     argv: list[str],
 ) -> int:
+    from annolid.engine.registry import get_model
+
     model_name = str(base_args.model)
     plugin = get_model(model_name)
 
@@ -1884,11 +2192,29 @@ def _dispatch_model_subcommand(
     if mode == "train":
         if not plugin.__class__.supports_train():
             raise SystemExit(f"Model {model_name!r} does not support training.")
-        p = argparse.ArgumentParser(prog=f"annolid-run train {model_name}")
+        p = argparse.ArgumentParser(
+            prog=f"annolid-run train {model_name}",
+            epilog=(
+                "Examples:\n"
+                f"  annolid-run train {model_name} --help-model\n"
+                f"  annolid-run help train {model_name}\n"
+                f"  annolid-run train {model_name} --run-config <path>"
+            ),
+            formatter_class=_AnnolidHelpFormatter,
+        )
         plugin.add_train_args(p)
+        p.description = _plugin_help_description(
+            mode="train",
+            model_name=model_name,
+            plugin_description=str(getattr(plugin, "description", "") or ""),
+            parser=p,
+            help_sections=plugin.get_help_sections("train"),
+        )
         if base_args.help_model:
             p.print_help()
             return 0
+        from annolid.engine.run_config import expand_argv_with_run_config
+
         resolved_argv = expand_argv_with_run_config(
             parser=p,
             argv=argv,
@@ -1901,8 +2227,24 @@ def _dispatch_model_subcommand(
     if mode == "predict":
         if not plugin.__class__.supports_predict():
             raise SystemExit(f"Model {model_name!r} does not support inference.")
-        p = argparse.ArgumentParser(prog=f"annolid-run predict {model_name}")
+        p = argparse.ArgumentParser(
+            prog=f"annolid-run predict {model_name}",
+            epilog=(
+                "Examples:\n"
+                f"  annolid-run predict {model_name} --help-model\n"
+                f"  annolid-run help predict {model_name}\n"
+                f"  annolid-run predict {model_name} --source <video-or-image>"
+            ),
+            formatter_class=_AnnolidHelpFormatter,
+        )
         plugin.add_predict_args(p)
+        p.description = _plugin_help_description(
+            mode="predict",
+            model_name=model_name,
+            plugin_description=str(getattr(plugin, "description", "") or ""),
+            parser=p,
+            help_sections=plugin.get_help_sections("predict"),
+        )
         if base_args.help_model:
             p.print_help()
             return 0
@@ -1912,12 +2254,43 @@ def _dispatch_model_subcommand(
     raise SystemExit(f"Unknown mode: {mode}")
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def _configure_cli_logging() -> None:
+    from annolid.utils.logger import configure_logging
+
     try:
         configure_logging(enable_file_logging=True)
     except TypeError:
         configure_logging()
+
+
+def _normalize_help_argv(argv: list[str]) -> list[str]:
+    if not argv:
+        return argv
+    first = str(argv[0] or "").strip().lower()
+    if first != "help":
+        return argv
+    if len(argv) == 1:
+        return ["--help"]
+    topic = [str(part) for part in argv[1:] if str(part).strip()]
+    if not topic:
+        return ["--help"]
+    if topic[0] in {"annolid-run", "annolid", "cli"}:
+        if len(topic) == 1:
+            return ["--help"]
+        topic = topic[1:]
+    if len(topic) >= 2 and topic[0] in {"train", "predict"}:
+        return [topic[0], topic[1], "--help-model"]
+    return [*topic, "--help"]
+
+
+def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    argv = _normalize_help_argv(argv)
+    if not argv or argv == ["--help"]:
+        p = _build_root_parser()
+        print(_format_root_help(p), end="")
+        return 0
+    _configure_cli_logging()
     operator_rc = _dispatch_operator_commands(argv)
     if operator_rc is not None:
         return int(operator_rc)

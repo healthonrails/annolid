@@ -27,6 +27,65 @@ logger = logging.getLogger(__name__)
 class BehaviorClassifierPlugin(ModelPluginBase):
     name = "behavior_classifier"
     description = "Video-folder behavior classifier (train/infer)."
+    train_help_sections = (
+        (
+            "Required inputs",
+            (
+                "--video-folder",
+                "--run-config",
+            ),
+        ),
+        (
+            "Outputs and run location",
+            (
+                "--checkpoint-dir",
+                "--tensorboard-log-dir",
+            ),
+        ),
+        (
+            "Model and runtime",
+            (
+                "--feature-backbone",
+                "--dinov3-model-name",
+                "--transformer-dim",
+                "--feature-dim",
+                "--device",
+            ),
+        ),
+        (
+            "Training controls",
+            (
+                "--batch-size",
+                "--epochs",
+                "--learning-rate",
+                "--validation-split",
+                "--unfreeze-dinov3",
+            ),
+        ),
+    )
+    predict_help_sections = (
+        (
+            "Required inputs",
+            (
+                "--video-folder",
+                "--checkpoint-path",
+            ),
+        ),
+        (
+            "Model and runtime",
+            (
+                "--feature-backbone",
+                "--dinov3-model-name",
+                "--transformer-dim",
+                "--feature-dim",
+                "--device",
+            ),
+        ),
+        (
+            "Inference controls",
+            ("--batch-size",),
+        ),
+    )
 
     def add_train_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(

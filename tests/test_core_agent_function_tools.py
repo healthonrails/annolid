@@ -18,6 +18,7 @@ import re
 from annolid.core.agent.config import CalendarToolConfig
 from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_builtin import (
+    AnnolidRunTool,
     BibtexListEntriesTool,
     BibtexRemoveEntryTool,
     BibtexUpsertEntryTool,
@@ -106,6 +107,66 @@ def test_function_registry_validate_and_execute() -> None:
     assert "Invalid parameters" in bad
     ok = asyncio.run(registry.execute("echo", {"text": "hi"}))
     assert ok == "hi"
+
+
+def test_annolid_run_tool_executes_in_process_cli(monkeypatch, tmp_path: Path) -> None:
+    observed: dict[str, object] = {}
+
+    def _fake_main(argv: list[str]) -> int:
+        observed["argv"] = list(argv)
+        observed["cwd"] = str(Path.cwd())
+        print("annolid-run ok")
+        return 0
+
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.annolid_run.annolid_run_main", _fake_main
+    )
+
+    tool = AnnolidRunTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(
+            command="annolid-run agent-status",
+            working_dir=str(tmp_path),
+        )
+    )
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["exit_code"] == 0
+    assert payload["argv"] == ["agent-status"]
+    assert payload["working_dir"] == str(tmp_path.resolve())
+    assert "annolid-run ok" in payload["stdout"]
+    assert observed["argv"] == ["agent-status"]
+    assert observed["cwd"] == str(tmp_path.resolve())
+
+
+def test_annolid_run_tool_blocks_mutation_without_opt_in(tmp_path: Path) -> None:
+    tool = AnnolidRunTool(allowed_dir=tmp_path)
+    result = asyncio.run(tool.execute(command="annolid-run update run"))
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["argv"] == ["update", "run"]
+    assert "allow_mutation=true" in payload["error"]
+
+
+def test_annolid_run_tool_normalizes_help_alias(tmp_path: Path) -> None:
+    tool = AnnolidRunTool(allowed_dir=tmp_path)
+    assert tool._normalize_argv("annolid-run help", None) == ["--help"]  # noqa: SLF001
+    assert tool._normalize_argv("annolid-run help train", None) == [  # noqa: SLF001
+        "train",
+        "--help",
+    ]
+    assert tool._normalize_argv(  # noqa: SLF001
+        "annolid-run help train dino_kpseg", None
+    ) == ["train", "dino_kpseg", "--help-model"]
+    assert tool._normalize_argv(  # noqa: SLF001
+        "help annolid-run predict dino_kpseg", None
+    ) == ["predict", "dino_kpseg", "--help-model"]
+
+
+def test_register_nanobot_style_tools_includes_annolid_run(tmp_path: Path) -> None:
+    registry = FunctionToolRegistry()
+    asyncio.run(register_nanobot_style_tools(registry, allowed_dir=tmp_path))
+    assert registry.has("annolid_run")
 
 
 def test_filesystem_tools_round_trip(tmp_path: Path) -> None:

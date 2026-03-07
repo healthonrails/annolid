@@ -41,6 +41,35 @@ async def chat_exec_command(command: str) -> dict[str, Any]:
     return {"ok": True, "result": result}
 
 
+async def chat_annolid_run(
+    *,
+    command: str = "",
+    working_dir: str = "",
+    allow_mutation: bool = False,
+) -> dict[str, Any]:
+    from annolid.core.agent.tools.annolid_run import AnnolidRunTool
+
+    workspace = get_agent_workspace_path()
+    tool = AnnolidRunTool(
+        allowed_dir=workspace,
+        allowed_read_roots=[str(workspace)],
+    )
+    raw = await tool.execute(
+        command=str(command or ""),
+        working_dir=str(working_dir or ""),
+        allow_mutation=bool(allow_mutation),
+    )
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        payload = {"ok": False, "error": str(raw or "invalid_annolid_run_result")}
+    return (
+        payload
+        if isinstance(payload, dict)
+        else {"ok": False, "error": "invalid_annolid_run_result"}
+    )
+
+
 def _parse_tool_payload(raw: str, invalid_message: str) -> dict[str, Any]:
     try:
         payload = json.loads(raw)
@@ -213,6 +242,7 @@ async def chat_exec_process(
 
 
 __all__ = [
+    "chat_annolid_run",
     "chat_exec_command",
     "chat_exec_process",
     "chat_exec_start",

@@ -30,6 +30,98 @@ def _parse_weight_list(text: Optional[str], *, n: int) -> tuple[float, ...]:
 class DinoKPSEGPlugin(ModelPluginBase):
     name = "dino_kpseg"
     description = "DINOv3 feature + small conv head for keypoint mask segmentation."
+    train_help_sections = (
+        (
+            "Required inputs",
+            (
+                "--data",
+                "--run-config",
+            ),
+        ),
+        (
+            "Outputs and run location",
+            (
+                "--output",
+                "--runs-root",
+                "--run-name",
+            ),
+        ),
+        (
+            "Model and features",
+            (
+                "--model-name",
+                "--short-side",
+                "--layers",
+                "--feature-merge",
+                "--feature-align-dim",
+            ),
+        ),
+        (
+            "Training controls",
+            (
+                "--epochs",
+                "--batch",
+                "--lr",
+                "--accumulate",
+                "--grad-clip",
+                "--warmup-epochs",
+                "--schedule-profile",
+            ),
+        ),
+        (
+            "Data and augmentation",
+            (
+                "--data-format",
+                "--instance-mode",
+                "--bbox-scale",
+                "--augment",
+                "--hflip",
+                "--degrees",
+                "--translate",
+                "--scale",
+            ),
+        ),
+        (
+            "Losses and reporting",
+            (
+                "--balanced-bce",
+                "--threshold",
+                "--tb-projector",
+                "--tb-add-graph",
+                "--log-every-steps",
+            ),
+        ),
+    )
+    predict_help_sections = (
+        (
+            "Required inputs",
+            (
+                "--weights",
+                "--image",
+            ),
+        ),
+        (
+            "Outputs and run location",
+            ("--out",),
+        ),
+        (
+            "Model and runtime",
+            ("--device",),
+        ),
+        (
+            "Inference controls",
+            (
+                "--threshold",
+                "--min-keypoint-score",
+                "--tta-hflip",
+                "--tta-merge",
+            ),
+        ),
+        (
+            "Output detail",
+            ("--return-patch-masks",),
+        ),
+    )
 
     def add_train_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(

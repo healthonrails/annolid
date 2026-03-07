@@ -87,6 +87,7 @@ async def execute_direct_gui_command(
     list_dir: Callable[..., Any],
     read_file: Callable[..., Any],
     exec_command: Callable[..., Any],
+    annolid_run: Callable[..., Any],
     exec_start: Callable[..., Any],
     exec_process: Callable[..., Any],
 ) -> Dict[str, Any]:
@@ -808,6 +809,30 @@ async def execute_direct_gui_command(
                 f"Command output:\n{res}" if res else "Command executed with no output."
             )
         return str(payload.get("error") or "Failed to execute command.")
+
+    if name == "annolid_run":
+        payload = await _run(
+            annolid_run,
+            command=str(args.get("command") or ""),
+            working_dir=str(args.get("working_dir") or ""),
+            allow_mutation=bool(args.get("allow_mutation", False)),
+        )
+        if payload.get("ok"):
+            stdout_text = str(payload.get("stdout") or "").strip()
+            stderr_text = str(payload.get("stderr") or "").strip()
+            if stdout_text:
+                return f"annolid-run output:\n{stdout_text}"
+            if stderr_text:
+                return f"annolid-run stderr:\n{stderr_text}"
+            return "annolid-run completed."
+        error_text = str(payload.get("error") or "Failed to run annolid-run command.")
+        if "allow_mutation=true" in error_text:
+            return (
+                f"{error_text}\n\n"
+                "For direct chat commands, review the exact `annolid-run` arguments first. "
+                "Then run the typed `annolid_run` tool with `allow_mutation=true` only when needed."
+            )
+        return error_text
 
     if name == "exec_start":
         payload = await _run(

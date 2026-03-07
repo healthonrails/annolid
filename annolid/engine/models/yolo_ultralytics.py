@@ -14,6 +14,73 @@ class YOLOUltralyticsPlugin(ModelPluginBase):
     description = (
         "Ultralytics YOLO train/predict wrapper (training delegates to the 'yolo' CLI)."
     )
+    train_help_sections = (
+        (
+            "Required inputs",
+            (
+                "--data",
+                "--weights",
+                "--run-config",
+            ),
+        ),
+        (
+            "Outputs and run location",
+            ("--project",),
+        ),
+        (
+            "Model and runtime",
+            (
+                "--device",
+                "--imgsz",
+            ),
+        ),
+        (
+            "Training controls",
+            (
+                "--epochs",
+                "--batch",
+                "--override",
+            ),
+        ),
+        (
+            "Saving and reporting",
+            ("--plots",),
+        ),
+    )
+    predict_help_sections = (
+        (
+            "Required inputs",
+            (
+                "--source",
+                "--weights",
+            ),
+        ),
+        (
+            "Outputs and run location",
+            (
+                "--project",
+                "--name",
+            ),
+        ),
+        (
+            "Model and runtime",
+            ("--device",),
+        ),
+        (
+            "Inference controls",
+            (
+                "--conf",
+                "--iou",
+            ),
+        ),
+        (
+            "Saving and reporting",
+            (
+                "--save",
+                "--save-txt",
+            ),
+        ),
+    )
 
     def add_train_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(

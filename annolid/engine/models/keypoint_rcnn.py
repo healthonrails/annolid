@@ -75,6 +75,50 @@ class KeypointRCNNPlugin(ModelPluginBase):
         "Torchvision Keypoint R-CNN (ResNet-50 FPN) — animal body keypoint detection. "
         "No Detectron2 required."
     )
+    train_help_sections = (
+        (
+            "Required inputs",
+            ("--dataset-dir",),
+        ),
+        (
+            "Outputs and run location",
+            (
+                "--output-dir",
+                "--weights",
+            ),
+        ),
+        (
+            "Training controls",
+            (
+                "--max-iterations",
+                "--batch-size",
+                "--base-lr",
+                "--checkpoint-period",
+                "--num-workers",
+                "--score-threshold",
+            ),
+        ),
+    )
+    predict_help_sections = (
+        (
+            "Required inputs",
+            (
+                "--weights",
+                "--image",
+            ),
+        ),
+        (
+            "Outputs and display",
+            (
+                "--output-json",
+                "--no-display",
+            ),
+        ),
+        (
+            "Inference controls",
+            ("--score-threshold",),
+        ),
+    )
 
     # ------------------------------------------------------------------ #
     # Train

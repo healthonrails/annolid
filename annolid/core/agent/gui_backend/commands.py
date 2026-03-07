@@ -1252,6 +1252,35 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             "args": {"command": exec_match.group("cmd").strip()},
         }
 
+    annolid_run_match = re.match(
+        r"\s*(?:/)?(?:run\s+)?annolid(?:-run|\s+run)\s+(?P<cmd>.+?)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if annolid_run_match:
+        return {
+            "name": "annolid_run",
+            "args": {
+                "command": annolid_run_match.group("cmd").strip(),
+                "allow_mutation": False,
+            },
+        }
+
+    annolid_help_match = re.match(
+        r"\s*(?:/)?help\s+(?:for\s+)?annolid(?:-run|\s+run)(?:\s+(?P<cmd>.+?))?\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if annolid_help_match:
+        topic = str(annolid_help_match.group("cmd") or "").strip()
+        return {
+            "name": "annolid_run",
+            "args": {
+                "command": f"help {topic}".strip(),
+                "allow_mutation": False,
+            },
+        }
+
     # Git/GitHub quick-action aliases: map natural language into dedicated
     # VCS tools first (avoid relying on generic shell-exec availability).
     if re.search(r"\bgit\s+status\b", lower) or re.search(

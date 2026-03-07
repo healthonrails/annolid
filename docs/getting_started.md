@@ -49,11 +49,19 @@ See [Workflows](workflows.md) for detailed operating patterns.
 ```bash
 annolid-run --help
 annolid-run list-models
-annolid-run train <model> --help-model
-annolid-run predict <model> --help-model
+annolid-run help train
+annolid-run help predict
+annolid-run help train <model>
+annolid-run help predict <model>
 ```
 
 Use run-config templates under `annolid/configs/runs/` for reproducible jobs.
+
+For built-in models, the model help view now shows a grouped quick reference
+before the full option list.
+
+If you want Annolid Bot to drive those commands for you, use the typed
+`annolid_run` path described in [Annolid Agent and annolid-run](agent_annolid_run.md).
 
 ## Optional Next Layers
 

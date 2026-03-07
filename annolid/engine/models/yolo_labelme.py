@@ -110,6 +110,41 @@ def _load_visual_prompts_from_labelme(path: Path) -> Tuple[Dict[str, Any], List[
 class YOLOLabelMePlugin(ModelPluginBase):
     name = "yolo_labelme"
     description = "Run Ultralytics YOLO/YOLOE inference and export LabelMe JSON (supports YOLOE text + visual prompts)."
+    predict_help_sections = (
+        (
+            "Required inputs",
+            (
+                "--source",
+                "--weights",
+            ),
+        ),
+        (
+            "Outputs and run location",
+            ("--output-dir",),
+        ),
+        (
+            "Prompting controls",
+            (
+                "--classes",
+                "--visual-prompts",
+                "--visual-prompts-labelme",
+            ),
+        ),
+        (
+            "Frame range and tracking",
+            (
+                "--start-frame",
+                "--end-frame",
+                "--step",
+                "--no-tracking",
+                "--tracker",
+            ),
+        ),
+        (
+            "Export behavior",
+            ("--save-pose-bbox",),
+        ),
+    )
 
     def add_predict_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(

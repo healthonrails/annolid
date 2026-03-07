@@ -18,6 +18,7 @@ from .common import (
 )
 from .cron import CronTool
 from .automation_scheduler import AutomationSchedulerTool
+from .annolid_run import AnnolidRunTool
 from .camera import CameraSnapshotTool
 from .coding_harness import (
     CodingSessionCloseTool,
@@ -114,6 +115,7 @@ __all__ = [
     "SwarmTool",
     "CronTool",
     "AutomationSchedulerTool",
+    "AnnolidRunTool",
     "CameraSnapshotTool",
     "CodingSessionStartTool",
     "CodingSessionSendTool",

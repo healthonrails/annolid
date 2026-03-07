@@ -2701,6 +2701,30 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_exec_bang["name"] == "exec_command"
     assert parsed_exec_bang["args"]["command"] == "echo hello"
 
+    parsed_annolid_run = task._parse_direct_gui_command("annolid-run agent-status")
+    assert parsed_annolid_run["name"] == "annolid_run"
+    assert parsed_annolid_run["args"]["command"] == "agent-status"
+    assert parsed_annolid_run["args"]["allow_mutation"] is False
+
+    parsed_annolid_run_spaced = task._parse_direct_gui_command(
+        "run annolid run update check --channel stable"
+    )
+    assert parsed_annolid_run_spaced["name"] == "annolid_run"
+    assert (
+        parsed_annolid_run_spaced["args"]["command"] == "update check --channel stable"
+    )
+    assert parsed_annolid_run_spaced["args"]["allow_mutation"] is False
+
+    parsed_annolid_help = task._parse_direct_gui_command("help annolid-run")
+    assert parsed_annolid_help["name"] == "annolid_run"
+    assert parsed_annolid_help["args"]["command"] == "help"
+    assert parsed_annolid_help["args"]["allow_mutation"] is False
+
+    parsed_annolid_help_train = task._parse_direct_gui_command("help annolid-run train")
+    assert parsed_annolid_help_train["name"] == "annolid_run"
+    assert parsed_annolid_help_train["args"]["command"] == "help train"
+    assert parsed_annolid_help_train["args"]["allow_mutation"] is False
+
     parsed_git_changes = task._parse_direct_gui_command("check git changes")
     assert parsed_git_changes["name"] == "git_status"
     assert parsed_git_changes["args"]["short"] is True
@@ -2799,6 +2823,61 @@ def test_parse_direct_gui_command_variants() -> None:
     )
     assert parsed_howto["name"] == "generate_annolid_tutorial"
     assert "behavior analysis" in parsed_howto["args"]["topic"].lower()
+
+
+def test_direct_annolid_run_prompt_routes_to_annolid_run_tool(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("annolid-run agent-status", widget=None)
+
+    async def _fake_chat_annolid_run(
+        *,
+        command: str = "",
+        working_dir: str = "",
+        allow_mutation: bool = False,
+    ) -> dict[str, object]:
+        assert command == "agent-status"
+        assert working_dir == ""
+        assert allow_mutation is False
+        return {
+            "ok": True,
+            "stdout": "agent status ok",
+            "stderr": "",
+            "exit_code": 0,
+        }
+
+    monkeypatch.setattr(backend, "chat_annolid_run", _fake_chat_annolid_run)
+
+    result = task._maybe_run_direct_gui_tool_from_prompt("annolid-run agent-status")
+    assert result == "annolid-run output:\nagent status ok"
+
+
+def test_direct_mutating_annolid_run_prompt_is_blocked(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("annolid-run update run", widget=None)
+
+    async def _fake_chat_annolid_run(
+        *,
+        command: str = "",
+        working_dir: str = "",
+        allow_mutation: bool = False,
+    ) -> dict[str, object]:
+        assert command == "update run"
+        assert allow_mutation is False
+        return {
+            "ok": False,
+            "error": (
+                "This `annolid-run` command may modify state. "
+                "Retry with allow_mutation=true only when that is intended."
+            ),
+        }
+
+    monkeypatch.setattr(backend, "chat_annolid_run", _fake_chat_annolid_run)
+
+    result = task._maybe_run_direct_gui_tool_from_prompt("annolid-run update run")
+    assert "allow_mutation=true" in result
+    assert "typed `annolid_run` tool" in result
 
 
 def test_gui_generate_tutorial_saves_and_opens_markdown_in_web_viewer(
