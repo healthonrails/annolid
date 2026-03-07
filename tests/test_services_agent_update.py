@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 
 from annolid.services.agent_update import (
+    check_gui_agent_update,
+    execute_gui_agent_rollback,
     check_for_agent_update,
     rollback_agent_update,
     run_legacy_agent_update,
@@ -150,3 +152,75 @@ def test_run_legacy_agent_update_maps_failed_steps(monkeypatch) -> None:
 
     assert exit_code == 1
     assert payload["steps"][0]["ok"] is False
+
+
+def test_check_gui_agent_update_returns_dialog_payload(monkeypatch) -> None:
+    import annolid.core.agent.update_manager.service as service_mod
+
+    class _Plan:
+        current_version = "1.0.0"
+        channel = "stable"
+        update_available = True
+
+        class manifest:
+            version = "1.1.0"
+
+        class verification:
+            reason = "verified"
+
+    class _Service:
+        def __init__(self, *, project: str) -> None:
+            assert project == "annolid"
+
+        def check(self, *, channel: str, timeout_s: float, require_signature: bool):
+            assert channel == "stable"
+            assert timeout_s == 4.0
+            assert require_signature is True
+            return _Plan()
+
+    monkeypatch.setattr(service_mod, "UpdateManagerService", _Service)
+
+    payload = check_gui_agent_update(require_signature=True)
+
+    assert payload == {
+        "current_version": "1.0.0",
+        "target_version": "1.1.0",
+        "channel": "stable",
+        "update_available": True,
+        "verification_reason": "verified",
+    }
+
+
+def test_execute_gui_agent_rollback_uses_service_preflight(monkeypatch) -> None:
+    import annolid.core.agent.update_manager.rollback as rollback_mod
+    import annolid.core.agent.update_manager.service as service_mod
+
+    captured: dict[str, object] = {}
+
+    class _Manager:
+        def preflight(self):
+            return {"install_mode": "package"}
+
+    class _Service:
+        def __init__(self, *, project: str) -> None:
+            captured["project"] = project
+            self.manager = _Manager()
+
+    monkeypatch.setattr(service_mod, "UpdateManagerService", _Service)
+    monkeypatch.setattr(
+        rollback_mod,
+        "build_rollback_plan",
+        lambda **kwargs: {"plan": kwargs},
+    )
+    monkeypatch.setattr(
+        rollback_mod,
+        "execute_rollback",
+        lambda plan, *, execute: {"ok": True, "plan": plan, "executed": execute},
+    )
+
+    payload = execute_gui_agent_rollback(previous_version="1.2.3")
+
+    assert captured["project"] == "annolid"
+    assert payload["ok"] is True
+    assert payload["executed"] is True
+    assert payload["plan"]["plan"]["previous_version"] == "1.2.3"

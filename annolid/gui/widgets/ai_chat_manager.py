@@ -8,26 +8,24 @@ from typing import Optional
 
 from qtpy import QtCore, QtWidgets
 
-from annolid.core.agent.bus import MessageBus
-from annolid.core.agent.bus.events import InboundMessage
-from annolid.core.agent.bus.service import AgentBusService
-from annolid.core.agent.channels.manager import ChannelManager
-from annolid.core.agent.channels.whatsapp import WhatsAppChannel
-from annolid.core.agent.channels.whatsapp_python_bridge import WhatsAppPythonBridge
-from annolid.core.agent.channels.whatsapp_webhook_server import WhatsAppWebhookServer
-from annolid.core.agent.config import load_config
-from annolid.core.agent.cron import (
+from annolid.infrastructure.agent_config import load_agent_config as load_config
+from annolid.infrastructure.agent_workspace import get_agent_workspace_path
+from annolid.services.chat_bus import InboundMessage, MessageBus
+from annolid.services.chat_manager_runtime import (
+    AgentBusService,
+    AgentLoop,
+    ChannelManager,
     CronJob,
     CronService,
-    default_cron_store_path,
-)
-from annolid.core.agent.loop import AgentLoop
-from annolid.core.agent.scheduler import ScheduledTask, TaskScheduler
-from annolid.core.agent.tools import (
     FunctionToolRegistry,
+    ScheduledTask,
+    TaskScheduler,
+    WhatsAppChannel,
+    WhatsAppPythonBridge,
+    WhatsAppWebhookServer,
+    default_cron_store_path,
     register_nanobot_style_tools,
 )
-from annolid.core.agent.utils import get_agent_workspace_path
 from annolid.gui.widgets.ai_chat_widget import AIChatWidget
 from annolid.gui.widgets.ai_chat_zulip import missing_zulip_config_fields
 

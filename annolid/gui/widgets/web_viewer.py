@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
-from annolid.core.agent.utils import get_agent_workspace_path
+from annolid.infrastructure.agent_workspace import get_agent_workspace_path
 from annolid.gui.widgets.bot_explain import (
     explain_image_with_annolid_bot,
     explain_selection_with_annolid_bot,

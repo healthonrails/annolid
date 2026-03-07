@@ -441,10 +441,23 @@ def test_execution_paths_use_layer_imports() -> None:
     assert "from annolid.services.chat_runtime import (" in ai_chat_backend
     assert "from annolid.services.chat_provider_runtime import (" in ai_chat_backend
     assert "from annolid.services.chat_context import (" in ai_chat_backend
+    assert "from annolid.services.chat_agent_core import (" in ai_chat_backend
+    assert "from annolid.services.chat_backend_support import (" in ai_chat_backend
+    assert "from annolid.services.chat_devtools import (" in ai_chat_backend
     assert "from annolid.services.chat_session import (" in ai_chat_backend
     assert "from annolid.services.chat_widget_bridge import (" in ai_chat_backend
     assert "from annolid.services.chat_video import (" in ai_chat_backend
     assert "from annolid.services.chat_web_pdf import (" in ai_chat_backend
+    assert "from annolid.services.chat_controls import (" in ai_chat_backend
+    assert "from annolid.services.chat_arxiv import (" in ai_chat_backend
+    assert "from annolid.services.chat_citations import (" in ai_chat_backend
+    assert "from annolid.services.chat_filesystem import (" in ai_chat_backend
+    assert "from annolid.services.chat_realtime import (" in ai_chat_backend
+    assert "from annolid.services.chat_shapes import (" in ai_chat_backend
+    assert "from annolid.services.chat_shape_files import (" in ai_chat_backend
+    assert "from annolid.infrastructure.agent_config import " in ai_chat_backend
+    assert "from annolid.infrastructure.agent_workspace import " in ai_chat_backend
+    assert "from annolid.core.agent" not in ai_chat_backend
     assert "get_chat_workspace()" in ai_chat_backend
     assert "get_chat_session_store()" in ai_chat_backend
     assert "resolve_chat_pdf_path(raw_path)" in ai_chat_backend
@@ -509,6 +522,88 @@ def test_execution_paths_use_layer_imports() -> None:
     assert "get_chat_widget_action_result(" in ai_chat_backend
     assert "segment_track_chat_video_tool(" in ai_chat_backend
     assert "label_chat_behavior_segments_tool(" in ai_chat_backend
+    assert "gui_run_ai_text_segmentation_tool(" in ai_chat_backend
+    assert "gui_select_annotation_model_tool(" in ai_chat_backend
+    assert "gui_send_chat_prompt_tool(" in ai_chat_backend
+    assert "gui_set_ai_text_prompt_tool(" in ai_chat_backend
+    assert "gui_set_chat_model_tool(" in ai_chat_backend
+    assert "gui_set_chat_prompt_tool(" in ai_chat_backend
+    assert "gui_set_frame_tool(" in ai_chat_backend
+    assert "gui_track_next_frames_tool(" in ai_chat_backend
+    assert "gui_arxiv_search_tool(" in ai_chat_backend
+    assert "gui_safe_run_arxiv_search(" in ai_chat_backend
+    assert "gui_list_local_pdfs(" in ai_chat_backend
+    assert "gui_add_citation_raw_tool(" in ai_chat_backend
+    assert "gui_list_citations_tool(" in ai_chat_backend
+    assert "gui_save_citation_tool(" in ai_chat_backend
+    assert "gui_rename_file_tool(" in ai_chat_backend
+    assert "gui_check_stream_source_tool(" in ai_chat_backend
+    assert "gui_get_realtime_status_tool(" in ai_chat_backend
+    assert "gui_list_logs_tool(" in ai_chat_backend
+    assert "gui_list_log_files_tool(" in ai_chat_backend
+    assert "gui_read_log_file_tool(" in ai_chat_backend
+    assert "gui_search_logs_tool(" in ai_chat_backend
+    assert "gui_open_log_folder_tool(" in ai_chat_backend
+    assert "gui_remove_log_folder_tool(" in ai_chat_backend
+    assert "gui_list_realtime_logs_tool(" in ai_chat_backend
+    assert "gui_list_realtime_models_tool(" in ai_chat_backend
+    assert "gui_start_realtime_stream_tool(" in ai_chat_backend
+    assert "gui_stop_realtime_stream_tool(" in ai_chat_backend
+    assert "gui_delete_selected_shapes_tool(" in ai_chat_backend
+    assert "gui_list_shapes_tool(" in ai_chat_backend
+    assert "gui_select_shapes_tool(" in ai_chat_backend
+    assert "gui_set_selected_shape_label_tool(" in ai_chat_backend
+    assert "gui_delete_shapes_in_annotation_tool(" in ai_chat_backend
+    assert "gui_list_shapes_in_annotation_tool(" in ai_chat_backend
+    assert "gui_relabel_shapes_in_annotation_tool(" in ai_chat_backend
+    assert "chat_list_dir(" in ai_chat_backend
+    assert "chat_read_file(" in ai_chat_backend
+    assert "chat_exec_command(" in ai_chat_backend
+    assert "chat_git_status(" in ai_chat_backend
+    assert "chat_git_diff(" in ai_chat_backend
+    assert "chat_git_log(" in ai_chat_backend
+    assert "chat_github_pr_status(" in ai_chat_backend
+    assert "chat_github_pr_checks(" in ai_chat_backend
+    assert "chat_exec_start(" in ai_chat_backend
+    assert "chat_exec_process(" in ai_chat_backend
     assert "load_chat_execution_prerequisites()" in ai_chat_backend
     assert "prepare_chat_context_tools(" in ai_chat_backend
     assert "register_chat_gui_toolset(" in ai_chat_backend
+
+    ai_chat_widget = (
+        repo_root / "annolid" / "gui" / "widgets" / "ai_chat_widget.py"
+    ).read_text(encoding="utf-8")
+    assert "from annolid.infrastructure.agent_config import (" in ai_chat_widget
+    assert "from annolid.infrastructure.agent_workspace import " in ai_chat_widget
+    assert "from annolid.services.chat_bus import (" in ai_chat_widget
+    assert "from annolid.services.chat_session import (" in ai_chat_widget
+    assert "from annolid.services.chat_backend_support import (" in ai_chat_widget
+    assert "from annolid.core.agent" not in ai_chat_widget
+
+    ai_chat_manager = (
+        repo_root / "annolid" / "gui" / "widgets" / "ai_chat_manager.py"
+    ).read_text(encoding="utf-8")
+    assert "from annolid.infrastructure.agent_config import " in ai_chat_manager
+    assert "from annolid.infrastructure.agent_workspace import " in ai_chat_manager
+    assert "from annolid.services.chat_bus import " in ai_chat_manager
+    assert "from annolid.services.chat_manager_runtime import (" in ai_chat_manager
+    assert "from annolid.core.agent" not in ai_chat_manager
+
+    chat_session_dialog = (
+        repo_root / "annolid" / "gui" / "widgets" / "ai_chat_session_dialog.py"
+    ).read_text(encoding="utf-8")
+    assert "from annolid.services.chat_session import (" in chat_session_dialog
+    assert "from annolid.core.agent" not in chat_session_dialog
+
+    llm_settings_dialog = (
+        repo_root / "annolid" / "gui" / "widgets" / "llm_settings_dialog.py"
+    ).read_text(encoding="utf-8")
+    assert "from annolid.infrastructure.agent_config import (" in llm_settings_dialog
+    assert "from annolid.services.agent_update import (" in llm_settings_dialog
+    assert "from annolid.core.agent" not in llm_settings_dialog
+
+    web_viewer = (
+        repo_root / "annolid" / "gui" / "widgets" / "web_viewer.py"
+    ).read_text(encoding="utf-8")
+    assert "from annolid.infrastructure.agent_workspace import " in web_viewer
+    assert "from annolid.core.agent" not in web_viewer

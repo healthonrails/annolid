@@ -89,11 +89,58 @@ def rollback_agent_update(
 
 
 __all__ = [
+    "check_gui_agent_update",
+    "execute_gui_agent_rollback",
     "check_for_agent_update",
     "run_legacy_agent_update",
     "rollback_agent_update",
     "run_agent_update",
 ]
+
+
+def check_gui_agent_update(
+    *,
+    project: str = "annolid",
+    channel: str = "stable",
+    timeout_s: float = 4.0,
+    require_signature: bool = False,
+) -> dict:
+    from annolid.core.agent.update_manager.service import UpdateManagerService
+
+    service = UpdateManagerService(project=str(project or "annolid"))
+    plan = service.check(
+        channel=str(channel or "stable"),
+        timeout_s=float(timeout_s),
+        require_signature=bool(require_signature),
+    )
+    return {
+        "current_version": str(plan.current_version),
+        "target_version": str(plan.manifest.version),
+        "channel": str(plan.channel),
+        "update_available": bool(plan.update_available),
+        "verification_reason": str(plan.verification.reason),
+    }
+
+
+def execute_gui_agent_rollback(
+    *,
+    project: str = "annolid",
+    previous_version: str,
+) -> dict:
+    from annolid.core.agent.update_manager.rollback import (
+        build_rollback_plan,
+        execute_rollback,
+    )
+    from annolid.core.agent.update_manager.service import UpdateManagerService
+
+    service = UpdateManagerService(project=str(project or "annolid"))
+    preflight = service.manager.preflight()
+    plan = build_rollback_plan(
+        install_mode=str(preflight.get("install_mode") or "package"),
+        project=str(project or "annolid"),
+        previous_version=str(previous_version or ""),
+    )
+    return execute_rollback(plan, execute=True)
 
 
 def run_legacy_agent_update(

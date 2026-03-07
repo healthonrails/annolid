@@ -5,7 +5,7 @@ from typing import Dict, List
 
 from qtpy import QtCore, QtWidgets
 
-from annolid.core.agent.session_manager import (
+from annolid.services.chat_session import (
     AgentSessionManager,
     PersistentSessionStore,
 )

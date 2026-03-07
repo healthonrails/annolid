@@ -20,14 +20,26 @@ from urllib.parse import urlsplit, urlunsplit
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import QThreadPool
 
-from annolid.core.agent.bus import InboundMessage, MessageBus, OutboundMessage
-from annolid.core.agent.channels.zulip import ZulipChannel
-from annolid.core.agent.config import get_config_path, load_config
-from annolid.core.agent.session_manager import (
+from annolid.infrastructure.agent_config import (
+    get_agent_config_path as get_config_path,
+    load_agent_config as load_config,
+)
+from annolid.infrastructure.agent_workspace import get_agent_workspace_path
+from annolid.services.chat_backend_support import (
+    ERROR_TYPE_CANCELLED,
+    TURN_STATUS_CANCELLED,
+)
+from annolid.services.chat_bus import (
+    InboundMessage,
+    MessageBus,
+    OutboundMessage,
+    ZulipChannel,
+    decode_outbound_chat_event,
+)
+from annolid.services.chat_session import (
     AgentSessionManager,
     PersistentSessionStore,
 )
-from annolid.core.agent.utils import get_agent_workspace_path
 from annolid.datasets.labelme_collection import default_label_index_path
 from annolid.gui.realtime_launch import (
     build_realtime_launch_payload,
@@ -41,11 +53,6 @@ from annolid.gui.widgets.ai_chat_audio_controller import ChatAudioController
 from annolid.gui.widgets.ai_chat_backend import (
     StreamingChatTask,
     clear_chat_session,
-)
-from annolid.core.agent.gui_backend.session_io import decode_outbound_chat_event
-from annolid.core.agent.gui_backend.turn_state import (
-    ERROR_TYPE_CANCELLED,
-    TURN_STATUS_CANCELLED,
 )
 from annolid.gui.widgets.ai_chat_session_dialog import ChatSessionManagerDialog
 from annolid.gui.widgets.ai_chat_zulip import (

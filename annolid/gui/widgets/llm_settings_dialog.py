@@ -5,7 +5,14 @@ from typing import Any, Dict, List, Optional
 
 from qtpy import QtCore, QtWidgets
 
-from annolid.core.agent.config import load_config, save_config
+from annolid.infrastructure.agent_config import (
+    load_agent_config as load_config,
+    save_agent_config as save_config,
+)
+from annolid.services.agent_update import (
+    check_gui_agent_update,
+    execute_gui_agent_rollback,
+)
 from annolid.utils.llm_settings import (
     detect_openai_codex_auth_state,
     default_settings,
@@ -729,32 +736,22 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         self._tabs.addTab(tab_widget, "Agent Runtime")
 
     def _check_now_update(self) -> None:
-        try:
-            from annolid.core.agent.update_manager.service import UpdateManagerService
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Update Check Failed",
-                f"Could not load update service.\n\n{exc}",
-            )
-            return
-
         channel = str(self.auto_update_channel_combo.currentData() or "stable")
         timeout_s = float(self.auto_update_timeout_spin.value())
         require_signature = bool(self.auto_update_require_sig_checkbox.isChecked())
         try:
-            service = UpdateManagerService(project="annolid")
-            plan = service.check(
+            payload = check_gui_agent_update(
+                project="annolid",
                 channel=channel,
                 timeout_s=timeout_s,
                 require_signature=require_signature,
             )
             details = [
-                f"Current version: {plan.current_version}",
-                f"Target version: {plan.manifest.version}",
-                f"Channel: {plan.channel}",
-                f"Update available: {plan.update_available}",
-                f"Verification: {plan.verification.reason}",
+                f"Current version: {payload.get('current_version')}",
+                f"Target version: {payload.get('target_version')}",
+                f"Channel: {payload.get('channel')}",
+                f"Update available: {payload.get('update_available')}",
+                f"Verification: {payload.get('verification_reason')}",
             ]
             QtWidgets.QMessageBox.information(
                 self,
@@ -769,20 +766,6 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             )
 
     def _rollback_update(self) -> None:
-        try:
-            from annolid.core.agent.update_manager.rollback import (
-                build_rollback_plan,
-                execute_rollback,
-            )
-            from annolid.core.agent.update_manager.service import UpdateManagerService
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Rollback Failed",
-                f"Could not load rollback dependencies.\n\n{exc}",
-            )
-            return
-
         previous_version, ok = QtWidgets.QInputDialog.getText(
             self,
             "Rollback",
@@ -814,14 +797,10 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             return
 
         try:
-            service = UpdateManagerService(project="annolid")
-            preflight = service.manager.preflight()
-            plan = build_rollback_plan(
-                install_mode=str(preflight.get("install_mode") or "package"),
+            payload = execute_gui_agent_rollback(
                 project="annolid",
                 previous_version=version,
             )
-            payload = execute_rollback(plan, execute=True)
             if bool(payload.get("ok", False)):
                 QtWidgets.QMessageBox.information(
                     self,

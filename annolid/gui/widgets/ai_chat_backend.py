@@ -19,87 +19,96 @@ from typing import Mapping
 from qtpy import QtCore
 from qtpy.QtCore import QRunnable
 
-from annolid.core.agent.config import load_config
-from annolid.core.agent.memory import AgentMemoryStore
-from annolid.core.agent.providers import (
+from annolid.infrastructure.agent_config import load_agent_config as load_config
+from annolid.infrastructure.agent_workspace import get_agent_workspace_path
+from annolid.services.chat_agent_core import (
+    AgentMemoryStore,
+    BusInboundMessage,
+    FunctionToolRegistry,
+    PROVIDER_OLLAMA_FORCE_PLAIN_CACHE as _PROVIDER_OLLAMA_FORCE_PLAIN_CACHE,
+    PROVIDER_OLLAMA_PLAIN_MODE_COOLDOWN_TURNS as _PROVIDER_OLLAMA_PLAIN_MODE_COOLDOWN_TURNS,
+    PROVIDER_OLLAMA_TOOL_SUPPORT_CACHE as _PROVIDER_OLLAMA_TOOL_SUPPORT_CACHE,
+    _annotate_snapshot_frame,
+    build_camera_mission_status,
+    clawhub_install_skill,
+    clawhub_search_skills,
     ollama_mark_plain_mode,
     ollama_plain_mode_decrement,
     ollama_plain_mode_remaining,
     recover_with_plain_ollama_reply,
+    resolve_allowed_tools,
 )
-from annolid.core.agent.providers.background_chat import (
-    OLLAMA_PLAIN_MODE_COOLDOWN_TURNS as _PROVIDER_OLLAMA_PLAIN_MODE_COOLDOWN_TURNS,
+from annolid.services.chat_agent_core import (
+    AutomationSchedulerTool,
+    CronTool,
+    DownloadPdfTool,
+    EmailTool,
+    RenameFileTool,
 )
-from annolid.core.agent.providers.background_chat import (
-    _OLLAMA_FORCE_PLAIN_CACHE as _PROVIDER_OLLAMA_FORCE_PLAIN_CACHE,
-)
-from annolid.core.agent.providers.background_chat import (
-    _OLLAMA_TOOL_SUPPORT_CACHE as _PROVIDER_OLLAMA_TOOL_SUPPORT_CACHE,
-)
-from annolid.core.agent.bus import InboundMessage as BusInboundMessage
-from annolid.core.agent.tools import (
-    FunctionToolRegistry,
-)
-from annolid.core.agent.tools.policy import resolve_allowed_tools
-from annolid.core.agent.tools.clawhub import (
-    clawhub_install_skill,
-    clawhub_search_skills,
-)
-from annolid.core.agent.tools.pdf import DownloadPdfTool
-from annolid.core.agent.tools.filesystem import RenameFileTool
-from annolid.core.agent.tools.email import EmailTool
-from annolid.core.agent.tools.automation_scheduler import AutomationSchedulerTool
-from annolid.core.agent.tools.cron import CronTool
-from annolid.core.agent.tools.camera import (
-    _annotate_snapshot_frame,
-    build_camera_mission_status,
-)
-from annolid.core.agent.utils import get_agent_workspace_path
-from annolid.core.agent.gui_backend.commands import (
-    looks_like_local_access_refusal,
-    parse_direct_gui_command,
-    prompt_may_need_tools,
-)
-from annolid.core.agent.gui_backend.context_blocks import (
+from annolid.services.chat_backend_support import (
+    ERROR_TYPE_CANCELLED,
+    ERROR_TYPE_POLICY,
+    ERROR_TYPE_USER,
+    PromptBuildInputs,
+    TURN_STATUS_CANCELLING,
+    TURN_STATUS_CANCELLED,
+    TURN_STATUS_COMPLETED,
+    TURN_STATUS_FAILED,
+    TURN_STATUS_QUEUED,
+    TURN_STATUS_RUNNING,
+    build_extractive_summary,
+    build_gui_compact_system_prompt,
+    build_gui_ollama_llm_callable,
     build_live_pdf_context_prompt_block,
     build_live_web_context_prompt_block,
-)
-from annolid.core.agent.gui_backend.fallbacks import (
+    build_tutorial_fallback_markdown,
+    build_tutorial_model_prompts,
+    build_workspace_roots,
     candidate_web_urls_for_prompt,
+    collect_gui_ollama_stream,
+    collect_tutorial_evidence,
+    contains_hint,
+    emit_agent_loop_result,
+    extract_gui_ollama_text,
     extract_page_text_from_web_steps,
+    extract_pdf_path_candidates,
+    extract_video_path_candidates,
+    extract_web_urls,
+    find_video_by_basename_in_roots,
+    format_gui_tool_trace,
+    gui_apply_direct_gui_fallback,
+    gui_apply_empty_ollama_recovery,
+    gui_apply_pdf_response_fallback,
+    gui_apply_web_response_fallbacks,
+    gui_ensure_non_empty_final_text,
+    gui_log_agent_result,
+    gui_should_apply_web_refusal_fallback,
+    gui_wrap_tool_callback,
+    list_available_pdfs_in_roots,
+    looks_like_local_access_refusal,
+    looks_like_knowledge_gap_response,
+    looks_like_open_pdf_suggestion,
+    looks_like_open_url_suggestion,
+    looks_like_url_request,
+    looks_like_web_access_refusal,
+    maybe_handle_ollama_plain_mode,
+    normalize_gui_messages_for_ollama,
+    parse_direct_gui_command,
+    parse_gui_ollama_tool_calls,
+    prompt_may_need_mcp,
+    prompt_may_need_tools,
+    resolve_video_path_for_roots,
+    select_annolid_reference_paths,
+    should_attach_live_pdf_context,
+    should_attach_live_web_context,
+    topic_tokens,
     try_browser_search_fallback,
     try_open_page_content_fallback,
     try_open_pdf_content_fallback,
     try_web_fetch_fallback,
     try_web_search_fallback,
 )
-from annolid.core.agent.gui_backend.heuristics import (
-    build_extractive_summary,
-    contains_hint,
-    extract_web_urls,
-    looks_like_knowledge_gap_response,
-    looks_like_open_pdf_suggestion,
-    looks_like_open_url_suggestion,
-    looks_like_url_request,
-    looks_like_web_access_refusal,
-    prompt_may_need_mcp,
-    should_attach_live_pdf_context,
-    should_attach_live_web_context,
-    topic_tokens,
-)
-from annolid.core.agent.gui_backend.paths import (
-    build_workspace_roots,
-    extract_pdf_path_candidates,
-    extract_video_path_candidates,
-    find_video_by_basename_in_roots,
-    list_available_pdfs_in_roots,
-    resolve_video_path_for_roots,
-)
-from annolid.core.agent.gui_backend.runtime_flow import (
-    emit_agent_loop_result,
-    maybe_handle_ollama_plain_mode,
-)
-from annolid.core.agent.gui_backend.tool_handlers_chat_controls import (
+from annolid.services.chat_controls import (
     run_ai_text_segmentation_tool as gui_run_ai_text_segmentation_tool,
     select_annotation_model_tool as gui_select_annotation_model_tool,
     send_chat_prompt_tool as gui_send_chat_prompt_tool,
@@ -109,12 +118,12 @@ from annolid.core.agent.gui_backend.tool_handlers_chat_controls import (
     set_frame_tool as gui_set_frame_tool,
     track_next_frames_tool as gui_track_next_frames_tool,
 )
-from annolid.core.agent.gui_backend.tool_handlers_arxiv import (
+from annolid.services.chat_arxiv import (
     arxiv_search_tool as gui_arxiv_search_tool,
     list_local_pdfs as gui_list_local_pdfs,
     safe_run_arxiv_search as gui_safe_run_arxiv_search,
 )
-from annolid.core.agent.gui_backend.tool_handlers_citations import (
+from annolid.services.chat_citations import (
     add_citation_raw_tool as gui_add_citation_raw_tool,
     citation_fields_from_pdf_state as gui_citation_fields_from_pdf_state,
     citation_fields_from_web_state as gui_citation_fields_from_web_state,
@@ -125,10 +134,10 @@ from annolid.core.agent.gui_backend.tool_handlers_citations import (
     resolve_bib_output_path as gui_resolve_bib_output_path,
     save_citation_tool as gui_save_citation_tool,
 )
-from annolid.core.agent.gui_backend.tool_handlers_filesystem import (
+from annolid.services.chat_filesystem import (
     rename_file_tool as gui_rename_file_tool,
 )
-from annolid.core.agent.gui_backend.tool_handlers_realtime import (
+from annolid.services.chat_realtime import (
     check_stream_source_tool as gui_check_stream_source_tool,
     get_realtime_status_tool as gui_get_realtime_status_tool,
     list_logs_tool as gui_list_logs_tool,
@@ -142,57 +151,16 @@ from annolid.core.agent.gui_backend.tool_handlers_realtime import (
     start_realtime_stream_tool as gui_start_realtime_stream_tool,
     stop_realtime_stream_tool as gui_stop_realtime_stream_tool,
 )
-from annolid.core.agent.gui_backend.tool_handlers_shapes import (
+from annolid.services.chat_shapes import (
     delete_selected_shapes_tool as gui_delete_selected_shapes_tool,
     list_shapes_tool as gui_list_shapes_tool,
     select_shapes_tool as gui_select_shapes_tool,
     set_selected_shape_label_tool as gui_set_selected_shape_label_tool,
 )
-from annolid.core.agent.gui_backend.tool_handlers_shape_files import (
+from annolid.services.chat_shape_files import (
     delete_shapes_in_annotation_tool as gui_delete_shapes_in_annotation_tool,
     list_shapes_in_annotation_tool as gui_list_shapes_in_annotation_tool,
     relabel_shapes_in_annotation_tool as gui_relabel_shapes_in_annotation_tool,
-)
-from annolid.core.agent.gui_backend.ollama_adapter import (
-    build_gui_ollama_llm_callable,
-    collect_gui_ollama_stream,
-    extract_gui_ollama_text,
-    format_gui_tool_trace,
-    normalize_gui_messages_for_ollama,
-    parse_gui_ollama_tool_calls,
-)
-from annolid.core.agent.gui_backend.response_finalize import (
-    apply_direct_gui_fallback as gui_apply_direct_gui_fallback,
-    apply_empty_ollama_recovery as gui_apply_empty_ollama_recovery,
-    apply_pdf_response_fallback as gui_apply_pdf_response_fallback,
-    apply_web_response_fallbacks as gui_apply_web_response_fallbacks,
-    ensure_non_empty_final_text as gui_ensure_non_empty_final_text,
-    should_apply_web_refusal_fallback as gui_should_apply_web_refusal_fallback,
-)
-from annolid.core.agent.gui_backend.tutorials import (
-    build_tutorial_fallback_markdown,
-    build_tutorial_model_prompts,
-    collect_tutorial_evidence,
-    select_annolid_reference_paths,
-)
-from annolid.core.agent.gui_backend.telemetry import (
-    log_agent_result as gui_log_agent_result,
-    wrap_tool_callback as gui_wrap_tool_callback,
-)
-from annolid.core.agent.gui_backend.prompt_builder import (
-    PromptBuildInputs,
-    build_compact_system_prompt as build_gui_compact_system_prompt,
-)
-from annolid.core.agent.gui_backend.turn_state import (
-    ERROR_TYPE_CANCELLED,
-    ERROR_TYPE_POLICY,
-    ERROR_TYPE_USER,
-    TURN_STATUS_CANCELLING,
-    TURN_STATUS_CANCELLED,
-    TURN_STATUS_COMPLETED,
-    TURN_STATUS_FAILED,
-    TURN_STATUS_QUEUED,
-    TURN_STATUS_RUNNING,
 )
 from annolid.gui.realtime_launch import build_realtime_launch_payload
 from annolid.services.chat_runtime import (
@@ -275,6 +243,18 @@ from annolid.services.chat_web_pdf import (
     run_chat_web_steps,
     scroll_chat_web,
     type_chat_web,
+)
+from annolid.services.chat_devtools import (
+    chat_exec_command,
+    chat_exec_process,
+    chat_exec_start,
+    chat_git_diff,
+    chat_git_log,
+    chat_git_status,
+    chat_github_pr_checks,
+    chat_github_pr_status,
+    chat_list_dir,
+    chat_read_file,
 )
 from annolid.services.chat_video import (
     label_chat_behavior_segments_tool,
@@ -3350,59 +3330,22 @@ class StreamingChatTask(QRunnable):
                     cap.release()
 
     async def _tool_gui_list_dir(self, path: str) -> Dict[str, Any]:
-        from annolid.core.agent.tools.filesystem import ListDirTool
-
-        workspace = get_agent_workspace_path()
-        tool = ListDirTool(allowed_read_roots=[str(workspace)])
-        res = await tool.execute(path=path)
-        if res.startswith("Error:"):
-            return {"ok": False, "error": res}
-        return {"ok": True, "result": res}
+        return await chat_list_dir(path)
 
     async def _tool_gui_read_file(self, path: str) -> Dict[str, Any]:
-        from annolid.core.agent.tools.filesystem import ReadFileTool
-
-        workspace = get_agent_workspace_path()
-        tool = ReadFileTool(allowed_read_roots=[str(workspace)])
-        res = await tool.execute(path=path)
-        if res.startswith("Error:"):
-            return {"ok": False, "error": res}
-        return {"ok": True, "result": res}
+        return await chat_read_file(path)
 
     async def _tool_gui_exec_command(self, command: str) -> Dict[str, Any]:
-        from annolid.core.agent.tools.shell import ExecTool
-
-        workspace = get_agent_workspace_path()
-        tool = ExecTool(working_dir=str(workspace))
-        res = await tool.execute(command=command)
-        if res.startswith("Error:") and "timed out" not in res:
-            return {"ok": False, "error": res}
-        return {"ok": True, "result": res}
+        return await chat_exec_command(command)
 
     async def _tool_gui_git_status(
         self, repo_path: str = ".", short: bool = True
     ) -> Dict[str, Any]:
-        from annolid.core.agent.tools.git import GitStatusTool
-
-        workspace = get_agent_workspace_path()
-        tool = GitStatusTool(
-            allowed_dir=workspace,
+        return await chat_git_status(
+            repo_path=repo_path,
+            short=short,
             allowed_read_roots=self._vcs_read_roots(),
         )
-        raw = await tool.execute(repo_path=repo_path, short=short)
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            payload = {"error": str(raw or "invalid_git_status_result")}
-        if not isinstance(payload, dict):
-            return {"ok": False, "error": "invalid_git_status_result"}
-        if payload.get("error"):
-            return {"ok": False, "error": str(payload.get("error"))}
-        return {
-            "ok": True,
-            "result": str(payload.get("output") or "").strip(),
-            "raw": payload,
-        }
 
     async def _tool_gui_git_diff(
         self,
@@ -3411,107 +3354,35 @@ class StreamingChatTask(QRunnable):
         target: Optional[str] = None,
         name_only: bool = False,
     ) -> Dict[str, Any]:
-        from annolid.core.agent.tools.git import GitDiffTool
-
-        workspace = get_agent_workspace_path()
-        tool = GitDiffTool(
-            allowed_dir=workspace,
-            allowed_read_roots=self._vcs_read_roots(),
-        )
-        raw = await tool.execute(
+        return await chat_git_diff(
             repo_path=repo_path,
             cached=cached,
             target=target,
             name_only=name_only,
+            allowed_read_roots=self._vcs_read_roots(),
         )
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            payload = {"error": str(raw or "invalid_git_diff_result")}
-        if not isinstance(payload, dict):
-            return {"ok": False, "error": "invalid_git_diff_result"}
-        if payload.get("error"):
-            return {"ok": False, "error": str(payload.get("error"))}
-        return {
-            "ok": True,
-            "result": str(payload.get("output") or "").strip(),
-            "raw": payload,
-        }
 
     async def _tool_gui_git_log(
         self, repo_path: str = ".", max_count: int = 20, oneline: bool = True
     ) -> Dict[str, Any]:
-        from annolid.core.agent.tools.git import GitLogTool
-
-        workspace = get_agent_workspace_path()
-        tool = GitLogTool(
-            allowed_dir=workspace,
-            allowed_read_roots=self._vcs_read_roots(),
-        )
-        raw = await tool.execute(
+        return await chat_git_log(
             repo_path=repo_path,
             max_count=max_count,
             oneline=oneline,
+            allowed_read_roots=self._vcs_read_roots(),
         )
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            payload = {"error": str(raw or "invalid_git_log_result")}
-        if not isinstance(payload, dict):
-            return {"ok": False, "error": "invalid_git_log_result"}
-        if payload.get("error"):
-            return {"ok": False, "error": str(payload.get("error"))}
-        return {
-            "ok": True,
-            "result": str(payload.get("output") or "").strip(),
-            "raw": payload,
-        }
 
     async def _tool_gui_github_pr_status(self, repo_path: str = ".") -> Dict[str, Any]:
-        from annolid.core.agent.tools.git import GitHubPrStatusTool
-
-        workspace = get_agent_workspace_path()
-        tool = GitHubPrStatusTool(
-            allowed_dir=workspace,
+        return await chat_github_pr_status(
+            repo_path=repo_path,
             allowed_read_roots=self._vcs_read_roots(),
         )
-        raw = await tool.execute(repo_path=repo_path)
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            payload = {"error": str(raw or "invalid_github_pr_status_result")}
-        if not isinstance(payload, dict):
-            return {"ok": False, "error": "invalid_github_pr_status_result"}
-        if payload.get("error"):
-            return {"ok": False, "error": str(payload.get("error"))}
-        return {
-            "ok": True,
-            "result": str(payload.get("output") or "").strip(),
-            "raw": payload,
-        }
 
     async def _tool_gui_github_pr_checks(self, repo_path: str = ".") -> Dict[str, Any]:
-        from annolid.core.agent.tools.git import GitHubPrChecksTool
-
-        workspace = get_agent_workspace_path()
-        tool = GitHubPrChecksTool(
-            allowed_dir=workspace,
+        return await chat_github_pr_checks(
+            repo_path=repo_path,
             allowed_read_roots=self._vcs_read_roots(),
         )
-        raw = await tool.execute(repo_path=repo_path)
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            payload = {"error": str(raw or "invalid_github_pr_checks_result")}
-        if not isinstance(payload, dict):
-            return {"ok": False, "error": "invalid_github_pr_checks_result"}
-        if payload.get("error"):
-            return {"ok": False, "error": str(payload.get("error"))}
-        return {
-            "ok": True,
-            "result": str(payload.get("output") or "").strip(),
-            "raw": payload,
-        }
 
     async def _tool_gui_exec_start(
         self,
@@ -3521,24 +3392,12 @@ class StreamingChatTask(QRunnable):
         timeout_s: float = 0.0,
         pty: bool = False,
     ) -> Dict[str, Any]:
-        from annolid.core.agent.tools.shell_sessions import ExecStartTool
-
-        tool = ExecStartTool()
-        raw = await tool.execute(
-            command=str(command or ""),
-            working_dir=str(working_dir or ""),
-            background=bool(background),
-            timeout_s=float(timeout_s or 0.0),
-            pty=bool(pty),
-        )
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            payload = {"ok": False, "error": str(raw or "invalid_exec_start_result")}
-        return (
-            payload
-            if isinstance(payload, dict)
-            else {"ok": False, "error": "invalid_exec_start_result"}
+        return await chat_exec_start(
+            command=command,
+            working_dir=working_dir,
+            background=background,
+            timeout_s=timeout_s,
+            pty=pty,
         )
 
     async def _tool_gui_exec_process(
@@ -3550,25 +3409,13 @@ class StreamingChatTask(QRunnable):
         text: str = "",
         submit: bool = False,
     ) -> Dict[str, Any]:
-        from annolid.core.agent.tools.shell_sessions import ExecProcessTool
-
-        tool = ExecProcessTool()
-        raw = await tool.execute(
-            action=str(action or ""),
-            session_id=str(session_id or ""),
-            wait_ms=int(wait_ms or 0),
-            tail_lines=int(tail_lines or 200),
-            text=str(text or ""),
-            submit=bool(submit),
-        )
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            payload = {"ok": False, "error": str(raw or "invalid_exec_process_result")}
-        return (
-            payload
-            if isinstance(payload, dict)
-            else {"ok": False, "error": "invalid_exec_process_result"}
+        return await chat_exec_process(
+            action=action,
+            session_id=session_id,
+            wait_ms=wait_ms,
+            tail_lines=tail_lines,
+            text=text,
+            submit=submit,
         )
 
     def _tool_gui_rename_file(

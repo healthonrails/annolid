@@ -5,6 +5,8 @@ from __future__ import annotations
 from importlib import import_module
 
 _EXPORTS = {
+    "get_agent_config_path": "annolid.infrastructure.agent_config",
+    "get_agent_workspace_path": "annolid.infrastructure.agent_workspace",
     "AnnotationStore": "annolid.infrastructure.persistence",
     "AnnotationStoreError": "annolid.infrastructure.persistence",
     "LLMChatAdapter": "annolid.infrastructure.external_apis",
@@ -18,8 +20,10 @@ _EXPORTS = {
     "find_manual_labeled_json_files": "annolid.infrastructure.filesystem",
     "find_most_recent_file": "annolid.infrastructure.filesystem",
     "get_cache_root": "annolid.infrastructure.model_downloads",
+    "load_agent_config": "annolid.infrastructure.agent_config",
     "get_frame_number_from_json": "annolid.infrastructure.filesystem",
     "load_labelme_json": "annolid.infrastructure.persistence",
+    "save_agent_config": "annolid.infrastructure.agent_config",
     "resolve_llm_config": "annolid.infrastructure.external_apis",
     "resolve_weight_path": "annolid.infrastructure.model_downloads",
     "sanitize_qt_plugin_env": "annolid.infrastructure.runtime",
