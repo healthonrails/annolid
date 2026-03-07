@@ -19,13 +19,16 @@ Implemented:
 - `annolid-run memory ...` CLI commands (`stats`, `search`, `delete`, `distill`, `cleanup`)
 - Maintenance scripts for export/import, migration, and re-embedding
 - GUI Memory Manager with CRUD operations
+- One-click settings profile apply actions for all Settings panels
+- One-click "save current settings as profile" actions for all Settings panels
 - Structured settings profiles (`SettingsProfile`) in addition to snapshots
 - Automated multi-source migration collectors (JSON, markdown memory logs, project schemas)
+- In-app migration report dashboard (scan + counts + import)
 
 Not yet complete:
 
-- One-click profile apply flows for every GUI settings panel
-- In-app migration report dashboard
+- Cross-workspace profile browsing/pinning in GUI
+- Incremental migration history with rollback checkpoints
 
 ## GUI Workflow
 
@@ -40,6 +43,15 @@ Notes:
 - edits are validated before write (required text/scope, metadata JSON validation)
 - delete requires confirmation
 - operations refresh the result table immediately
+
+### Migration dashboard
+
+In the same Memory Manager dialog, open `Migration Dashboard`:
+
+1. Select a legacy source directory
+2. Click `Scan Sources` to collect and preview import candidates
+3. Review source counts and record previews
+4. Click `Import Scanned` to ingest records into the active memory backend
 
 ## Quick Start
 
@@ -193,6 +205,18 @@ Adapters isolate callers from backend-specific implementation details.
 
 - `SettingsSnapshot` for point-in-time captures
 - `SettingsProfile` for reusable typed workflow configurations
+
+Profile apply is available from `Settings` menu with one-click actions for:
+
+- Advanced Parameters
+- Optical Flow
+- Depth
+- SAM 3D
+- Patch Similarity
+- PCA Feature Map
+
+Profile save actions are available in the same menu for the same workflows, so
+you can save current panel state and later apply it with one click.
 
 Minimal profile example:
 

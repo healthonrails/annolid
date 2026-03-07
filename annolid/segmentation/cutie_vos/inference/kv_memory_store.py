@@ -3,6 +3,18 @@ from collections import defaultdict
 import torch
 
 
+def _coerce_index(value, *, name: str) -> int:
+    """Convert slice-related values to a safe integer index."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, float):
+        return int(value)
+    try:
+        return int(value)
+    except Exception as exc:
+        raise TypeError(f"{name} must be an integer-like value, got {type(value)!r}") from exc
+
+
 def _add_last_dim(dictionary, key, new_value, prepend=False):
     # append/prepend a new value to the last dimension of a tensor in a dictionary
     # if the key does not exist, put the new value in
@@ -163,6 +175,9 @@ class KeyValueMemoryStore:
         # i.e., concat (a[:start], a[end:])
         # bucket with size <= min_size are not modified
 
+        start = _coerce_index(start, name="start")
+        end = _coerce_index(end, name="end")
+        min_size = _coerce_index(min_size, name="min_size")
         assert start >= 0
         assert end <= 0
 
@@ -200,6 +215,7 @@ class KeyValueMemoryStore:
             self.v[obj_id] = torch.cat([v[:, :, :start], v[:, :, end:]], -1)
 
     def remove_old_memory(self, bucket_id: int, max_len: int) -> None:
+        max_len = max(0, _coerce_index(max_len, name="max_len"))
         self.sieve_by_range(bucket_id, 0, -max_len, max_len)
 
     def remove_obsolete_features(self, bucket_id: int, max_size: int) -> None:

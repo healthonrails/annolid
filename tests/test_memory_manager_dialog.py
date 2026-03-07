@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from qtpy import QtWidgets
 
@@ -183,5 +184,56 @@ def test_memory_manager_add_edit_delete(monkeypatch) -> None:
         dialog.table.selectRow(0)
         dialog.delete_selected_record()
         assert all(r["id"] != "m1" for r in state["records"])
+    finally:
+        dialog.close()
+
+
+def test_memory_manager_migration_scan_and_import(monkeypatch, tmp_path: Path) -> None:
+    _ensure_qapp()
+    source_root = tmp_path / "legacy"
+    source_root.mkdir(parents=True, exist_ok=True)
+
+    state = {"imported_count": 0}
+
+    class DummyBackend:
+        pass
+
+    class DummyResult:
+        imported = 3
+        failed = 0
+
+    def _fake_collect(path: Path):
+        assert path == source_root
+
+        class _Rec:
+            category = "fact"
+            text = "Legacy line"
+
+        return (
+            [_Rec(), _Rec(), _Rec()],
+            {"json": 1, "markdown": 1, "project_schema": 1},
+        )
+
+    def _fake_import(backend, records):
+        assert isinstance(backend, DummyBackend)
+        state["imported_count"] = len(records)
+        return DummyResult()
+
+    monkeypatch.setattr(mm, "collect_legacy_records", _fake_collect)
+    monkeypatch.setattr(mm, "import_records", _fake_import)
+    monkeypatch.setattr(mm, "get_memory_backend", lambda: DummyBackend())
+    monkeypatch.setattr(mm, "get_retrieval_service", lambda: None)
+    monkeypatch.setattr(mm, "get_memory_service", lambda: None)
+
+    dialog = mm.MemoryManagerDialog()
+    try:
+        dialog.migration_source_edit.setText(str(source_root))
+        dialog.scan_migration_sources()
+        assert dialog.total_count_label.text() == "Total records: 3"
+        assert "JSON records: 1" in dialog.migration_report.toPlainText()
+
+        dialog.import_migration_sources()
+        assert state["imported_count"] == 3
+        assert "imported=3 failed=0" in dialog.status_label.text()
     finally:
         dialog.close()

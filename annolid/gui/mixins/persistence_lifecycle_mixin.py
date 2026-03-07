@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import os.path as osp
 import re
@@ -305,6 +306,16 @@ class PersistenceLifecycleMixin:
         return index_file
 
     def _auto_collect_labelme_pair(self, json_path: str, image_path: str) -> str | None:
+        manual_only_env = (
+            os.environ.get("ANNOLID_LABEL_INDEX_MANUAL_ONLY", "1").strip().lower()
+        )
+        manual_only = manual_only_env not in {"0", "false", "no", "off"}
+        if manual_only and not self._is_manual_label_json(Path(json_path)):
+            logger.debug(
+                "Skipping auto label indexing for non-manual JSON: %s", json_path
+            )
+            return None
+
         index_file = self._resolve_label_index_file()
 
         include_empty_value = (
@@ -326,6 +337,24 @@ class PersistenceLifecycleMixin:
         except Exception as exc:
             logger.warning("Auto label indexing failed for %s: %s", json_path, exc)
             return None
+
+    def _is_manual_label_json(self, json_path: Path) -> bool:
+        """Return True when a LabelMe JSON includes explicit manual-label markers."""
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        shapes = payload.get("shapes", [])
+        if not isinstance(shapes, list) or not shapes:
+            return False
+        for shape in shapes:
+            if not isinstance(shape, dict):
+                continue
+            description = str(shape.get("description") or "").lower()
+            # Keep backward compatibility with existing "manul" marker typo.
+            if "manul" in description or "manual" in description:
+                return True
+        return False
 
     def _update_label_stats_from_index(self, *, index_file: str | None) -> None:
         if not index_file:

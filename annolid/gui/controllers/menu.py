@@ -150,6 +150,7 @@ class MenuController:
         w = self._window
         here = w.here
         registry = self._actions
+        settings_profile_specs = self._settings_profile_action_specs()
 
         w.createPolygonSAMMode = self._action_factory(
             w.tr("AI Polygons"),
@@ -238,6 +239,8 @@ class MenuController:
                 "slot": w.set_advanced_params,
                 "tip": w.tr("Advanced Parameters"),
             },
+            settings_profile_specs["advanced_parameters"]["apply"],
+            settings_profile_specs["advanced_parameters"]["save"],
             {
                 "name": "open_audio",
                 "text": w.tr("&Open Audio"),
@@ -571,18 +574,24 @@ class MenuController:
                 "slot": w.configure_optical_flow_settings,
                 "tip": w.tr("Configure optical flow backend, overlays, and outputs"),
             },
+            settings_profile_specs["optical_flow"]["apply"],
+            settings_profile_specs["optical_flow"]["save"],
             {
                 "name": "depth_settings",
                 "text": w.tr("Depth Settings..."),
                 "slot": w.configure_video_depth_settings,
                 "tip": w.tr("Configure Video-Depth-Anything defaults"),
             },
+            settings_profile_specs["video_depth_anything"]["apply"],
+            settings_profile_specs["video_depth_anything"]["save"],
             {
                 "name": "sam3d_settings",
                 "text": w.tr("SAM 3D Settings..."),
                 "slot": w.configure_sam3d_settings,
                 "tip": w.tr("Configure SAM 3D repository, checkpoints, and Python env"),
             },
+            settings_profile_specs["sam3d"]["apply"],
+            settings_profile_specs["sam3d"]["save"],
             {
                 "name": "colab",
                 "text": w.tr("&Open in Colab"),
@@ -625,6 +634,12 @@ class MenuController:
             w._open_patch_similarity_settings,
             tip=w.tr("Choose model and overlay opacity for patch similarity"),
         )
+        w.apply_patch_similarity_profile_action = self._create_action_from_spec(
+            settings_profile_specs["patch_similarity"]["apply"]
+        )
+        w.save_patch_similarity_profile_action = self._create_action_from_spec(
+            settings_profile_specs["patch_similarity"]["save"]
+        )
 
         w.pca_map_action = self._action_factory(
             w.tr("PCA Feature Map"),
@@ -641,6 +656,12 @@ class MenuController:
             w.tr("PCA Feature Map Settings…"),
             w._open_pca_map_settings,
             tip=w.tr("Choose model and overlay opacity for the PCA map"),
+        )
+        w.apply_pca_map_profile_action = self._create_action_from_spec(
+            settings_profile_specs["pca_map"]["apply"]
+        )
+        w.save_pca_map_profile_action = self._create_action_from_spec(
+            settings_profile_specs["pca_map"]["save"]
         )
 
         w.realtime_control_action = self._action_factory(
@@ -814,6 +835,66 @@ class MenuController:
     @staticmethod
     def _format_tool_button_text(text: str) -> str:
         return format_tool_button_text(text)
+
+    def _settings_profile_action_specs(self) -> dict[str, dict[str, dict]]:
+        workflows = {
+            "advanced_parameters": {
+                "panel": "Advanced Parameters",
+                "apply_name": "apply_advanced_profile",
+                "save_name": "save_advanced_profile",
+            },
+            "optical_flow": {
+                "panel": "Optical Flow",
+                "apply_name": "apply_optical_flow_profile",
+                "save_name": "save_optical_flow_profile",
+            },
+            "video_depth_anything": {
+                "panel": "Depth",
+                "apply_name": "apply_depth_profile",
+                "save_name": "save_depth_profile",
+            },
+            "sam3d": {
+                "panel": "SAM 3D",
+                "apply_name": "apply_sam3d_profile",
+                "save_name": "save_sam3d_profile",
+            },
+            "patch_similarity": {
+                "panel": "Patch Similarity",
+                "apply_name": "apply_patch_similarity_profile",
+                "save_name": "save_patch_similarity_profile",
+            },
+            "pca_map": {
+                "panel": "PCA Feature Map",
+                "apply_name": "apply_pca_map_profile",
+                "save_name": "save_pca_map_profile",
+            },
+        }
+        specs: dict[str, dict[str, dict]] = {}
+        for workflow, meta in workflows.items():
+            panel = str(meta["panel"])
+            specs[workflow] = {
+                "apply": {
+                    "name": meta["apply_name"],
+                    "text": self._window.tr(f"Apply {panel} Profile"),
+                    "slot": lambda _checked=False,
+                    wf=workflow,
+                    pl=panel: self._apply_settings_profile(wf, pl),
+                    "tip": self._window.tr(
+                        f"Apply a saved settings profile to {panel.lower()}"
+                    ),
+                },
+                "save": {
+                    "name": meta["save_name"],
+                    "text": self._window.tr(f"Save {panel} as Profile"),
+                    "slot": lambda _checked=False,
+                    wf=workflow,
+                    pl=panel: self._save_settings_profile(wf, pl),
+                    "tip": self._window.tr(
+                        f"Save current {panel.lower()} settings as a reusable profile"
+                    ),
+                },
+            }
+        return specs
 
     def _populate_tools_and_menus(self) -> None:
         w = self._window
@@ -1034,6 +1115,22 @@ class MenuController:
         # ============================================================
         # SETTINGS MENU - Configuration dialogs
         # ============================================================
+        apply_profiles_menu = QtWidgets.QMenu(w.tr("Apply Profiles"), w)
+        apply_profiles_menu.addAction(actions["apply_advanced_profile"])
+        apply_profiles_menu.addAction(actions["apply_optical_flow_profile"])
+        apply_profiles_menu.addAction(actions["apply_depth_profile"])
+        apply_profiles_menu.addAction(actions["apply_sam3d_profile"])
+        apply_profiles_menu.addAction(w.apply_patch_similarity_profile_action)
+        apply_profiles_menu.addAction(w.apply_pca_map_profile_action)
+
+        save_profiles_menu = QtWidgets.QMenu(w.tr("Save Profiles"), w)
+        save_profiles_menu.addAction(actions["save_advanced_profile"])
+        save_profiles_menu.addAction(actions["save_optical_flow_profile"])
+        save_profiles_menu.addAction(actions["save_depth_profile"])
+        save_profiles_menu.addAction(actions["save_sam3d_profile"])
+        save_profiles_menu.addAction(w.save_patch_similarity_profile_action)
+        save_profiles_menu.addAction(w.save_pca_map_profile_action)
+
         settings_sections = [
             (
                 actions["advance_params"],
@@ -1050,6 +1147,10 @@ class MenuController:
             (
                 w.patch_similarity_settings_action,
                 w.pca_map_settings_action,
+            ),
+            (
+                apply_profiles_menu.menuAction(),
+                save_profiles_menu.menuAction(),
             ),
         ]
 
@@ -1254,6 +1355,34 @@ class MenuController:
             webbrowser.open(url)
         except Exception:
             pass
+
+    def _apply_settings_profile(self, workflow: str, panel_label: str) -> None:
+        try:
+            from annolid.gui.widgets.settings_profile_flow import (
+                apply_profile_for_workflow,
+            )
+
+            apply_profile_for_workflow(self._window, workflow, panel_label)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self._window,
+                self._window.tr("Apply settings profile"),
+                self._window.tr("Failed to apply profile: %s") % str(exc),
+            )
+
+    def _save_settings_profile(self, workflow: str, panel_label: str) -> None:
+        try:
+            from annolid.gui.widgets.settings_profile_flow import (
+                save_current_profile_for_workflow,
+            )
+
+            save_current_profile_for_workflow(self._window, workflow, panel_label)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self._window,
+                self._window.tr("Save settings profile"),
+                self._window.tr("Failed to save profile: %s") % str(exc),
+            )
 
     def _open_memory_manager(self) -> None:
         w = self._window
