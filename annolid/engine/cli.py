@@ -854,6 +854,12 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
     if not argv:
         return None
 
+    # annolid-run memory ...
+    if argv[0] == "memory":
+        from annolid.interfaces.memory.cli import main as memory_cli_main
+
+        return int(memory_cli_main(argv[1:]))
+
     # annolid-run agent skills refresh
     if (
         len(argv) >= 3

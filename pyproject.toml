@@ -130,6 +130,13 @@ annolid_bot = [
     "google-auth-oauthlib>=1.2.1",
 ]
 
+memory = [
+    # Vector DB and fast memory features
+    "lancedb>=0.6.0",
+    "pyarrow>=14.0.1",
+    "tantivy>=0.21.1",
+]
+
 [project.urls]
 Homepage = "https://github.com/healthonrails/annolid"
 Repository = "https://github.com/healthonrails/annolid"

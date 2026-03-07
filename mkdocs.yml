@@ -42,6 +42,16 @@ markdown_extensions:
   - fenced_code
   - attr_list
   - md_in_html
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: material.extensions.emoji.twemoji
+      emoji_generator: material.extensions.emoji.to_svg
 
 plugins:
   - search
@@ -63,6 +73,7 @@ nav:
   - Google Workspace: agent_workspace.md
   - Agent Secrets: agent_secrets.md
   - Agent Security: agent_security.md
+  - Memory Subsystem: memory.md
   - SAM 3D: sam3d.md
   - Deployment: deployment.md
   - Migration Plan: migration.md
