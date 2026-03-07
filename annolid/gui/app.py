@@ -20,23 +20,31 @@ if sys.platform == "darwin":
     try:
         from annolid.infrastructure.runtime import (
             apply_macos_webengine_sandbox_patch,
+            configure_qtwebengine_resource_paths,
         )
 
+        configure_qtwebengine_resource_paths()
         apply_macos_webengine_sandbox_patch()
     except Exception as exc:
         print(
             f"Warning: Failed to initialize macOS QtWebEngine fix: {exc.__class__.__name__}: {exc}",
             file=sys.stderr,
         )
+else:
+    try:
+        from annolid.infrastructure.runtime import configure_qtwebengine_resource_paths
+
+        configure_qtwebengine_resource_paths()
+    except Exception:
+        pass
 
 from qtpy import QtCore
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import Signal
 from qtpy import QtWidgets
 from qtpy import QtGui
 from annolid.gui.window_base import (
     AnnolidWindowBase,
 )
-from annolid.gui.widgets.video_manager import VideoManagerWidget
 from annolid.gui.workers import (
     FlexibleWorker,
     LoadFrameThread,
@@ -44,23 +52,19 @@ from annolid.gui.workers import (
 from annolid.utils.logger import configure_logging, logger
 from annolid.gui.widgets.canvas import Canvas
 from annolid.domain import ProjectSchema
-from annolid.gui.widgets.behavior_controls import BehaviorControlsWidget
-from annolid.gui.widgets import FlagTableWidget
 from annolid.gui.widgets import AnnolidLabelDialog
 import atexit
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.gui.widgets import CanvasScreenshotWidget
 from annolid.gui.widgets.pdf_import_widget import PdfImportWidget
-from annolid.gui.widgets.pdf_manager import PdfManager
-from annolid.gui.widgets.web_manager import WebManager
-from annolid.gui.widgets.threejs_manager import ThreeJsManager
-from annolid.gui.widgets.depth_manager import DepthManager
-from annolid.gui.widgets.sam3d_manager import Sam3DManager
-from annolid.gui.widgets.sam2_manager import Sam2Manager
-from annolid.gui.widgets.sam3_manager import Sam3Manager
-from annolid.gui.widgets.optical_flow_manager import OpticalFlowManager
-from annolid.gui.widgets.realtime_manager import RealtimeManager
-from annolid.gui.widgets.ai_chat_manager import AIChatManager
+from annolid.gui.features import (
+    GuiFeatureDeps,
+    setup_annotation_feature,
+    setup_search_feature,
+    setup_timeline_feature,
+    setup_video_feature,
+    setup_viewers_feature,
+)
 
 from annolid.annotation.pose_schema import PoseSchema
 from annolid.gui.model_manager import AIModelManager
@@ -73,10 +77,6 @@ from annolid.jobs.tracking_jobs import TrackingSegment
 
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.gui.behavior_controller import BehaviorController
-from annolid.gui.widgets.behavior_log import BehaviorEventLogWidget
-from annolid.gui.widgets.embedding_search_widget import EmbeddingSearchWidget
-from annolid.gui.widgets.timeline_panel import TimelinePanel
-from annolid.gui.widgets.keypoint_sequencer import KeypointSequencerWidget
 from annolid.gui.keypoint_catalog import extract_labels_from_uniq_label_list
 from annolid.gui.yolo_training_manager import YOLOTrainingManager
 from annolid.gui.dino_kpseg_training_manager import DinoKPSEGTrainingManager
@@ -85,7 +85,6 @@ from annolid.infrastructure.runtime import create_qapp, sanitize_qt_plugin_env
 from annolid.gui.controllers import (
     AnnotationController,
     DinoController,
-    FlagsController,
     InferenceController,
     MenuController,
     ProjectController,
@@ -138,36 +137,15 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self._prediction_stop_requested = False
         self.florence_dock: Optional[QtWidgets.QDockWidget] = None
         self.tracking_controller = TrackingController(self)
-
-        # Create the Video Manager Widget
-        self.video_manager_widget = VideoManagerWidget()
-        self.video_manager_widget.video_selected.connect(self._load_video)
-        # Connect the close video signal
-        self.video_manager_widget.close_video_requested.connect(self.closeFile)
-        self.video_manager_widget.output_folder_ready.connect(
-            self.handle_extracted_frames
+        feature_deps = GuiFeatureDeps(
+            window=self,
+            status_message=lambda msg, timeout=4000: self.statusBar().showMessage(
+                msg, timeout
+            ),
         )
-        self.video_manager_widget.json_saved.connect(
-            self.video_manager_widget.update_json_column
-        )
+        self.feature_states: Dict[str, object] = {}
 
-        self.video_manager_widget.track_all_worker_created.connect(
-            self.tracking_controller.register_track_all_worker
-        )
-
-        # Create the Dock Widget
-        self.video_dock = QtWidgets.QDockWidget("Video List", self)
-        # Set a unique objectName
-        self.video_dock.setObjectName("videoListDock")
-        self.video_dock.setWidget(self.video_manager_widget)
-        self.video_dock.setFeatures(
-            QtWidgets.QDockWidget.DockWidgetMovable
-            | QtWidgets.QDockWidget.DockWidgetClosable
-            | QtWidgets.QDockWidget.DockWidgetFloatable
-        )
-
-        # Add the Dock Widget to the Main Window
-        self.addDockWidget(Qt.RightDockWidgetArea, self.video_dock)
+        self.feature_states["video"] = setup_video_feature(feature_deps)
 
         self.here = Path(__file__).resolve().parent
         self.settings_manager = SettingsManager("Annolid", "Annolid")
@@ -296,28 +274,8 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
             self.canvas.setShowPoseBBoxes(self._show_pose_bboxes)
         except Exception:
             pass
-        self._viewer_stack = QtWidgets.QStackedWidget()
-        self._viewer_stack.setContentsMargins(0, 0, 0, 0)
-        self._viewer_stack.addWidget(self.canvas)
-        self.pdf_manager = PdfManager(self, self._viewer_stack)
-        self.web_manager = WebManager(self, self._viewer_stack)
-        self.threejs_manager = ThreeJsManager(self, self._viewer_stack)
-        self.depth_manager = DepthManager(self)
-        self.optical_flow_manager = OpticalFlowManager(self)
-        self.sam3d_manager = Sam3DManager(self)
-        self.sam2_manager = Sam2Manager(self)
-        self.sam3_manager = Sam3Manager(self)
-        self.realtime_manager = RealtimeManager(self)
-        self.ai_chat_manager = AIChatManager(self)
+        self.feature_states["viewers"] = setup_viewers_feature(feature_deps)
         self.canvas.zoomRequest.connect(self.zoomRequest)
-        scrollArea = QtWidgets.QScrollArea()
-        scrollArea.setWidget(self._viewer_stack)
-        scrollArea.setWidgetResizable(True)
-        scrollArea.setAlignment(Qt.AlignCenter)
-        self.scrollBars = {
-            Qt.Vertical: scrollArea.verticalScrollBar(),
-            Qt.Horizontal: scrollArea.horizontalScrollBar(),
-        }
 
         self.canvas.scrollRequest.connect(self.scrollRequest)
 
@@ -329,167 +287,21 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self._setup_label_list_connections()
         self._setup_file_list_connections()
 
-        self.keypoint_sequence_widget = KeypointSequencerWidget(self)
-        self.keypoint_sequence_dock = QtWidgets.QDockWidget(
-            self.tr("Keypoint Sequencer"), self
-        )
-        self.keypoint_sequence_dock.setObjectName("keypointSequencerDock")
-        self.keypoint_sequence_dock.setWidget(self.keypoint_sequence_widget)
-        self.keypoint_sequence_widget.poseSchemaChanged.connect(
-            self._on_keypoint_sequence_schema_changed
-        )
-        self.addDockWidget(Qt.RightDockWidgetArea, self.keypoint_sequence_dock)
-        self.tabifyDockWidget(self.shape_dock, self.keypoint_sequence_dock)
-        self.keypoint_sequence_dock.setVisible(False)
-        self._setup_keypoint_sequence_quick_toggle()
-        self._setup_keypoint_sequence_label_sync()
+        self.feature_states["annotation"] = setup_annotation_feature(feature_deps)
 
         # Ensure all drawing/edit mode actions work without relying on LabelMe.
         self._setup_drawing_mode_actions()
-
-        self.flag_widget = FlagTableWidget()
-        self.flag_dock.setWidget(self.flag_widget)
-        self.flags_controller = FlagsController(
-            window=self,
-            widget=self.flag_widget,
-            config_path=self.here.parent.resolve() / "configs" / "behaviors.yaml",
-        )
-        self.flags_controller.initialize()
-
-        # Ensure flag_dock is visible and raised (shown as the active tab)
-        self.flag_dock.setVisible(True)
-        self.flag_dock.raise_()
 
         self.dino_controller = DinoController(self)
         self.dino_controller.initialize()
 
         self.tracking_data_controller = TrackingDataController(self)
 
-        # Behavior event log dock
-        self.behavior_log_widget = BehaviorEventLogWidget(
-            self, color_getter=self._get_rgb_by_label
-        )
-        self.behavior_log_widget.jumpToFrame.connect(self._jump_to_frame_from_log)
-        self.behavior_log_widget.undoRequested.connect(self.undo_last_behavior_event)
-        self.behavior_log_widget.clearRequested.connect(
-            self._clear_behavior_events_from_log
-        )
-        self.behavior_log_widget.behaviorSelected.connect(
-            self._show_behavior_event_details
-        )
-        self.behavior_log_widget.editRequested.connect(
-            self._edit_behavior_event_from_log
-        )
-        self.behavior_log_widget.deleteRequested.connect(
-            self._delete_behavior_event_from_log
-        )
-        self.behavior_log_widget.confirmRequested.connect(
-            self._confirm_behavior_event_from_log
-        )
-        self.behavior_log_widget.rejectRequested.connect(
-            self._reject_behavior_event_from_log
-        )
-
-        self.behavior_log_dock = QtWidgets.QDockWidget("Behavior Log", self)
-        self.behavior_log_dock.setObjectName("behaviorLogDock")
-        self.behavior_log_dock.setWidget(self.behavior_log_widget)
-        self.behavior_log_dock.setFeatures(
-            QtWidgets.QDockWidget.DockWidgetMovable
-            | QtWidgets.QDockWidget.DockWidgetClosable
-            | QtWidgets.QDockWidget.DockWidgetFloatable
-        )
-        self.addDockWidget(Qt.RightDockWidgetArea, self.behavior_log_dock)
-
         self._behavior_event_detail_dialog = None
-
-        self.embedding_search_widget = EmbeddingSearchWidget(self)
-        self.embedding_search_widget.jumpToFrame.connect(self._jump_to_frame_from_log)
-        self.embedding_search_widget.statusMessage.connect(
-            lambda msg: self.statusBar().showMessage(msg, 4000)
-        )
-        self.embedding_search_widget.labelFramesRequested.connect(
-            self._label_frames_from_search
-        )
-        self.embedding_search_widget.markFramesRequested.connect(
-            self._mark_similar_frames_from_search
-        )
-        self.embedding_search_widget.clearMarkedFramesRequested.connect(
-            self._clear_similar_frame_marks
-        )
-        self.embedding_search_dock = QtWidgets.QDockWidget("Embedding Search", self)
-        self.embedding_search_dock.setObjectName("embeddingSearchDock")
-        self.embedding_search_dock.setWidget(self.embedding_search_widget)
-        self.embedding_search_dock.setFeatures(
-            QtWidgets.QDockWidget.DockWidgetMovable
-            | QtWidgets.QDockWidget.DockWidgetClosable
-            | QtWidgets.QDockWidget.DockWidgetFloatable
-        )
-        self.addDockWidget(Qt.RightDockWidgetArea, self.embedding_search_dock)
-        try:
-            self.tabifyDockWidget(self.video_dock, self.embedding_search_dock)
-            self.video_dock.show()
-            self.video_dock.raise_()
-        except Exception:
-            pass
+        self.feature_states["search"] = setup_search_feature(feature_deps)
         self._apply_agent_mode(self._agent_mode_enabled)
-
-        self.behavior_controls_widget = BehaviorControlsWidget(self)
-        self.behavior_controls_widget.subjectChanged.connect(
-            self._on_active_subject_changed
-        )
-        self.behavior_controls_widget.modifierToggled.connect(self._on_modifier_toggled)
-        self.behavior_controls_dock = QtWidgets.QDockWidget("Behavior Controls", self)
-        self.behavior_controls_dock.setObjectName("behaviorControlsDock")
-        self.behavior_controls_dock.setWidget(self.behavior_controls_widget)
-        self.behavior_controls_dock.setFeatures(
-            QtWidgets.QDockWidget.DockWidgetMovable
-            | QtWidgets.QDockWidget.DockWidgetClosable
-            | QtWidgets.QDockWidget.DockWidgetFloatable
-        )
-        self.addDockWidget(Qt.RightDockWidgetArea, self.behavior_controls_dock)
-        self.tabifyDockWidget(self.behavior_log_dock, self.behavior_controls_dock)
-        self.behavior_log_dock.raise_()
-
-        self.timeline_panel = TimelinePanel(self)
-        self.timeline_panel.frameSelected.connect(self._jump_to_frame_from_log)
-        self.timeline_panel.set_behavior_controller(
-            self.behavior_controller, color_getter=self._get_rgb_by_label
-        )
-        self.timeline_panel.set_timestamp_provider(self._estimate_recording_time)
-        self.timeline_panel.set_behavior_catalog(
-            provider=self._timeline_behavior_catalog,
-            adder=self._timeline_add_behavior,
-        )
-        try:
-            self.flag_widget.flagsSaved.connect(
-                self.timeline_panel.refresh_behavior_catalog
-            )
-            self.flag_widget.rowSelected.connect(
-                self.timeline_panel.set_active_behavior
-            )
-            self.flag_widget.rowSelected.connect(
-                lambda _name: self.timeline_panel.refresh_behavior_catalog()
-            )
-            self.flag_widget.flagToggled.connect(
-                lambda _name, _state: self.timeline_panel.refresh_behavior_catalog()
-            )
-        except Exception:
-            pass
-        self.timeline_dock = QtWidgets.QDockWidget("Timeline", self)
-        self.timeline_dock.setObjectName("timelineDock")
-        self.timeline_dock.setWidget(self.timeline_panel)
-        self.timeline_dock.setFeatures(
-            QtWidgets.QDockWidget.DockWidgetMovable
-            | QtWidgets.QDockWidget.DockWidgetClosable
-            | QtWidgets.QDockWidget.DockWidgetFloatable
-        )
-        self.addDockWidget(Qt.BottomDockWidgetArea, self.timeline_dock)
-        self._setup_timeline_view_toggle()
-        # Only show the timeline when a video is opened and the user enables it.
-        self._apply_timeline_dock_visibility(video_open=False)
-        self._apply_fixed_dock_sizes()
-
-        self.setCentralWidget(scrollArea)
+        self.feature_states["timeline"] = setup_timeline_feature(feature_deps)
+        self.setCentralWidget(self._main_scroll_area)
 
         self.statusBar().showMessage(self.tr("%s started.") % __appname__)
         self.statusBar().show()

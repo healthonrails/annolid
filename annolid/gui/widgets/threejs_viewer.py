@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 from typing import List, Optional
@@ -428,3 +429,35 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
                 self._web_view.setHtml("")
             except Exception:
                 pass
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        """Release WebEngine page/profile in deterministic order."""
+        try:
+            view = self._web_view
+            if view is not None:
+                try:
+                    view.setUrl(QtCore.QUrl("about:blank"))
+                except Exception:
+                    pass
+                page = None
+                try:
+                    page = view.page()
+                except Exception:
+                    page = None
+                try:
+                    view.setPage(None)  # type: ignore[arg-type]
+                except Exception:
+                    pass
+                if page is not None:
+                    with contextlib.suppress(Exception):
+                        page.deleteLater()
+                with contextlib.suppress(Exception):
+                    view.deleteLater()
+            profile = self._web_profile
+            self._web_view = None
+            self._web_profile = None
+            if profile is not None:
+                with contextlib.suppress(Exception):
+                    profile.deleteLater()
+        finally:
+            super().closeEvent(event)

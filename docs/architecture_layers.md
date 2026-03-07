@@ -91,6 +91,13 @@ Annolid now defines four top-level layers with explicit intent:
   - `annolid/gui/widgets/llm_settings_dialog.py`
   - `annolid/gui/widgets/web_viewer.py`
   - These now consume `annolid.services` and `annolid.infrastructure` wrappers rather than `annolid.core.agent` directly.
+- GUI feature setup extraction in place:
+  - `annolid/gui/features/video.py`
+  - `annolid/gui/features/viewers.py`
+  - `annolid/gui/features/annotation.py`
+  - `annolid/gui/features/search.py`
+  - `annolid/gui/features/timeline.py`
+  - `AnnolidWindow` now composes these through `GuiFeatureDeps` and records typed feature state objects in `self.feature_states`.
 - Stable architecture wrappers in place:
   - `annolid.domain.*` re-exports canonical schema/event/track/keypoint/timeline/dataset types.
   - `annolid.services.*` exposes inference/training/export/search/tracking/agent APIs.

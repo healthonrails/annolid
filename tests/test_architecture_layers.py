@@ -316,6 +316,32 @@ def test_execution_paths_use_layer_imports() -> None:
         in gui_app
     )
     assert "from annolid.infrastructure.runtime import (" in gui_app
+    assert "from annolid.gui.features import (" in gui_app
+    assert "GuiFeatureDeps" in gui_app
+    assert "setup_video_feature" in gui_app
+    assert "setup_viewers_feature" in gui_app
+    assert "setup_annotation_feature" in gui_app
+    assert "setup_search_feature" in gui_app
+    assert "setup_timeline_feature" in gui_app
+    assert "self.feature_states" in gui_app
+    assert 'self.feature_states["video"]' in gui_app
+    assert 'self.feature_states["viewers"]' in gui_app
+    assert 'self.feature_states["annotation"]' in gui_app
+    assert 'self.feature_states["search"]' in gui_app
+    assert 'self.feature_states["timeline"]' in gui_app
+    assert (
+        "from annolid.gui.widgets.video_manager import VideoManagerWidget"
+        not in gui_app
+    )
+    assert (
+        "from annolid.gui.widgets.embedding_search_widget import EmbeddingSearchWidget"
+        not in gui_app
+    )
+    assert "from annolid.gui.widgets.timeline_panel import TimelinePanel" not in gui_app
+    assert (
+        "from annolid.gui.widgets.keypoint_sequencer import KeypointSequencerWidget"
+        not in gui_app
+    )
 
     schema_loader = (
         repo_root / "annolid" / "gui" / "mixins" / "schema_behavior_loader_mixin.py"
