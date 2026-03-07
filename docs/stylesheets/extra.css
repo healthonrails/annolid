@@ -307,3 +307,10 @@
     transform: translateY(0);
   }
 }
+
+/* Fix MkDocs p-tag wrapping breaking grid layouts */
+.ann-quick > p,
+.ann-grid > p,
+.ann-paths > p {
+  display: contents;
+}

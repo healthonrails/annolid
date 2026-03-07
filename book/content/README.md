@@ -14,9 +14,9 @@ For the latest, unified user docs, use the Docs Portal.
 ## Start Here
 
 1. [Open the Docs Portal](https://annolid.com/)
-2. [Install Annolid](https://annolid.com/installation/)
-3. [Run the video-first workflow](https://annolid.com/workflows/)
-4. [Explore tutorials](https://annolid.com/tutorials/)
+2. [Install Annolid](https://annolid.com/portal/installation/)
+3. [Run the video-first workflow](https://annolid.com/portal/workflows/)
+4. [Explore tutorials](https://annolid.com/portal/tutorials/)
 5. Use this book for legacy chapter-style walkthroughs when needed.
 
 `extract_frames.md` remains available for workflows where frame sampling is preferred, but it is optional for standard video-first labeling.

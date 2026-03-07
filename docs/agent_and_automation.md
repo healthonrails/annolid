@@ -9,32 +9,32 @@ or running repeatable workflows through the agent stack.
   <article class="ann-card">
     <h3>Agent CLI</h3>
     <p>Run Annolid-native CLI flows through the typed <code>annolid_run</code> path.</p>
-    <a href="agent_annolid_run.md">Open agent CLI guide</a>
+    <a href="../agent_annolid_run/">Open agent CLI guide</a>
   </article>
   <article class="ann-card">
     <h3>MCP</h3>
     <p>Connect external tools and resources through Model Context Protocol servers.</p>
-    <a href="mcp.md">Open MCP guide</a>
+    <a href="../mcp/">Open MCP guide</a>
   </article>
   <article class="ann-card">
     <h3>Codex and ACP</h3>
     <p>Bridge Annolid with Codex-style workflows and ACP-compatible runtime paths.</p>
-    <a href="codex_and_acp.md">Open Codex and ACP guide</a>
+    <a href="../codex_and_acp/">Open Codex and ACP guide</a>
   </article>
   <article class="ann-card">
     <h3>Calendar</h3>
     <p>Schedule and coordinate tasks with Google Calendar-aware agent flows.</p>
-    <a href="agent_calendar.md">Open calendar guide</a>
+    <a href="../agent_calendar/">Open calendar guide</a>
   </article>
   <article class="ann-card">
     <h3>Workspace and Secrets</h3>
     <p>Configure Google Workspace, local secret storage, and channel-safe credentials.</p>
-    <a href="agent_workspace.md">Open workspace guide</a>
+    <a href="../agent_workspace/">Open workspace guide</a>
   </article>
   <article class="ann-card">
     <h3>Memory and Security</h3>
     <p>Manage retrieval-backed memory and harden agent behavior before scaling up.</p>
-    <a href="agent_security.md">Open security guide</a>
+    <a href="../agent_security/">Open security guide</a>
   </article>
 </div>
 
