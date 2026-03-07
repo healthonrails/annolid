@@ -1,62 +1,45 @@
 # Annolid Memory
 
-The Annolid memory subsystem provides an optional, local-first storage layer for reusable context such as project notes, annotation conventions, workspace settings snapshots, workflow recipes, and agent memory.
+Annolid memory is an optional, local-first retrieval layer for reusable context:
+project notes, annotation conventions, workflow recipes, settings snapshots, and
+agent-facing memory.
 
-Memory is retrieval-oriented. It does not replace canonical project configs, annotations, or datasets.
+Memory is support context, not source of truth. Canonical project files,
+annotations, datasets, and configs remain authoritative.
 
-## Status
+## Current Scope
 
-Current implementation status:
+Implemented:
 
-- Layered memory modules in `annolid/domain/memory`, `annolid/services/memory`, `annolid/infrastructure/memory/lancedb`, and `annolid/interfaces/memory`
+- Layered modules in `annolid/domain/memory`, `annolid/services/memory`,
+  `annolid/infrastructure/memory/lancedb`, and `annolid/interfaces/memory`
 - LanceDB-backed storage with optional semantic retrieval
 - Scope/category/source taxonomy
-- Explicit persistence helpers and interface adapters
-- `annolid-run memory ...` CLI commands for stats, search, delete, distill, and cleanup
-- Import/export/re-embedding maintenance scripts
+- Persistence helpers and interface adapters
+- `annolid-run memory ...` CLI commands (`stats`, `search`, `delete`, `distill`, `cleanup`)
+- Maintenance scripts for export/import, migration, and re-embedding
 
 Not yet complete:
 
-- Full engine-level CRUD workflows in the GUI
-- Rich structured settings model beyond snapshot storage
-- End-to-end migration automation for legacy memory sources
+- Full GUI CRUD workflows
+- Rich structured settings model beyond snapshot-style storage
+- End-to-end automated migration from all legacy memory sources
 
-## Install
+## Quick Start
 
-Install the optional dependency group:
+Install optional memory dependencies:
 
 ```bash
 pip install -e ".[memory]"
 ```
 
-For local validation in this repository, use `.venv`:
+For local development in this repository, activate `.venv` first:
 
 ```bash
 source .venv/bin/activate
 ```
 
-## Architecture
-
-The subsystem follows Annolid's layered architecture:
-
-```text
-annolid/
-  domain/memory/
-  services/memory/
-  infrastructure/memory/lancedb/
-  interfaces/memory/
-```
-
-Responsibilities:
-
-- `domain`: backend-agnostic data models, protocols, scopes, taxonomy
-- `services`: orchestration for storing, retrieval, context building, persistence
-- `infrastructure`: LanceDB config, backend, retriever, embedder, reranker, migration helpers
-- `interfaces`: registry, CLI, and adapters for bot, annotation, project, workflow, workspace
-
-## Enablement
-
-Memory is optional and controlled by environment variables:
+Enable memory via environment variables:
 
 ```bash
 export ANNOLID_MEMORY_ENABLED=true
@@ -69,40 +52,58 @@ export ANNOLID_MEMORY_BM25_WEIGHT=0.35
 export ANNOLID_MEMORY_RERANK_PROVIDER=none
 ```
 
-Supported backend selector values today:
+Supported backend values today:
 
 - `lancedb`
 - `none`
 
-## Data Model
+## Architecture
+
+```text
+annolid/
+  domain/memory/
+  services/memory/
+  infrastructure/memory/lancedb/
+  interfaces/memory/
+```
+
+Layer responsibilities:
+
+- `domain`: backend-agnostic models, protocols, scopes, taxonomy
+- `services`: store/retrieve orchestration, context building, persistence workflows
+- `infrastructure`: LanceDB config/backend/retriever/embedder/reranker/migration
+- `interfaces`: registry, CLI, and adapters (bot/annotation/project/workflow/workspace)
+
+## Data Contract
 
 Primary models:
 
-- `MemoryRecord`: write model for memory entries
-- `MemoryHit`: read model returned by search/list operations
+- `MemoryRecord`: write model for new records
+- `MemoryHit`: read model returned by list/search
 
-Important fields:
+Key fields:
 
-- `text`: human-readable summary used for keyword and semantic retrieval
-- `scope`: such as `global`, `project:<id>`, `dataset:<id>`, `workspace:<id>`
-- `category`: such as `project_note`, `annotation_rule`, `setting`, `workflow_recipe`
-- `metadata`: structured references to canonical artifacts or workflow context
+- `text`: short human-readable memory statement
+- `scope`: for example `global`, `project:<id>`, `dataset:<id>`, `workspace:<id>`
+- `category`: for example `project_note`, `annotation_rule`, `setting`, `workflow_recipe`
+- `metadata`: structured references back to canonical artifacts and context
 
 ## Retrieval Behavior
 
-The LanceDB retriever combines:
+The LanceDB retriever can combine:
 
 - vector similarity
-- full-text search when available
-- recency boost
-- basic length normalization
+- full-text retrieval (when available)
+- recency weighting
+- length normalization
 - optional reranking
 
-Blank-query context retrieval is supported. This matters for calls such as "show me project memory" where the caller wants scoped memory without providing a semantic query string.
+Blank-query retrieval is supported for scoped context calls (for example,
+"show project memory" with no semantic query text).
 
-## CLI
+## CLI Usage
 
-The memory CLI is available through the main runner:
+Use memory commands through the main runner:
 
 ```bash
 annolid-run memory stats --scope global
@@ -114,9 +115,9 @@ annolid-run memory cleanup workspace:default --older_than_days 30 --min_importan
 
 Notes:
 
-- `search` performs semantic retrieval when embeddings are enabled
-- `cleanup` removes low-importance or old records within a scope
-- `distill` depends on the summarization service being available
+- `search` uses semantic retrieval when embeddings are enabled
+- `cleanup` removes low-importance/old records within a scope
+- `distill` requires summarization service availability
 
 ## Developer API
 
@@ -145,11 +146,11 @@ from annolid.interfaces.memory.registry import get_context_service
 context = get_context_service().build_project_context(project_id="demo-project")
 ```
 
-Use higher-level persistence helpers:
+Use persistence helpers:
 
 ```python
-from annolid.interfaces.memory.registry import get_persistence_service
 from annolid.domain.memory.scopes import MemoryScope
+from annolid.interfaces.memory.registry import get_persistence_service
 
 persistence = get_persistence_service()
 persistence.save_settings_snapshot(
@@ -162,7 +163,7 @@ persistence.save_settings_snapshot(
 
 ## Adapters
 
-Available adapters:
+Available interface adapters:
 
 - `BotMemoryAdapter`
 - `AnnotationMemoryAdapter`
@@ -170,11 +171,11 @@ Available adapters:
 - `WorkflowMemoryAdapter`
 - `WorkspaceMemoryAdapter`
 
-These adapters keep the rest of Annolid from depending directly on LanceDB details.
+Adapters isolate callers from backend-specific implementation details.
 
-## Maintenance Scripts
+## Maintenance Operations
 
-Repository scripts:
+Scripts:
 
 ```bash
 source .venv/bin/activate
@@ -184,17 +185,18 @@ python scripts/migrate_memory.py --source-dir /path/to/legacy/json
 python scripts/reembed_memory.py
 ```
 
-What they do:
+Purpose:
 
-- `export_memory.py`: export/import JSONL records
-- `migrate_memory.py`: import legacy JSON files into the current backend
-- `reembed_memory.py`: recompute stored vectors for the current embedding config
+- `export_memory.py`: export/import JSONL memory records
+- `migrate_memory.py`: import legacy JSON records into the active backend
+- `reembed_memory.py`: regenerate vectors using current embedding settings
 
-## JSONL Contract
+## JSONL Format
 
-The export format is newline-delimited JSON. Each line is a single memory record without the vector payload.
+Export output is newline-delimited JSON. Each line is one record without vector
+payloads.
 
-Expected exported fields:
+Expected fields:
 
 - `id`
 - `text`
@@ -207,14 +209,14 @@ Expected exported fields:
 - `tags`
 - `metadata_json`
 
-Contract notes:
+Notes:
 
-- vectors are intentionally omitted because they can be regenerated
-- `metadata_json` is stored as a JSON string for backend compatibility
-- import regenerates embeddings through `store_memory(...)`
-- import treats identical records conservatively via the service dedupe path
+- vectors are omitted by design (recomputable)
+- `metadata_json` is stored as JSON text for backend compatibility
+- import regenerates embeddings via `store_memory(...)`
+- duplicate handling follows service-layer dedupe behavior
 
-## Testing
+## Validation
 
 Run targeted memory tests:
 
@@ -237,7 +239,7 @@ pytest tests/services/test_memory_service.py \
 
 The subsystem is intentionally conservative:
 
-- writes are explicit by default
-- memory stores compact summaries, not full raw artifacts
-- canonical project files remain the source of truth
-- optional dependencies must fail gracefully when unavailable
+- writes are explicit, not implicit side effects
+- stored memory should be compact and summary-oriented
+- canonical project artifacts remain source of truth
+- optional dependencies must degrade gracefully when unavailable

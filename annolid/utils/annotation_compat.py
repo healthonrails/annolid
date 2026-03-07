@@ -56,10 +56,10 @@ def get_ai_models() -> list[Any]:
             if self._model is not None:
                 return
             if not self._encoder_path.exists() or not self._decoder_path.exists():
-                raise FileNotFoundError(
-                    f"Missing SAM ONNX weights for '{self.name}': "
-                    f"{self._encoder_path.name}, {self._decoder_path.name}"
-                )
+                # Keep AI polygon mode usable in lightweight installs where
+                # bundled SAM ONNX weights are intentionally absent.
+                self._model = _PointPromptFallbackModel(self.name)
+                return
             try:
                 from annolid.segmentation.SAM.segment_anything import (
                     SegmentAnythingModel,

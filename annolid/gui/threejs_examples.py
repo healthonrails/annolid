@@ -33,20 +33,56 @@ def generate_threejs_example(example_id: str, out_dir: str | Path) -> Path:
 
 
 def _build_brain_viewer_html(_out: Path) -> Path:
-    # This is a standalone HTML example bundled with the app.
-    return Path(__file__).resolve().parent / "assets" / "threejs" / "points_3d.html"
+    return _resolve_or_generate_bundled_html(
+        "points_3d.html",
+        _out,
+        title="Annolid Three.js Brain Viewer Example",
+    )
 
 
 def _build_two_mice_html(_out: Path) -> Path:
-    # This is a standalone HTML example bundled with the app.
-    return Path(__file__).resolve().parent / "assets" / "threejs" / "two_mice.html"
+    return _resolve_or_generate_bundled_html(
+        "two_mice.html",
+        _out,
+        title="Annolid Three.js Two Mice Example",
+    )
 
 
 def _build_swarm_visualizer_html(_out: Path) -> Path:
-    # This is a standalone HTML example bundled with the app.
-    return (
-        Path(__file__).resolve().parent / "assets" / "threejs" / "swarm_visualizer.html"
+    return _resolve_or_generate_bundled_html(
+        "swarm_visualizer.html",
+        _out,
+        title="Annolid Three.js Swarm Visualizer Example",
     )
+
+
+def _resolve_or_generate_bundled_html(filename: str, out: Path, *, title: str) -> Path:
+    # Prefer bundled viewer HTML when present.
+    bundled = Path(__file__).resolve().parent / "assets" / "threejs" / filename
+    if bundled.exists():
+        return bundled
+
+    # Fallback for slim package builds missing optional example assets.
+    fallback = out / filename
+    fallback.write_text(
+        "\n".join(
+            [
+                "<!doctype html>",
+                "<html lang='en'>",
+                "<head>",
+                "  <meta charset='utf-8'/>",
+                f"  <title>{title}</title>",
+                "</head>",
+                "<body>",
+                f"  <h1>{title}</h1>",
+                "  <p>Bundled Three.js example asset was not packaged in this install.</p>",
+                "</body>",
+                "</html>",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return fallback
 
 
 def _build_helix_points_csv(out: Path) -> Path:
