@@ -9,22 +9,22 @@ maintenance flows.
   <article class="ann-card">
     <h3>Deployment</h3>
     <p>Build, publish, and operate the documentation and release-facing surfaces.</p>
-    <a href="deployment/">Open deployment guide</a>
+    <a href="deployment.md">Open deployment guide</a>
   </article>
   <article class="ann-card">
     <h3>Migration</h3>
     <p>Track migrations and compatibility changes for memory, settings, and workflow surfaces.</p>
-    <a href="migration/">Open migration guide</a>
+    <a href="migration.md">Open migration guide</a>
   </article>
   <article class="ann-card">
     <h3>Architecture</h3>
     <p>Review boundaries and layering rules before making larger structural changes.</p>
-    <a href="architecture_layers/">Open architecture guide</a>
+    <a href="architecture_layers.md">Open architecture guide</a>
   </article>
   <article class="ann-card">
     <h3>Reference</h3>
     <p>Jump to command, config, and important path references for ongoing maintenance.</p>
-    <a href="reference/">Open reference</a>
+    <a href="reference.md">Open reference</a>
   </article>
 </div>
 
