@@ -1,0 +1,124 @@
+# COCO Data Flow
+
+Annolid now uses one shared COCO dataset layer across YOLO, DinoKPSEG, conversion tooling, and Mask R-CNN metadata readers. This page explains what inputs are accepted, how Annolid interprets them, and what each model workflow expects.
+
+## Accepted Inputs
+
+Annolid can start from either of these COCO inputs:
+
+- a COCO spec YAML
+- a COCO annotations directory
+
+Annolid treats a dataset as COCO when either is true:
+
+- `format` or `type` is `coco`, `coco_pose`, or `coco_keypoints`
+- one of `train`, `val`, or `test` points to a `.json` annotations file
+
+## Accepted Annotation Filenames
+
+When you point Annolid at an annotations directory, it will look for these common COCO filenames:
+
+- `train.json`, `val.json`, `test.json`
+- `instances_train.json`, `instances_val.json`, `instances_test.json`
+- `person_keypoints_train.json`, `person_keypoints_val.json`, `person_keypoints_test.json`
+
+This means you can usually select the COCO `annotations/` directory directly instead of writing a YAML first.
+
+## Task Detection
+
+Annolid infers whether a COCO dataset is pose or detection:
+
+- `pose`: keypoint information is present in the YAML or in COCO categories/annotations
+- `detect`: no keypoint information is present
+
+This inference is shared, so different model entry points no longer make different decisions about the same COCO dataset.
+
+## Model Support
+
+### YOLO workflows
+
+YOLO training can start from:
+
+- COCO pose
+- COCO detection
+- staged YOLO datasets
+
+If the source is COCO, Annolid materializes a temporary YOLO-style dataset with:
+
+- `images/`
+- `labels/`
+- `data.yaml`
+
+### DinoKPSEG workflows
+
+DinoKPSEG COCO workflows are pose-only.
+
+If you pass a COCO detection spec to a DinoKPSEG flow, Annolid now fails early with a clear error instead of getting farther into training and failing in a less obvious place.
+
+### Mask R-CNN workflows
+
+Mask R-CNN still uses torchvision-specific dataset wrappers, but category names, keypoint metadata, and category-id mapping now come from the same shared COCO utilities used elsewhere in Annolid.
+
+## Validation and Auto-Splitting
+
+- If a staged YOLO dataset needs both `train` and `val`, Annolid validates that those splits are present before launching training.
+- If a COCO spec provides `train` but no `val`, Annolid may auto-split validation during COCO to YOLO staging when the workflow allows it.
+- Pose-only consumers explicitly enforce `expected_task="pose"`.
+
+## Recommended COCO YAMLs
+
+COCO pose spec:
+
+```yaml
+format: coco
+path: /path/to/dataset_root
+image_root: images
+train: annotations/person_keypoints_train.json
+val: annotations/person_keypoints_val.json
+```
+
+COCO detection spec:
+
+```yaml
+format: coco
+path: /path/to/dataset_root
+image_root: images
+train: annotations/instances_train.json
+val: annotations/instances_val.json
+```
+
+## Typical Workflows
+
+### GUI YOLO training from COCO
+
+1. Open `File -> Train models`.
+2. Choose `YOLO`.
+3. Select either:
+   - a COCO spec YAML, or
+   - a COCO annotations directory
+4. Start training as usual.
+
+Annolid will stage the COCO dataset into a YOLO-compatible temporary dataset before invoking Ultralytics.
+
+### CLI and tooling
+
+Shared COCO staging is also used by:
+
+- `annolid-run` model workflows that consume the shared dataset layer
+- the dataset conversion helper script in `annolid/core/agent/skills/dataset-convert/scripts/convert_dataset.py`
+
+## Troubleshooting
+
+If COCO training fails, check these first:
+
+- `path` points to the dataset root, not just the annotations directory
+- `image_root` matches where images actually live
+- `train` and `val` annotation JSONs exist
+- pose datasets include keypoints in the COCO categories or annotations
+- DinoKPSEG inputs are COCO pose, not COCO detection
+
+## Implementation Note
+
+The shared COCO implementation lives in `annolid/datasets/coco.py`.
+
+For backward compatibility, `annolid/yolo/dataset_prep.py` remains as a thin re-export shim.

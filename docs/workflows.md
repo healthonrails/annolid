@@ -47,6 +47,9 @@ See:
 
 The current terminal entry point is `annolid-run`.
 
+COCO dataset handling for model workflows is documented in
+[COCO Data Flow](coco_data_flow.md).
+
 Useful commands:
 
 ```bash

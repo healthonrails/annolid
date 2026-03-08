@@ -89,6 +89,7 @@ nav:
       - One-Line Installer: one_line_install_choices.md
   - Workflows:
       - Workflow Overview: workflows.md
+      - COCO Data Flow: coco_data_flow.md
       - Tutorials Overview: tutorials.md
       - Segment-based Batch Tracking: tutorials/segment-based-batch-tracking.md
       - LabelMe to YOLO Class Map: tutorials/Labelme_to_YOLO_class_map.md

@@ -71,6 +71,7 @@ annolid-run agent acp bridge --workspace /path/to/repo
 - [uv Setup](install_with_uv.md)
 - [One-Line Installer](one_line_install_choices.md)
 - [Workflows](workflows.md)
+- [COCO Data Flow](coco_data_flow.md)
 - [Tutorials](tutorials.md)
 - [MCP](mcp.md)
 - [Model Plugin Help](model_plugin_help.md)
