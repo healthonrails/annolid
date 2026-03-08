@@ -9,6 +9,7 @@ Annolid can start from either of these COCO inputs:
 - a COCO spec YAML
 - a COCO annotations directory
 - a COCO dataset root that contains an `annotations/` folder
+- a COCO dataset root with split-local annotations such as `train/annotations.json` and `val/annotations.json`
 
 Annolid treats a dataset as COCO when either is true:
 
@@ -25,6 +26,14 @@ When you point Annolid at an annotations directory, it will look for these commo
 
 This means you can usually select the COCO `annotations/` directory directly instead of writing a YAML first.
 Annolid also accepts a dataset root and will auto-discover `annotations/` when possible.
+
+Annolid also accepts split-local COCO layouts such as:
+
+- `train/annotations.json`
+- `val/annotations.json`
+- `test/annotations.json`
+
+In that layout, images can live next to each split-local JSON file, and Annolid will resolve them during COCO to YOLO staging.
 
 ## Task Detection
 

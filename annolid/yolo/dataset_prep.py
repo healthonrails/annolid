@@ -1,5 +1,6 @@
 from annolid.datasets.coco import (
     build_coco_spec_from_annotations_dir,
+    build_coco_spec_from_dataset_path,
     infer_coco_task,
     iter_existing_paths,
     looks_like_coco_spec,
@@ -13,6 +14,7 @@ from annolid.datasets.coco import (
 
 __all__ = [
     "build_coco_spec_from_annotations_dir",
+    "build_coco_spec_from_dataset_path",
     "infer_coco_task",
     "iter_existing_paths",
     "looks_like_coco_spec",

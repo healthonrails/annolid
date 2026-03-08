@@ -780,12 +780,15 @@ def _resolve_coco_image_path(
     *,
     root: Path,
     image_root: Path,
+    ann_path: Optional[Path] = None,
 ) -> Optional[Path]:
     p = Path(str(file_name)).expanduser()
     if p.is_absolute():
         return p if p.exists() else None
 
     candidates = [
+        (ann_path.parent / p).resolve() if ann_path is not None else None,
+        (ann_path.parent / p.name).resolve() if ann_path is not None else None,
         (image_root / p).resolve(),
         (root / p).resolve(),
         (root / "images" / p).resolve(),
@@ -793,7 +796,7 @@ def _resolve_coco_image_path(
         (root / "images" / p.name).resolve(),
     ]
     for cand in candidates:
-        if cand.exists():
+        if cand is not None and cand.exists():
             return cand
     return None
 
@@ -1032,6 +1035,7 @@ def materialize_coco_pose_as_yolo(
                 file_name,
                 root=spec.root,
                 image_root=spec.image_root,
+                ann_path=ann_path,
             )
             if src_image is None:
                 continue

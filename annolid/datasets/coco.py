@@ -23,6 +23,18 @@ _COCO_SPLIT_FILENAMES = {
     "test": ("person_keypoints_test.json", "instances_test.json", "test.json"),
 }
 
+_COCO_SPLIT_DIRS = {
+    "train": ("train",),
+    "val": ("val", "valid", "validation"),
+    "test": ("test",),
+}
+
+_COCO_SPLIT_LOCAL_FILENAMES = (
+    "annotations.json",
+    "person_keypoints.json",
+    "instances.json",
+)
+
 
 def looks_like_coco_spec(data_cfg: Dict[str, Any]) -> bool:
     fmt = str(data_cfg.get("format") or data_cfg.get("type") or "").strip().lower()
@@ -74,6 +86,73 @@ def build_coco_spec_from_annotations_dir(
     return payload
 
 
+def build_coco_spec_from_split_dirs(dataset_root: Path) -> Optional[Dict[str, Any]]:
+    dataset_root = Path(dataset_root).expanduser().resolve()
+    if not dataset_root.is_dir():
+        return None
+
+    split_files: Dict[str, Path] = {}
+    for split, dir_names in _COCO_SPLIT_DIRS.items():
+        for dir_name in dir_names:
+            split_dir = dataset_root / dir_name
+            if not split_dir.is_dir():
+                continue
+            for file_name in _COCO_SPLIT_LOCAL_FILENAMES:
+                ann_path = split_dir / file_name
+                if ann_path.exists():
+                    split_files[split] = ann_path
+                    break
+            if split in split_files:
+                break
+
+    if "train" not in split_files and "val" not in split_files:
+        return None
+
+    payload: Dict[str, Any] = {
+        "format": "coco",
+        "path": str(dataset_root),
+        "image_root": ".",
+    }
+    for split, ann_path in split_files.items():
+        payload[split] = str(ann_path.relative_to(dataset_root))
+    return payload
+
+
+def build_coco_spec_from_dataset_path(path: Path) -> Optional[Dict[str, Any]]:
+    candidate = Path(path).expanduser().resolve()
+    if not candidate.is_dir():
+        return None
+
+    payload = build_coco_spec_from_annotations_dir(candidate)
+    if payload is not None:
+        return payload
+
+    common = candidate / "annotations"
+    if common.is_dir():
+        payload = build_coco_spec_from_annotations_dir(common)
+        if payload is not None:
+            return payload
+
+    payload = build_coco_spec_from_split_dirs(candidate)
+    if payload is not None:
+        return payload
+
+    for depth in (1, 2):
+        for pattern in (
+            "/".join(["*"] * depth + [name])
+            for name in _COCO_SPLIT_FILENAMES["train"] + _COCO_SPLIT_LOCAL_FILENAMES
+        ):
+            for json_path in candidate.glob(pattern):
+                parent = json_path.parent
+                payload = build_coco_spec_from_annotations_dir(parent)
+                if payload is not None:
+                    return payload
+                payload = build_coco_spec_from_split_dirs(parent.parent)
+                if payload is not None:
+                    return payload
+    return None
+
+
 def discover_coco_annotations_dir(
     input_dir: Path,
     *,
@@ -91,10 +170,27 @@ def discover_coco_annotations_dir(
     if common.is_dir() and build_coco_spec_from_annotations_dir(common) is not None:
         return common
 
+    for split_dir_names in _COCO_SPLIT_DIRS.values():
+        for dir_name in split_dir_names:
+            split_dir = candidate / dir_name
+            if not split_dir.is_dir():
+                continue
+            for file_name in _COCO_SPLIT_LOCAL_FILENAMES:
+                if (split_dir / file_name).exists():
+                    return candidate
+
     depth = max(1, int(max_depth))
-    for split_names in _COCO_SPLIT_FILENAMES.values():
-        for name in split_names:
-            pattern = "/".join(["*"] * depth + [name])
+    nested_names = (
+        tuple(name for names in _COCO_SPLIT_FILENAMES.values() for name in names)
+        + _COCO_SPLIT_LOCAL_FILENAMES
+    )
+    for name in nested_names:
+        for prefix in ("", "train/", "val/", "valid/", "validation/", "test/"):
+            pattern = (
+                "/".join(["*"] * depth + [prefix + name])
+                if prefix
+                else "/".join(["*"] * depth + [name])
+            )
             for json_path in candidate.glob(pattern):
                 parent = json_path.parent
                 if (
@@ -102,6 +198,8 @@ def discover_coco_annotations_dir(
                     and build_coco_spec_from_annotations_dir(parent) is not None
                 ):
                     return parent
+                if build_coco_spec_from_split_dirs(parent.parent) is not None:
+                    return parent.parent
     return None
 
 
@@ -422,6 +520,7 @@ def _convert_coco_detection_split(
             file_name=file_name,
             root_path=root_path,
             image_root=image_root,
+            ann_path=ann_path,
         )
         if src_image is None:
             continue
@@ -512,12 +611,16 @@ def _resolve_coco_image_path(
     file_name: str,
     root_path: Path,
     image_root: Path,
+    ann_path: Optional[Path] = None,
 ) -> Optional[Path]:
     raw = Path(file_name)
     candidates = []
     if raw.is_absolute():
         candidates.append(raw)
     else:
+        if ann_path is not None:
+            candidates.append(ann_path.parent / raw)
+            candidates.append(ann_path.parent / raw.name)
         candidates.append(image_root / raw)
         candidates.append(root_path / raw)
     for candidate in candidates:

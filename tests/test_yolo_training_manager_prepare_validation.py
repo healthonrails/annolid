@@ -324,3 +324,98 @@ def test_prepare_data_config_upgrades_pose_yaml_from_nearby_coco_keypoints(
     finally:
         manager.cleanup()
         window.close()
+
+
+def test_prepare_data_config_upgrades_pose_yaml_from_split_local_annotations(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _ensure_qapp()
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("Unexpected QMessageBox during test.")
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _fail)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "critical", _fail)
+
+    root = tmp_path / "dataset"
+    train_dir = root / "train"
+    val_dir = root / "val"
+    train_dir.mkdir(parents=True)
+    val_dir.mkdir(parents=True)
+    Image.new("RGB", (16, 16)).save(train_dir / "frame_0001.jpg")
+    Image.new("RGB", (16, 16)).save(val_dir / "frame_0001.jpg")
+
+    train_payload = {
+        "images": [{"id": 1, "file_name": "frame_0001.jpg", "width": 16, "height": 16}],
+        "annotations": [
+            {
+                "id": 1,
+                "image_id": 1,
+                "category_id": 1,
+                "bbox": [2, 2, 8, 8],
+                "area": 64,
+                "iscrowd": 0,
+                "num_keypoints": 3,
+                "keypoints": [4, 4, 2, 6, 6, 2, 8, 8, 2],
+            }
+        ],
+        "categories": [
+            {
+                "id": 1,
+                "name": "mouse",
+                "keypoints": ["nose", "left_ear", "right_ear"],
+                "skeleton": [[1, 2], [1, 3]],
+            }
+        ],
+    }
+    val_payload = {
+        "images": [{"id": 2, "file_name": "frame_0001.jpg", "width": 16, "height": 16}],
+        "annotations": [
+            {
+                "id": 2,
+                "image_id": 2,
+                "category_id": 1,
+                "bbox": [3, 3, 7, 7],
+                "area": 49,
+                "iscrowd": 0,
+                "num_keypoints": 3,
+                "keypoints": [5, 5, 2, 7, 7, 2, 9, 9, 2],
+            }
+        ],
+        "categories": train_payload["categories"],
+    }
+    (train_dir / "annotations.json").write_text(
+        json.dumps(train_payload),
+        encoding="utf-8",
+    )
+    (val_dir / "annotations.json").write_text(
+        json.dumps(val_payload),
+        encoding="utf-8",
+    )
+
+    config_path = root / "data.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "path: .",
+                "train: train",
+                "val: val",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    window = QtWidgets.QMainWindow()
+    manager = YOLOTrainingManager(window)
+    try:
+        prepared = manager.prepare_data_config(str(config_path), expected_task="pose")
+        assert prepared is not None
+        payload = yaml.safe_load(Path(prepared).read_text(encoding="utf-8"))
+        assert payload["kpt_shape"] == [3, 3]
+        assert payload["names"] == ["mouse"]
+        assert payload["nc"] == 1
+        assert Path(payload["train"]).exists()
+        assert Path(payload["val"]).exists()
+    finally:
+        manager.cleanup()
+        window.close()

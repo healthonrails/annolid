@@ -7,6 +7,7 @@ from PIL import Image
 
 from annolid.datasets.coco import (
     build_coco_spec_from_annotations_dir,
+    build_coco_spec_from_dataset_path,
     discover_coco_annotations_dir,
     infer_coco_task,
     load_coco_category_id_map,
@@ -144,6 +145,73 @@ def test_discover_coco_annotations_dir_from_dataset_root(tmp_path: Path) -> None
     annotations_dir.mkdir(parents=True)
     (annotations_dir / "train.json").write_text("{}", encoding="utf-8")
     assert discover_coco_annotations_dir(root) == annotations_dir.resolve()
+
+
+def test_build_coco_spec_from_dataset_path_accepts_split_local_annotations_json(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "dataset"
+    train_dir = root / "train"
+    val_dir = root / "val"
+    train_dir.mkdir(parents=True)
+    val_dir.mkdir(parents=True)
+
+    Image.new("RGB", (32, 24)).save(train_dir / "train.png")
+    Image.new("RGB", (32, 24)).save(val_dir / "val.png")
+    _write_detection_coco_json(
+        train_dir / "annotations.json",
+        file_name="train.png",
+        image_id=1,
+    )
+    _write_detection_coco_json(
+        val_dir / "annotations.json",
+        file_name="val.png",
+        image_id=2,
+    )
+
+    payload = build_coco_spec_from_dataset_path(root)
+    assert payload is not None
+    assert payload["format"] == "coco"
+    assert payload["image_root"] == "."
+    assert payload["train"] == "train/annotations.json"
+    assert payload["val"] == "val/annotations.json"
+
+
+def test_materialize_coco_spec_as_yolo_accepts_split_local_annotations_json(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "dataset"
+    train_dir = root / "train"
+    val_dir = root / "val"
+    train_dir.mkdir(parents=True)
+    val_dir.mkdir(parents=True)
+
+    Image.new("RGB", (32, 24)).save(train_dir / "train.png")
+    Image.new("RGB", (32, 24)).save(val_dir / "val.png")
+    _write_detection_coco_json(
+        train_dir / "annotations.json",
+        file_name="train.png",
+        image_id=1,
+    )
+    _write_detection_coco_json(
+        val_dir / "annotations.json",
+        file_name="val.png",
+        image_id=2,
+    )
+
+    spec = build_coco_spec_from_dataset_path(root)
+    assert spec is not None
+    spec_path = root / "coco_detect.yaml"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+    yolo_yaml = materialize_coco_spec_as_yolo(
+        config_path=spec_path,
+        output_dir=tmp_path / "out",
+    )
+    payload = read_yaml_dict(yolo_yaml)
+    assert payload["names"] == ["mouse"]
+    assert (yolo_yaml.parent / "images" / "train").exists()
+    assert (yolo_yaml.parent / "images" / "val").exists()
 
 
 def test_build_coco_spec_prefers_person_keypoints_over_instances(

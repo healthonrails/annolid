@@ -13,8 +13,7 @@ from qtpy import QtCore, QtWidgets
 
 from annolid.gui.workers import FlexibleWorker
 from annolid.datasets.coco import (
-    build_coco_spec_from_annotations_dir,
-    discover_coco_annotations_dir,
+    build_coco_spec_from_dataset_path,
     load_coco_class_names,
     load_coco_keypoint_meta,
     looks_like_coco_spec,
@@ -222,14 +221,11 @@ class YOLOTrainingManager(QtCore.QObject):
             if candidate_root in seen or not candidate_root.exists():
                 continue
             seen.add(candidate_root)
-            ann_dir = discover_coco_annotations_dir(candidate_root)
-            if ann_dir is None:
-                continue
-            payload = build_coco_spec_from_annotations_dir(ann_dir)
+            payload = build_coco_spec_from_dataset_path(candidate_root)
             if not payload:
                 continue
             ann_paths = resolve_coco_annotation_paths(
-                config_path=ann_dir / "auto_pose_spec.yaml",
+                config_path=candidate_root / "auto_pose_spec.yaml",
                 payload=payload,
             )
             keypoint_ann = next(
@@ -247,7 +243,10 @@ class YOLOTrainingManager(QtCore.QObject):
                 continue
 
             temp_spec_path = Path(
-                self._write_temp_config(payload, ann_dir / "auto_pose_spec.yaml")
+                self._write_temp_config(
+                    payload,
+                    candidate_root / "auto_pose_spec.yaml",
+                )
             )
             try:
                 upgraded_cfg = (
@@ -338,14 +337,11 @@ class YOLOTrainingManager(QtCore.QObject):
             if candidate_root in seen:
                 continue
             seen.add(candidate_root)
-            ann_dir = discover_coco_annotations_dir(candidate_root)
-            if ann_dir is None:
-                continue
-            payload = build_coco_spec_from_annotations_dir(ann_dir)
+            payload = build_coco_spec_from_dataset_path(candidate_root)
             if not payload:
                 continue
             ann_paths = resolve_coco_annotation_paths(
-                config_path=ann_dir / "auto_discovered_coco_spec.yaml",
+                config_path=candidate_root / "auto_discovered_coco_spec.yaml",
                 payload=payload,
             )
             for split in ("train", "val", "test"):
@@ -463,15 +459,12 @@ class YOLOTrainingManager(QtCore.QObject):
     def _prepare_from_coco_annotations_dir(
         self, annotations_dir: Path
     ) -> Optional[Path]:
-        resolved_annotations_dir = discover_coco_annotations_dir(annotations_dir)
-        payload = None
-        if resolved_annotations_dir is not None:
-            payload = build_coco_spec_from_annotations_dir(resolved_annotations_dir)
+        payload = build_coco_spec_from_dataset_path(annotations_dir)
         if payload is None:
             QtWidgets.QMessageBox.warning(
                 self._window,
                 "Invalid COCO Folder",
-                "Could not find COCO train/val annotations. Select either a COCO annotations folder or a dataset root that contains an annotations subfolder.",
+                "Could not find COCO train/val annotations. Select either a COCO annotations folder, a dataset root that contains an annotations subfolder, or a dataset root with split-local annotations.json files.",
             )
             return None
 
