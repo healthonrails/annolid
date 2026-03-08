@@ -144,3 +144,30 @@ def test_discover_coco_annotations_dir_from_dataset_root(tmp_path: Path) -> None
     annotations_dir.mkdir(parents=True)
     (annotations_dir / "train.json").write_text("{}", encoding="utf-8")
     assert discover_coco_annotations_dir(root) == annotations_dir.resolve()
+
+
+def test_build_coco_spec_prefers_person_keypoints_over_instances(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "dataset"
+    images_dir = root / "images"
+    annotations_dir = root / "annotations"
+    images_dir.mkdir(parents=True)
+    annotations_dir.mkdir(parents=True)
+
+    # Presence is enough for selection priority in spec creation.
+    (annotations_dir / "instances_train.json").write_text("{}", encoding="utf-8")
+    (annotations_dir / "instances_val.json").write_text("{}", encoding="utf-8")
+    (annotations_dir / "person_keypoints_train.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    (annotations_dir / "person_keypoints_val.json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+
+    payload = build_coco_spec_from_annotations_dir(annotations_dir)
+    assert payload is not None
+    assert payload.get("train") == "annotations/person_keypoints_train.json"
+    assert payload.get("val") == "annotations/person_keypoints_val.json"

@@ -17,9 +17,10 @@ from annolid.segmentation.dino_kpseg.data import (
 
 
 _COCO_SPLIT_FILENAMES = {
-    "train": ("train.json", "instances_train.json", "person_keypoints_train.json"),
-    "val": ("val.json", "instances_val.json", "person_keypoints_val.json"),
-    "test": ("test.json", "instances_test.json", "person_keypoints_test.json"),
+    # Prefer keypoint annotations when multiple COCO variants are present.
+    "train": ("person_keypoints_train.json", "instances_train.json", "train.json"),
+    "val": ("person_keypoints_val.json", "instances_val.json", "val.json"),
+    "test": ("person_keypoints_test.json", "instances_test.json", "test.json"),
 }
 
 
