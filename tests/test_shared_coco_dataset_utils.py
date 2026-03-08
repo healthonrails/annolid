@@ -7,6 +7,7 @@ from PIL import Image
 
 from annolid.datasets.coco import (
     build_coco_spec_from_annotations_dir,
+    discover_coco_annotations_dir,
     infer_coco_task,
     load_coco_category_id_map,
     load_coco_class_names,
@@ -135,3 +136,11 @@ def test_shared_coco_metadata_helpers_parse_categories(tmp_path: Path) -> None:
         "keypoint_names": ["nose", "tail"],
         "skeleton": [[1, 2]],
     }
+
+
+def test_discover_coco_annotations_dir_from_dataset_root(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    annotations_dir = root / "annotations"
+    annotations_dir.mkdir(parents=True)
+    (annotations_dir / "train.json").write_text("{}", encoding="utf-8")
+    assert discover_coco_annotations_dir(root) == annotations_dir.resolve()

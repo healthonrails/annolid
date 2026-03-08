@@ -73,6 +73,37 @@ def build_coco_spec_from_annotations_dir(
     return payload
 
 
+def discover_coco_annotations_dir(
+    input_dir: Path,
+    *,
+    max_depth: int = 2,
+) -> Optional[Path]:
+    """Find a COCO annotations directory from a user-selected dataset path."""
+    candidate = Path(input_dir).expanduser().resolve()
+    if not candidate.is_dir():
+        return None
+
+    if build_coco_spec_from_annotations_dir(candidate) is not None:
+        return candidate
+
+    common = candidate / "annotations"
+    if common.is_dir() and build_coco_spec_from_annotations_dir(common) is not None:
+        return common
+
+    depth = max(1, int(max_depth))
+    for split_names in _COCO_SPLIT_FILENAMES.values():
+        for name in split_names:
+            pattern = "/".join(["*"] * depth + [name])
+            for json_path in candidate.glob(pattern):
+                parent = json_path.parent
+                if (
+                    parent.is_dir()
+                    and build_coco_spec_from_annotations_dir(parent) is not None
+                ):
+                    return parent
+    return None
+
+
 def infer_coco_task(*, config_path: Path, payload: Dict[str, Any]) -> str:
     if (
         payload.get("kpt_shape")

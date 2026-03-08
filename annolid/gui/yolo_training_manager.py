@@ -14,8 +14,11 @@ from qtpy import QtCore, QtWidgets
 from annolid.gui.workers import FlexibleWorker
 from annolid.datasets.coco import (
     build_coco_spec_from_annotations_dir,
+    discover_coco_annotations_dir,
+    load_coco_class_names,
     looks_like_coco_spec,
     materialize_coco_spec_as_yolo,
+    resolve_coco_annotation_paths,
 )
 from annolid.utils.logger import logger
 from annolid.utils.runs import allocate_run_dir, shared_runs_root
@@ -153,6 +156,12 @@ class YOLOTrainingManager(QtCore.QObject):
             )
             return None
 
+        self._ensure_required_class_metadata(
+            data_cfg,
+            root_dir=root_dir,
+            config_path=config_path,
+        )
+
         # Pose datasets: auto-generate flip_idx if missing, so fliplr/flipud augmentations work.
         if data_cfg.get("kpt_shape") and not data_cfg.get("flip_idx"):
             flip_idx = self._infer_flip_idx(data_cfg)
@@ -160,6 +169,104 @@ class YOLOTrainingManager(QtCore.QObject):
                 data_cfg["flip_idx"] = flip_idx
 
         return self._write_temp_config(data_cfg, config_path)
+
+    def _ensure_required_class_metadata(
+        self,
+        data_cfg: Dict[str, Any],
+        *,
+        root_dir: Path,
+        config_path: Path,
+    ) -> None:
+        names = self._normalize_class_names(data_cfg.get("names"))
+        if names:
+            data_cfg["names"] = names
+            data_cfg["nc"] = len(names)
+            return
+
+        try:
+            nc = int(data_cfg.get("nc"))
+        except Exception:
+            nc = 0
+        if nc > 0:
+            data_cfg["names"] = [f"class_{i}" for i in range(nc)]
+            data_cfg["nc"] = nc
+            return
+
+        kpt_names = data_cfg.get("kpt_names")
+        if isinstance(kpt_names, dict) and kpt_names:
+            class_count = len(kpt_names)
+            if class_count > 0:
+                data_cfg["names"] = [f"class_{i}" for i in range(class_count)]
+                data_cfg["nc"] = class_count
+                return
+
+        coco_names = self._infer_class_names_from_coco(
+            root_dir=root_dir,
+            config_path=config_path,
+        )
+        if coco_names:
+            data_cfg["names"] = coco_names
+            data_cfg["nc"] = len(coco_names)
+            return
+
+        # Ultralytics requires at least one class definition for all training YAMLs.
+        data_cfg["names"] = ["animal"]
+        data_cfg["nc"] = 1
+
+    def _normalize_class_names(self, value: Any) -> Optional[List[str]]:
+        if isinstance(value, str):
+            label = value.strip()
+            return [label] if label else None
+        if isinstance(value, (list, tuple)):
+            names = [str(item).strip() for item in value if str(item).strip()]
+            return names if names else None
+        if isinstance(value, dict):
+            entries: List[Tuple[int, str]] = []
+            for key, name in value.items():
+                label = str(name).strip()
+                if not label:
+                    continue
+                try:
+                    key_i = int(key)
+                except Exception:
+                    continue
+                entries.append((key_i, label))
+            if not entries:
+                return None
+            entries.sort(key=lambda item: item[0])
+            return [label for _, label in entries]
+        return None
+
+    def _infer_class_names_from_coco(
+        self,
+        *,
+        root_dir: Path,
+        config_path: Path,
+    ) -> Optional[List[str]]:
+        candidates: List[Path] = [root_dir, config_path.parent]
+        seen: set[Path] = set()
+        for candidate_root in candidates:
+            if candidate_root in seen:
+                continue
+            seen.add(candidate_root)
+            ann_dir = discover_coco_annotations_dir(candidate_root)
+            if ann_dir is None:
+                continue
+            payload = build_coco_spec_from_annotations_dir(ann_dir)
+            if not payload:
+                continue
+            ann_paths = resolve_coco_annotation_paths(
+                config_path=ann_dir / "auto_discovered_coco_spec.yaml",
+                payload=payload,
+            )
+            for split in ("train", "val", "test"):
+                ann_path = ann_paths.get(split)
+                if ann_path is None or not ann_path.exists():
+                    continue
+                names = [name for name in load_coco_class_names(ann_path) if name]
+                if names:
+                    return names
+        return None
 
     def _ensure_required_splits(
         self,
@@ -267,12 +374,15 @@ class YOLOTrainingManager(QtCore.QObject):
     def _prepare_from_coco_annotations_dir(
         self, annotations_dir: Path
     ) -> Optional[Path]:
-        payload = build_coco_spec_from_annotations_dir(annotations_dir)
+        resolved_annotations_dir = discover_coco_annotations_dir(annotations_dir)
+        payload = None
+        if resolved_annotations_dir is not None:
+            payload = build_coco_spec_from_annotations_dir(resolved_annotations_dir)
         if payload is None:
             QtWidgets.QMessageBox.warning(
                 self._window,
                 "Invalid COCO Folder",
-                "Expected COCO train/val annotations (for example train.json, val.json, instances_train.json, or person_keypoints_train.json) in the selected COCO folder.",
+                "Could not find COCO train/val annotations. Select either a COCO annotations folder or a dataset root that contains an annotations subfolder.",
             )
             return None
 

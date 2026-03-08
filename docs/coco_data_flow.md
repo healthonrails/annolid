@@ -8,6 +8,7 @@ Annolid can start from either of these COCO inputs:
 
 - a COCO spec YAML
 - a COCO annotations directory
+- a COCO dataset root that contains an `annotations/` folder
 
 Annolid treats a dataset as COCO when either is true:
 
@@ -23,6 +24,7 @@ When you point Annolid at an annotations directory, it will look for these commo
 - `person_keypoints_train.json`, `person_keypoints_val.json`, `person_keypoints_test.json`
 
 This means you can usually select the COCO `annotations/` directory directly instead of writing a YAML first.
+Annolid also accepts a dataset root and will auto-discover `annotations/` when possible.
 
 ## Task Detection
 
@@ -49,6 +51,8 @@ If the source is COCO, Annolid materializes a temporary YOLO-style dataset with:
 - `labels/`
 - `data.yaml`
 
+If the selected directory is a dataset root (not the annotations folder), Annolid will auto-locate COCO annotations before staging.
+
 ### DinoKPSEG workflows
 
 DinoKPSEG COCO workflows are pose-only.
@@ -64,6 +68,7 @@ Mask R-CNN still uses torchvision-specific dataset wrappers, but category names,
 - If a staged YOLO dataset needs both `train` and `val`, Annolid validates that those splits are present before launching training.
 - If a COCO spec provides `train` but no `val`, Annolid may auto-split validation during COCO to YOLO staging when the workflow allows it.
 - Pose-only consumers explicitly enforce `expected_task="pose"`.
+- If a YOLO-facing YAML is missing `names`/`nc`, Annolid attempts to infer class names from nearby COCO annotation JSON categories before falling back to defaults.
 
 ## Recommended COCO YAMLs
 
@@ -95,7 +100,8 @@ val: annotations/instances_val.json
 2. Choose `YOLO`.
 3. Select either:
    - a COCO spec YAML, or
-   - a COCO annotations directory
+   - a COCO annotations directory, or
+   - a COCO dataset root containing `annotations/`
 4. Start training as usual.
 
 Annolid will stage the COCO dataset into a YOLO-compatible temporary dataset before invoking Ultralytics.
@@ -116,6 +122,7 @@ If COCO training fails, check these first:
 - `train` and `val` annotation JSONs exist
 - pose datasets include keypoints in the COCO categories or annotations
 - DinoKPSEG inputs are COCO pose, not COCO detection
+- if your YAML has no `names`/`nc`, ensure COCO `categories` contain valid names for class inference
 
 ## Implementation Note
 
