@@ -43,6 +43,7 @@ YOLO training can start from:
 
 - COCO pose
 - COCO detection
+- a plain YOLO `data.yaml` that lives next to COCO annotations
 - staged YOLO datasets
 
 If the source is COCO, Annolid materializes a temporary YOLO-style dataset with:
@@ -52,6 +53,8 @@ If the source is COCO, Annolid materializes a temporary YOLO-style dataset with:
 - `data.yaml`
 
 If the selected directory is a dataset root (not the annotations folder), Annolid will auto-locate COCO annotations before staging.
+
+If you launch a YOLO pose model from a plain `data.yaml` and that YAML does not include `kpt_shape`, Annolid now checks for nearby COCO keypoint annotations and upgrades the dataset to a staged YOLO pose dataset automatically.
 
 ### DinoKPSEG workflows
 
@@ -69,6 +72,7 @@ Mask R-CNN still uses torchvision-specific dataset wrappers, but category names,
 - If a COCO spec provides `train` but no `val`, Annolid may auto-split validation during COCO to YOLO staging when the workflow allows it.
 - Pose-only consumers explicitly enforce `expected_task="pose"`.
 - If a YOLO-facing YAML is missing `names`/`nc`, Annolid attempts to infer class names from nearby COCO annotation JSON categories before falling back to defaults.
+- If a YOLO pose launch still cannot resolve keypoint metadata, Annolid now stops before invoking Ultralytics and reports that the selected dataset is not pose-compatible.
 
 ## Recommended COCO YAMLs
 
@@ -101,10 +105,11 @@ val: annotations/instances_val.json
 3. Select either:
    - a COCO spec YAML, or
    - a COCO annotations directory, or
-   - a COCO dataset root containing `annotations/`
+   - a COCO dataset root containing `annotations/`, or
+   - a plain `data.yaml` beside a COCO keypoints dataset
 4. Start training as usual.
 
-Annolid will stage the COCO dataset into a YOLO-compatible temporary dataset before invoking Ultralytics.
+Annolid will stage the COCO dataset into a YOLO-compatible temporary dataset before invoking Ultralytics. For pose models, this includes auto-detecting nearby COCO keypoints annotations when a plain `data.yaml` is missing `kpt_shape`.
 
 ### CLI and tooling
 
@@ -121,6 +126,7 @@ If COCO training fails, check these first:
 - `image_root` matches where images actually live
 - `train` and `val` annotation JSONs exist
 - pose datasets include keypoints in the COCO categories or annotations
+- when using a YOLO pose model, prefer `person_keypoints_*.json` over detection-only `instances_*.json`
 - DinoKPSEG inputs are COCO pose, not COCO detection
 - if your YAML has no `names`/`nc`, ensure COCO `categories` contain valid names for class inference
 

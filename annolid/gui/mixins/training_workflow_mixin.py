@@ -270,7 +270,14 @@ class TrainingWorkflowMixin:
         if config_file is None:
             return
         if algo == "YOLO":
-            data_config = self.yolo_training_manager.prepare_data_config(config_file)
+            expected_task = self.yolo_training_manager._infer_expected_task(
+                yolo_model_file,
+                model_path=model_path,
+            )
+            data_config = self.yolo_training_manager.prepare_data_config(
+                config_file,
+                expected_task=expected_task,
+            )
             if data_config is None:
                 return
             self.yolo_training_manager.start_training(

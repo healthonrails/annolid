@@ -16,6 +16,7 @@ from annolid.datasets.coco import (
     build_coco_spec_from_annotations_dir,
     discover_coco_annotations_dir,
     load_coco_class_names,
+    load_coco_keypoint_meta,
     looks_like_coco_spec,
     materialize_coco_spec_as_yolo,
     resolve_coco_annotation_paths,
@@ -48,7 +49,12 @@ class YOLOTrainingManager(QtCore.QObject):
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #
-    def prepare_data_config(self, config_file: str) -> Optional[str]:
+    def prepare_data_config(
+        self,
+        config_file: str,
+        *,
+        expected_task: Optional[str] = None,
+    ) -> Optional[str]:
         """Resolve training data config and persist a YOLO-compatible temp YAML."""
         config_path = Path(config_file).expanduser().resolve()
         if not config_path.exists():
@@ -77,8 +83,17 @@ class YOLOTrainingManager(QtCore.QObject):
             )
             return None
 
+        config_path, data_cfg = self._upgrade_from_nearby_coco(
+            config_path=config_path,
+            data_cfg=data_cfg,
+            expected_task=expected_task,
+        )
+
         if looks_like_coco_spec(data_cfg):
-            prepared = self._materialize_coco_spec(config_path)
+            prepared = self._materialize_coco_spec(
+                config_path,
+                expected_task=expected_task,
+            )
             if prepared is None:
                 return None
             config_path = prepared
@@ -168,7 +183,81 @@ class YOLOTrainingManager(QtCore.QObject):
             if flip_idx:
                 data_cfg["flip_idx"] = flip_idx
 
+        if str(expected_task or "").strip().lower() == "pose" and not data_cfg.get(
+            "kpt_shape"
+        ):
+            QtWidgets.QMessageBox.warning(
+                self._window,
+                "Pose Dataset Required",
+                "The selected YOLO pose model requires a dataset with 'kpt_shape'.\n\n"
+                "Choose a YOLO pose dataset or a COCO keypoints dataset.",
+            )
+            return None
+
         return self._write_temp_config(data_cfg, config_path)
+
+    def _upgrade_from_nearby_coco(
+        self,
+        *,
+        config_path: Path,
+        data_cfg: Dict[str, Any],
+        expected_task: Optional[str],
+    ) -> Tuple[Path, Dict[str, Any]]:
+        task = str(expected_task or "").strip().lower()
+        if task != "pose":
+            return config_path, data_cfg
+        if data_cfg.get("kpt_shape") or looks_like_coco_spec(data_cfg):
+            return config_path, data_cfg
+
+        candidate_roots: List[Path] = [config_path.parent]
+        raw_root = data_cfg.get("path")
+        if raw_root:
+            root_candidate = Path(str(raw_root)).expanduser()
+            if not root_candidate.is_absolute():
+                root_candidate = (config_path.parent / root_candidate).resolve()
+            candidate_roots.append(root_candidate)
+
+        seen: set[Path] = set()
+        for candidate_root in candidate_roots:
+            if candidate_root in seen or not candidate_root.exists():
+                continue
+            seen.add(candidate_root)
+            ann_dir = discover_coco_annotations_dir(candidate_root)
+            if ann_dir is None:
+                continue
+            payload = build_coco_spec_from_annotations_dir(ann_dir)
+            if not payload:
+                continue
+            ann_paths = resolve_coco_annotation_paths(
+                config_path=ann_dir / "auto_pose_spec.yaml",
+                payload=payload,
+            )
+            keypoint_ann = next(
+                (
+                    ann_path
+                    for ann_path in ann_paths.values()
+                    if ann_path is not None and ann_path.exists()
+                ),
+                None,
+            )
+            if keypoint_ann is None:
+                continue
+            keypoint_meta = load_coco_keypoint_meta(keypoint_ann)
+            if int(keypoint_meta.get("num_keypoints") or 0) <= 0:
+                continue
+
+            temp_spec_path = Path(
+                self._write_temp_config(payload, ann_dir / "auto_pose_spec.yaml")
+            )
+            try:
+                upgraded_cfg = (
+                    yaml.safe_load(temp_spec_path.read_text(encoding="utf-8")) or {}
+                )
+            except Exception:
+                upgraded_cfg = dict(payload)
+            return temp_spec_path, upgraded_cfg
+
+        return config_path, data_cfg
 
     def _ensure_required_class_metadata(
         self,
@@ -390,7 +479,12 @@ class YOLOTrainingManager(QtCore.QObject):
         temp_spec = Path(self._write_temp_config(payload, cfg_stub))
         return temp_spec
 
-    def _materialize_coco_spec(self, config_path: Path) -> Optional[Path]:
+    def _materialize_coco_spec(
+        self,
+        config_path: Path,
+        *,
+        expected_task: Optional[str] = None,
+    ) -> Optional[Path]:
         try:
             stage_dir = Path(
                 tempfile.mkdtemp(prefix=f"{config_path.stem}_coco_yolo_")
@@ -400,6 +494,7 @@ class YOLOTrainingManager(QtCore.QObject):
                 config_path=config_path,
                 output_dir=stage_dir,
                 link_mode="hardlink",
+                expected_task=expected_task,
             )
             return staged_yaml
         except Exception as exc:
@@ -426,12 +521,19 @@ class YOLOTrainingManager(QtCore.QObject):
         out_dir: Optional[str],
     ) -> bool:
         """Launch YOLO training on a background thread."""
+        expected_task = self._infer_expected_task(
+            yolo_model_file,
+            model_path=model_path,
+        )
         config_path = Path(data_config_path).expanduser().resolve()
         if config_path not in self._temp_configs:
             # Ensure the dataset config is resolved to an absolute, temporary
             # YAML with paths fixed up for Ultralytics. If preparation fails,
             # abort early.
-            prepared_cfg = self.prepare_data_config(str(config_path))
+            prepared_cfg = self.prepare_data_config(
+                str(config_path),
+                expected_task=expected_task,
+            )
             if not prepared_cfg:
                 return False
             # From this point forward use the prepared temp config path so
@@ -464,6 +566,24 @@ class YOLOTrainingManager(QtCore.QObject):
         ):
             self._release_temp_config(data_config_path)
             return False
+
+        if expected_task == "pose":
+            try:
+                payload = (
+                    yaml.safe_load(Path(data_config_path).read_text(encoding="utf-8"))
+                    or {}
+                )
+            except Exception:
+                payload = {}
+            if not payload.get("kpt_shape"):
+                QtWidgets.QMessageBox.warning(
+                    self._window,
+                    "Pose Dataset Required",
+                    "The selected YOLO pose model requires a dataset with 'kpt_shape'.\n\n"
+                    "Choose a YOLO pose dataset or a COCO keypoints dataset.",
+                )
+                self._release_temp_config(data_config_path)
+                return False
 
         self._training_running = True
         self._window.statusBar().showMessage(
@@ -640,6 +760,21 @@ class YOLOTrainingManager(QtCore.QObject):
         thread.finished.connect(thread.deleteLater, QtCore.Qt.QueuedConnection)
         QtCore.QTimer.singleShot(0, thread.start)
         return True
+
+    def _infer_expected_task(
+        self,
+        yolo_model_file: str,
+        *,
+        model_path: Optional[str],
+    ) -> Optional[str]:
+        model_token = str(model_path or yolo_model_file or "").strip().lower()
+        if not model_token:
+            return None
+        if "-pose" in model_token or model_token.endswith("pose.pt"):
+            return "pose"
+        if "-seg" in model_token or model_token.endswith("seg.pt"):
+            return "seg"
+        return None
 
     def _confirm_preflight(
         self,
