@@ -8,13 +8,12 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from annolid.datasets.coco import materialize_coco_spec_as_yolo
 from annolid.segmentation.dino_kpseg.data import (
     _image_to_labelme_path,
     _resolve_split_images,
-    load_coco_pose_spec,
     load_labelme_pose_spec,
     load_yolo_pose_spec,
-    materialize_coco_pose_as_yolo,
 )
 from annolid.segmentation.dino_kpseg.format_utils import (
     normalize_dino_kpseg_data_format,
@@ -126,7 +125,6 @@ def resolve_pose_dataset(
     staged_yolo_yaml: Optional[Path] = None
     label_format = "yolo"
     if data_format_norm == "coco":
-        coco_spec = load_coco_pose_spec(source_yaml)
         if coco_staging_dir is None:
             staging_root = Path(
                 tempfile.mkdtemp(
@@ -137,9 +135,10 @@ def resolve_pose_dataset(
             staging_root = Path(coco_staging_dir).resolve()
             if staging_root.exists():
                 shutil.rmtree(staging_root)
-        staged_yolo_yaml = materialize_coco_pose_as_yolo(
-            spec=coco_spec,
+        staged_yolo_yaml = materialize_coco_spec_as_yolo(
+            config_path=source_yaml,
             output_dir=staging_root,
+            expected_task="pose",
         )
         source_yaml = staged_yolo_yaml
         label_format = "yolo"

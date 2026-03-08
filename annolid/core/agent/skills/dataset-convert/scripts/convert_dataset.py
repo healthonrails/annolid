@@ -11,10 +11,7 @@ from annolid.annotation.coco2labelme import (
     convert_coco_json_to_labelme_dataset,
 )
 from annolid.annotation.labelme2coco import convert as labelme_to_coco_convert
-from annolid.segmentation.dino_kpseg.data import (
-    load_coco_pose_spec,
-    materialize_coco_pose_as_yolo,
-)
+from annolid.datasets.coco import materialize_coco_spec_as_yolo
 
 
 def _resolve_labelme_input_dir(input_dir: Path) -> Path:
@@ -101,9 +98,8 @@ def _run_coco_to_labelme(args: argparse.Namespace) -> int:
 def _run_coco_spec_to_yolo(args: argparse.Namespace) -> int:
     spec_yaml = Path(args.spec_yaml).expanduser().resolve()
     output_dir = Path(args.output_dir).expanduser().resolve()
-    spec = load_coco_pose_spec(spec_yaml)
-    yolo_yaml = materialize_coco_pose_as_yolo(
-        spec=spec,
+    yolo_yaml = materialize_coco_spec_as_yolo(
+        config_path=spec_yaml,
         output_dir=output_dir,
         link_mode=str(args.link_mode),
     )

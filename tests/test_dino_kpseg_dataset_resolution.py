@@ -70,3 +70,45 @@ def test_resolve_pose_dataset_split_helpers(tmp_path: Path) -> None:
     assert len(spec.split_images("val")) == 1
     assert spec.split_labels("train") is None
     assert spec.split_labels("val") is None
+
+
+def test_resolve_pose_dataset_rejects_coco_detection_spec(tmp_path: Path) -> None:
+    root = tmp_path / "dataset"
+    images_dir = root / "images"
+    annotations_dir = root / "annotations"
+    images_dir.mkdir(parents=True)
+    annotations_dir.mkdir(parents=True)
+
+    Image.new("RGB", (32, 24), color=(100, 100, 100)).save(images_dir / "train.png")
+    (annotations_dir / "instances_train.json").write_text(
+        """
+{
+  "images": [{"id": 1, "file_name": "train.png", "width": 32, "height": 24}],
+  "annotations": [{"id": 1, "image_id": 1, "category_id": 1, "bbox": [4, 4, 8, 8], "area": 64, "iscrowd": 0}],
+  "categories": [{"id": 1, "name": "mouse"}]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    data_yaml = root / "data.yaml"
+    data_yaml.write_text(
+        "\n".join(
+            [
+                "format: coco",
+                f"path: {root.as_posix()}",
+                "image_root: images",
+                "train: annotations/instances_train.json",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        resolve_pose_dataset(data_yaml=data_yaml, data_format="coco")
+    except ValueError as exc:
+        assert "Expected a COCO pose dataset" in str(exc)
+    else:
+        raise AssertionError(
+            "Expected resolve_pose_dataset to reject COCO detection specs."
+        )

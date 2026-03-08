@@ -12,9 +12,10 @@ import yaml
 from qtpy import QtCore, QtWidgets
 
 from annolid.gui.workers import FlexibleWorker
-from annolid.segmentation.dino_kpseg.data import (
-    load_coco_pose_spec,
-    materialize_coco_pose_as_yolo,
+from annolid.datasets.coco import (
+    build_coco_spec_from_annotations_dir,
+    looks_like_coco_spec,
+    materialize_coco_spec_as_yolo,
 )
 from annolid.utils.logger import logger
 from annolid.utils.runs import allocate_run_dir, shared_runs_root
@@ -73,7 +74,7 @@ class YOLOTrainingManager(QtCore.QObject):
             )
             return None
 
-        if self._looks_like_coco_spec(data_cfg):
+        if looks_like_coco_spec(data_cfg):
             prepared = self._materialize_coco_spec(config_path)
             if prepared is None:
                 return None
@@ -126,6 +127,9 @@ class YOLOTrainingManager(QtCore.QObject):
             if split in data_cfg and data_cfg[split]:
                 data_cfg[split] = resolve_entry(data_cfg[split])
 
+        if not self._ensure_required_splits(data_cfg, root_dir=root_dir):
+            return None
+
         missing_paths: List[str] = []
         for split in ("train", "val", "test"):
             value = data_cfg.get(split)
@@ -156,6 +160,48 @@ class YOLOTrainingManager(QtCore.QObject):
                 data_cfg["flip_idx"] = flip_idx
 
         return self._write_temp_config(data_cfg, config_path)
+
+    def _ensure_required_splits(
+        self,
+        data_cfg: Dict[str, Any],
+        *,
+        root_dir: Path,
+    ) -> bool:
+        missing = [split for split in ("train", "val") if not data_cfg.get(split)]
+        if not missing:
+            return True
+
+        guessed = {
+            "train": [
+                root_dir / "images" / "train",
+                root_dir / "train",
+            ],
+            "val": [
+                root_dir / "images" / "val",
+                root_dir / "val",
+                root_dir / "images" / "valid",
+                root_dir / "valid",
+                root_dir / "images" / "validation",
+                root_dir / "validation",
+            ],
+        }
+        for split in list(missing):
+            for candidate in guessed[split]:
+                if candidate.exists():
+                    data_cfg[split] = str(candidate.resolve())
+                    missing.remove(split)
+                    break
+
+        if not missing:
+            return True
+
+        QtWidgets.QMessageBox.warning(
+            self._window,
+            "Dataset Split Required",
+            "YOLO training requires both 'train' and 'val' in the dataset YAML.\n\n"
+            f"Missing: {', '.join(missing)}",
+        )
+        return False
 
     def _infer_flip_idx(self, data_cfg: Dict[str, Any]) -> Optional[List[int]]:
         kpt_shape = data_cfg.get("kpt_shape")
@@ -218,56 +264,17 @@ class YOLOTrainingManager(QtCore.QObject):
             return None
         return flip_idx
 
-    def _looks_like_coco_spec(self, data_cfg: Dict[str, Any]) -> bool:
-        fmt = str(data_cfg.get("format") or data_cfg.get("type") or "").strip().lower()
-        if fmt in {"coco", "coco_pose", "coco_keypoints"}:
-            return True
-
-        # Heuristic: any split path pointing to a JSON annotation file.
-        for split in ("train", "val", "test"):
-            value = data_cfg.get(split)
-            entries = value if isinstance(value, (list, tuple)) else [value]
-            for entry in entries:
-                if isinstance(entry, str) and entry.strip().lower().endswith(".json"):
-                    return True
-        return False
-
     def _prepare_from_coco_annotations_dir(
         self, annotations_dir: Path
     ) -> Optional[Path]:
-        if not annotations_dir.is_dir():
-            return None
-
-        train_json = annotations_dir / "train.json"
-        val_json = annotations_dir / "val.json"
-        test_json = annotations_dir / "test.json"
-        if not train_json.exists() and not val_json.exists():
+        payload = build_coco_spec_from_annotations_dir(annotations_dir)
+        if payload is None:
             QtWidgets.QMessageBox.warning(
                 self._window,
                 "Invalid COCO Folder",
-                "Expected train.json or val.json in the selected COCO folder.",
+                "Expected COCO train/val annotations (for example train.json, val.json, instances_train.json, or person_keypoints_train.json) in the selected COCO folder.",
             )
             return None
-
-        root_path = annotations_dir
-        image_root = "."
-        if (annotations_dir / "images").exists():
-            image_root = "images"
-        elif (annotations_dir.parent / "images").exists():
-            root_path = annotations_dir.parent
-            image_root = "images"
-
-        payload: Dict[str, Any] = {
-            "format": "coco",
-            "path": str(root_path),
-            "image_root": image_root,
-        }
-        if train_json.exists():
-            payload["train"] = str(train_json.resolve().relative_to(root_path))
-        if val_json.exists():
-            payload["val"] = str(val_json.resolve().relative_to(root_path))
-        if test_json.exists():
-            payload["test"] = str(test_json.resolve().relative_to(root_path))
 
         cfg_stub = annotations_dir / "coco_pose_spec.yaml"
         temp_spec = Path(self._write_temp_config(payload, cfg_stub))
@@ -275,35 +282,22 @@ class YOLOTrainingManager(QtCore.QObject):
 
     def _materialize_coco_spec(self, config_path: Path) -> Optional[Path]:
         try:
-            spec = load_coco_pose_spec(config_path)
-        except Exception as exc:
-            logger.exception("Failed to load COCO pose spec: %s", config_path)
-            QtWidgets.QMessageBox.critical(
-                self._window,
-                "Dataset Error",
-                f"Could not parse COCO pose spec:\n{config_path}\n\n{exc}",
-            )
-            return None
-
-        try:
             stage_dir = Path(
-                tempfile.mkdtemp(
-                    prefix=f"{config_path.stem}_coco_yolo_",
-                )
+                tempfile.mkdtemp(prefix=f"{config_path.stem}_coco_yolo_")
             ).resolve()
             self._temp_dataset_dirs.append(stage_dir)
-            staged_yaml = materialize_coco_pose_as_yolo(
-                spec=spec,
+            staged_yaml = materialize_coco_spec_as_yolo(
+                config_path=config_path,
                 output_dir=stage_dir,
                 link_mode="hardlink",
             )
             return staged_yaml
         except Exception as exc:
-            logger.exception("Failed to convert COCO spec to YOLO pose dataset.")
+            logger.exception("Failed to convert COCO spec to a YOLO dataset.")
             QtWidgets.QMessageBox.critical(
                 self._window,
                 "Dataset Error",
-                f"Failed to convert COCO annotations into a YOLO pose dataset.\n\n{exc}",
+                f"Failed to convert COCO annotations into a YOLO dataset.\n\n{exc}",
             )
             return None
 
@@ -322,15 +316,19 @@ class YOLOTrainingManager(QtCore.QObject):
         out_dir: Optional[str],
     ) -> bool:
         """Launch YOLO training on a background thread."""
-        # Ensure the dataset config is resolved to an absolute, temporary
-        # YAML with paths fixed up for Ultralytics. If preparation fails,
-        # abort early.
-        prepared_cfg = self.prepare_data_config(data_config_path)
-        if not prepared_cfg:
-            return False
-        # From this point forward use the prepared temp config path so
-        # downstream cleanup/removal is safe.
-        data_config_path = prepared_cfg
+        config_path = Path(data_config_path).expanduser().resolve()
+        if config_path not in self._temp_configs:
+            # Ensure the dataset config is resolved to an absolute, temporary
+            # YAML with paths fixed up for Ultralytics. If preparation fails,
+            # abort early.
+            prepared_cfg = self.prepare_data_config(str(config_path))
+            if not prepared_cfg:
+                return False
+            # From this point forward use the prepared temp config path so
+            # downstream cleanup/removal is safe.
+            data_config_path = prepared_cfg
+        else:
+            data_config_path = str(config_path)
 
         if self._training_running:
             QtWidgets.QMessageBox.warning(

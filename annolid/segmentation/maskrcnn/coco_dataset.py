@@ -11,7 +11,6 @@ and ``skeleton`` metadata consumed by :mod:`annolid.segmentation.maskrcnn.keypoi
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,6 +19,12 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import tv_tensors
 from torchvision.transforms import v2 as T
+
+from annolid.datasets.coco import (
+    load_coco_category_id_map,
+    load_coco_class_names,
+    load_coco_keypoint_meta,
+)
 
 
 # ------------------------------------------------------------------
@@ -33,10 +38,7 @@ def load_class_names(annotations_json: str | Path) -> List[str]:
     Returns:
         Sorted list of category names (order matches category id).
     """
-    with open(annotations_json, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    cats = sorted(data.get("categories", []), key=lambda c: c["id"])
-    return [c["name"] for c in cats]
+    return load_coco_class_names(annotations_json)
 
 
 def load_keypoint_meta(
@@ -52,20 +54,7 @@ def load_keypoint_meta(
 
     Falls back to empty/zero values when no keypoint data is present.
     """
-    with open(annotations_json, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    cats = sorted(data.get("categories", []), key=lambda c: c["id"])
-    if not cats:
-        return {"num_keypoints": 0, "keypoint_names": [], "skeleton": []}
-    # Use the first category's keypoint spec (typical for single-class animal pose).
-    cat = cats[0]
-    kp_names: List[str] = cat.get("keypoints", [])
-    skeleton: List[Any] = cat.get("skeleton", [])
-    return {
-        "num_keypoints": len(kp_names),
-        "keypoint_names": kp_names,
-        "skeleton": skeleton,
-    }
+    return load_coco_keypoint_meta(annotations_json)
 
 
 def load_category_id_map(annotations_json: str | Path) -> Dict[int, int]:
@@ -74,10 +63,7 @@ def load_category_id_map(annotations_json: str | Path) -> Dict[int, int]:
     Returns:
         Dict mapping original COCO category IDs to 0-based indices.
     """
-    with open(annotations_json, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    cats = sorted(data.get("categories", []), key=lambda c: c["id"])
-    return {c["id"]: idx for idx, c in enumerate(cats)}
+    return load_coco_category_id_map(annotations_json)
 
 
 # ------------------------------------------------------------------
