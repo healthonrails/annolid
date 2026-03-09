@@ -1485,15 +1485,18 @@ class AIChatWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
-        if (
-            watched is self.prompt_text_edit
-            and event.type() == QtCore.QEvent.KeyPress
-            and isinstance(event, QtGui.QKeyEvent)
-            and event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter)
-            and bool(event.modifiers() & QtCore.Qt.ControlModifier)
-        ):
-            self.chat_with_model()
-            return True
+        try:
+            if (
+                watched is self.prompt_text_edit
+                and event.type() == QtCore.QEvent.KeyPress
+                and isinstance(event, QtGui.QKeyEvent)
+                and event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter)
+                and bool(event.modifiers() & QtCore.Qt.ControlModifier)
+            ):
+                self.chat_with_model()
+                return True
+        except Exception:
+            return False
         return super().eventFilter(watched, event)
 
     @staticmethod

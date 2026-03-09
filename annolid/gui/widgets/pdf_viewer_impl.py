@@ -39,6 +39,7 @@ from annolid.gui.widgets.pdf_viewer_bridge import _PdfReaderBridge, _SpeakToken
 from annolid.gui.widgets.pdf_viewer_server import (
     _ensure_pdfjs_http_server,
     _register_pdfjs_http_pdf,
+    _register_pdfjs_http_viewer_html,
 )
 from annolid.gui.widgets.webengine_lifecycle import release_webengine_view
 from annolid.gui.widgets.bot_explain import explain_selection_with_annolid_bot
@@ -54,6 +55,178 @@ _PDFJS_BENIGN_CONSOLE_PATTERNS = (
     'loadfont - translatefont failed: "formaterror: invalid font name"',
     "error during font loading: invalid font name",
 )
+
+
+def _js_literal(value: object) -> str:
+    text = json.dumps(value, ensure_ascii=False)
+    return text.replace("</", "<\\/")
+
+
+def _build_pdfjs_viewer_html(
+    *,
+    asset_base_url: str,
+    pdf_key: str,
+    initial_state: dict[str, object],
+    pdf_url: str,
+    pdf_b64: str,
+    pdf_title: str,
+) -> str:
+    asset_base = str(asset_base_url or "").rstrip("/")
+    css_url = f"{asset_base}/pdfjs/annolid_viewer.css"
+    polyfills_url = f"{asset_base}/pdfjs/annolid_viewer_polyfills.js"
+    pdfjs_url = f"{asset_base}/pdfjs/pdf.min.js"
+    viewer_url = f"{asset_base}/pdfjs/annolid_viewer.js"
+    try:
+        bootstrap_js = _js_literal(
+            {
+                "assetBaseUrl": asset_base,
+                "pdfKey": pdf_key,
+                "initialUserState": initial_state,
+                "pdfUrl": pdf_url,
+                "pdfBase64": pdf_b64,
+                "pdfTitle": pdf_title,
+            }
+        )
+    except Exception:
+        bootstrap_js = '{"assetBaseUrl":"","pdfKey":"","initialUserState":{},"pdfUrl":"","pdfBase64":"","pdfTitle":""}'
+    return f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="{css_url}" />
+  <script src="{polyfills_url}"></script>
+  <script>
+    (() => {{
+      const bootstrap = {bootstrap_js};
+      window.__annolidAssetBaseUrl = bootstrap.assetBaseUrl || "";
+      window.__annolidPdfKey = bootstrap.pdfKey;
+      window.__annolidInitialUserState = bootstrap.initialUserState || {{}};
+      window.__annolidPdfUrl = bootstrap.pdfUrl;
+      window.__annolidPdfBase64 = bootstrap.pdfBase64;
+      window.__annolidPdfTitle = bootstrap.pdfTitle;
+    }})();
+  </script>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <script src="{pdfjs_url}"></script>
+  <script src="{viewer_url}"></script>
+</head>
+<body>
+  <div id="annolidToolbar">
+    <div class="annolid-toolbar-left">
+      <button id="annolidMenuBtn" title="Menu" class="annolid-icon-btn">☰</button>
+      <div id="annolidMenuPanel">
+        <button data-action="resume" id="annolidResumeBtn" class="annolid-hidden">Resume reading</button>
+        <button data-action="first-page">Go to first page</button>
+        <button data-action="fit">Fit width</button>
+        <button data-action="reset">Reset zoom</button>
+        <button data-action="print">Print</button>
+        <span class="annolid-sep"></span>
+        <button data-action="clear-state" id="annolidClearStateBtn" class="annolid-hidden">Clear saved data</button>
+      </div>
+      <div class="annolid-title" id="annolidTitle">PDF</div>
+    </div>
+    <div class="annolid-nav">
+      <button id="annolidPrevPage" title="Previous page">◀</button>
+      <input id="annolidPageInput" type="number" value="1" min="1" />
+      <button id="annolidNextPage" title="Next page">▶</button>
+      <button id="annolidBookmarkBtn" title="Bookmark this page">☆</button>
+      <span>/ <span id="annolidTotalPages">-</span></span>
+      <span class="annolid-sep"></span>
+      <button id="annolidZoomOut" title="Zoom out">-</button>
+      <div id="annolidZoomLabel">125%</div>
+      <button id="annolidZoomIn" title="Zoom in">+</button>
+      <button id="annolidZoomReset" title="Reset zoom">100%</button>
+      <button id="annolidZoomFit" title="Fit width">Fit</button>
+      <button id="annolidRotate" title="Rotate 90°">⟳</button>
+      <button id="annolidPrint" title="Print PDF">Print</button>
+    </div>
+    <div class="annolid-actions" id="annolidActionRow">
+      <div class="annolid-group" data-overflow="auto" id="annolidMetaGroup">
+        <button id="annolidNotesBtn" title="Notes and bookmarks">Notes</button>
+      </div>
+      <div class="annolid-group" data-overflow="auto" id="annolidToolsGroup">
+        <button id="annolidToolSelect" class="annolid-active" title="Select">Select</button>
+        <button id="annolidToolPen" title="Pen">Pen</button>
+        <button id="annolidToolHighlighter" title="Marker">Mark</button>
+      </div>
+      <div class="annolid-group" data-overflow="auto" id="annolidEditGroup">
+        <button id="annolidUndo" title="Undo">⟲</button>
+        <button id="annolidClear" title="Clear all">✕</button>
+      </div>
+      <div class="annolid-group annolid-mark-options" data-overflow="auto" id="annolidMarkOptions">
+        <button id="annolidHighlightSelection" title="Highlight selection">Highlight</button>
+        <span class="annolid-option-label">Color</span>
+        <input id="annolidColorInline" type="color" value="#ffb300" title="Stroke color" />
+        <span class="annolid-option-label">Size</span>
+        <input id="annolidSizeInline" type="range" min="2" max="24" value="10" title="Stroke size" />
+      </div>
+    </div>
+  </div>
+  <div id="viewerContainer"></div>
+  <div class="annolid-modal" id="annolidPreviewModal" role="dialog" aria-modal="true">
+    <div class="annolid-modal-content" role="document">
+      <div class="annolid-modal-header">
+        <div class="annolid-modal-title" id="annolidPreviewTitle">Preview</div>
+        <div class="annolid-modal-actions">
+          <button id="annolidPreviewZoomOut" title="Zoom out">-</button>
+          <button id="annolidPreviewZoomIn" title="Zoom in">+</button>
+          <button id="annolidPreviewZoomReset" title="Reset zoom">100%</button>
+          <button id="annolidPreviewClose" title="Close">Close</button>
+        </div>
+      </div>
+      <div class="annolid-modal-body" id="annolidPreviewBody">
+        <div class="annolid-preview-grid" id="annolidPreviewGrid">
+          <div class="annolid-preview-text" id="annolidPreviewText"><span class="annolid-muted">Hover a citation like [41] to preview the reference.</span></div>
+          <div class="annolid-modal-canvas-wrap" id="annolidPreviewCanvasWrap">
+            <canvas id="annolidPreviewCanvas"></canvas>
+            <div id="annolidPreviewHighlight"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="annolid-popup" id="annolidNotesModal" role="dialog" aria-label="Notes &amp; Bookmarks">
+    <div class="annolid-modal-content" role="document">
+      <div class="annolid-modal-header">
+        <div class="annolid-modal-title" id="annolidNotesTitle">Notes &amp; Bookmarks</div>
+        <div class="annolid-modal-actions">
+          <button id="annolidNoteAdd" title="Add note from selection">Add</button>
+          <button id="annolidNoteDelete" title="Delete selected note">Delete</button>
+          <button id="annolidNoteSave" title="Save note">Save</button>
+          <button id="annolidNoteClose" title="Close">Close</button>
+        </div>
+      </div>
+      <div class="annolid-modal-body">
+        <div class="annolid-notes-grid">
+          <div class="annolid-notes-left">
+            <input id="annolidNotesSearch" class="annolid-notes-search" type="search" placeholder="Search notes…" />
+            <div class="annolid-notes-section">
+              <div class="annolid-notes-section-title">Bookmarks</div>
+              <div id="annolidBookmarksList" class="annolid-notes-list"></div>
+            </div>
+            <div class="annolid-notes-section">
+              <div class="annolid-notes-section-title">Notes</div>
+              <div id="annolidNotesList" class="annolid-notes-list"></div>
+            </div>
+          </div>
+          <div class="annolid-notes-right">
+            <div id="annolidNoteMeta" class="annolid-notes-meta annolid-muted">Select a note to view/edit.</div>
+            <textarea id="annolidNoteEditor" class="annolid-notes-editor" placeholder="Write a comment…"></textarea>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="annolid-cite-popover" id="annolidCitePopover" role="tooltip">
+    <div class="annolid-cite-card">
+      <div class="annolid-cite-title" id="annolidCiteTitle">Reference</div>
+      <div class="annolid-cite-body" id="annolidCiteBody"></div>
+    </div>
+  </div>
+</body>
+</html>
+    """.strip()
 
 
 def _is_benign_pdfjs_console_message(message: str) -> bool:
@@ -747,12 +920,18 @@ class PdfViewerWidget(QtWidgets.QWidget):
                         )
                         return
                     if not pdfjs_ready:
-                        self._fallback_from_web(
+                        logger.warning(
+                            "PDF.js probe inconclusive for %s "
+                            "(readyState=%r hasPdfjs=%s); keeping WebEngine active.",
                             path,
-                            "PDF.js bootstrap not running "
-                            f"(readyState={ready_state!r} hasPdfjs={has_pdfjs})",
-                            source_path=source_path,
+                            ready_state,
+                            has_pdfjs,
                         )
+                        self._pdf_path = source_path
+                        self._web_loading_path = None
+                        self._web_loading_source_path = None
+                        self._apply_reader_enabled_to_web()
+                        self._emit_reader_availability()
                         return
                     if not pdf_loaded and attempts_left > 0:
                         QtCore.QTimer.singleShot(
@@ -762,12 +941,19 @@ class PdfViewerWidget(QtWidgets.QWidget):
                     # If the document loaded successfully, consider PDF.js
                     # active even if rendering is still in progress.
                     if not pdf_loaded:
-                        self._fallback_from_web(
+                        logger.warning(
+                            "PDF.js load still pending for %s "
+                            "(readyState=%r spans=%s renderedPages=%s); keeping WebEngine active.",
                             path,
-                            "PDF.js did not load "
-                            f"(readyState={ready_state!r} spans={spans} pages={rendered_pages})",
-                            source_path=source_path,
+                            ready_state,
+                            spans,
+                            rendered_pages,
                         )
+                        self._pdf_path = source_path
+                        self._web_loading_path = None
+                        self._web_loading_source_path = None
+                        self._apply_reader_enabled_to_web()
+                        self._emit_reader_availability()
                         return
                     self._pdf_path = source_path
                     self._web_loading_path = None
@@ -893,157 +1079,27 @@ class PdfViewerWidget(QtWidgets.QWidget):
         """Load a lightweight PDF.js viewer into the web view."""
         if self._web_view is None:
             return False
-        # Serve the PDF over a local HTTP endpoint so PDF.js can fetch it
-        # reliably (fetch/XHR against file:// can hang in QtWebEngine).
-        base = _ensure_pdfjs_http_server()
-        base_url = QtCore.QUrl(base + "/")
+        # Serve the entire viewer shell over local HTTP so the document, assets,
+        # and target PDF all share one real origin. This is more robust in
+        # QtWebEngine than mixing setHtml() with HTTP subresources.
+        _ensure_pdfjs_http_server()
         pdf_url = _register_pdfjs_http_pdf(path)
         pdf_b64 = ""
         pdf_key = self._pdf_key or ""
         initial_state = (
             self._pdf_user_state if isinstance(self._pdf_user_state, dict) else {}
         )
+        html = _build_pdfjs_viewer_html(
+            asset_base_url=_ensure_pdfjs_http_server(),
+            pdf_key=pdf_key,
+            initial_state=initial_state,
+            pdf_url=pdf_url,
+            pdf_b64=pdf_b64,
+            pdf_title=path.name,
+        )
         try:
-            initial_state_js = json.dumps(initial_state, ensure_ascii=False)
-            initial_state_js = initial_state_js.replace("</", "<\\/")
-        except Exception:
-            initial_state_js = "{}"
-        html = f"""
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <link rel="stylesheet" href="pdfjs/annolid_viewer.css" />
-  <script src="pdfjs/annolid_viewer_polyfills.js"></script>
-  <script>
-    window.__annolidPdfKey = "{pdf_key}";
-    window.__annolidInitialUserState = {initial_state_js};
-    window.__annolidPdfUrl = "{pdf_url}";
-    window.__annolidPdfBase64 = "{pdf_b64}";
-    window.__annolidPdfTitle = "{path.name}";
-  </script>
-  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-  <script src="pdfjs/pdf.min.js"></script>
-  <script src="pdfjs/annolid_viewer.js"></script>
-</head>
-<body>
-  <div id="annolidToolbar">
-    <div class="annolid-toolbar-left">
-      <button id="annolidMenuBtn" title="Menu" class="annolid-icon-btn">☰</button>
-      <div id="annolidMenuPanel">
-        <button data-action="resume" id="annolidResumeBtn" class="annolid-hidden">Resume reading</button>
-        <button data-action="first-page">Go to first page</button>
-        <button data-action="fit">Fit width</button>
-        <button data-action="reset">Reset zoom</button>
-        <button data-action="print">Print</button>
-        <span class="annolid-sep"></span>
-        <button data-action="clear-state" id="annolidClearStateBtn" class="annolid-hidden">Clear saved data</button>
-      </div>
-      <div class="annolid-title" id="annolidTitle">PDF</div>
-    </div>
-    <div class="annolid-nav">
-      <button id="annolidPrevPage" title="Previous page">◀</button>
-      <input id="annolidPageInput" type="number" value="1" min="1" />
-      <button id="annolidNextPage" title="Next page">▶</button>
-      <button id="annolidBookmarkBtn" title="Bookmark this page">☆</button>
-      <span>/ <span id="annolidTotalPages">-</span></span>
-      <span class="annolid-sep"></span>
-      <button id="annolidZoomOut" title="Zoom out">-</button>
-      <div id="annolidZoomLabel">125%</div>
-      <button id="annolidZoomIn" title="Zoom in">+</button>
-      <button id="annolidZoomReset" title="Reset zoom">100%</button>
-      <button id="annolidZoomFit" title="Fit width">Fit</button>
-      <button id="annolidRotate" title="Rotate 90°">⟳</button>
-      <button id="annolidPrint" title="Print PDF">Print</button>
-    </div>
-    <div class="annolid-actions" id="annolidActionRow">
-      <div class="annolid-group" data-overflow="auto" id="annolidMetaGroup">
-        <button id="annolidNotesBtn" title="Notes and bookmarks">Notes</button>
-      </div>
-      <div class="annolid-group" data-overflow="auto" id="annolidToolsGroup">
-        <button id="annolidToolSelect" class="annolid-active" title="Select">Select</button>
-        <button id="annolidToolPen" title="Pen">Pen</button>
-        <button id="annolidToolHighlighter" title="Marker">Mark</button>
-      </div>
-      <div class="annolid-group" data-overflow="auto" id="annolidEditGroup">
-        <button id="annolidUndo" title="Undo">⟲</button>
-        <button id="annolidClear" title="Clear all">✕</button>
-      </div>
-      <div class="annolid-group annolid-mark-options" data-overflow="auto" id="annolidMarkOptions">
-        <button id="annolidHighlightSelection" title="Highlight selection">Highlight</button>
-        <span class="annolid-option-label">Color</span>
-        <input id="annolidColorInline" type="color" value="#ffb300" title="Stroke color" />
-        <span class="annolid-option-label">Size</span>
-        <input id="annolidSizeInline" type="range" min="2" max="24" value="10" title="Stroke size" />
-      </div>
-    </div>
-  </div>
-  <div id="viewerContainer"></div>
-  <div class="annolid-modal" id="annolidPreviewModal" role="dialog" aria-modal="true">
-    <div class="annolid-modal-content" role="document">
-      <div class="annolid-modal-header">
-        <div class="annolid-modal-title" id="annolidPreviewTitle">Preview</div>
-        <div class="annolid-modal-actions">
-          <button id="annolidPreviewZoomOut" title="Zoom out">-</button>
-          <button id="annolidPreviewZoomIn" title="Zoom in">+</button>
-          <button id="annolidPreviewZoomReset" title="Reset zoom">100%</button>
-          <button id="annolidPreviewClose" title="Close">Close</button>
-        </div>
-      </div>
-      <div class="annolid-modal-body" id="annolidPreviewBody">
-        <div class="annolid-preview-grid" id="annolidPreviewGrid">
-          <div class="annolid-preview-text" id="annolidPreviewText"><span class="annolid-muted">Hover a citation like [41] to preview the reference.</span></div>
-          <div class="annolid-modal-canvas-wrap" id="annolidPreviewCanvasWrap">
-            <canvas id="annolidPreviewCanvas"></canvas>
-            <div id="annolidPreviewHighlight"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div class="annolid-popup" id="annolidNotesModal" role="dialog" aria-label="Notes &amp; Bookmarks">
-    <div class="annolid-modal-content" role="document">
-      <div class="annolid-modal-header">
-        <div class="annolid-modal-title" id="annolidNotesTitle">Notes &amp; Bookmarks</div>
-        <div class="annolid-modal-actions">
-          <button id="annolidNoteAdd" title="Add note from selection">Add</button>
-          <button id="annolidNoteDelete" title="Delete selected note">Delete</button>
-          <button id="annolidNoteSave" title="Save note">Save</button>
-          <button id="annolidNoteClose" title="Close">Close</button>
-        </div>
-      </div>
-      <div class="annolid-modal-body">
-        <div class="annolid-notes-grid">
-          <div class="annolid-notes-left">
-            <input id="annolidNotesSearch" class="annolid-notes-search" type="search" placeholder="Search notes…" />
-            <div class="annolid-notes-section">
-              <div class="annolid-notes-section-title">Bookmarks</div>
-              <div id="annolidBookmarksList" class="annolid-notes-list"></div>
-            </div>
-            <div class="annolid-notes-section">
-              <div class="annolid-notes-section-title">Notes</div>
-              <div id="annolidNotesList" class="annolid-notes-list"></div>
-            </div>
-          </div>
-          <div class="annolid-notes-right">
-            <div id="annolidNoteMeta" class="annolid-notes-meta annolid-muted">Select a note to view/edit.</div>
-            <textarea id="annolidNoteEditor" class="annolid-notes-editor" placeholder="Write a comment…"></textarea>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div class="annolid-cite-popover" id="annolidCitePopover" role="tooltip">
-    <div class="annolid-cite-card">
-      <div class="annolid-cite-title" id="annolidCiteTitle">Reference</div>
-      <div class="annolid-cite-body" id="annolidCiteBody"></div>
-    </div>
-  </div>
-</body>
-</html>
-        """.strip()
-        try:
-            self._web_view.setHtml(html, base_url)
+            viewer_url = _register_pdfjs_http_viewer_html(html)
+            self._web_view.load(QtCore.QUrl(viewer_url))
             return True
         except Exception as exc:
             logger.info(f"Failed to load PDF.js viewer: {exc}")
@@ -1150,6 +1206,27 @@ class PdfViewerWidget(QtWidgets.QWidget):
         menu.insertAction(menu.actions()[0] if menu.actions() else None, note_action)
         menu.exec_(self.text_view.mapToGlobal(position))
 
+    def _build_web_context_menu(self) -> QtWidgets.QMenu:
+        if self._web_view is None:
+            return QtWidgets.QMenu(self)
+        page = self._web_view.page()
+        try:
+            if hasattr(page, "createStandardContextMenu"):
+                menu = page.createStandardContextMenu()
+                if menu is not None:
+                    return menu
+        except Exception:
+            pass
+        try:
+            if hasattr(self._web_view, "createStandardContextMenu"):
+                menu = self._web_view.createStandardContextMenu()
+                if menu is not None:
+                    return menu
+        except Exception:
+            pass
+        return QtWidgets.QMenu(self)
+
+    @QtCore.Slot(QtCore.QPoint)
     def _show_web_context_menu(self, position: QtCore.QPoint) -> None:
         if self._web_view is None:
             return
@@ -1164,7 +1241,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 self._update_selection_cache(selected_text)
             else:
                 self._clear_selection_cache()
-            menu = page.createStandardContextMenu()
+            menu = self._build_web_context_menu()
             menu.insertSeparator(menu.actions()[0] if menu.actions() else None)
             lookup_action = QtWidgets.QAction("Look up in dictionary…", self)
             lookup_action.setEnabled(bool(self._extract_single_word(selected_text)))

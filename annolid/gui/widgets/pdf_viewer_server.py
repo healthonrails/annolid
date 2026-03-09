@@ -15,6 +15,7 @@ _PDFJS_HTTP_PORT: Optional[int] = None
 _PDFJS_HTTP_THREAD: Optional[threading.Thread] = None
 _PDFJS_HTTP_LOCK = threading.Lock()
 _PDFJS_HTTP_TOKENS: dict[str, Path] = {}
+_PDFJS_HTTP_VIEWERS: dict[str, str] = {}
 _PDFJS_HTTP_ASSET_CACHE: dict[str, tuple[int, bytes]] = {}
 
 
@@ -99,6 +100,26 @@ def _ensure_pdfjs_http_server() -> str:
                         content_type = "application/javascript"
                     self.send_response(200)
                     self.send_header("Content-Type", content_type)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    if send_body:
+                        try:
+                            self.wfile.write(payload)
+                        except Exception:
+                            return
+                    return
+
+                if path.startswith("/viewer/"):
+                    token = unquote(path[len("/viewer/") :]).strip().split("/", 1)[0]
+                    html = _PDFJS_HTTP_VIEWERS.get(token)
+                    if html is None:
+                        self.send_error(404)
+                        return
+                    payload = html.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Cache-Control", "no-store")
                     self.send_header("Access-Control-Allow-Origin", "*")
                     self.send_header("Content-Length", str(len(payload)))
@@ -197,4 +218,15 @@ def _register_pdfjs_http_pdf(path: Path) -> str:
     return f"{base}/pdf/{token}"
 
 
-__all__ = ["_ensure_pdfjs_http_server", "_register_pdfjs_http_pdf"]
+def _register_pdfjs_http_viewer_html(html: str) -> str:
+    base = _ensure_pdfjs_http_server()
+    token = uuid.uuid4().hex
+    _PDFJS_HTTP_VIEWERS[token] = str(html)
+    return f"{base}/viewer/{token}"
+
+
+__all__ = [
+    "_ensure_pdfjs_http_server",
+    "_register_pdfjs_http_pdf",
+    "_register_pdfjs_http_viewer_html",
+]

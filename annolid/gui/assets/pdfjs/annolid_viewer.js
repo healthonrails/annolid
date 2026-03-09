@@ -2,6 +2,7 @@
 // This file is generated from the embedded viewer and can be edited directly.
 
 (() => {
+  const assetBaseUrl = String(window.__annolidAssetBaseUrl || "").replace(/\/+$/, "");
   const pdfUrl = String(window.__annolidPdfUrl || "");
   const pdfBase64 = String(window.__annolidPdfBase64 || "");
   const pdfTitle = String(window.__annolidPdfTitle || "");
@@ -13,9 +14,11 @@
         return;
       }
       try {
-        const workerUrl = (typeof URL !== "undefined" && document.baseURI)
-          ? (new URL("pdfjs/annolid.worker.js", document.baseURI)).toString()
-          : "pdfjs/annolid.worker.js";
+        const workerUrl = assetBaseUrl
+          ? `${assetBaseUrl}/pdfjs/annolid.worker.js`
+          : ((typeof URL !== "undefined" && document.baseURI)
+              ? (new URL("/pdfjs/annolid.worker.js", document.baseURI)).toString()
+              : "/pdfjs/annolid.worker.js");
         if (pdfjsLib.GlobalWorkerOptions) {
           pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
         }
