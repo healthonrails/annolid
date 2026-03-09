@@ -299,8 +299,9 @@ class ViewerToolsMixin:
             example_id == "flybody_simulation_json"
             and resolve_local_flybody_repo() is None
         ):
+            parent = self if isinstance(self, QtWidgets.QWidget) else None
             reply = QtWidgets.QMessageBox.question(
-                self,
+                parent,
                 self.tr("FlyBody Example"),
                 self.tr(
                     "A local FlyBody checkout was not found.\n\n"

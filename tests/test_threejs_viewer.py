@@ -19,8 +19,14 @@ def test_supports_threejs_canvas_rejects_unknown_extensions():
 
 
 def test_flybody_part_loader_accepts_parts_without_explicit_type():
-    js_path = Path(
-        "/Users/chenyang/Desktop/annolid/annolid/gui/assets/threejs/annolid_threejs_viewer.js"
+    repo_root = Path(__file__).resolve().parents[1]
+    js_path = (
+        repo_root
+        / "annolid"
+        / "gui"
+        / "assets"
+        / "threejs"
+        / "annolid_threejs_viewer.js"
     )
     source = js_path.read_text(encoding="utf-8")
 
