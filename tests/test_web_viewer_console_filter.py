@@ -236,7 +236,7 @@ def test_web_viewer_context_menu_slot_registered() -> None:
     from annolid.gui.widgets.web_viewer import WebViewerWidget
 
     meta = WebViewerWidget.staticMetaObject
-    assert meta.indexOfSlot(b"_show_context_menu(QPoint)") >= 0
+    assert meta.indexOfSlot("_show_context_menu(QPoint)") >= 0
 
 
 def test_build_web_context_menu_falls_back_to_view_menu(monkeypatch) -> None:
