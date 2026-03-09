@@ -1,16 +1,91 @@
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
+import subprocess
+import time
 
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
+from annolid.gui.flybody_support import (
+    FLYBODY_GITHUB_URL,
+    build_clone_flybody_command,
+    build_live_flybody_command,
+    build_setup_flybody_command,
+    default_flybody_install_dir,
+    pick_ready_flybody_runtime,
+    resolve_local_flybody_repo,
+    summarize_flybody_status,
+)
 from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
-from annolid.gui.threejs_examples import generate_threejs_example
+from annolid.gui.threejs_examples import (
+    attach_flybody_floor,
+    attach_flybody_mesh,
+    attach_flybody_mesh_parts,
+    generate_threejs_example,
+)
+from annolid.gui.workers import FlexibleWorker
+from annolid.simulation import (
+    SimulationRunRequest,
+    build_default_output_path,
+    run_simulation_workflow,
+)
+from annolid.utils.logger import logger
+
+_LIVE_FLYBODY_EXAMPLE_STEPS = 48
+_LIVE_FLYBODY_EXAMPLE_SEED = 7
+_LIVE_FLYBODY_EXAMPLE_CACHE_TTL_SECONDS = 300.0
+
+
+def _is_recent_live_flybody_payload(
+    payload_path: str | Path,
+    *,
+    max_age_seconds: float = _LIVE_FLYBODY_EXAMPLE_CACHE_TTL_SECONDS,
+) -> bool:
+    path = Path(payload_path)
+    if not path.exists():
+        return False
+    try:
+        age_seconds = time.time() - path.stat().st_mtime
+        if age_seconds < 0 or age_seconds > max_age_seconds:
+            return False
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("kind") != "annolid-simulation-v1":
+        return False
+    adapter = str(payload.get("adapter") or "")
+    return adapter == "flybody-live"
 
 
 class ViewerToolsMixin:
     """3D viewer and PCA map UI helpers."""
+
+    def _show_flybody_static_example(self, manager) -> bool:
+        try:
+            base_dir = Path(tempfile.gettempdir()) / "annolid_threejs_examples"
+            example_path = generate_threejs_example("flybody_simulation_json", base_dir)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("FlyBody 3D Example"),
+                self.tr("Failed to generate FlyBody example:\n%1").replace(
+                    "%1", str(exc)
+                ),
+            )
+            return False
+        if manager.show_simulation_in_viewer(example_path):
+            self.statusBar().showMessage(
+                self.tr(
+                    "Loaded FlyBody 3D example. Start a live simulation when ready."
+                ),
+                5000,
+            )
+            return True
+        return False
 
     def open_3d_viewer(self):
         """Open Annolid's built-in 3D stack viewer."""
@@ -220,6 +295,33 @@ class ViewerToolsMixin:
                 self.tr("Failed to generate example:\n%1").replace("%1", str(exc)),
             )
             return
+        if (
+            example_id == "flybody_simulation_json"
+            and resolve_local_flybody_repo() is None
+        ):
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                self.tr("FlyBody Example"),
+                self.tr(
+                    "A local FlyBody checkout was not found.\n\n"
+                    "Select Yes to install FlyBody now, or No to open the fallback example."
+                ),
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if reply == QtWidgets.QMessageBox.Yes:
+                self.install_flybody_optional()
+                return
+        if example_path.suffix.lower() == ".json":
+            if manager.show_simulation_in_viewer(example_path):
+                if example_id == "flybody_simulation_json":
+                    self.statusBar().showMessage(
+                        self.tr(
+                            "Loaded FlyBody 3D example. Use 'Start Live FlyBody Simulation…' or 'Run Simulation to 3D Viewer…' for live motion."
+                        ),
+                        6000,
+                    )
+                return
         if not manager.show_model_in_viewer(example_path):
             # If it's an HTML file, we can try to open it directly if the manager supports it
             # or use the system browser.
@@ -244,6 +346,578 @@ class ViewerToolsMixin:
                 self.tr("Three.js Examples"),
                 self.tr("Unable to open generated example in Three.js viewer."),
             )
+
+    def start_live_flybody_example(self) -> None:
+        manager = getattr(self, "threejs_manager", None)
+        if manager is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("FlyBody Live Example"),
+                self.tr("Three.js canvas is not available in this session."),
+            )
+            return
+        self._show_flybody_static_example(manager)
+        if self._start_live_flybody_example(manager):
+            return
+        QtWidgets.QMessageBox.information(
+            self,
+            self.tr("FlyBody Live Example"),
+            self.tr(
+                "A ready FlyBody runtime was not found.\n\n"
+                "Open 'FlyBody Status…' to inspect setup, or use 'Run Simulation to 3D Viewer…' with another backend."
+            ),
+        )
+
+    def _flybody_runtime_summary_lines(self) -> tuple[list[str], bool]:
+        summary = summarize_flybody_status()
+        lines = [
+            f"Repo: {summary['repo_root']}"
+            if summary.get("repo_root")
+            else "Repo: missing",
+        ]
+        for candidate in summary.get("candidates", []):
+            python = str(candidate.get("python") or "").strip()
+            exists = bool(candidate.get("exists"))
+            if not python:
+                continue
+            if not exists:
+                lines.append(f"Python: {python} [missing]")
+                continue
+            status = "ready" if candidate.get("ready") else "not ready"
+            reason = str(
+                candidate.get("error") or candidate.get("stderr") or ""
+            ).strip()
+            line = f"Python: {python} [{status}]"
+            if reason:
+                line += f" - {reason}"
+            lines.append(line)
+        if len(lines) == 1:
+            lines.append("Python: no FlyBody runtime candidates found")
+        return lines, bool(summary.get("ready"))
+
+    def show_flybody_status_dialog(self) -> None:
+        lines, ready = self._flybody_runtime_summary_lines()
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(self.tr("FlyBody Setup"))
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        summary_label = QtWidgets.QLabel(
+            self.tr("Optional FlyBody support for live 3D examples and simulation."),
+            dialog,
+        )
+        summary_label.setWordWrap(True)
+        layout.addWidget(summary_label)
+
+        status_label = QtWidgets.QLabel(
+            self.tr("Status: Ready") if ready else self.tr("Status: Setup Needed"),
+            dialog,
+        )
+        layout.addWidget(status_label)
+
+        details = QtWidgets.QPlainTextEdit(dialog)
+        details.setReadOnly(True)
+        details.setPlainText("\n".join(lines))
+        details.setMinimumHeight(180)
+        layout.addWidget(details, 1)
+
+        buttons = QtWidgets.QDialogButtonBox(dialog)
+        refresh_button = buttons.addButton(
+            self.tr("Refresh"),
+            QtWidgets.QDialogButtonBox.ActionRole,
+        )
+        open_button = buttons.addButton(
+            self.tr("Open Example"),
+            QtWidgets.QDialogButtonBox.ActionRole,
+        )
+        install_button = buttons.addButton(
+            self.tr("Install / Update"),
+            QtWidgets.QDialogButtonBox.ActionRole,
+        )
+        close_button = buttons.addButton(QtWidgets.QDialogButtonBox.Close)
+        layout.addWidget(buttons)
+
+        refresh_button.clicked.connect(dialog.accept)
+        open_button.clicked.connect(lambda: dialog.done(2))
+        install_button.clicked.connect(lambda: dialog.done(3))
+        close_button.clicked.connect(dialog.reject)
+
+        result = dialog.exec_()
+        if result == QtWidgets.QDialog.Accepted:
+            self.show_flybody_status_dialog()
+            return
+        if result == 2:
+            self.open_threejs_example("flybody_simulation_json")
+            return
+        if result == 3:
+            self.install_flybody_optional()
+
+    def _start_live_flybody_example(self, manager) -> bool:
+        base_dir = Path(tempfile.gettempdir()) / "annolid_threejs_examples"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        payload_path = base_dir / "flybody_live_rollout.json"
+        if _is_recent_live_flybody_payload(payload_path):
+            logger.info("Reusing cached live FlyBody example payload: %s", payload_path)
+            manager.show_simulation_in_viewer(str(payload_path))
+            self.statusBar().showMessage(
+                self.tr("Reused recent FlyBody live example in 3D viewer."),
+                4000,
+            )
+            return True
+
+        runtime_python, _probe = pick_ready_flybody_runtime()
+        if runtime_python is None:
+            self.statusBar().showMessage(
+                self.tr(
+                    "FlyBody 3D example loaded. No ready FlyBody runtime found for live simulation."
+                ),
+                5000,
+            )
+            return False
+
+        progress = QtWidgets.QProgressDialog(
+            self.tr("Preparing live FlyBody simulation…"),
+            "",
+            0,
+            0,
+            self,
+        )
+        progress.setWindowTitle(self.tr("FlyBody Live Example"))
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setWindowModality(QtCore.Qt.WindowModal)
+        progress.setLabelText(
+            self.tr(
+                "FlyBody 3D example is open. Live motion will replace it when ready."
+            )
+        )
+
+        def _task() -> str:
+            rollout_started = time.perf_counter()
+            subprocess.run(
+                build_live_flybody_command(
+                    runtime_python,
+                    out_path=payload_path,
+                    steps=_LIVE_FLYBODY_EXAMPLE_STEPS,
+                    seed=_LIVE_FLYBODY_EXAMPLE_SEED,
+                ),
+                cwd=str(Path.cwd()),
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            rollout_ms = (time.perf_counter() - rollout_started) * 1000.0
+            payload = json.loads(payload_path.read_text(encoding="utf-8"))
+            mesh_started = time.perf_counter()
+            payload = attach_flybody_mesh_parts(payload, base_dir)
+            if "mesh" not in payload:
+                payload = attach_flybody_mesh(payload, base_dir)
+            payload = attach_flybody_floor(payload)
+            payload_path.write_text(
+                json.dumps(payload, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            mesh_ms = (time.perf_counter() - mesh_started) * 1000.0
+            logger.info(
+                "Prepared live FlyBody example in %.1fms (rollout %.1fms, mesh attach %.1fms)",
+                rollout_ms + mesh_ms,
+                rollout_ms,
+                mesh_ms,
+            )
+            return str(payload_path)
+
+        thread = QtCore.QThread(self)
+        worker = FlexibleWorker(_task)
+        worker.moveToThread(thread)
+
+        def _finish(result) -> None:
+            try:
+                progress.close()
+            except Exception:
+                pass
+            thread.quit()
+            thread.wait(2000)
+            worker.deleteLater()
+            thread.deleteLater()
+            if isinstance(result, Exception):
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    self.tr("FlyBody Live Example"),
+                    self.tr(
+                        "Live FlyBody rollout failed. Falling back to the bundled example.\n%1"
+                    ).replace("%1", str(result)),
+                )
+                try:
+                    fallback_path = generate_threejs_example(
+                        "flybody_simulation_json",
+                        base_dir,
+                    )
+                    manager.show_simulation_in_viewer(fallback_path)
+                except Exception:
+                    pass
+                return
+            manager.show_simulation_in_viewer(str(result))
+            self.statusBar().showMessage(
+                self.tr("FlyBody live rollout opened in 3D viewer."),
+                4000,
+            )
+
+        thread.started.connect(worker.run)
+        worker.finished_signal.connect(_finish)
+        progress.show()
+        thread.start()
+        return True
+
+    def install_flybody_optional(self) -> None:
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(self.tr("Install FlyBody (Optional)"))
+        layout = QtWidgets.QFormLayout(dialog)
+
+        repo_edit = QtWidgets.QLineEdit(FLYBODY_GITHUB_URL, dialog)
+        dest_edit = QtWidgets.QLineEdit(str(default_flybody_install_dir()), dialog)
+        venv_edit = QtWidgets.QLineEdit(str(Path.cwd() / ".venv311"), dialog)
+        python_edit = QtWidgets.QLineEdit("3.12", dialog)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dialog,
+        )
+        layout.addRow(self.tr("GitHub URL"), repo_edit)
+        layout.addRow(self.tr("Clone Destination"), dest_edit)
+        layout.addRow(self.tr("Virtual Env"), venv_edit)
+        layout.addRow(self.tr("Python Version"), python_edit)
+        layout.addRow(buttons)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        repo_url = repo_edit.text().strip() or FLYBODY_GITHUB_URL
+        dest = Path(
+            dest_edit.text().strip() or default_flybody_install_dir()
+        ).expanduser()
+        venv_dir = Path(
+            venv_edit.text().strip() or (Path.cwd() / ".venv311")
+        ).expanduser()
+        python_version = python_edit.text().strip() or "3.12"
+
+        progress = QtWidgets.QProgressDialog(
+            self.tr("Installing optional FlyBody support…"),
+            "",
+            0,
+            0,
+            self,
+        )
+        progress.setWindowTitle(self.tr("Install FlyBody"))
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setWindowModality(QtCore.Qt.WindowModal)
+
+        def _task() -> str:
+            if not dest.exists():
+                clone_cmd = build_clone_flybody_command(repo_url, dest)
+                subprocess.run(
+                    clone_cmd,
+                    cwd=str(Path.cwd()),
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            setup_cmd = build_setup_flybody_command(
+                repo_root=Path.cwd(),
+                flybody_path=dest,
+                venv_dir=venv_dir,
+                python_version=python_version,
+            )
+            subprocess.run(
+                setup_cmd,
+                cwd=str(Path.cwd()),
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            return str(dest)
+
+        thread = QtCore.QThread(self)
+        worker = FlexibleWorker(_task)
+        worker.moveToThread(thread)
+
+        def _finish(result) -> None:
+            try:
+                progress.close()
+            except Exception:
+                pass
+            thread.quit()
+            thread.wait(2000)
+            worker.deleteLater()
+            thread.deleteLater()
+            if isinstance(result, Exception):
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    self.tr("Install FlyBody"),
+                    self.tr("FlyBody install failed:\n%1").replace("%1", str(result)),
+                )
+                return
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("Install FlyBody"),
+                self.tr(
+                    "FlyBody was prepared at:\n%1\n\n"
+                    "You can now reopen the FlyBody Simulation Example or run the FlyBody 3D workflow."
+                ).replace("%1", str(result)),
+            )
+
+        thread.started.connect(worker.run)
+        worker.finished_signal.connect(_finish)
+        progress.show()
+        thread.start()
+
+    def open_simulation_3d_viewer(self) -> None:
+        manager = getattr(self, "threejs_manager", None)
+        if manager is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("Simulation Viewer"),
+                self.tr("Three.js canvas is not available in this session."),
+            )
+            return
+        start_dir = getattr(self, "lastOpenDir", str(Path.home()))
+        filters = self.tr(
+            "Simulation Output (*.ndjson);;JSON Files (*.json);;All Files (*)"
+        )
+        filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            self.tr("Open FlyBody / Simulation Output"),
+            start_dir,
+            filters,
+        )
+        if not filename:
+            return
+        self.lastOpenDir = str(Path(filename).parent)
+        manager.show_simulation_in_viewer(filename)
+
+    def run_simulation_3d_viewer(self) -> None:
+        manager = getattr(self, "threejs_manager", None)
+        if manager is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("Simulation Viewer"),
+                self.tr("Three.js canvas is not available in this session."),
+            )
+            return
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(self.tr("Run Simulation to 3D Viewer"))
+        layout = QtWidgets.QFormLayout(dialog)
+
+        backend_combo = QtWidgets.QComboBox(dialog)
+        backend_combo.addItem("FlyBody", "flybody")
+        backend_combo.addItem("Identity", "identity")
+
+        input_edit = QtWidgets.QLineEdit(dialog)
+        mapping_edit = QtWidgets.QLineEdit(dialog)
+        depth_edit = QtWidgets.QLineEdit(dialog)
+        schema_edit = QtWidgets.QLineEdit(dialog)
+        video_name_edit = QtWidgets.QLineEdit(dialog)
+        default_z_spin = QtWidgets.QDoubleSpinBox(dialog)
+        default_z_spin.setRange(-10000.0, 10000.0)
+        default_z_spin.setDecimals(4)
+        default_z_spin.setValue(0.0)
+        dry_run_box = QtWidgets.QCheckBox(self.tr("Dry run"), dialog)
+        dry_run_box.setChecked(True)
+        smooth_combo = QtWidgets.QComboBox(dialog)
+        for mode in ("none", "ema", "one_euro", "kalman"):
+            smooth_combo.addItem(mode, mode)
+        max_gap_spin = QtWidgets.QSpinBox(dialog)
+        max_gap_spin.setRange(0, 1000)
+        fps_spin = QtWidgets.QDoubleSpinBox(dialog)
+        fps_spin.setRange(1.0, 1000.0)
+        fps_spin.setValue(30.0)
+        output_edit = QtWidgets.QLineEdit(dialog)
+
+        def _pick_file(target: QtWidgets.QLineEdit, title: str, filters: str) -> None:
+            start_dir = getattr(self, "lastOpenDir", str(Path.home()))
+            filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+                dialog,
+                title,
+                start_dir,
+                filters,
+            )
+            if filename:
+                target.setText(filename)
+                self.lastOpenDir = str(Path(filename).parent)
+
+        def _pick_output(target: QtWidgets.QLineEdit) -> None:
+            start_dir = getattr(self, "lastOpenDir", str(Path.home()))
+            filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+                dialog,
+                self.tr("Save Simulation Output"),
+                start_dir,
+                self.tr("Simulation Output (*.ndjson)"),
+            )
+            if filename:
+                target.setText(filename)
+                self.lastOpenDir = str(Path(filename).parent)
+
+        input_browse = QtWidgets.QPushButton(self.tr("Browse…"), dialog)
+        input_browse.clicked.connect(
+            lambda: _pick_file(
+                input_edit,
+                self.tr("Open Pose Input"),
+                self.tr("Pose Input (*.json *.ndjson);;All Files (*)"),
+            )
+        )
+        mapping_browse = QtWidgets.QPushButton(self.tr("Browse…"), dialog)
+        mapping_browse.clicked.connect(
+            lambda: _pick_file(
+                mapping_edit,
+                self.tr("Open Simulation Mapping"),
+                self.tr("Mapping Files (*.json *.yaml *.yml);;All Files (*)"),
+            )
+        )
+        depth_browse = QtWidgets.QPushButton(self.tr("Browse…"), dialog)
+        depth_browse.clicked.connect(
+            lambda: _pick_file(
+                depth_edit,
+                self.tr("Open Depth NDJSON"),
+                self.tr("Depth Output (*.ndjson);;All Files (*)"),
+            )
+        )
+        schema_browse = QtWidgets.QPushButton(self.tr("Browse…"), dialog)
+        schema_browse.clicked.connect(
+            lambda: _pick_file(
+                schema_edit,
+                self.tr("Open Pose Schema"),
+                self.tr("Schema Files (*.json *.yaml *.yml);;All Files (*)"),
+            )
+        )
+        output_browse = QtWidgets.QPushButton(self.tr("Browse…"), dialog)
+        output_browse.clicked.connect(lambda: _pick_output(output_edit))
+
+        def _row_with_browse(widget: QtWidgets.QWidget, browse: QtWidgets.QWidget):
+            row = QtWidgets.QWidget(dialog)
+            row_layout = QtWidgets.QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.addWidget(widget, 1)
+            row_layout.addWidget(browse)
+            return row
+
+        layout.addRow(self.tr("Backend"), backend_combo)
+        layout.addRow(
+            self.tr("Pose Input"),
+            _row_with_browse(input_edit, input_browse),
+        )
+        layout.addRow(
+            self.tr("Mapping"),
+            _row_with_browse(mapping_edit, mapping_browse),
+        )
+        layout.addRow(
+            self.tr("Depth NDJSON"),
+            _row_with_browse(depth_edit, depth_browse),
+        )
+        layout.addRow(
+            self.tr("Pose Schema"),
+            _row_with_browse(schema_edit, schema_browse),
+        )
+        layout.addRow(self.tr("Video Name"), video_name_edit)
+        layout.addRow(self.tr("Default Z"), default_z_spin)
+        layout.addRow(self.tr("Smoothing"), smooth_combo)
+        layout.addRow(self.tr("FPS"), fps_spin)
+        layout.addRow(self.tr("Max Gap Frames"), max_gap_spin)
+        layout.addRow("", dry_run_box)
+        layout.addRow(
+            self.tr("Output NDJSON"),
+            _row_with_browse(output_edit, output_browse),
+        )
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dialog,
+        )
+        layout.addRow(buttons)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        input_path = input_edit.text().strip()
+        mapping_path = mapping_edit.text().strip()
+        if not input_path or not mapping_path:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("Simulation Viewer"),
+                self.tr("Pose input and mapping are required."),
+            )
+            return
+
+        backend = str(backend_combo.currentData() or "flybody")
+        out_path = output_edit.text().strip() or str(
+            build_default_output_path(input_path, backend=backend)
+        )
+        request = SimulationRunRequest(
+            backend=backend,
+            input_path=input_path,
+            mapping_path=mapping_path,
+            out_ndjson=out_path,
+            pose_schema=schema_edit.text().strip() or None,
+            depth_ndjson=depth_edit.text().strip() or None,
+            video_name=video_name_edit.text().strip() or None,
+            default_z=float(default_z_spin.value()),
+            dry_run=bool(dry_run_box.isChecked()),
+            smooth_mode=str(smooth_combo.currentData() or "none"),
+            fps=float(fps_spin.value()),
+            max_gap_frames=int(max_gap_spin.value()),
+        )
+
+        progress = QtWidgets.QProgressDialog(
+            self.tr("Running simulation…"),
+            "",
+            0,
+            0,
+            self,
+        )
+        progress.setWindowTitle(self.tr("Simulation Viewer"))
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setWindowModality(QtCore.Qt.WindowModal)
+
+        def _task() -> str:
+            return str(run_simulation_workflow(request))
+
+        thread = QtCore.QThread(self)
+        worker = FlexibleWorker(_task)
+        worker.moveToThread(thread)
+
+        def _finish(result) -> None:
+            try:
+                progress.close()
+            except Exception:
+                pass
+            thread.quit()
+            thread.wait(2000)
+            worker.deleteLater()
+            thread.deleteLater()
+            if isinstance(result, Exception):
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    self.tr("Simulation Viewer"),
+                    self.tr("Simulation run failed:\n%1").replace("%1", str(result)),
+                )
+            else:
+                manager.show_simulation_in_viewer(str(result))
+                self.statusBar().showMessage(
+                    self.tr("Simulation ready in 3D viewer."),
+                    3000,
+                )
+
+        thread.started.connect(worker.run)
+        worker.finished_signal.connect(_finish)
+        progress.show()
+        thread.start()
 
     def _on_pca_map_started(self):
         self.statusBar().showMessage(self.tr("Computing PCA feature map…"))

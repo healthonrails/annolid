@@ -1,4 +1,5 @@
 from annolid.gui.threejs_support import supports_threejs_canvas
+from pathlib import Path
 
 
 def test_supports_threejs_canvas_known_extensions():
@@ -15,3 +16,12 @@ def test_supports_threejs_canvas_rejects_unknown_extensions():
     assert not supports_threejs_canvas("volume.tif")
     assert not supports_threejs_canvas("volume.nii.gz")
     assert not supports_threejs_canvas("anything")
+
+
+def test_flybody_part_loader_accepts_parts_without_explicit_type():
+    js_path = Path(
+        "/Users/chenyang/Desktop/annolid/annolid/gui/assets/threejs/annolid_threejs_viewer.js"
+    )
+    source = js_path.read_text(encoding="utf-8")
+
+    assert 'if (part && (!part.type || part.type === "obj"))' in source

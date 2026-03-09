@@ -59,6 +59,139 @@ body.white-theme {
   padding: 8px 10px;
 }
 
+#annolidThreeTimeline {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(8, 12, 18, 0.76);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  z-index: 950;
+}
+
+#annolidThreeTimeline[hidden],
+#annolidThreeMeta[hidden],
+#annolidThreeLegend[hidden],
+#annolidThreeCategoryPanel[hidden] {
+  display: none;
+}
+
+#annolidThreeTimeline input[type="range"] {
+  flex: 1 1 auto;
+}
+
+.timeline-btn {
+  min-width: 58px;
+  height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  cursor: pointer;
+}
+
+#simulationFrameLabel {
+  min-width: 120px;
+  text-align: right;
+  font-size: 12px;
+}
+
+#annolidThreeMeta {
+  position: fixed;
+  left: 12px;
+  bottom: 64px;
+  max-width: min(48vw, 480px);
+  background: rgba(8, 12, 18, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-line;
+  z-index: 940;
+}
+
+#annolidThreeLegend,
+#annolidThreeCategoryPanel {
+  position: fixed;
+  right: 12px;
+  background: rgba(8, 12, 18, 0.74);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 10px 12px;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  z-index: 940;
+}
+
+#annolidThreeLegend {
+  top: 180px;
+  min-width: 180px;
+  max-width: min(32vw, 260px);
+}
+
+#annolidThreeCategoryPanel {
+  top: 328px;
+  min-width: 200px;
+  max-width: min(32vw, 300px);
+}
+
+.three-panel-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  opacity: 0.9;
+}
+
+.three-legend-row,
+.three-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.three-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.three-toggle-row input[type="checkbox"] {
+  accent-color: #d19a54;
+}
+
+body[data-threejs-simulation="1"] #annolidThreeHints {
+  bottom: 62px;
+}
+
+body.white-theme #annolidThreeTimeline,
+body.white-theme #annolidThreeMeta,
+body.white-theme #annolidThreeLegend,
+body.white-theme #annolidThreeCategoryPanel {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: #1a2230;
+}
+
+body.white-theme .timeline-btn {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: #1a2230;
+}
+
 #annolidThreeToolbar {
   position: fixed;
   right: 12px;

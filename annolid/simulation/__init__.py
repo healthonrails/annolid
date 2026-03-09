@@ -23,6 +23,16 @@ from annolid.simulation.types import (
     SimulationMapping,
     SimulationRunResult,
 )
+from annolid.simulation.viewer import (
+    build_simulation_view_payload,
+    export_simulation_view_payload,
+)
+from annolid.simulation.workflow import (
+    SimulationRunRequest,
+    build_default_output_path,
+    build_simulation_adapter,
+    run_simulation_workflow,
+)
 
 __all__ = [
     "Pose2DFrame",
@@ -41,4 +51,10 @@ __all__ = [
     "save_simulation_mapping_template",
     "lift_pose_frames_with_depth",
     "write_simulation_ndjson",
+    "build_simulation_view_payload",
+    "export_simulation_view_payload",
+    "SimulationRunRequest",
+    "build_default_output_path",
+    "build_simulation_adapter",
+    "run_simulation_workflow",
 ]

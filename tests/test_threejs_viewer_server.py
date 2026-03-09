@@ -34,7 +34,17 @@ def test_prune_threejs_http_tokens_removes_expired_and_limits_size() -> None:
 
 
 def test_threejs_allowed_model_suffixes_include_core_formats() -> None:
-    for suffix in {".obj", ".mtl", ".ply", ".stl", ".glb", ".gltf", ".png", ".jpg"}:
+    for suffix in {
+        ".obj",
+        ".mtl",
+        ".ply",
+        ".stl",
+        ".glb",
+        ".gltf",
+        ".json",
+        ".png",
+        ".jpg",
+    }:
         assert suffix in srv._THREEJS_ALLOWED_MODEL_SUFFIXES  # noqa: SLF001
 
 

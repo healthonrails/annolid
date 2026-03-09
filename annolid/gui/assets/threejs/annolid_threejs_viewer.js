@@ -1,6 +1,13 @@
 async function boot() {
   const statusEl = document.getElementById("annolidThreeStatus");
   const canvas = document.getElementById("annolidThreeCanvas");
+  const timelineEl = document.getElementById("annolidThreeTimeline");
+  const timelineSlider = document.getElementById("simulationFrameSlider");
+  const timelineLabel = document.getElementById("simulationFrameLabel");
+  const timelinePlayBtn = document.getElementById("btnSimulationPlay");
+  const metaEl = document.getElementById("annolidThreeMeta");
+  const legendEl = document.getElementById("annolidThreeLegend");
+  const categoryPanelEl = document.getElementById("annolidThreeCategoryPanel");
   const modelUrl = window.__annolidThreeModelUrl || "";
   const modelExtHint = (window.__annolidThreeModelExt || "").toLowerCase();
   const title = window.__annolidThreeTitle || "3D";
@@ -238,6 +245,7 @@ async function boot() {
       camera.updateProjectionMatrix();
 
       const axes = new THREE.AxesHelper(maxDim * 0.35);
+      axes.visible = false;
       root.add(axes);
 
       setStatus(`Loaded ${title} (${ext.toUpperCase()}).`);
@@ -371,6 +379,573 @@ async function boot() {
         rows.push(cols);
       }
       return buildPointCloudFromRows(rows);
+    };
+
+    const parseJsonPayload = async () => {
+      const resp = await fetch(modelUrl, { cache: "no-store" });
+      if (!resp.ok) {
+        throw new Error(`Unable to fetch model: HTTP ${resp.status}`);
+      }
+      return await resp.json();
+    };
+
+    const simulationRoot = new THREE.Group();
+    const simulationEnvironmentRoot = new THREE.Group();
+    const simulationModelRoot = new THREE.Group();
+    const simulationBodyPartsRoot = new THREE.Group();
+    const simulationPoints = new THREE.Group();
+    const simulationEdges = new THREE.Group();
+    const simulationTrails = new THREE.Group();
+    const simulationLabels = new THREE.Group();
+    simulationRoot.add(simulationEnvironmentRoot);
+    simulationRoot.add(simulationModelRoot);
+    simulationRoot.add(simulationBodyPartsRoot);
+    simulationRoot.add(simulationPoints);
+    simulationRoot.add(simulationEdges);
+    simulationRoot.add(simulationTrails);
+    simulationRoot.add(simulationLabels);
+    let simulationPayload = null;
+    let simulationBodyPartMap = new Map();
+    let simulationCategoryState = new Map();
+    let simulationFrameIndex = 0;
+    let simulationPlaying = false;
+    let simulationTimer = null;
+
+    const _proceduralTextureCache = new Map();
+    const buildProceduralTexture = (category, baseColor) => {
+      const key = `${category}:${baseColor}`;
+      if (_proceduralTextureCache.has(key)) return _proceduralTextureCache.get(key);
+      const size = 128;
+      const canvas = document.createElement("canvas");
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext("2d");
+      const c = new THREE.Color(baseColor);
+
+      // Fill with base color
+      ctx.fillStyle = `rgb(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)})`;
+      ctx.fillRect(0, 0, size, size);
+
+      if (category === "wing") {
+        // Vein pattern: thin radiating lines from base
+        ctx.strokeStyle = `rgba(${Math.round(c.r * 255 * 0.6)},${Math.round(c.g * 255 * 0.6)},${Math.round(c.b * 255 * 0.6)},0.55)`;
+        ctx.lineWidth = 0.7;
+        for (let i = 0; i < 18; i++) {
+          const angle = (i / 18) * Math.PI;
+          ctx.beginPath();
+          ctx.moveTo(size * 0.1, size * 0.85);
+          ctx.lineTo(
+            size * 0.1 + Math.cos(angle) * size * 1.25,
+            size * 0.85 - Math.sin(angle) * size * 1.1
+          );
+          ctx.stroke();
+        }
+        // Cross veins
+        ctx.lineWidth = 0.5;
+        for (let row = 1; row < 5; row++) {
+          ctx.beginPath();
+          ctx.moveTo(0, size * row / 5);
+          ctx.lineTo(size, size * row / 5 + (row % 2 === 0 ? -8 : 8));
+          ctx.stroke();
+        }
+      } else if (category === "thorax" || category === "head" || category === "abdomen") {
+        // Chitin grain: scattered dark micro-dots and faint grid
+        ctx.fillStyle = `rgba(0,0,0,0.07)`;
+        const seeded = category === "abdomen" ? 17 : category === "head" ? 31 : 53;
+        for (let i = 0; i < 260; i++) {
+          // Deterministic pseudo-random using simple LCG
+          const px = ((i * 1664525 + 1013904223 + seeded) >>> 0) % size;
+          const py = ((i * 22695477 + 1 + seeded * 3) >>> 0) % size;
+          const r = 0.6 + ((i * 6364136 + seeded) >>> 0) % 100 / 200;
+          ctx.beginPath();
+          ctx.arc(px, py, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        // Faint segmentation lines for abdomen
+        if (category === "abdomen") {
+          ctx.strokeStyle = "rgba(0,0,0,0.12)";
+          ctx.lineWidth = 1;
+          for (let row = 1; row < 5; row++) {
+            ctx.beginPath();
+            ctx.moveTo(0, size * row / 5);
+            ctx.lineTo(size, size * row / 5);
+            ctx.stroke();
+          }
+        }
+      } else {
+        // Legs, antenna, etc: fine dot noise
+        ctx.fillStyle = "rgba(0,0,0,0.06)";
+        for (let i = 0; i < 80; i++) {
+          const px = ((i * 1664525 + 101) >>> 0) % size;
+          const py = ((i * 22695477 + 303) >>> 0) % size;
+          ctx.beginPath();
+          ctx.arc(px, py, 0.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(3, 3);
+      _proceduralTextureCache.set(key, tex);
+      return tex;
+    };
+
+    const buildFlybodyPartMaterial = (part) => {
+      const color = new THREE.Color(String(part && part.color ? part.color : "#c8ab72"));
+      const roughness = Number(part && part.roughness);
+      const metalness = Number(part && part.metalness);
+      const category = String(part && part.category ? part.category : "body");
+      let opacity = 1.0;
+      let transparent = false;
+      if (category === "wing") {
+        opacity = 0.68;
+        transparent = true;
+      } else if (category === "antenna") {
+        opacity = 0.92;
+      }
+      const colorHex = String(part && part.color ? part.color : "#c8ab72");
+      const map = buildProceduralTexture(category, colorHex);
+      return new THREE.MeshStandardMaterial({
+        color,
+        map,
+        roughness: Number.isFinite(roughness) ? roughness : (category === "wing" ? 0.22 : 0.58),
+        metalness: Number.isFinite(metalness) ? metalness : (category === "wing" ? 0.01 : 0.05),
+        transparent,
+        opacity,
+        side: category === "wing" ? THREE.DoubleSide : THREE.FrontSide,
+      });
+    };
+
+
+    const formatCategoryLabel = (category) =>
+      String(category || "body")
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (match) => match.toUpperCase());
+
+    const updateBodyPartVisibility = () => {
+      simulationBodyPartMap.forEach((entry) => {
+        const enabled = simulationCategoryState.get(entry.category) !== false;
+        entry.group.visible = enabled && entry.hasPose !== false;
+      });
+    };
+
+    const rebuildSimulationCategoryUI = () => {
+      if (!legendEl || !categoryPanelEl) return;
+      legendEl.innerHTML = "";
+      categoryPanelEl.innerHTML = "";
+      const categories = Array.from(
+        new Set(
+          Array.from(simulationBodyPartMap.values()).map((entry) => String(entry.category || "body"))
+        )
+      ).sort();
+      if (!categories.length) {
+        legendEl.hidden = true;
+        categoryPanelEl.hidden = true;
+        return;
+      }
+      legendEl.hidden = false;
+      categoryPanelEl.hidden = false;
+
+      const legendTitle = document.createElement("div");
+      legendTitle.className = "three-panel-title";
+      legendTitle.textContent = "Part Legend";
+      legendEl.appendChild(legendTitle);
+
+      const toggleTitle = document.createElement("div");
+      toggleTitle.className = "three-panel-title";
+      toggleTitle.textContent = "Visible Parts";
+      categoryPanelEl.appendChild(toggleTitle);
+
+      categories.forEach((category) => {
+        const first = Array.from(simulationBodyPartMap.values()).find(
+          (entry) => String(entry.category || "body") === category
+        );
+        const color = first && first.color ? first.color : "#c8ab72";
+        if (!simulationCategoryState.has(category)) {
+          simulationCategoryState.set(category, true);
+        }
+
+        const legendRow = document.createElement("div");
+        legendRow.className = "three-legend-row";
+        const swatch = document.createElement("span");
+        swatch.className = "three-legend-swatch";
+        swatch.style.background = color;
+        const text = document.createElement("span");
+        text.textContent = formatCategoryLabel(category);
+        legendRow.appendChild(swatch);
+        legendRow.appendChild(text);
+        legendEl.appendChild(legendRow);
+
+        const toggleRow = document.createElement("label");
+        toggleRow.className = "three-toggle-row";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = simulationCategoryState.get(category) !== false;
+        checkbox.addEventListener("change", () => {
+          simulationCategoryState.set(category, checkbox.checked);
+          updateBodyPartVisibility();
+        });
+        const toggleText = document.createElement("span");
+        toggleText.textContent = formatCategoryLabel(category);
+        toggleRow.appendChild(checkbox);
+        toggleRow.appendChild(toggleText);
+        categoryPanelEl.appendChild(toggleRow);
+      });
+      updateBodyPartVisibility();
+    };
+
+    const stopSimulationPlayback = () => {
+      simulationPlaying = false;
+      if (timelinePlayBtn) timelinePlayBtn.textContent = "Play";
+      if (simulationTimer !== null) {
+        window.clearInterval(simulationTimer);
+        simulationTimer = null;
+      }
+    };
+
+    const updateSimulationMeta = (frame) => {
+      if (!metaEl || !simulationPayload || !frame) return;
+      const adapter = simulationPayload.adapter || "simulation";
+      const qposLen = Array.isArray(frame.qpos) ? frame.qpos.length : 0;
+      const dryRun = frame.dry_run ? "yes" : "no";
+      const lines = [
+        `Adapter: ${adapter}`,
+        `Frame: ${frame.frame_index}`,
+        `Points: ${Array.isArray(frame.points) ? frame.points.length : 0}`,
+        `Qpos: ${qposLen}`,
+        `Dry run: ${dryRun}`,
+      ];
+      if (Number.isFinite(frame.timestamp_sec)) {
+        lines.push(`Time: ${Number(frame.timestamp_sec).toFixed(3)} s`);
+      }
+      metaEl.textContent = lines.join("\n");
+    };
+
+    const renderSimulationFrame = (index) => {
+      if (!simulationPayload || !Array.isArray(simulationPayload.frames) || !simulationPayload.frames.length) {
+        return;
+      }
+      const frames = simulationPayload.frames;
+      const safeIndex = Math.max(0, Math.min(frames.length - 1, Number(index) || 0));
+      const frame = frames[safeIndex];
+      simulationFrameIndex = safeIndex;
+      const display = simulationPayload && typeof simulationPayload.display === "object"
+        ? simulationPayload.display
+        : {};
+      const showPoints = display.show_points !== false;
+      const showLabels = display.show_labels !== false;
+      const showEdges = display.show_edges !== false;
+      const showTrails = display.show_trails !== false;
+
+      clearGroupAndDispose(simulationPoints);
+      clearGroupAndDispose(simulationEdges);
+      clearGroupAndDispose(simulationTrails);
+      clearGroupAndDispose(simulationLabels);
+
+      const pointMap = new Map();
+      const orderedPoints = Array.isArray(frame.points) ? frame.points : [];
+      orderedPoints.forEach((pt, ptIdx) => {
+        if (!pt || typeof pt !== "object") return;
+        const x = Number(pt.x);
+        const y = Number(pt.y);
+        const z = Number(pt.z);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+        const label = String(pt.label || `point_${ptIdx}`);
+        const color = new THREE.Color().setHSL((ptIdx * 0.13) % 1, 0.78, 0.56);
+        if (showPoints) {
+          const sphere = new THREE.Mesh(
+            new THREE.SphereGeometry(0.02, 12, 12),
+            new THREE.MeshStandardMaterial({
+              color,
+              emissive: color.clone().multiplyScalar(0.28),
+              roughness: 0.35,
+              metalness: 0.08,
+            })
+          );
+          sphere.position.set(x, y, z);
+          simulationPoints.add(sphere);
+        }
+        pointMap.set(label, new THREE.Vector3(x, y, z));
+
+        if (showLabels) {
+          const labelSprite = createBehaviorLabelSprite(label, `#${color.getHexString()}`);
+          if (labelSprite) {
+            labelSprite.scale.set(0.6, 0.16, 1);
+            labelSprite.position.set(x, y + 0.035, z);
+            simulationLabels.add(labelSprite);
+          }
+        }
+
+        const start = Math.max(0, safeIndex - 24);
+        const trailPoints = [];
+        for (let i = start; i <= safeIndex; i += 1) {
+          const srcFrame = frames[i];
+          if (!srcFrame || !Array.isArray(srcFrame.points)) continue;
+          const srcPoint = srcFrame.points.find((item) => item && String(item.label || "") === label);
+          if (!srcPoint) continue;
+          const tx = Number(srcPoint.x);
+          const ty = Number(srcPoint.y);
+          const tz = Number(srcPoint.z);
+          if (!Number.isFinite(tx) || !Number.isFinite(ty) || !Number.isFinite(tz)) continue;
+          trailPoints.push(new THREE.Vector3(tx, ty, tz));
+        }
+        if (showTrails && trailPoints.length > 1) {
+          const trail = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(trailPoints),
+            new THREE.LineBasicMaterial({
+              color,
+              transparent: true,
+              opacity: 0.42,
+            })
+          );
+          simulationTrails.add(trail);
+        }
+      });
+
+      if (showEdges) {
+        const edges = Array.isArray(simulationPayload.edges) ? simulationPayload.edges : [];
+        edges.forEach((edge) => {
+          if (!Array.isArray(edge) || edge.length < 2) return;
+          const a = pointMap.get(String(edge[0] || ""));
+          const b = pointMap.get(String(edge[1] || ""));
+          if (!a || !b) return;
+          const line = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints([a, b]),
+            new THREE.LineBasicMaterial({ color: 0xe7edf7, transparent: true, opacity: 0.78 })
+          );
+          simulationEdges.add(line);
+        });
+      }
+
+      if (timelineSlider) timelineSlider.value = String(safeIndex);
+      if (timelineLabel) timelineLabel.textContent = `Frame ${safeIndex + 1} / ${frames.length}`;
+      const modelPose = frame.model_pose || {};
+      const bodyPoses = frame.body_poses && typeof frame.body_poses === "object" ? frame.body_poses : {};
+      const modelPos = Array.isArray(modelPose.position) ? modelPose.position : [0, 0, 0];
+      const modelRot = Array.isArray(modelPose.rotation) ? modelPose.rotation : [0, 0, 0];
+      const modelScale = Number(modelPose.scale);
+      simulationModelRoot.position.set(
+        Number(modelPos[0] || 0) * (Number.isFinite(modelScale) && modelScale > 0 ? modelScale : 1),
+        Number(modelPos[2] || 0) * (Number.isFinite(modelScale) && modelScale > 0 ? modelScale : 1),
+        Number(modelPos[1] || 0) * (Number.isFinite(modelScale) && modelScale > 0 ? modelScale : 1)
+      );
+      // Pre-rotate model root so MuJoCo Z-up aligns to Three.js Y-up,
+      // then apply the payload's Euler Z-rotation (yaw) on top.
+      const yaw = Number(modelRot[2] || 0);
+      simulationModelRoot.rotation.set(-Math.PI / 2, 0, yaw);
+      if (Number.isFinite(modelScale) && modelScale > 0) {
+        simulationModelRoot.scale.setScalar(modelScale);
+      }
+      simulationBodyPartMap.forEach((entry, label) => {
+        const pose = bodyPoses[label];
+        const enabled = simulationCategoryState.get(entry.category) !== false;
+        if (!pose || !Array.isArray(pose.position) || !Array.isArray(pose.quaternion)) {
+          entry.group.visible = false;
+          entry.hasPose = false;
+          return;
+        }
+        entry.hasPose = true;
+        entry.group.visible = enabled;
+        entry.group.position.set(
+          Number(pose.position[0] || 0),
+          Number(pose.position[1] || 0),
+          Number(pose.position[2] || 0)
+        );
+        const qw = Number(pose.quaternion[0] || 1);
+        const qx = Number(pose.quaternion[1] || 0);
+        const qy = Number(pose.quaternion[2] || 0);
+        const qz = Number(pose.quaternion[3] || 0);
+        entry.group.quaternion.set(qx, qy, qz, qw);
+      });
+      updateSimulationMeta(frame);
+      setStatus(`Viewing ${title}: frame ${safeIndex + 1} / ${frames.length}`);
+    };
+
+    const loadSimulationPayload = (payload) => {
+      if (!payload || payload.kind !== "annolid-simulation-v1") {
+        throw new Error("Unsupported simulation payload");
+      }
+      simulationPayload = payload;
+      document.body.setAttribute("data-threejs-simulation", "1");
+      if (timelineEl) timelineEl.hidden = false;
+      if (metaEl) metaEl.hidden = false;
+      clearGroupAndDispose(simulationEnvironmentRoot);
+      clearGroupAndDispose(simulationModelRoot);
+      clearGroupAndDispose(simulationBodyPartsRoot);
+      simulationBodyPartMap = new Map();
+      simulationCategoryState = new Map();
+      if (legendEl) {
+        legendEl.hidden = true;
+        legendEl.innerHTML = "";
+      }
+      if (categoryPanelEl) {
+        categoryPanelEl.hidden = true;
+        categoryPanelEl.innerHTML = "";
+      }
+      root.add(simulationRoot);
+      addLoadedObject(simulationRoot);
+      const floor = payload.environment && payload.environment.floor ? payload.environment.floor : null;
+      if (floor && floor.type === "plane") {
+        const floorSize = Array.isArray(floor.size) ? floor.size : [5, 5];
+        const floorPos = Array.isArray(floor.position) ? floor.position : [0, 0, -0.132];
+        const width = Number(floorSize[0] || 5) * 2;
+        const depth = Number(floorSize[1] || 5) * 2;
+        const plane = new THREE.Mesh(
+          new THREE.PlaneGeometry(width, depth),
+          new THREE.MeshStandardMaterial({
+            color: new THREE.Color(String(floor.color || "#314759")),
+            roughness: 0.92,
+            metalness: 0.02,
+            side: THREE.DoubleSide,
+          })
+        );
+        plane.rotation.x = -Math.PI / 2;
+        // Floor height is a Y-coordinate in Three.js Y-up world space
+        const floorY = Number(
+          Array.isArray(floor.position) ? (floor.position[1] != null ? floor.position[1] : 0) : 0
+        );
+        plane.position.set(0, floorY, 0);
+        simulationEnvironmentRoot.add(plane);
+        const grid = new THREE.GridHelper(
+          Math.max(width, depth),
+          20,
+          new THREE.Color(String(floor.gridColor || "#3f5f73")),
+          new THREE.Color(String(floor.gridColor || "#3f5f73"))
+        );
+        grid.position.set(0, floorY, 0);
+        simulationEnvironmentRoot.add(grid);
+      }
+      if (payload.mesh && payload.mesh.type === "flybody_parts" && Array.isArray(payload.mesh.parts)) {
+        const loader = new OBJLoader();
+        payload.mesh.parts.forEach((part) => {
+          if (part && (!part.type || part.type === "obj")) {
+            const meshUrl = new URL(String(part.path || ""), modelUrl).toString();
+            const bodyLabel = String(part.body || "");
+            if (!meshUrl || !bodyLabel) return;
+            loader.load(
+              meshUrl,
+              (obj) => {
+                const material = buildFlybodyPartMaterial(part);
+                obj.traverse((child) => {
+                  if (child && child.isMesh) {
+                    child.material = material.clone();
+                    child.castShadow = false;
+                    child.receiveShadow = false;
+                  }
+                });
+                const partRoot = new THREE.Group();
+                partRoot.add(obj);
+                simulationBodyPartsRoot.add(partRoot);
+                simulationBodyPartMap.set(bodyLabel, {
+                  group: partRoot,
+                  category: String(part.category || "body"),
+                  color: String(part.color || "#c8ab72"),
+                  hasPose: false,
+                });
+                rebuildSimulationCategoryUI();
+                renderSimulationFrame(simulationFrameIndex);
+              },
+              undefined,
+              (err) => {
+                console.warn("Failed to load FlyBody body part mesh:", bodyLabel, err);
+              }
+            );
+          }
+        });
+      } else if (payload.mesh && payload.mesh.type === "obj" && payload.mesh.path) {
+        const meshUrl = new URL(String(payload.mesh.path), modelUrl).toString();
+        // Derive MTL URL from OBJ URL (same filename, .mtl extension)
+        const mtlUrl = meshUrl.replace(/\.obj(\?.*)?$/i, ".mtl");
+        const applyObjToScene = (obj) => {
+          obj.traverse((child) => {
+            if (child && child.isMesh) {
+              // Ensure wing materials are transparent
+              if (child.material) {
+                const mats = Array.isArray(child.material) ? child.material : [child.material];
+                mats.forEach((mat) => {
+                  // "membrane" = wing skin in fruitfly.xml (rgba alpha=0.4)
+                  if (mat && mat.name && (
+                    mat.name === "membrane" ||
+                    mat.name.toLowerCase().includes("wing")
+                  )) {
+                    mat.transparent = true;
+                    mat.side = THREE.DoubleSide;
+                  }
+                  if (mat) mat.needsUpdate = true;
+                });
+              }
+              child.castShadow = false;
+              child.receiveShadow = false;
+            }
+          });
+          simulationModelRoot.add(obj);
+          renderSimulationFrame(simulationFrameIndex);
+        };
+        const fallbackLoad = () => {
+          const loader = new OBJLoader();
+          loader.load(
+            meshUrl,
+            applyObjToScene,
+            undefined,
+            (err) => { console.warn("Failed to load FlyBody example mesh:", err); }
+          );
+        };
+        try {
+          const mtlLoader = new MTLLoader();
+          mtlLoader.setResourcePath(meshUrl.replace(/[^/]*$/, ""));
+          mtlLoader.load(
+            mtlUrl,
+            (materials) => {
+              materials.preload();
+              const objLoader = new OBJLoader();
+              objLoader.setMaterials(materials);
+              objLoader.load(meshUrl, applyObjToScene, undefined, fallbackLoad);
+            },
+            undefined,
+            () => fallbackLoad()
+          );
+        } catch (_e) {
+          fallbackLoad();
+        }
+      }
+
+      if (!payload.mesh || payload.mesh.type !== "flybody_parts") {
+        if (legendEl) legendEl.hidden = true;
+        if (categoryPanelEl) categoryPanelEl.hidden = true;
+      }
+      if (timelineSlider) {
+        const frameCount = Array.isArray(payload.frames) ? payload.frames.length : 0;
+        timelineSlider.min = "0";
+        timelineSlider.max = String(Math.max(0, frameCount - 1));
+        timelineSlider.step = "1";
+        timelineSlider.value = "0";
+        timelineSlider.oninput = (event) => {
+          const value = Number(event && event.target ? event.target.value : 0);
+          renderSimulationFrame(value);
+        };
+      }
+      if (timelinePlayBtn) {
+        timelinePlayBtn.onclick = () => {
+          if (!simulationPayload || !Array.isArray(simulationPayload.frames) || simulationPayload.frames.length < 2) {
+            return;
+          }
+          if (simulationPlaying) {
+            stopSimulationPlayback();
+            return;
+          }
+          simulationPlaying = true;
+          timelinePlayBtn.textContent = "Pause";
+          simulationTimer = window.setInterval(() => {
+            const nextIndex = (simulationFrameIndex + 1) % simulationPayload.frames.length;
+            renderSimulationFrame(nextIndex);
+          }, 120);
+        };
+      }
+      renderSimulationFrame(0);
+      setStatus(`Loaded ${title} (${(payload.adapter || "simulation").toUpperCase()}).`);
+      document.body.setAttribute("data-threejs-ready", "1");
     };
 
     if (modelUrl) {
@@ -513,6 +1088,14 @@ async function boot() {
           })
           .catch((err) => {
             setStatus(`Failed to load point cloud: ${err.message}`, "error");
+          });
+      } else if (ext === "json") {
+        parseJsonPayload()
+          .then((payload) => {
+            loadSimulationPayload(payload);
+          })
+          .catch((err) => {
+            setStatus(`Failed to load simulation payload: ${err.message}`, "error");
           });
       } else {
         setStatus(`Unsupported 3D format: .${ext}`, "error");

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -129,6 +130,103 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         self._current_path: Optional[Path] = None
         self._build_ui()
 
+    def _build_viewer_html(
+        self,
+        *,
+        title: str,
+        model_url: str,
+        model_ext: str,
+        status_text: str,
+        hints_text: str,
+        enable_eye_control: bool = False,
+        enable_hand_control: bool = False,
+    ) -> str:
+        escaped_title = json.dumps(title)
+        escaped_url = json.dumps(model_url)
+        escaped_ext = json.dumps(model_ext)
+        return f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="threejs/annolid_threejs_viewer.css" />
+  <script type="importmap">
+    {_THREEJS_IMPORTMAP}
+  </script>
+  <script>
+    window.__annolidThreeTitle = {escaped_title};
+    window.__annolidThreeModelUrl = {escaped_url};
+    window.__annolidThreeModelExt = {escaped_ext};
+    window.__annolidEnableEyeControl = {str(enable_eye_control).lower()};
+    window.__annolidEnableHandControl = {str(enable_hand_control).lower()};
+  </script>
+</head>
+<body>
+  <div id="annolidThreeRoot">
+    <canvas id="annolidThreeCanvas"></canvas>
+  </div>
+
+  <div id="annolidThreeToolbar">
+    <div class="tool-group">
+      <button class="tool-btn" id="btnHome" title="Reset Camera">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8h5z"/></svg>
+      </button>
+      <button class="tool-btn" id="btnViewX" title="Sagittal (X) View">X</button>
+      <button class="tool-btn" id="btnViewY" title="Coronal (Y) View">Y</button>
+      <button class="tool-btn" id="btnViewZ" title="Axial (Z) View">Z</button>
+    </div>
+    <div class="tool-sep"></div>
+    <div class="tool-group">
+      <button class="tool-btn" id="btnFlipX" title="Flip X">fX</button>
+      <button class="tool-btn" id="btnFlipY" title="Flip Y">fY</button>
+      <button class="tool-btn" id="btnFlipZ" title="Flip Z">fZ</button>
+    </div>
+    <div class="tool-sep"></div>
+    <div class="tool-group">
+      <button class="tool-btn" id="btnRotateX" title="Rotate X 90°">rX</button>
+      <button class="tool-btn" id="btnRotateY" title="Rotate Y 90°">rY</button>
+      <button class="tool-btn" id="btnRotateZ" title="Rotate Z 90°">rZ</button>
+    </div>
+    <div class="tool-sep"></div>
+    <div class="tool-group">
+      <button class="tool-btn" id="btnToggleAxes" title="Toggle Axes">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M13 1.07V9h7c.55 0 1 .45 1 1v2c0 .55-.45 1-1 1h-7v7.93c0 .55-.45 1-1 1h-2c-.55 0-1-.45-1-1V13H3c-.55 0-1-.45-1-1v-2c0-.55.45-1 1-1h7V1.07c0-.55.45-1 1-1h2c.55 0 1 .45 1 1z"/></svg>
+      </button>
+      <button class="tool-btn" id="btnToggleTheme" title="Toggle Theme">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10zm1-17.93c3.94.49 7 3.85 7 7.93s-3.06 7.44-7 7.93V4.07z"/></svg>
+      </button>
+      <button class="tool-btn" id="btnToggleAutoRotate" title="Auto Rotate">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0020 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 004 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+      </button>
+    </div>
+    <div class="tool-sep"></div>
+    <button class="tool-btn" id="btnToggleRealtime" title="Toggle Real-time Updates">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+    </button>
+  </div>
+
+  <div id="annolidThreeIndicators">
+    <div class="indicator" id="indRotate">Rotating</div>
+    <div class="indicator" id="indPan">Panning</div>
+    <div class="indicator" id="indZoom">Zooming</div>
+  </div>
+
+  <div id="annolidThreeTimeline" hidden>
+    <button class="timeline-btn" id="btnSimulationPlay" title="Play or pause simulation">Play</button>
+    <input id="simulationFrameSlider" type="range" min="0" max="0" step="1" value="0" />
+    <span id="simulationFrameLabel">Frame 0 / 0</span>
+  </div>
+  <div id="annolidThreeMeta" hidden></div>
+  <div id="annolidThreeLegend" hidden></div>
+  <div id="annolidThreeCategoryPanel" hidden></div>
+
+  <div id="annolidThreeStatus">{status_text}</div>
+  <div id="annolidThreeHints">{hints_text}</div>
+  <script type="module" src="threejs/annolid_threejs_viewer.js"></script>
+</body>
+</html>
+        """.strip()
+
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -187,79 +285,15 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
 
         base = _ensure_threejs_http_server()
         base_url = QtCore.QUrl(base + "/")
-        html = f"""
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <link rel="stylesheet" href="threejs/annolid_threejs_viewer.css" />
-  <script type="importmap">
-    {_THREEJS_IMPORTMAP}
-  </script>
-  <script>
-    window.__annolidThreeTitle = "Real-time";
-    window.__annolidThreeModelUrl = "";
-    window.__annolidThreeModelExt = "";
-    window.__annolidEnableEyeControl = {str(enable_eye_control).lower()};
-    window.__annolidEnableHandControl = {str(enable_hand_control).lower()};
-  </script>
-</head>
-<body>
-  <div id="annolidThreeRoot">
-    <canvas id="annolidThreeCanvas"></canvas>
-  </div>
-
-  <div id="annolidThreeToolbar">
-    <div class="tool-group">
-      <button class="tool-btn" id="btnHome" title="Reset Camera">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8h5z"/></svg>
-      </button>
-      <button class="tool-btn" id="btnViewX" title="Sagittal (X) View">X</button>
-      <button class="tool-btn" id="btnViewY" title="Coronal (Y) View">Y</button>
-      <button class="tool-btn" id="btnViewZ" title="Axial (Z) View">Z</button>
-    </div>
-    <div class="tool-sep"></div>
-    <div class="tool-group">
-      <button class="tool-btn" id="btnFlipX" title="Flip X">fX</button>
-      <button class="tool-btn" id="btnFlipY" title="Flip Y">fY</button>
-      <button class="tool-btn" id="btnFlipZ" title="Flip Z">fZ</button>
-    </div>
-    <div class="tool-sep"></div>
-    <div class="tool-group">
-      <button class="tool-btn" id="btnRotateX" title="Rotate X 90°">rX</button>
-      <button class="tool-btn" id="btnRotateY" title="Rotate Y 90°">rY</button>
-      <button class="tool-btn" id="btnRotateZ" title="Rotate Z 90°">rZ</button>
-    </div>
-    <div class="tool-sep"></div>
-    <div class="tool-group">
-      <button class="tool-btn" id="btnToggleAxes" title="Toggle Axes">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M13 1.07V9h7c.55 0 1 .45 1 1v2c0 .55-.45 1-1 1h-7v7.93c0 .55-.45 1-1 1h-2c-.55 0-1-.45-1-1V13H3c-.55 0-1-.45-1-1v-2c0-.55.45-1 1-1h7V1.07c0-.55.45-1 1-1h2c.55 0 1 .45 1 1z"/></svg>
-      </button>
-      <button class="tool-btn" id="btnToggleTheme" title="Toggle Theme">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10zm1-17.93c3.94.49 7 3.85 7 7.93s-3.06 7.44-7 7.93V4.07z"/></svg>
-      </button>
-      <button class="tool-btn" id="btnToggleAutoRotate" title="Auto Rotate">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0020 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 004 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
-      </button>
-    </div>
-    <div class="tool-sep"></div>
-    <button class="tool-btn" id="btnToggleRealtime" title="Toggle Real-time Updates">
-      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
-    </button>
-  </div>
-
-  <div id="annolidThreeIndicators">
-    <div class="indicator" id="indRotate">Rotating</div>
-    <div class="indicator" id="indPan">Panning</div>
-    <div class="indicator" id="indZoom">Zooming</div>
-  </div>
-
-  <div id="annolidThreeStatus">Starting real-time viewer…</div>
-  <div id="annolidThreeHints">Real-time inference mode active.</div>
-  <script type="module" src="threejs/annolid_threejs_viewer.js"></script>
-</body>
-</html>
-        """.strip()
+        html = self._build_viewer_html(
+            title="Real-time",
+            model_url="",
+            model_ext="",
+            status_text="Starting real-time viewer…",
+            hints_text="Real-time inference mode active.",
+            enable_eye_control=enable_eye_control,
+            enable_hand_control=enable_hand_control,
+        )
         self._web_view.setHtml(html, base_url)
         logger.info("Initialized empty Three.js viewer for real-time mode")
 
@@ -332,87 +366,51 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
             raise RuntimeError("Qt WebEngine is unavailable")
 
         self._current_path = path
+        started = time.perf_counter()
         base = _ensure_threejs_http_server()
         model_url = _register_threejs_http_model(path)
         base_url = QtCore.QUrl(base + "/")
-        title = path.name.replace('"', '\\"')
-        model_ext = path.suffix.lower().replace('"', '\\"')
-        html = f"""
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <link rel="stylesheet" href="threejs/annolid_threejs_viewer.css" />
-  <script type="importmap">
-    {_THREEJS_IMPORTMAP}
-  </script>
-  <script>
-    window.__annolidThreeTitle = "{title}";
-    window.__annolidThreeModelUrl = "{model_url}";
-    window.__annolidThreeModelExt = "{model_ext}";
-    window.__annolidEnableEyeControl = false;
-    window.__annolidEnableHandControl = false;
-  </script>
-</head>
-<body>
-  <div id="annolidThreeRoot">
-    <canvas id="annolidThreeCanvas"></canvas>
-  </div>
-
-  <div id="annolidThreeToolbar">
-    <div class="tool-group">
-      <button class="tool-btn" id="btnHome" title="Reset Camera">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8h5z"/></svg>
-      </button>
-      <button class="tool-btn" id="btnViewX" title="Sagittal (X) View">X</button>
-      <button class="tool-btn" id="btnViewY" title="Coronal (Y) View">Y</button>
-      <button class="tool-btn" id="btnViewZ" title="Axial (Z) View">Z</button>
-    </div>
-    <div class="tool-sep"></div>
-    <div class="tool-group">
-      <button class="tool-btn" id="btnFlipX" title="Flip X">fX</button>
-      <button class="tool-btn" id="btnFlipY" title="Flip Y">fY</button>
-      <button class="tool-btn" id="btnFlipZ" title="Flip Z">fZ</button>
-    </div>
-    <div class="tool-sep"></div>
-    <div class="tool-group">
-      <button class="tool-btn" id="btnRotateX" title="Rotate X 90°">rX</button>
-      <button class="tool-btn" id="btnRotateY" title="Rotate Y 90°">rY</button>
-      <button class="tool-btn" id="btnRotateZ" title="Rotate Z 90°">rZ</button>
-    </div>
-    <div class="tool-sep"></div>
-    <div class="tool-group">
-      <button class="tool-btn" id="btnToggleAxes" title="Toggle Axes">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M13 1.07V9h7c.55 0 1 .45 1 1v2c0 .55-.45 1-1 1h-7v7.93c0 .55-.45 1-1 1h-2c-.55 0-1-.45-1-1V13H3c-.55 0-1-.45-1-1v-2c0-.55.45-1 1-1h7V1.07c0-.55.45-1 1-1h2c.55 0 1 .45 1 1z"/></svg>
-      </button>
-      <button class="tool-btn" id="btnToggleTheme" title="Toggle Theme">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10zm1-17.93c3.94.49 7 3.85 7 7.93s-3.06 7.44-7 7.93V4.07z"/></svg>
-      </button>
-      <button class="tool-btn" id="btnToggleAutoRotate" title="Auto Rotate">
-        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0020 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 004 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
-      </button>
-    </div>
-    <div class="tool-sep"></div>
-    <button class="tool-btn" id="btnToggleRealtime" title="Toggle Real-time Updates">
-      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
-    </button>
-  </div>
-
-  <div id="annolidThreeIndicators">
-    <div class="indicator" id="indRotate">Rotating</div>
-    <div class="indicator" id="indPan">Panning</div>
-    <div class="indicator" id="indZoom">Zooming</div>
-  </div>
-
-  <div id="annolidThreeStatus">Loading {title}…</div>
-  <div id="annolidThreeHints">Drag: rotate | Wheel: zoom | Right-drag: pan</div>
-  <script type="module" src="threejs/annolid_threejs_viewer.js"></script>
-</body>
-</html>
-        """.strip()
+        html = self._build_viewer_html(
+            title=path.name,
+            model_url=model_url,
+            model_ext=path.suffix.lower(),
+            status_text=f"Loading {path.name}…",
+            hints_text="Drag: rotate | Wheel: zoom | Right-drag: pan",
+        )
         self._web_view.setHtml(html, base_url)
         self.status_changed.emit(f"Loaded 3D model: {path.name}")
-        logger.info("Loading Three.js canvas model: %s", path)
+        logger.info(
+            "Loading Three.js canvas model: %s (%.1fms)",
+            path,
+            (time.perf_counter() - started) * 1000.0,
+        )
+
+    def load_simulation_payload(self, payload_path: str | Path, *, title: str) -> None:
+        path = Path(payload_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Simulation payload not found: {path}")
+        if self._web_view is None:
+            raise RuntimeError("Qt WebEngine is unavailable")
+
+        started = time.perf_counter()
+        self._current_path = path
+        base = _ensure_threejs_http_server()
+        model_url = _register_threejs_http_model(path)
+        base_url = QtCore.QUrl(base + "/")
+        html = self._build_viewer_html(
+            title=title,
+            model_url=model_url,
+            model_ext=".json",
+            status_text=f"Loading simulation {title}…",
+            hints_text="Play: animate frames | Slider: scrub | Drag: rotate | Wheel: zoom",
+        )
+        self._web_view.setHtml(html, base_url)
+        self.status_changed.emit(f"Loaded simulation: {title}")
+        logger.info(
+            "Loading Three.js simulation payload: %s (prepared in %.1fms)",
+            path,
+            (time.perf_counter() - started) * 1000.0,
+        )
 
     def current_model_path(self) -> Optional[str]:
         if self._current_path is None:

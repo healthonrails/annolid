@@ -143,6 +143,159 @@ This writes simulation metadata under:
 otherData.simulation
 ```
 
+## 3A. View FlyBody Output in the GUI
+
+The Annolid GUI can now open simulation/FlyBody NDJSON directly in the embedded
+Three.js viewer.
+
+Menu path:
+
+```text
+View -> 3D Examples -> Open Simulation Output…
+```
+
+What it shows:
+
+- 3D FlyBody site targets from `otherData.simulation.state.site_targets`
+- per-frame playback with a scrubber
+- short trajectory trails for each site
+- optional skeleton edges from `mapping_metadata.metadata.viewer_edges`
+
+The generic simulation viewer now also honors optional payload display flags, so
+example payloads can suppress debug overlays like:
+
+- point markers
+- text labels
+- skeleton edges
+- trails
+
+This is additive:
+
+- regular Annolid 2D annotation still works unchanged
+- generic Three.js mesh/point-cloud viewing still works unchanged
+- FlyBody runtime is still optional; dry-run NDJSON is enough for visualization
+
+If you do not already have simulation NDJSON, the GUI can run the workflow for
+you:
+
+```text
+View -> 3D Examples -> Run Simulation to 3D Viewer…
+```
+
+That dialog accepts:
+
+- pose input (`.json` or `.ndjson`)
+- simulation mapping (`.json` / `.yaml`)
+- optional depth sidecar
+- optional pose schema
+- backend choice (`flybody` or `identity`)
+
+The result is written to a temporary NDJSON path by default and opened
+immediately in the Three.js viewer.
+
+To inspect whether the optional FlyBody runtime is actually ready before
+launching the example:
+
+```text
+View -> 3D Examples -> FlyBody Status…
+```
+
+The setup dialog reports:
+
+- whether a local FlyBody repo was found
+- which Python runtimes were checked
+- whether each runtime can import FlyBody and create `walk_imitation()`
+- and gives one-place actions to:
+  - refresh status
+  - open the FlyBody example
+  - install or update FlyBody
+
+Runtime discovery order currently prefers:
+
+- `<flybody repo>/.venv/bin/python`
+- `annolid/.venv311/bin/python`
+- `annolid/.venv/bin/python`
+- the current interpreter
+
+## 3B. FlyBody Example Uses the Local Repo When Present
+
+The `View -> 3D Examples -> FlyBody 3D Example` entry is now the fast path. It
+opens the FlyBody mesh/example immediately and does not block on a live rollout.
+
+If you want the expensive runtime-backed path, use:
+
+```text
+View -> 3D Examples -> Start Live FlyBody Simulation…
+```
+
+The live action remains optional and can take longer because it generates a
+real FlyBody rollout first.
+
+The FlyBody 3D example still prefers a real local FlyBody checkout for mesh
+assets.
+
+Resolution order:
+
+- `ANNOLID_FLYBODY_PATH`
+- `~/Downloads/flybody`
+
+When found, Annolid:
+
+- reads `flybody/fruitfly/assets/fruitfly.xml`
+- reads `flybody/fruitfly/assets/floor.xml`
+- combines the referenced OBJ meshes into a temporary assembled fly mesh
+- loads the FlyBody floor plane into the Three.js scene
+- opens a clean presentation view:
+  - assembled fly body
+  - floor/grid
+  - walking loop animation
+  - no point markers, label text, edges, or trails in the static example
+- checks the optional FlyBody runtime in `.venv311`, `.venv`, and the current
+  interpreter
+- if a usable FlyBody runtime is available, runs a live `walk_imitation()`
+  rollout and opens that real site-state playback in the 3D viewer
+- `Start Live FlyBody Simulation…` now opens the static FlyBody 3D example
+  immediately, then replaces it with the live rollout when that background job
+  finishes
+- when the local repo mesh is available, the viewer now loads FlyBody body-part
+  meshes and applies per-body MuJoCo poses for articulated playback
+- FlyBody body parts also receive stable material categories and colors
+  (thorax, head, wings, antennae, abdomen, legs, mouthparts) for clearer 3D
+  structure during playback
+- the 3D viewer now includes:
+  - a part legend
+  - per-category visibility toggles so you can hide wings, legs, antennae,
+    abdomen, or other body groups while scrubbing playback
+- if the runtime is not available, falls back to the bundled example playback
+  while still using the real fly mesh when the repo is present
+
+If no local FlyBody checkout is available, the example still opens using the
+built-in skeleton-only fallback.
+
+To install FlyBody from the GUI instead of doing it manually:
+
+```text
+View -> 3D Examples -> Install FlyBody…
+```
+
+That action:
+
+- clones FlyBody from GitHub if the checkout is missing
+- runs `scripts/setup_flybody_uv.sh`
+- keeps the setup opt-in and separate from normal Annolid workflows
+
+If you already created a repo-local FlyBody environment, for example:
+
+```bash
+cd /path/to/flybody
+uv venv --python 3.12
+source .venv/bin/activate
+uv pip install -e .
+```
+
+Annolid will now detect that repo-local `.venv` automatically in the FlyBody
+status dialog and when launching the live FlyBody example.
+
 ## 4. Add Depth for 3D Targets
 
 If you have already generated Annolid depth sidecars, pass them in directly:

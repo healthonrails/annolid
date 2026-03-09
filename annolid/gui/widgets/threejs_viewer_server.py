@@ -76,6 +76,7 @@ _THREEJS_ALLOWED_MODEL_SUFFIXES = {
     ".obj",
     ".mtl",
     ".ply",
+    ".json",
     ".glb",
     ".gltf",
     ".bin",
@@ -234,12 +235,15 @@ def _ensure_threejs_http_server() -> str:
                     _prune_threejs_http_tokens()
                     base_file_path = _THREEJS_HTTP_TOKENS.get(token)
                 if base_file_path is None:
-                    logger.warning(f"Token not found: {token}")
+                    logger.warning("Token not found: %s", token)
                     self.send_error(404)
                     return
 
                 logger.info(
-                    f"Model request: token={token}, base_file={base_file_path}, parts={parts}"
+                    "Model request: token=%s, base_file=%s, parts=%s",
+                    token,
+                    base_file_path,
+                    parts,
                 )
 
                 # If no additional path, serve the base file
@@ -252,7 +256,10 @@ def _ensure_threejs_http_server() -> str:
                     file_path = model_dir / requested_filename
 
                     logger.info(
-                        f"Related file request: {requested_filename}, full_path={file_path}, exists={file_path.exists()}"
+                        "Related file request: %s, full_path=%s, exists=%s",
+                        requested_filename,
+                        file_path,
+                        file_path.exists(),
                     )
 
                     # Security check: only serve files in the same directory or subdirectories
@@ -261,7 +268,9 @@ def _ensure_threejs_http_server() -> str:
                     except ValueError:
                         # File is outside the model directory
                         logger.warning(
-                            f"Security violation: requested file {file_path} is outside model directory {model_dir}"
+                            "Security violation: requested file %s is outside model directory %s",
+                            file_path,
+                            model_dir,
                         )
                         self.send_error(403)
                         return

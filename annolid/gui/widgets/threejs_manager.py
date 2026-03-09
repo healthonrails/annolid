@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -7,6 +9,7 @@ from qtpy import QtCore, QtWidgets
 
 from annolid.gui.threejs_support import supports_threejs_canvas
 from annolid.gui.widgets.threejs_viewer import ThreeJsViewerWidget
+from annolid.simulation import export_simulation_view_payload
 from annolid.utils.logger import logger
 
 if TYPE_CHECKING:
@@ -84,6 +87,63 @@ class ThreeJsManager(QtCore.QObject):
         except Exception:
             pass
         return True
+
+    def show_simulation_in_viewer(self, simulation_path: str | Path) -> bool:
+        path = Path(simulation_path)
+        if not path.exists():
+            QtWidgets.QMessageBox.warning(
+                self.window,
+                self.window.tr("Simulation Viewer"),
+                self.window.tr("Simulation file not found:\n%1").replace(
+                    "%1", str(path)
+                ),
+            )
+            return False
+        viewer = self.ensure_threejs_viewer()
+        started = time.perf_counter()
+        payload_path = path
+        try:
+            payload_path = self._resolve_simulation_payload_path(path)
+            viewer.load_simulation_payload(payload_path, title=path.stem)
+        except Exception as exc:
+            logger.warning("Failed to load simulation in Three.js viewer: %s", exc)
+            QtWidgets.QMessageBox.warning(
+                self.window,
+                self.window.tr("Simulation Viewer"),
+                self.window.tr(
+                    "Unable to open FlyBody/simulation output in the 3D viewer:\n%1"
+                ).replace("%1", str(exc)),
+            )
+            return False
+        logger.info(
+            "Prepared Three.js simulation view for %s using %s in %.1fms",
+            path,
+            payload_path,
+            (time.perf_counter() - started) * 1000.0,
+        )
+        self.window.set_unrelated_docks_visible(False)
+        self.window._set_active_view("threejs")
+        self.window.statusBar().showMessage(
+            self.window.tr("Loaded simulation view %1").replace("%1", path.name), 3000
+        )
+        return True
+
+    def _resolve_simulation_payload_path(self, path: Path) -> Path:
+        if self._is_prebuilt_simulation_payload(path):
+            return path
+        return export_simulation_view_payload(path)
+
+    @staticmethod
+    def _is_prebuilt_simulation_payload(path: Path) -> bool:
+        if path.suffix.lower() != ".json":
+            return False
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        return (
+            isinstance(payload, dict) and payload.get("kind") == "annolid-simulation-v1"
+        )
 
     def viewer_widget(self) -> Optional[ThreeJsViewerWidget]:
         return self.threejs_viewer

@@ -1,22 +1,8 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 from annolid.engine.registry import ModelPluginBase, register_model
-
-
-def _build_adapter(name: str):
-    label = str(name or "").strip().lower()
-    if label == "identity":
-        from annolid.simulation.adapters.identity import IdentitySimulationAdapter
-
-        return IdentitySimulationAdapter()
-    if label == "flybody":
-        from annolid.simulation.adapters.flybody import FlyBodyAdapter
-
-        return FlyBodyAdapter()
-    raise ValueError(f"Unsupported simulation backend: {name}")
 
 
 @register_model
@@ -170,14 +156,12 @@ class SimulationRunnerPlugin(ModelPluginBase):
 
     def predict(self, args: argparse.Namespace) -> int:
         from annolid.simulation import (
+            SimulationRunRequest,
+            build_default_output_path,
             generate_flybody_mapping_template,
-            lift_pose_frames_with_depth,
-            load_depth_records,
-            load_simulation_mapping,
             read_pose_frames,
+            run_simulation_workflow,
             save_simulation_mapping_template,
-            smooth_pose_frames,
-            write_simulation_ndjson,
         )
 
         pose_frames = []
@@ -224,62 +208,27 @@ class SimulationRunnerPlugin(ModelPluginBase):
                 "--input, --mapping, and --out-ndjson are required unless generating a mapping template."
             )
 
-        mapping = load_simulation_mapping(args.mapping)
-        pose_frames = smooth_pose_frames(
-            pose_frames,
-            mode=args.smooth_mode,
+        request = SimulationRunRequest(
+            backend=str(args.backend),
+            input_path=str(args.input),
+            mapping_path=str(args.mapping),
+            out_ndjson=str(
+                args.out_ndjson
+                or build_default_output_path(args.input, backend=str(args.backend))
+            ),
+            pose_schema=args.pose_schema,
+            depth_ndjson=args.depth_ndjson,
+            video_name=args.video_name,
+            default_z=float(args.default_z),
+            dry_run=bool(args.dry_run),
+            env_factory=args.env_factory,
+            ik_function=args.ik_function,
+            ik_max_steps=int(args.ik_max_steps),
+            smooth_mode=str(args.smooth_mode),
             fps=float(args.fps),
             max_gap_frames=int(args.max_gap_frames),
             min_score=float(args.min_score),
             ema_alpha=float(args.ema_alpha),
         )
-        adapter = _build_adapter(args.backend)
-        adapter_config = {
-            "mapping_path": str(Path(args.mapping).expanduser()),
-            "keypoint_to_site": dict(mapping.keypoint_to_site),
-            "site_to_joint": dict(mapping.site_to_joint),
-            "coordinate_system": dict(mapping.coordinate_system),
-            "dry_run": bool(args.dry_run),
-            "default_z": float(args.default_z),
-            "ik_kwargs": {"max_steps": int(args.ik_max_steps)},
-        }
-        if args.env_factory:
-            adapter_config["environment_factory"] = str(args.env_factory)
-        if args.ik_function:
-            adapter_config["ik_function"] = str(args.ik_function)
-
-        adapter.configure(adapter_config)
-        adapter.initialize()
-        if args.depth_ndjson:
-            depth_records = load_depth_records(args.depth_ndjson)
-            pose_frames_3d = lift_pose_frames_with_depth(
-                pose_frames,
-                depth_records=depth_records,
-                coordinate_system=dict(mapping.coordinate_system),
-            )
-            result = adapter.fit_3d(pose_frames_3d)
-        else:
-            result = adapter.fit_2d(pose_frames)
-        write_simulation_ndjson(
-            args.out_ndjson,
-            pose_frames=pose_frames,
-            result=result,
-            adapter_name=adapter.name,
-            extra_metadata={
-                "backend": args.backend,
-                "mapping_path": str(Path(args.mapping).expanduser()),
-                "depth_ndjson": str(Path(args.depth_ndjson).expanduser())
-                if args.depth_ndjson
-                else None,
-                "coordinate_system": dict(mapping.coordinate_system),
-                "backend_metadata": dict(mapping.metadata),
-                "smoothing": {
-                    "mode": str(args.smooth_mode),
-                    "fps": float(args.fps),
-                    "max_gap_frames": int(args.max_gap_frames),
-                    "min_score": float(args.min_score),
-                    "ema_alpha": float(args.ema_alpha),
-                },
-            },
-        )
+        run_simulation_workflow(request)
         return 0
