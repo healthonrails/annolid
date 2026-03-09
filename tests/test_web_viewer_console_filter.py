@@ -1,8 +1,12 @@
 from annolid.gui.widgets.web_viewer import (
+    _clamp_text,
     _console_source_domain,
     _format_suppressed_console_summary,
     _is_ignorable_js_console_message,
+    _sanitize_context_menu_image_src,
+    _sanitize_image_data_url,
 )
+from qtpy import QtWidgets
 
 
 def test_ignorable_console_noise_markers() -> None:
@@ -226,3 +230,139 @@ def test_save_pdf_task_adds_pmc_download_fallback() -> None:
     )
     assert candidates[1] == url
     assert candidates[2].endswith("nihms-1556781.pdf?download=1")
+
+
+def test_web_viewer_context_menu_slot_registered() -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    meta = WebViewerWidget.staticMetaObject
+    assert meta.indexOfSlot(b"_show_context_menu(QPoint)") >= 0
+
+
+def test_build_web_context_menu_falls_back_to_view_menu(monkeypatch) -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    created = []
+
+    class _FakeMenu:
+        pass
+
+    class _FakeView:
+        def page(self):
+            return object()
+
+        def createStandardContextMenu(self):
+            created.append("view")
+            return _FakeMenu()
+
+    class _FakeWidget:
+        def __init__(self):
+            self._web_view = _FakeView()
+
+    monkeypatch.setattr(QtWidgets, "QMenu", lambda *_args, **_kwargs: _FakeMenu())
+
+    menu = WebViewerWidget._build_web_context_menu(_FakeWidget())
+
+    assert isinstance(menu, _FakeMenu)
+    assert created == ["view"]
+
+
+def test_context_menu_payload_sanitizers_restrict_unsafe_input() -> None:
+    assert _clamp_text("abc", max_chars=2) == "ab"
+    assert _sanitize_context_menu_image_src("javascript:alert(1)") == ""
+    assert _sanitize_context_menu_image_src("file:///tmp/demo.png") == ""
+    assert _sanitize_context_menu_image_src("https://example.com/a.png") == (
+        "https://example.com/a.png"
+    )
+    assert _sanitize_image_data_url("data:text/html;base64,Zm9v") == ""
+    assert _sanitize_image_data_url("data:image/png;base64,Zm9v") == (
+        "data:image/png;base64,Zm9v"
+    )
+
+
+def test_save_image_from_context_rejects_non_http_non_data_scheme() -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    path, error = WebViewerWidget._save_image_from_context(
+        None, image_src="file:///tmp/demo.png", image_data_url=""
+    )
+
+    assert path == ""
+    assert "Unsupported image URL scheme" in error
+
+
+def test_is_inline_pdf_context_uses_saveable_pdf_url() -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    class _FakeWidget:
+        _current_url = "https://example.com/paper.pdf"
+
+        @staticmethod
+        def _is_saveable_pdf_url(url: str) -> bool:
+            return url.endswith(".pdf")
+
+    assert WebViewerWidget._is_inline_pdf_context(_FakeWidget()) is True
+
+
+def test_resolve_context_selection_uses_text_immediately() -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    captured = []
+
+    class _FakeWidget:
+        def _is_inline_pdf_context(self) -> bool:
+            return False
+
+    WebViewerWidget._resolve_context_selection(
+        _FakeWidget(),
+        " chosen text ",
+        lambda text: captured.append(text),
+    )
+
+    assert captured == ["chosen text"]
+
+
+def test_resolve_context_selection_uses_pdf_copy_fallback(monkeypatch) -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+    from qtpy import QtCore, QtWebEngineWidgets
+
+    captured = []
+
+    class _Clipboard:
+        def __init__(self):
+            self._text = "before"
+
+        def text(self):
+            return self._text
+
+        def setText(self, value):
+            self._text = value
+
+    clipboard = _Clipboard()
+
+    class _Page:
+        def triggerAction(self, action):
+            assert action == QtWebEngineWidgets.QWebEnginePage.Copy
+            clipboard.setText("pdf selected text")
+
+    class _WebView:
+        def page(self):
+            return _Page()
+
+    class _FakeWidget:
+        _web_view = _WebView()
+
+        def _is_inline_pdf_context(self) -> bool:
+            return True
+
+    monkeypatch.setattr(QtWidgets.QApplication, "clipboard", lambda: clipboard)
+    monkeypatch.setattr(QtCore.QTimer, "singleShot", lambda _ms, fn: fn())
+
+    WebViewerWidget._resolve_context_selection(
+        _FakeWidget(),
+        "",
+        lambda text: captured.append(text),
+    )
+
+    assert captured == ["pdf selected text"]
+    assert clipboard.text() == "before"

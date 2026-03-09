@@ -953,6 +953,8 @@ async function boot() {
             roughness: 0.92,
             metalness: 0.02,
             side: THREE.DoubleSide,
+            transparent: true,
+            opacity: 0.5,
           })
         );
         plane.rotation.x = -Math.PI / 2;

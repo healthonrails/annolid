@@ -43,6 +43,13 @@ except Exception:
     _WEBENGINE_AVAILABLE = False
 
 
+_MAX_CONTEXT_MENU_TEXT_CHARS = 8192
+_MAX_CONTEXT_MENU_IMAGE_URL_CHARS = 4096
+_MAX_CONTEXT_MENU_IMAGE_DATA_URL_CHARS = 2_000_000
+_MAX_CONTEXT_MENU_IMAGE_BYTES = 15 * 1024 * 1024
+_MAX_CONTEXT_MENU_IMAGE_PIXELS = 2048 * 2048
+
+
 def _is_ignorable_js_console_message(message: str, source_id: str = "") -> bool:
     value = str(message or "").strip().lower()
     source = str(source_id or "").strip().lower()
@@ -119,6 +126,39 @@ def _format_suppressed_console_summary(
     items = sorted(counters.items(), key=lambda pair: (-pair[1], pair[0]))
     shown = items[: max(1, int(top_n))]
     return ", ".join(f"{domain}={count}" for domain, count in shown)
+
+
+def _clamp_text(value: object, *, max_chars: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip()
+
+
+def _sanitize_image_data_url(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) > _MAX_CONTEXT_MENU_IMAGE_DATA_URL_CHARS:
+        return ""
+    if not raw.lower().startswith("data:image/"):
+        return ""
+    return raw
+
+
+def _sanitize_context_menu_image_src(value: object) -> str:
+    raw = _clamp_text(value, max_chars=_MAX_CONTEXT_MENU_IMAGE_URL_CHARS)
+    if not raw:
+        return ""
+    if raw.startswith("data:"):
+        return raw if _sanitize_image_data_url(raw) else ""
+    try:
+        parsed = urllib.parse.urlparse(raw)
+    except Exception:
+        return ""
+    if str(parsed.scheme or "").strip().lower() not in {"http", "https"}:
+        return ""
+    return raw
 
 
 class _SavePdfTask(QtCore.QRunnable):
@@ -1482,6 +1522,74 @@ class WebViewerWidget(QtWidgets.QWidget):
 
         self.status_changed.emit(f"Loaded: {url}")
 
+    def _build_web_context_menu(self) -> QtWidgets.QMenu:
+        if self._web_view is None:
+            return QtWidgets.QMenu(self)
+        page = self._web_view.page()
+        try:
+            if hasattr(page, "createStandardContextMenu"):
+                menu = page.createStandardContextMenu()
+                if menu is not None:
+                    return menu
+        except Exception:
+            pass
+        try:
+            if hasattr(self._web_view, "createStandardContextMenu"):
+                menu = self._web_view.createStandardContextMenu()
+                if menu is not None:
+                    return menu
+        except Exception:
+            pass
+        return QtWidgets.QMenu(self)
+
+    def _is_inline_pdf_context(self) -> bool:
+        return self._is_saveable_pdf_url(str(self._current_url or "").strip())
+
+    def _resolve_context_selection(
+        self,
+        selected_text: str,
+        callback,
+        *,
+        empty_message: str = "No selection detected.",
+    ) -> None:
+        cleaned = _clamp_text(selected_text, max_chars=_MAX_CONTEXT_MENU_TEXT_CHARS)
+        if cleaned:
+            callback(cleaned)
+            return
+        if not self._is_inline_pdf_context() or self._web_view is None:
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), empty_message, self)
+            return
+        try:
+            clipboard = QtWidgets.QApplication.clipboard()
+        except Exception:
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), empty_message, self)
+            return
+
+        original = clipboard.text()
+        try:
+            self._web_view.page().triggerAction(QtWebEngineWidgets.QWebEnginePage.Copy)
+        except Exception:
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), empty_message, self)
+            return
+
+        def consume() -> None:
+            text = _clamp_text(clipboard.text(), max_chars=_MAX_CONTEXT_MENU_TEXT_CHARS)
+            try:
+                if text and text != original:
+                    callback(text)
+                else:
+                    QtWidgets.QToolTip.showText(
+                        QtGui.QCursor.pos(),
+                        empty_message,
+                        self,
+                    )
+            finally:
+                if original is not None:
+                    clipboard.setText(original)
+
+        QtCore.QTimer.singleShot(120, consume)
+
+    @QtCore.Slot(QtCore.QPoint)
     def _show_context_menu(self, position: QtCore.QPoint) -> None:
         if self._web_view is None:
             return
@@ -1491,24 +1599,43 @@ class WebViewerWidget(QtWidgets.QWidget):
         global_pos = self._web_view.mapToGlobal(position)
 
         def show_menu(selection: object) -> None:
+            if self._web_view is None:
+                return
             payload = selection if isinstance(selection, dict) else {}
-            selected_text = (
-                str(payload.get("selectedText") or "") if payload else ""
-            ).strip()
-            if not selected_text:
-                selected_text = str(self._web_view.selectedText() or "").strip()
-            image_src = str(payload.get("imageSrc") or "").strip() if payload else ""
-            image_data_url = (
-                str(payload.get("imageDataUrl") or "").strip() if payload else ""
+            selected_text = _clamp_text(
+                payload.get("selectedText") if payload else "",
+                max_chars=_MAX_CONTEXT_MENU_TEXT_CHARS,
             )
-            menu = page.createStandardContextMenu()
+            if not selected_text:
+                try:
+                    selected_text = _clamp_text(
+                        self._web_view.selectedText(),
+                        max_chars=_MAX_CONTEXT_MENU_TEXT_CHARS,
+                    )
+                except Exception:
+                    selected_text = ""
+            image_src = _sanitize_context_menu_image_src(
+                payload.get("imageSrc") if payload else ""
+            )
+            image_data_url = _sanitize_image_data_url(
+                payload.get("imageDataUrl") if payload else ""
+            )
+            can_resolve_pdf_selection = self._is_inline_pdf_context()
+            menu = self._build_web_context_menu()
             menu.insertSeparator(menu.actions()[0] if menu.actions() else None)
 
             lookup_action = QtWidgets.QAction("Look up in dictionary…", self)
-            lookup_action.setEnabled(bool(self._extract_single_word(selected_text)))
+            lookup_action.setEnabled(
+                bool(self._extract_single_word(selected_text))
+                or can_resolve_pdf_selection
+            )
             lookup_action.triggered.connect(
-                lambda: self._request_dictionary_lookup(
-                    selected_text, global_pos=global_pos
+                lambda: self._resolve_context_selection(
+                    selected_text,
+                    lambda text: self._request_dictionary_lookup(
+                        text, global_pos=global_pos
+                    ),
+                    empty_message="Select exactly one word to look up.",
                 )
             )
             menu.insertAction(
@@ -1516,9 +1643,12 @@ class WebViewerWidget(QtWidgets.QWidget):
             )
 
             explain_action = QtWidgets.QAction("Explain with Annolid Bot", self)
-            explain_action.setEnabled(bool(selected_text))
+            explain_action.setEnabled(bool(selected_text) or can_resolve_pdf_selection)
             explain_action.triggered.connect(
-                lambda: self._request_bot_explanation(selected_text)
+                lambda: self._resolve_context_selection(
+                    selected_text,
+                    self._request_bot_explanation,
+                )
             )
             menu.insertAction(
                 menu.actions()[0] if menu.actions() else None, explain_action
@@ -1526,9 +1656,15 @@ class WebViewerWidget(QtWidgets.QWidget):
 
             bib_entries = self._extract_bibtex_entries(selected_text)
             add_citation_action = QtWidgets.QAction("Add Citation to BibTeX File", self)
-            add_citation_action.setEnabled(bool(bib_entries))
+            add_citation_action.setEnabled(
+                bool(bib_entries) or can_resolve_pdf_selection
+            )
             add_citation_action.triggered.connect(
-                lambda: self._add_selected_citation_to_bib(selected_text)
+                lambda: self._resolve_context_selection(
+                    selected_text,
+                    self._add_selected_citation_to_bib,
+                    empty_message="No selected citation text detected.",
+                )
             )
             menu.insertAction(
                 menu.actions()[0] if menu.actions() else None, add_citation_action
@@ -1549,9 +1685,15 @@ class WebViewerWidget(QtWidgets.QWidget):
             )
 
             speak_action = QtWidgets.QAction("Speak selection", self)
-            speak_action.setEnabled(bool(selected_text) and not self._speaking)
+            speak_action.setEnabled(
+                (bool(selected_text) or can_resolve_pdf_selection)
+                and not self._speaking
+            )
             speak_action.triggered.connect(
-                lambda: self._speak_selected_text(selected_text)
+                lambda: self._resolve_context_selection(
+                    selected_text,
+                    self._speak_selected_text,
+                )
             )
             menu.insertAction(
                 menu.actions()[0] if menu.actions() else None, speak_action
@@ -1588,6 +1730,9 @@ class WebViewerWidget(QtWidgets.QWidget):
           const w = Number(img.naturalWidth || img.width || 0);
           const h = Number(img.naturalHeight || img.height || 0);
           if (w > 0 && h > 0) {{
+            if ((w * h) > {_MAX_CONTEXT_MENU_IMAGE_PIXELS}) {{
+              return {{ selectedText, imageSrc, imageDataUrl }};
+            }}
             const canvas = document.createElement('canvas');
             canvas.width = w;
             canvas.height = h;
@@ -1595,6 +1740,9 @@ class WebViewerWidget(QtWidgets.QWidget):
             if (ctx) {{
               ctx.drawImage(img, 0, 0, w, h);
               imageDataUrl = String(canvas.toDataURL('image/png') || '');
+              if (imageDataUrl.length > {_MAX_CONTEXT_MENU_IMAGE_DATA_URL_CHARS}) {{
+                imageDataUrl = '';
+              }}
             }}
           }}
         }} catch (e) {{}}
@@ -1834,9 +1982,11 @@ class WebViewerWidget(QtWidgets.QWidget):
         if not src:
             return "", "No image found at the clicked location."
         if src.startswith("data:"):
-            raw, mime = self._decode_data_url(src)
+            raw, mime = self._decode_data_url(_sanitize_image_data_url(src))
             if not raw:
                 return "", "Failed to decode selected image data."
+            if len(raw) > _MAX_CONTEXT_MENU_IMAGE_BYTES:
+                return "", "Selected image is too large to process safely."
             fd, path = tempfile.mkstemp(
                 prefix="annolid_web_image_",
                 suffix=self._mime_to_suffix(mime),
@@ -1854,6 +2004,14 @@ class WebViewerWidget(QtWidgets.QWidget):
                 return "", f"Failed to save selected image: {exc}"
 
         try:
+            parsed = urllib.parse.urlparse(src)
+        except Exception:
+            return "", "Selected image URL is invalid."
+        scheme = str(parsed.scheme or "").strip().lower()
+        if scheme not in {"http", "https"}:
+            return "", f"Unsupported image URL scheme: {scheme or 'unknown'}"
+
+        try:
             req = urllib.request.Request(
                 src,
                 headers={
@@ -1864,9 +2022,13 @@ class WebViewerWidget(QtWidgets.QWidget):
                 content_type = str(response.headers.get("content-type") or "").split(
                     ";", 1
                 )[0]
-                raw = response.read()
+                raw = response.read(_MAX_CONTEXT_MENU_IMAGE_BYTES + 1)
             if not raw:
                 return "", "Selected image URL returned no data."
+            if len(raw) > _MAX_CONTEXT_MENU_IMAGE_BYTES:
+                return "", "Selected image is too large to process safely."
+            if content_type and not content_type.startswith("image/"):
+                return "", "Selected URL did not return an image."
             fd, path = tempfile.mkstemp(
                 prefix="annolid_web_image_",
                 suffix=self._mime_to_suffix(content_type),

@@ -193,10 +193,20 @@ def generate_live_rollout_payload(
     seed: int = 7,
     title: str = "FlyBody Live Rollout",
     behavior: str = "walk_imitation",
+    policy_dir: str | None = None,
 ) -> dict[str, Any]:
     env = _build_behavior_env(behavior)
     timestep = env.reset()
-    _ = timestep
+
+    policy = None
+    if policy_dir:
+        try:
+            tf = importlib.import_module("tensorflow")
+            utils_tf = importlib.import_module("flybody.agents.utils_tf")
+            loaded_policy = tf.saved_model.load(policy_dir)
+            policy = utils_tf.TestPolicyWrapper(loaded_policy)
+        except Exception as exc:
+            print(f"Warning: Failed to load policy from {policy_dir}: {exc}")
 
     def _physics():
         return getattr(env, "physics", env)
@@ -281,7 +291,11 @@ def generate_live_rollout_payload(
                 },
             }
         )
-        env.step(_sample_repo_style_action(action_spec, rng))
+        if policy is not None:
+            action = policy(timestep.observation)
+        else:
+            action = _sample_repo_style_action(action_spec, rng)
+        timestep = env.step(action)
 
     return {
         "kind": "annolid-simulation-v1",
@@ -330,6 +344,12 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--steps", type=int, default=180)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--policy_dir",
+        type=str,
+        default=None,
+        help="Path to a directory containing a pre-trained flybody policy.",
+    )
     return parser.parse_args()
 
 
@@ -349,6 +369,7 @@ def main() -> int:
         seed=args.seed,
         behavior=args.behavior,
         title=f"FlyBody Live Rollout ({args.behavior})",
+        policy_dir=args.policy_dir,
     )
     out_path = Path(args.out).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
