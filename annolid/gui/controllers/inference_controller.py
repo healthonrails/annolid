@@ -53,6 +53,13 @@ class InferenceController(QtCore.QObject):
         self._inference_service = inference_service or InferenceService()
         self._current_model_config: Optional[Dict[str, Any]] = None
         self._inference_thread: Optional[InferenceWorker] = None
+        self.destroyed.connect(self._shutdown_on_destroyed)
+
+    def __del__(self) -> None:
+        try:
+            self.shutdown(timeout_ms=2000)
+        except Exception:
+            pass
 
     def _is_worker_running(self) -> bool:
         return self._inference_thread is not None and self._inference_thread.isRunning()
@@ -102,6 +109,7 @@ class InferenceController(QtCore.QObject):
             model_config=model_config,
             postprocessing_config=postprocessing_config,
             raw_inference_callable=raw_inference_callable,
+            parent=self,
         )
         worker.inference_completed.connect(self._on_inference_completed)
         worker.inference_error.connect(self._on_inference_error)
@@ -398,7 +406,8 @@ class InferenceController(QtCore.QObject):
         except Exception as e:
             logger.warning(f"Failed to shutdown inference thread cleanly: {e}")
         finally:
-            self._inference_thread = None
+            if not thread.isRunning():
+                self._inference_thread = None
             elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
             logger.info("Inference shutdown completed in %.1fms.", elapsed_ms)
 
@@ -423,13 +432,11 @@ class InferenceController(QtCore.QObject):
     def _on_inference_completed(self, results: Dict[str, Any]) -> None:
         """Handle inference completion."""
         self.inference_completed.emit(results)
-        self._inference_thread = None
         logger.info("Inference completed successfully")
 
     def _on_inference_error(self, error_msg: str) -> None:
         """Handle inference error."""
         self.inference_error.emit(error_msg)
-        self._inference_thread = None
         logger.error(f"Inference error: {error_msg}")
 
     def _on_progress_updated(self, progress: int, message: str) -> None:
@@ -442,6 +449,9 @@ class InferenceController(QtCore.QObject):
             and not self._inference_thread.isRunning()
         ):
             self._inference_thread = None
+
+    def _shutdown_on_destroyed(self, *_args: object) -> None:
+        self.shutdown(timeout_ms=2000)
 
 
 class InferenceWorker(QtCore.QThread):

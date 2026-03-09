@@ -12,6 +12,7 @@ class _FakeThread:
         self.interruption_called = False
         self.quit_called = False
         self.wait_args: list[int] = []
+        self.wait_result = True
 
     def isRunning(self) -> bool:
         return self._running
@@ -27,8 +28,9 @@ class _FakeThread:
 
     def wait(self, timeout_ms: int) -> bool:
         self.wait_args.append(int(timeout_ms))
-        self._running = False
-        return True
+        if self.wait_result:
+            self._running = False
+        return self.wait_result
 
 
 class _RaisingInferenceService:
@@ -87,6 +89,41 @@ def test_shutdown_handles_non_running_thread() -> None:
     assert fake_thread.quit_called is False
     assert fake_thread.wait_args == []
     assert controller._inference_thread is None
+
+
+def test_shutdown_keeps_reference_when_thread_does_not_stop() -> None:
+    controller = InferenceController()
+    fake_thread = _FakeThread(running=True)
+    fake_thread.wait_result = False
+    controller._inference_thread = fake_thread
+
+    controller.shutdown(timeout_ms=10)
+
+    assert fake_thread.cancel_called is True
+    assert fake_thread.interruption_called is True
+    assert fake_thread.quit_called is True
+    assert fake_thread.wait_args == [10]
+    assert controller._inference_thread is fake_thread
+
+
+def test_inference_completed_does_not_clear_thread_reference_before_finished() -> None:
+    controller = InferenceController()
+    fake_thread = _FakeThread(running=True)
+    controller._inference_thread = fake_thread
+
+    controller._on_inference_completed({"ok": True})
+
+    assert controller._inference_thread is fake_thread
+
+
+def test_inference_error_does_not_clear_thread_reference_before_finished() -> None:
+    controller = InferenceController()
+    fake_thread = _FakeThread(running=True)
+    controller._inference_thread = fake_thread
+
+    controller._on_inference_error("boom")
+
+    assert controller._inference_thread is fake_thread
 
 
 def test_validate_model_config_propagates_service_exception_to_signal() -> None:

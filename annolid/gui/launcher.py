@@ -12,7 +12,7 @@ import sys
 from typing import Any, Optional, Sequence
 
 from annolid.gui.cli import parse_cli
-from annolid.gui.qt_env import configure_qt_api, sanitize_qt_plugin_env
+from annolid.infrastructure.runtime import configure_qt_runtime, sanitize_qt_plugin_env
 from annolid.utils.logger import configure_logging
 
 
@@ -35,7 +35,7 @@ def main(argv: Optional[Sequence[str]] = None) -> Any:
     # (labelme's AI helpers import onnxruntime; annolid imports torch).
     if os.name == "nt":
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-    configure_qt_api(os.environ)
+    configure_qt_runtime()
     sanitize_qt_plugin_env(os.environ)
 
     try:

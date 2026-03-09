@@ -5,46 +5,24 @@ from __future__ import annotations
 import os  # noqa
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"  # noqa
-# Disable Chromium sandbox inside QtWebEngine on macOS to avoid dyld failures
-# when the helper process cannot resolve @rpath Qt frameworks.
-# os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")  # noqa
 # Windows: mitigate OpenMP runtime conflicts (e.g. PyTorch + ONNX Runtime).
 if os.name == "nt":  # noqa
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")  # noqa
 
 import sys
 from pathlib import Path
-from annolid.gui.qt_env import configure_qt_api
+from annolid.infrastructure.runtime import (
+    configure_qt_runtime,
+)
 
-configure_qt_api(os.environ)
-
-# Configure Qt WebEngine before importing modules that may import
-# QtWebEngine at module-load time (for example PDF/Web viewer managers).
-if sys.platform == "darwin":
-    try:
-        from annolid.infrastructure.runtime import (
-            configure_qtwebengine_chromium_flags,
-            configure_qtwebengine_resource_paths,
-        )
-
-        configure_qtwebengine_chromium_flags()
-        configure_qtwebengine_resource_paths()
-    except Exception as exc:
+try:
+    configure_qt_runtime()
+except Exception as exc:
+    if sys.platform == "darwin":
         print(
-            f"Warning: Failed to initialize QtWebEngine runtime config: {exc.__class__.__name__}: {exc}",
+            f"Warning: Failed to initialize Qt runtime config: {exc.__class__.__name__}: {exc}",
             file=sys.stderr,
         )
-else:
-    try:
-        from annolid.infrastructure.runtime import (
-            configure_qtwebengine_chromium_flags,
-            configure_qtwebengine_resource_paths,
-        )
-
-        configure_qtwebengine_chromium_flags()
-        configure_qtwebengine_resource_paths()
-    except Exception:
-        pass
 
 from qtpy import QtCore
 from qtpy.QtCore import Signal

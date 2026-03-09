@@ -43,29 +43,32 @@ def test_inference_controller_runs_with_callable() -> None:
             return {"boxes": []}
         return {}
 
-    controller.run_inference(
-        model_type="yolo",
-        input_data={"dummy": True},
-        model_config={
-            "identifier": "x",
-            "weight_file": "",
-            "raw_inference_callable": raw_infer,
-        },
-        postprocessing_config=None,
-    )
+    try:
+        controller.run_inference(
+            model_type="yolo",
+            input_data={"dummy": True},
+            model_config={
+                "identifier": "x",
+                "weight_file": "",
+                "raw_inference_callable": raw_infer,
+            },
+            postprocessing_config=None,
+        )
 
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline:
-        app.processEvents()
-        if completed or errors:
-            break
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            app.processEvents()
+            if completed or errors:
+                break
 
-    assert not errors
-    assert completed
-    payload = completed[-1]
-    assert payload["model_type"] == "yolo"
-    assert "detections" in payload
-    assert "error" in payload
+        assert not errors
+        assert completed
+        payload = completed[-1]
+        assert payload["model_type"] == "yolo"
+        assert "detections" in payload
+        assert "error" in payload
+    finally:
+        controller.shutdown()
 
 
 def test_inference_controller_rejects_parallel_runs() -> None:
@@ -84,14 +87,21 @@ def test_inference_controller_rejects_parallel_runs() -> None:
         time.sleep(0.2)
         return {}
 
-    cfg = {"identifier": "x", "weight_file": "", "raw_inference_callable": raw_infer}
-    controller.run_inference("yolo", {}, cfg)
-    controller.run_inference("yolo", {}, cfg)
+    try:
+        cfg = {
+            "identifier": "x",
+            "weight_file": "",
+            "raw_inference_callable": raw_infer,
+        }
+        controller.run_inference("yolo", {}, cfg)
+        controller.run_inference("yolo", {}, cfg)
 
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
-        app.processEvents()
-        if errors:
-            break
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            app.processEvents()
+            if errors:
+                break
 
-    assert any("already running" in e for e in errors)
+        assert any("already running" in e for e in errors)
+    finally:
+        controller.shutdown()

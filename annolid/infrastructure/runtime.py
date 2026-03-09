@@ -132,15 +132,30 @@ def configure_qtwebengine_chromium_flags() -> None:
     )
 
 
+def configure_qt_runtime() -> None:
+    """
+    Apply the Qt runtime environment consistently before importing qtpy/Qt.
+
+    This keeps binding selection, plugin-path sanitizing, and WebEngine
+    environment configuration in one place so launcher and GUI startup stay in
+    sync across platforms.
+    """
+    configure_qt_api(os.environ)
+    sanitize_qt_plugin_env(os.environ)
+    configure_qtwebengine_chromium_flags()
+    configure_qtwebengine_resource_paths()
+
+
 def create_qapp(argv=None):
     """Create QApplication after QT_API has been selected deterministically."""
-    configure_qt_api(os.environ)
+    configure_qt_runtime()
     from annolid.gui.application import create_qapp as _create_qapp
 
     return _create_qapp(argv)
 
 
 __all__ = [
+    "configure_qt_runtime",
     "configure_qtwebengine_chromium_flags",
     "configure_qtwebengine_resource_paths",
     "create_qapp",
