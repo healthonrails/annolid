@@ -78,6 +78,7 @@ jobs:
       run: |
         source .venv/bin/activate
         export QT_QPA_PLATFORM=offscreen
+        export ANNOLID_DISABLE_BOT_AUTOSTART=1
         pytest
     - name: Agent/update integration smoke tests
       run: |

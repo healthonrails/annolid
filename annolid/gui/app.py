@@ -480,6 +480,10 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
 
     def _startup_annolid_bot(self) -> None:
         """Start Annolid Bot when the main window opens."""
+        if os.environ.get("ANNOLID_DISABLE_BOT_AUTOSTART"):
+            return
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("CI"):
+            return
         manager = getattr(self, "ai_chat_manager", None)
         if manager is None:
             return

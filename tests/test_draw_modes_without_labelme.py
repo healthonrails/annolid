@@ -446,3 +446,26 @@ def test_post_status_message_is_safe_from_background_thread() -> None:
         assert ("background update", 1234) in messages
     finally:
         window.close()
+
+
+def test_startup_annolid_bot_respects_disable_env(monkeypatch) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.app import AnnolidWindow
+
+    window = AnnolidWindow(config={})
+    called = {"count": 0}
+    try:
+        manager = getattr(window, "ai_chat_manager", None)
+        assert manager is not None
+
+        def _unexpected_start(*args, **kwargs):
+            _ = args, kwargs
+            called["count"] += 1
+
+        monkeypatch.setattr(manager, "initialize_annolid_bot", _unexpected_start)
+        monkeypatch.setenv("ANNOLID_DISABLE_BOT_AUTOSTART", "1")
+        window._startup_annolid_bot()
+        assert called["count"] == 0
+    finally:
+        window.close()
