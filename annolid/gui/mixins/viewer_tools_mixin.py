@@ -15,7 +15,6 @@ from annolid.gui.flybody_support import (
     build_setup_flybody_command,
     default_flybody_install_dir,
     pick_ready_flybody_runtime,
-    resolve_local_flybody_repo,
     summarize_flybody_status,
 )
 from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
@@ -295,24 +294,6 @@ class ViewerToolsMixin:
                 self.tr("Failed to generate example:\n%1").replace("%1", str(exc)),
             )
             return
-        if (
-            example_id == "flybody_simulation_json"
-            and resolve_local_flybody_repo() is None
-        ):
-            parent = self if isinstance(self, QtWidgets.QWidget) else None
-            reply = QtWidgets.QMessageBox.question(
-                parent,
-                self.tr("FlyBody Example"),
-                self.tr(
-                    "A local FlyBody checkout was not found.\n\n"
-                    "Select Yes to install FlyBody now, or No to open the fallback example."
-                ),
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.No,
-            )
-            if reply == QtWidgets.QMessageBox.Yes:
-                self.install_flybody_optional()
-                return
         if example_path.suffix.lower() == ".json":
             if manager.show_simulation_in_viewer(example_path):
                 if example_id == "flybody_simulation_json":
