@@ -1,12 +1,12 @@
-from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot, QThread
+from qtpy.QtCore import QObject, QThread, Signal, Slot
 
 
 class BackgroundTask(QObject):
     """
-    A class for running tasks in the background using PyQt5.
+    A class for running tasks in the background using Qt via qtpy.
     """
 
-    task_completed = pyqtSignal()
+    task_completed = Signal()
 
     def __init__(self, task_function, *args, **kwargs):
         """
@@ -21,7 +21,7 @@ class BackgroundTask(QObject):
         self.args = args
         self.kwargs = kwargs
 
-    @pyqtSlot()
+    @Slot()
     def execute(self):
         """
         Execute the background task.
@@ -55,7 +55,7 @@ class BackgroundTaskThread(QThread):
 
 # Usage Example:
 if __name__ == "__main__":
-    from PyQt5.QtWidgets import QApplication
+    from qtpy.QtWidgets import QApplication
 
     def time_consuming_task():
         # Simulate a time-consuming task
@@ -72,4 +72,5 @@ if __name__ == "__main__":
 
     task_thread.start()
 
-    app.exec_()
+    exec_fn = getattr(app, "exec", None) or getattr(app, "exec_", None)
+    exec_fn()

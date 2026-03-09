@@ -29,13 +29,10 @@ from annolid.utils.citations import (
     upsert_entry,
 )
 from annolid.utils.logger import logger
+from annolid.gui.widgets.webengine_lifecycle import release_webengine_view
 
 
 import os
-
-# The macOS QtWebEngine sandbox patches (fixing dyld and ICU mmap errors)
-# have been moved to `annolid.utils.macos_fixes.apply_macos_webengine_sandbox_patch`
-# and are executed early in `annolid/gui/app.py` before QApplication initialization.
 
 try:
     from qtpy import QtWebEngineWidgets  # type: ignore
@@ -562,7 +559,10 @@ def _create_ephemeral_web_profile(
     if not _WEBENGINE_AVAILABLE:
         return None
     try:
-        profile = QtWebEngineWidgets.QWebEngineProfile(parent)
+        # Keep profile unmanaged by parent so close-event teardown can enforce
+        # page-before-profile deletion order.
+        _ = parent
+        profile = QtWebEngineWidgets.QWebEngineProfile()
         cookie_policy = getattr(
             QtWebEngineWidgets.QWebEngineProfile, "NoPersistentCookies", None
         )
@@ -992,31 +992,10 @@ class WebViewerWidget(QtWidgets.QWidget):
         """Release WebEngine page/profile in deterministic order."""
         try:
             view = self._web_view
-            if view is not None:
-                try:
-                    view.setUrl(QtCore.QUrl("about:blank"))
-                except Exception:
-                    pass
-                page = None
-                try:
-                    page = view.page()
-                except Exception:
-                    page = None
-                try:
-                    view.setPage(None)  # type: ignore[arg-type]
-                except Exception:
-                    pass
-                if page is not None:
-                    with contextlib.suppress(Exception):
-                        page.deleteLater()
-                with contextlib.suppress(Exception):
-                    view.deleteLater()
             profile = self._web_profile
             self._web_view = None
             self._web_profile = None
-            if profile is not None:
-                with contextlib.suppress(Exception):
-                    profile.deleteLater()
+            release_webengine_view(view, profile)
         finally:
             super().closeEvent(event)
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.metadata
 import pkgutil
+import sys
 from abc import ABC
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Type
+from typing import Any, Dict, Iterable, List, Type
 
 
 class ModelPluginBase(ABC):
@@ -19,6 +21,8 @@ class ModelPluginBase(ABC):
     description: str = ""
     train_help_sections: tuple[tuple[str, tuple[str, ...]], ...] = ()
     predict_help_sections: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    train_examples: tuple[str, ...] = ()
+    predict_examples: tuple[str, ...] = ()
 
     def add_train_args(self, parser: argparse.ArgumentParser) -> None:
         raise NotImplementedError
@@ -65,7 +69,9 @@ class ModelInfo:
 
 _REGISTRY: Dict[str, Type[ModelPluginBase]] = {}
 _BUILTINS_LOADED = False
+_ENTRY_POINTS_LOADED = False
 _LOAD_FAILURES: Dict[str, str] = {}
+_ENTRY_POINT_GROUP = "annolid.model_plugins"
 
 
 def register_model(plugin_cls: Type[ModelPluginBase]) -> Type[ModelPluginBase]:
@@ -88,6 +94,42 @@ def _iter_builtin_modules() -> Iterable[str]:
         yield mod.name
 
 
+def _iter_model_plugin_entry_points() -> Iterable[Any]:
+    try:
+        entry_points = importlib.metadata.entry_points()
+    except Exception:
+        return ()
+    if hasattr(entry_points, "select"):
+        return entry_points.select(group=_ENTRY_POINT_GROUP)
+    group_items = getattr(entry_points, "get", lambda *_args, **_kwargs: ())(
+        _ENTRY_POINT_GROUP, ()
+    )
+    return tuple(group_items)
+
+
+def load_entry_point_models() -> List[str]:
+    """Load third-party model plugins registered via Python entry points."""
+    global _ENTRY_POINTS_LOADED
+    if _ENTRY_POINTS_LOADED:
+        return []
+    _ENTRY_POINTS_LOADED = True
+
+    failed: List[str] = []
+    for entry_point in _iter_model_plugin_entry_points():
+        label = f"{_ENTRY_POINT_GROUP}:{getattr(entry_point, 'name', '<unknown>')}"
+        try:
+            loaded = entry_point.load()
+            if not isinstance(loaded, type) or not issubclass(loaded, ModelPluginBase):
+                raise TypeError(
+                    "Entry point must resolve to a ModelPluginBase subclass"
+                )
+            register_model(loaded)
+        except Exception as exc:
+            failed.append(label)
+            _LOAD_FAILURES[label] = f"{exc.__class__.__name__}: {exc}"
+    return failed
+
+
 def load_builtin_models() -> List[str]:
     """Import built-in plugin modules and return those that failed to import."""
     global _BUILTINS_LOADED
@@ -107,12 +149,14 @@ def load_builtin_models() -> List[str]:
 
 def get_load_failures() -> Dict[str, str]:
     load_builtin_models()
+    load_entry_point_models()
     return dict(_LOAD_FAILURES)
 
 
 def list_models(*, load_builtins: bool = True) -> List[ModelInfo]:
     if load_builtins:
         load_builtin_models()
+        load_entry_point_models()
     out: List[ModelInfo] = []
     for name, cls in sorted(_REGISTRY.items(), key=lambda kv: kv[0]):
         out.append(
@@ -134,13 +178,17 @@ def get_model(name: str, *, load_builtins: bool = True) -> ModelPluginBase:
         # so lightweight CLI subcommands avoid importing all heavy model stacks.
         candidate_module = key.replace("-", "_")
         if candidate_module:
+            module_name = f"annolid.engine.models.{candidate_module}"
             try:
-                importlib.import_module(f"annolid.engine.models.{candidate_module}")
+                importlib.import_module(module_name)
+                if key not in _REGISTRY and module_name in sys.modules:
+                    importlib.reload(sys.modules[module_name])
             except Exception:
                 # Fall back to global builtin import below.
                 pass
     if load_builtins and key not in _REGISTRY:
         load_builtin_models()
+        load_entry_point_models()
     if key not in _REGISTRY:
         available = ", ".join(sorted(_REGISTRY.keys())) or "(none)"
         raise KeyError(f"Unknown model {key!r}. Available: {available}")

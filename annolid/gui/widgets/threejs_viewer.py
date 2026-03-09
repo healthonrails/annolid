@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import json
 from pathlib import Path
 from typing import List, Optional
@@ -22,6 +21,7 @@ from annolid.gui.widgets.threejs_viewer_server import (
     _ensure_threejs_http_server,
     _register_threejs_http_model,
 )
+from annolid.gui.widgets.webengine_lifecycle import release_webengine_view
 from annolid.gui.threejs_support import supports_threejs_canvas
 from annolid.utils.logger import logger
 
@@ -98,7 +98,10 @@ def _create_ephemeral_web_profile(
     if not _WEBENGINE_AVAILABLE:
         return None
     try:
-        profile = QtWebEngineWidgets.QWebEngineProfile(parent)
+        # Keep profile unmanaged by parent so close-event teardown can enforce
+        # page-before-profile deletion order.
+        _ = parent
+        profile = QtWebEngineWidgets.QWebEngineProfile()
         cookie_policy = getattr(
             QtWebEngineWidgets.QWebEngineProfile, "NoPersistentCookies", None
         )
@@ -434,30 +437,9 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         """Release WebEngine page/profile in deterministic order."""
         try:
             view = self._web_view
-            if view is not None:
-                try:
-                    view.setUrl(QtCore.QUrl("about:blank"))
-                except Exception:
-                    pass
-                page = None
-                try:
-                    page = view.page()
-                except Exception:
-                    page = None
-                try:
-                    view.setPage(None)  # type: ignore[arg-type]
-                except Exception:
-                    pass
-                if page is not None:
-                    with contextlib.suppress(Exception):
-                        page.deleteLater()
-                with contextlib.suppress(Exception):
-                    view.deleteLater()
             profile = self._web_profile
             self._web_view = None
             self._web_profile = None
-            if profile is not None:
-                with contextlib.suppress(Exception):
-                    profile.deleteLater()
+            release_webengine_view(view, profile)
         finally:
             super().closeEvent(event)

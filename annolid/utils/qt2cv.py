@@ -2,8 +2,8 @@ import cv2
 import numpy as np
 import os.path
 import qimage2ndarray
-from PyQt5 import QtGui
-from PyQt5.QtGui import QImage
+from qtpy import QtGui
+from qtpy.QtGui import QImage
 
 
 def load_image_from_path(img_path):

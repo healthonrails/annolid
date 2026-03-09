@@ -18,6 +18,7 @@ import shutil
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 from qtpy import QtCore, QtGui, QtWidgets
+from annolid.gui.qt_compat import palette_color_role
 from qtpy.QtCore import QThreadPool
 
 from annolid.infrastructure.agent_config import (
@@ -1513,7 +1514,7 @@ class AIChatWidget(QtWidgets.QWidget):
         self._applying_theme_styles = True
         try:
             palette = self.palette()
-            is_dark = palette.color(QtGui.QPalette.Window).lightness() < 128
+            is_dark = palette.color(palette_color_role("Window")).lightness() < 128
 
             # Theme-aware colors
             if is_dark:

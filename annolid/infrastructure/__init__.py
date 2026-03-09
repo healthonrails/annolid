@@ -11,7 +11,6 @@ _EXPORTS = {
     "AnnotationStoreError": "annolid.infrastructure.persistence",
     "LLMChatAdapter": "annolid.infrastructure.external_apis",
     "Qwen3EmbeddingAdapter": "annolid.infrastructure.external_apis",
-    "apply_macos_webengine_sandbox_patch": "annolid.infrastructure.runtime",
     "configure_ultralytics_cache": "annolid.infrastructure.model_downloads",
     "construct_filename": "annolid.infrastructure.filesystem",
     "create_qapp": "annolid.infrastructure.runtime",

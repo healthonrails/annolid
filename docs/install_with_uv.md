@@ -52,6 +52,36 @@ annolid-run --help
 annolid-run list-models
 ```
 
+## Optional FlyBody Checkout
+
+If you want the simulation/FlyBody plugin path in the same `.venv`, install the
+optional runtime explicitly with `uv pip`:
+
+```bash
+source .venv/bin/activate
+uv pip install --python .venv/bin/python dm-control mujoco dm-tree mediapy h5py
+uv pip install --python .venv/bin/python --no-deps -e /path/to/flybody
+python scripts/check_flybody_runtime.py
+```
+
+Equivalent helper:
+
+```bash
+scripts/setup_flybody_uv.sh --flybody-path /path/to/flybody
+```
+
+Alternative isolated environment:
+
+```bash
+scripts/setup_flybody_uv.sh --venv-dir .venv311 --python 3.11 --flybody-path /path/to/flybody
+```
+
+Notes:
+
+- Prefer Python 3.11 for this setup.
+- Python 3.13 can still require a `labmaze` compatibility workaround upstream.
+- The Annolid plugin docs are in [Simulation and FlyBody](simulation_flybody.md).
+
 ## 5. Launch
 
 ```bash

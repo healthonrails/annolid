@@ -1,4 +1,5 @@
 from __future__ import annotations
+# ruff: noqa: E402
 
 # Enable CPU fallback for unsupported MPS ops
 import os  # noqa
@@ -13,27 +14,34 @@ if os.name == "nt":  # noqa
 
 import sys
 from pathlib import Path
+from annolid.gui.qt_env import configure_qt_api
 
-# Apply macOS QtWebEngine patch before importing modules that may import
+configure_qt_api(os.environ)
+
+# Configure Qt WebEngine before importing modules that may import
 # QtWebEngine at module-load time (for example PDF/Web viewer managers).
 if sys.platform == "darwin":
     try:
         from annolid.infrastructure.runtime import (
-            apply_macos_webengine_sandbox_patch,
+            configure_qtwebengine_chromium_flags,
             configure_qtwebengine_resource_paths,
         )
 
+        configure_qtwebengine_chromium_flags()
         configure_qtwebengine_resource_paths()
-        apply_macos_webengine_sandbox_patch()
     except Exception as exc:
         print(
-            f"Warning: Failed to initialize macOS QtWebEngine fix: {exc.__class__.__name__}: {exc}",
+            f"Warning: Failed to initialize QtWebEngine runtime config: {exc.__class__.__name__}: {exc}",
             file=sys.stderr,
         )
 else:
     try:
-        from annolid.infrastructure.runtime import configure_qtwebengine_resource_paths
+        from annolid.infrastructure.runtime import (
+            configure_qtwebengine_chromium_flags,
+            configure_qtwebengine_resource_paths,
+        )
 
+        configure_qtwebengine_chromium_flags()
         configure_qtwebengine_resource_paths()
     except Exception:
         pass
@@ -107,6 +115,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
     """Annolid main window built on AnnolidWindowBase."""
 
     live_annolid_frame_updated = Signal(int, str)  # For modeless dialogs if any
+    status_message_requested = Signal(str, int)
 
     def __init__(self, config=None):
         self.config = config
@@ -121,6 +130,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         tracker_kwargs = {k: v for k, v in tracker_cfg.items() if k in tracker_fields}
         self.tracker_runtime_config = CutieDinoTrackerConfig(**tracker_kwargs)
         super(AnnolidWindow, self).__init__(config=self.config)
+        self.status_message_requested.connect(self._show_status_message)
 
         # self.flag_dock.setVisible(True)
         self.flag_widget.close()
@@ -139,9 +149,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.tracking_controller = TrackingController(self)
         feature_deps = GuiFeatureDeps(
             window=self,
-            status_message=lambda msg, timeout=4000: self.statusBar().showMessage(
-                msg, timeout
-            ),
+            status_message=self.post_status_message,
         )
         self.feature_states: Dict[str, object] = {}
 
@@ -211,6 +219,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.annotation_dir = None
         self.step_size = 5
         self.stepSizeWidget = StepSizeWidget(5)
+
         self.prev_shapes = None
         self.pred_worker = None
         self.video_processor = None
@@ -359,6 +368,13 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.populateModeActions()
         QtCore.QTimer.singleShot(0, self._restore_last_worked_file_if_available)
         QtCore.QTimer.singleShot(0, self._startup_annolid_bot)
+
+    @QtCore.Slot(str, int)
+    def _show_status_message(self, message: str, timeout: int = 4000) -> None:
+        self.statusBar().showMessage(str(message or ""), int(timeout or 0))
+
+    def post_status_message(self, message: str, timeout: int = 4000) -> None:
+        self.status_message_requested.emit(str(message or ""), int(timeout or 0))
 
     def _setup_keypoint_sequence_quick_toggle(self) -> None:
         """Add quick toggle action (toolbar + shortcut) for keypoint sequencing."""

@@ -118,7 +118,7 @@ annolid-run list-models
 - Install FFmpeg if video import/export or codec support is incomplete.
 - If you use Annolid Bot with MCP or browser automation, install the `annolid_bot` extra.
 - If `qtpy.QtBindingsNotFoundError` appears, install the `gui` extra in the active environment.
-- On Python 3.13+, the GUI stack may use `PySide6` instead of `PyQt5` based on the package metadata.
+- The `gui` extra now installs `PySide6` as the default Qt binding.
 
 ## Next Steps
 

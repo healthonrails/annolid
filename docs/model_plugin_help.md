@@ -75,6 +75,78 @@ Each section is declared as:
 )
 ```
 
+Annolid now also discovers third-party model plugins from the Python entry
+point group `annolid.model_plugins`. This lets heavy optional backends stay in a
+separate package while still appearing in:
+
+```bash
+annolid-run list-models
+annolid-run help predict <model>
+annolid-run predict <model> ...
+```
+
+Example `pyproject.toml` for an external plugin package:
+
+```toml
+[project.entry-points."annolid.model_plugins"]
+flybody = "annolid_flybody.plugin:FlyBodyPlugin"
+```
+
+## Simulation Backend Pattern
+
+For physics or kinematics integrations, prefer keeping backend-specific code in a
+plugin package and reuse the core helpers under `annolid.simulation` for:
+
+- typed pose frames (`Pose2DFrame`, `Pose3DFrame`),
+- adapter contracts (`SimulationAdapter`),
+- mapping/config loading (`load_simulation_mapping`),
+- LabelMe or NDJSON pose ingestion (`read_pose_frames`),
+- schema-valid simulation export (`write_simulation_ndjson`).
+
+That split keeps Annolid core responsible for stable IO contracts while the
+simulation package owns heavy runtime dependencies and backend behavior.
+
+Current built-in examples:
+
+```bash
+annolid-run help predict simulation_runner
+annolid-run predict simulation_runner --backend identity --input pose.json --mapping sim.json --out-ndjson sim.ndjson
+annolid-run predict flybody --pose-schema pose_schema.json --write-mapping-template flybody.yaml
+annolid-run predict flybody --input pose.ndjson --mapping flybody.yaml --out-ndjson flybody.ndjson --dry-run
+annolid-run predict flybody --input pose.ndjson --depth-ndjson depth.ndjson --mapping flybody.yaml --out-ndjson flybody.ndjson --dry-run
+annolid-run predict flybody --input pose.ndjson --depth-ndjson depth.ndjson --mapping flybody.yaml --out-ndjson flybody.ndjson --smooth-mode ema --max-gap-frames 2 --dry-run
+```
+
+If you install the optional FlyBody runtime into `.venv`, verify that stack
+before the first non-`--dry-run` invocation:
+
+```bash
+uv pip install --python .venv/bin/python dm-control mujoco dm-tree mediapy h5py
+uv pip install --python .venv/bin/python --no-deps -e /path/to/flybody
+python scripts/check_flybody_runtime.py
+```
+
+Wrapper:
+
+```bash
+scripts/setup_flybody_uv.sh --flybody-path /path/to/flybody
+```
+
+Use `--venv-dir .venv311 --python 3.11` if you want an isolated FlyBody env
+without modifying the default `.venv`.
+
+Checked example template:
+
+```bash
+annolid/configs/flybody_template.yaml
+```
+
+Use it directly as a starting point, or generate a project-specific copy with:
+
+```bash
+annolid-run predict flybody --pose-schema pose_schema.json --write-mapping-template flybody.yaml
+```
+
 ## Plugin Author Guidelines
 
 - Add explicit help sections for every supported mode.
@@ -86,6 +158,8 @@ Each section is declared as:
   - train or predict tuning knobs.
 - Keep the section names stable and human-readable.
 - Treat the full parser output as the detailed reference, not the primary UX.
+- Keep module imports light so discovery does not pull in heavy runtime
+  dependencies before the user actually runs `train()` or `predict()`.
 
 ## Fallback Behavior
 

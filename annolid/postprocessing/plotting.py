@@ -1,5 +1,6 @@
 import pandas as pd
-import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 
 
 def plot_trajactory(
@@ -17,10 +18,12 @@ def plot_trajactory(
     df = pd.read_csv(tracking_csv)
     df = df[df["instance_name"] == instance_name]
     df.dropna(inplace=True)
-    plt.figure(figsize=(10, 5))
-    plt.title(f"{title} for {instance_name}")
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.plot(df.cx, df.cy, trajactory_color_style)
-    plt.savefig(save_path)
-    plt.close()
+    # Use Agg canvas directly to avoid GUI backend teardown issues in tests.
+    figure = Figure(figsize=(10, 5))
+    FigureCanvasAgg(figure)
+    axis = figure.add_subplot(111)
+    axis.set_title(f"{title} for {instance_name}")
+    axis.set_xlabel(xlabel)
+    axis.set_ylabel(ylabel)
+    axis.plot(df.cx, df.cy, trajactory_color_style)
+    figure.savefig(save_path)

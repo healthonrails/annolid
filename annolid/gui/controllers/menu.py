@@ -42,21 +42,48 @@ class MenuController:
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
+    def _is_menu_alive(self, menu: object) -> bool:
+        """Return True when a QMenu wrapper still points to a live Qt object."""
+        if not isinstance(menu, QtWidgets.QMenu):
+            return False
+        try:
+            _ = menu.title()
+            _ = menu.menuAction()
+            return True
+        except RuntimeError:
+            # PySide/PyQt raise when the wrapped C++ object has been deleted.
+            return False
+
+    def _ensure_named_menu(self, name: str, title: str) -> QtWidgets.QMenu:
+        """Get a top-level menu by name, recreating it if missing/stale."""
+        w = self._window
+        if not hasattr(w, "menus"):
+            w.menus = SimpleNamespace()
+        menu = getattr(w.menus, name, None)
+        if self._is_menu_alive(menu):
+            try:
+                menu.setTitle(w.tr(title))
+                return menu
+            except RuntimeError:
+                pass
+        menu = QtWidgets.QMenu(w.tr(title), w)
+        setattr(w.menus, name, menu)
+        return menu
+
     def _ensure_all_menus(self) -> None:
         """Create all custom menus for organized, user-friendly navigation."""
         w = self._window
         action = self._action_factory
 
         # Base menus can be missing in some UI reconstruction paths.
-        # Re-create Help defensively so About actions always have a target.
-        if not hasattr(w, "menus"):
-            w.menus = SimpleNamespace()
-        if not hasattr(w.menus, "help") or getattr(w.menus, "help", None) is None:
-            w.menus.help = w.menuBar().addMenu(w.tr("&Help"))
+        # Ensure menu references are live wrappers before population/reorder.
+        self._ensure_named_menu("file", "&File")
+        self._ensure_named_menu("edit", "&Edit")
+        self._ensure_named_menu("view", "&View")
+        self._ensure_named_menu("help", "&Help")
 
         # Video Tools menu
-        if not hasattr(w.menus, "video_tools"):
-            w.menus.video_tools = QtWidgets.QMenu(w.tr("&Video Tools"), w)
+        self._ensure_named_menu("video_tools", "&Video Tools")
         w.open_segment_editor_action = action(
             w.tr("Define Video Segments..."),
             w._open_segment_editor_dialog,
@@ -66,20 +93,16 @@ class MenuController:
         w.open_segment_editor_action.setEnabled(False)
 
         # AI & Models menu - central hub for machine learning
-        if not hasattr(w.menus, "ai_models"):
-            w.menus.ai_models = QtWidgets.QMenu(w.tr("&AI && Models"), w)
+        self._ensure_named_menu("ai_models", "&AI && Models")
 
         # Analysis menu - reports and visualization
-        if not hasattr(w.menus, "analysis"):
-            w.menus.analysis = QtWidgets.QMenu(w.tr("&Analysis"), w)
+        self._ensure_named_menu("analysis", "&Analysis")
 
         # Convert menu - format conversions
-        if not hasattr(w.menus, "convert"):
-            w.menus.convert = QtWidgets.QMenu(w.tr("&Convert"), w)
+        self._ensure_named_menu("convert", "&Convert")
 
         # Settings menu
-        if not hasattr(w.menus, "settings"):
-            w.menus.settings = QtWidgets.QMenu(w.tr("&Settings"), w)
+        self._ensure_named_menu("settings", "&Settings")
 
     def _ensure_docks_menu(self) -> None:
         """Create a dynamic View->Docks submenu for showing/hiding dock widgets."""
@@ -1304,14 +1327,6 @@ class MenuController:
         """Keep top-level menu order consistent and professional."""
         w = self._window
         bar = w.menuBar()
-        if not hasattr(w.menus, "help") or getattr(w.menus, "help", None) is None:
-            w.menus.help = bar.addMenu(w.tr("&Help"))
-        else:
-            try:
-                w.menus.help.setTitle(w.tr("&Help"))
-                w.menus.help.menuAction().setVisible(True)
-            except Exception:
-                pass
         # Professional menu order: File, Edit, View, then domain menus, then Settings/Help
         desired_names = [
             "file",
@@ -1324,11 +1339,21 @@ class MenuController:
             "settings",
             "help",
         ]
-        menus = []
-        for name in desired_names:
-            menu = getattr(w.menus, name, None)
-            if menu is not None:
-                menus.append(menu)
+        top_menu_titles = {
+            "file": "&File",
+            "edit": "&Edit",
+            "view": "&View",
+            "video_tools": "&Video Tools",
+            "ai_models": "&AI && Models",
+            "analysis": "&Analysis",
+            "convert": "&Convert",
+            "settings": "&Settings",
+            "help": "&Help",
+        }
+        menus = [
+            self._ensure_named_menu(name, top_menu_titles[name])
+            for name in desired_names
+        ]
 
         # Remove existing menu actions so we can re-add in a stable order.
         # Use menuAction() directly (instead of addMenu(menu)) to avoid platform-
@@ -1339,8 +1364,12 @@ class MenuController:
                 bar.removeAction(action)
 
         # Re-add in the requested order.
+        # PySide6 can invalidate the old QAction wrapper after removeAction(),
+        # so reattach the QMenu itself instead of reusing menu.menuAction().
         for menu in menus:
-            bar.addAction(menu.menuAction())
+            if not self._is_menu_alive(menu):
+                continue
+            bar.addMenu(menu)
 
     def _open_help_url(self, url: str) -> None:
         if not url:

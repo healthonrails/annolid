@@ -4,7 +4,6 @@ import time
 from pathlib import Path
 
 import cv2
-import imgviz
 import numpy as np
 from qtpy import QtCore
 from qtpy import QtGui
@@ -26,6 +25,7 @@ from annolid.utils.devices import clear_device_cache
 from annolid.utils.logger import logger
 from annolid.utils.prompts import extract_number_and_remove_digits
 from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
+from annolid.gui.qt_compat import painter_render_hint
 # TODO(unknown):
 # - [maybe] Find optimal epsilon value.
 
@@ -41,7 +41,7 @@ MOVE_SPEED = 5.0
 
 class Canvas(QtWidgets.QWidget):
     zoomRequest = QtCore.Signal(int, QtCore.QPoint)
-    scrollRequest = QtCore.Signal(int, int)
+    scrollRequest = QtCore.Signal(int, object)
     newShape = QtCore.Signal()
     selectionChanged = QtCore.Signal(list)
     shapeMoved = QtCore.Signal()
@@ -119,7 +119,6 @@ class Canvas(QtWidgets.QWidget):
         self.movingShape = False
         self.snapping = True
         self.hShapeIsSelected = False
-        self._painter = QtGui.QPainter()
         self._cursor = CURSOR_DEFAULT
         self.mouse_xy_text = ""
         self._icons_dir = Path(__file__).resolve().parents[1] / "icons"
@@ -1008,6 +1007,7 @@ class Canvas(QtWidgets.QWidget):
         self.mode = self.EDIT if value else self.CREATE
         if self.mode == self.EDIT:
             # CREATE -> EDIT
+            self._clear_preview_line()
             self.repaint()  # clear crosshair
         else:
             # EDIT -> CREATE
@@ -1438,7 +1438,7 @@ class Canvas(QtWidgets.QWidget):
                     elif self.createMode == "linestrip":
                         self.current.addPoint(self.line[1])
                         self.line[0] = self.current[-1]
-                        if int(ev.modifiers()) == QtCore.Qt.ControlModifier:
+                        if ev.modifiers() == QtCore.Qt.ControlModifier:
                             self.finalise()
                     elif self.createMode in ["ai_polygon", "ai_mask"]:
                         self.current.addPoint(
@@ -1456,7 +1456,7 @@ class Canvas(QtWidgets.QWidget):
                         ]
                         labels = [int(label) for label in self.current.labels]
                         self.samPrompt(np.array(points), np.array(labels))
-                        if int(ev.modifiers()) == QtCore.Qt.ControlModifier:
+                        if ev.modifiers() == QtCore.Qt.ControlModifier:
                             self.finalise()
                 elif not self.outOfPixmap(pos):
                     # Create new shape.
@@ -1502,13 +1502,12 @@ class Canvas(QtWidgets.QWidget):
                 if self.selectedEdge():
                     self.addPointToEdge()
                 elif (
-                    self.selectedVertex()
-                    and int(ev.modifiers()) == QtCore.Qt.ShiftModifier
+                    self.selectedVertex() and ev.modifiers() == QtCore.Qt.ShiftModifier
                 ):
                     # Delete point if: left-click + SHIFT on a point
                     self.removeSelectedPoint()
 
-                group_mode = int(ev.modifiers()) == QtCore.Qt.ControlModifier
+                group_mode = ev.modifiers() == QtCore.Qt.ControlModifier
                 self.selectShapePoint(pos, multiple_selection_mode=group_mode)
                 self.prevPoint = pos
                 self.repaint()
@@ -1519,7 +1518,7 @@ class Canvas(QtWidgets.QWidget):
                     points = [[point.x(), point.y()] for point in self.current.points]
                     labels = [int(label) for label in self.current.labels]
                     self.samPrompt(np.array(points), np.array(labels))
-                    if int(ev.modifiers()) == QtCore.Qt.ControlModifier:
+                    if ev.modifiers() == QtCore.Qt.ControlModifier:
                         self.finalise()
                 elif not self.outOfPixmap(pos):
                     self.current = MultipoinstShape()
@@ -1529,7 +1528,7 @@ class Canvas(QtWidgets.QWidget):
                     self.drawingPolygon.emit(True)
                     self.update()
             elif self.editing():
-                group_mode = int(ev.modifiers()) == QtCore.Qt.ControlModifier
+                group_mode = ev.modifiers() == QtCore.Qt.ControlModifier
                 selected_ids = {id(s) for s in (self.selectedShapes or [])}
                 if not self.selectedShapes or (
                     self.hShape is not None and id(self.hShape) not in selected_ids
@@ -1770,143 +1769,111 @@ class Canvas(QtWidgets.QWidget):
         if not self.boundedMoveShapes(shapes, point - offset):
             self.boundedMoveShapes(shapes, point + offset)
 
-    def paintEvent(self, event):
-        p = self._painter
-        p.begin(self)
-        p.setRenderHint(QtGui.QPainter.Antialiasing)
-        p.setRenderHint(QtGui.QPainter.HighQualityAntialiasing)
-        p.setRenderHint(QtGui.QPainter.SmoothPixmapTransform)
-
-        p.scale(self.scale, self.scale)
-        p.translate(self.offsetToCenter())
-
-        # Check if pixmap is valid
-        if self.pixmap and not self.pixmap.isNull():
-            p.drawPixmap(0, 0, self.pixmap)
-
-        self.sam_mask.paint(p)
-
-        if self._patch_similarity_pixmap is not None:
-            p.drawPixmap(0, 0, self._patch_similarity_pixmap)
-
-        if self._pca_map_pixmap is not None:
-            p.drawPixmap(0, 0, self._pca_map_pixmap)
-
-        if self._depth_preview_pixmap is not None:
-            p.drawPixmap(0, 0, self._depth_preview_pixmap)
-
-        if self._flow_preview_pixmap is not None:
-            p.drawPixmap(0, 0, self._flow_preview_pixmap)
-
-        if self.current_behavior_text and len(self.current_behavior_text) > 0:
-            p.save()
-            p.resetTransform()
-
-            if self.pixmap and not self.pixmap.isNull():
-                base_size = min(self.pixmap.width(), self.pixmap.height())
-            else:
-                base_size = min(max(self.width(), 1), max(self.height(), 1))
-            font_size = max(20, base_size // 40)
-
-            font = QtGui.QFont()
-            font.setPointSize(font_size)
-            font.setBold(True)
-            p.setFont(font)
-
-            metrics = QtGui.QFontMetrics(font)
-            text = self.current_behavior_text
-            text_bounds = metrics.boundingRect(text)
-
-            margin = 12
-            padding_x = 8
-            padding_y = 6
-
-            background_rect = QtCore.QRect(
-                margin,
-                margin,
-                text_bounds.width() + 2 * padding_x,
-                text_bounds.height() + 2 * padding_y,
+    def _paint_ai_polygon_preview(self, painter):
+        if self.current is None:
+            return
+        drawing_shape = self.current.copy()
+        drawing_shape.addPoint(
+            point=self.line.points[1],
+            label=self.line.point_labels[1],
+        )
+        try:
+            if not self._ensure_ai_model_initialized():
+                logger.error(
+                    "AI polygon model is not initialized; skipping prediction."
+                )
+                return
+            points = self._ai_model.predict_polygon_from_points(
+                points=[[point.x(), point.y()] for point in drawing_shape.points],
+                point_labels=drawing_shape.point_labels,
             )
+            if len(points) > 2:
+                drawing_shape.setShapeRefined(
+                    shape_type="polygon",
+                    points=[QtCore.QPointF(point[0], point[1]) for point in points],
+                    point_labels=[1] * len(points),
+                )
+                drawing_shape.fill = self.fillDrawing()
+                drawing_shape.paint(painter)
+        except Exception as e:
+            logger.error(f"An error occurred during AI polygon prediction: {e}")
 
-            bg_color = self.behavior_text_background
-            if bg_color is None:
-                bg_color = QtGui.QColor(0, 0, 0, 180)
-            else:
-                bg_color = QtGui.QColor(bg_color)
-
-            if bg_color.alpha() > 0:
-                p.setPen(QtCore.Qt.NoPen)
-                p.setBrush(QtGui.QBrush(bg_color))
-                p.drawRoundedRect(background_rect, 6, 6)
-
-            text_rect = QtCore.QRect(
-                background_rect.left() + padding_x,
-                background_rect.top() + padding_y,
-                text_bounds.width(),
-                text_bounds.height(),
+    def _paint_ai_mask_preview(self, painter):
+        if self.current is None:
+            return
+        drawing_shape = self.current.copy()
+        drawing_shape.addPoint(
+            point=self.line.points[1],
+            label=self.line.point_labels[1],
+        )
+        try:
+            if not self._ensure_ai_model_initialized():
+                logger.error("AI mask model is not initialized; skipping prediction.")
+                return
+            mask = self._ai_model.predict_mask_from_points(
+                points=[[point.x(), point.y()] for point in drawing_shape.points],
+                point_labels=drawing_shape.point_labels,
             )
-
-            # Drop shadow ensures contrast even if the background is light/transparent
-            shadow_rect = text_rect.translated(1, 1)
-            p.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 200)))
-            p.drawText(
-                shadow_rect,
-                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
-                text,
+            bbox = self._mask_bbox(mask)
+            if bbox is None:
+                return
+            y1, x1, y2, x2 = bbox
+            drawing_shape.setShapeRefined(
+                shape_type="mask",
+                points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
+                point_labels=[1, 1],
+                mask=mask[y1:y2, x1:x2],
             )
+            drawing_shape.selected = True
+            drawing_shape.paint(painter)
+        except Exception as e:
+            logger.error(f"An error occurred during AI mask prediction: {e}")
 
-            p.setPen(QtGui.QPen(QtGui.QColor(self.behavior_text_color)))
-            p.drawText(
-                text_rect,
-                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
-                text,
-            )
+    @staticmethod
+    def _mask_bbox(mask):
+        mask_array = np.asarray(mask)
+        if mask_array.ndim != 2 or not np.any(mask_array):
+            return None
+        rows = np.where(mask_array.any(axis=1))[0]
+        cols = np.where(mask_array.any(axis=0))[0]
+        y1 = int(rows[0])
+        y2 = int(rows[-1]) + 1
+        x1 = int(cols[0])
+        x2 = int(cols[-1]) + 1
+        return y1, x1, y2, x2
 
-            p.restore()
+    def _build_polygon_preview_line(self):
+        if self.current is None or len(self.current.points) == 0:
+            return None
+        if len(self.line.points) < 2:
+            return None
+        preview = Shape(
+            shape_type="line", line_color=getattr(self.line, "line_color", None)
+        )
+        preview.points = [
+            QtCore.QPointF(self.current[-1]),
+            QtCore.QPointF(self.line.points[1]),
+        ]
+        preview.point_labels = [1, 1]
+        return preview
 
-        # draw crosshair
-        if (not self.createMode == "grounding_sam") and (
-            self._crosshair[self._createMode] and self.drawing()
-        ):
-            p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255), 1, QtCore.Qt.DotLine))
-            p.drawLine(
-                0,
-                int(self.prevMovePoint.y()),
-                self.width() - 1,
-                int(self.prevMovePoint.y()),
-            )
-            p.drawLine(
-                int(self.prevMovePoint.x()),
-                0,
-                int(self.prevMovePoint.x()),
-                self.height() - 1,
-            )
+    def _clear_preview_line(self):
+        self.line = Shape()
 
-        Shape.scale = self.scale
-        MultipoinstShape.scale = self.scale
-        if self.pixmap and not self.pixmap.isNull():
-            image_width = self.pixmap.width()
-            image_height = self.pixmap.height()
-        else:
-            image_width = None
-            image_height = None
-
-        # Draw pose edges behind the keypoints (but above the image).
-        self._draw_pose_edges(p)
-
-        for shape in self.shapes:
-            if (shape.selected or not self._hideBackround) and self.isVisible(shape):
-                shape.fill = shape.selected or shape == self.hShape
-                try:
-                    shape.paint(p, image_width, image_height)
-                except SystemError as e:
-                    print(e)
-        if self.current:
-            self.current.paint(p)
-            self.line.paint(p)
+    def _paint_live_preview(self, painter):
         if self.selectedShapesCopy:
-            for s in self.selectedShapesCopy:
-                s.paint(p)
+            for shape in self.selectedShapesCopy:
+                shape.paint(painter)
+
+        if not self.drawing():
+            return
+
+        if self.createMode in ["polygon", "linestrip"] and self.current is not None:
+            preview_line = self._build_polygon_preview_line()
+            if preview_line is not None:
+                preview_line.paint(painter)
+        else:
+            self.line.paint(painter)
 
         try:
             if (
@@ -1918,121 +1885,189 @@ class Canvas(QtWidgets.QWidget):
                 drawing_shape = self.current.copy()
                 drawing_shape.addPoint(self.line[1])
                 drawing_shape.fill = True
-                drawing_shape.paint(p)
+                drawing_shape.paint(painter)
             elif self.createMode == "ai_polygon" and self.current is not None:
-                drawing_shape = self.current.copy()
-                drawing_shape.addPoint(
-                    point=self.line.points[1],
-                    label=self.line.point_labels[1],
-                )
-                try:
-                    if not self._ensure_ai_model_initialized():
-                        logger.error(
-                            "AI polygon model is not initialized; skipping prediction."
-                        )
-                    else:
-                        points = self._ai_model.predict_polygon_from_points(
-                            points=[
-                                [point.x(), point.y()] for point in drawing_shape.points
-                            ],
-                            point_labels=drawing_shape.point_labels,
-                        )
-                        if len(points) > 2:
-                            drawing_shape.setShapeRefined(
-                                shape_type="polygon",
-                                points=[
-                                    QtCore.QPointF(point[0], point[1])
-                                    for point in points
-                                ],
-                                point_labels=[1] * len(points),
-                            )
-                            drawing_shape.fill = self.fillDrawing()
-                            drawing_shape.paint(p)
-                except Exception as e:
-                    logger.error(f"An error occurred during AI polygon prediction: {e}")
-
+                self._paint_ai_polygon_preview(painter)
             elif self.createMode == "ai_mask" and self.current is not None:
-                drawing_shape = self.current.copy()
-                drawing_shape.addPoint(
-                    point=self.line.points[1],
-                    label=self.line.point_labels[1],
-                )
-                try:
-                    if not self._ensure_ai_model_initialized():
-                        logger.error(
-                            "AI mask model is not initialized; skipping prediction."
-                        )
-                    else:
-                        mask = self._ai_model.predict_mask_from_points(
-                            points=[
-                                [point.x(), point.y()] for point in drawing_shape.points
-                            ],
-                            point_labels=drawing_shape.point_labels,
-                        )
-                        y1, x1, y2, x2 = imgviz.instances.mask_to_bbox([mask])[
-                            0
-                        ].astype(int)
-                        drawing_shape.setShapeRefined(
-                            shape_type="mask",
-                            points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
-                            point_labels=[1, 1],
-                            mask=mask[y1:y2, x1:x2],
-                        )
-                        drawing_shape.selected = True
-                        drawing_shape.paint(p)
-                except Exception as e:
-                    logger.error(f"An error occurred during AI mask prediction: {e}")
-
+                self._paint_ai_mask_preview(painter)
             elif (
-                # Check if the current mode is either 'linestrip' or 'line' to handle line segment drawing.
                 self.createMode in ["linestrip", "line"]
                 and self.drawing()
                 and self.current
                 and len(self.current.points) > 0
             ):
-                # Get starting and end point for the line segment.
                 start_point = self.current.points[-1]
                 end_point = self.line.points[1]
 
-                # Compute Euclidean distance in pixels.
                 dx = end_point.x() - start_point.x()
                 dy = end_point.y() - start_point.y()
                 distance = (dx**2 + dy**2) ** 0.5
 
-                # Calculate the midpoint of the line segment to place the text.
                 mid_point = QtCore.QPointF(
                     (start_point.x() + end_point.x()) / 2,
                     (start_point.y() + end_point.y()) / 2,
                 )
 
-                # Adjust the font size with line length. Here we're using a simple scaling
-                # factor (distance/10) while clamping the font size between 8 and 20 points.
-                # Clamp the font size between 8 and 20 points.
-                # Adjust the scaling factor and min/max values as needed.
                 font_size = int(max(8, min(20, distance / 10)))
 
-                # Create a font with the computed size.
                 font = QtGui.QFont()
                 font.setPointSize(font_size)
 
-                # Use the pen already set for drawing lines (this reuses the line color).
-                line_pen = p.pen()
+                line_pen = painter.pen()
 
-                # Set the painter's font and pen.
-                p.setFont(font)
-                p.setPen(line_pen)
-                # Draw the text near the midpoint with localization.
+                painter.setFont(font)
+                painter.setPen(line_pen)
                 localized_text = QtCore.QCoreApplication.translate(
                     "Canvas", "{:.1f}px".format(distance)
                 )
-                p.drawText(mid_point, localized_text)
-                p.drawText(mid_point, f"{distance:.1f}px")
+                painter.drawText(mid_point, localized_text)
+                painter.drawText(mid_point, f"{distance:.1f}px")
 
         except Exception as e:
-            # General error handling for the entire block
             logger.error(f"An error occurred in paintEvent: {e}")
 
-        p.end()
+    def paintEvent(self, event):
+        p = QtGui.QPainter(self)
+        try:
+            p.setRenderHint(painter_render_hint("Antialiasing"), True)
+            try:
+                p.setRenderHint(painter_render_hint("HighQualityAntialiasing"), True)
+            except AttributeError:
+                pass
+            p.setRenderHint(painter_render_hint("SmoothPixmapTransform"), True)
+
+            p.scale(self.scale, self.scale)
+            p.translate(self.offsetToCenter())
+
+            # Check if pixmap is valid
+            if self.pixmap and not self.pixmap.isNull():
+                p.drawPixmap(0, 0, self.pixmap)
+
+            self.sam_mask.paint(p)
+
+            if self._patch_similarity_pixmap is not None:
+                p.drawPixmap(0, 0, self._patch_similarity_pixmap)
+
+            if self._pca_map_pixmap is not None:
+                p.drawPixmap(0, 0, self._pca_map_pixmap)
+
+            if self._depth_preview_pixmap is not None:
+                p.drawPixmap(0, 0, self._depth_preview_pixmap)
+
+            if self._flow_preview_pixmap is not None:
+                p.drawPixmap(0, 0, self._flow_preview_pixmap)
+
+            if self.current_behavior_text and len(self.current_behavior_text) > 0:
+                p.save()
+                p.resetTransform()
+
+                if self.pixmap and not self.pixmap.isNull():
+                    base_size = min(self.pixmap.width(), self.pixmap.height())
+                else:
+                    base_size = min(max(self.width(), 1), max(self.height(), 1))
+                font_size = max(20, base_size // 40)
+
+                font = QtGui.QFont()
+                font.setPointSize(font_size)
+                font.setBold(True)
+                p.setFont(font)
+
+                metrics = QtGui.QFontMetrics(font)
+                text = self.current_behavior_text
+                text_bounds = metrics.boundingRect(text)
+
+                margin = 12
+                padding_x = 8
+                padding_y = 6
+
+                background_rect = QtCore.QRect(
+                    margin,
+                    margin,
+                    text_bounds.width() + 2 * padding_x,
+                    text_bounds.height() + 2 * padding_y,
+                )
+
+                bg_color = self.behavior_text_background
+                if bg_color is None:
+                    bg_color = QtGui.QColor(0, 0, 0, 180)
+                else:
+                    bg_color = QtGui.QColor(bg_color)
+
+                if bg_color.alpha() > 0:
+                    p.setPen(QtCore.Qt.NoPen)
+                    p.setBrush(QtGui.QBrush(bg_color))
+                    p.drawRoundedRect(background_rect, 6, 6)
+
+                text_rect = QtCore.QRect(
+                    background_rect.left() + padding_x,
+                    background_rect.top() + padding_y,
+                    text_bounds.width(),
+                    text_bounds.height(),
+                )
+
+                # Drop shadow ensures contrast even if the background is light/transparent
+                shadow_rect = text_rect.translated(1, 1)
+                p.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 200)))
+                p.drawText(
+                    shadow_rect,
+                    QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                    text,
+                )
+
+                p.setPen(QtGui.QPen(QtGui.QColor(self.behavior_text_color)))
+                p.drawText(
+                    text_rect,
+                    QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                    text,
+                )
+
+                p.restore()
+
+            # draw crosshair
+            if (not self.createMode == "grounding_sam") and (
+                self._crosshair[self._createMode] and self.drawing()
+            ):
+                p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255), 1, QtCore.Qt.DotLine))
+                p.drawLine(
+                    0,
+                    int(self.prevMovePoint.y()),
+                    self.width() - 1,
+                    int(self.prevMovePoint.y()),
+                )
+                p.drawLine(
+                    int(self.prevMovePoint.x()),
+                    0,
+                    int(self.prevMovePoint.x()),
+                    self.height() - 1,
+                )
+
+            Shape.scale = self.scale
+            MultipoinstShape.scale = self.scale
+            if self.pixmap and not self.pixmap.isNull():
+                image_width = self.pixmap.width()
+                image_height = self.pixmap.height()
+            else:
+                image_width = None
+                image_height = None
+
+            # Draw pose edges behind the keypoints (but above the image).
+            self._draw_pose_edges(p)
+
+            for shape in self.shapes:
+                if (shape.selected or not self._hideBackround) and self.isVisible(
+                    shape
+                ):
+                    shape.fill = shape.selected or shape == self.hShape
+                    try:
+                        shape.paint(p, image_width, image_height)
+                    except SystemError as e:
+                        print(e)
+            if self.current:
+                self.current.paint(p)
+            self._paint_live_preview(p)
+        finally:
+            if p.isActive():
+                p.end()
 
     def transformPos(self, point):
         """Convert from widget-logical coordinates to painter-logical ones."""
@@ -2137,7 +2172,11 @@ class Canvas(QtWidgets.QWidget):
                 points=[[point.x(), point.y()] for point in self.current.points],
                 point_labels=self.current.point_labels,
             )
-            y1, x1, y2, x2 = imgviz.instances.mask_to_bbox([mask])[0].astype(int)
+            bbox = self._mask_bbox(mask)
+            if bbox is None:
+                logger.error("AI mask prediction returned an empty mask.")
+                return
+            y1, x1, y2, x2 = bbox
             self.current.setShapeRefined(
                 shape_type="mask",
                 points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
@@ -2153,6 +2192,7 @@ class Canvas(QtWidgets.QWidget):
         self.storeShapes()
         self.sam_mask = MaskShape()
         self.current = None
+        self._clear_preview_line()
         self.setHiding(False)
         self.newShape.emit()
         self.update()
@@ -2233,7 +2273,7 @@ class Canvas(QtWidgets.QWidget):
         if QT5:
             mods = ev.modifiers()
             delta = ev.angleDelta()
-            if QtCore.Qt.ControlModifier == int(mods):
+            if mods == QtCore.Qt.ControlModifier:
                 # with Ctrl/Command key
                 # zoom
                 self.zoomRequest.emit(delta.y(), ev.pos())
@@ -2244,14 +2284,14 @@ class Canvas(QtWidgets.QWidget):
         else:
             if ev.orientation() == QtCore.Qt.Vertical:
                 mods = ev.modifiers()
-                if QtCore.Qt.ControlModifier == int(mods):
+                if mods == QtCore.Qt.ControlModifier:
                     # with Ctrl/Command key
                     self.zoomRequest.emit(ev.delta(), ev.pos())
                 else:
                     self.scrollRequest.emit(
                         ev.delta(),
                         QtCore.Qt.Horizontal
-                        if (QtCore.Qt.ShiftModifier == int(mods))
+                        if (mods == QtCore.Qt.ShiftModifier)
                         else QtCore.Qt.Vertical,
                     )
             else:
@@ -2271,6 +2311,7 @@ class Canvas(QtWidgets.QWidget):
         if self.drawing():
             if key == QtCore.Qt.Key_Escape and self.current:
                 self.current = None
+                self._clear_preview_line()
                 self.drawingPolygon.emit(False)
                 self.update()
                 handled = True
@@ -2344,7 +2385,7 @@ class Canvas(QtWidgets.QWidget):
     def keyReleaseEvent(self, ev):
         modifiers = ev.modifiers()
         if self.drawing():
-            if int(modifiers) == 0:
+            if modifiers == QtCore.Qt.NoModifier:
                 self.snapping = True
         elif self.editing():
             if self.movingShape and self.selectedShapes:
@@ -2407,6 +2448,7 @@ class Canvas(QtWidgets.QWidget):
             self.shapes = []
             self.sam_mask = MaskShape()
             self.current = None
+            self._clear_preview_line()
 
         if self.createMode == "polygonSAM" and self.pixmap and self.sam_predictor:
             self.samEmbedding()
@@ -2485,6 +2527,7 @@ class Canvas(QtWidgets.QWidget):
             self.shapes.extend(shapes)
         self.storeShapes()
         self.current = None
+        self._clear_preview_line()
         self.sam_mask = MaskShape()
         self.hShape = None
         self.hVertex = None
@@ -2495,6 +2538,7 @@ class Canvas(QtWidgets.QWidget):
         """Replace shapes without touching the undo stack."""
         self.shapes = list(shapes or [])
         self.current = None
+        self._clear_preview_line()
         self.hShape = None
         self.hVertex = None
         self.hEdge = None

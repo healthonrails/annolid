@@ -6,6 +6,11 @@ from types import SimpleNamespace
 from typing import Iterable, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
+from annolid.gui.qt_compat import (
+    normalize_orientation,
+    palette_color_group,
+    palette_color_role,
+)
 
 from annolid.configs import get_config
 from annolid.gui.file_dock import FileDockMixin
@@ -286,8 +291,12 @@ class AnnolidToolButton(QtWidgets.QToolButton):
         text = (act.iconText() if act is not None else "") or self.text()
         if text:
             pal = opt.palette
-            group = QtGui.QPalette.Active if enabled else QtGui.QPalette.Disabled
-            painter.setPen(pal.color(group, QtGui.QPalette.ButtonText))
+            group = (
+                palette_color_group("Active")
+                if enabled
+                else palette_color_group("Disabled")
+            )
+            painter.setPen(pal.color(group, palette_color_role("ButtonText")))
             painter.drawText(
                 text_rect,
                 QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop | QtCore.Qt.TextWordWrap,
@@ -768,6 +777,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         bars = getattr(self, "scrollBars", None)
         if not isinstance(bars, dict):
             return
+        orientation = normalize_orientation(orientation)
         bar = bars.get(orientation)
         if bar is not None:
             bar.setValue(int(value))

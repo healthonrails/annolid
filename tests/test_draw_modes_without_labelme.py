@@ -1,9 +1,11 @@
 import builtins
 import importlib
 import os
+import threading
+from types import SimpleNamespace
 
 import numpy as np
-from qtpy import QtWidgets, QtGui
+from qtpy import QtCore, QtWidgets, QtGui
 
 
 os.environ.setdefault("QT_QPA_PLATFORM", "minimal")
@@ -203,3 +205,244 @@ def test_draw_mode_actions_expose_mode_switch_shortcuts():
         assert edit_texts & {"Ctrl+J", "Meta+J"}
     finally:
         w.close()
+
+
+class _ActivePainterProbe:
+    def __init__(self, active_states, *, points=None, point_labels=None):
+        self._active_states = active_states
+        self.points = list(points or [])
+        self.point_labels = list(point_labels or [])
+        self.fill = False
+        self.selected = False
+
+    def paint(self, painter, *args):
+        self._active_states.append(bool(painter.isActive()))
+
+    def copy(self):
+        return _ActivePainterProbe(
+            self._active_states,
+            points=self.points,
+            point_labels=self.point_labels,
+        )
+
+    def addPoint(self, point, label=1):
+        self.points.append(point)
+        self.point_labels.append(label)
+
+    def setShapeRefined(self, **kwargs):
+        _ = kwargs
+
+
+def test_ai_polygon_preview_paints_with_active_painter(monkeypatch):
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+
+    active_states = []
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(96, 64, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(90, 100, 110))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.resize(96, 64)
+        canvas.show()
+        _ensure_qapp().processEvents()
+        canvas.createMode = "ai_polygon"
+        canvas.current = _ActivePainterProbe(
+            active_states,
+            points=[QtCore.QPointF(10, 10)],
+            point_labels=[1],
+        )
+        canvas.line = _ActivePainterProbe(
+            active_states,
+            points=[QtCore.QPointF(10, 10), QtCore.QPointF(40, 40)],
+            point_labels=[1, 1],
+        )
+        monkeypatch.setattr(canvas, "_ensure_ai_model_initialized", lambda: True)
+
+        class _FakeAiModel:
+            def predict_polygon_from_points(self, points, point_labels):
+                _ = point_labels
+                return points + [[20.0, 40.0], [10.0, 40.0]]
+
+        canvas._ai_model = _FakeAiModel()
+        target = QtGui.QPixmap(canvas.size())
+        target.fill(QtCore.Qt.transparent)
+        canvas.render(target)
+    finally:
+        canvas.close()
+
+    assert active_states
+    assert all(active_states)
+
+
+def test_ai_mask_preview_paints_with_active_painter(monkeypatch):
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+
+    active_states = []
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(96, 64, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(120, 130, 140))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.resize(96, 64)
+        canvas.show()
+        _ensure_qapp().processEvents()
+        canvas.createMode = "ai_mask"
+        canvas.current = _ActivePainterProbe(
+            active_states,
+            points=[QtCore.QPointF(20, 20)],
+            point_labels=[1],
+        )
+        canvas.line = _ActivePainterProbe(
+            active_states,
+            points=[QtCore.QPointF(20, 20), QtCore.QPointF(50, 45)],
+            point_labels=[1, 1],
+        )
+        monkeypatch.setattr(canvas, "_ensure_ai_model_initialized", lambda: True)
+
+        class _FakeAiModel:
+            def predict_mask_from_points(self, points, point_labels):
+                _ = points, point_labels
+                mask = np.zeros((64, 96), dtype=np.uint8)
+                mask[15:48, 18:60] = 1
+                return mask
+
+        canvas._ai_model = _FakeAiModel()
+        target = QtGui.QPixmap(canvas.size())
+        target.fill(QtCore.Qt.transparent)
+        canvas.render(target)
+    finally:
+        canvas.close()
+
+    assert active_states
+    assert all(active_states)
+
+
+def test_playback_scroll_request_accepts_raw_orientation_int() -> None:
+    from annolid.gui.mixins.playback_draw_mixin import PlaybackDrawMixin
+
+    class _DummyBar:
+        def value(self):
+            return 10
+
+        def singleStep(self):
+            return 2
+
+    class _DummyHost(PlaybackDrawMixin):
+        def __init__(self):
+            self.scrollBars = {
+                QtCore.Qt.Horizontal: _DummyBar(),
+                QtCore.Qt.Vertical: _DummyBar(),
+            }
+            self.calls = []
+
+        def setScroll(self, orientation, value):
+            self.calls.append((orientation, value))
+
+    host = _DummyHost()
+    host.scrollRequest(5, 0)
+
+    assert host.calls == [(QtCore.Qt.Horizontal, 9.0)]
+
+
+def test_canvas_key_release_accepts_qt_no_modifier() -> None:
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        canvas.mode = canvas.CREATE
+        canvas.snapping = False
+        event = SimpleNamespace(modifiers=lambda: QtCore.Qt.NoModifier)
+        canvas.keyReleaseEvent(event)
+        assert canvas.snapping is True
+    finally:
+        canvas.close()
+
+
+def test_polygon_preview_line_uses_last_committed_point_not_stale_line_start() -> None:
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+    from annolid.gui.shape import Shape
+
+    canvas = Canvas()
+    try:
+        current = Shape(shape_type="polygon")
+        current.points = [
+            QtCore.QPointF(10, 10),
+            QtCore.QPointF(20, 15),
+            QtCore.QPointF(30, 40),
+        ]
+        current.point_labels = [1, 1, 1]
+        canvas.current = current
+        canvas.line.points = [QtCore.QPointF(10, 10), QtCore.QPointF(80, 70)]
+
+        preview = canvas._build_polygon_preview_line()
+
+        assert preview is not None
+        assert preview.points[0] == QtCore.QPointF(30, 40)
+        assert preview.points[1] == QtCore.QPointF(80, 70)
+    finally:
+        canvas.close()
+
+
+def test_stale_preview_line_is_not_painted_in_edit_mode() -> None:
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    calls = []
+
+    class _DummyPreviewLine:
+        points = [QtCore.QPointF(10, 10), QtCore.QPointF(30, 30)]
+
+        def paint(self, painter):
+            calls.append(bool(painter.isActive()))
+
+    canvas.line = _DummyPreviewLine()
+    canvas.mode = canvas.EDIT
+
+    target = QtGui.QPixmap(32, 32)
+    target.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(target)
+    try:
+        canvas._paint_live_preview(painter)
+    finally:
+        painter.end()
+        canvas.close()
+
+    assert calls == []
+
+
+def test_post_status_message_is_safe_from_background_thread() -> None:
+    _ensure_qapp()
+
+    from annolid.gui.app import AnnolidWindow
+
+    window = AnnolidWindow(config={})
+    messages = []
+    try:
+        original = window.statusBar().showMessage
+
+        def capture(message, timeout=0):
+            messages.append((message, timeout))
+            return original(message, timeout)
+
+        window.statusBar().showMessage = capture  # type: ignore[method-assign]
+
+        thread = threading.Thread(
+            target=lambda: window.post_status_message("background update", 1234)
+        )
+        thread.start()
+        thread.join(timeout=2)
+        _ensure_qapp().processEvents()
+
+        assert ("background update", 1234) in messages
+    finally:
+        window.close()

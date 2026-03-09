@@ -18,6 +18,8 @@ from qtpy.QtCore import QPropertyAnimation
 from typing import Dict
 import re
 
+from annolid.gui.qt_compat import palette_color_role
+
 
 class FlagTable(QTableWidget):
     COLUMN_NAME = 0
@@ -41,7 +43,7 @@ class FlagTable(QTableWidget):
 
         # Get system selection color
         palette = self.palette()
-        highlight_color = palette.color(palette.Highlight)
+        highlight_color = palette.color(palette_color_role("Highlight"))
         highlight_rgba = f"rgba({highlight_color.red()}, {highlight_color.green()}, {highlight_color.blue()}, 0.3)"
 
         self.setStyleSheet(f"""

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
+from annolid.gui.qt_compat import palette_color_role
 
 from annolid.utils.citations import (
     BibEntry,
@@ -370,7 +371,7 @@ class CitationManagerDialog(QtWidgets.QDialog):
         errors = validate_basic_citation_fields(
             {"__key__": key, "year": year, "doi": doi}
         )
-        default_brush = self.palette().brush(QtGui.QPalette.Text)
+        default_brush = self.palette().brush(palette_color_role("Text"))
         for col in (0, 3, 4):
             cell = self.table.item(row, col)
             if cell is None:

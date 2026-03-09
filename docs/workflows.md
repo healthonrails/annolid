@@ -117,6 +117,28 @@ Use cases:
 
 See [SAM 3D](sam3d.md).
 
+## 7. Simulation and FlyBody Workflow
+
+Annolid now includes a simulation-oriented CLI path for converting pose tracks
+into backend-specific targets and enriched NDJSON outputs.
+
+Current capabilities:
+
+- generate FlyBody mapping templates,
+- validate mappings with `--dry-run`,
+- lift 2D keypoints into 3D from `depth.ndjson`,
+- smooth trajectories and fill small gaps before fitting.
+
+Start here:
+
+```bash
+annolid-run help predict flybody
+annolid-run predict flybody --pose-schema pose_schema.json --write-mapping-template flybody.yaml
+annolid-run predict flybody --input pose.ndjson --depth-ndjson depth.ndjson --mapping flybody.yaml --out-ndjson flybody.ndjson --dry-run
+```
+
+See [Simulation and FlyBody](simulation_flybody.md).
+
 ## Recommended Operating Pattern
 
 - Keep changes incremental.

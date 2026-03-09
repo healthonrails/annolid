@@ -60,7 +60,6 @@ dependencies = [
     'pyzmq>=25.1.2',
     'ffpyplayer>=4.5.0',
     'tree-config>=0.6.0',
-    # 'PyQt5==5.15.7',
     'Pillow>=9.3.0,<12.0',
     'chardet>=5.2.0,<6.0.0',
     'transformers>=4.45.1',
@@ -76,9 +75,8 @@ dependencies = [
 
 [project.optional-dependencies]
 gui = [
-    # Qt bindings for the GUI (prefer PyQt5 where available; fall back to PySide6 on newer Python).
-    "PyQt5>=5.15.7; python_version < '3.13'",
-    "PySide6>=6.7.0; python_version >= '3.13'",
+    # Default GUI binding. Code routes Qt access through qtpy for compatibility.
+    "PySide6>=6.7.0",
 ]
 
 vtk = [
@@ -99,7 +97,6 @@ image_editing = [
 
 text_to_speech = [
     "pocket-tts>=1.0.0",
-    "pyqtwebengine",
     "pymupdf",
 ]
 

@@ -1,5 +1,6 @@
 import os
 import sys
+from importlib import util as importlib_util
 from typing import MutableMapping, Optional
 
 
@@ -38,3 +39,26 @@ def sanitize_qt_plugin_env(
         env["QT_PLUGIN_PATH"] = os.pathsep.join(kept_entries)
     else:
         env.pop("QT_PLUGIN_PATH", None)
+
+
+def _has_importable_module(module_name: str) -> bool:
+    try:
+        return importlib_util.find_spec(module_name) is not None
+    except Exception:
+        return False
+
+
+def configure_qt_api(env: MutableMapping[str, str]) -> None:
+    """
+    Select a single Qt binding before any qtpy/PyQt/PySide import happens.
+
+    On environments where multiple Qt bindings are installed, forcing
+    a deterministic QT_API avoids loading two Qt framework families in
+    one process, which can lead to Objective-C class collisions and crashes.
+    """
+    configured = str(env.get("QT_API", "")).strip().lower()
+    if configured:
+        return
+
+    if _has_importable_module("PySide6"):
+        env["QT_API"] = "pyside6"

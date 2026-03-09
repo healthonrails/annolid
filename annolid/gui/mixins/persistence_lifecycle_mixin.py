@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Set
 
 import numpy as np
-from PIL import Image, ImageQt
+from PIL import Image
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
@@ -79,18 +79,7 @@ class PersistenceLifecycleMixin:
                 return None
         elif isinstance(self.imageData, Image.Image):
             pil_image = self.imageData
-        elif isinstance(
-            self.imageData,
-            tuple(
-                filter(
-                    None,
-                    (
-                        QtGui.QImage,
-                        getattr(ImageQt, "ImageQt", None),
-                    ),
-                )
-            ),
-        ):
+        elif isinstance(self.imageData, QtGui.QImage):
             qimage = QtGui.QImage(self.imageData)
             image_bytes = self._qimage_to_bytes(qimage)
             if image_bytes is None:
@@ -104,6 +93,29 @@ class PersistenceLifecycleMixin:
                 logger.error(f"Failed to convert QImage to PIL Image: {e}")
                 return None
         else:
+            # Some callers may store QImage-like wrappers. Try Qt conversion
+            # without importing additional Qt binding helper modules.
+            try:
+                qimage = QtGui.QImage(self.imageData)
+            except Exception:
+                qimage = QtGui.QImage()
+            if not qimage.isNull():
+                image_bytes = self._qimage_to_bytes(qimage)
+                if image_bytes is None:
+                    logger.error("Failed to serialize QImage-like object for saving.")
+                    return None
+                try:
+                    with io.BytesIO(image_bytes) as buffer:
+                        pil_image = Image.open(buffer)
+                        pil_image.load()
+                except Exception as e:
+                    logger.error(
+                        f"Failed to convert QImage-like object to PIL Image: {e}"
+                    )
+                    return None
+                if pil_image.mode != "RGB":
+                    return pil_image.convert("RGB")
+                return pil_image
             logger.warning(
                 f"self.imageData is of an unexpected type ({type(self.imageData)}). "
                 "Cannot convert to PIL.Image for saving."

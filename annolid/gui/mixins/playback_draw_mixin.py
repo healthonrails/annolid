@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from qtpy import QtCore, QtWidgets
 
+from annolid.gui.qt_compat import normalize_orientation
 from annolid.gui.window_base import format_tool_button_text, utils
 from annolid.utils.logger import logger
 
@@ -82,8 +83,14 @@ class PlaybackDrawMixin:
         utils.addActions(self.menus.edit, actions + self.actions.editMenu)
 
     def scrollRequest(self, delta, orientation):
+        orientation = normalize_orientation(orientation)
         units = -delta * 0.1
-        bar = self.scrollBars[orientation]
+        bar = self.scrollBars.get(orientation)
+        if bar is None:
+            logger.debug(
+                "Ignoring scroll request with unknown orientation: %r", orientation
+            )
+            return
         value = bar.value() + bar.singleStep() * units
         self.setScroll(orientation, value)
 

@@ -8,6 +8,8 @@ from PIL import Image
 from qtpy import QtCore, QtGui, QtWidgets
 import qimage2ndarray
 
+from annolid.gui.qt_compat import palette_color_role
+
 
 class VolumeViewerDialog(QtWidgets.QDialog):
     """
@@ -37,7 +39,7 @@ class VolumeViewerDialog(QtWidgets.QDialog):
         # UI
         self._image_label = QtWidgets.QLabel()
         self._image_label.setAlignment(QtCore.Qt.AlignCenter)
-        self._image_label.setBackgroundRole(QtGui.QPalette.Base)
+        self._image_label.setBackgroundRole(palette_color_role("Base"))
         self._image_label.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
         )

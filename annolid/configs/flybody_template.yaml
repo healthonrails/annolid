@@ -1,0 +1,30 @@
+backend: flybody
+keypoint_to_site:
+  nose: head_site
+  left_antenna: left_antenna_site
+  right_antenna: right_antenna_site
+  thorax: thorax_site
+  abdomen_tip: abdomen_tip_site
+  left_front_leg_tip: left_front_tarsus_site
+  right_front_leg_tip: right_front_tarsus_site
+  left_middle_leg_tip: left_middle_tarsus_site
+  right_middle_leg_tip: right_middle_tarsus_site
+  left_hind_leg_tip: left_hind_tarsus_site
+  right_hind_leg_tip: right_hind_tarsus_site
+site_to_joint:
+  head_site: head_yaw_joint
+  thorax_site: thorax_root_joint
+coordinate_system:
+  units: meters
+  camera_intrinsics:
+    fx: null
+    fy: null
+    cx: null
+    cy: null
+metadata:
+  template: flybody
+  species: drosophila
+  notes:
+    - Replace placeholder site names with the exact FlyBody MuJoCo site names you use.
+    - Keep units in meters when combining with Annolid depth.ndjson lifting.
+    - Extend site_to_joint only for joints you need in downstream analysis or IK diagnostics.

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
+from annolid.gui.qt_compat import palette_color_role
 
 try:
     from qtpy import QtWebEngineWidgets  # type: ignore
@@ -39,6 +40,7 @@ from annolid.gui.widgets.pdf_viewer_server import (
     _ensure_pdfjs_http_server,
     _register_pdfjs_http_pdf,
 )
+from annolid.gui.widgets.webengine_lifecycle import release_webengine_view
 from annolid.gui.widgets.bot_explain import explain_selection_with_annolid_bot
 from annolid.gui.widgets.dictionary_lookup import DictionaryLookupTask
 from annolid.gui.widgets.pdf_user_state import (
@@ -181,7 +183,10 @@ def _create_ephemeral_web_profile(
     if not _WEBENGINE_AVAILABLE:
         return None
     try:
-        profile = QtWebEngineWidgets.QWebEngineProfile(parent)
+        # Keep profile unmanaged by parent so close-event teardown can enforce
+        # page-before-profile deletion order.
+        _ = parent
+        profile = QtWebEngineWidgets.QWebEngineProfile()
         cookie_policy = getattr(
             QtWebEngineWidgets.QWebEngineProfile, "NoPersistentCookies", None
         )
@@ -304,7 +309,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
 
         self.image_label = QtWidgets.QLabel(self)
         self.image_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.image_label.setBackgroundRole(QtGui.QPalette.Base)
+        self.image_label.setBackgroundRole(palette_color_role("Base"))
         self.image_label.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
         )
@@ -2885,29 +2890,18 @@ class PdfViewerWidget(QtWidgets.QWidget):
             self._doc.close()
         self._doc = None
         try:
-            if self._web_view is not None:
-                self._web_view.stop()
-                page = self._web_view.page()
-                if page is not None:
-                    try:
-                        page.setWebChannel(None)
-                    except Exception:
-                        pass
-                    try:
-                        page.deleteLater()
-                    except Exception:
-                        pass
-                self._web_view.deleteLater()
+            view = self._web_view
+            profile = self._web_profile
+            release_webengine_view(
+                view,
+                profile,
+                before_page_delete=lambda page: page.setWebChannel(None),
+            )
         except Exception:
             pass
         self._web_view = None
         self._web_channel = None
         self._reader_bridge = None
-        try:
-            if self._web_profile is not None:
-                self._web_profile.deleteLater()
-        except Exception:
-            pass
         self._web_profile = None
         super().closeEvent(event)
 

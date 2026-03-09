@@ -249,6 +249,41 @@ def _plugin_help_description(
     return "\n".join(lines)
 
 
+def _plugin_examples(
+    plugin: object,
+    *,
+    mode: str,
+    model_name: str,
+) -> str:
+    if mode == "train":
+        examples = tuple(
+            str(item)
+            for item in getattr(plugin, "train_examples", ())
+            if str(item).strip()
+        )
+        if examples:
+            return "Examples:\n" + "\n".join(f"  {item}" for item in examples)
+        return (
+            "Examples:\n"
+            f"  annolid-run train {model_name} --help-model\n"
+            f"  annolid-run help train {model_name}\n"
+            f"  annolid-run train {model_name} --run-config <path>"
+        )
+    examples = tuple(
+        str(item)
+        for item in getattr(plugin, "predict_examples", ())
+        if str(item).strip()
+    )
+    if examples:
+        return "Examples:\n" + "\n".join(f"  {item}" for item in examples)
+    return (
+        "Examples:\n"
+        f"  annolid-run predict {model_name} --help-model\n"
+        f"  annolid-run help predict {model_name}\n"
+        f"  annolid-run predict {model_name} --source <video-or-image>"
+    )
+
+
 def _collect_root_command_help(
     parser: argparse.ArgumentParser,
 ) -> dict[str, str]:
@@ -2194,12 +2229,7 @@ def _dispatch_model_subcommand(
             raise SystemExit(f"Model {model_name!r} does not support training.")
         p = argparse.ArgumentParser(
             prog=f"annolid-run train {model_name}",
-            epilog=(
-                "Examples:\n"
-                f"  annolid-run train {model_name} --help-model\n"
-                f"  annolid-run help train {model_name}\n"
-                f"  annolid-run train {model_name} --run-config <path>"
-            ),
+            epilog=_plugin_examples(plugin, mode="train", model_name=model_name),
             formatter_class=_AnnolidHelpFormatter,
         )
         plugin.add_train_args(p)
@@ -2229,12 +2259,7 @@ def _dispatch_model_subcommand(
             raise SystemExit(f"Model {model_name!r} does not support inference.")
         p = argparse.ArgumentParser(
             prog=f"annolid-run predict {model_name}",
-            epilog=(
-                "Examples:\n"
-                f"  annolid-run predict {model_name} --help-model\n"
-                f"  annolid-run help predict {model_name}\n"
-                f"  annolid-run predict {model_name} --source <video-or-image>"
-            ),
+            epilog=_plugin_examples(plugin, mode="predict", model_name=model_name),
             formatter_class=_AnnolidHelpFormatter,
         )
         plugin.add_predict_args(p)

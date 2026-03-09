@@ -12,7 +12,7 @@ import sys
 from typing import Any, Optional, Sequence
 
 from annolid.gui.cli import parse_cli
-from annolid.gui.qt_env import sanitize_qt_plugin_env
+from annolid.gui.qt_env import configure_qt_api, sanitize_qt_plugin_env
 from annolid.utils.logger import configure_logging
 
 
@@ -35,6 +35,7 @@ def main(argv: Optional[Sequence[str]] = None) -> Any:
     # (labelme's AI helpers import onnxruntime; annolid imports torch).
     if os.name == "nt":
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    configure_qt_api(os.environ)
     sanitize_qt_plugin_env(os.environ)
 
     try:
@@ -51,7 +52,7 @@ def main(argv: Optional[Sequence[str]] = None) -> Any:
                 (
                     "No Qt binding detected. Install GUI dependencies with:\n"
                     '  pip install -e ".[gui]"\n'
-                    "or install a Qt binding directly (for example `PyQt5` or `PySide6`)."
+                    "or install a Qt binding directly (for example `PySide6`)."
                 ),
                 file=sys.stderr,
             )

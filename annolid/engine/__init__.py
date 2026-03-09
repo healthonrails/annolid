@@ -3,7 +3,8 @@
 This package provides a small plugin system so new models can be added with:
 1) a lightweight wrapper implementing `ModelPluginBase`
 2) registering via `@register_model`
-3) (optionally) exposing CLI via `annolid-run`
+3) publishing via the `annolid.model_plugins` entry point group
+4) (optionally) exposing CLI via `annolid-run`
 """
 
 from annolid.engine.registry import (
