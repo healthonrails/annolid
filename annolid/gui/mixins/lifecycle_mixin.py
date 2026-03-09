@@ -39,6 +39,12 @@ def _safe_info(message: str, *args) -> None:
 class LifecycleMixin:
     """App lifecycle and teardown helpers."""
 
+    def _ensure_cleanup_once(self) -> bool:
+        if bool(getattr(self, "_cleanup_done", False)):
+            return False
+        self._cleanup_done = True
+        return True
+
     def _stop_frame_loader(self):
         """Tear down the frame loader safely from its owning thread."""
         loader = getattr(self, "frame_loader", None)
@@ -77,6 +83,9 @@ class LifecycleMixin:
             _safe_info("Frame loader stop completed in %.1fms.", elapsed_ms)
 
     def clean_up(self):
+        if not self._ensure_cleanup_once():
+            return
+
         def quit_and_wait(thread, message):
             if thread is not None:
                 try:

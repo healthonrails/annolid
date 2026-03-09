@@ -469,3 +469,28 @@ def test_startup_annolid_bot_respects_disable_env(monkeypatch) -> None:
         assert called["count"] == 0
     finally:
         window.close()
+
+
+def test_window_close_runs_cleanup_once(monkeypatch) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.app import AnnolidWindow
+
+    window = AnnolidWindow(config={})
+    calls = {"count": 0}
+    try:
+        manager = getattr(window, "ai_chat_manager", None)
+        assert manager is not None
+
+        def _cleanup_once():
+            calls["count"] += 1
+
+        monkeypatch.setattr(manager, "cleanup", _cleanup_once)
+        window.close()
+        _ensure_qapp().processEvents()
+        window.clean_up()
+
+        assert calls["count"] == 1
+    finally:
+        if window.isVisible():
+            window.close()

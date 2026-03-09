@@ -256,6 +256,10 @@ class WindowLifecycleMixin:
 
     def closeEvent(self, event):
         try:
+            self.clean_up()
+        except Exception as exc:
+            logger.debug("Failed during window cleanup on close: %s", exc)
+        try:
             self.stop_realtime_inference()
         except Exception as exc:
             logger.error(
