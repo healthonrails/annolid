@@ -13,18 +13,6 @@ from annolid.gui.mixins.viewer_tools_mixin import (
 )
 
 
-_QAPP = None
-
-
-def _ensure_qapp():
-    global _QAPP
-    app = QtWidgets.QApplication.instance()
-    if app is None:
-        app = QtWidgets.QApplication([])
-    _QAPP = app
-    return _QAPP
-
-
 def test_is_recent_live_flybody_payload_accepts_recent_live_payload(
     tmp_path: Path,
 ) -> None:
@@ -78,20 +66,21 @@ class _DummyManager:
         return True
 
 
-class _DummyViewerHost(QtWidgets.QWidget, ViewerToolsMixin):
+class _DummyViewerHost(ViewerToolsMixin):
     def __init__(self) -> None:
-        super().__init__()
         self.threejs_manager = _DummyManager()
         self._status = _DummyStatusBar()
 
     def statusBar(self):
         return self._status
 
+    def tr(self, text: str) -> str:
+        return text
+
 
 def test_open_threejs_example_flybody_stays_on_fast_example_path(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _ensure_qapp()
     widget = _DummyViewerHost()
     example_path = tmp_path / "flybody.json"
     example_path.write_text(
@@ -122,7 +111,6 @@ def test_open_threejs_example_flybody_stays_on_fast_example_path(
 def test_start_live_flybody_example_shows_static_example_first_when_runtime_missing(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _ensure_qapp()
     widget = _DummyViewerHost()
     example_path = tmp_path / "flybody.json"
     example_path.write_text(
