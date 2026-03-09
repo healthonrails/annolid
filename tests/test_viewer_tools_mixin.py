@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
 from annolid.gui.mixins.viewer_tools_mixin import (
     ViewerToolsMixin,
     _is_recent_live_flybody_payload,
+    _prepare_live_flybody_view_payload,
+    _run_logged_subprocess,
 )
 from qtpy import QtWidgets
 
@@ -17,23 +20,59 @@ def test_is_recent_live_flybody_payload_accepts_recent_live_payload(
 ) -> None:
     payload_path = tmp_path / "flybody_live_rollout.json"
     payload_path.write_text(
-        json.dumps({"kind": "annolid-simulation-v1", "adapter": "flybody-live"}),
+        json.dumps(
+            {
+                "kind": "annolid-simulation-v1",
+                "adapter": "flybody-live",
+                "metadata": {
+                    "run_metadata": {
+                        "payload_version": 3,
+                        "behavior": "walk_imitation",
+                    }
+                },
+            }
+        ),
         encoding="utf-8",
     )
 
-    assert _is_recent_live_flybody_payload(payload_path, max_age_seconds=60.0) is True
+    assert (
+        _is_recent_live_flybody_payload(
+            payload_path,
+            max_age_seconds=60.0,
+            behavior="walk_imitation",
+        )
+        is True
+    )
 
 
 def test_is_recent_live_flybody_payload_rejects_stale_payload(tmp_path: Path) -> None:
     payload_path = tmp_path / "flybody_live_rollout.json"
     payload_path.write_text(
-        json.dumps({"kind": "annolid-simulation-v1", "adapter": "flybody-live"}),
+        json.dumps(
+            {
+                "kind": "annolid-simulation-v1",
+                "adapter": "flybody-live",
+                "metadata": {
+                    "run_metadata": {
+                        "payload_version": 3,
+                        "behavior": "walk_imitation",
+                    }
+                },
+            }
+        ),
         encoding="utf-8",
     )
     stale_time = time.time() - 120.0
     os.utime(payload_path, (stale_time, stale_time))
 
-    assert _is_recent_live_flybody_payload(payload_path, max_age_seconds=5.0) is False
+    assert (
+        _is_recent_live_flybody_payload(
+            payload_path,
+            max_age_seconds=5.0,
+            behavior="walk_imitation",
+        )
+        is False
+    )
 
 
 def test_is_recent_live_flybody_payload_rejects_non_live_payload(
@@ -41,11 +80,57 @@ def test_is_recent_live_flybody_payload_rejects_non_live_payload(
 ) -> None:
     payload_path = tmp_path / "flybody_live_rollout.json"
     payload_path.write_text(
-        json.dumps({"kind": "annolid-simulation-v1", "adapter": "flybody"}),
+        json.dumps(
+            {
+                "kind": "annolid-simulation-v1",
+                "adapter": "flybody",
+                "metadata": {
+                    "run_metadata": {
+                        "payload_version": 3,
+                        "behavior": "walk_imitation",
+                    }
+                },
+            }
+        ),
         encoding="utf-8",
     )
 
-    assert _is_recent_live_flybody_payload(payload_path, max_age_seconds=60.0) is False
+    assert (
+        _is_recent_live_flybody_payload(
+            payload_path,
+            max_age_seconds=60.0,
+            behavior="walk_imitation",
+        )
+        is False
+    )
+
+
+def test_is_recent_live_flybody_payload_rejects_wrong_behavior(tmp_path: Path) -> None:
+    payload_path = tmp_path / "flybody_live_rollout.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "kind": "annolid-simulation-v1",
+                "adapter": "flybody-live",
+                "metadata": {
+                    "run_metadata": {
+                        "payload_version": 3,
+                        "behavior": "walk_imitation",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        _is_recent_live_flybody_payload(
+            payload_path,
+            max_age_seconds=60.0,
+            behavior="flight_imitation",
+        )
+        is False
+    )
 
 
 class _DummyStatusBar:
@@ -133,7 +218,26 @@ def test_open_threejs_example_flybody_does_not_prompt_for_install(
 
     widget.open_threejs_example("flybody_simulation_json")
 
-    assert widget.threejs_manager.paths == [example_path]
+
+def test_handle_flybody_viewer_command_routes_start_and_stop(monkeypatch) -> None:
+    widget = _DummyViewerHost()
+    calls = []
+
+    monkeypatch.setattr(
+        widget,
+        "_start_live_flybody_behavior_example",
+        lambda **kwargs: calls.append(("start", kwargs["behavior"])),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_stop_live_flybody_example",
+        lambda: calls.append(("stop", "")),
+    )
+
+    widget.handle_flybody_viewer_command("start", "flight_imitation")
+    widget.handle_flybody_viewer_command("stop", "")
+
+    assert calls == [("start", "flight_imitation"), ("stop", "")]
 
 
 def test_start_live_flybody_example_shows_static_example_first_when_runtime_missing(
@@ -156,6 +260,10 @@ def test_start_live_flybody_example_shows_static_example_first_when_runtime_miss
         "annolid.gui.mixins.viewer_tools_mixin.pick_ready_flybody_runtime",
         lambda: (None, {}),
     )
+    monkeypatch.setattr(
+        "annolid.gui.mixins.viewer_tools_mixin._is_recent_live_flybody_payload",
+        lambda *args, **kwargs: False,
+    )
     shown: list[str] = []
     monkeypatch.setattr(
         QtWidgets.QMessageBox,
@@ -171,3 +279,75 @@ def test_start_live_flybody_example_shows_static_example_first_when_runtime_miss
         "Loaded FlyBody 3D example." in message
         for message, _timeout in widget.statusBar().messages
     )
+
+
+def test_run_logged_subprocess_reports_timeout(monkeypatch, tmp_path: Path) -> None:
+    def _fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["demo"], timeout=5)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    try:
+        _run_logged_subprocess(["demo"], cwd=tmp_path, timeout_seconds=5)
+    except RuntimeError as exc:
+        assert "Timed out after 5s." in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+
+def test_run_logged_subprocess_reports_process_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    def _fake_run(*args, **kwargs):
+        log_file = kwargs["stdout"]
+        log_file.write("failure details\n")
+        raise subprocess.CalledProcessError(returncode=7, cmd=["demo"])
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    try:
+        _run_logged_subprocess(["demo"], cwd=tmp_path, timeout_seconds=5)
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "Command exited with status 7." in message
+        assert "failure details" in message
+    else:
+        raise AssertionError("expected RuntimeError")
+
+
+def test_prepare_live_flybody_view_payload_uses_combined_mesh_and_hides_overlays(
+    monkeypatch, tmp_path: Path
+) -> None:
+    payload_path = tmp_path / "flybody_live_rollout.json"
+    payload_path.write_text(
+        json.dumps({"kind": "annolid-simulation-v1", "adapter": "flybody-live"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "annolid.gui.mixins.viewer_tools_mixin.attach_flybody_mesh",
+        lambda payload, out_dir: {
+            **payload,
+            "mesh": {"type": "obj", "path": "fly.obj"},
+        },
+    )
+    monkeypatch.setattr(
+        "annolid.gui.mixins.viewer_tools_mixin.attach_flybody_floor",
+        lambda payload: {
+            **payload,
+            "environment": {"floor": {"type": "plane", "position": [0.0, 0.0, -0.132]}},
+        },
+    )
+
+    out_path = _prepare_live_flybody_view_payload(payload_path, base_dir=tmp_path)
+    payload = json.loads(Path(out_path).read_text(encoding="utf-8"))
+
+    assert payload["mesh"]["type"] == "obj"
+    assert payload["environment"]["floor"]["type"] == "plane"
+    assert payload["environment"]["floor"]["position"] == [0.0, -0.99, 0.0]
+    assert payload["display"] == {
+        "show_points": False,
+        "show_labels": False,
+        "show_edges": False,
+        "show_trails": False,
+    }

@@ -31,3 +31,70 @@ def test_flybody_part_loader_accepts_parts_without_explicit_type():
     source = js_path.read_text(encoding="utf-8")
 
     assert 'if (part && (!part.type || part.type === "obj"))' in source
+
+
+def test_simulation_loader_preserves_world_coordinates_and_exposes_flybody_controls():
+    repo_root = Path(__file__).resolve().parents[1]
+    js_path = (
+        repo_root
+        / "annolid"
+        / "gui"
+        / "assets"
+        / "threejs"
+        / "annolid_threejs_viewer.js"
+    )
+    source = js_path.read_text(encoding="utf-8")
+
+    assert "addLoadedObject(simulationRoot)" not in source
+    assert "annolid://flybody-live/" in source
+    assert "annolidThreeFlybodyControls" in source
+
+
+def test_simulation_loader_reuses_flybody_mesh_between_motion_updates():
+    repo_root = Path(__file__).resolve().parents[1]
+    js_path = (
+        repo_root
+        / "annolid"
+        / "gui"
+        / "assets"
+        / "threejs"
+        / "annolid_threejs_viewer.js"
+    )
+    source = js_path.read_text(encoding="utf-8")
+
+    assert 'let simulationMeshKey = "";' in source
+    assert 'let simulationEnvironmentKey = "";' in source
+    assert "const shouldReloadMesh = nextMeshKey !== simulationMeshKey;" in source
+    assert (
+        "const shouldReloadEnvironment = nextEnvironmentKey !== simulationEnvironmentKey;"
+        in source
+    )
+    assert "simulationMeshKey = nextMeshKey;" in source
+    assert "simulationEnvironmentKey = nextEnvironmentKey;" in source
+
+
+def test_flybody_controls_snap_under_toolbar_and_are_draggable():
+    repo_root = Path(__file__).resolve().parents[1]
+    js_path = (
+        repo_root
+        / "annolid"
+        / "gui"
+        / "assets"
+        / "threejs"
+        / "annolid_threejs_viewer.js"
+    )
+    css_path = (
+        repo_root
+        / "annolid"
+        / "gui"
+        / "assets"
+        / "threejs"
+        / "annolid_threejs_viewer.css"
+    )
+    js_source = js_path.read_text(encoding="utf-8")
+    css_source = css_path.read_text(encoding="utf-8")
+
+    assert "positionFlybodyControls" in js_source
+    assert "Drag to move FlyBody controls" in js_source
+    assert "cursor: move;" in css_source
+    assert "touch-action: none;" in css_source

@@ -33,6 +33,9 @@ class ThreeJsManager(QtCore.QObject):
             viewer.status_changed.connect(
                 lambda msg: self.window.statusBar().showMessage(msg, 3000)
             )
+            viewer.flybody_command_requested.connect(
+                self._handle_flybody_viewer_command
+            )
             self.viewer_stack.addWidget(viewer)
             self.threejs_viewer = viewer
         return self.threejs_viewer
@@ -128,6 +131,29 @@ class ThreeJsManager(QtCore.QObject):
         )
         return True
 
+    def update_simulation_in_viewer(
+        self, simulation_path: str | Path, *, title: str | None = None
+    ) -> bool:
+        path = Path(simulation_path)
+        if not path.exists():
+            return False
+        viewer = self.ensure_threejs_viewer()
+        started = time.perf_counter()
+        payload_path = path
+        try:
+            payload_path = self._resolve_simulation_payload_path(path)
+            viewer.update_simulation_payload(payload_path, title=title or path.stem)
+        except Exception as exc:
+            logger.warning("Failed to update simulation in Three.js viewer: %s", exc)
+            return False
+        logger.info(
+            "Updated Three.js simulation view for %s using %s in %.1fms",
+            path,
+            payload_path,
+            (time.perf_counter() - started) * 1000.0,
+        )
+        return True
+
     def _resolve_simulation_payload_path(self, path: Path) -> Path:
         if self._is_prebuilt_simulation_payload(path):
             return path
@@ -155,3 +181,8 @@ class ThreeJsManager(QtCore.QObject):
             self.window._set_active_view("canvas")
         except Exception:
             pass
+
+    def _handle_flybody_viewer_command(self, action: str, behavior: str) -> None:
+        handler = getattr(self.window, "handle_flybody_viewer_command", None)
+        if callable(handler):
+            handler(action, behavior)

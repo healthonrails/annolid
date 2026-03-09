@@ -21,7 +21,6 @@ from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
 from annolid.gui.threejs_examples import (
     attach_flybody_floor,
     attach_flybody_mesh,
-    attach_flybody_mesh_parts,
     generate_threejs_example,
 )
 from annolid.gui.workers import FlexibleWorker
@@ -32,15 +31,18 @@ from annolid.simulation import (
 )
 from annolid.utils.logger import logger
 
-_LIVE_FLYBODY_EXAMPLE_STEPS = 48
+_LIVE_FLYBODY_EXAMPLE_STEPS = 96
 _LIVE_FLYBODY_EXAMPLE_SEED = 7
 _LIVE_FLYBODY_EXAMPLE_CACHE_TTL_SECONDS = 300.0
+_LIVE_FLYBODY_SUBPROCESS_TIMEOUT_SECONDS = 45.0
+_LIVE_FLYBODY_PAYLOAD_VERSION = 3
 
 
 def _is_recent_live_flybody_payload(
     payload_path: str | Path,
     *,
     max_age_seconds: float = _LIVE_FLYBODY_EXAMPLE_CACHE_TTL_SECONDS,
+    behavior: str | None = None,
 ) -> bool:
     path = Path(payload_path)
     if not path.exists():
@@ -57,7 +59,107 @@ def _is_recent_live_flybody_payload(
     if payload.get("kind") != "annolid-simulation-v1":
         return False
     adapter = str(payload.get("adapter") or "")
-    return adapter == "flybody-live"
+    if adapter != "flybody-live":
+        return False
+    metadata = payload.get("metadata") or {}
+    run_metadata = metadata.get("run_metadata") or {}
+    if int(run_metadata.get("payload_version") or 0) != _LIVE_FLYBODY_PAYLOAD_VERSION:
+        return False
+    if behavior is not None and str(run_metadata.get("behavior") or "") != str(
+        behavior
+    ):
+        return False
+    return True
+
+
+def _run_logged_subprocess(
+    command: list[str],
+    *,
+    cwd: str | Path,
+    timeout_seconds: float,
+) -> None:
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as log_file:
+        try:
+            subprocess.run(
+                command,
+                cwd=str(Path(cwd)),
+                check=True,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=timeout_seconds,
+            )
+            return
+        except subprocess.TimeoutExpired as exc:
+            log_file.seek(0)
+            log_tail = log_file.read()[-4000:].strip()
+            detail = (
+                f"Timed out after {timeout_seconds:.0f}s."
+                if not log_tail
+                else f"Timed out after {timeout_seconds:.0f}s.\n\n{log_tail}"
+            )
+            raise RuntimeError(detail) from exc
+        except subprocess.CalledProcessError as exc:
+            log_file.seek(0)
+            log_tail = log_file.read()[-4000:].strip()
+            detail = (
+                f"Command exited with status {exc.returncode}."
+                if not log_tail
+                else f"Command exited with status {exc.returncode}.\n\n{log_tail}"
+            )
+            raise RuntimeError(detail) from exc
+
+
+def _read_log_tail(path: str | Path, *, max_chars: int = 4000) -> str:
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    return text[-max_chars:].strip()
+
+
+def _prepare_live_flybody_view_payload(
+    payload_path: str | Path,
+    *,
+    base_dir: str | Path,
+) -> str:
+    payload_file = Path(payload_path)
+    payload = json.loads(payload_file.read_text(encoding="utf-8"))
+    payload = attach_flybody_mesh(payload, base_dir)
+    payload = attach_flybody_floor(payload)
+    floor = (payload.get("environment") or {}).get("floor") or {}
+    model_scale = float(
+        ((payload.get("frames") or [{}])[0].get("model_pose") or {}).get("scale") or 7.5
+    )
+    if isinstance(floor.get("position"), list) and len(floor["position"]) >= 3:
+        floor_position = floor["position"]
+        normalized_floor = dict(floor)
+        normalized_floor["position"] = [
+            0.0,
+            float(floor_position[2]) * model_scale,
+            0.0,
+        ]
+        payload["environment"] = dict(payload.get("environment") or {})
+        payload["environment"]["floor"] = normalized_floor
+    payload.setdefault("display", {})
+    payload["display"].update(
+        {
+            "show_points": False,
+            "show_labels": False,
+            "show_edges": False,
+            "show_trails": False,
+        }
+    )
+    payload["playback"] = {
+        "autoplay": True,
+        "loop": True,
+        "interval_ms": 90,
+    }
+    payload_file.write_text(
+        json.dumps(payload, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return str(payload_file)
 
 
 class ViewerToolsMixin:
@@ -299,7 +401,7 @@ class ViewerToolsMixin:
                 if example_id == "flybody_simulation_json":
                     self.statusBar().showMessage(
                         self.tr(
-                            "Loaded FlyBody 3D example. Use 'Start Live FlyBody Simulation…' or 'Run Simulation to 3D Viewer…' for live motion."
+                            "Loaded FlyBody 3D example. Use the FlyBody controls in the 3D viewer for live motion."
                         ),
                         6000,
                     )
@@ -330,24 +432,41 @@ class ViewerToolsMixin:
             )
 
     def start_live_flybody_example(self) -> None:
+        self._start_live_flybody_behavior_example(
+            behavior="walk_imitation",
+            label=self.tr("FlyBody Live Walk"),
+        )
+
+    def _start_live_flybody_behavior_example(
+        self, *, behavior: str, label: str
+    ) -> None:
         manager = getattr(self, "threejs_manager", None)
         if manager is None:
             QtWidgets.QMessageBox.warning(
                 self,
-                self.tr("FlyBody Live Example"),
+                label,
                 self.tr("Three.js canvas is not available in this session."),
             )
             return
         self._show_flybody_static_example(manager)
-        if self._start_live_flybody_example(manager):
+        if self._start_live_flybody_example(manager, behavior=behavior, label=label):
             return
         QtWidgets.QMessageBox.information(
             self,
-            self.tr("FlyBody Live Example"),
+            label,
             self.tr(
                 "A ready FlyBody runtime was not found.\n\n"
                 "Open 'FlyBody Status…' to inspect setup, or use 'Run Simulation to 3D Viewer…' with another backend."
             ),
+        )
+
+    def handle_flybody_viewer_command(self, action: str, behavior: str) -> None:
+        if action == "stop":
+            self._stop_live_flybody_example()
+            return
+        self._start_live_flybody_behavior_example(
+            behavior=behavior or "walk_imitation",
+            label=self.tr("FlyBody Live Simulation"),
         )
 
     def _flybody_runtime_summary_lines(self) -> tuple[list[str], bool]:
@@ -433,13 +552,17 @@ class ViewerToolsMixin:
         if result == 3:
             self.install_flybody_optional()
 
-    def _start_live_flybody_example(self, manager) -> bool:
+    def _start_live_flybody_example(
+        self, manager, *, behavior: str, label: str
+    ) -> bool:
         base_dir = Path(tempfile.gettempdir()) / "annolid_threejs_examples"
         base_dir.mkdir(parents=True, exist_ok=True)
-        payload_path = base_dir / "flybody_live_rollout.json"
-        if _is_recent_live_flybody_payload(payload_path):
+        payload_path = base_dir / f"flybody_live_{behavior}.json"
+        if _is_recent_live_flybody_payload(payload_path, behavior=behavior):
             logger.info("Reusing cached live FlyBody example payload: %s", payload_path)
-            manager.show_simulation_in_viewer(str(payload_path))
+            manager.update_simulation_in_viewer(
+                str(payload_path), title=f"flybody_live_{behavior}"
+            )
             self.statusBar().showMessage(
                 self.tr("Reused recent FlyBody live example in 3D viewer."),
                 4000,
@@ -463,7 +586,7 @@ class ViewerToolsMixin:
             0,
             self,
         )
-        progress.setWindowTitle(self.tr("FlyBody Live Example"))
+        progress.setWindowTitle(label)
         progress.setCancelButton(None)
         progress.setMinimumDuration(0)
         progress.setWindowModality(QtCore.Qt.WindowModal)
@@ -473,82 +596,141 @@ class ViewerToolsMixin:
             )
         )
 
-        def _task() -> str:
-            rollout_started = time.perf_counter()
-            subprocess.run(
-                build_live_flybody_command(
-                    runtime_python,
-                    out_path=payload_path,
-                    steps=_LIVE_FLYBODY_EXAMPLE_STEPS,
-                    seed=_LIVE_FLYBODY_EXAMPLE_SEED,
-                ),
-                cwd=str(Path.cwd()),
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            rollout_ms = (time.perf_counter() - rollout_started) * 1000.0
-            payload = json.loads(payload_path.read_text(encoding="utf-8"))
-            mesh_started = time.perf_counter()
-            payload = attach_flybody_mesh_parts(payload, base_dir)
-            if "mesh" not in payload:
-                payload = attach_flybody_mesh(payload, base_dir)
-            payload = attach_flybody_floor(payload)
-            payload_path.write_text(
-                json.dumps(payload, separators=(",", ":")),
-                encoding="utf-8",
-            )
-            mesh_ms = (time.perf_counter() - mesh_started) * 1000.0
-            logger.info(
-                "Prepared live FlyBody example in %.1fms (rollout %.1fms, mesh attach %.1fms)",
-                rollout_ms + mesh_ms,
-                rollout_ms,
-                mesh_ms,
-            )
-            return str(payload_path)
+        progress.setCancelButtonText(self.tr("Cancel"))
+        progress.setWindowModality(QtCore.Qt.NonModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
 
-        thread = QtCore.QThread(self)
-        worker = FlexibleWorker(_task)
-        worker.moveToThread(thread)
+        process = QtCore.QProcess(self)
+        log_path = base_dir / "flybody_live_rollout.log"
+        process.setWorkingDirectory(str(Path.cwd()))
+        process.setProgram(str(runtime_python))
+        process.setArguments(
+            build_live_flybody_command(
+                runtime_python,
+                out_path=payload_path,
+                steps=_LIVE_FLYBODY_EXAMPLE_STEPS,
+                seed=_LIVE_FLYBODY_EXAMPLE_SEED,
+                behavior=behavior,
+            )[1:]
+        )
+        process.setProcessChannelMode(QtCore.QProcess.MergedChannels)
+        process.setStandardOutputFile(str(log_path))
 
-        def _finish(result) -> None:
+        started = time.perf_counter()
+        timeout_timer = QtCore.QTimer(self)
+        timeout_timer.setSingleShot(True)
+
+        self._flybody_live_process = process
+        self._flybody_live_progress = progress
+        self._flybody_live_timeout_timer = timeout_timer
+
+        def _cleanup_process() -> None:
+            timeout_timer.stop()
             try:
                 progress.close()
             except Exception:
                 pass
-            thread.quit()
-            thread.wait(2000)
-            worker.deleteLater()
-            thread.deleteLater()
-            if isinstance(result, Exception):
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    self.tr("FlyBody Live Example"),
-                    self.tr(
-                        "Live FlyBody rollout failed. Falling back to the bundled example.\n%1"
-                    ).replace("%1", str(result)),
+            self._flybody_live_process = None
+            self._flybody_live_progress = None
+            self._flybody_live_timeout_timer = None
+            process.deleteLater()
+            timeout_timer.deleteLater()
+
+        def _handle_failure(detail: str) -> None:
+            _cleanup_process()
+            QtWidgets.QMessageBox.warning(
+                self,
+                label,
+                self.tr(
+                    "Live FlyBody rollout failed. Falling back to the bundled example.\n%1"
+                ).replace("%1", detail),
+            )
+            try:
+                fallback_path = generate_threejs_example(
+                    "flybody_simulation_json",
+                    base_dir,
                 )
-                try:
-                    fallback_path = generate_threejs_example(
-                        "flybody_simulation_json",
-                        base_dir,
-                    )
-                    manager.show_simulation_in_viewer(fallback_path)
-                except Exception:
-                    pass
+                manager.show_simulation_in_viewer(fallback_path)
+            except Exception:
+                pass
+
+        def _on_timeout() -> None:
+            if process.state() != QtCore.QProcess.NotRunning:
+                process.kill()
+            detail = _read_log_tail(log_path) or (
+                f"Timed out after {_LIVE_FLYBODY_SUBPROCESS_TIMEOUT_SECONDS:.0f}s."
+            )
+            _handle_failure(detail)
+
+        def _on_canceled() -> None:
+            if process.state() != QtCore.QProcess.NotRunning:
+                process.kill()
+            _cleanup_process()
+            self.statusBar().showMessage(
+                self.tr("Canceled live FlyBody simulation startup."),
+                4000,
+            )
+
+        def _on_finished(exit_code: int, exit_status) -> None:
+            if exit_status != QtCore.QProcess.NormalExit or exit_code != 0:
+                detail = _read_log_tail(log_path) or (
+                    f"Command exited with status {exit_code}."
+                )
+                _handle_failure(detail)
                 return
-            manager.show_simulation_in_viewer(str(result))
+            try:
+                prepared_path = _prepare_live_flybody_view_payload(
+                    payload_path,
+                    base_dir=base_dir,
+                )
+            except Exception as exc:
+                _handle_failure(str(exc))
+                return
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            logger.info(
+                "Prepared live FlyBody example in %.1fms using %s",
+                elapsed_ms,
+                prepared_path,
+            )
+            _cleanup_process()
+            manager.update_simulation_in_viewer(
+                prepared_path,
+                title=f"flybody_live_{behavior}",
+            )
             self.statusBar().showMessage(
                 self.tr("FlyBody live rollout opened in 3D viewer."),
                 4000,
             )
 
-        thread.started.connect(worker.run)
-        worker.finished_signal.connect(_finish)
+        timeout_timer.timeout.connect(_on_timeout)
+        progress.canceled.connect(_on_canceled)
+        process.finished.connect(_on_finished)
         progress.show()
-        thread.start()
+        timeout_timer.start(int(_LIVE_FLYBODY_SUBPROCESS_TIMEOUT_SECONDS * 1000.0))
+        process.start()
         return True
+
+    def _stop_live_flybody_example(self) -> None:
+        process = getattr(self, "_flybody_live_process", None)
+        progress = getattr(self, "_flybody_live_progress", None)
+        timeout_timer = getattr(self, "_flybody_live_timeout_timer", None)
+        if process is not None and process.state() != QtCore.QProcess.NotRunning:
+            process.kill()
+        if timeout_timer is not None:
+            timeout_timer.stop()
+        if progress is not None:
+            try:
+                progress.close()
+            except Exception:
+                pass
+        self._flybody_live_process = None
+        self._flybody_live_progress = None
+        self._flybody_live_timeout_timer = None
+        self.statusBar().showMessage(
+            self.tr("Stopped live FlyBody simulation."),
+            4000,
+        )
 
     def install_flybody_optional(self) -> None:
         dialog = QtWidgets.QDialog(self)
@@ -599,13 +781,10 @@ class ViewerToolsMixin:
         def _task() -> str:
             if not dest.exists():
                 clone_cmd = build_clone_flybody_command(repo_url, dest)
-                subprocess.run(
+                _run_logged_subprocess(
                     clone_cmd,
                     cwd=str(Path.cwd()),
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
+                    timeout_seconds=_LIVE_FLYBODY_SUBPROCESS_TIMEOUT_SECONDS,
                 )
             setup_cmd = build_setup_flybody_command(
                 repo_root=Path.cwd(),
@@ -613,13 +792,10 @@ class ViewerToolsMixin:
                 venv_dir=venv_dir,
                 python_version=python_version,
             )
-            subprocess.run(
+            _run_logged_subprocess(
                 setup_cmd,
                 cwd=str(Path.cwd()),
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
+                timeout_seconds=_LIVE_FLYBODY_SUBPROCESS_TIMEOUT_SECONDS,
             )
             return str(dest)
 

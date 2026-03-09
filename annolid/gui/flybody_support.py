@@ -111,11 +111,14 @@ def build_live_flybody_command(
     out_path: str | Path,
     steps: int = 180,
     seed: int = 7,
+    behavior: str = "walk_imitation",
 ) -> list[str]:
     return [
         str(Path(python_executable).expanduser()),
         "-m",
         "annolid.simulation.flybody_live",
+        "--behavior",
+        str(behavior),
         "--out",
         str(Path(out_path).expanduser()),
         "--steps",

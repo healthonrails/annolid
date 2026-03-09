@@ -6,6 +6,8 @@ async function boot() {
   const timelineLabel = document.getElementById("simulationFrameLabel");
   const timelinePlayBtn = document.getElementById("btnSimulationPlay");
   const metaEl = document.getElementById("annolidThreeMeta");
+  const flybodyControlsEl = document.getElementById("annolidThreeFlybodyControls");
+  const toolbarEl = document.getElementById("annolidThreeToolbar");
   const legendEl = document.getElementById("annolidThreeLegend");
   const categoryPanelEl = document.getElementById("annolidThreeCategoryPanel");
   const modelUrl = window.__annolidThreeModelUrl || "";
@@ -221,6 +223,30 @@ async function boot() {
     const root = new THREE.Group();
     scene.add(root);
 
+    const fitCameraToObject = (obj, options = {}) => {
+      const box = new THREE.Box3().setFromObject(obj || root);
+      if (box.isEmpty()) {
+        setStatus(`Loaded ${title} but geometry bounds are empty.`, "error");
+        return;
+      }
+      const size = new THREE.Vector3();
+      const center = new THREE.Vector3();
+      box.getSize(size);
+      box.getCenter(center);
+      const centerControls = options.centerControls !== false;
+      if (centerControls) {
+        controls.target.copy(center);
+      }
+      controls.update();
+
+      const maxDim = Math.max(size.x, size.y, size.z, 0.001);
+      const distance = maxDim * 1.8;
+      camera.position.set(center.x + distance, center.y + distance * 0.65, center.z + distance);
+      camera.near = Math.max(0.001, maxDim / 1000);
+      camera.far = Math.max(1000, maxDim * 20);
+      camera.updateProjectionMatrix();
+    };
+
     const addLoadedObject = (obj) => {
       root.add(obj);
       const box = new THREE.Box3().setFromObject(root);
@@ -232,18 +258,11 @@ async function boot() {
       const center = new THREE.Vector3();
       box.getSize(size);
       box.getCenter(center);
-
       root.position.sub(center);
       controls.target.set(0, 0, 0);
-      controls.update();
+      fitCameraToObject(root, { centerControls: false });
 
       const maxDim = Math.max(size.x, size.y, size.z, 0.001);
-      const distance = maxDim * 1.8;
-      camera.position.set(distance, distance * 0.65, distance);
-      camera.near = Math.max(0.001, maxDim / 1000);
-      camera.far = Math.max(1000, maxDim * 20);
-      camera.updateProjectionMatrix();
-
       const axes = new THREE.AxesHelper(maxDim * 0.35);
       axes.visible = false;
       root.add(axes);
@@ -410,6 +429,123 @@ async function boot() {
     let simulationFrameIndex = 0;
     let simulationPlaying = false;
     let simulationTimer = null;
+    let simulationLoopEnabled = true;
+    let simulationMeshKey = "";
+    let simulationEnvironmentKey = "";
+    let simulationActiveBehavior = "";
+    let flybodyControlsMoved = false;
+    let flybodyDragState = null;
+
+    const positionFlybodyControls = () => {
+      if (!flybodyControlsEl || !toolbarEl || flybodyControlsMoved) return;
+      const toolbarRect = toolbarEl.getBoundingClientRect();
+      flybodyControlsEl.style.width = `${Math.max(140, Math.ceil(toolbarRect.width))}px`;
+      flybodyControlsEl.style.left = "auto";
+      flybodyControlsEl.style.right = "12px";
+      flybodyControlsEl.style.top = `${Math.round(toolbarRect.bottom + 8)}px`;
+    };
+
+    const stopFlybodyDrag = () => {
+      flybodyDragState = null;
+      if (flybodyControlsEl) {
+        flybodyControlsEl.classList.remove("dragging");
+      }
+      window.removeEventListener("pointermove", onFlybodyDragMove);
+      window.removeEventListener("pointerup", stopFlybodyDrag);
+      window.removeEventListener("pointercancel", stopFlybodyDrag);
+    };
+
+    const onFlybodyDragMove = (event) => {
+      if (!flybodyDragState || !flybodyControlsEl) return;
+      flybodyControlsMoved = true;
+      const nextLeft = Math.max(8, event.clientX - flybodyDragState.offsetX);
+      const nextTop = Math.max(8, event.clientY - flybodyDragState.offsetY);
+      flybodyControlsEl.style.left = `${nextLeft}px`;
+      flybodyControlsEl.style.top = `${nextTop}px`;
+      flybodyControlsEl.style.right = "auto";
+    };
+
+    const issueFlybodyCommand = (action, behavior) => {
+      const url = new URL(`annolid://flybody-live/${action}`);
+      if (behavior) {
+        url.searchParams.set("behavior", behavior);
+      }
+      window.location.href = url.toString();
+    };
+
+    const rebuildFlybodyControls = () => {
+      if (!flybodyControlsEl) return;
+      flybodyControlsEl.innerHTML = "";
+      const adapter = String((simulationPayload && simulationPayload.adapter) || "");
+      if (!(adapter === "flybody" || adapter === "flybody-live")) {
+        flybodyControlsEl.hidden = true;
+        return;
+      }
+      const titleEl = document.createElement("div");
+      titleEl.className = "three-toolbar-subtitle";
+      titleEl.textContent = "FlyBody";
+      titleEl.title = "Drag to move FlyBody controls";
+      titleEl.addEventListener("pointerdown", (event) => {
+        if (!flybodyControlsEl) return;
+        const rect = flybodyControlsEl.getBoundingClientRect();
+        flybodyDragState = {
+          offsetX: event.clientX - rect.left,
+          offsetY: event.clientY - rect.top,
+        };
+        flybodyControlsEl.classList.add("dragging");
+        window.addEventListener("pointermove", onFlybodyDragMove);
+        window.addEventListener("pointerup", stopFlybodyDrag);
+        window.addEventListener("pointercancel", stopFlybodyDrag);
+      });
+      flybodyControlsEl.appendChild(titleEl);
+      const controls = [
+        ["walk_imitation", "walk", "Run FlyBody walk imitation"],
+        ["walk_on_ball", "ball", "Run FlyBody walk-on-ball"],
+        ["flight_imitation", "flight", "Run FlyBody flight imitation"],
+        ["vision_guided_flight", "vision", "Run FlyBody vision-guided flight"],
+        ["template_task", "template", "Run FlyBody template task"],
+      ];
+      const iconSvg = (kind) => {
+        if (kind === "walk") {
+          return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M13 4a2 2 0 1 1 0 4 2 2 0 0 1 0-4Zm-2.2 5.2 1.8-.2 1.6 1.5c.4.4 1 .7 1.6.7H19v2h-3.2c-1.1 0-2.1-.4-2.9-1.1l-.8-.7-.7 3 1.8 1.8V20H11v-3.2l-2.2-2.3-.6 2.9H6l1.1-5.1 1.7-3.1c.4-.7 1.1-1.1 2-1.1Zm-2 1.6L7.1 14H4v-2h2l1.4-2.4 1.4 1.2Z"/></svg>';
+        }
+        if (kind === "ball") {
+          return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm6.7 6h-3a15 15 0 0 0-1.3-3.1A8.1 8.1 0 0 1 18.7 8ZM12 4.1A13 13 0 0 1 13.8 8h-3.6A13 13 0 0 1 12 4.1ZM5.3 14a8.4 8.4 0 0 1 0-4h3.4a17.5 17.5 0 0 0 0 4Zm.9 2h3a15 15 0 0 0 1.3 3.1A8.1 8.1 0 0 1 6.2 16Zm3-8h-3a8.1 8.1 0 0 1 4.3-3.1A15 15 0 0 0 9.2 8Zm2.8 11.9A13 13 0 0 1 10.2 16h3.6A13 13 0 0 1 12 19.9ZM14.2 14h-4.4a15.7 15.7 0 0 1 0-4h4.4a15.7 15.7 0 0 1 0 4Zm.3 5.1a15 15 0 0 0 1.3-3.1h3a8.1 8.1 0 0 1-4.3 3.1Zm1.8-5.1a17.5 17.5 0 0 0 0-4h3.4a8.4 8.4 0 0 1 0 4Z"/></svg>';
+        }
+        if (kind === "flight") {
+          return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M21 16v-2l-8-5V3.5A1.5 1.5 0 0 0 11.5 2h-1A1.5 1.5 0 0 0 9 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l4-1 4 1v-1.5L13 19v-5.5Z"/></svg>';
+        }
+        if (kind === "vision") {
+          return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c5 0 9.3 3.1 11 7-1.7 3.9-6 7-11 7S2.7 15.9 1 12c1.7-3.9 6-7 11-7Zm0 2.2A4.8 4.8 0 1 0 16.8 12 4.8 4.8 0 0 0 12 7.2Zm0 2A2.8 2.8 0 1 1 9.2 12 2.8 2.8 0 0 1 12 9.2Z"/></svg>';
+        }
+        return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M5 4h10l4 4v12H5V4Zm9 1.5V9h3.5L14 5.5ZM8 12h8v2H8v-2Zm0 4h8v2H8v-2Zm0-8h4v2H8V8Z"/></svg>';
+      };
+      controls.forEach(([behavior, iconKind, titleText]) => {
+        const btn = document.createElement("button");
+        btn.className = "tool-btn flybody-tool-btn";
+        if (behavior === simulationActiveBehavior) {
+          btn.classList.add("active");
+        }
+        btn.innerHTML = iconSvg(iconKind);
+        btn.title = titleText;
+        btn.setAttribute("aria-label", titleText);
+        btn.setAttribute("data-behavior", behavior);
+        btn.addEventListener("click", () => issueFlybodyCommand("start", behavior));
+        flybodyControlsEl.appendChild(btn);
+      });
+      const stopBtn = document.createElement("button");
+      stopBtn.className = "tool-btn flybody-tool-btn flybody-stop-btn";
+      stopBtn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>';
+      stopBtn.title = "Stop live FlyBody simulation";
+      stopBtn.setAttribute("aria-label", "Stop live FlyBody simulation");
+      stopBtn.addEventListener("click", () => {
+        stopSimulationPlayback();
+        issueFlybodyCommand("stop", "");
+      });
+      flybodyControlsEl.appendChild(stopBtn);
+      flybodyControlsEl.hidden = false;
+      positionFlybodyControls();
+    };
 
     const _proceduralTextureCache = new Map();
     const buildProceduralTexture = (category, baseColor) => {
@@ -768,14 +904,31 @@ async function boot() {
         throw new Error("Unsupported simulation payload");
       }
       simulationPayload = payload;
+      simulationActiveBehavior = String(
+        (((payload.metadata || {}).run_metadata || {}).behavior || "")
+      );
       document.body.setAttribute("data-threejs-simulation", "1");
+      root.position.set(0, 0, 0);
+      root.rotation.set(0, 0, 0);
+      root.scale.set(1, 1, 1);
       if (timelineEl) timelineEl.hidden = false;
       if (metaEl) metaEl.hidden = false;
-      clearGroupAndDispose(simulationEnvironmentRoot);
-      clearGroupAndDispose(simulationModelRoot);
-      clearGroupAndDispose(simulationBodyPartsRoot);
-      simulationBodyPartMap = new Map();
-      simulationCategoryState = new Map();
+      simulationLoopEnabled = !payload.playback || payload.playback.loop !== false;
+      const nextMeshKey = JSON.stringify(payload.mesh || null);
+      const nextEnvironmentKey = JSON.stringify(payload.environment || null);
+      const shouldReloadMesh = nextMeshKey !== simulationMeshKey;
+      const shouldReloadEnvironment = nextEnvironmentKey !== simulationEnvironmentKey;
+      if (shouldReloadEnvironment) {
+        clearGroupAndDispose(simulationEnvironmentRoot);
+        simulationEnvironmentKey = nextEnvironmentKey;
+      }
+      if (shouldReloadMesh) {
+        clearGroupAndDispose(simulationModelRoot);
+        clearGroupAndDispose(simulationBodyPartsRoot);
+        simulationBodyPartMap = new Map();
+        simulationCategoryState = new Map();
+        simulationMeshKey = nextMeshKey;
+      }
       if (legendEl) {
         legendEl.hidden = true;
         legendEl.innerHTML = "";
@@ -784,10 +937,11 @@ async function boot() {
         categoryPanelEl.hidden = true;
         categoryPanelEl.innerHTML = "";
       }
-      root.add(simulationRoot);
-      addLoadedObject(simulationRoot);
+      if (simulationRoot.parent !== root) {
+        root.add(simulationRoot);
+      }
       const floor = payload.environment && payload.environment.floor ? payload.environment.floor : null;
-      if (floor && floor.type === "plane") {
+      if (shouldReloadEnvironment && floor && floor.type === "plane") {
         const floorSize = Array.isArray(floor.size) ? floor.size : [5, 5];
         const floorPos = Array.isArray(floor.position) ? floor.position : [0, 0, -0.132];
         const width = Number(floorSize[0] || 5) * 2;
@@ -817,7 +971,13 @@ async function boot() {
         grid.position.set(0, floorY, 0);
         simulationEnvironmentRoot.add(grid);
       }
-      if (payload.mesh && payload.mesh.type === "flybody_parts" && Array.isArray(payload.mesh.parts)) {
+      rebuildFlybodyControls();
+      if (!shouldReloadMesh) {
+        if (!payload.mesh || payload.mesh.type !== "flybody_parts") {
+          if (legendEl) legendEl.hidden = true;
+          if (categoryPanelEl) categoryPanelEl.hidden = true;
+        }
+      } else if (payload.mesh && payload.mesh.type === "flybody_parts" && Array.isArray(payload.mesh.parts)) {
         const loader = new OBJLoader();
         payload.mesh.parts.forEach((part) => {
           if (part && (!part.type || part.type === "obj")) {
@@ -937,16 +1097,49 @@ async function boot() {
           }
           simulationPlaying = true;
           timelinePlayBtn.textContent = "Pause";
+          const intervalMs = Number(
+            (simulationPayload.playback && simulationPayload.playback.interval_ms) || 120
+          );
           simulationTimer = window.setInterval(() => {
-            const nextIndex = (simulationFrameIndex + 1) % simulationPayload.frames.length;
+            const nextIndex = simulationFrameIndex + 1;
+            if (nextIndex >= simulationPayload.frames.length) {
+              if (!simulationLoopEnabled) {
+                stopSimulationPlayback();
+                return;
+              }
+              renderSimulationFrame(0);
+              return;
+            }
             renderSimulationFrame(nextIndex);
-          }, 120);
+          }, intervalMs);
         };
       }
       renderSimulationFrame(0);
+      if (payload.playback && payload.playback.autoplay && timelinePlayBtn) {
+        timelinePlayBtn.click();
+      }
+      fitCameraToObject(simulationRoot);
       setStatus(`Loaded ${title} (${(payload.adapter || "simulation").toUpperCase()}).`);
       document.body.setAttribute("data-threejs-ready", "1");
     };
+
+    window.__annolidLoadSimulationPayloadFromUrl = async (nextUrl, nextTitle) => {
+      try {
+        const resp = await fetch(String(nextUrl || modelUrl), { cache: "no-store" });
+        if (!resp.ok) {
+          throw new Error(`Unable to fetch simulation: HTTP ${resp.status}`);
+        }
+        const payload = await resp.json();
+        if (nextTitle) {
+          window.__annolidThreeTitle = nextTitle;
+        }
+        loadSimulationPayload(payload);
+      } catch (err) {
+        setStatus(`Failed to update simulation payload: ${err.message}`, "error");
+      }
+    };
+
+    window.addEventListener("resize", positionFlybodyControls);
 
     if (modelUrl) {
       if (ext === "stl") {

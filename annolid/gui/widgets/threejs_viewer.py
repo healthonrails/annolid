@@ -4,6 +4,7 @@ import json
 import time
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import parse_qs, urlparse
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -39,6 +40,8 @@ _THREEJS_IMPORTMAP = json.dumps(
 if _WEBENGINE_AVAILABLE:
 
     class _ThreeJsWebEnginePage(QtWebEngineWidgets.QWebEnginePage):
+        flybody_command_requested = QtCore.Signal(str, str)
+
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
             self._install_threejs_importmap_injector()
@@ -92,6 +95,26 @@ if _WEBENGINE_AVAILABLE:
             page.urlChanged.connect(handle_url_changed)
             return page
 
+        def acceptNavigationRequest(  # noqa: N802 - Qt override
+            self,
+            url: QtCore.QUrl,
+            nav_type,
+            is_main_frame: bool,
+        ) -> bool:
+            try:
+                parsed = urlparse(url.toString())
+                if parsed.scheme == "annolid" and parsed.netloc == "flybody-live":
+                    query = parse_qs(parsed.query or "")
+                    behavior = str(
+                        query.get("behavior", ["walk_imitation"])[0] or "walk_imitation"
+                    )
+                    action = parsed.path.strip("/") or "start"
+                    self.flybody_command_requested.emit(action, behavior)
+                    return False
+            except Exception:
+                pass
+            return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
 
 def _create_ephemeral_web_profile(
     parent: Optional[QtCore.QObject],
@@ -122,6 +145,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
     """Embedded Three.js viewer for mesh and point-cloud files."""
 
     status_changed = QtCore.Signal(str)
+    flybody_command_requested = QtCore.Signal(str, str)
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -217,6 +241,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
     <span id="simulationFrameLabel">Frame 0 / 0</span>
   </div>
   <div id="annolidThreeMeta" hidden></div>
+  <div id="annolidThreeFlybodyControls" hidden></div>
   <div id="annolidThreeLegend" hidden></div>
   <div id="annolidThreeCategoryPanel" hidden></div>
 
@@ -244,11 +269,11 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         try:
             self._web_profile = _create_ephemeral_web_profile(self._web_view)
             if self._web_profile is not None:
-                self._web_view.setPage(
-                    _ThreeJsWebEnginePage(self._web_profile, self._web_view)
-                )
+                page = _ThreeJsWebEnginePage(self._web_profile, self._web_view)
             else:
-                self._web_view.setPage(_ThreeJsWebEnginePage(self._web_view))
+                page = _ThreeJsWebEnginePage(self._web_view)
+            page.flybody_command_requested.connect(self.flybody_command_requested.emit)
+            self._web_view.setPage(page)
         except Exception:
             pass
         try:
@@ -410,6 +435,35 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
             "Loading Three.js simulation payload: %s (prepared in %.1fms)",
             path,
             (time.perf_counter() - started) * 1000.0,
+        )
+
+    def update_simulation_payload(
+        self, payload_path: str | Path, *, title: str
+    ) -> None:
+        path = Path(payload_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Simulation payload not found: {path}")
+        if self._web_view is None:
+            raise RuntimeError("Qt WebEngine is unavailable")
+
+        self._current_path = path
+        model_url = _register_threejs_http_model(path)
+        page = self._web_view.page()
+
+        def _apply_update(ready: object) -> None:
+            if ready is True:
+                js_code = (
+                    "window.__annolidLoadSimulationPayloadFromUrl && "
+                    f"window.__annolidLoadSimulationPayloadFromUrl({json.dumps(model_url)}, {json.dumps(title)});"
+                )
+                page.runJavaScript(js_code)
+                self.status_changed.emit(f"Updated simulation: {title}")
+                return
+            self.load_simulation_payload(path, title=title)
+
+        page.runJavaScript(
+            "typeof window.__annolidLoadSimulationPayloadFromUrl === 'function';",
+            _apply_update,
         )
 
     def current_model_path(self) -> Optional[str]:

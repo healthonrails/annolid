@@ -762,13 +762,8 @@ class MenuController:
             w.tr("FlyBody 3D Example"),
             lambda: w.open_threejs_example("flybody_simulation_json"),
             tip=w.tr(
-                "Open the FlyBody 3D model example in Three.js without starting a live simulation"
+                "Open the FlyBody 3D model example in Three.js with in-viewer live controls"
             ),
-        )
-        w.threejs_example_flybody_live_action = self._action_factory(
-            w.tr("Start Live FlyBody Simulation…"),
-            w.start_live_flybody_example,
-            tip=w.tr("Run a live FlyBody rollout and open it in the 3D viewer"),
         )
         w.open_simulation_3d_viewer_action = self._action_factory(
             w.tr("Open Simulation Output…"),
@@ -812,7 +807,6 @@ class MenuController:
         w.threejs_examples_menu.addAction(w.threejs_example_wave_action)
         w.threejs_examples_menu.addAction(w.threejs_example_sphere_action)
         w.threejs_examples_menu.addAction(w.threejs_example_flybody_action)
-        w.threejs_examples_menu.addAction(w.threejs_example_flybody_live_action)
         w.threejs_examples_menu.addSeparator()
         w.threejs_examples_menu.addAction(w.open_simulation_3d_viewer_action)
         w.threejs_examples_menu.addAction(w.run_simulation_3d_viewer_action)

@@ -68,12 +68,15 @@ def test_build_live_flybody_command_points_to_module() -> None:
         out_path="/tmp/flybody.json",
         steps=42,
         seed=11,
+        behavior="walk_on_ball",
     )
 
     assert cmd == [
         "/tmp/python",
         "-m",
         "annolid.simulation.flybody_live",
+        "--behavior",
+        "walk_on_ball",
         "--out",
         "/tmp/flybody.json",
         "--steps",
