@@ -19,6 +19,18 @@ from .common import (
 from .cron import CronTool
 from .automation_scheduler import AutomationSchedulerTool
 from .annolid_run import AnnolidRunTool
+from .dataset import AnnolidDatasetInspectTool, AnnolidDatasetPrepareTool
+from .eval_reporting import (
+    AnnolidEvalReportTool,
+    build_model_eval_report,
+    write_model_eval_report_files,
+)
+from .eval_start import AnnolidEvalStartTool
+from .training import (
+    AnnolidTrainHelpTool,
+    AnnolidTrainModelsTool,
+    AnnolidTrainStartTool,
+)
 from .camera import CameraSnapshotTool
 from .coding_harness import (
     CodingSessionCloseTool,
@@ -116,6 +128,15 @@ __all__ = [
     "CronTool",
     "AutomationSchedulerTool",
     "AnnolidRunTool",
+    "AnnolidDatasetInspectTool",
+    "AnnolidDatasetPrepareTool",
+    "AnnolidEvalReportTool",
+    "AnnolidEvalStartTool",
+    "build_model_eval_report",
+    "write_model_eval_report_files",
+    "AnnolidTrainModelsTool",
+    "AnnolidTrainHelpTool",
+    "AnnolidTrainStartTool",
     "CameraSnapshotTool",
     "CodingSessionStartTool",
     "CodingSessionSendTool",

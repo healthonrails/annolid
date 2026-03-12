@@ -58,6 +58,14 @@ from .coding_harness import (
 )
 from .automation_scheduler import AutomationSchedulerTool
 from .annolid_run import AnnolidRunTool
+from .dataset import AnnolidDatasetInspectTool, AnnolidDatasetPrepareTool
+from .eval_reporting import AnnolidEvalReportTool
+from .eval_start import AnnolidEvalStartTool
+from .training import (
+    AnnolidTrainHelpTool,
+    AnnolidTrainModelsTool,
+    AnnolidTrainStartTool,
+)
 from .function_admin import (
     AdminEvalRunTool,
     AdminMemoryFlushTool,
@@ -210,6 +218,43 @@ async def register_nanobot_style_tools(
     registry.register(CodingSessionCloseTool())
     registry.register(
         AnnolidRunTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        AnnolidDatasetInspectTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        AnnolidDatasetPrepareTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        AnnolidEvalReportTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        AnnolidEvalStartTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(AnnolidTrainModelsTool())
+    registry.register(
+        AnnolidTrainHelpTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        AnnolidTrainStartTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )

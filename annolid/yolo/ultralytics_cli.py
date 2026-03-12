@@ -80,6 +80,45 @@ def build_yolo_train_command(
     return cmd
 
 
+def build_yolo_val_command(
+    *,
+    model: str,
+    data: str,
+    imgsz: Optional[int] = None,
+    batch: Optional[int] = None,
+    device: Optional[str] = None,
+    project: Optional[str] = None,
+    name: Optional[str] = None,
+    split: Optional[str] = None,
+    plots: Optional[bool] = None,
+    save_json: Optional[bool] = None,
+    workers: Optional[int] = None,
+    overrides: Optional[Dict[str, Any]] = None,
+    yolo_cmd: Optional[Sequence[str]] = None,
+) -> List[str]:
+    cmd: List[str] = list(yolo_cmd or locate_yolo_cli())
+    cmd.append("val")
+    _append_kv(cmd, "model", model)
+    _append_kv(cmd, "data", data)
+    _append_kv(cmd, "imgsz", int(imgsz) if imgsz is not None else None)
+    _append_kv(cmd, "batch", int(batch) if batch is not None else None)
+
+    device_str = str(device or "").strip()
+    _append_kv(cmd, "device", device_str if device_str else None)
+    _append_kv(cmd, "project", project)
+    _append_kv(cmd, "name", name)
+    _append_kv(cmd, "split", split)
+    _append_kv(cmd, "plots", plots)
+    _append_kv(cmd, "save_json", save_json)
+    _append_kv(cmd, "workers", workers)
+
+    if overrides:
+        for key in sorted(overrides.keys()):
+            _append_kv(cmd, key, overrides[key])
+
+    return cmd
+
+
 def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
     if proc.poll() is not None:
         return

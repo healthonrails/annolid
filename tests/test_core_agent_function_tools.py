@@ -14,11 +14,20 @@ import cv2
 import numpy as np
 import pytest
 import re
+from PIL import Image
+import yaml
 
 from annolid.core.agent.config import CalendarToolConfig
 from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_builtin import (
+    AnnolidDatasetInspectTool,
+    AnnolidDatasetPrepareTool,
+    AnnolidEvalReportTool,
+    AnnolidEvalStartTool,
     AnnolidRunTool,
+    AnnolidTrainHelpTool,
+    AnnolidTrainModelsTool,
+    AnnolidTrainStartTool,
     BibtexListEntriesTool,
     BibtexRemoveEntryTool,
     BibtexUpsertEntryTool,
@@ -100,6 +109,172 @@ def _write_test_video(path: Path, *, fps: float = 10.0, frames: int = 8) -> None
         writer.release()
 
 
+def _write_labelme_example(
+    root: Path,
+    *,
+    stem: str,
+    split: str = "",
+    include_point: bool = True,
+    include_polygon: bool = True,
+) -> tuple[Path, Path]:
+    base = root / split if split else root
+    base.mkdir(parents=True, exist_ok=True)
+    image_path = base / f"{stem}.png"
+    Image.new("RGB", (64, 64), color=(120, 120, 120)).save(image_path)
+    shapes: list[dict[str, object]] = []
+    if include_polygon:
+        shapes.append(
+            {
+                "label": "mouse",
+                "shape_type": "polygon",
+                "points": [[10, 10], [30, 10], [30, 30], [10, 30]],
+                "group_id": 0,
+            }
+        )
+    if include_point:
+        shapes.append(
+            {
+                "label": "nose",
+                "shape_type": "point",
+                "points": [[20, 20]],
+                "group_id": 0,
+            }
+        )
+    json_path = base / f"{stem}.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "version": "5.0.1",
+                "imagePath": image_path.name,
+                "imageHeight": 64,
+                "imageWidth": 64,
+                "shapes": shapes,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return json_path, image_path
+
+
+def _write_dlc_collected_data_csv(
+    csv_path: Path, *, folder: str, image_name: str
+) -> None:
+    rows = [
+        "scorer,,,hyn,hyn",
+        "bodyparts,,,nose,nose",
+        "coords,,,x,y",
+        f"labeled-data,{folder},{image_name},10.0,20.0",
+    ]
+    csv_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def _write_coco_detection_dataset(root: Path) -> None:
+    images_dir = root / "images"
+    annotations_dir = root / "annotations"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    annotations_dir.mkdir(parents=True, exist_ok=True)
+
+    Image.new("RGB", (64, 48), color=(80, 80, 80)).save(images_dir / "train.png")
+    Image.new("RGB", (64, 48), color=(100, 100, 100)).save(images_dir / "val.png")
+
+    categories = [{"id": 1, "name": "mouse"}]
+    train_payload = {
+        "images": [{"id": 1, "file_name": "train.png", "width": 64, "height": 48}],
+        "annotations": [
+            {
+                "id": 1,
+                "image_id": 1,
+                "category_id": 1,
+                "bbox": [8, 8, 16, 12],
+                "area": 192,
+                "iscrowd": 0,
+            }
+        ],
+        "categories": categories,
+    }
+    val_payload = {
+        "images": [{"id": 2, "file_name": "val.png", "width": 64, "height": 48}],
+        "annotations": [
+            {
+                "id": 2,
+                "image_id": 2,
+                "category_id": 1,
+                "bbox": [10, 10, 20, 14],
+                "area": 280,
+                "iscrowd": 0,
+            }
+        ],
+        "categories": categories,
+    }
+    (annotations_dir / "instances_train.json").write_text(
+        json.dumps(train_payload),
+        encoding="utf-8",
+    )
+    (annotations_dir / "instances_val.json").write_text(
+        json.dumps(val_payload),
+        encoding="utf-8",
+    )
+
+
+def _write_coco_pose_dataset(root: Path) -> None:
+    images_dir = root / "images"
+    annotations_dir = root / "annotations"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    annotations_dir.mkdir(parents=True, exist_ok=True)
+
+    Image.new("RGB", (80, 60), color=(20, 20, 20)).save(images_dir / "train.png")
+    Image.new("RGB", (80, 60), color=(40, 40, 40)).save(images_dir / "val.png")
+
+    categories = [
+        {
+            "id": 1,
+            "name": "mouse",
+            "keypoints": ["nose", "tail"],
+            "skeleton": [[1, 2]],
+        }
+    ]
+    train_payload = {
+        "images": [{"id": 1, "file_name": "train.png", "width": 80, "height": 60}],
+        "annotations": [
+            {
+                "id": 1,
+                "image_id": 1,
+                "category_id": 1,
+                "bbox": [10, 10, 30, 20],
+                "area": 600,
+                "iscrowd": 0,
+                "num_keypoints": 2,
+                "keypoints": [20, 20, 2, 30, 24, 2],
+            }
+        ],
+        "categories": categories,
+    }
+    val_payload = {
+        "images": [{"id": 2, "file_name": "val.png", "width": 80, "height": 60}],
+        "annotations": [
+            {
+                "id": 2,
+                "image_id": 2,
+                "category_id": 1,
+                "bbox": [12, 12, 28, 18],
+                "area": 504,
+                "iscrowd": 0,
+                "num_keypoints": 2,
+                "keypoints": [22, 20, 2, 32, 26, 1],
+            }
+        ],
+        "categories": categories,
+    }
+    (annotations_dir / "person_keypoints_train.json").write_text(
+        json.dumps(train_payload),
+        encoding="utf-8",
+    )
+    (annotations_dir / "person_keypoints_val.json").write_text(
+        json.dumps(val_payload),
+        encoding="utf-8",
+    )
+
+
 def test_function_registry_validate_and_execute() -> None:
     registry = FunctionToolRegistry()
     registry.register(_EchoTool())
@@ -167,6 +342,1138 @@ def test_register_nanobot_style_tools_includes_annolid_run(tmp_path: Path) -> No
     registry = FunctionToolRegistry()
     asyncio.run(register_nanobot_style_tools(registry, allowed_dir=tmp_path))
     assert registry.has("annolid_run")
+    assert registry.has("annolid_dataset_inspect")
+    assert registry.has("annolid_dataset_prepare")
+    assert registry.has("annolid_eval_report")
+    assert registry.has("annolid_eval_start")
+    assert registry.has("annolid_train_models")
+    assert registry.has("annolid_train_help")
+    assert registry.has("annolid_train_start")
+
+
+def test_annolid_train_models_lists_dino_and_yolo() -> None:
+    tool = AnnolidTrainModelsTool()
+    payload = json.loads(asyncio.run(tool.execute()))
+    assert payload["ok"] is True
+    names = {row["name"]: row for row in payload["models"]}
+    assert "dino_kpseg" in names
+    assert "yolo" in names
+    assert "pose" in names["yolo"]["tasks"]
+    assert "dino keypoint segmentation" in names["dino_kpseg"]["aliases"]
+
+
+def test_annolid_dataset_inspect_reports_raw_labelme_pose_folder(
+    tmp_path: Path,
+) -> None:
+    _write_labelme_example(tmp_path, stem="frame_0001", split="train")
+    _write_labelme_example(tmp_path, stem="frame_0002", split="val")
+
+    tool = AnnolidDatasetInspectTool(allowed_dir=tmp_path)
+    payload = json.loads(asyncio.run(tool.execute(dataset_folder=str(tmp_path))))
+    assert payload["ok"] is True
+    dataset = payload["dataset"]
+    assert dataset["ready_for_training"] is False
+    assert "labelme" in dataset["dataset_kinds"]
+    assert dataset["labelme"]["json_files"] == 2
+    assert dataset["labelme"]["shape_type_counts"]["point"] >= 1
+    assert any(row["model"] == "dino_kpseg" for row in dataset["recommended_models"])
+    assert any("annolid_dataset_prepare" in step for step in dataset["next_actions"])
+
+
+def test_annolid_dataset_prepare_generates_labelme_spec(tmp_path: Path) -> None:
+    _write_labelme_example(tmp_path, stem="frame_0001", split="train")
+    _write_labelme_example(tmp_path, stem="frame_0002", split="val")
+
+    tool = AnnolidDatasetPrepareTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                dataset_folder=str(tmp_path),
+                mode="labelme_spec",
+                allow_mutation=True,
+                val_size=0.5,
+                test_size=0.0,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    result = payload["result"]
+    assert Path(result["spec_path"]).exists()
+    assert result["split_counts"]["train"] >= 1
+    spec_payload = yaml.safe_load(Path(result["spec_path"]).read_text(encoding="utf-8"))
+    assert spec_payload["format"] == "labelme"
+    assert spec_payload["kpt_shape"][0] >= 1
+
+
+def test_annolid_dataset_prepare_exports_yolo_dataset(tmp_path: Path) -> None:
+    _write_labelme_example(
+        tmp_path,
+        stem="frame_0001",
+        split="train",
+        include_point=False,
+        include_polygon=True,
+    )
+    _write_labelme_example(
+        tmp_path,
+        stem="frame_0002",
+        split="val",
+        include_point=False,
+        include_polygon=True,
+    )
+
+    tool = AnnolidDatasetPrepareTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                dataset_folder=str(tmp_path),
+                mode="yolo_from_labelme",
+                allow_mutation=True,
+                task="segmentation",
+                dataset_name="seg_dataset",
+            )
+        )
+    )
+    assert payload["ok"] is True
+    result = payload["result"]
+    assert result["status"] == "ok"
+    dataset_dir = Path(result["dataset_dir"])
+    assert (dataset_dir / "data.yaml").exists()
+    assert result["task"] == "segmentation"
+
+
+def test_annolid_dataset_inspect_detects_coco_and_yolo_datasets(tmp_path: Path) -> None:
+    coco_root = tmp_path / "coco_dataset"
+    _write_coco_pose_dataset(coco_root)
+
+    inspect_tool = AnnolidDatasetInspectTool(allowed_dir=tmp_path)
+    coco_payload = json.loads(
+        asyncio.run(inspect_tool.execute(dataset_folder=str(coco_root)))
+    )
+    assert coco_payload["ok"] is True
+    coco_info = coco_payload["dataset"]
+    assert coco_info["ready_for_training"] is False
+    assert "coco" in coco_info["dataset_kinds"]
+    assert coco_info["inferred_formats"] == ["coco"]
+    assert coco_info["coco_spec"]["format"] == "coco"
+    assert any(row["model"] == "dino_kpseg" for row in coco_info["recommended_models"])
+    assert any(row["task"] == "pose" for row in coco_info["recommended_models"])
+    assert any(
+        "auto-stage an inferred COCO spec" in step for step in coco_info["next_actions"]
+    )
+
+    yolo_root = tmp_path / "yolo_dataset"
+    yolo_root.mkdir()
+    (yolo_root / "data.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "path": str(yolo_root),
+                "train": "images/train",
+                "val": "images/val",
+                "nc": 1,
+                "names": ["mouse"],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    yolo_payload = json.loads(
+        asyncio.run(inspect_tool.execute(dataset_folder=str(yolo_root)))
+    )
+    assert yolo_payload["ok"] is True
+    yolo_info = yolo_payload["dataset"]
+    assert yolo_info["ready_for_training"] is True
+    assert "yolo" in yolo_info["dataset_kinds"]
+    assert yolo_info["yolo"]["path"] == str((yolo_root / "data.yaml").resolve())
+
+
+def test_annolid_dataset_inspect_detects_deeplabcut_folder(tmp_path: Path) -> None:
+    dataset = tmp_path / "dlc_dataset"
+    labeled = dataset / "labeled-data" / "seg-1"
+    labeled.mkdir(parents=True)
+    image = labeled / "img00001.png"
+    Image.new("RGB", (100, 80), color=(10, 20, 30)).save(image)
+    _write_dlc_collected_data_csv(
+        labeled / "CollectedData_test.csv",
+        folder="seg-1",
+        image_name="img00001.png",
+    )
+
+    tool = AnnolidDatasetInspectTool(allowed_dir=tmp_path)
+    payload = json.loads(asyncio.run(tool.execute(dataset_folder=str(dataset))))
+    assert payload["ok"] is True
+    info = payload["dataset"]
+    assert "deeplabcut" in info["dataset_kinds"]
+    assert "deeplabcut" in info["external_formats"]
+    assert any(row["task"] == "pose" for row in info["recommended_models"])
+
+
+def test_annolid_dataset_prepare_imports_deeplabcut_training_data(
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dlc_dataset"
+    labeled = dataset / "labeled-data" / "seg-1"
+    labeled.mkdir(parents=True)
+    image = labeled / "img00001.png"
+    Image.new("RGB", (100, 80), color=(10, 20, 30)).save(image)
+    _write_dlc_collected_data_csv(
+        labeled / "CollectedData_test.csv",
+        folder="seg-1",
+        image_name="img00001.png",
+    )
+
+    tool = AnnolidDatasetPrepareTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                dataset_folder=str(dataset),
+                mode="deeplabcut_import",
+                allow_mutation=True,
+                write_pose_schema=True,
+                write_index=True,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    result = payload["result"]
+    assert result["json_written"] == 1
+    assert Path(result["index_file"]).exists()
+    assert result["index_summary"]["appended"] == 1
+    assert (labeled / "img00001.json").exists()
+
+
+def test_annolid_dataset_prepare_writes_coco_spec_and_materializes_yolo(
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "coco_dataset"
+    _write_coco_detection_dataset(dataset)
+
+    tool = AnnolidDatasetPrepareTool(allowed_dir=tmp_path)
+    spec_payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                dataset_folder=str(dataset),
+                mode="coco_spec",
+                output_dir=str(dataset / "derived"),
+                allow_mutation=True,
+            )
+        )
+    )
+    assert spec_payload["ok"] is True
+    spec_path = Path(spec_payload["result"]["spec_path"])
+    assert spec_path.exists()
+    assert spec_path.name == "coco_spec.yaml"
+    assert spec_payload["result"]["task"] == "detect"
+
+    yolo_payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                dataset_folder=str(dataset),
+                mode="coco_to_yolo",
+                output_dir=str(dataset / "yolo_export"),
+                allow_mutation=True,
+            )
+        )
+    )
+    assert yolo_payload["ok"] is True
+    data_yaml = Path(yolo_payload["result"]["data_yaml"])
+    assert data_yaml.exists()
+    yolo_cfg = yaml.safe_load(data_yaml.read_text(encoding="utf-8"))
+    assert yolo_cfg["names"] == ["mouse"]
+    assert (data_yaml.parent / "images" / "train").exists()
+    assert (data_yaml.parent / "images" / "val").exists()
+
+
+def test_annolid_train_help_delegates_to_annolid_run(
+    monkeypatch, tmp_path: Path
+) -> None:
+    observed: dict[str, object] = {}
+
+    async def _fake_execute(self, **kwargs):
+        observed["kwargs"] = kwargs
+        return json.dumps({"ok": True, "stdout": "train help"})
+
+    monkeypatch.setattr(AnnolidRunTool, "execute", _fake_execute)
+    tool = AnnolidTrainHelpTool(allowed_dir=tmp_path)
+    payload = json.loads(asyncio.run(tool.execute(model="dino_kpseg")))
+    assert payload["ok"] is True
+    assert observed["kwargs"] == {"argv": ["train", "dino_kpseg", "--help-model"]}
+
+
+def test_annolid_train_start_blocks_without_mutation(tmp_path: Path) -> None:
+    tool = AnnolidTrainStartTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                model="yolo",
+                data=str(tmp_path / "data.yaml"),
+            )
+        )
+    )
+    assert payload["ok"] is False
+    assert "allow_mutation=true" in payload["error"]
+
+
+def test_annolid_train_start_launches_yolo_pose_session(
+    monkeypatch, tmp_path: Path
+) -> None:
+    data_yaml = tmp_path / "data.yaml"
+    data_yaml.write_text("train: images/train\nval: images/val\n", encoding="utf-8")
+    project_dir = tmp_path / "runs"
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self.command = ""
+            self.cwd = ""
+            self.timeout_s = 0.0
+
+        async def start(self, *, command: str, cwd: str, timeout_s: float = 0.0):
+            self.command = command
+            self.cwd = cwd
+            self.timeout_s = timeout_s
+            return types.SimpleNamespace(session_id="sh_train123")
+
+        async def poll(self, session_id: str, *, wait_ms: int = 0):
+            return {
+                "ok": True,
+                "running": False,
+                "status": "completed",
+                "return_code": 0,
+                "session_id": session_id,
+                "wait_ms": wait_ms,
+            }
+
+        async def log(self, session_id: str, *, tail_lines: int = 200):
+            return {
+                "ok": True,
+                "session_id": session_id,
+                "text": "done",
+                "tail_lines": tail_lines,
+            }
+
+    manager = _FakeManager()
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.training.get_shell_session_manager",
+        lambda: manager,
+    )
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.training._resolve_training_python",
+        lambda working_dir: str(working_dir / ".venv" / "bin" / "python"),
+    )
+
+    tool = AnnolidTrainStartTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                model="yolo",
+                task="pose",
+                data=str(data_yaml),
+                output_dir=str(project_dir),
+                epochs=5,
+                batch=2,
+                imgsz=640,
+                allow_mutation=True,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["task"] == "pose"
+    assert payload["session_id"] == "sh_train123"
+    assert "--weights" in payload["argv"]
+    assert "yolo11n-pose.pt" in payload["argv"]
+    assert manager.cwd == str(tmp_path.resolve())
+    assert "train yolo" in manager.command
+    assert "yolo11n-pose.pt" in manager.command
+
+
+def test_annolid_train_start_maps_dino_short_side(monkeypatch, tmp_path: Path) -> None:
+    data_yaml = tmp_path / "data.yaml"
+    data_yaml.write_text("train: images/train\nval: images/val\n", encoding="utf-8")
+
+    class _FakeManager:
+        async def start(self, *, command: str, cwd: str, timeout_s: float = 0.0):
+            return types.SimpleNamespace(session_id="sh_dino456")
+
+        async def poll(self, session_id: str, *, wait_ms: int = 0):
+            return {
+                "ok": True,
+                "running": False,
+                "status": "completed",
+                "return_code": 0,
+            }
+
+        async def log(self, session_id: str, *, tail_lines: int = 200):
+            return {"ok": True, "text": ""}
+
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.training.get_shell_session_manager",
+        lambda: _FakeManager(),
+    )
+
+    tool = AnnolidTrainStartTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                model="dino_kpseg",
+                data=str(data_yaml),
+                short_side=896,
+                extra_args=["--augment", "--schedule-profile", "aggressive_s"],
+                allow_mutation=True,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["argv"][0:2] == ["train", "dino_kpseg"]
+    assert "--short-side" in payload["argv"]
+    assert "896" in payload["argv"]
+
+
+def test_annolid_train_start_resolves_dataset_folder(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _write_labelme_example(tmp_path, stem="frame_0001", split="train")
+    _write_labelme_example(tmp_path, stem="frame_0002", split="val")
+    prepare = AnnolidDatasetPrepareTool(allowed_dir=tmp_path)
+    prepared = json.loads(
+        asyncio.run(
+            prepare.execute(
+                dataset_folder=str(tmp_path),
+                mode="labelme_spec",
+                allow_mutation=True,
+            )
+        )
+    )
+    assert prepared["ok"] is True
+
+    class _FakeManager:
+        async def start(self, *, command: str, cwd: str, timeout_s: float = 0.0):
+            return types.SimpleNamespace(session_id="sh_train_dataset")
+
+        async def poll(self, session_id: str, *, wait_ms: int = 0):
+            return {
+                "ok": True,
+                "running": False,
+                "status": "completed",
+                "return_code": 0,
+            }
+
+        async def log(self, session_id: str, *, tail_lines: int = 200):
+            return {"ok": True, "text": ""}
+
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.training.get_shell_session_manager",
+        lambda: _FakeManager(),
+    )
+
+    tool = AnnolidTrainStartTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                model="dino_kpseg",
+                dataset_folder=str(tmp_path),
+                short_side=640,
+                allow_mutation=True,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert "--data" in payload["argv"]
+    assert str((tmp_path / "labelme_spec.yaml").resolve()) in payload["argv"]
+
+
+def test_annolid_train_start_resolves_coco_dataset_folder_for_dino(
+    monkeypatch, tmp_path: Path
+) -> None:
+    dataset = tmp_path / "coco_pose"
+    _write_coco_pose_dataset(dataset)
+
+    class _FakeManager:
+        async def start(self, *, command: str, cwd: str, timeout_s: float = 0.0):
+            return types.SimpleNamespace(session_id="sh_train_coco")
+
+        async def poll(self, session_id: str, *, wait_ms: int = 0):
+            return {
+                "ok": True,
+                "running": False,
+                "status": "completed",
+                "return_code": 0,
+            }
+
+        async def log(self, session_id: str, *, tail_lines: int = 200):
+            return {"ok": True, "text": ""}
+
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.training.get_shell_session_manager",
+        lambda: _FakeManager(),
+    )
+
+    tool = AnnolidTrainStartTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                model="dino_kpseg",
+                dataset_folder=str(dataset),
+                allow_mutation=True,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    staged_spec = tmp_path / ".annolid" / "agent_cache" / "datasets"
+    assert "--data" in payload["argv"]
+    resolved_data = Path(payload["argv"][payload["argv"].index("--data") + 1])
+    assert resolved_data.exists()
+    assert staged_spec in resolved_data.parents
+    assert "--data-format" in payload["argv"]
+    assert "coco" in payload["argv"]
+
+
+def test_annolid_train_start_rejects_coco_dataset_folder_for_yolo(
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "coco_detect"
+    _write_coco_detection_dataset(dataset)
+    (dataset / "coco_spec.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "format": "coco",
+                "path": str(dataset.resolve()),
+                "image_root": "images",
+                "train": "annotations/instances_train.json",
+                "val": "annotations/instances_val.json",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    tool = AnnolidTrainStartTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                model="yolo",
+                dataset_folder=str(dataset),
+                allow_mutation=True,
+            )
+        )
+    )
+    assert payload["ok"] is False
+    assert "mode=coco_to_yolo" in payload["error"]
+
+
+def test_annolid_train_start_maps_behavior_classifier_args(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_dir = tmp_path / "videos"
+    video_dir.mkdir()
+    ckpt_dir = tmp_path / "checkpoints"
+    tb_dir = tmp_path / "tensorboard"
+
+    class _FakeManager:
+        async def start(self, *, command: str, cwd: str, timeout_s: float = 0.0):
+            return types.SimpleNamespace(session_id="sh_behavior789")
+
+        async def poll(self, session_id: str, *, wait_ms: int = 0):
+            return {
+                "ok": True,
+                "running": False,
+                "status": "completed",
+                "return_code": 0,
+            }
+
+        async def log(self, session_id: str, *, tail_lines: int = 200):
+            return {"ok": True, "text": ""}
+
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.training.get_shell_session_manager",
+        lambda: _FakeManager(),
+    )
+
+    tool = AnnolidTrainStartTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                model="behavior_classifier",
+                video_folder=str(video_dir),
+                checkpoint_dir=str(ckpt_dir),
+                tensorboard_log_dir=str(tb_dir),
+                batch_size=4,
+                epochs=12,
+                learning_rate=0.0005,
+                validation_split=0.3,
+                feature_backbone="dinov3",
+                dinov3_model_name="facebook/dinov3-vits16-pretrain-lvd1689m",
+                unfreeze_dinov3=True,
+                allow_mutation=True,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert "--video-folder" in payload["argv"]
+    assert str(video_dir.resolve()) in payload["argv"]
+    assert "--checkpoint-dir" in payload["argv"]
+    assert str(ckpt_dir.resolve()) in payload["argv"]
+    assert "--tensorboard-log-dir" in payload["argv"]
+    assert "--batch-size" in payload["argv"]
+    assert "--learning-rate" in payload["argv"]
+    assert "--validation-split" in payload["argv"]
+    assert "--unfreeze-dinov3" in payload["argv"]
+
+
+def test_annolid_train_start_maps_detectron_dataset_args(
+    monkeypatch, tmp_path: Path
+) -> None:
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    output_dir = tmp_path / "outputs"
+
+    class _FakeManager:
+        async def start(self, *, command: str, cwd: str, timeout_s: float = 0.0):
+            return types.SimpleNamespace(session_id="sh_detectron012")
+
+        async def poll(self, session_id: str, *, wait_ms: int = 0):
+            return {
+                "ok": True,
+                "running": False,
+                "status": "completed",
+                "return_code": 0,
+            }
+
+        async def log(self, session_id: str, *, tail_lines: int = 200):
+            return {"ok": True, "text": ""}
+
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.training.get_shell_session_manager",
+        lambda: _FakeManager(),
+    )
+
+    tool = AnnolidTrainStartTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                model="maskrcnn_detectron2",
+                dataset_dir=str(dataset_dir),
+                output_dir=str(output_dir),
+                max_iterations=100,
+                batch_size=2,
+                base_lr=0.001,
+                num_workers=0,
+                checkpoint_period=25,
+                score_threshold=0.5,
+                overlap_threshold=0.8,
+                model_arch="maskrcnn_resnet50_fpn_v2",
+                allow_mutation=True,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert "--dataset-dir" in payload["argv"]
+    assert str(dataset_dir.resolve()) in payload["argv"]
+    assert "--output-dir" in payload["argv"]
+    assert str(output_dir.resolve()) in payload["argv"]
+    assert "--max-iterations" in payload["argv"]
+    assert "--batch-size" in payload["argv"]
+    assert "--base-lr" in payload["argv"]
+    assert "--num-workers" in payload["argv"]
+    assert "--checkpoint-period" in payload["argv"]
+    assert "--score-threshold" in payload["argv"]
+    assert "--overlap-threshold" in payload["argv"]
+    assert "--model-arch" in payload["argv"]
+
+
+def test_annolid_eval_report_builds_dino_report_from_summary_json(
+    tmp_path: Path,
+) -> None:
+    metrics_path = tmp_path / "dino_eval.json"
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "images_total": 10,
+                "images_used": 10,
+                "instances_total": 10,
+                "keypoints_visible_total": 100,
+                "mean_error_px": 2.25,
+                "pck": {"4.0": 0.7, "8.0": 0.9},
+                "pck_counts": {"4.0": 70, "8.0": 90},
+            }
+        ),
+        encoding="utf-8",
+    )
+    tool = AnnolidEvalReportTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                path=str(metrics_path),
+                model_family="dino_kpseg",
+                dataset_name="mouse_pose",
+                model_name="dino_best",
+                split="test",
+            )
+        )
+    )
+    assert payload["ok"] is True
+    report = payload["report"]
+    assert report["metadata"]["model_family"] == "dino_kpseg"
+    assert "PCK@4px" in report["paper_table"]["markdown"]
+    assert "95% CI" in report["paper_table"]["markdown"]
+
+
+def test_annolid_eval_report_builds_yolo_report_and_writes_files(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "yolo_run"
+    run_dir.mkdir()
+    (run_dir / "results.csv").write_text(
+        "\n".join(
+            [
+                "epoch,metrics/precision(P),metrics/recall(P),metrics/mAP50(P),metrics/mAP50-95(P)",
+                "0,0.2,0.3,0.4,0.25",
+                "1,0.5,0.6,0.7,0.55",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.png").write_bytes(b"fake")
+    out_dir = tmp_path / "reports"
+    tool = AnnolidEvalReportTool(allowed_dir=tmp_path)
+    blocked = json.loads(
+        asyncio.run(
+            tool.execute(
+                path=str(run_dir),
+                model_family="yolo",
+                dataset_name="mouse_pose",
+                model_name="yolo_pose_best",
+                split="test",
+                report_dir=str(out_dir),
+            )
+        )
+    )
+    assert blocked["ok"] is False
+    assert "allow_mutation=true" in blocked["error"]
+
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                path=str(run_dir),
+                model_family="yolo",
+                dataset_name="mouse_pose",
+                model_name="yolo_pose_best",
+                split="test",
+                report_dir=str(out_dir),
+                report_basename="paper_ready",
+                allow_mutation=True,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    report = payload["report"]
+    assert report["metadata"]["model_family"] == "yolo"
+    assert "mAP@50-95" in report["paper_table"]["markdown"]
+    written = report["written_files"]
+    assert Path(written["json"]).exists()
+    assert Path(written["markdown"]).exists()
+    assert Path(written["csv"]).exists()
+    assert Path(written["latex"]).exists()
+
+
+def test_annolid_eval_report_builds_yolo_report_with_bootstrap_ci(
+    tmp_path: Path,
+) -> None:
+    dataset_root = tmp_path / "dataset"
+    annotations_dir = dataset_root / "annotations"
+    annotations_dir.mkdir(parents=True)
+    run_dir = tmp_path / "yolo_run"
+    run_dir.mkdir()
+    data_yaml = dataset_root / "data.yaml"
+    data_yaml.write_text(
+        "path: .\ntrain: images/train\nval: images/val\ntest: images/test\n",
+        encoding="utf-8",
+    )
+    (annotations_dir / "instances_test.json").write_text(
+        json.dumps(
+            {
+                "images": [
+                    {"id": 1, "width": 64, "height": 64, "file_name": "img1.jpg"}
+                ],
+                "annotations": [
+                    {
+                        "id": 1,
+                        "image_id": 1,
+                        "category_id": 1,
+                        "bbox": [10, 10, 20, 20],
+                        "area": 400,
+                        "iscrowd": 0,
+                    }
+                ],
+                "categories": [{"id": 1, "name": "mouse"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "results.csv").write_text(
+        "\n".join(
+            [
+                "epoch,metrics/precision(B),metrics/recall(B),metrics/mAP50(B),metrics/mAP50-95(B)",
+                "0,1.0,1.0,1.0,1.0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "predictions.json").write_text(
+        json.dumps(
+            [
+                {
+                    "image_id": 1,
+                    "category_id": 1,
+                    "bbox": [10, 10, 20, 20],
+                    "score": 0.99,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "args.yaml").write_text(
+        f"data: {data_yaml}\nsplit: test\n",
+        encoding="utf-8",
+    )
+    tool = AnnolidEvalReportTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                path=str(run_dir),
+                model_family="yolo",
+                dataset_name="mouse_pose",
+                model_name="yolo_detect_best",
+                split="test",
+                bootstrap_samples=8,
+                bootstrap_seed=7,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    report = payload["report"]
+    assert report["metadata"]["annotation_json"].endswith("instances_test.json")
+    assert report["metadata"]["prediction_json"].endswith("predictions.json")
+    rows = {row["metric"]: row for row in report["paper_table"]["rows"]}
+    assert rows["mAP@50"]["ci95"] != "NA"
+    assert rows["mAP@50-95"]["ci95"] != "NA"
+    assert "map50_ci95_low" in report["paper_table"]["csv"]
+    assert any("predictions.json" in artifact for artifact in report["artifacts"])
+
+
+def test_annolid_eval_report_builds_behavior_report(tmp_path: Path) -> None:
+    run_dir = tmp_path / "behavior_run"
+    run_dir.mkdir()
+    (run_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "test_metrics": {
+                    "loss": 0.4,
+                    "accuracy": 0.8,
+                    "macro_f1": 0.75,
+                    "macro_map": 0.77,
+                    "per_class": {
+                        "grooming": {
+                            "precision": 0.8,
+                            "recall": 0.7,
+                            "f1-score": 0.75,
+                            "support": 12,
+                        }
+                    },
+                    "per_class_ap": {"grooming": 0.82},
+                },
+                "predictions": [
+                    {
+                        "video_name": "video_0.mpg",
+                        "target_index": 0,
+                        "predicted_index": 0,
+                        "class_probabilities": [0.9, 0.1],
+                    },
+                    {
+                        "video_name": "video_1.mpg",
+                        "target_index": 0,
+                        "predicted_index": 1,
+                        "class_probabilities": [0.2, 0.8],
+                    },
+                    {
+                        "video_name": "video_2.mpg",
+                        "target_index": 1,
+                        "predicted_index": 1,
+                        "class_probabilities": [0.1, 0.9],
+                    },
+                    {
+                        "video_name": "video_3.mpg",
+                        "target_index": 1,
+                        "predicted_index": 1,
+                        "class_probabilities": [0.3, 0.7],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "confusion_matrix.png").write_bytes(b"fake")
+    tool = AnnolidEvalReportTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                path=str(run_dir),
+                model_family="behavior_classifier",
+                dataset_name="behavior_benchmark",
+                model_name="polygon_frame_classifier",
+                split="test",
+            )
+        )
+    )
+    assert payload["ok"] is True
+    report = payload["report"]
+    assert report["metadata"]["model_family"] == "behavior_classifier"
+    assert "Macro F1" in report["paper_table"]["markdown"]
+    assert report["paper_table"]["rows"][1]["ci95"] != "NA"
+    assert "accuracy_ci95_low" in report["paper_table"]["csv"]
+    assert report["per_class"][0]["precision_ci95"] != "NA"
+    assert report["per_class"][0]["ap_ci95"] != "NA"
+    assert "grooming" in report["report_markdown"]
+    assert "(" in report["report_markdown"]
+    assert any("confusion_matrix.png" in artifact for artifact in report["artifacts"])
+    assert report["per_class"][0]["label"] == "grooming"
+
+
+def test_annolid_eval_start_blocks_without_mutation(tmp_path: Path) -> None:
+    data_yaml = tmp_path / "data.yaml"
+    weights = tmp_path / "best.pt"
+    data_yaml.write_text("train: images/train\nval: images/val\n", encoding="utf-8")
+    weights.write_text("fake", encoding="utf-8")
+    tool = AnnolidEvalStartTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                model_family="dino_kpseg",
+                data=str(data_yaml),
+                weights=str(weights),
+            )
+        )
+    )
+    assert payload["ok"] is False
+    assert "allow_mutation=true" in payload["error"]
+
+
+def test_annolid_eval_start_builds_dino_command(monkeypatch, tmp_path: Path) -> None:
+    data_yaml = tmp_path / "data.yaml"
+    weights = tmp_path / "best.pt"
+    out_json = tmp_path / "eval.json"
+    report_dir = tmp_path / "paper"
+    data_yaml.write_text("train: images/train\nval: images/val\n", encoding="utf-8")
+    weights.write_text("fake", encoding="utf-8")
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self.command = ""
+            self.cwd = ""
+
+        async def start(self, *, command: str, cwd: str, timeout_s: float = 0.0):
+            self.command = command
+            self.cwd = cwd
+            return types.SimpleNamespace(session_id="sh_eval_dino")
+
+        async def poll(self, session_id: str, *, wait_ms: int = 0):
+            return {
+                "ok": True,
+                "running": False,
+                "status": "completed",
+                "return_code": 0,
+            }
+
+        async def log(self, session_id: str, *, tail_lines: int = 200):
+            return {"ok": True, "text": ""}
+
+    manager = _FakeManager()
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.eval_start.get_shell_session_manager",
+        lambda: manager,
+    )
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.eval_start._resolve_training_python",
+        lambda cwd: str(cwd / ".venv" / "bin" / "python"),
+    )
+
+    tool = AnnolidEvalStartTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                model_family="dino_kpseg",
+                data=str(data_yaml),
+                weights=str(weights),
+                split="test",
+                data_format="coco",
+                thresholds="4,8",
+                per_keypoint=True,
+                paper_report=True,
+                dataset_name="mouse_pose",
+                model_name="dino_best",
+                out=str(out_json),
+                report_dir=str(report_dir),
+                report_basename="paper_metrics",
+                allow_mutation=True,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["session_id"] == "sh_eval_dino"
+    assert payload["expected_output_path"] == str(out_json.resolve())
+    assert "annolid.segmentation.dino_kpseg.eval" in manager.command
+    assert "--paper-report" in manager.command
+    assert "--per-keypoint" in manager.command
+    assert "--report-dir" in manager.command
+
+
+def test_annolid_eval_start_builds_yolo_command(monkeypatch, tmp_path: Path) -> None:
+    data_yaml = tmp_path / "data.yaml"
+    data_yaml.write_text("train: images/train\nval: images/val\n", encoding="utf-8")
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self.command = ""
+
+        async def start(self, *, command: str, cwd: str, timeout_s: float = 0.0):
+            self.command = command
+            return types.SimpleNamespace(session_id="sh_eval_yolo")
+
+        async def poll(self, session_id: str, *, wait_ms: int = 0):
+            return {
+                "ok": True,
+                "running": False,
+                "status": "completed",
+                "return_code": 0,
+            }
+
+        async def log(self, session_id: str, *, tail_lines: int = 200):
+            return {"ok": True, "text": ""}
+
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.eval_start.get_shell_session_manager",
+        lambda: _FakeManager(),
+    )
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.eval_start.resolve_weight_path",
+        lambda value: Path(value),
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_build_yolo_val_command(**kwargs):
+        captured.update(kwargs)
+        return [
+            "yolo",
+            "val",
+            f"model={kwargs['model']}",
+            f"data={kwargs['data']}",
+            f"split={kwargs['split']}",
+            f"project={kwargs['project']}",
+            f"name={kwargs['name']}",
+            f"save_json={kwargs['save_json']}",
+            f"workers={kwargs['workers']}",
+        ]
+
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.eval_start.build_yolo_val_command",
+        _fake_build_yolo_val_command,
+    )
+
+    tool = AnnolidEvalStartTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                model_family="yolo",
+                data=str(data_yaml),
+                weights="yolo11n-pose.pt",
+                split="test",
+                project=str(tmp_path / "runs"),
+                run_name="eval_pose",
+                imgsz=640,
+                batch=4,
+                save_json=True,
+                workers=0,
+                allow_mutation=True,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["session_id"] == "sh_eval_yolo"
+    assert payload["model_family"] == "yolo"
+    assert "yolo val" in payload["command"]
+    assert "split=test" in payload["command"]
+    assert "save_json=True" in payload["command"]
+    assert "workers=0" in payload["command"]
+    assert captured["save_json"] is True
+    assert captured["workers"] == 0
+
+
+def test_annolid_eval_start_builds_behavior_command(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_dir = tmp_path / "videos"
+    video_dir.mkdir()
+    checkpoint = tmp_path / "best_model.pth"
+    checkpoint.write_text("fake", encoding="utf-8")
+    out_json = tmp_path / "behavior_metrics.json"
+    plot_dir = tmp_path / "behavior_plots"
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self.command = ""
+
+        async def start(self, *, command: str, cwd: str, timeout_s: float = 0.0):
+            self.command = command
+            return types.SimpleNamespace(session_id="sh_eval_behavior")
+
+        async def poll(self, session_id: str, *, wait_ms: int = 0):
+            return {
+                "ok": True,
+                "running": False,
+                "status": "completed",
+                "return_code": 0,
+            }
+
+        async def log(self, session_id: str, *, tail_lines: int = 200):
+            return {"ok": True, "text": ""}
+
+    manager = _FakeManager()
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.eval_start.get_shell_session_manager",
+        lambda: manager,
+    )
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.eval_start._resolve_training_python",
+        lambda cwd: str(cwd / ".venv" / "bin" / "python"),
+    )
+
+    tool = AnnolidEvalStartTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                model_family="behavior_classifier",
+                data=str(video_dir),
+                weights=str(checkpoint),
+                split="all",
+                batch=2,
+                feature_backbone="dinov3",
+                dinov3_model_name="facebook/dinov3-vits16-pretrain-lvd1689m",
+                feature_dim=768,
+                transformer_dim=512,
+                val_ratio=0.25,
+                random_seed=7,
+                out=str(out_json),
+                plot_dir=str(plot_dir),
+                allow_mutation=True,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["session_id"] == "sh_eval_behavior"
+    assert payload["expected_output_path"] == str(out_json.resolve())
+    assert "annolid.behavior.eval" in manager.command
+    assert "--video-folder" in manager.command
+    assert "--checkpoint-path" in manager.command
+    assert "--transformer-dim" in manager.command
+    assert "--plot-dir" in manager.command
 
 
 def test_filesystem_tools_round_trip(tmp_path: Path) -> None:
@@ -1382,6 +2689,11 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("exec")
     assert registry.has("exec_start")
     assert registry.has("exec_process")
+    assert registry.has("annolid_dataset_inspect")
+    assert registry.has("annolid_dataset_prepare")
+    assert registry.has("annolid_train_start")
+    assert registry.has("annolid_eval_start")
+    assert registry.has("annolid_eval_report")
     assert registry.has("cron")
     assert registry.has("download_url")
     assert registry.has("download_pdf")
