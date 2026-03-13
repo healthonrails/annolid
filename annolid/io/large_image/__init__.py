@@ -17,9 +17,9 @@ from .cache import (
     remove_large_image_cache_file,
     resolve_fresh_optimized_large_image_path,
 )
+from .common import TIFF_SUFFIXES
 from .openslide_backend import OpenSlideBackend
 from .registry import (
-    TIFF_SUFFIXES,
     available_large_image_backends,
     is_large_tiff_path,
     load_image_with_backends,
