@@ -14,6 +14,7 @@ from .depth_sam_proxy_mixin import DepthSamProxyMixin
 from .file_browser_mixin import FileBrowserMixin
 from .flags_overlay_mixin import FlagsOverlayMixin
 from .frame_playback_mixin import FramePlaybackMixin
+from .label_image_overlay_mixin import LabelImageOverlayMixin
 from .label_panel_mixin import LabelPanelMixin
 from .lifecycle_mixin import LifecycleMixin
 from .media_workflow_mixin import MediaWorkflowMixin
@@ -55,6 +56,7 @@ class AnnolidWindowMixinBundle(
     BehaviorInteractionMixin,
     SchemaBehaviorLoaderMixin,
     FramePlaybackMixin,
+    LabelImageOverlayMixin,
     BehaviorLogMixin,
     AgentAnalysisMixin,
     ProjectWorkflowMixin,

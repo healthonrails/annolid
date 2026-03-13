@@ -84,3 +84,13 @@ class LargeImageBackend(ABC):
     @abstractmethod
     def load(self, path: str | Path | None = None) -> LargeImageLoadResult:
         raise NotImplementedError
+
+    def get_page_count(self) -> int:
+        return 1
+
+    def get_current_page(self) -> int:
+        return 0
+
+    def set_page(self, page_index: int) -> None:
+        if int(page_index) != 0:
+            raise IndexError("This backend only exposes page 0")

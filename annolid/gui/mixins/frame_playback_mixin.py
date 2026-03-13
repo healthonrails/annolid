@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from qtpy import QtGui, QtWidgets
+from qtpy import QtGui
 
 from annolid.gui.shape import Shape
 from annolid.utils.logger import logger
@@ -17,20 +17,12 @@ class FramePlaybackMixin:
         if self.isPlaying:
             self.stopPlaying()
             self.update_step_size(1)
-            self.playButton.setIcon(
-                QtWidgets.QApplication.style().standardIcon(
-                    QtWidgets.QStyle.SP_MediaPlay
-                )
-            )
-            self.playButton.setText("Play")
+            if hasattr(self, "_set_play_button_state"):
+                self._set_play_button_state(False)
         else:
             self.startPlaying()
-            self.playButton.setIcon(
-                QtWidgets.QApplication.style().standardIcon(
-                    QtWidgets.QStyle.SP_MediaStop
-                )
-            )
-            self.playButton.setText("Pause")
+            if hasattr(self, "_set_play_button_state"):
+                self._set_play_button_state(True)
 
     def _on_frame_loaded(self, frame_idx: int, qimage: QtGui.QImage) -> None:
         """Render a frame only if it matches the latest requested index."""

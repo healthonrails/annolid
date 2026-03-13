@@ -179,10 +179,37 @@ class PersistenceLifecycleMixin:
         try:
             imagePath = osp.relpath(self.imagePath, osp.dirname(filename))
             imageData = None
-            if save_image_data and self._config["store_data"]:
+            save_embedded_image_data = bool(
+                save_image_data and self._config["store_data"]
+            )
+            if hasattr(self, "_has_large_image_page_navigation") and bool(
+                self._has_large_image_page_navigation()
+            ):
+                save_embedded_image_data = False
+            if save_embedded_image_data:
                 pil_image_to_save = self._get_pil_image_from_state()
                 if pil_image_to_save:
                     imageData = utils.img_pil_to_data(pil_image_to_save)
+
+            image_height = self.image.height()
+            image_width = self.image.width()
+            large_backend = getattr(self, "large_image_backend", None)
+            if large_backend is not None:
+                try:
+                    image_width, image_height = large_backend.get_level_shape(0)
+                except Exception:
+                    pass
+
+            other_data = dict(self.otherData or {})
+            if hasattr(self, "_has_large_image_page_navigation") and bool(
+                self._has_large_image_page_navigation()
+            ):
+                other_data["large_image_page"] = {
+                    "page_index": int(getattr(self, "frame_number", 0) or 0),
+                    "page_count": int(getattr(self, "num_frames", 1) or 1),
+                    "label_path": str(filename),
+                    "source_path": str(getattr(self, "imagePath", "") or ""),
+                }
 
             if osp.dirname(filename) and not osp.exists(osp.dirname(filename)):
                 os.makedirs(osp.dirname(filename))
@@ -191,9 +218,9 @@ class PersistenceLifecycleMixin:
                 shapes=shapes,
                 imagePath=Path(imagePath).name,
                 imageData=imageData,
-                imageHeight=self.image.height(),
-                imageWidth=self.image.width(),
-                otherData=self.otherData,
+                imageHeight=image_height,
+                imageWidth=image_width,
+                otherData=other_data,
                 flags=flags,
                 caption=self.canvas.getCaption(),
             )

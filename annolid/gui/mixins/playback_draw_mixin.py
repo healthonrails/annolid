@@ -122,6 +122,26 @@ class PlaybackDrawMixin:
         self.isPlaying = isPlaying
         timer = getattr(self, "timer", None)
         if self.video_loader is None:
+            if (
+                hasattr(self, "_has_large_image_page_navigation")
+                and self._has_large_image_page_navigation()
+            ):
+                if self.isPlaying:
+                    if timer is None:
+                        timer = QtCore.QTimer(self)
+                        timer.timeout.connect(self.openNextImg)
+                        self.timer = timer
+                    if timer.isActive():
+                        return
+                    interval_ms = 120
+                    fps = float(getattr(self, "fps", 0.0) or 0.0)
+                    if fps > 0.0:
+                        interval_ms = max(30, int(1000.0 / fps))
+                    timer.start(interval_ms)
+                else:
+                    if timer is not None and timer.isActive():
+                        timer.stop()
+                return
             if timer is not None and timer.isActive():
                 timer.stop()
             return

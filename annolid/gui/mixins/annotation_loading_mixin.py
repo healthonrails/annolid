@@ -17,7 +17,7 @@ from annolid.utils.logger import logger
 class AnnotationLoadingMixin:
     """Annotation/label loading workflow for frames and images."""
 
-    def loadLabels(self, shapes):
+    def _materialize_label_shapes(self, shapes):
         s = []
         for shape in shapes:
             label = shape["label"]
@@ -57,9 +57,110 @@ class AnnotationLoadingMixin:
             shape.flags.update(flags)
             shape.other_data = other_data
             s.append(shape)
+        return s
 
+    def loadLabels(self, shapes):
+        s = self._materialize_label_shapes(shapes)
         self.loadShapes(s)
         return s
+
+    def _large_image_page_baseline_other_data(self) -> dict:
+        baseline: dict = {}
+        current_other_data = getattr(self, "otherData", None)
+        if isinstance(current_other_data, dict):
+            if "large_image" in current_other_data:
+                baseline["large_image"] = current_other_data["large_image"]
+            if "svg_overlays" in current_other_data:
+                baseline["svg_overlays"] = current_other_data["svg_overlays"]
+            if "label_image_overlay" in current_other_data:
+                baseline["label_image_overlay"] = current_other_data[
+                    "label_image_overlay"
+                ]
+        return baseline
+
+    def _loadLargeImagePageAnnotations(
+        self,
+        page_index: int,
+        *,
+        fallback_shapes=None,
+        fallback_other_data: Optional[dict] = None,
+    ) -> bool:
+        resolver = getattr(self, "_large_image_stack_label_path", None)
+        if not callable(resolver):
+            return False
+
+        label_path_str = resolver(page_index=page_index)
+        if not label_path_str:
+            return False
+
+        label_path = Path(label_path_str)
+        baseline_other_data = self._large_image_page_baseline_other_data()
+
+        def _apply_loaded_shapes(shape_payload):
+            if shape_payload and isinstance(shape_payload[0], dict):
+                self.loadLabels(shape_payload)
+            else:
+                self.loadShapes(shape_payload or [], replace=True)
+
+        if label_path.exists():
+            try:
+                label_file = LabelFile(str(label_path), is_video_frame=True)
+            except LabelFileError as exc:
+                logger.error(
+                    "Failed to load TIFF page label file %s: %s",
+                    label_path,
+                    exc,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Unexpected error loading TIFF page label file %s: %s",
+                    label_path,
+                    exc,
+                )
+            else:
+                self.labelFile = label_file
+                merged_other_data = dict(baseline_other_data)
+                merged_other_data.update(
+                    dict(getattr(label_file, "otherData", {}) or {})
+                )
+                merged_other_data["large_image_page"] = {
+                    "page_index": int(page_index),
+                    "label_path": str(label_path),
+                }
+                self.otherData = merged_other_data
+                if hasattr(self.canvas, "setBehaviorText"):
+                    self.canvas.setBehaviorText(None)
+                _apply_loaded_shapes(label_file.shapes)
+                self.update_flags_from_file(label_file)
+                caption = label_file.get_caption()
+                if getattr(self, "caption_widget", None) is not None:
+                    if caption:
+                        self.caption_widget.set_caption(caption)
+                    else:
+                        self.caption_widget.set_caption("")
+                    self.caption_widget.set_image_path(
+                        str(getattr(self, "imagePath", "") or "")
+                    )
+                return True
+
+        self.labelFile = None
+        merged_other_data = dict(baseline_other_data)
+        if isinstance(fallback_other_data, dict):
+            merged_other_data.update(fallback_other_data)
+        merged_other_data["large_image_page"] = {
+            "page_index": int(page_index),
+            "label_path": str(label_path),
+        }
+        self.otherData = merged_other_data
+        if hasattr(self.canvas, "setBehaviorText"):
+            self.canvas.setBehaviorText(None)
+        _apply_loaded_shapes(fallback_shapes or [])
+        if getattr(self, "caption_widget", None) is not None:
+            self.caption_widget.set_caption("")
+            self.caption_widget.set_image_path(
+                str(getattr(self, "imagePath", "") or "")
+            )
+        return bool(fallback_shapes)
 
     def loadShapes(self, shapes, replace=True):
         self._noSelectionSlot = True
@@ -148,6 +249,15 @@ class AnnotationLoadingMixin:
                 return
             if path not in candidates:
                 candidates.append(path)
+
+        if hasattr(self, "_has_large_image_page_navigation") and bool(
+            self._has_large_image_page_navigation()
+        ):
+            resolver = getattr(self, "_large_image_stack_label_path", None)
+            if callable(resolver):
+                stack_label_path = resolver(page_index=frame_number)
+                if stack_label_path:
+                    _append_candidate(Path(stack_label_path))
 
         if frame_path is not None:
             frame_path = Path(frame_path)

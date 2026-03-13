@@ -6,6 +6,7 @@ import time
 from qtpy import QtCore, QtWidgets
 
 from annolid.data import videos
+from annolid.io.large_image.common import is_large_tiff_path
 from annolid.gui.widgets.youtube_dialog import YouTubeVideoDialog
 from annolid.gui.widgets.video_slider import VideoSlider
 from annolid.gui.window_base import QT5
@@ -56,6 +57,16 @@ class VideoWorkflowMixin:
         )
 
         video_filename = str(video_filename)
+        if video_filename and is_large_tiff_path(video_filename):
+            logger.info(
+                "Redirecting TIFF stack open to the large-image viewer path: %s",
+                video_filename,
+            )
+            if hasattr(self, "loadFile"):
+                self.loadFile(video_filename)
+            return
+        if hasattr(self, "setLargeImageDocksActive"):
+            self.setLargeImageDocksActive(False)
         self.stepSizeWidget.setEnabled(True)
 
         if video_filename:

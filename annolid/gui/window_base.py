@@ -17,6 +17,7 @@ from annolid.gui.file_dock import FileDockMixin
 from annolid.gui.large_image import (
     DEFAULT_LARGE_IMAGE_CACHE_MAX_ENTRIES,
     DEFAULT_LARGE_IMAGE_CACHE_MAX_SIZE_BYTES,
+    TIFF_SUFFIXES,
     clear_all_large_image_caches,
     format_large_image_cache_size,
     is_large_tiff_path,
@@ -373,6 +374,8 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.otherData = {}
         self.large_image_backend = None
         self._active_image_view = "canvas"
+        self._large_image_hidden_docks_states: dict[QtWidgets.QDockWidget, bool] = {}
+        self._play_button_owner: str | None = None
         self.dirty = False
         self.output_dir: Optional[str] = None
         self.lastOpenDir: Optional[str] = None
@@ -1068,6 +1071,301 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.canvas.setEnabled(False)
         return True
 
+    def _large_tiff_annotation_root(
+        self, image_path: str | Path | None = None
+    ) -> Path | None:
+        candidate = (
+            image_path if image_path is not None else getattr(self, "imagePath", None)
+        )
+        if not candidate:
+            return None
+        path = Path(candidate)
+        if not bool(is_large_tiff_path(path)):
+            return None
+        path_str = str(path)
+        lower_path = path_str.lower()
+        matched_suffix = ""
+        for suffix in sorted(TIFF_SUFFIXES, key=len, reverse=True):
+            if lower_path.endswith(suffix):
+                matched_suffix = suffix
+                break
+        if matched_suffix:
+            return Path(path_str[: -len(matched_suffix)])
+        return path.with_suffix("")
+
+    def _large_image_stack_annotation_dir(
+        self, image_path: str | Path | None = None
+    ) -> Path | None:
+        return self._large_tiff_annotation_root(image_path=image_path)
+
+    def _large_image_stack_label_path(
+        self,
+        page_index: int | None = None,
+        image_path: str | Path | None = None,
+    ) -> str | None:
+        backend = getattr(self, "large_image_backend", None)
+        page_count = int(getattr(backend, "get_page_count", lambda: 1)() or 1)
+        if image_path is None:
+            if not self._has_large_image_page_navigation() and page_count <= 1:
+                return None
+            annotation_dir = self._large_image_stack_annotation_dir(
+                image_path=image_path
+            )
+        else:
+            if page_count <= 1:
+                return None
+            current_image_path = getattr(self, "imagePath", None)
+            if not current_image_path:
+                return None
+            try:
+                same_image = (
+                    Path(current_image_path).expanduser().resolve()
+                    == Path(image_path).expanduser().resolve()
+                )
+            except Exception:
+                same_image = str(current_image_path) == str(image_path)
+            if not same_image:
+                return None
+            annotation_dir = self._large_image_stack_annotation_dir(
+                image_path=current_image_path
+            )
+        if annotation_dir is None:
+            return None
+        target_page = (
+            int(page_index)
+            if page_index is not None
+            else int(getattr(self, "frame_number", 0) or 0)
+        )
+        return str(annotation_dir / f"{annotation_dir.name}_{target_page:09}.json")
+
+    def _has_large_image_page_navigation(self) -> bool:
+        return bool(getattr(self, "_seekbar_owner", "") == "large_image_stack")
+
+    def _clear_large_image_stack_navigation(self) -> None:
+        stack_annotation_dir = self._large_image_stack_annotation_dir()
+        if not self._has_large_image_page_navigation():
+            if getattr(self, "_play_button_owner", "") == "large_image_stack":
+                play_button = getattr(self, "playButton", None)
+                if play_button is not None:
+                    try:
+                        self.statusBar().removeWidget(play_button)
+                    except Exception:
+                        pass
+                self.playButton = None
+                self._play_button_owner = None
+            if stack_annotation_dir is not None and str(
+                getattr(self, "annotation_dir", "") or ""
+            ) == str(stack_annotation_dir):
+                self.annotation_dir = None
+            return
+        seekbar = getattr(self, "seekbar", None)
+        if seekbar is not None:
+            try:
+                self.statusBar().removeWidget(seekbar)
+            except Exception:
+                pass
+        self.seekbar = None
+        if getattr(self, "_play_button_owner", "") == "large_image_stack":
+            play_button = getattr(self, "playButton", None)
+            if play_button is not None:
+                try:
+                    self.statusBar().removeWidget(play_button)
+                except Exception:
+                    pass
+            self.playButton = None
+            self._play_button_owner = None
+        self._seekbar_owner = None
+        self._large_image_page_count = 0
+        if stack_annotation_dir is not None and str(
+            getattr(self, "annotation_dir", "") or ""
+        ) == str(stack_annotation_dir):
+            self.annotation_dir = None
+
+    def _set_play_button_state(
+        self, is_playing: bool, *, enabled: bool | None = None
+    ) -> None:
+        play_button = getattr(self, "playButton", None)
+        if play_button is None:
+            return
+        try:
+            icon_style = (
+                QtWidgets.QStyle.SP_MediaStop
+                if bool(is_playing)
+                else QtWidgets.QStyle.SP_MediaPlay
+            )
+            play_button.setIcon(QtWidgets.QApplication.style().standardIcon(icon_style))
+            play_button.setText("Pause" if bool(is_playing) else "Play")
+            if enabled is not None:
+                play_button.setEnabled(bool(enabled))
+        except Exception:
+            pass
+
+    def _clear_status_bar_media_controls(self) -> None:
+        for attr_name in ("seekbar", "playButton", "saveButton"):
+            widget = getattr(self, attr_name, None)
+            if widget is None:
+                continue
+            try:
+                self.statusBar().removeWidget(widget)
+            except Exception:
+                pass
+            setattr(self, attr_name, None)
+        self._seekbar_owner = None
+        self._play_button_owner = None
+        self._large_image_seekbar_drag_active = False
+
+    def _on_large_image_seekbar_pressed(self, *_args) -> None:
+        self._large_image_seekbar_drag_active = True
+
+    def _on_large_image_seekbar_released(self, *_args) -> None:
+        seekbar = getattr(self, "seekbar", None)
+        if seekbar is None or not self._has_large_image_page_navigation():
+            self._large_image_seekbar_drag_active = False
+            return
+        self._large_image_seekbar_drag_active = False
+        self.requestLargeImagePageNumber(int(seekbar.value()))
+
+    def _on_large_image_seekbar_value_changed(self, value: int) -> None:
+        if getattr(self, "_large_image_seekbar_drag_active", False):
+            return
+        self.requestLargeImagePageNumber(int(value))
+
+    def _setup_large_image_stack_navigation(self, backend) -> None:
+        from annolid.gui.widgets.video_slider import VideoSlider
+
+        page_count = max(1, int(getattr(backend, "get_page_count", lambda: 1)() or 1))
+        if page_count <= 1:
+            self._clear_large_image_stack_navigation()
+            return
+        self._clear_status_bar_media_controls()
+        seekbar = VideoSlider()
+        seekbar.setMinimum(0)
+        seekbar.setMaximum(page_count - 1)
+        seekbar.setEnabled(True)
+        seekbar.resizeEvent()
+        if hasattr(self, "jump_to_frame"):
+            seekbar.input_value.returnPressed.connect(self.jump_to_frame)
+        if hasattr(self, "keyPressEvent"):
+            seekbar.keyPress.connect(self.keyPressEvent)
+        if hasattr(self, "keyReleaseEvent"):
+            seekbar.keyRelease.connect(self.keyReleaseEvent)
+        seekbar.mousePressed.connect(self._on_large_image_seekbar_pressed)
+        seekbar.mouseReleased.connect(self._on_large_image_seekbar_released)
+        seekbar.valueChanged.connect(self._on_large_image_seekbar_value_changed)
+        play_button = QtWidgets.QPushButton("Play", self)
+        toggle_play = getattr(self, "togglePlay", None)
+        if callable(toggle_play):
+            play_button.clicked.connect(toggle_play)
+        self.statusBar().addPermanentWidget(play_button)
+        self.statusBar().addPermanentWidget(seekbar, stretch=1)
+        self.playButton = play_button
+        self.seekbar = seekbar
+        self._play_button_owner = "large_image_stack"
+        self._seekbar_owner = "large_image_stack"
+        self._set_play_button_state(False, enabled=callable(toggle_play))
+        self._large_image_page_count = page_count
+        annotation_dir = self._large_image_stack_annotation_dir()
+        if annotation_dir is not None:
+            self.annotation_dir = str(annotation_dir)
+        current_page = int(getattr(backend, "get_current_page", lambda: 0)() or 0)
+        try:
+            with QtCore.QSignalBlocker(seekbar):
+                seekbar.setValue(current_page)
+        except Exception:
+            pass
+
+    def requestLargeImagePageNumber(self, page_index: int) -> bool:
+        target = int(page_index)
+        current = int(getattr(self, "frame_number", 0) or 0)
+        if target == current:
+            return True
+        if not self.mayContinue():
+            seekbar = getattr(self, "seekbar", None)
+            if seekbar is not None and self._has_large_image_page_navigation():
+                try:
+                    with QtCore.QSignalBlocker(seekbar):
+                        seekbar.setValue(current)
+                except Exception:
+                    pass
+            return False
+        try:
+            return self.setLargeImagePageNumber(target)
+        except Exception as exc:
+            seekbar = getattr(self, "seekbar", None)
+            if seekbar is not None and self._has_large_image_page_navigation():
+                try:
+                    with QtCore.QSignalBlocker(seekbar):
+                        seekbar.setValue(current)
+                except Exception:
+                    pass
+            message = str(exc)
+            if hasattr(self, "errorMessage"):
+                self.errorMessage(
+                    self.tr("TIFF Page Navigation"),
+                    self.tr("Failed to open TIFF page: %s") % message,
+                )
+            else:
+                self._post_window_status(
+                    self.tr("Failed to open TIFF page: %s") % message,
+                    timeout=5000,
+                )
+            return False
+
+    def setLargeImagePageNumber(self, page_index: int) -> bool:
+        backend = getattr(self, "large_image_backend", None)
+        large_view = getattr(self, "large_image_view", None)
+        canvas = getattr(self, "canvas", None)
+        if backend is None or large_view is None:
+            return False
+        page_count = max(1, int(getattr(backend, "get_page_count", lambda: 1)() or 1))
+        if page_count <= 1:
+            return False
+        target = int(page_index)
+        if target < 0 or target >= page_count:
+            return False
+        current = int(getattr(backend, "get_current_page", lambda: 0)() or 0)
+        if target != current:
+            backend.set_page(target)
+            try:
+                large_view.set_backend(backend)
+            except Exception:
+                try:
+                    backend.set_page(current)
+                except Exception:
+                    pass
+                raise
+            label_backend = None
+            if hasattr(large_view, "label_layer_backend"):
+                label_backend = large_view.label_layer_backend()
+            if label_backend is not None:
+                try:
+                    label_page_count = int(
+                        getattr(label_backend, "get_page_count", lambda: 1)() or 1
+                    )
+                    if label_page_count == page_count and page_count > 1:
+                        label_backend.set_page(target)
+                except Exception:
+                    pass
+        self.frame_number = target
+        self.num_frames = page_count
+        if hasattr(self, "_loadLargeImagePageAnnotations"):
+            self._loadLargeImagePageAnnotations(target)
+        elif canvas is not None:
+            large_view.set_shapes(getattr(canvas, "shapes", []) or [])
+        if hasattr(self, "_restoreLabelImageOverlayFromState"):
+            self._restoreLabelImageOverlayFromState()
+        seekbar = getattr(self, "seekbar", None)
+        if seekbar is not None and self._has_large_image_page_navigation():
+            try:
+                with QtCore.QSignalBlocker(seekbar):
+                    seekbar.setValue(target)
+            except Exception:
+                pass
+        self._post_window_status(
+            self.tr("Viewing TIFF page %d of %d") % (target + 1, page_count)
+        )
+        return True
+
     def _settings_value(self, key: str, default, value_type):
         settings = getattr(self, "settings", None)
         if settings is None:
@@ -1079,6 +1377,80 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
 
     def _post_window_status(self, message: str, timeout: int = 4000) -> None:
         post_window_status(self, message, timeout)
+
+    def _large_image_irrelevant_docks(self) -> list[QtWidgets.QDockWidget]:
+        docks = []
+        for name in (
+            "video_dock",
+            "timeline_dock",
+            "behavior_log_dock",
+            "behavior_controls_dock",
+            "audio_dock",
+            "caption_dock",
+            "embedding_search_dock",
+            "florence_dock",
+        ):
+            dock = getattr(self, name, None)
+            if isinstance(dock, QtWidgets.QDockWidget):
+                docks.append(dock)
+        return docks
+
+    def _large_image_related_docks(self) -> list[QtWidgets.QDockWidget]:
+        docks = []
+        for name in (
+            "file_dock",
+            "flag_dock",
+            "label_dock",
+            "shape_dock",
+            "vector_overlay_dock",
+            "keypoint_sequence_dock",
+        ):
+            dock = getattr(self, name, None)
+            if isinstance(dock, QtWidgets.QDockWidget):
+                docks.append(dock)
+        return docks
+
+    def setLargeImageDocksActive(self, active: bool) -> None:
+        if active:
+            related_states = getattr(self, "_large_image_related_docks_states", None)
+            if related_states is None:
+                related_states = {}
+                self._large_image_related_docks_states = related_states
+            for dock in self._large_image_irrelevant_docks():
+                try:
+                    if dock not in self._large_image_hidden_docks_states:
+                        self._large_image_hidden_docks_states[dock] = dock.isHidden()
+                    dock.hide()
+                except Exception:
+                    continue
+            for dock in self._large_image_related_docks():
+                try:
+                    if dock not in related_states:
+                        related_states[dock] = dock.isHidden()
+                    dock.show()
+                except Exception:
+                    continue
+            return
+
+        for dock, was_hidden in list(self._large_image_hidden_docks_states.items()):
+            try:
+                if was_hidden:
+                    dock.hide()
+                else:
+                    dock.show()
+            except Exception:
+                continue
+        self._large_image_hidden_docks_states.clear()
+        related_states = getattr(self, "_large_image_related_docks_states", {})
+        for dock, was_hidden in list(related_states.items()):
+            try:
+                if was_hidden:
+                    dock.hide()
+                else:
+                    dock.show()
+            except Exception:
+                continue
+        related_states.clear()
 
     def largeImageCachePolicy(self) -> dict[str, int]:
         max_entries = self._settings_value(
@@ -1507,6 +1879,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         image_path = path
         shapes = []
 
+        initial_large_image_page = None
         if path.suffix.lower() == ".json":
             try:
                 label_file = LabelFile(str(path))
@@ -1515,6 +1888,14 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 return
             self.labelFile = label_file
             self.otherData = dict(getattr(label_file, "otherData", {}) or {})
+            try:
+                initial_large_image_page = int(
+                    (getattr(label_file, "otherData", {}) or {})
+                    .get("large_image_page", {})
+                    .get("page_index", 0)
+                )
+            except Exception:
+                initial_large_image_page = None
             shapes = label_file.shapes
             image_rel = label_file.imagePath or ""
             if image_rel:
@@ -1590,6 +1971,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
 
         if hasattr(self, "canvas") and self.canvas is not None:
             use_tiled_view = False
+            handled_page_shapes = False
             if bool(is_large_tiff_path(backend_image_path)) and hasattr(
                 self, "large_image_view"
             ):
@@ -1601,10 +1983,46 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                     self.large_image_backend = None
                     use_tiled_view = False
             if not use_tiled_view:
+                self._clear_large_image_stack_navigation()
+                self.setLargeImageDocksActive(False)
                 self._activate_canvas_image_view(image)
+                if hasattr(self, "_restoreLabelImageOverlayFromState"):
+                    self._restoreLabelImageOverlayFromState()
+            elif large_backend is not None:
+                self.setLargeImageDocksActive(True)
+                if initial_large_image_page is not None:
+                    try:
+                        page_count = int(
+                            getattr(large_backend, "get_page_count", lambda: 1)() or 1
+                        )
+                        if 0 <= int(initial_large_image_page) < page_count:
+                            large_backend.set_page(int(initial_large_image_page))
+                            self.large_image_view.set_backend(large_backend)
+                    except Exception:
+                        pass
+                self._setup_large_image_stack_navigation(large_backend)
+                if int(
+                    getattr(large_backend, "get_page_count", lambda: 1)() or 1
+                ) > 1 and hasattr(self, "_loadLargeImagePageAnnotations"):
+                    handled_page_shapes = True
+                    self.frame_number = int(
+                        getattr(large_backend, "get_current_page", lambda: 0)() or 0
+                    )
+                    self.num_frames = int(
+                        getattr(large_backend, "get_page_count", lambda: 1)() or 1
+                    )
+                    self._loadLargeImagePageAnnotations(
+                        self.frame_number,
+                        fallback_shapes=shapes,
+                        fallback_other_data=self.otherData,
+                    )
+                if hasattr(self, "_restoreLabelImageOverlayFromState"):
+                    self._restoreLabelImageOverlayFromState()
             # AnnolidWindow.loadLabels expects LabelFile JSON dict payloads and
             # materializes Shape objects before forwarding to loadShapes.
-            if shapes and isinstance(shapes[0], dict) and hasattr(self, "loadLabels"):
+            if handled_page_shapes:
+                pass
+            elif shapes and isinstance(shapes[0], dict) and hasattr(self, "loadLabels"):
                 self.loadLabels(shapes)
             elif hasattr(self, "loadShapes"):
                 self.loadShapes(shapes, replace=True)

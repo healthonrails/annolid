@@ -75,6 +75,102 @@ def test_probe_tiff_with_yxs_axes_reports_width_height_correctly(
     assert metadata.channels == 3
 
 
+def test_tifffile_backend_supports_page_navigation_for_multipage_tiff(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "multipage_stack.tif"
+    data = np.stack(
+        [
+            np.full((32, 48), 10, dtype=np.uint8),
+            np.full((32, 48), 200, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    tifffile.imwrite(image_path, data)
+
+    backend = TiffFileBackend(image_path)
+    metadata = backend.probe()
+    first_region = backend.read_region(0, 0, 8, 8)
+    backend.set_page(1)
+    second_region = backend.read_region(0, 0, 8, 8)
+
+    assert metadata is not None
+    assert metadata.page_count == 2
+    assert metadata.width == 48
+    assert metadata.height == 32
+    assert backend.get_page_count() == 2
+    assert backend.get_current_page() == 1
+    assert backend.get_level_shape(0) == (48, 32)
+    assert int(first_region[0, 0]) == 10
+    assert int(second_region[0, 0]) == 200
+
+
+def test_tifffile_backend_supports_single_series_stack_page_navigation(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "single_series_stack.tif"
+    data = np.stack(
+        [
+            np.full((24, 36), 11, dtype=np.uint8),
+            np.full((24, 36), 77, dtype=np.uint8),
+            np.full((24, 36), 155, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    tifffile.imwrite(image_path, data, metadata={"axes": "QYX"})
+
+    backend = TiffFileBackend(image_path)
+    metadata = backend.probe()
+    first_region = backend.read_region(0, 0, 4, 4)
+    backend.set_page(2)
+    third_region = backend.read_region(0, 0, 4, 4)
+
+    assert metadata is not None
+    assert metadata.page_count == 3
+    assert metadata.width == 36
+    assert metadata.height == 24
+    assert backend.get_page_count() == 3
+    assert backend.get_current_page() == 2
+    assert int(first_region[0, 0]) == 11
+    assert int(third_region[0, 0]) == 155
+
+
+def test_tifffile_backend_falls_back_to_pillow_for_missing_codec(monkeypatch) -> None:
+    backend = TiffFileBackend("dummy.tif")
+    expected = np.full((12, 8), 7, dtype=np.uint8)
+    calls = {"count": 0}
+
+    def fake_pillow(page_index: int):
+        calls["count"] += 1
+        assert page_index == 0
+        return expected
+
+    monkeypatch.setattr(backend, "_page_array_with_pillow", fake_pillow)
+
+    class _FakePage:
+        def asarray(self):
+            raise ValueError("<COMPRESSION.LZW: 5> requires the 'imagecodecs' package")
+
+    class _FakeTiffFile:
+        def __init__(self, path):
+            self.pages = [_FakePage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    import tifffile
+
+    monkeypatch.setattr(tifffile, "TiffFile", _FakeTiffFile)
+
+    result = backend._page_array(0)
+
+    assert calls["count"] == 1
+    assert np.array_equal(result, expected)
+
+
 def test_backend_registry_includes_tifffile_backend() -> None:
     names = [backend.name for backend in available_large_image_backends()]
     assert names[0] == "qt"

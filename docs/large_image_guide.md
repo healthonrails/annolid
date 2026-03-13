@@ -16,6 +16,32 @@ In practice, this guide is for:
 
 Annolid treats these differently from ordinary images because they may be too large to load comfortably as one full in-memory raster.
 
+Multi-page TIFF stacks are handled on the same large-image path now. Instead of
+opening them through the older video-style TIFF stack loader, Annolid opens
+them in the tiled large-image viewer and lets you move between pages with the
+status-bar slider and the normal next/previous navigation actions. The same
+play control used for frame workflows can also step through TIFF pages, and it
+stops cleanly at the last page instead of bouncing the viewer out of tiled
+mode.
+
+For large multipage TIFFs, the slider now commits the page change when you
+release the handle. That keeps dragging responsive even when each page switch
+requires a real TIFF decode.
+
+Annolid also recognizes TIFF stacks that are stored as a single series with an
+explicit stack axis, so page navigation still appears for those stack-style
+files when the TIFF metadata exposes that axis clearly.
+
+Each TIFF page also has its own annotation JSON. Annolid saves and reloads
+those page labels from a sibling folder next to the TIFF, using names like:
+
+- `sample_stack/sample_stack_000000000.json`
+- `sample_stack/sample_stack_000000001.json`
+
+That means page navigation in a TIFF stack now behaves much more like frame
+navigation used to behave for videos, but without leaving the large-image
+viewer workflow.
+
 ## Large-image support is optional
 
 Annolid still works normally without the large-image extras. A standard GUI install is enough for ordinary image and video annotation workflows.
@@ -91,6 +117,10 @@ Use:
 
 This creates an optimized cache file that later opens can reuse while still keeping the original TIFF as the project source image.
 
+For multipage TIFF stacks, the optimized viewing cache affects image loading
+speed only. Page-specific annotation JSON files remain in the sibling
+annotation folder described above.
+
 ## Large TIFF cache management
 
 Annolid includes cache-management tools in the `File` menu:
@@ -128,6 +158,23 @@ Best for:
 - AI-assisted creation tools that still depend on canvas-specific logic
 
 For normal manual large-image work, Annolid now keeps you in the tiled viewer as much as possible.
+
+## Docks shown for large TIFF workflows
+
+When you open a large TIFF, Annolid now hides docks that are mainly tied to
+video or media playback, including timeline, behavior-log, behavior-controls,
+audio, caption, and video-list docks.
+
+It keeps the annotation-focused docks available:
+
+- Files
+- Flags
+- Labels
+- Label Instances
+- Vector Overlays, when overlays are present
+
+When you leave the large-image workflow and go back to ordinary image or video
+work, those hidden docks are restored.
 
 ## What is tile-native
 
@@ -201,6 +248,39 @@ Imported atlas overlays can now be:
 - aligned with landmarks
 - exported after correction
 
+Annolid also supports atlas-style label images, similar to a napari labels
+layer:
+
+- load an integer-valued label TIFF as a colorized overlay
+- keep it tiled and memory-efficient in the large-image viewer
+- hover to inspect the region id under the cursor
+- click a region to select and emphasize that label
+- optionally import a CSV/TSV mapping so ids resolve to acronyms and region names
+
+Use the `File -> Overlays` menu:
+
+- `Import Label Image Overlay...`
+- `Import Label Mapping...`
+- `Show Vector Overlays`
+- `Show Label Image Overlay`
+- `Set Label Overlay Opacity...`
+- `Clear Label Image Overlay`
+
+For atlas CSV mappings, Annolid looks for flexible column names such as:
+
+- `id`, `region_id`, `structure_id`, `label_id`
+- `acronym`, `abbreviation`
+- `name`, `region_name`, `structure_name`
+
+This works well for mouse brain annotation TIFFs where each pixel stores a
+brain-region id instead of RGB color values.
+
+Annolid keeps the label-overlay visibility state in project metadata. When you
+move through a multi-page TIFF with the page slider, the label layer now stays
+available on the next page instead of disappearing. If the label stack matches
+the TIFF page count, the label overlay follows the active TIFF page
+automatically.
+
 For the atlas-specific step-by-step workflow, see [Large TIFF and Atlas Overlay Workflow](atlas_overlay_workflow.md).
 
 ## Recommended workflow
@@ -214,6 +294,15 @@ For most large-image users:
 5. Use the overlay dock for visibility, opacity, transform, and alignment.
 6. Only switch to AI/SAM tools when you actually need them.
 7. Build an optimized TIFF cache if the same flat TIFF will be opened often.
+
+For multipage TIFF stacks:
+
+1. Open the TIFF stack directly.
+2. Drag the page slider and release it to jump smoothly, or use the
+   next/previous actions for stepwise browsing.
+3. Save annotations normally; Annolid writes them to the page-specific JSON for
+   the current page.
+4. Reopen the TIFF later and Annolid restores each page’s shapes as you browse.
 
 ## Troubleshooting
 
@@ -229,6 +318,13 @@ Check:
 ### The viewer changed unexpectedly
 
 If you selected an AI/SAM tool, that is expected. Those tools still use the canvas fallback path.
+
+### My annotations do not follow the TIFF page
+
+Check that you opened the `.tif` or `.tiff` stack itself, not just one of its
+page JSON files. Annolid stores page labels in the sibling annotation folder,
+and page changes in the large-image viewer reload the matching JSON
+automatically.
 
 ### I can see a shape but cannot edit it
 

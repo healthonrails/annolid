@@ -184,6 +184,7 @@ class VectorOverlayMixin:
 
     def _refreshVectorOverlayDock(self) -> None:
         dock = getattr(self, "vector_overlay_dock", None)
+        self._syncVectorOverlayActionState()
         if isinstance(dock, VectorOverlayDockWidget):
             overlays = self.listVectorOverlays()
             dock.set_overlays(overlays)
@@ -727,6 +728,82 @@ class VectorOverlayMixin:
                     QtCore.Qt.Checked if visible else QtCore.Qt.Unchecked
                 )
 
+    def setAllVectorOverlaysVisible(self, visible: bool) -> int:
+        if not isinstance(getattr(self, "otherData", None), dict):
+            return 0
+        overlays = list(self.otherData.get("svg_overlays") or [])
+        if not overlays:
+            self._syncVectorOverlayActionState()
+            return 0
+
+        visible_flag = bool(visible)
+        changed = 0
+        for idx, overlay in enumerate(overlays):
+            current = dict(overlay or {})
+            overlay_id = str(current.get("id") or "")
+            transform = overlay_transform_from_dict(current.get("transform"))
+            if transform.visible == visible_flag:
+                continue
+            target_transform = OverlayTransform(
+                tx=transform.tx,
+                ty=transform.ty,
+                sx=transform.sx,
+                sy=transform.sy,
+                rotation_deg=transform.rotation_deg,
+                opacity=transform.opacity,
+                visible=visible_flag,
+                z_order=transform.z_order,
+            )
+            current["transform"] = overlay_transform_to_dict(target_transform)
+            metadata = dict(current.get("metadata") or {})
+            metadata["transform"] = dict(current["transform"])
+            current["metadata"] = metadata
+            overlays[idx] = current
+            for shape in self._iter_overlay_shapes(overlay_id):
+                other = dict(getattr(shape, "other_data", {}) or {})
+                other["overlay_visible"] = visible_flag
+                other["overlay_document_transform"] = overlay_transform_to_dict(
+                    target_transform
+                )
+                shape.other_data = other
+                shape.visible = visible_flag
+            self._sync_overlay_visibility_items(overlay_id, visible_flag)
+            changed += 1
+
+        if changed <= 0:
+            self._syncVectorOverlayActionState()
+            return 0
+
+        self.otherData["svg_overlays"] = overlays
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None:
+            canvas.update()
+        if getattr(self, "large_image_view", None) is not None:
+            self.large_image_view.set_shapes(getattr(canvas, "shapes", []))
+        self._refreshVectorOverlayDock()
+        self._syncVectorOverlayActionState()
+        if hasattr(self, "setDirty"):
+            self.setDirty()
+        return changed
+
+    def toggleVectorOverlaysVisible(self, value: bool = False) -> None:
+        self.setAllVectorOverlaysVisible(bool(value))
+
+    def _syncVectorOverlayActionState(self) -> None:
+        actions = getattr(self, "actions", None)
+        action = getattr(actions, "toggle_vector_overlays_visible", None)
+        if action is None:
+            return
+        overlays = self.listVectorOverlays()
+        enabled = bool(overlays)
+        checked = enabled and all(
+            bool(dict(overlay.get("transform") or {}).get("visible", True))
+            for overlay in overlays
+        )
+        with QtCore.QSignalBlocker(action):
+            action.setEnabled(enabled)
+            action.setChecked(bool(checked))
+
     def setVectorOverlayTransform(
         self,
         overlay_id: str,
@@ -815,6 +892,7 @@ class VectorOverlayMixin:
             )
         self._sync_overlay_visibility_items(overlay_id, target_transform.visible)
         self._refreshVectorOverlayDock()
+        self._syncVectorOverlayActionState()
         if hasattr(self, "setDirty"):
             self.setDirty()
         return True

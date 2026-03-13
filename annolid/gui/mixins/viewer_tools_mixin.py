@@ -203,6 +203,20 @@ class ViewerToolsMixin:
             pass
 
         if not tiff_path:
+            current_image = Path(str(getattr(self, "imagePath", "") or "")).expanduser()
+            large_backend = getattr(self, "large_image_backend", None)
+            if current_image.exists() and current_image.suffix.lower() in {
+                ".tif",
+                ".tiff",
+            }:
+                if (
+                    large_backend is not None
+                    and int(getattr(large_backend, "get_page_count", lambda: 1)() or 1)
+                    > 1
+                ):
+                    tiff_path = str(current_image)
+
+        if not tiff_path:
             start_dir = (
                 str(Path(self.filename).parent)
                 if getattr(self, "filename", None)

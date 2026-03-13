@@ -7,7 +7,12 @@ import numpy as np
 import tifffile
 from qtpy import QtCore, QtGui, QtWidgets
 
+from annolid.gui.mixins.annotation_loading_mixin import AnnotationLoadingMixin
+from annolid.gui.mixins.file_browser_mixin import FileBrowserMixin
+from annolid.gui.mixins.frame_playback_mixin import FramePlaybackMixin
 from annolid.gui.mixins.label_panel_mixin import LabelPanelMixin
+from annolid.gui.mixins.navigation_workflow_mixin import NavigationWorkflowMixin
+from annolid.gui.mixins.playback_draw_mixin import PlaybackDrawMixin
 from annolid.gui.shape import Shape
 from annolid.gui.widgets.tiled_image_view import TiledImageView, _ShapeGraphicsItem
 from annolid.gui.window_base import (
@@ -97,6 +102,7 @@ class _CanvasStub(QtWidgets.QWidget):
         self.last_load_clear_shapes = None
         self.editing_values = []
         self.context_menu_builds = 0
+        self.current_behavior_text = ""
 
     def loadPixmap(self, pixmap, clear_shapes=True):
         self.last_pixmap = pixmap
@@ -116,6 +122,9 @@ class _CanvasStub(QtWidgets.QWidget):
             shape.visible = bool(value)
         except Exception:
             pass
+
+    def setBehaviorText(self, value):
+        self.current_behavior_text = value or ""
 
 
 class _WindowStub(AnnolidWindowBase):
@@ -146,6 +155,94 @@ class _WindowStub(AnnolidWindowBase):
     def setDirty(self):
         self.dirty = True
         self._dirty_calls += 1
+
+    def status(self, message, delay=5000):
+        self._status_messages.append(str(message))
+
+
+class _WindowNavigationStub(
+    NavigationWorkflowMixin,
+    FramePlaybackMixin,
+    PlaybackDrawMixin,
+    _WindowStub,
+):
+    def __init__(self):
+        self._active_view_requests = []
+        super().__init__()
+        self.video_loader = None
+        self.isPlaying = False
+        self.caption_widget = None
+        self.behavior_controller = type(
+            "_BehaviorController", (), {"highlighted_mark": None}
+        )()
+        self.playButton = QtWidgets.QPushButton("Play", self)
+        self.seekbar = None
+        self.timer = None
+        self.fps = 8.0
+        self.frame_number = 0
+        self.num_frames = 0
+
+    def _set_active_view(self, mode: str = "canvas") -> None:
+        self._active_view_requests.append(str(mode))
+
+    def mayContinue(self) -> bool:
+        return True
+
+    def _update_frame_display_and_emit_update(self) -> None:
+        return None
+
+    def _checked_file_paths(self):
+        return []
+
+    def _set_current_file_item(self, _filename: str) -> None:
+        return None
+
+    def sync_large_image_page_state(self) -> None:
+        if self.large_image_backend is None:
+            return
+        self.frame_number = int(
+            getattr(self.large_image_backend, "get_current_page", lambda: 0)() or 0
+        )
+        self.num_frames = int(
+            getattr(self.large_image_backend, "get_page_count", lambda: 1)() or 1
+        )
+
+
+class _PageAnnotationWindow(
+    AnnotationLoadingMixin, FileBrowserMixin, AnnolidWindowBase
+):
+    def __init__(self):
+        self._toggle_calls = []
+        self._clean_calls = 0
+        self._status_messages = []
+        super().__init__(config={"label_flags": {}, "store_data": False})
+        self.canvas = _CanvasStub()
+        self.large_image_view = TiledImageView(self)
+        self.large_image_view.set_host_window(self)
+        self._viewer_stack = QtWidgets.QStackedWidget()
+        self._viewer_stack.addWidget(self.canvas)
+        self._viewer_stack.addWidget(self.large_image_view)
+        self.fileListWidget = QtWidgets.QListWidget()
+        self.labelList = AnnolidLabelListWidget()
+        self.uniqLabelList = QtWidgets.QListWidget()
+        self.caption_widget = None
+        self.flag_widget = None
+        self._known_file_paths = set()
+
+    def loadShapes(self, shapes, replace=True):
+        self.canvas.shapes = list(shapes or [])
+        if getattr(self, "large_image_view", None) is not None:
+            self.large_image_view.set_shapes(self.canvas.shapes)
+
+    def toggleActions(self, value):
+        self._toggle_calls.append(bool(value))
+
+    def setClean(self):
+        self._clean_calls += 1
+        self.dirty = False
+
+    def update_flags_from_file(self, label_file):
+        return None
 
     def status(self, message, delay=5000):
         self._status_messages.append(str(message))
@@ -215,6 +312,35 @@ def _make_visible_shape() -> Shape:
     return shape
 
 
+def _write_page_label_json(path: Path, *, label: str, image_name: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        (
+            "{\n"
+            '  "version": "test",\n'
+            '  "flags": {},\n'
+            f'  "imagePath": "{image_name}",\n'
+            '  "imageData": null,\n'
+            '  "imageHeight": 40,\n'
+            '  "imageWidth": 60,\n'
+            '  "shapes": [\n'
+            "    {\n"
+            f'      "label": "{label}",\n'
+            '      "points": [[10, 10], [20, 10], [20, 20], [10, 20]],\n'
+            '      "group_id": null,\n'
+            '      "shape_type": "polygon",\n'
+            '      "flags": {},\n'
+            '      "description": "",\n'
+            '      "mask": null,\n'
+            '      "visible": true\n'
+            "    }\n"
+            "  ]\n"
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_large_tiff_load_switches_to_tiled_view_with_base_window(
     tmp_path: Path,
 ) -> None:
@@ -236,6 +362,333 @@ def test_large_tiff_load_switches_to_tiled_view_with_base_window(
         assert window._toggle_calls[-1] is True
         assert window._clean_calls == 1
     finally:
+        window.close()
+
+
+def test_multipage_tiff_load_sets_up_large_image_page_navigation(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "multipage_stack.tif"
+    data = np.stack(
+        [
+            np.full((40, 60), 5, dtype=np.uint8),
+            np.full((40, 60), 180, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    tifffile.imwrite(image_path, data)
+
+    window = _WindowStub()
+    try:
+        window.loadFile(str(image_path))
+
+        assert window._active_image_view == "tiled"
+        assert window.large_image_backend is not None
+        assert window._has_large_image_page_navigation() is True
+        assert window.seekbar is not None
+        assert window.playButton is not None
+        assert window.playButton.text() == "Play"
+        assert window.seekbar._val_max == 1
+        assert window.setLargeImagePageNumber(1) is True
+        assert window.frame_number == 1
+        assert window.num_frames == 2
+        assert window.large_image_backend.get_current_page() == 1
+    finally:
+        window.close()
+
+
+def test_large_image_next_prev_navigation_stays_in_tiled_view(tmp_path: Path) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "multipage_stack.tif"
+    data = np.stack(
+        [
+            np.full((40, 60), 5, dtype=np.uint8),
+            np.full((40, 60), 180, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    tifffile.imwrite(image_path, data)
+
+    window = _WindowNavigationStub()
+    try:
+        window.loadFile(str(image_path))
+        window.sync_large_image_page_state()
+        window._seekbar_owner = "large_image_stack"
+
+        assert window._active_image_view == "tiled"
+        assert window._has_large_image_page_navigation() is True
+        window.openNextImg()
+        assert window._active_image_view == "tiled"
+        assert window.frame_number == 1
+        assert window.large_image_backend.get_current_page() == 1
+        assert window._active_view_requests == []
+
+        window.openPrevImg()
+        assert window._active_image_view == "tiled"
+        assert window.frame_number == 0
+        assert window.large_image_backend.get_current_page() == 0
+        assert window._active_view_requests == []
+    finally:
+        if window.timer is not None:
+            window.timer.stop()
+        window.close()
+
+
+def test_large_image_playback_advances_pages_and_stops_at_end(tmp_path: Path) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "multipage_stack.tif"
+    data = np.stack(
+        [
+            np.full((40, 60), 5, dtype=np.uint8),
+            np.full((40, 60), 180, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    tifffile.imwrite(image_path, data)
+
+    window = _WindowNavigationStub()
+    try:
+        window.loadFile(str(image_path))
+        window.sync_large_image_page_state()
+        window._seekbar_owner = "large_image_stack"
+
+        assert window._has_large_image_page_navigation() is True
+        window.togglePlay()
+        assert window.isPlaying is True
+        assert window.timer is not None and window.timer.isActive() is True
+
+        window.openNextImg()
+        assert window.frame_number == 1
+        assert window.isPlaying is True
+
+        window.openNextImg()
+        assert window.frame_number == 1
+        assert window.isPlaying is False
+        assert window.timer is not None and window.timer.isActive() is False
+        assert window.playButton.text() == "Play"
+    finally:
+        if window.timer is not None:
+            window.timer.stop()
+        window.close()
+
+
+def test_multipage_tiff_loads_page_specific_annotations_and_switches_pages(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "multipage_stack.tif"
+    data = np.stack(
+        [
+            np.full((40, 60), 5, dtype=np.uint8),
+            np.full((40, 60), 180, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    tifffile.imwrite(image_path, data)
+    annotation_dir = tmp_path / "multipage_stack"
+    _write_page_label_json(
+        annotation_dir / "multipage_stack_000000000.json",
+        label="page0",
+        image_name=image_path.name,
+    )
+    _write_page_label_json(
+        annotation_dir / "multipage_stack_000000001.json",
+        label="page1",
+        image_name=image_path.name,
+    )
+
+    window = _PageAnnotationWindow()
+    try:
+        window.loadFile(str(image_path))
+
+        assert window._active_image_view == "tiled"
+        assert len(window.canvas.shapes) == 1
+        assert window.canvas.shapes[0].label == "page0"
+        assert window._getLabelFile(str(image_path)).endswith(
+            "multipage_stack_000000000.json"
+        )
+
+        assert window.setLargeImagePageNumber(1) is True
+        assert len(window.canvas.shapes) == 1
+        assert window.canvas.shapes[0].label == "page1"
+        assert window._getLabelFile(str(image_path)).endswith(
+            "multipage_stack_000000001.json"
+        )
+    finally:
+        window.close()
+
+
+def test_multipage_tiff_page_without_annotation_clears_shapes(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "multipage_stack.tif"
+    data = np.stack(
+        [
+            np.full((40, 60), 5, dtype=np.uint8),
+            np.full((40, 60), 180, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    tifffile.imwrite(image_path, data)
+    annotation_dir = tmp_path / "multipage_stack"
+    _write_page_label_json(
+        annotation_dir / "multipage_stack_000000000.json",
+        label="page0",
+        image_name=image_path.name,
+    )
+
+    window = _PageAnnotationWindow()
+    try:
+        window.loadFile(str(image_path))
+        assert len(window.canvas.shapes) == 1
+
+        assert window.setLargeImagePageNumber(1) is True
+        assert window.canvas.shapes == []
+    finally:
+        window.close()
+
+
+def test_large_tiff_load_hides_unrelated_docks_and_keeps_annotation_docks(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "atlas.ome.tiff"
+    data = np.arange(128 * 128, dtype=np.uint16).reshape(128, 128)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    window = _WindowStub()
+    try:
+        window.timeline_dock = QtWidgets.QDockWidget("Timeline", window)
+        window.audio_dock = QtWidgets.QDockWidget("Audio", window)
+        window.caption_dock = QtWidgets.QDockWidget("Caption", window)
+        window.video_dock = QtWidgets.QDockWidget("Video List", window)
+        for dock in (
+            window.timeline_dock,
+            window.audio_dock,
+            window.caption_dock,
+            window.video_dock,
+        ):
+            window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+            dock.show()
+
+        window.label_dock.hide()
+        window.shape_dock.hide()
+
+        window.loadFile(str(image_path))
+
+        assert window._active_image_view == "tiled"
+        assert window.timeline_dock.isHidden() is True
+        assert window.audio_dock.isHidden() is True
+        assert window.caption_dock.isHidden() is True
+        assert window.video_dock.isHidden() is True
+        assert window.file_dock.isHidden() is False
+        assert window.flag_dock.isHidden() is False
+        assert window.label_dock.isHidden() is False
+        assert window.shape_dock.isHidden() is False
+
+        window.setLargeImageDocksActive(False)
+        assert window.timeline_dock.isHidden() is False
+        assert window.audio_dock.isHidden() is False
+        assert window.caption_dock.isHidden() is False
+        assert window.video_dock.isHidden() is False
+        assert window.label_dock.isHidden() is True
+        assert window.shape_dock.isHidden() is True
+        assert window.file_dock.isHidden() is False
+        assert window.flag_dock.isHidden() is False
+    finally:
+        window.close()
+
+
+def test_large_tiff_load_replaces_existing_video_status_controls(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "multipage_stack.tif"
+    data = np.stack(
+        [
+            np.full((40, 60), 5, dtype=np.uint8),
+            np.full((40, 60), 180, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    tifffile.imwrite(image_path, data)
+
+    window = _WindowStub()
+    try:
+        old_seekbar = QtWidgets.QSlider(window)
+        old_play = QtWidgets.QPushButton("Old Play", window)
+        old_save = QtWidgets.QPushButton("Old Save", window)
+        window.seekbar = old_seekbar
+        window.playButton = old_play
+        window.saveButton = old_save
+        window._seekbar_owner = "video"
+        window._play_button_owner = "video"
+        window.statusBar().addPermanentWidget(old_play)
+        window.statusBar().addPermanentWidget(old_seekbar)
+        window.statusBar().addPermanentWidget(old_save)
+
+        window.loadFile(str(image_path))
+
+        assert window._has_large_image_page_navigation() is True
+        assert window.seekbar is not old_seekbar
+        assert window.playButton is not old_play
+        assert window.saveButton is None
+        assert window.playButton.text() == "Play"
+    finally:
+        window.close()
+
+
+def test_large_image_seekbar_drag_commits_page_change_on_release(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "multipage_stack.tif"
+    data = np.stack(
+        [
+            np.full((20, 30), 5, dtype=np.uint8),
+            np.full((20, 30), 60, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    tifffile.imwrite(image_path, data)
+
+    window = _WindowNavigationStub()
+    requested_pages = []
+    try:
+        window.loadFile(str(image_path))
+
+        original_request = window.requestLargeImagePageNumber
+
+        def _recording_request(page_index: int) -> bool:
+            requested_pages.append(int(page_index))
+            return original_request(page_index)
+
+        window.requestLargeImagePageNumber = _recording_request
+
+        seekbar = window.seekbar
+        assert seekbar is not None
+
+        seekbar.mousePressed.emit(0.0, 0.0)
+        seekbar.setValue(1)
+        assert requested_pages == []
+
+        seekbar.mouseReleased.emit(0.0, 0.0)
+        assert requested_pages == [1]
+        assert window.frame_number == 1
+        assert window.large_image_backend.get_current_page() == 1
+    finally:
+        if window.timer is not None:
+            window.timer.stop()
         window.close()
 
 

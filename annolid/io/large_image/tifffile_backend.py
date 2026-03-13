@@ -35,6 +35,28 @@ def _extract_physical_pixel_metadata(
     return size_x, size_y, unit
 
 
+def _is_missing_codec_error(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    return "imagecodecs" in message or "requires the 'imagecodecs' package" in message
+
+
+def _normalize_tiff_array_axes(arr: np.ndarray, axes: str = "") -> np.ndarray:
+    normalized = np.asarray(arr)
+    while normalized.ndim > 3:
+        normalized = normalized[0]
+    trimmed_axes = str(axes or "").upper()
+    if trimmed_axes:
+        trimmed_axes = trimmed_axes[-normalized.ndim :]
+    if (
+        normalized.ndim == 3
+        and normalized.shape[0] in (3, 4)
+        and normalized.shape[-1] not in (3, 4)
+        and (not trimmed_axes or trimmed_axes[:1] in {"S", "C"})
+    ):
+        normalized = np.moveaxis(normalized, 0, -1)
+    return normalized
+
+
 class TiffFileBackend(LargeImageBackend):
     name = "tifffile"
 
@@ -43,6 +65,8 @@ class TiffFileBackend(LargeImageBackend):
         self._metadata_cache: Optional[LargeImageMetadata] = None
         self._level_shapes_cache: dict[int, tuple[int, int]] = {}
         self._level_memmap_cache: dict[int, np.ndarray] = {}
+        self._active_page_index: int = 0
+        self._page_array_cache: dict[int, np.ndarray] = {}
 
     def can_handle(self, path: Path) -> bool:
         if not is_large_tiff_path(path):
@@ -73,23 +97,126 @@ class TiffFileBackend(LargeImageBackend):
             raise IndexError(f"Invalid TIFF pyramid level: {level}")
         return levels[level]
 
+    @staticmethod
+    def _series_axes(series: Any, level: int = 0) -> str:
+        target = TiffFileBackend._series_level(series, level=level)
+        return str(getattr(target, "axes", "") or "")
+
     @classmethod
     def _normalized_shape(cls, series: Any, level: int = 0) -> tuple[int, ...]:
         target = cls._series_level(series, level=level)
         shape = tuple(int(v) for v in getattr(target, "shape", ()) or ())
+        axes = str(getattr(target, "axes", "") or "").upper()
         while len(shape) > 3:
             shape = shape[1:]
+            if axes:
+                axes = axes[-len(shape) :]
         if len(shape) == 3:
-            if shape[0] in (3, 4) and shape[-1] not in (3, 4):
+            if (
+                shape[0] in (3, 4)
+                and shape[-1] not in (3, 4)
+                and (not axes or axes[:1] in {"S", "C"})
+            ):
                 shape = (shape[1], shape[2], shape[0])
         return shape
 
     @classmethod
     def _normalized_level_shape(cls, series: Any, level: int = 0) -> tuple[int, int]:
         shape = cls._normalized_shape(series, level=level)
-        width = int(shape[-1]) if len(shape) == 1 else int(shape[1])
-        height = int(shape[0]) if shape else 0
+        axes = cls._series_axes(series, level=level).upper()
+        if axes and len(axes) >= len(shape):
+            trimmed_axes = axes[-len(shape) :]
+            if "Y" in trimmed_axes and "X" in trimmed_axes:
+                height = int(shape[trimmed_axes.index("Y")])
+                width = int(shape[trimmed_axes.index("X")])
+                return width, height
+        if len(shape) >= 2:
+            height = int(shape[-2])
+            width = int(shape[-1])
+        elif len(shape) == 1:
+            height = int(shape[0])
+            width = int(shape[0])
+        else:
+            width = 0
+            height = 0
         return width, height
+
+    @classmethod
+    def _series_stack_page_axis(
+        cls, series: Any, level: int = 0
+    ) -> tuple[int, int] | None:
+        target = cls._series_level(series, level=level)
+        shape = tuple(int(v) for v in getattr(target, "shape", ()) or ())
+        axes = str(getattr(target, "axes", "") or "").upper()
+        if not shape or not axes or len(shape) != len(axes):
+            return None
+        for axis_name in ("Q", "I", "T", "Z"):
+            axis_index = axes.find(axis_name)
+            if axis_index >= 0 and int(shape[axis_index]) > 1:
+                return axis_index, int(shape[axis_index])
+        return None
+
+    def _page_stack_enabled(self) -> bool:
+        metadata = self.probe()
+        if metadata is None:
+            return False
+        return int(metadata.page_count or 1) > 1 and int(metadata.levels or 1) <= 1
+
+    def _page_array(self, page_index: int) -> np.ndarray:
+        normalized_page = max(0, int(page_index))
+        if normalized_page in self._page_array_cache:
+            return self._page_array_cache[normalized_page]
+        import tifffile
+
+        path = self._require_path()
+        with tifffile.TiffFile(path) as tif:
+            series_list = list(getattr(tif, "series", []) or [])
+            series = series_list[0] if series_list else None
+            stack_axis = (
+                self._series_stack_page_axis(series, level=0)
+                if series is not None
+                else None
+            )
+            if len(tif.pages) <= 1 and stack_axis is not None:
+                arr = self._series_page_array_from_stack(
+                    series, normalized_page, axis_index=stack_axis[0]
+                )
+            else:
+                page = tif.pages[normalized_page]
+                try:
+                    arr = np.asarray(page.asarray())
+                except Exception as exc:
+                    if not _is_missing_codec_error(exc):
+                        raise
+                    arr = self._page_array_with_pillow(normalized_page)
+        arr = _normalize_tiff_array_axes(
+            arr,
+            self._series_axes(series, level=0) if series is not None else "",
+        )
+        self._page_array_cache[normalized_page] = arr
+        return arr
+
+    def _series_page_array_from_stack(
+        self, series: Any, page_index: int, *, axis_index: int
+    ) -> np.ndarray:
+        arr = self._memmap_level_array(level=0)
+        if arr is None:
+            arr = self._select_series_array(series, level=0)
+        if axis_index < 0 or axis_index >= arr.ndim:
+            raise IndexError(f"Invalid stack axis: {axis_index}")
+        if page_index < 0 or page_index >= int(arr.shape[axis_index]):
+            raise IndexError(f"Invalid TIFF page index: {page_index}")
+        return np.take(arr, indices=int(page_index), axis=axis_index)
+
+    def _page_array_with_pillow(self, page_index: int) -> np.ndarray:
+        path = self._require_path()
+        with Image.open(path) as image:
+            try:
+                image.seek(max(0, int(page_index)))
+            except EOFError as exc:
+                raise IndexError(f"Invalid TIFF page index: {page_index}") from exc
+            frame = image.copy()
+        return _normalize_tiff_array_axes(np.asarray(frame))
 
     def _memmap_level_array(self, level: int = 0) -> np.ndarray | None:
         if level in self._level_memmap_cache:
@@ -99,10 +226,10 @@ class TiffFileBackend(LargeImageBackend):
             arr = np.asarray(__import__("tifffile").memmap(path, series=0, level=level))
         except Exception:
             return None
-        while arr.ndim > 3:
-            arr = arr[0]
-        if arr.ndim == 3 and arr.shape[0] in (3, 4) and arr.shape[-1] not in (3, 4):
-            arr = np.moveaxis(arr, 0, -1)
+        with __import__("tifffile").TiffFile(path) as tif:
+            series = tif.series[0] if tif.series else None
+            axes = self._series_axes(series, level=level) if series is not None else ""
+        arr = _normalize_tiff_array_axes(arr, axes)
         self._level_memmap_cache[level] = arr
         return arr
 
@@ -131,6 +258,13 @@ class TiffFileBackend(LargeImageBackend):
                             break
             levels = len(getattr(series, "levels", []) or [])
             page_count = len(tif.pages)
+            stack_axis = (
+                self._series_stack_page_axis(series, level=0)
+                if series is not None
+                else None
+            )
+            if page_count <= 1 and stack_axis is not None:
+                page_count = int(stack_axis[1])
             dtype = None
             if series is not None and getattr(series, "dtype", None) is not None:
                 dtype = str(series.dtype)
@@ -161,14 +295,13 @@ class TiffFileBackend(LargeImageBackend):
             if level < 0 or level >= len(levels):
                 raise IndexError(f"Invalid TIFF pyramid level: {level}")
             target = levels[level]
-        arr = target.asarray()
-        while arr.ndim > 3:
-            arr = arr[0]
-        if arr.ndim == 3 and arr.shape[0] in (3, 4) and arr.shape[-1] not in (3, 4):
-            arr = np.moveaxis(arr, 0, -1)
-        return arr
+        return _normalize_tiff_array_axes(
+            target.asarray(), str(getattr(target, "axes", "") or "")
+        )
 
     def get_level_count(self) -> int:
+        if self._page_stack_enabled():
+            return 1
         import tifffile
 
         path = self._require_path()
@@ -178,6 +311,9 @@ class TiffFileBackend(LargeImageBackend):
             return len(levels) if levels else 1
 
     def get_level_shape(self, level: int) -> tuple[int, int]:
+        if self._page_stack_enabled():
+            image = self._page_array(self.get_current_page())
+            return int(image.shape[1]), int(image.shape[0])
         import tifffile
 
         if level in self._level_shapes_cache:
@@ -191,11 +327,14 @@ class TiffFileBackend(LargeImageBackend):
     def read_region(self, x: int, y: int, w: int, h: int, level: int = 0):
         import tifffile
 
-        image = self._memmap_level_array(level=level)
-        if image is None:
-            path = self._require_path()
-            with tifffile.TiffFile(path) as tif:
-                image = self._select_series_array(tif.series[0], level=level)
+        if self._page_stack_enabled():
+            image = self._page_array(self.get_current_page())
+        else:
+            image = self._memmap_level_array(level=level)
+            if image is None:
+                path = self._require_path()
+                with tifffile.TiffFile(path) as tif:
+                    image = self._select_series_array(tif.series[0], level=level)
         x0 = max(0, int(x))
         y0 = max(0, int(y))
         x1 = min(int(x + w), image.shape[1])
@@ -206,12 +345,15 @@ class TiffFileBackend(LargeImageBackend):
         import tifffile
 
         path = self._require_path()
-        level_count = self.get_level_count()
-        level = max(0, level_count - 1)
-        image = self._memmap_level_array(level=level)
-        if image is None:
-            with tifffile.TiffFile(path) as tif:
-                image = self._select_series_array(tif.series[0], level=level)
+        if self._page_stack_enabled():
+            image = self._page_array(self.get_current_page())
+        else:
+            level_count = self.get_level_count()
+            level = max(0, level_count - 1)
+            image = self._memmap_level_array(level=level)
+            if image is None:
+                with tifffile.TiffFile(path) as tif:
+                    image = self._select_series_array(tif.series[0], level=level)
         height, width = image.shape[:2]
         if max(height, width) > max_size:
             step = max(1, int(np.ceil(max(height, width) / float(max_size))))
@@ -236,6 +378,21 @@ class TiffFileBackend(LargeImageBackend):
             qimage=array_to_qimage(thumbnail),
             metadata=metadata,
         )
+
+    def get_page_count(self) -> int:
+        metadata = self.probe()
+        return max(1, int(getattr(metadata, "page_count", 1) or 1))
+
+    def get_current_page(self) -> int:
+        page_count = self.get_page_count()
+        return min(max(0, int(self._active_page_index or 0)), page_count - 1)
+
+    def set_page(self, page_index: int) -> None:
+        page_count = self.get_page_count()
+        normalized = int(page_index)
+        if normalized < 0 or normalized >= page_count:
+            raise IndexError(f"Invalid TIFF page index: {page_index}")
+        self._active_page_index = normalized
 
 
 def probe_tiff_metadata(path: str | Path) -> LargeImageMetadata:

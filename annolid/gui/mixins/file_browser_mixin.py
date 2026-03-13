@@ -167,6 +167,16 @@ class FileBrowserMixin:
         return stem_matches[0]
 
     def _getLabelFile(self, filename):
+        stack_label_resolver = getattr(self, "_large_image_stack_label_path", None)
+        if callable(stack_label_resolver):
+            try:
+                stack_label_file = stack_label_resolver(image_path=filename)
+            except TypeError:
+                stack_label_file = stack_label_resolver()
+            except Exception:
+                stack_label_file = None
+            if stack_label_file:
+                return stack_label_file
         label_file = osp.splitext(filename)[0] + ".json"
         if self.output_dir:
             label_file_without_path = osp.basename(label_file)

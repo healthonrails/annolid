@@ -4,8 +4,10 @@ from collections import OrderedDict
 from dataclasses import dataclass
 import math
 
+import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
+from annolid.gui.label_image_overlay import colorize_label_image, label_entry_text
 from annolid.gui.large_image_modes import is_tile_native_create_mode
 from annolid.gui.shape import Shape
 from annolid.io.large_image import LargeImageBackend
@@ -302,6 +304,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._preview_close_item.setZValue(132.0)
         self._scene.addItem(self._preview_close_item)
         self._tile_items: dict[TileKey, QtWidgets.QGraphicsPixmapItem] = {}
+        self._label_tile_items: dict[TileKey, QtWidgets.QGraphicsPixmapItem] = {}
         self._overlay_items: list[QtWidgets.QGraphicsItem] = []
         self._pair_items: list[QtWidgets.QGraphicsItem] = []
         self._pair_endpoint_items: list[QtWidgets.QGraphicsItem] = []
@@ -316,6 +319,25 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._host_window = None
         self._content_size: tuple[int, int] = (0, 0)
         self._fit_mode: str = "fit_window"
+        self._label_backend: LargeImageBackend | None = None
+        self._label_tile_cache = TileCache()
+        self._label_value_tile_cache: OrderedDict[tuple[int, int], np.ndarray] = (
+            OrderedDict()
+        )
+        self._label_mapping: dict[int, dict] = {}
+        self._label_overlay_opacity: float = 0.45
+        self._label_overlay_visible: bool = True
+        self._selected_label_value: int | None = None
+        self._label_source_path: str | None = None
+        self._label_mapping_path: str | None = None
+        self._label_page_index: int = 0
+        self._label_transform: dict[str, float] = {
+            "tx": 0.0,
+            "ty": 0.0,
+            "sx": 1.0,
+            "sy": 1.0,
+        }
+        self._last_hovered_label_value: int | None = None
         self.mode = self.EDIT
         self.createMode = "polygon"
         self.current = None
@@ -332,6 +354,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self.backend = backend
         self.tile_cache = TileCache()
         self._clear_tile_items()
+        self._clear_label_value_cache()
         thumbnail = backend.get_thumbnail(max_size=2048)
         if isinstance(thumbnail, QtGui.QImage):
             image = thumbnail
@@ -348,6 +371,109 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._scene.setSceneRect(0.0, 0.0, float(full_w), float(full_h))
         self.fit_to_window()
         self.refresh_visible_tiles()
+
+    def set_label_layer(
+        self,
+        backend: LargeImageBackend,
+        *,
+        opacity: float = 0.45,
+        mapping: dict[int, dict] | None = None,
+        source_path: str | None = None,
+        mapping_path: str | None = None,
+        visible: bool = True,
+        page_index: int | None = None,
+        transform: dict | None = None,
+    ) -> None:
+        self._label_backend = backend
+        self._label_overlay_opacity = max(0.0, min(1.0, float(opacity)))
+        self._label_mapping = dict(mapping or {})
+        self._label_source_path = str(source_path or "")
+        self._label_mapping_path = str(mapping_path or "")
+        self._label_overlay_visible = bool(visible)
+        self._label_page_index = int(page_index or 0)
+        if isinstance(transform, dict):
+            self._label_transform = {
+                "tx": float(transform.get("tx", 0.0) or 0.0),
+                "ty": float(transform.get("ty", 0.0) or 0.0),
+                "sx": max(1e-6, float(transform.get("sx", 1.0) or 1.0)),
+                "sy": max(1e-6, float(transform.get("sy", 1.0) or 1.0)),
+            }
+        else:
+            self._label_transform = {"tx": 0.0, "ty": 0.0, "sx": 1.0, "sy": 1.0}
+        self._label_tile_cache = TileCache()
+        self._clear_label_value_cache()
+        self._clear_label_tile_items()
+        self.refresh_visible_tiles()
+
+    def clear_label_layer(self) -> None:
+        self._label_backend = None
+        self._label_tile_cache = TileCache()
+        self._clear_label_value_cache()
+        self._label_mapping = {}
+        self._label_overlay_visible = True
+        self._selected_label_value = None
+        self._label_source_path = None
+        self._label_mapping_path = None
+        self._label_page_index = 0
+        self._label_transform = {"tx": 0.0, "ty": 0.0, "sx": 1.0, "sy": 1.0}
+        self._last_hovered_label_value = None
+        self._clear_label_tile_items()
+
+    def label_layer_backend(self) -> LargeImageBackend | None:
+        return self._label_backend
+
+    def set_label_mapping(
+        self, mapping: dict[int, dict] | None, *, mapping_path: str | None = None
+    ) -> None:
+        self._label_mapping = dict(mapping or {})
+        self._label_mapping_path = str(mapping_path or "")
+
+    def set_label_layer_opacity(self, opacity: float) -> None:
+        normalized = max(0.0, min(1.0, float(opacity)))
+        if abs(normalized - self._label_overlay_opacity) < 1e-6:
+            return
+        self._label_overlay_opacity = normalized
+        self._label_tile_cache = TileCache()
+        self._clear_label_tile_items()
+        self.refresh_visible_tiles()
+
+    def set_label_layer_visible(self, visible: bool) -> None:
+        visible_flag = bool(visible)
+        if visible_flag == self._label_overlay_visible:
+            return
+        self._label_overlay_visible = visible_flag
+        if not visible_flag:
+            self._clear_label_tile_items()
+        self.refresh_visible_tiles()
+
+    def label_layer_visible(self) -> bool:
+        return bool(self._label_overlay_visible)
+
+    def set_selected_label_value(self, label_value: int | None) -> None:
+        normalized = None
+        if label_value is not None:
+            value = int(label_value)
+            normalized = value if value > 0 else None
+        if normalized == self._selected_label_value:
+            return
+        self._selected_label_value = normalized
+        self._label_tile_cache = TileCache()
+        self._clear_label_tile_items()
+        self.refresh_visible_tiles()
+
+    def selected_label_value(self) -> int | None:
+        return self._selected_label_value
+
+    def label_overlay_state(self) -> dict:
+        return {
+            "source_path": str(self._label_source_path or ""),
+            "mapping_path": str(self._label_mapping_path or ""),
+            "opacity": float(self._label_overlay_opacity),
+            "visible": bool(self._label_overlay_visible),
+            "selected_label": self._selected_label_value,
+            "page_index": int(self._label_page_index),
+            "transform": dict(self._label_transform),
+        }
 
     def content_size(self) -> tuple[int, int]:
         return self._content_size
@@ -371,6 +497,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._preview_vertices_item.setPath(QtGui.QPainterPath())
         self._preview_close_item.setPath(QtGui.QPainterPath())
         self._clear_tile_items()
+        self.clear_label_layer()
         self.set_shapes([])
         self._scene.setSceneRect(QtCore.QRectF())
         self.resetTransform()
@@ -397,6 +524,14 @@ class TiledImageView(QtWidgets.QGraphicsView):
         for item in self._tile_items.values():
             self._scene.removeItem(item)
         self._tile_items.clear()
+
+    def _clear_label_tile_items(self) -> None:
+        for item in self._label_tile_items.values():
+            self._scene.removeItem(item)
+        self._label_tile_items.clear()
+
+    def _clear_label_value_cache(self) -> None:
+        self._label_value_tile_cache.clear()
 
     def set_shapes(self, shapes) -> None:
         for item in self._overlay_items:
@@ -905,11 +1040,16 @@ class TiledImageView(QtWidgets.QGraphicsView):
         return item
 
     def visible_tile_keys(self, level: int = 0) -> list[TileKey]:
-        if self.backend is None:
+        return self._visible_tile_keys_for_backend(self.backend, level=level)
+
+    def _visible_tile_keys_for_backend(
+        self, backend: LargeImageBackend | None, *, level: int = 0
+    ) -> list[TileKey]:
+        if backend is None:
             return []
         rect = self.mapToScene(self.viewport().rect()).boundingRect()
         full_w, full_h = self._content_size
-        level_w, level_h = self.backend.get_level_shape(level)
+        level_w, level_h = backend.get_level_shape(level)
         if level_w <= 0 or level_h <= 0:
             return []
         scale_x = full_w / max(1, level_w)
@@ -931,9 +1071,12 @@ class TiledImageView(QtWidgets.QGraphicsView):
         return float(transform.m11())
 
     def _select_level(self) -> int:
-        if self.backend is None:
+        return self._select_level_for_backend(self.backend)
+
+    def _select_level_for_backend(self, backend: LargeImageBackend | None) -> int:
+        if backend is None:
             return 0
-        levels = max(1, int(self.backend.get_level_count()))
+        levels = max(1, int(backend.get_level_count()))
         scale = self.current_scale()
         if levels <= 1:
             return 0
@@ -982,6 +1125,157 @@ class TiledImageView(QtWidgets.QGraphicsView):
             item.setZValue(-10.0 - key.level)
             self._scene.addItem(item)
             self._tile_items[key] = item
+        self._refresh_visible_label_tiles()
+
+    def _refresh_visible_label_tiles(self) -> None:
+        backend = self._label_backend
+        if backend is None or not self._label_overlay_visible:
+            self._clear_label_tile_items()
+            return
+        if not self._content_size[0] or not self._content_size[1]:
+            return
+        if self.current_scale() < 0.2 and backend.get_level_count() <= 1:
+            return
+        level = self._select_level_for_backend(backend)
+        visible_keys = set(self._visible_tile_keys_for_backend(backend, level=level))
+        for key in list(self._label_tile_items):
+            if key not in visible_keys:
+                self._scene.removeItem(self._label_tile_items.pop(key))
+        for key in visible_keys:
+            if key in self._label_tile_items:
+                continue
+            cached = self._label_tile_cache.get(key)
+            if cached is None:
+                x = key.tx * self.tile_size
+                y = key.ty * self.tile_size
+                region = backend.read_region(
+                    x, y, self.tile_size, self.tile_size, level=key.level
+                )
+                rgba = colorize_label_image(
+                    np.asarray(region),
+                    opacity=self._label_overlay_opacity,
+                    selected_label=self._selected_label_value,
+                )
+                cached = array_to_qimage(rgba)
+                self._label_tile_cache.put(key, cached)
+            item = QtWidgets.QGraphicsPixmapItem(QtGui.QPixmap.fromImage(cached))
+            full_w, full_h = self._content_size
+            level_w, level_h = backend.get_level_shape(key.level)
+            scale_x = full_w / max(1, level_w)
+            scale_y = full_h / max(1, level_h)
+            item.setPos(
+                self._label_transform["tx"]
+                + (key.tx * self.tile_size * scale_x * self._label_transform["sx"]),
+                self._label_transform["ty"]
+                + (key.ty * self.tile_size * scale_y * self._label_transform["sy"]),
+            )
+            item.setTransform(
+                QtGui.QTransform.fromScale(
+                    scale_x * self._label_transform["sx"],
+                    scale_y * self._label_transform["sy"],
+                )
+            )
+            item.setZValue(20.0 + float(key.level) * -0.1)
+            item.setOpacity(1.0)
+            self._scene.addItem(item)
+            self._label_tile_items[key] = item
+
+    def _label_scene_to_level0(
+        self, scene_pos: QtCore.QPointF
+    ) -> tuple[int, int] | None:
+        backend = self._label_backend
+        if backend is None or not self._content_size[0] or not self._content_size[1]:
+            return None
+        level0_w, level0_h = backend.get_level_shape(0)
+        if level0_w <= 0 or level0_h <= 0:
+            return None
+        sx = max(1e-6, float(self._label_transform.get("sx", 1.0) or 1.0))
+        sy = max(1e-6, float(self._label_transform.get("sy", 1.0) or 1.0))
+        tx = float(self._label_transform.get("tx", 0.0) or 0.0)
+        ty = float(self._label_transform.get("ty", 0.0) or 0.0)
+        normalized_x = (float(scene_pos.x()) - tx) / sx
+        normalized_y = (float(scene_pos.y()) - ty) / sy
+        x = int(
+            round(
+                (normalized_x / max(1.0, float(self._content_size[0])))
+                * max(1, level0_w - 1)
+            )
+        )
+        y = int(
+            round(
+                (normalized_y / max(1.0, float(self._content_size[1])))
+                * max(1, level0_h - 1)
+            )
+        )
+        x = min(max(x, 0), max(0, level0_w - 1))
+        y = min(max(y, 0), max(0, level0_h - 1))
+        return x, y
+
+    def label_value_at(self, scene_pos: QtCore.QPointF) -> int | None:
+        backend = self._label_backend
+        if backend is None:
+            return None
+        coords = self._label_scene_to_level0(scene_pos)
+        if coords is None:
+            return None
+        x, y = coords
+        tile_x = x // self.tile_size
+        tile_y = y // self.tile_size
+        key = (tile_x, tile_y)
+        cached = self._label_value_tile_cache.get(key)
+        if cached is None:
+            region = backend.read_region(
+                tile_x * self.tile_size,
+                tile_y * self.tile_size,
+                self.tile_size,
+                self.tile_size,
+                level=0,
+            )
+            cached = np.asarray(region)
+            self._label_value_tile_cache[key] = cached
+            self._label_value_tile_cache.move_to_end(key)
+            while len(self._label_value_tile_cache) > 64:
+                self._label_value_tile_cache.popitem(last=False)
+        local_y = y - (tile_y * self.tile_size)
+        local_x = x - (tile_x * self.tile_size)
+        if cached.ndim > 2:
+            cached = np.squeeze(cached)
+        if cached.ndim != 2:
+            return None
+        if (
+            local_y < 0
+            or local_y >= cached.shape[0]
+            or local_x < 0
+            or local_x >= cached.shape[1]
+        ):
+            return None
+        try:
+            return int(cached[local_y, local_x])
+        except Exception:
+            return None
+
+    def _update_label_hover_status(self, scene_pos: QtCore.QPointF) -> None:
+        backend = self._label_backend
+        host = getattr(self, "_host_window", None)
+        if backend is None or host is None:
+            self._last_hovered_label_value = None
+            return
+        label_value = self.label_value_at(scene_pos)
+        if label_value == self._last_hovered_label_value:
+            return
+        self._last_hovered_label_value = label_value
+        if label_value is None:
+            return
+        if hasattr(host, "describeLabelImageOverlayValue"):
+            try:
+                text = host.describeLabelImageOverlayValue(label_value)
+            except Exception:
+                text = label_entry_text(label_value, self._label_mapping)
+        else:
+            text = label_entry_text(label_value, self._label_mapping)
+        post_status = getattr(host, "_post_window_status", None)
+        if callable(post_status):
+            post_status(str(text), 1500)
 
     def set_zoom_percent(self, percent: int) -> None:
         if not self._content_size[0] or not self._content_size[1]:
@@ -1123,6 +1417,10 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 self._apply_selection(selected, emit_signal=True)
                 event.accept()
                 return
+            label_value = self.label_value_at(scene_pos)
+            if label_value is not None and int(label_value) > 0:
+                self.set_selected_label_value(label_value)
+                self._update_label_hover_status(scene_pos)
             self._apply_selection([], emit_signal=True)
         item = self._pair_item_at_view_pos(pos)
         if isinstance(item, _LandmarkPairItem):
@@ -1167,6 +1465,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 self.set_shapes(self._shapes)
             event.accept()
             return
+        self._update_label_hover_status(scene_pos)
         super().mouseMoveEvent(event)
 
     def mouseDoubleClickEvent(self, event):

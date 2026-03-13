@@ -10,11 +10,29 @@ from annolid.utils.logger import logger
 class NavigationWorkflowMixin:
     """Frame and file navigation helpers."""
 
+    def _using_large_image_page_navigation(self) -> bool:
+        return bool(
+            hasattr(self, "_has_large_image_page_navigation")
+            and self._has_large_image_page_navigation()
+        )
+
     def jump_to_frame(self):
         """Jump to the specified frame number."""
         try:
             input_frame_number = int(self.seekbar.input_value.text())
-            if 0 <= input_frame_number < self.num_frames:
+            if (
+                hasattr(self, "_has_large_image_page_navigation")
+                and self._has_large_image_page_navigation()
+            ):
+                if 0 <= input_frame_number < int(getattr(self, "num_frames", 0) or 0):
+                    self.setLargeImagePageNumber(input_frame_number)
+                else:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "Invalid TIFF Page",
+                        f"{input_frame_number} is out of range.",
+                    )
+            elif 0 <= input_frame_number < self.num_frames:
                 self.set_frame_number(input_frame_number)
             else:
                 logger.info(f"Frame number {input_frame_number} is out of range.")
@@ -47,6 +65,28 @@ class NavigationWorkflowMixin:
         keep_prev = self._config["keep_prev"]
         if Qt.KeyboardModifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
             self._config["keep_prev"] = True
+
+        if self._using_large_image_page_navigation():
+            if not self.mayContinue():
+                self._config["keep_prev"] = keep_prev
+                return
+            page_count = int(getattr(self, "num_frames", 0) or 0)
+            if page_count <= 0:
+                self._config["keep_prev"] = keep_prev
+                return
+            current_page = max(0, int(getattr(self, "frame_number", 0) or 0))
+            if current_page >= page_count - 1:
+                if getattr(self, "isPlaying", False):
+                    self.stopPlaying()
+                    if hasattr(self, "_set_play_button_state"):
+                        self._set_play_button_state(False)
+                self._config["keep_prev"] = keep_prev
+                self._update_frame_display_and_emit_update()
+                return
+            self.setLargeImagePageNumber(current_page + 1)
+            self._config["keep_prev"] = keep_prev
+            self._update_frame_display_and_emit_update()
+            return
 
         self._set_active_view("canvas")
 
@@ -107,6 +147,20 @@ class NavigationWorkflowMixin:
         keep_prev = self._config["keep_prev"]
         if Qt.KeyboardModifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
             self._config["keep_prev"] = True
+
+        if self._using_large_image_page_navigation():
+            if not self.mayContinue():
+                self._config["keep_prev"] = keep_prev
+                return
+            page_count = int(getattr(self, "num_frames", 0) or 0)
+            if page_count <= 0:
+                self._config["keep_prev"] = keep_prev
+                return
+            prev_page = max(0, int(getattr(self, "frame_number", 0) or 0) - 1)
+            self.setLargeImagePageNumber(prev_page)
+            self._config["keep_prev"] = keep_prev
+            self._update_frame_display_and_emit_update()
+            return
 
         self._set_active_view("canvas")
 

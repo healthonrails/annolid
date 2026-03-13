@@ -296,6 +296,52 @@ class MenuController:
                 ),
             },
             {
+                "name": "import_label_image_overlay",
+                "text": w.tr("Import &Label Image Overlay…"),
+                "slot": w.importLabelImageOverlay,
+                "tip": w.tr(
+                    "Import an integer-valued TIFF labels image as a colorized atlas overlay"
+                ),
+            },
+            {
+                "name": "import_label_image_mapping",
+                "text": w.tr("Import Label &Mapping…"),
+                "slot": w.importLabelImageMapping,
+                "tip": w.tr(
+                    "Import a CSV/TSV mapping from region ids to acronyms and names"
+                ),
+            },
+            {
+                "name": "toggle_vector_overlays_visible",
+                "text": w.tr("Show &Vector Overlays"),
+                "slot": w.toggleVectorOverlaysVisible,
+                "tip": w.tr("Show or hide imported vector overlay layers"),
+                "checkable": True,
+                "checked": True,
+            },
+            {
+                "name": "toggle_label_image_overlay_visible",
+                "text": w.tr("Show &Label Image Overlay"),
+                "slot": w.toggleLabelImageOverlayVisible,
+                "tip": w.tr("Show or hide the loaded label image overlay"),
+                "checkable": True,
+                "checked": False,
+            },
+            {
+                "name": "set_label_image_overlay_opacity",
+                "text": w.tr("Set Label Overlay &Opacity…"),
+                "slot": w.setLabelImageOverlayOpacity,
+                "tip": w.tr("Adjust the opacity of the loaded label image overlay"),
+            },
+            {
+                "name": "clear_label_image_overlay",
+                "text": w.tr("&Clear Label Image Overlay"),
+                "slot": w.clearLabelImageOverlay,
+                "tip": w.tr(
+                    "Remove the current label image overlay from the large-image viewer"
+                ),
+            },
+            {
                 "name": "optimize_large_tiff",
                 "text": w.tr("Optimize Large &TIFF for Fast Viewing…"),
                 "slot": w.optimizeLargeImageForViewing,
@@ -1101,6 +1147,12 @@ class MenuController:
             "&Overlays",
             (
                 actions["import_svg_overlay"],
+                actions["import_label_image_overlay"],
+                actions["import_label_image_mapping"],
+                actions["toggle_vector_overlays_visible"],
+                actions["toggle_label_image_overlay_visible"],
+                actions["set_label_image_overlay_opacity"],
+                actions["clear_label_image_overlay"],
                 actions["export_vector_overlay"],
             ),
         )
