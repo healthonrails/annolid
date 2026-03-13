@@ -14,6 +14,17 @@ class CoreInteractionMixin:
     """Core canvas interaction and advanced-parameter workflows."""
 
     def paintCanvas(self):
+        if getattr(self, "_active_image_view", "canvas") == "tiled":
+            tiled = getattr(self, "large_image_view", None)
+            if tiled is None or getattr(self, "large_image_backend", None) is None:
+                return
+            if self.zoomMode == self.FIT_WINDOW:
+                tiled.fit_to_window()
+            elif self.zoomMode == self.FIT_WIDTH:
+                tiled.fit_to_width()
+            else:
+                tiled.set_zoom_percent(self.zoomWidget.value())
+            return
         if self.image.isNull():
             return
         self.canvas.scale = 0.01 * self.zoomWidget.value()

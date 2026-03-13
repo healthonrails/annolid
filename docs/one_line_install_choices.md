@@ -101,6 +101,7 @@ Examples:
 
 Current supported extras:
 
+- `large_image`
 - `sam3`
 - `image_editing`
 - `text_to_speech`
@@ -111,6 +112,7 @@ Current supported extras:
 
 | Extra | Install this when you need... | Example use case |
 |---|---|---|
+| `large_image` | TIFF/OME-TIFF metadata and optional region-streaming backends | You want large TIFF, BigTIFF, OME-TIFF, or virtual-slide style viewing without forcing those native libraries into every install. Leave it out for the default GUI install. |
 | `sam3` | the SAM3-related segmentation workflow/features in Annolid | You want stronger promptable segmentation on difficult frames and plan to use SAM3 tools in the GUI/CLI pipeline. |
 | `image_editing` | diffusion-based image editing/generation dependencies | You are preparing augmented training images (inpainting/background edits) as part of annotation or data curation. |
 | `text_to_speech` | built-in narration/read-aloud features | You want captions/notes read aloud during review, accessibility workflows, or hands-free labeling sessions. |
@@ -131,6 +133,12 @@ Use comma-separated values with no spaces, for example:
 ```bash
 --extras sam3,text_to_speech
 ```
+
+### `large_image` runtime note
+
+The `large_image` extra installs the Python bindings, but `pyvips` and `openslide-python` may still require native system runtimes on your machine. This extra is optional; Annolid's normal GUI workflows do not depend on it.
+
+If those runtimes are not available, Annolid will still open the file and will fall back to `tifffile` when available, but navigation can be slower on very large TIFF files.
 
 ## Recommended patterns
 

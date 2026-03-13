@@ -16,6 +16,9 @@ class CanvasWorkflowMixin:
     def image_to_canvas(self, qimage, filename, frame_number):
         self.resetState()
         self.canvas.setEnabled(True)
+        self._active_image_view = "canvas"
+        if getattr(self, "_viewer_stack", None) is not None:
+            self._viewer_stack.setCurrentWidget(self.canvas)
         self.canvas.setPatchSimilarityOverlay(None)
         self._deactivate_pca_map()
         if isinstance(filename, str):
@@ -28,6 +31,8 @@ class CanvasWorkflowMixin:
             prev_shapes = self.canvas.shapes
         pixmap = QtGui.QPixmap.fromImage(qimage)
         self.canvas.loadPixmap(pixmap)
+        if getattr(self, "large_image_view", None) is not None:
+            self.large_image_view.clear()
         try:
             frame_rgb = convert_qt_image_to_rgb_cv_image(qimage).copy()
         except Exception:

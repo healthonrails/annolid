@@ -9,6 +9,7 @@ from qtpy import QtWidgets
 
 from annolid.gui.features.container import GuiFeatureDeps
 from annolid.gui.widgets.depth_manager import DepthManager
+from annolid.gui.widgets.tiled_image_view import TiledImageView
 from annolid.gui.widgets.optical_flow_manager import OpticalFlowManager
 from annolid.gui.widgets.pdf_manager import PdfManager
 from annolid.gui.widgets.realtime_manager import RealtimeManager
@@ -24,6 +25,7 @@ from annolid.gui.widgets.ai_chat_manager import AIChatManager
 class ViewersFeatureState:
     viewer_stack: QtWidgets.QStackedWidget
     main_scroll_area: QtWidgets.QScrollArea
+    large_image_view: TiledImageView
     pdf_manager: PdfManager
     web_manager: WebManager
     threejs_manager: ThreeJsManager
@@ -42,6 +44,8 @@ def setup_viewers_feature(deps: GuiFeatureDeps) -> ViewersFeatureState:
     window._viewer_stack = QtWidgets.QStackedWidget()
     window._viewer_stack.setContentsMargins(0, 0, 0, 0)
     window._viewer_stack.addWidget(window.canvas)
+    window.large_image_view = TiledImageView(window)
+    window._viewer_stack.addWidget(window.large_image_view)
 
     window.pdf_manager = PdfManager(window, window._viewer_stack)
     window.web_manager = WebManager(window, window._viewer_stack)
@@ -66,6 +70,7 @@ def setup_viewers_feature(deps: GuiFeatureDeps) -> ViewersFeatureState:
     return ViewersFeatureState(
         viewer_stack=window._viewer_stack,
         main_scroll_area=window._main_scroll_area,
+        large_image_view=window.large_image_view,
         pdf_manager=window.pdf_manager,
         web_manager=window.web_manager,
         threejs_manager=window.threejs_manager,

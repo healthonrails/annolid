@@ -89,6 +89,7 @@ nav:
       - One-Line Installer: one_line_install_choices.md
   - Workflows:
       - Workflow Overview: workflows.md
+      - Large TIFF and Atlas Overlays: atlas_overlay_workflow.md
       - Simulation and FlyBody: simulation_flybody.md
       - COCO Data Flow: coco_data_flow.md
       - Tutorials Overview: tutorials.md

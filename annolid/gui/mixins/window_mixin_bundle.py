@@ -30,6 +30,7 @@ from .shape_editing_mixin import ShapeEditingMixin
 from .tooling_dialogs_mixin import ToolingDialogsMixin
 from .tracking_segment_mixin import TrackingSegmentMixin
 from .training_workflow_mixin import TrainingWorkflowMixin
+from .vector_overlay_mixin import VectorOverlayMixin
 from .viewer_tools_mixin import ViewerToolsMixin
 from .video_workflow_mixin import VideoWorkflowMixin
 from .window_lifecycle_mixin import WindowLifecycleMixin
@@ -67,6 +68,7 @@ class AnnolidWindowMixinBundle(
     AnnotationLoadingMixin,
     LifecycleMixin,
     NavigationWorkflowMixin,
+    VectorOverlayMixin,
     ViewerToolsMixin,
     CanvasWorkflowMixin,
     VideoWorkflowMixin,

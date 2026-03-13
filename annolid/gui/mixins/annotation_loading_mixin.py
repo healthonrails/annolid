@@ -72,6 +72,10 @@ class AnnotationLoadingMixin:
         self.labelList.clearSelection()
         self._noSelectionSlot = False
         self.canvas.loadShapes(shapes, replace=replace)
+        if getattr(self, "large_image_view", None) is not None:
+            self.large_image_view.set_shapes(self.canvas.shapes)
+        if hasattr(self, "_refreshVectorOverlayDock"):
+            self._refreshVectorOverlayDock()
         self._rebuild_unique_label_list()
         try:
             caption = self.labelFile.get_caption() if self.labelFile else None

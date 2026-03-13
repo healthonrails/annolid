@@ -79,6 +79,13 @@ gui = [
     "PySide6>=6.7.0",
 ]
 
+large_image = [
+    # Large TIFF / OME-TIFF metadata and streaming backends.
+    "tifffile>=2024.8.30",
+    "pyvips>=2.2.3",
+    "openslide-python>=1.3.1",
+]
+
 vtk = [
     # 3D volume rendering and Analyze/NIfTI readers for Open 3D workflows.
     "vtk>=9.2.0",

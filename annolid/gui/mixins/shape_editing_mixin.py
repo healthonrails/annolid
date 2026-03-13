@@ -6,6 +6,13 @@ from qtpy.QtCore import Qt
 class ShapeEditingMixin:
     """Shape list/canvas editing actions."""
 
+    def _active_shape_editor(self):
+        if getattr(self, "_active_image_view", "canvas") == "tiled":
+            editor = getattr(self, "large_image_view", None)
+            if editor is not None and hasattr(editor, "setLastLabel"):
+                return editor
+        return self.canvas
+
     def remLabels(self, shapes) -> None:
         super().remLabels(shapes)
         self._rebuild_unique_label_list()
@@ -56,6 +63,7 @@ class ShapeEditingMixin:
 
     def newShape(self):
         """Pop-up and give focus to the label editor."""
+        editor = self._active_shape_editor()
         if self.canvas.createMode == "grounding_sam":
             self.labelList.clearSelection()
             shapes = [
@@ -94,7 +102,7 @@ class ShapeEditingMixin:
                 text = ""
             if text:
                 self.labelList.clearSelection()
-                shapes = self.canvas.setLastLabel(text, flags)
+                shapes = editor.setLastLabel(text, flags)
                 for shape in shapes:
                     shape.group_id = group_id
                     shape.description = description
@@ -104,8 +112,9 @@ class ShapeEditingMixin:
                 self.actions.undo.setEnabled(True)
                 self.setDirty()
             else:
-                self.canvas.undoLastLine()
-                self.canvas.shapesBackups.pop()
+                editor.undoLastLine()
+                if hasattr(self.canvas, "shapesBackups") and self.canvas.shapesBackups:
+                    self.canvas.shapesBackups.pop()
 
     def _try_apply_keypoint_sequence_labeling(self) -> bool:
         canvas = getattr(self, "canvas", None)
@@ -123,7 +132,7 @@ class ShapeEditingMixin:
             return False
 
         self.labelList.clearSelection()
-        shapes = self.canvas.setLastLabel(next_label, {})
+        shapes = self._active_shape_editor().setLastLabel(next_label, {})
         for shape in shapes:
             self.addLabel(shape)
         self.actions.editMode.setEnabled(True)

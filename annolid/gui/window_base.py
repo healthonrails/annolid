@@ -14,7 +14,25 @@ from annolid.gui.qt_compat import (
 
 from annolid.configs import get_config
 from annolid.gui.file_dock import FileDockMixin
+from annolid.gui.large_image import (
+    DEFAULT_LARGE_IMAGE_CACHE_MAX_ENTRIES,
+    DEFAULT_LARGE_IMAGE_CACHE_MAX_SIZE_BYTES,
+    clear_all_large_image_caches,
+    format_large_image_cache_size,
+    is_large_tiff_path,
+    large_image_cache_root,
+    large_image_cache_size_bytes,
+    list_large_image_cache_entries,
+    load_image_with_backends,
+    optimize_large_tiff_for_viewing,
+    open_large_image,
+    pyvips_optimization_available,
+    probe_large_image,
+    remove_large_image_cache_file,
+    resolve_fresh_optimized_large_image_path,
+)
 from annolid.gui.label_file import LabelFile, LabelFileError
+from annolid.gui.workers import FlexibleWorker
 from annolid.utils.annotation_compat import (
     AI_MODELS,
     PY2,
@@ -26,6 +44,9 @@ from annolid.utils.annotation_compat import (
 )
 from annolid.version import __version__
 from annolid.utils.logger import logger
+
+LARGE_IMAGE_CACHE_MAX_ENTRIES_KEY = "large_image_cache/max_entries"
+LARGE_IMAGE_CACHE_MAX_SIZE_GB_KEY = "large_image_cache/max_size_gb"
 
 
 def format_tool_button_text(text: str) -> str:
@@ -349,6 +370,8 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.filename: Optional[str] = None
         self.labelFile = None
         self.otherData = {}
+        self.large_image_backend = None
+        self._active_image_view = "canvas"
         self.dirty = False
         self.output_dir: Optional[str] = None
         self.lastOpenDir: Optional[str] = None
@@ -824,6 +847,10 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             self.adjustScale()
 
     def _canvas_pixmap_size(self) -> tuple[int, int]:
+        if getattr(self, "_active_image_view", "canvas") == "tiled":
+            tiled = getattr(self, "large_image_view", None)
+            if tiled is not None:
+                return tiled.content_size()
         canvas = getattr(self, "canvas", None)
         pixmap = getattr(canvas, "pixmap", None)
         if pixmap is None or pixmap.isNull():
@@ -866,6 +893,8 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             self.paintCanvas()
 
     def _has_renderable_image(self) -> bool:
+        if getattr(self, "_active_image_view", "canvas") == "tiled":
+            return getattr(self, "large_image_backend", None) is not None
         image = getattr(self, "image", None)
         return image is not None and hasattr(image, "isNull") and not image.isNull()
 
@@ -1021,6 +1050,449 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         if hasattr(self, "importDirImages"):
             self.importDirImages(directory, load=True)
 
+    def _activate_tiled_image_view(self, image_path: Path, backend=None) -> bool:
+        if not hasattr(self, "canvas") or self.canvas is None:
+            return False
+        if not bool(is_large_tiff_path(image_path)) or not hasattr(
+            self, "large_image_view"
+        ):
+            return False
+        self.large_image_backend = (
+            backend if backend is not None else open_large_image(image_path)
+        )
+        self.large_image_view.set_backend(self.large_image_backend)
+        if hasattr(self, "_viewer_stack") and self._viewer_stack is not None:
+            self._viewer_stack.setCurrentWidget(self.large_image_view)
+        self._active_image_view = "tiled"
+        self.canvas.setEnabled(False)
+        return True
+
+    def _settings_value(self, key: str, default, value_type):
+        settings = getattr(self, "settings", None)
+        if settings is None:
+            return default
+        try:
+            return settings.value(key, default, type=value_type)
+        except Exception:
+            return default
+
+    def largeImageCachePolicy(self) -> dict[str, int]:
+        max_entries = self._settings_value(
+            LARGE_IMAGE_CACHE_MAX_ENTRIES_KEY,
+            DEFAULT_LARGE_IMAGE_CACHE_MAX_ENTRIES,
+            int,
+        )
+        max_size_gb = self._settings_value(
+            LARGE_IMAGE_CACHE_MAX_SIZE_GB_KEY,
+            max(1, DEFAULT_LARGE_IMAGE_CACHE_MAX_SIZE_BYTES // (1024**3)),
+            int,
+        )
+        max_entries = max(1, int(max_entries))
+        max_size_gb = max(1, int(max_size_gb))
+        return {
+            "max_entries": max_entries,
+            "max_size_gb": max_size_gb,
+            "max_size_bytes": max_size_gb * 1024 * 1024 * 1024,
+        }
+
+    def setLargeImageCachePolicy(
+        self, *, max_entries: int, max_size_gb: int
+    ) -> dict[str, int]:
+        policy = {
+            "max_entries": max(1, int(max_entries)),
+            "max_size_gb": max(1, int(max_size_gb)),
+        }
+        settings = getattr(self, "settings", None)
+        if settings is not None:
+            try:
+                settings.setValue(
+                    LARGE_IMAGE_CACHE_MAX_ENTRIES_KEY, policy["max_entries"]
+                )
+                settings.setValue(
+                    LARGE_IMAGE_CACHE_MAX_SIZE_GB_KEY, policy["max_size_gb"]
+                )
+            except Exception:
+                pass
+        policy["max_size_bytes"] = policy["max_size_gb"] * 1024 * 1024 * 1024
+        return policy
+
+    def largeImageCacheOptimizeOptions(self) -> dict[str, int]:
+        policy = self.largeImageCachePolicy()
+        return {
+            "max_cache_entries": policy["max_entries"],
+            "max_cache_size_bytes": policy["max_size_bytes"],
+        }
+
+    def configureLargeImageCachePolicy(
+        self, _value: bool = False
+    ) -> dict[str, int] | None:
+        current = self.largeImageCachePolicy()
+        max_entries, ok_entries = QtWidgets.QInputDialog.getInt(
+            self,
+            self.tr("Large TIFF Cache Limits"),
+            self.tr("Maximum optimized TIFF cache files to keep:"),
+            current["max_entries"],
+            1,
+            1000,
+            1,
+        )
+        if not ok_entries:
+            return None
+        max_size_gb, ok_size = QtWidgets.QInputDialog.getInt(
+            self,
+            self.tr("Large TIFF Cache Limits"),
+            self.tr("Maximum total optimized TIFF cache size (GB):"),
+            current["max_size_gb"],
+            1,
+            4096,
+            1,
+        )
+        if not ok_size:
+            return None
+        policy = self.setLargeImageCachePolicy(
+            max_entries=max_entries, max_size_gb=max_size_gb
+        )
+        if hasattr(self, "status"):
+            self.status(
+                self.tr("Updated large TIFF cache limits to %d file(s), %d GB")
+                % (policy["max_entries"], policy["max_size_gb"])
+            )
+        return policy
+
+    def optimizeLargeImageForViewing(self, _value: bool = False) -> str | None:
+        source_path = Path(str(getattr(self, "imagePath", "") or "")).expanduser()
+        if not source_path.exists() or not bool(is_large_tiff_path(source_path)):
+            if hasattr(self, "errorMessage"):
+                self.errorMessage(
+                    self.tr("Optimize Large Image"),
+                    self.tr(
+                        "Open a TIFF-family image before creating an optimized viewing cache."
+                    ),
+                )
+            return None
+        available, reason = pyvips_optimization_available()
+        if not available:
+            if hasattr(self, "errorMessage"):
+                self.errorMessage(
+                    self.tr("Optimize Large Image"),
+                    self.tr(
+                        "Fast-view optimization requires a working pyvips/libvips runtime. Current error: %s"
+                    )
+                    % str(reason or self.tr("unknown error")),
+                )
+            return None
+        if getattr(self, "_large_image_opt_thread", None) is not None:
+            if hasattr(self, "status"):
+                self.status(self.tr("Large image optimization is already running"))
+            return None
+
+        progress = QtWidgets.QProgressDialog(
+            self.tr("Building optimized pyramidal TIFF cache…"),
+            "",
+            0,
+            0,
+            self,
+        )
+        progress.setWindowTitle(self.tr("Optimize Large Image"))
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setWindowModality(QtCore.Qt.WindowModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+
+        def _task() -> str:
+            return str(
+                optimize_large_tiff_for_viewing(
+                    source_path,
+                    **self.largeImageCacheOptimizeOptions(),
+                )
+            )
+
+        thread = QtCore.QThread(self)
+        worker = FlexibleWorker(_task)
+        worker.moveToThread(thread)
+        self._large_image_opt_thread = thread
+        self._large_image_opt_worker = worker
+        self._large_image_opt_progress = progress
+        self._large_image_opt_source_path = source_path
+
+        def _finish(result) -> None:
+            self._finishLargeImageOptimization(result)
+
+        thread.started.connect(worker.run)
+        worker.finished_signal.connect(_finish)
+        progress.show()
+        thread.start()
+        if hasattr(self, "status"):
+            self.status(self.tr("Optimizing large TIFF for faster future viewing…"))
+        return None
+
+    def _finishLargeImageOptimization(self, result) -> None:
+        progress = getattr(self, "_large_image_opt_progress", None)
+        thread = getattr(self, "_large_image_opt_thread", None)
+        worker = getattr(self, "_large_image_opt_worker", None)
+        source_path = getattr(self, "_large_image_opt_source_path", None)
+        try:
+            if progress is not None:
+                progress.close()
+        except Exception:
+            pass
+        try:
+            if thread is not None:
+                thread.quit()
+                thread.wait(2000)
+        except Exception:
+            pass
+        try:
+            if worker is not None:
+                worker.deleteLater()
+        except Exception:
+            pass
+        try:
+            if thread is not None:
+                thread.deleteLater()
+        except Exception:
+            pass
+        self._large_image_opt_progress = None
+        self._large_image_opt_thread = None
+        self._large_image_opt_worker = None
+        self._large_image_opt_source_path = None
+
+        if isinstance(result, Exception):
+            if hasattr(self, "errorMessage"):
+                self.errorMessage(
+                    self.tr("Optimize Large Image"),
+                    self.tr("Failed to build optimized viewing cache: %s")
+                    % str(result),
+                )
+            return
+        if source_path is None:
+            return
+        self._applyOptimizedLargeImageCache(source_path, Path(str(result)))
+
+    def _applyOptimizedLargeImageCache(
+        self, source_path: Path, cache_path: Path
+    ) -> str:
+        if not isinstance(getattr(self, "otherData", None), dict):
+            self.otherData = {}
+        large_info = dict(self.otherData.get("large_image") or {})
+        large_info["optimized_cache_path"] = str(cache_path)
+        self.otherData["large_image"] = large_info
+
+        try:
+            backend = open_large_image(cache_path)
+            self._activate_tiled_image_view(source_path, backend=backend)
+            if hasattr(self, "large_image_view"):
+                self.large_image_view.set_shapes(getattr(self.canvas, "shapes", []))
+        except Exception:
+            pass
+        if hasattr(self, "status"):
+            self.status(
+                self.tr("Created optimized pyramidal TIFF cache at %s")
+                % str(cache_path)
+            )
+        if hasattr(self, "setDirty"):
+            self.setDirty()
+        return str(cache_path)
+
+    def _currentLargeImageCachePath(self) -> Path | None:
+        large_info = (
+            self.otherData.get("large_image")
+            if isinstance(getattr(self, "otherData", None), dict)
+            else None
+        )
+        if not isinstance(large_info, dict):
+            return None
+        cache_path = large_info.get("optimized_cache_path")
+        if not cache_path:
+            return None
+        return Path(str(cache_path)).expanduser()
+
+    def _reloadCurrentLargeImageFromSource(self) -> None:
+        source_path = Path(str(getattr(self, "imagePath", "") or "")).expanduser()
+        if not source_path.exists() or not bool(is_large_tiff_path(source_path)):
+            return
+        try:
+            backend = open_large_image(source_path)
+            self._activate_tiled_image_view(source_path, backend=backend)
+            if hasattr(self, "large_image_view"):
+                self.large_image_view.set_shapes(getattr(self.canvas, "shapes", []))
+        except Exception as exc:
+            logger.warning(
+                "Failed to reload large image source after cache cleanup: %s", exc
+            )
+
+    def showLargeImageCacheInfo(self, _value: bool = False) -> dict[str, object]:
+        entries = list_large_image_cache_entries()
+        total_size = large_image_cache_size_bytes()
+        cache_root = large_image_cache_root()
+        policy = self.largeImageCachePolicy()
+        current_cache_path = self._currentLargeImageCachePath()
+        current_cache_exists = bool(current_cache_path and current_cache_path.exists())
+        current_cache_size = 0
+        if current_cache_exists and current_cache_path is not None:
+            try:
+                current_cache_size = int(current_cache_path.stat().st_size)
+            except OSError:
+                current_cache_exists = False
+        message_lines = [
+            self.tr("Cache folder: %s") % str(cache_root),
+            self.tr("Cached TIFFs: %d") % len(entries),
+            self.tr("Disk usage: %s") % format_large_image_cache_size(total_size),
+            self.tr("Cache limit: %d file(s), %d GB")
+            % (policy["max_entries"], policy["max_size_gb"]),
+        ]
+        if current_cache_path is not None:
+            message_lines.append(
+                self.tr("Current image cache: %s") % str(current_cache_path)
+            )
+            if current_cache_exists:
+                message_lines.append(
+                    self.tr("Current cache size: %s")
+                    % format_large_image_cache_size(current_cache_size)
+                )
+            else:
+                message_lines.append(
+                    self.tr("Current image cache is not present on disk")
+                )
+        QtWidgets.QMessageBox.information(
+            self,
+            self.tr("Large Image Cache"),
+            "\n".join(message_lines),
+        )
+        return {
+            "cache_root": str(cache_root),
+            "entry_count": len(entries),
+            "total_size_bytes": total_size,
+            "policy": policy,
+            "current_cache_path": str(current_cache_path)
+            if current_cache_path
+            else None,
+            "current_cache_exists": current_cache_exists,
+        }
+
+    def openLargeImageCacheFolder(self, _value: bool = False) -> str | None:
+        cache_root = large_image_cache_root()
+        cache_root.mkdir(parents=True, exist_ok=True)
+        ok = QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(cache_root)))
+        if not ok:
+            if hasattr(self, "errorMessage"):
+                self.errorMessage(
+                    self.tr("Large Image Cache"),
+                    self.tr("Could not open cache folder: %s") % str(cache_root),
+                )
+            return None
+        if hasattr(self, "status"):
+            self.status(
+                self.tr("Opened large image cache folder: %s") % str(cache_root)
+            )
+        return str(cache_root)
+
+    def clearCurrentLargeImageCache(self, _value: bool = False) -> int:
+        cache_path = self._currentLargeImageCachePath()
+        if cache_path is None:
+            if hasattr(self, "status"):
+                self.status(
+                    self.tr("No optimized cache is recorded for the current image")
+                )
+            return 0
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            self.tr("Clear Current Cache"),
+            self.tr("Delete the optimized TIFF cache for the current image?\n\n%s")
+            % str(cache_path),
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return 0
+        removed = remove_large_image_cache_file(cache_path)
+        if isinstance(getattr(self, "otherData", None), dict):
+            large_info = dict(self.otherData.get("large_image") or {})
+            large_info.pop("optimized_cache_path", None)
+            self.otherData["large_image"] = large_info
+        self._reloadCurrentLargeImageFromSource()
+        if hasattr(self, "status"):
+            if removed:
+                self.status(self.tr("Cleared optimized cache for the current image"))
+            else:
+                self.status(
+                    self.tr("Removed stale cache reference for the current image")
+                )
+        if hasattr(self, "setDirty"):
+            self.setDirty()
+        return 1 if removed else 0
+
+    def clearAllLargeImageCaches(self, _value: bool = False) -> int:
+        entries = list_large_image_cache_entries()
+        if not entries:
+            if hasattr(self, "status"):
+                self.status(self.tr("No large image caches are present"))
+            return 0
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            self.tr("Clear All Large Image Caches"),
+            self.tr("Delete %d optimized TIFF cache file(s) from %s?")
+            % (len(entries), str(large_image_cache_root())),
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return 0
+        removed = clear_all_large_image_caches()
+        if isinstance(getattr(self, "otherData", None), dict):
+            large_info = dict(self.otherData.get("large_image") or {})
+            large_info.pop("optimized_cache_path", None)
+            self.otherData["large_image"] = large_info
+        self._reloadCurrentLargeImageFromSource()
+        if hasattr(self, "status"):
+            self.status(
+                self.tr("Cleared %d optimized TIFF cache file(s)") % int(removed)
+            )
+        if removed and hasattr(self, "setDirty"):
+            self.setDirty()
+        return int(removed)
+
+    def _activate_canvas_image_view(
+        self,
+        image: QtGui.QImage,
+        *,
+        preserve_shapes: bool = False,
+        clear_large_image_view: bool = True,
+    ) -> None:
+        if not hasattr(self, "canvas") or self.canvas is None:
+            return
+        if clear_large_image_view:
+            self.large_image_backend = None
+        self._active_image_view = "canvas"
+        self.canvas.setEnabled(True)
+        if clear_large_image_view and hasattr(self, "large_image_view"):
+            self.large_image_view.clear()
+        if hasattr(self, "_viewer_stack") and self._viewer_stack is not None:
+            self._viewer_stack.setCurrentWidget(self.canvas)
+        pixmap = QtGui.QPixmap.fromImage(image)
+        self.canvas.loadPixmap(pixmap, clear_shapes=not bool(preserve_shapes))
+
+    def activateLargeImageCanvasEditMode(
+        self, *, reason: str = "overlay editing"
+    ) -> bool:
+        if getattr(self, "_active_image_view", "canvas") != "tiled":
+            return False
+        image = getattr(self, "image", None)
+        if image is None or image.isNull():
+            return False
+        self._activate_canvas_image_view(
+            image,
+            preserve_shapes=True,
+            clear_large_image_view=False,
+        )
+        if hasattr(self.canvas, "setEditing"):
+            self.canvas.setEditing(True)
+        if hasattr(self, "status"):
+            self.status(
+                self.tr(
+                    "Switched large-image overlay editing to canvas preview mode for %s"
+                )
+                % str(reason or self.tr("editing"))
+            )
+        return True
+
     def loadFile(self, filename: str) -> None:
         path = Path(filename)
         if not path.exists():
@@ -1039,6 +1511,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 self.errorMessage(self.tr("Load Error"), str(exc))
                 return
             self.labelFile = label_file
+            self.otherData = dict(getattr(label_file, "otherData", {}) or {})
             shapes = label_file.shapes
             image_rel = label_file.imagePath or ""
             if image_rel:
@@ -1049,11 +1522,39 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 try:
                     label_file = LabelFile(str(candidate))
                     self.labelFile = label_file
+                    self.otherData = dict(getattr(label_file, "otherData", {}) or {})
                     shapes = label_file.shapes
                 except Exception:
                     shapes = []
+            if not isinstance(getattr(self, "otherData", None), dict):
+                self.otherData = {}
 
-        image = QtGui.QImage(str(image_path))
+        backend_image_path = image_path
+        if bool(is_large_tiff_path(image_path)):
+            cached_large_image = resolve_fresh_optimized_large_image_path(image_path)
+            if cached_large_image is not None:
+                backend_image_path = cached_large_image
+
+        image_result = None
+        probed_large_image = None
+        large_backend = None
+        if bool(is_large_tiff_path(backend_image_path)) and hasattr(
+            self, "large_image_view"
+        ):
+            try:
+                large_backend = open_large_image(backend_image_path)
+                image_result = large_backend.load()
+                probed_large_image = image_result.metadata
+            except Exception:
+                image_result = None
+                large_backend = None
+        if image_result is None:
+            try:
+                image_result = load_image_with_backends(backend_image_path)
+            except Exception:
+                image_result = None
+
+        image = image_result.qimage if image_result is not None else QtGui.QImage()
         if image.isNull():
             self.errorMessage(
                 self.tr("Load Error"),
@@ -1065,11 +1566,39 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.filename = str(path)
         self.imagePath = str(image_path)
         self.imageData = None
+        if probed_large_image is None:
+            probed_large_image = probe_large_image(backend_image_path)
+        if image_result is not None and image_result.metadata is not None:
+            if not isinstance(self.otherData, dict):
+                self.otherData = {}
+            large_info = image_result.metadata.to_dict()
+            if backend_image_path != image_path:
+                large_info["optimized_cache_path"] = str(backend_image_path)
+                large_info["source_path"] = str(image_path)
+            self.otherData["large_image"] = large_info
+        elif probed_large_image is not None:
+            if not isinstance(self.otherData, dict):
+                self.otherData = {}
+            large_info = probed_large_image.to_dict()
+            if backend_image_path != image_path:
+                large_info["optimized_cache_path"] = str(backend_image_path)
+                large_info["source_path"] = str(image_path)
+            self.otherData["large_image"] = large_info
 
         if hasattr(self, "canvas") and self.canvas is not None:
-            self.canvas.setEnabled(True)
-            pixmap = QtGui.QPixmap.fromImage(image)
-            self.canvas.loadPixmap(pixmap, clear_shapes=True)
+            use_tiled_view = False
+            if bool(is_large_tiff_path(backend_image_path)) and hasattr(
+                self, "large_image_view"
+            ):
+                try:
+                    use_tiled_view = self._activate_tiled_image_view(
+                        image_path, backend=large_backend
+                    )
+                except Exception:
+                    self.large_image_backend = None
+                    use_tiled_view = False
+            if not use_tiled_view:
+                self._activate_canvas_image_view(image)
             # AnnolidWindow.loadLabels expects LabelFile JSON dict payloads and
             # materializes Shape objects before forwarding to loadShapes.
             if shapes and isinstance(shapes[0], dict) and hasattr(self, "loadLabels"):
@@ -1080,6 +1609,19 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         # Ensure image workflows (Open / Open Dir) activate toolbar actions.
         if hasattr(self, "toggleActions"):
             self.toggleActions(True)
+
+        if (
+            bool(is_large_tiff_path(image_path))
+            and image_result is not None
+            and image_result.metadata is not None
+            and hasattr(self, "status")
+        ):
+            backend_name = str(image_result.metadata.backend_name or "image backend")
+            hint = str(image_result.metadata.performance_hint or "").strip()
+            message = self.tr("Opened large image with %s backend") % backend_name
+            if hint:
+                message = f"{message}. {hint}"
+            self.status(message)
 
         self.setWindowTitle(f"Annolid - {osp.basename(self.filename)}")
         try:

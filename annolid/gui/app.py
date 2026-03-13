@@ -269,6 +269,12 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.canvas.newShape.connect(self.newShape)
         self.canvas.shapeMoved.connect(self.setDirty)
         self.canvas.selectionChanged.connect(self.shapeSelectionChanged)
+        self.canvas.selectionChanged.connect(self.large_image_view.set_selected_shapes)
+        self.large_image_view.selectionChanged.connect(self.canvas.selectShapes)
+        self.large_image_view.shapeMoved.connect(self.canvas.storeShapes)
+        self.large_image_view.shapeMoved.connect(self.setDirty)
+        self.large_image_view.newShape.connect(self.newShape)
+        self.large_image_view.drawingPolygon.connect(self.toggleDrawingSensitive)
         self.canvas.drawingPolygon.connect(self.toggleDrawingSensitive)
         self.canvas.vertexSelected.connect(self.actions.removePoint.setEnabled)
         self._setup_label_list_connections()
@@ -338,6 +344,8 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
             canvas=self.canvas, here=Path(__file__).resolve().parent
         )
         self.pdf_import_widget = PdfImportWidget(self)
+        if hasattr(self, "setupVectorOverlayDock"):
+            self.setupVectorOverlayDock()
         self._setup_canvas_screenshot_action()
         self._setup_open_pdf_action()
         self._setup_label_collection_action()

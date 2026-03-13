@@ -101,6 +101,17 @@ class PlaybackDrawMixin:
         self.imageData = None
         self.labelFile = None
         self.otherData = None
+        self.large_image_backend = None
+        self._active_image_view = "canvas"
+        if getattr(self, "large_image_view", None) is not None:
+            self.large_image_view.clear()
+        if hasattr(self, "_refreshVectorOverlayDock"):
+            self._refreshVectorOverlayDock()
+        if (
+            getattr(self, "_viewer_stack", None) is not None
+            and getattr(self, "canvas", None) is not None
+        ):
+            self._viewer_stack.setCurrentWidget(self.canvas)
         self.canvas.resetState()
 
     def playVideo(self, isPlaying=False):
@@ -151,10 +162,36 @@ class PlaybackDrawMixin:
             "grounding_sam": getattr(self.actions, "createGroundingSAMMode", None),
             "polygonSAM": getattr(self, "createPolygonSAMMode", None),
         }
+        large_image_view = getattr(self, "large_image_view", None)
+        use_native_tiled_creation = bool(
+            getattr(self, "_active_image_view", "canvas") == "tiled"
+            and large_image_view is not None
+            and hasattr(large_image_view, "_supports_create_mode")
+            and bool(edit) is False
+            and large_image_view._supports_create_mode(createMode)
+        )
+        if (
+            not bool(edit)
+            and getattr(self, "_active_image_view", "canvas") == "tiled"
+            and not use_native_tiled_creation
+            and hasattr(self, "activateLargeImageCanvasEditMode")
+        ):
+            try:
+                reason = f"{createMode} drawing"
+                self.activateLargeImageCanvasEditMode(reason=reason)
+            except Exception:
+                logger.debug(
+                    "Failed to switch large-image editing to canvas preview.",
+                    exc_info=True,
+                )
 
         self.canvas.setEditing(bool(edit))
         if not edit:
             self.canvas.createMode = createMode
+        if large_image_view is not None and hasattr(large_image_view, "setEditing"):
+            large_image_view.setEditing(bool(edit))
+            if not edit:
+                large_image_view.createMode = createMode
 
         if edit:
             for action in draw_actions.values():

@@ -78,6 +78,7 @@ pip install -e ".[gui]"
 Useful extras currently defined in `pyproject.toml` include:
 
 - `gui`: Qt bindings for the desktop application
+- `large_image`: TIFF/OME-TIFF metadata and optional streaming backends (`tifffile`, `pyvips`, `openslide-python`)
 - `sam3`: SAM3-related dependencies
 - `image_editing`: diffusion/image-editing features
 - `text_to_speech`: read-aloud and narration features
@@ -89,8 +90,19 @@ Useful extras currently defined in `pyproject.toml` include:
 Example:
 
 ```bash
-pip install -e ".[gui,annolid_bot,text_to_speech]"
+pip install -e ".[gui,large_image,annolid_bot,text_to_speech]"
 ```
+
+### Note on `large_image`
+
+`large_image` is optional. A normal `annolid[gui]` install does not require these dependencies, and Annolid's standard image/video annotation workflows continue to work without them.
+
+The `large_image` extra installs the Python packages, but some platforms also need native runtimes for the fastest backends:
+
+- `pyvips` needs a working `libvips` runtime
+- `openslide-python` needs a working OpenSlide runtime
+
+If those native libraries are missing, Annolid falls back to `tifffile` when available. If the full `large_image` extra is not installed, Annolid still starts normally and falls back to the standard Qt/Pillow image path instead of requiring large-image packages at startup.
 
 ## Verify the Install
 

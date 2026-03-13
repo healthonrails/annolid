@@ -288,6 +288,64 @@ class MenuController:
                 ),
             },
             {
+                "name": "import_svg_overlay",
+                "text": w.tr("Import &Vector Overlay…"),
+                "slot": w.importSvgOverlay,
+                "tip": w.tr(
+                    "Import SVG, PDF, or PDF-compatible Illustrator vectors as editable overlay shapes"
+                ),
+            },
+            {
+                "name": "optimize_large_tiff",
+                "text": w.tr("Optimize Large &TIFF for Fast Viewing…"),
+                "slot": w.optimizeLargeImageForViewing,
+                "tip": w.tr(
+                    "Build a pyramidal cached TIFF for faster future pan/zoom sessions"
+                ),
+            },
+            {
+                "name": "show_large_tiff_cache_info",
+                "text": w.tr("Large TIFF Cache &Info…"),
+                "slot": w.showLargeImageCacheInfo,
+                "tip": w.tr(
+                    "Show cache location, size, and the current optimized TIFF cache"
+                ),
+            },
+            {
+                "name": "configure_large_tiff_cache_limits",
+                "text": w.tr("Configure Large TIFF Cache &Limits…"),
+                "slot": w.configureLargeImageCachePolicy,
+                "tip": w.tr(
+                    "Set how many optimized TIFF caches Annolid keeps and how much disk space they may use"
+                ),
+            },
+            {
+                "name": "open_large_tiff_cache_folder",
+                "text": w.tr("Open Large TIFF Cache &Folder"),
+                "slot": w.openLargeImageCacheFolder,
+                "tip": w.tr("Open the folder where optimized TIFF caches are stored"),
+            },
+            {
+                "name": "clear_current_large_tiff_cache",
+                "text": w.tr("Clear Current TIFF &Cache…"),
+                "slot": w.clearCurrentLargeImageCache,
+                "tip": w.tr("Delete the optimized cache for the current image only"),
+            },
+            {
+                "name": "clear_all_large_tiff_caches",
+                "text": w.tr("Clear &All TIFF Caches…"),
+                "slot": w.clearAllLargeImageCaches,
+                "tip": w.tr("Delete all optimized TIFF caches created by Annolid"),
+            },
+            {
+                "name": "export_vector_overlay",
+                "text": w.tr("Export Corrected &Overlay…"),
+                "slot": w.exportVectorOverlay,
+                "tip": w.tr(
+                    "Export the selected corrected vector overlay as SVG or JSON"
+                ),
+            },
+            {
                 "name": "open_ai_chat",
                 "text": w.tr("Annolid &Bot…"),
                 "slot": w.open_annolid_bot_dock,
@@ -1039,6 +1097,24 @@ class MenuController:
         # ============================================================
         # FILE MENU - Open, Save, Export operations only
         # ============================================================
+        overlay_menu = self._build_submenu(
+            "&Overlays",
+            (
+                actions["import_svg_overlay"],
+                actions["export_vector_overlay"],
+            ),
+        )
+        large_tiff_menu = self._build_submenu(
+            "Large &TIFF",
+            (
+                actions["optimize_large_tiff"],
+                actions["show_large_tiff_cache_info"],
+                actions["configure_large_tiff_cache_limits"],
+                actions["open_large_tiff_cache_folder"],
+                actions["clear_current_large_tiff_cache"],
+                actions["clear_all_large_tiff_caches"],
+            ),
+        )
         file_sections = [
             (
                 actions["new_project_wizard"],
@@ -1050,6 +1126,7 @@ class MenuController:
                 actions["open_3d"],
                 actions["open_caption"],
             ),
+            (overlay_menu, large_tiff_menu),
             (
                 w.actions.save,
                 w.actions.saveAuto,
@@ -1358,6 +1435,11 @@ class MenuController:
             utils.addActions(menu, tuple(section))
             if idx < total - 1:
                 menu.addSeparator()
+
+    def _build_submenu(self, title: str, items) -> QtWidgets.QMenu:
+        menu = QtWidgets.QMenu(self._window.tr(title), self._window)
+        utils.addActions(menu, tuple(items))
+        return menu
 
     def _reorder_top_menus(self) -> None:
         """Keep top-level menu order consistent and professional."""

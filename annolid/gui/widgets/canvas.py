@@ -47,6 +47,7 @@ class Canvas(QtWidgets.QWidget):
     shapeMoved = QtCore.Signal()
     drawingPolygon = QtCore.Signal(bool)
     vertexSelected = QtCore.Signal(bool)
+    overlayLandmarkPairSelected = QtCore.Signal(str)
 
     CREATE, EDIT = 0, 1
 
@@ -172,6 +173,7 @@ class Canvas(QtWidgets.QWidget):
         self._show_pose_bboxes: bool = True
         self._pose_edge_color = QtGui.QColor(0, 255, 255, 190)
         self._pose_edge_shadow = QtGui.QColor(0, 0, 0, 160)
+        self._selected_overlay_landmark_pair_id = None
 
     def _on_selection_changed(self, shapes):
         """Update internal selection state from a newly selected shapes list."""
@@ -1508,6 +1510,17 @@ class Canvas(QtWidgets.QWidget):
                     self.removeSelectedPoint()
 
                 group_mode = ev.modifiers() == QtCore.Qt.ControlModifier
+                if (
+                    not group_mode
+                    and not self.selectedEdge()
+                    and not self.selectedVertex()
+                    and self.hShape is None
+                ):
+                    pair_id = self._nearest_explicit_landmark_pair(pos)
+                    if pair_id:
+                        self.overlayLandmarkPairSelected.emit(str(pair_id))
+                        ev.accept()
+                        return
                 self.selectShapePoint(pos, multiple_selection_mode=group_mode)
                 self.prevPoint = pos
                 self.repaint()
@@ -1860,6 +1873,136 @@ class Canvas(QtWidgets.QWidget):
     def _clear_preview_line(self):
         self.line = Shape()
 
+    @staticmethod
+    def _collect_explicit_landmark_pairs_from_shapes(shapes):
+        overlay_points = {}
+        image_points = {}
+        for shape in list(shapes or []):
+            if str(getattr(shape, "shape_type", "") or "").lower() != "point":
+                continue
+            points = getattr(shape, "points", None) or []
+            if not points:
+                continue
+            other = dict(getattr(shape, "other_data", {}) or {})
+            pair_id = str(other.get("overlay_landmark_pair_id") or "")
+            if not pair_id:
+                continue
+            point = points[0]
+            coords = (float(point.x()), float(point.y()))
+            if "overlay_id" in other:
+                overlay_points[pair_id] = coords
+            else:
+                image_points[pair_id] = coords
+        pairs = []
+        for pair_id, src in overlay_points.items():
+            dst = image_points.get(pair_id)
+            if dst is None:
+                continue
+            pairs.append((pair_id, src, dst))
+        return pairs
+
+    @staticmethod
+    def _explicit_landmark_pair_pen(scale: float, *, selected: bool = False):
+        color = (
+            QtGui.QColor(255, 140, 0, 240)
+            if selected
+            else QtGui.QColor(255, 215, 0, 220)
+        )
+        pen = QtGui.QPen(color)
+        base_width = 3.0 if selected else 2.0
+        pen.setWidthF(max(1.5, base_width / max(scale, 0.01)))
+        pen.setStyle(QtCore.Qt.DashLine)
+        return pen
+
+    def setSelectedOverlayLandmarkPair(self, pair_id: str | None) -> None:
+        normalized = str(pair_id or "") or None
+        if normalized == self._selected_overlay_landmark_pair_id:
+            return
+        self._selected_overlay_landmark_pair_id = normalized
+        self.update()
+
+    def _nearest_explicit_landmark_pair(self, pos, tolerance: float | None = None):
+        threshold = float(
+            tolerance if tolerance is not None else self.epsilon / max(self.scale, 0.01)
+        )
+        best_pair_id = None
+        best_distance = None
+        query = QtCore.QPointF(pos)
+        for pair_id, src, dst in self._collect_explicit_landmark_pairs_from_shapes(
+            self.shapes
+        ):
+            line = QtCore.QLineF(
+                QtCore.QPointF(src[0], src[1]), QtCore.QPointF(dst[0], dst[1])
+            )
+            length = line.length()
+            if length <= 0:
+                continue
+            dx = line.dx()
+            dy = line.dy()
+            t = (((query.x() - line.x1()) * dx) + ((query.y() - line.y1()) * dy)) / (
+                length * length
+            )
+            t = max(0.0, min(1.0, t))
+            closest = QtCore.QPointF(line.x1() + (dx * t), line.y1() + (dy * t))
+            distance = QtCore.QLineF(query, closest).length()
+            if distance > threshold:
+                continue
+            if best_distance is None or distance < best_distance:
+                best_pair_id = pair_id
+                best_distance = distance
+        return best_pair_id
+
+    def _draw_explicit_landmark_pairs(self, painter):
+        pairs = self._collect_explicit_landmark_pairs_from_shapes(self.shapes)
+        if not pairs:
+            return
+        painter.save()
+        for pair_id, src, dst in pairs:
+            painter.setPen(
+                self._explicit_landmark_pair_pen(
+                    self.scale,
+                    selected=pair_id == self._selected_overlay_landmark_pair_id,
+                )
+            )
+            painter.drawLine(
+                QtCore.QPointF(src[0], src[1]),
+                QtCore.QPointF(dst[0], dst[1]),
+            )
+        painter.restore()
+
+    def _selected_explicit_landmark_pair_points(self):
+        selected_pair_id = str(self._selected_overlay_landmark_pair_id or "")
+        if not selected_pair_id:
+            return []
+        for pair_id, src, dst in self._collect_explicit_landmark_pairs_from_shapes(
+            self.shapes
+        ):
+            if pair_id == selected_pair_id:
+                return [src, dst]
+        return []
+
+    def _draw_selected_explicit_landmark_pair_points(self, painter):
+        points = self._selected_explicit_landmark_pair_points()
+        if not points:
+            return
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        outer_pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 220))
+        outer_pen.setWidthF(max(1.5, 2.0 / max(self.scale, 0.01)))
+        painter.setPen(outer_pen)
+        painter.setBrush(QtGui.QBrush(QtGui.QColor(255, 140, 0, 180)))
+        outer_radius = max(6.0, 8.0 / max(self.scale, 0.01))
+        inner_radius = outer_radius * 0.45
+        for x, y in points:
+            center = QtCore.QPointF(x, y)
+            painter.drawEllipse(center, outer_radius, outer_radius)
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setBrush(QtGui.QBrush(QtGui.QColor(255, 255, 255, 240)))
+            painter.drawEllipse(center, inner_radius, inner_radius)
+            painter.setPen(outer_pen)
+            painter.setBrush(QtGui.QBrush(QtGui.QColor(255, 140, 0, 180)))
+        painter.restore()
+
     def _paint_live_preview(self, painter):
         if self.selectedShapesCopy:
             for shape in self.selectedShapesCopy:
@@ -2052,6 +2195,7 @@ class Canvas(QtWidgets.QWidget):
 
             # Draw pose edges behind the keypoints (but above the image).
             self._draw_pose_edges(p)
+            self._draw_explicit_landmark_pairs(p)
 
             for shape in self.shapes:
                 if (shape.selected or not self._hideBackround) and self.isVisible(
@@ -2062,6 +2206,7 @@ class Canvas(QtWidgets.QWidget):
                         shape.paint(p, image_width, image_height)
                     except SystemError as e:
                         print(e)
+            self._draw_selected_explicit_landmark_pair_points(p)
             if self.current:
                 self.current.paint(p)
             self._paint_live_preview(p)

@@ -87,6 +87,7 @@ class SettingsTimelineMixin:
             getattr(self, "label_dock", None),
             getattr(self, "shape_dock", None),
             getattr(self, "flag_dock", None),
+            getattr(self, "vector_overlay_dock", None),
             getattr(self, "video_dock", None),
             getattr(self, "behavior_log_dock", None),
             getattr(self, "behavior_controls_dock", None),
