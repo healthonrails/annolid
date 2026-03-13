@@ -45,6 +45,7 @@ def setup_viewers_feature(deps: GuiFeatureDeps) -> ViewersFeatureState:
     window._viewer_stack.setContentsMargins(0, 0, 0, 0)
     window._viewer_stack.addWidget(window.canvas)
     window.large_image_view = TiledImageView(window)
+    window.large_image_view.set_host_window(window)
     window._viewer_stack.addWidget(window.large_image_view)
 
     window.pdf_manager = PdfManager(window, window._viewer_stack)

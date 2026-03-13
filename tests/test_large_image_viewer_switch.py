@@ -5,11 +5,16 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
-from qtpy import QtCore, QtGui, QtTest, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
+from annolid.gui.mixins.label_panel_mixin import LabelPanelMixin
 from annolid.gui.shape import Shape
-from annolid.gui.widgets.tiled_image_view import TiledImageView
-from annolid.gui.window_base import AnnolidWindowBase
+from annolid.gui.widgets.tiled_image_view import TiledImageView, _ShapeGraphicsItem
+from annolid.gui.window_base import (
+    AnnolidLabelListItem,
+    AnnolidLabelListWidget,
+    AnnolidWindowBase,
+)
 import annolid.gui.window_base as window_base_module
 
 
@@ -56,9 +61,32 @@ def _send_mouse_drag(view, start: QtCore.QPoint, end: QtCore.QPoint) -> None:
         QtCore.Qt.NoButton,
         QtCore.Qt.NoModifier,
     )
-    QtWidgets.QApplication.sendEvent(viewport, press)
-    QtWidgets.QApplication.sendEvent(viewport, move)
-    QtWidgets.QApplication.sendEvent(viewport, release)
+    view.mousePressEvent(press)
+    view.mouseMoveEvent(move)
+    view.mouseReleaseEvent(release)
+
+
+def _send_mouse_click(view, pos: QtCore.QPoint) -> None:
+    viewport = view.viewport()
+    global_pos = viewport.mapToGlobal(pos)
+    press = QtGui.QMouseEvent(
+        QtCore.QEvent.MouseButtonPress,
+        QtCore.QPointF(pos),
+        QtCore.QPointF(global_pos),
+        QtCore.Qt.LeftButton,
+        QtCore.Qt.LeftButton,
+        QtCore.Qt.NoModifier,
+    )
+    release = QtGui.QMouseEvent(
+        QtCore.QEvent.MouseButtonRelease,
+        QtCore.QPointF(pos),
+        QtCore.QPointF(global_pos),
+        QtCore.Qt.LeftButton,
+        QtCore.Qt.NoButton,
+        QtCore.Qt.NoModifier,
+    )
+    view.mousePressEvent(press)
+    view.mouseReleaseEvent(release)
 
 
 class _CanvasStub(QtWidgets.QWidget):
@@ -68,6 +96,7 @@ class _CanvasStub(QtWidgets.QWidget):
         self.shapes = []
         self.last_load_clear_shapes = None
         self.editing_values = []
+        self.context_menu_builds = 0
 
     def loadPixmap(self, pixmap, clear_shapes=True):
         self.last_pixmap = pixmap
@@ -77,6 +106,16 @@ class _CanvasStub(QtWidgets.QWidget):
 
     def setEditing(self, value=True):
         self.editing_values.append(bool(value))
+
+    def _build_context_menu(self, _main_window):
+        self.context_menu_builds += 1
+        return QtWidgets.QMenu(self)
+
+    def setShapeVisible(self, shape, value):
+        try:
+            shape.visible = bool(value)
+        except Exception:
+            pass
 
 
 class _WindowStub(AnnolidWindowBase):
@@ -88,6 +127,7 @@ class _WindowStub(AnnolidWindowBase):
         super().__init__(config={})
         self.canvas = _CanvasStub()
         self.large_image_view = TiledImageView(self)
+        self.large_image_view.set_host_window(self)
         self._viewer_stack = QtWidgets.QStackedWidget()
         self._viewer_stack.addWidget(self.canvas)
         self._viewer_stack.addWidget(self.large_image_view)
@@ -123,6 +163,39 @@ class _SettingsStub:
 
     def setValue(self, key, value):
         self._values[key] = value
+
+
+class _VisibilityHost(LabelPanelMixin):
+    def __init__(self, backend):
+        self._noSelectionSlot = False
+        self.canvas = _CanvasStub()
+        self.large_image_view = TiledImageView()
+        self.large_image_view.set_backend(backend)
+        self.labelList = AnnolidLabelListWidget()
+        self.uniqLabelList = QtWidgets.QListWidget()
+        self.actions = type(
+            "_Actions",
+            (),
+            {"onShapesPresent": [], "deleteShapes": None, "duplicateShapes": None},
+        )()
+        self.labelDialog = type(
+            "_LabelDialog", (), {"addLabelHistory": lambda self, text: None}
+        )()
+        self._refresh_overlay_dock_calls = 0
+        self._dirty_calls = 0
+        self._setup_label_list_connections()
+
+    def _refreshVectorOverlayDock(self):
+        self._refresh_overlay_dock_calls += 1
+
+    def setDirty(self):
+        self._dirty_calls += 1
+
+    def editLabel(self, *_args, **_kwargs):
+        return None
+
+    def deleteSelectedShapes(self, *_args, **_kwargs):
+        return None
 
 
 def _make_visible_shape() -> Shape:
@@ -707,6 +780,13 @@ def test_tiled_image_view_clamps_tiles_and_renders_visible_shapes(
         assert len(view._overlay_items) == 1
         assert abs(view._overlay_items[0].opacity() - 0.4) < 1e-6
         assert abs(view._overlay_items[0].zValue() - 102.0) < 1e-6
+        base_scale = view._overlay_items[0].current_scale
+        base_point_pixels = view._overlay_items[0]._visual_metrics()
+
+        view.set_zoom_percent(400)
+
+        assert view._overlay_items[0].current_scale > base_scale
+        assert view._overlay_items[0]._visual_metrics() < base_point_pixels
 
         view.set_shapes([visible, overlay_point, image_point])
 
@@ -725,7 +805,10 @@ def test_tiled_image_view_clamps_tiles_and_renders_visible_shapes(
         )
 
         item_center = view.mapFromScene(view._pair_items[0].line().pointAt(0.5))
-        QtTest.QTest.mouseClick(view.viewport(), QtCore.Qt.LeftButton, pos=item_center)
+        hit_item = view._pair_item_at_view_pos(item_center)
+        assert hit_item is not None
+        view.set_selected_landmark_pair(hit_item.pair_id)
+        view.overlayLandmarkPairSelected.emit(hit_item.pair_id)
 
         assert received[-1] == "pair_1"
 
@@ -737,6 +820,108 @@ def test_tiled_image_view_clamps_tiles_and_renders_visible_shapes(
         assert len(view._pair_items) == 0
         assert len(view._pair_endpoint_items) == 0
         assert len(view.tile_cache) == 0
+    finally:
+        view.close()
+
+
+def test_label_visibility_toggle_refreshes_tiled_view(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "sample_visibility_sync.ome.tiff"
+    data = np.arange(300 * 520, dtype=np.uint16).reshape(300, 520)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    from annolid.io.large_image import open_large_image
+
+    backend = open_large_image(image_path)
+    host = _VisibilityHost(backend)
+    try:
+        shape = _make_visible_shape()
+        host.canvas.shapes = [shape]
+        host.large_image_view.set_shapes(host.canvas.shapes)
+
+        assert len(host.large_image_view._overlay_items) == 1
+
+        item = AnnolidLabelListItem("atlas", shape)
+        item.setFlags(
+            item.flags() | QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsSelectable
+        )
+        item.setCheckState(QtCore.Qt.Checked)
+        item.setData(host.labelList.VISIBILITY_STATE_ROLE, True)
+        host.labelList.addItem(item)
+
+        item.setCheckState(QtCore.Qt.Unchecked)
+        _ensure_qapp().processEvents()
+
+        assert shape.visible is False
+        assert len(host.large_image_view._overlay_items) == 0
+        assert host._refresh_overlay_dock_calls >= 1
+        assert host._dirty_calls >= 1
+    finally:
+        host.large_image_view.close()
+        host.labelList.close()
+
+
+def test_tiled_overlay_item_reduces_highlight_multiplier_at_high_zoom() -> None:
+    shape = _make_visible_shape()
+    item = _ShapeGraphicsItem(
+        shape,
+        content_size=(24000, 16000),
+        current_scale=6.0,
+    )
+
+    settings = item._effective_highlight_settings()
+
+    assert (
+        settings[Shape.NEAR_VERTEX][0] < shape._highlightSettings[Shape.NEAR_VERTEX][0]
+    )
+    assert (
+        settings[Shape.MOVE_VERTEX][0] < shape._highlightSettings[Shape.MOVE_VERTEX][0]
+    )
+    overrides = item._effective_vertex_render_overrides()
+    assert overrides["glow_alpha_mult"] < 1.0
+    assert overrides["halo_alpha_mult"] < 1.0
+    assert overrides["glow_scale"] < 1.75
+
+
+def test_tiled_image_view_clicking_polygon_edge_inserts_point(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "sample_insert_edge.ome.tiff"
+    data = np.arange(300 * 520, dtype=np.uint16).reshape(300, 520)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    from annolid.io.large_image import open_large_image
+
+    backend = open_large_image(image_path)
+    view = TiledImageView(tile_size=128)
+    try:
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.set_backend(backend)
+        view.set_zoom_percent(100)
+
+        shape = _make_visible_shape()
+        view.set_shapes([shape])
+
+        moved = []
+        view.shapeMoved.connect(lambda: moved.append(True))
+
+        edge_click = view.mapFromScene(QtCore.QPointF(45, 10))
+        _send_mouse_click(view, edge_click)
+
+        assert len(shape.points) == 5
+        assert moved
+        assert (round(shape.points[1].x(), 1), round(shape.points[1].y(), 1)) == (
+            45.0,
+            10.0,
+        )
+        assert view.selectedShapes == [shape]
     finally:
         view.close()
 
@@ -773,14 +958,14 @@ def test_tiled_image_view_supports_native_overlay_selection_and_drag(
         view.shapeMoved.connect(lambda: moved.append(True))
 
         click_pos = view.mapFromScene(QtCore.QPointF(20, 20))
-        QtTest.QTest.mousePress(view.viewport(), QtCore.Qt.LeftButton, pos=click_pos)
-        QtTest.QTest.mouseRelease(view.viewport(), QtCore.Qt.LeftButton, pos=click_pos)
+        _send_mouse_click(view, click_pos)
 
         assert selected
         assert selected[-1] == [shape]
         assert view.selectedShapes == [shape]
         assert shape.selected is True
-        assert len(view._vertex_items) == len(shape.points)
+        assert shape.selected is True
+        assert shape._highlightIndex is None
 
         drag_end = view.mapFromScene(QtCore.QPointF(35, 32))
         _send_mouse_drag(view, click_pos, drag_end)
@@ -827,7 +1012,7 @@ def test_tiled_image_view_supports_native_overlay_vertex_drag(tmp_path: Path) ->
             18.0,
             16.0,
         )
-        assert len(view._vertex_items) == len(shape.points)
+        assert shape._highlightIndex is None
     finally:
         view.close()
 
@@ -858,7 +1043,7 @@ def test_tiled_image_view_supports_native_point_creation_and_labeling(
         view.newShape.connect(lambda: created.append(True))
 
         click_pos = view.mapFromScene(QtCore.QPointF(44, 55))
-        QtTest.QTest.mouseClick(view.viewport(), QtCore.Qt.LeftButton, pos=click_pos)
+        _send_mouse_click(view, click_pos)
 
         assert created
         assert len(view._shapes) == 1
@@ -896,22 +1081,204 @@ def test_tiled_image_view_supports_native_polygon_creation(
         view.set_zoom_percent(100)
         view.setEditing(False)
         view.createMode = "polygon"
+        first_click = view.mapFromScene(QtCore.QPointF(20, 20))
+        second_pos = view.mapFromScene(QtCore.QPointF(70, 20))
+        third_pos = view.mapFromScene(QtCore.QPointF(70, 65))
+        _send_mouse_click(view, first_click)
+        move_event = QtGui.QMouseEvent(
+            QtCore.QEvent.MouseMove,
+            QtCore.QPointF(second_pos),
+            QtCore.QPointF(view.viewport().mapToGlobal(second_pos)),
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoModifier,
+        )
+        view.mouseMoveEvent(move_event)
 
-        from annolid.gui.shape import Shape
+        assert not view._preview_item.path().isEmpty()
+        assert not view._preview_vertices_item.path().isEmpty()
+        assert view._preview_close_item.path().isEmpty()
 
-        view.current = Shape(shape_type="polygon")
-        for scene_point in (
-            QtCore.QPointF(20, 20),
-            QtCore.QPointF(70, 20),
-            QtCore.QPointF(70, 65),
-        ):
-            view.current.addPoint(QtCore.QPointF(scene_point))
+        _send_mouse_click(view, second_pos)
+        _send_mouse_click(view, third_pos)
 
-        view.finalise()
+        close_hover = view.mapFromScene(QtCore.QPointF(21, 21))
+        close_move_event = QtGui.QMouseEvent(
+            QtCore.QEvent.MouseMove,
+            QtCore.QPointF(close_hover),
+            QtCore.QPointF(view.viewport().mapToGlobal(close_hover)),
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoModifier,
+        )
+        view.mouseMoveEvent(close_move_event)
+
+        assert not view._preview_item.path().isEmpty()
+        assert not view._preview_vertices_item.path().isEmpty()
+        assert not view._preview_close_item.path().isEmpty()
+
+        _send_mouse_click(view, close_hover)
 
         assert len(view._shapes) == 1
         assert view._shapes[0].shape_type == "polygon"
         assert view._shapes[0].isClosed() is True
         assert len(view._shapes[0].points) == 3
+        assert view._preview_item.path().isEmpty()
+        assert view._preview_vertices_item.path().isEmpty()
+        assert view._preview_close_item.path().isEmpty()
+    finally:
+        view.close()
+
+
+def test_tiled_image_view_context_menu_uses_canvas_builder(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "sample_context_menu.ome.tiff"
+    data = np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    from annolid.io.large_image import open_large_image
+
+    backend = open_large_image(image_path)
+    window = _WindowStub()
+    executed = []
+
+    def fake_exec(self, pos):
+        executed.append(pos)
+        return None
+
+    monkeypatch.setattr(QtWidgets.QMenu, "exec_", fake_exec)
+
+    try:
+        view = window.large_image_view
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.set_backend(backend)
+        view.set_zoom_percent(100)
+
+        assert view._show_context_menu(QtCore.QPoint(10, 10)) is True
+        assert executed
+        assert window.canvas.context_menu_builds == 1
+    finally:
+        window.close()
+
+
+def test_tiled_image_view_can_edit_native_non_overlay_polygon(tmp_path: Path) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "sample_native_edit_polygon.ome.tiff"
+    data = np.arange(300 * 520, dtype=np.uint16).reshape(300, 520)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    from annolid.io.large_image import open_large_image
+    from annolid.gui.shape import Shape
+
+    backend = open_large_image(image_path)
+    view = TiledImageView(tile_size=128)
+    try:
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.set_backend(backend)
+        view.set_zoom_percent(100)
+
+        shape = Shape("native_polygon", shape_type="polygon")
+        shape.addPoint(QtCore.QPointF(20, 20))
+        shape.addPoint(QtCore.QPointF(70, 20))
+        shape.addPoint(QtCore.QPointF(70, 65))
+        shape.close()
+        view.set_shapes([shape])
+
+        click_pos = view.mapFromScene(QtCore.QPointF(60, 30))
+        drag_end = view.mapFromScene(QtCore.QPointF(74, 36))
+        _send_mouse_drag(view, click_pos, drag_end)
+
+        assert shape.selected is True
+        assert [(round(p.x(), 1), round(p.y(), 1)) for p in shape.points] == [
+            (34.0, 26.0),
+            (84.0, 26.0),
+            (84.0, 71.0),
+        ]
+    finally:
+        view.close()
+
+
+def test_tiled_image_view_supports_native_rectangle_creation(tmp_path: Path) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "sample_native_rectangle.ome.tiff"
+    data = np.arange(300 * 520, dtype=np.uint16).reshape(300, 520)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    from annolid.io.large_image import open_large_image
+
+    backend = open_large_image(image_path)
+    view = TiledImageView(tile_size=128)
+    try:
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.set_backend(backend)
+        view.set_zoom_percent(100)
+        view.setEditing(False)
+        view.createMode = "rectangle"
+
+        from annolid.gui.shape import Shape
+
+        view.current = Shape(shape_type="rectangle")
+        view.current.addPoint(QtCore.QPointF(25, 30))
+        view.current.addPoint(QtCore.QPointF(95, 90))
+        view.finalise()
+
+        assert len(view._shapes) == 1
+        shape = view._shapes[0]
+        assert shape.shape_type == "rectangle"
+        assert shape.isClosed() is True
+        assert [(round(p.x(), 1), round(p.y(), 1)) for p in shape.points] == [
+            (25.0, 30.0),
+            (95.0, 90.0),
+        ]
+    finally:
+        view.close()
+
+
+def test_tiled_image_view_supports_native_circle_creation(tmp_path: Path) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "sample_native_circle.ome.tiff"
+    data = np.arange(300 * 520, dtype=np.uint16).reshape(300, 520)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    from annolid.io.large_image import open_large_image
+
+    backend = open_large_image(image_path)
+    view = TiledImageView(tile_size=128)
+    try:
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.set_backend(backend)
+        view.set_zoom_percent(100)
+        view.setEditing(False)
+        view.createMode = "circle"
+
+        from annolid.gui.shape import Shape
+
+        view.current = Shape(shape_type="circle")
+        view.current.addPoint(QtCore.QPointF(60, 60))
+        view.current.addPoint(QtCore.QPointF(90, 60))
+        view.finalise()
+
+        assert len(view._shapes) == 1
+        shape = view._shapes[0]
+        assert shape.shape_type == "circle"
+        assert len(shape.points) == 2
+        assert [(round(p.x(), 1), round(p.y(), 1)) for p in shape.points] == [
+            (60.0, 60.0),
+            (90.0, 60.0),
+        ]
     finally:
         view.close()

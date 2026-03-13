@@ -3,8 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from annolid.gui.svg_overlay import flatten_svg_path, import_svg_shapes
+from annolid.gui.svg_overlay import import_vector_shapes
 from annolid.io.vector import import_vector_document
-from annolid.io.vector.svg_import import ImportedVectorDocument, import_svg_document
+from annolid.io.vector.svg_import import (
+    ImportedPath,
+    ImportedVectorDocument,
+    import_svg_document,
+)
+from annolid.io.vector.document_import import _assign_text_labels_to_shapes
 
 
 def test_flatten_svg_path_samples_curves() -> None:
@@ -12,6 +18,13 @@ def test_flatten_svg_path_samples_curves() -> None:
     assert len(points) > 4
     assert points[0] == (0.0, 0.0)
     assert points[-1] == (0.0, 0.0)
+
+
+def test_flatten_svg_path_simplifies_dense_curve_samples() -> None:
+    points = flatten_svg_path("M 0 0 C 10 0, 20 10, 30 10")
+    assert len(points) < 25
+    assert points[0] == (0.0, 0.0)
+    assert points[-1] == (30.0, 10.0)
 
 
 def test_import_svg_shapes_preserves_source_metadata(tmp_path: Path) -> None:
@@ -107,6 +120,98 @@ def test_import_vector_document_dispatches_pdf_compatible_ai(
     assert document.source_path == str(ai_path)
     assert len(document.shapes) == 1
     assert document.shapes[0].id == "region"
+
+
+def test_assign_text_labels_to_shapes_prefers_containing_polygon() -> None:
+    document = ImportedVectorDocument(
+        source_path="atlas.ai",
+        width=100.0,
+        height=100.0,
+        view_box=[0.0, 0.0, 100.0, 100.0],
+        shapes=[
+            ImportedPath(
+                id="path1",
+                label="path1",
+                kind="polygon",
+                points=[(0.0, 0.0), (90.0, 0.0), (90.0, 90.0), (0.0, 90.0)],
+            ),
+            ImportedPath(
+                id="path2",
+                label="path2",
+                kind="polygon",
+                points=[(10.0, 10.0), (40.0, 10.0), (40.0, 40.0), (10.0, 40.0)],
+            ),
+        ],
+    )
+    updated = _assign_text_labels_to_shapes(
+        document,
+        [{"text": "AreaA", "center": (20.0, 20.0), "bbox": (18.0, 18.0, 22.0, 22.0)}],
+    )
+    assert updated.shapes[0].label == "path1"
+    assert updated.shapes[0].text is None
+    assert updated.shapes[1].label == "AreaA"
+    assert updated.shapes[1].text == "AreaA"
+
+
+def test_import_vector_document_uses_extracted_pdf_text_as_shape_labels(
+    monkeypatch, tmp_path: Path
+) -> None:
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_bytes(b"%PDF-1.5\n%fake\n")
+
+    monkeypatch.setattr(
+        "annolid.io.vector.document_import._pdf_like_to_svg_text",
+        lambda path: """
+        <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>
+          <path id='path1' d='M 0 0 L 80 0 L 80 80 L 0 80 Z'/>
+          <path id='path2' d='M 10 10 L 30 10 L 30 30 L 10 30 Z'/>
+        </svg>
+        """,
+    )
+    monkeypatch.setattr(
+        "annolid.io.vector.document_import._extract_pdf_text_labels",
+        lambda path: [
+            {"text": "Hp", "center": (20.0, 20.0), "bbox": (18.0, 18.0, 22.0, 22.0)}
+        ],
+    )
+
+    document = import_vector_document(ai_path)
+
+    labels = {shape.id: shape.label for shape in document.shapes}
+    texts = {shape.id: shape.text for shape in document.shapes}
+    assert labels["path1"] == "path1"
+    assert labels["path2"] == "Hp"
+    assert texts["path2"] == "Hp"
+
+
+def test_import_vector_shapes_preserves_assigned_overlay_text(
+    monkeypatch, tmp_path: Path
+) -> None:
+    svg_path = tmp_path / "atlas.svg"
+    svg_path.write_text("<svg xmlns='http://www.w3.org/2000/svg' />", encoding="utf-8")
+    monkeypatch.setattr(
+        "annolid.gui.svg_overlay.import_vector_document",
+        lambda path: ImportedVectorDocument(
+            source_path=str(path),
+            width=100.0,
+            height=100.0,
+            view_box=[0.0, 0.0, 100.0, 100.0],
+            shapes=[
+                ImportedPath(
+                    id="path2",
+                    label="Hp",
+                    kind="polygon",
+                    points=[(10.0, 10.0), (30.0, 10.0), (30.0, 30.0), (10.0, 30.0)],
+                    text="Hp",
+                )
+            ],
+        ),
+    )
+
+    result = import_vector_shapes(svg_path)
+
+    assert result.shapes[0].label == "Hp"
+    assert result.shapes[0].other_data["overlay_text"] == "Hp"
 
 
 def test_import_svg_skips_defs_and_clip_paths(tmp_path: Path) -> None:

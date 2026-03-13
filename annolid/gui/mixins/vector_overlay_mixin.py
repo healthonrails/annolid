@@ -19,6 +19,7 @@ from annolid.gui.overlay import (
     overlay_transform_to_dict,
     points_bounds_center,
 )
+from annolid.gui.status import post_window_status
 from annolid.io.vector import (
     export_overlay_document_json,
     export_overlay_document_labelme,
@@ -32,26 +33,7 @@ class VectorOverlayMixin:
     """Import external vector overlays as standard editable Annolid shapes."""
 
     def _postVectorOverlayStatus(self, message: str, timeout: int = 4000) -> None:
-        status = getattr(self, "status", None)
-        if callable(status):
-            try:
-                status(message, timeout)
-                return
-            except TypeError:
-                status(message)
-                return
-        post_status = getattr(self, "post_status_message", None)
-        if callable(post_status):
-            post_status(message, timeout)
-            return
-        status_bar = getattr(self, "statusBar", None)
-        if callable(status_bar):
-            try:
-                bar = status_bar()
-                if bar is not None:
-                    bar.showMessage(str(message), int(timeout))
-            except Exception:
-                pass
+        post_window_status(self, message, timeout)
 
     def _currentOverlayImportImageSize(self) -> tuple[float, float] | None:
         large_image_view = getattr(self, "large_image_view", None)

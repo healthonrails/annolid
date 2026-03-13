@@ -70,6 +70,7 @@ def _imported_path_to_shape(
         "overlay_element": imported.source_tag,
         "overlay_element_id": imported.id,
         "overlay_transform": list(imported.transform or []),
+        "overlay_text": imported.text,
         "overlay_layer": imported.layer_name,
         "overlay_stroke": imported.stroke,
         "overlay_fill": imported.fill,

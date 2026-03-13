@@ -191,12 +191,13 @@ Annolid now supports a practical atlas workflow for large TIFF-family images and
 - Open `.tif`, `.tiff`, `.ome.tif`, or `.ome.tiff` images.
 - Import Illustrator-exported `SVG` overlays or PDF-compatible `.ai` files.
 - Use the `Vector Overlays` dock for visibility, opacity, transform, landmark pairing, and affine alignment.
-- Edit imported overlay shapes directly inside the tiled large-image viewer, and create native point/line/linestrip/polygon annotations there.
+- Edit polygons and other supported shapes directly inside the tiled large-image viewer, and create native point/line/linestrip/polygon/rectangle/circle annotations there.
 - Export corrected overlays as `SVG`, overlay `JSON`, or `*.labelme.json`.
 
 Imported vector overlays now skip definition-only geometry such as clip paths, PDF-compatible Illustrator `.ai` files can be opened directly, and small atlas drawings can auto-fit to the current image on import when their coordinates are clearly not already in image space.
 
 For step-by-step instructions, install notes, and landmark pairing details, see [Large TIFF and Atlas Overlay Workflow](docs/atlas_overlay_workflow.md).
+For a broader overview of large TIFF support, viewing backends, caches, tile-native editing, and canvas fallback behavior, see [Large Image Guide](docs/large_image_guide.md).
 
 Large-image support is optional by design. A standard `annolid[gui]` install still works normally for the usual GUI and annotation workflows. If you need large TIFF / OME-TIFF metadata, optimized cache generation, or faster whole-slide style navigation, install `annolid[large_image]`.
 

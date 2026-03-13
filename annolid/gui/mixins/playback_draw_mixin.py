@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from qtpy import QtCore, QtWidgets
 
+from annolid.gui.large_image_modes import (
+    is_tile_native_create_mode,
+    large_image_draw_mode_label,
+)
 from annolid.gui.qt_compat import normalize_orientation
 from annolid.gui.window_base import format_tool_button_text, utils
 from annolid.utils.logger import logger
@@ -166,9 +170,8 @@ class PlaybackDrawMixin:
         use_native_tiled_creation = bool(
             getattr(self, "_active_image_view", "canvas") == "tiled"
             and large_image_view is not None
-            and hasattr(large_image_view, "_supports_create_mode")
             and bool(edit) is False
-            and large_image_view._supports_create_mode(createMode)
+            and is_tile_native_create_mode(createMode)
         )
         if (
             not bool(edit)
@@ -177,7 +180,7 @@ class PlaybackDrawMixin:
             and hasattr(self, "activateLargeImageCanvasEditMode")
         ):
             try:
-                reason = f"{createMode} drawing"
+                reason = self.tr("%s tool") % large_image_draw_mode_label(createMode)
                 self.activateLargeImageCanvasEditMode(reason=reason)
             except Exception:
                 logger.debug(

@@ -28,7 +28,7 @@ For vector overlays:
 
 Annolid can now import PDF-compatible Illustrator `.ai` files directly by converting the embedded PDF page to SVG during import. Exporting `SVG` from Illustrator is still the cleanest path when you want the most predictable interchange.
 
-On import, Annolid ignores non-rendered SVG definition content such as clip paths in `<defs>`, converts PDF-compatible `.ai` files through an SVG import path, and can automatically fit a small atlas drawing to the currently open image when the document coordinates are clearly not already in image space.
+On import, Annolid ignores non-rendered SVG definition content such as clip paths in `<defs>`, converts PDF-compatible `.ai` files through an SVG import path, and can automatically fit a small atlas drawing to the currently open image when the document coordinates are clearly not already in image space. For PDF-compatible `.ai` and `.pdf` files, Annolid also extracts visible text from the source page and uses it as region labels when the text can be matched to nearby imported shapes.
 
 ## Install the optional large-image dependencies
 
@@ -82,7 +82,7 @@ Annolid also prunes old optimized TIFF caches automatically after creating a new
 3. Import your Illustrator `SVG`, `.ai`, or `.pdf` file with `File -> Import Vector Overlay...`.
 4. For very large flat TIFF files, optionally run `File -> Optimize Large TIFF for Fast Viewing...`.
 5. If you need to inspect or clean up disk usage later, use the TIFF cache actions in the `File` menu.
-6. If the image is open in the tiled large-image viewer, imported overlay shapes remain editable directly in that viewer. You can select overlay shapes, drag them, drag their vertices, and create native point/line/linestrip/polygon annotations without leaving the large-image view.
+6. If the image is open in the tiled large-image viewer, polygons and other supported vector shapes remain editable directly in that viewer. You can select shapes, drag them, drag their vertices, and create native point/line/linestrip/polygon/rectangle/circle annotations without leaving the large-image view.
 7. Use the `Vector Overlays` dock to adjust visibility, opacity, transform, and z-order.
 8. Create or select corresponding point landmarks on the image and overlay.
 9. Pair landmarks in the dock with `Pair Selected`, or click existing pair guide lines to inspect them.
@@ -140,9 +140,11 @@ Recommended export settings:
 
 ## Current limitations
 
-- Tile-native creation currently covers point, line, linestrip, and polygon tools. Rectangle, circle, and AI-assisted create modes still fall back to the existing canvas workflow.
+- Tile-native creation currently covers point, line, linestrip, polygon, rectangle, and circle tools. AI-assisted create modes still fall back to the existing canvas workflow.
 - Exported corrected SVG preserves corrected geometry, but not full Illustrator Bézier editing semantics.
 - Landmark alignment is affine only in the current GUI workflow.
+
+For a broader overview of large TIFF support, viewing backends, caches, tile-native editing, and canvas fallback behavior, see [Large Image Guide](large_image_guide.md).
 
 ## Output formats
 

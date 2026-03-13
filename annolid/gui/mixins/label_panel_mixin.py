@@ -17,6 +17,28 @@ from annolid.gui.window_base import AnnolidLabelListItem
 class LabelPanelMixin:
     """Label/file list synchronization and keypoint visibility controls."""
 
+    def _refresh_shape_views(self) -> None:
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None:
+            try:
+                canvas.update()
+            except Exception:
+                pass
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is not None and canvas is not None:
+            try:
+                large_view.set_shapes(getattr(canvas, "shapes", []) or [])
+            except Exception:
+                pass
+            try:
+                selected_pair_id = getattr(
+                    self, "_selected_overlay_landmark_pair_id", None
+                )
+                if hasattr(large_view, "set_selected_landmark_pair"):
+                    large_view.set_selected_landmark_pair(selected_pair_id)
+            except Exception:
+                pass
+
     def _resolve_pdf_manager(self):
         manager = getattr(self, "pdf_manager", None)
         if manager is not None:
@@ -99,8 +121,11 @@ class LabelPanelMixin:
             try:
                 self.canvas.setShapeVisible(shape, bool(visible))
             except Exception:
+                pass
+            self._refresh_shape_views()
+            if hasattr(self, "_refreshVectorOverlayDock"):
                 try:
-                    self.canvas.update()
+                    self._refreshVectorOverlayDock()
                 except Exception:
                     pass
             try:

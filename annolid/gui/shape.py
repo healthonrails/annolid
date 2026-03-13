@@ -391,7 +391,11 @@ class Shape(object):
         shape = self.point_type
         point = self.points[i]
         if i == self._highlightIndex:
-            size, shape = self._highlightSettings[self._highlightMode]
+            render_overrides = dict(getattr(self, "_vertex_render_overrides", {}) or {})
+            highlight_settings = (
+                render_overrides.get("highlight_settings") or self._highlightSettings
+            )
+            size, shape = highlight_settings[self._highlightMode]
             d *= size
         if self._highlightIndex is not None:
             self._vertex_fill_color = self.hvertex_fill_color
@@ -428,6 +432,22 @@ class Shape(object):
         if not getattr(self, "_queued_vertices", None):
             return
 
+        render_overrides = dict(getattr(self, "_vertex_render_overrides", {}) or {})
+        glow_scale = max(0.1, float(render_overrides.get("glow_scale", 1.75)))
+        halo_scale = max(0.1, float(render_overrides.get("halo_scale", 1.1)))
+        glow_alpha_mult = max(
+            0.0, min(1.0, float(render_overrides.get("glow_alpha_mult", 1.0)))
+        )
+        halo_alpha_mult = max(
+            0.0, min(1.0, float(render_overrides.get("halo_alpha_mult", 1.0)))
+        )
+        inner_alpha_mult = max(
+            0.0, min(1.0, float(render_overrides.get("inner_alpha_mult", 1.0)))
+        )
+        highlight_lighter = max(
+            100, int(render_overrides.get("highlight_lighter", 130))
+        )
+
         original_pen = QtGui.QPen(painter.pen())
         original_brush = QtGui.QBrush(painter.brush())
 
@@ -437,7 +457,7 @@ class Shape(object):
             fill_color = QtGui.QColor(vertex["fill_color"])
             if vertex["highlighted"]:
                 # brighten the base color a bit for highlighted points
-                fill_color = fill_color.lighter(130)
+                fill_color = fill_color.lighter(highlight_lighter)
 
             if vertex.get("occluded", False):
                 painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
@@ -477,15 +497,17 @@ class Shape(object):
                 )
 
                 if vertex["highlighted"]:
-                    halo_pen = QtGui.QPen(
-                        QtGui.QColor(255, 255, 255, 180), outline_width
+                    halo_color = QtGui.QColor(255, 255, 255, 180)
+                    halo_color.setAlpha(
+                        max(0, min(255, int(halo_color.alpha() * halo_alpha_mult)))
                     )
+                    halo_pen = QtGui.QPen(halo_color, outline_width)
                     halo_pen.setCapStyle(QtCore.Qt.RoundCap)
                     halo_pen.setJoinStyle(QtCore.Qt.RoundJoin)
                     halo_pen.setStyle(QtCore.Qt.DotLine)
                     painter.setPen(halo_pen)
                     painter.setBrush(QtCore.Qt.NoBrush)
-                    halo_radius = radius * 1.75
+                    halo_radius = radius * glow_scale
                     if vertex["shape"] == self.P_ROUND:
                         painter.drawEllipse(center, halo_radius, halo_radius)
                     else:
@@ -501,10 +523,18 @@ class Shape(object):
                         )
                 continue
 
-            glow_radius = radius * 1.75
+            glow_radius = radius * glow_scale
             glow = QtGui.QRadialGradient(center, glow_radius)
             glow_color = QtGui.QColor(fill_color)
-            glow_color.setAlpha(min(fill_color.alpha() + 80, 255))
+            glow_color.setAlpha(
+                max(
+                    0,
+                    min(
+                        255,
+                        int(min(fill_color.alpha() + 80, 255) * glow_alpha_mult),
+                    ),
+                )
+            )
             transparent_color = QtGui.QColor(fill_color)
             transparent_color.setAlpha(0)
             glow.setColorAt(0.0, glow_color)
@@ -553,6 +583,9 @@ class Shape(object):
             inner_color = QtGui.QColor(255, 255, 255, 220)
             if vertex["negative"]:
                 inner_color = fill_color.lighter(180)
+            inner_color.setAlpha(
+                max(0, min(255, int(inner_color.alpha() * inner_alpha_mult)))
+            )
 
             painter.setPen(QtCore.Qt.NoPen)
             painter.setBrush(inner_color)
@@ -569,13 +602,17 @@ class Shape(object):
                 painter.drawRoundedRect(rect, inner_radius * 0.35, inner_radius * 0.35)
 
             if vertex["highlighted"]:
-                halo_pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 180), outline_width)
+                halo_color = QtGui.QColor(255, 255, 255, 180)
+                halo_color.setAlpha(
+                    max(0, min(255, int(halo_color.alpha() * halo_alpha_mult)))
+                )
+                halo_pen = QtGui.QPen(halo_color, outline_width)
                 halo_pen.setCapStyle(QtCore.Qt.RoundCap)
                 halo_pen.setJoinStyle(QtCore.Qt.RoundJoin)
                 halo_pen.setStyle(QtCore.Qt.DotLine)
                 painter.setPen(halo_pen)
                 painter.setBrush(QtCore.Qt.NoBrush)
-                halo_radius = glow_radius * 1.1
+                halo_radius = glow_radius * halo_scale
                 if vertex["shape"] == self.P_ROUND:
                     painter.drawEllipse(center, halo_radius, halo_radius)
                 else:

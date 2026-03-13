@@ -185,6 +185,62 @@ def _token_iter(path_data: str) -> Iterator[str]:
     yield from _COMMAND_RE.findall(path_data or "")
 
 
+def _point_line_distance(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    px, py = point
+    x1, y1 = start
+    x2, y2 = end
+    dx = x2 - x1
+    dy = y2 - y1
+    if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+        return math.hypot(px - x1, py - y1)
+    t = ((px - x1) * dx + (py - y1) * dy) / ((dx * dx) + (dy * dy))
+    t = max(0.0, min(1.0, t))
+    proj_x = x1 + (t * dx)
+    proj_y = y1 + (t * dy)
+    return math.hypot(px - proj_x, py - proj_y)
+
+
+def _simplify_polyline(
+    points: list[tuple[float, float]],
+    *,
+    epsilon: float = 0.75,
+) -> list[tuple[float, float]]:
+    if len(points) <= 2:
+        return list(points)
+
+    closed = len(points) > 2 and points[0] == points[-1]
+    work_points = list(points[:-1] if closed else points)
+    if len(work_points) <= 2:
+        return list(points)
+
+    def _rdp(segment: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        if len(segment) <= 2:
+            return list(segment)
+        start = segment[0]
+        end = segment[-1]
+        max_distance = -1.0
+        split_index = -1
+        for index in range(1, len(segment) - 1):
+            distance = _point_line_distance(segment[index], start, end)
+            if distance > max_distance:
+                max_distance = distance
+                split_index = index
+        if max_distance > epsilon and split_index > 0:
+            left = _rdp(segment[: split_index + 1])
+            right = _rdp(segment[split_index:])
+            return left[:-1] + right
+        return [start, end]
+
+    simplified = _rdp(work_points)
+    if closed:
+        simplified.append(simplified[0])
+    return simplified
+
+
 def flatten_svg_path(path_data: str) -> list[tuple[float, float]]:
     tokens = list(_token_iter(path_data))
     points: list[tuple[float, float]] = []
@@ -269,7 +325,7 @@ def flatten_svg_path(path_data: str) -> list[tuple[float, float]]:
                 points.append(start)
         else:
             raise ValueError(f"Unsupported SVG path command: {command}")
-    return points
+    return _simplify_polyline(points)
 
 
 def _apply_transform(points: list[tuple[float, float]], matrix: np.ndarray):

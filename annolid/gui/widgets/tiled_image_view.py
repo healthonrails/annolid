@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+import math
 
 from qtpy import QtCore, QtGui, QtWidgets
 
+from annolid.gui.large_image_modes import is_tile_native_create_mode
+from annolid.gui.shape import Shape
 from annolid.io.large_image import LargeImageBackend
 from annolid.io.large_image.common import array_to_qimage
 
@@ -90,6 +93,185 @@ class _LandmarkPairEndpointItem(QtWidgets.QGraphicsEllipseItem):
         self.setZValue(96.0 if selected else 91.0)
 
 
+class _ShapeGraphicsItem(QtWidgets.QGraphicsItem):
+    def __init__(
+        self,
+        shape,
+        *,
+        content_size: tuple[int, int],
+        current_scale: float,
+    ):
+        super().__init__()
+        self._ann_shape = shape
+        self.content_size = tuple(content_size or (0, 0))
+        self.current_scale = max(0.01, float(current_scale))
+        self.setAcceptedMouseButtons(QtCore.Qt.NoButton)
+
+    def set_current_scale(self, current_scale: float) -> None:
+        normalized = max(0.01, float(current_scale))
+        if abs(normalized - self.current_scale) < 1e-6:
+            return
+        self.prepareGeometryChange()
+        self.current_scale = normalized
+        self.update()
+
+    def _visual_metrics(self) -> float:
+        width, height = self.content_size
+        diagonal = math.hypot(float(width or 0), float(height or 0))
+        diagonal_factor = min(
+            1.0, max(0.0, (diagonal - 2048.0) / max(1.0, 32768.0 - 2048.0))
+        )
+        scale = max(0.01, self.current_scale)
+        point_pixels = 6.0 + (1.25 * diagonal_factor)
+        if scale < 0.2:
+            point_pixels += 2.0
+        elif scale < 0.5:
+            point_pixels += 1.0
+        elif scale > 8.0:
+            point_pixels -= 3.25
+        elif scale > 5.0:
+            point_pixels -= 2.5
+        elif scale > 4.0:
+            point_pixels -= 2.0
+        elif scale > 2.0:
+            point_pixels -= 1.5
+        elif scale > 1.0:
+            point_pixels -= 0.75
+        point_pixels = min(9.0, max(2.0, point_pixels))
+        return point_pixels
+
+    def _effective_highlight_settings(self) -> dict:
+        base = dict(getattr(self._ann_shape, "_highlightSettings", {}) or {})
+        if not base:
+            return base
+        scale = max(0.01, self.current_scale)
+        if scale >= 8.0:
+            near_scale = 1.4
+            move_scale = 1.15
+        elif scale >= 4.0:
+            near_scale = 1.7
+            move_scale = 1.2
+        elif scale >= 2.0:
+            near_scale = 2.2
+            move_scale = 1.3
+        else:
+            near_scale = 2.8
+            move_scale = 1.4
+        if getattr(Shape, "NEAR_VERTEX", None) in base:
+            _, near_shape = base[Shape.NEAR_VERTEX]
+            base[Shape.NEAR_VERTEX] = (near_scale, near_shape)
+        if getattr(Shape, "MOVE_VERTEX", None) in base:
+            _, move_shape = base[Shape.MOVE_VERTEX]
+            base[Shape.MOVE_VERTEX] = (move_scale, move_shape)
+        return base
+
+    def _effective_vertex_render_overrides(self) -> dict:
+        scale = max(0.01, self.current_scale)
+        if scale >= 8.0:
+            return {
+                "highlight_settings": self._effective_highlight_settings(),
+                "glow_scale": 1.2,
+                "halo_scale": 0.7,
+                "glow_alpha_mult": 0.35,
+                "halo_alpha_mult": 0.3,
+                "inner_alpha_mult": 0.85,
+                "highlight_lighter": 112,
+            }
+        if scale >= 4.0:
+            return {
+                "highlight_settings": self._effective_highlight_settings(),
+                "glow_scale": 1.3,
+                "halo_scale": 0.8,
+                "glow_alpha_mult": 0.45,
+                "halo_alpha_mult": 0.38,
+                "inner_alpha_mult": 0.9,
+                "highlight_lighter": 116,
+            }
+        if scale >= 2.0:
+            return {
+                "highlight_settings": self._effective_highlight_settings(),
+                "glow_scale": 1.45,
+                "halo_scale": 0.92,
+                "glow_alpha_mult": 0.6,
+                "halo_alpha_mult": 0.5,
+                "inner_alpha_mult": 0.95,
+                "highlight_lighter": 122,
+            }
+        return {"highlight_settings": self._effective_highlight_settings()}
+
+    def boundingRect(self) -> QtCore.QRectF:
+        rect = self._ann_shape.boundingRect()
+        if rect is None or not rect.isValid():
+            points = list(getattr(self._ann_shape, "points", []) or [])
+            if not points:
+                return QtCore.QRectF()
+            point = points[0]
+            rect = QtCore.QRectF(float(point.x()), float(point.y()), 0.0, 0.0)
+        margin = max(8.0, self._visual_metrics() * 2.75)
+        return rect.adjusted(-margin, -margin, margin, margin)
+
+    def shape(self) -> QtGui.QPainterPath:
+        path = QtGui.QPainterPath()
+        rect = self.boundingRect()
+        if rect.isValid():
+            path.addRect(rect)
+        return path
+
+    def contains(self, point: QtCore.QPointF) -> bool:
+        try:
+            return self.shape().contains(point)
+        except Exception:
+            return False
+
+    def paint(self, painter, option, widget=None) -> None:
+        _ = option
+        _ = widget
+        other = dict(getattr(self._ann_shape, "other_data", {}) or {})
+        width, height = self.content_size
+        original_line = getattr(self._ann_shape, "line_color", None)
+        original_fill = getattr(self._ann_shape, "fill_color", None)
+        original_fill_flag = bool(getattr(self._ann_shape, "fill", False))
+        original_scale = getattr(self._ann_shape, "scale", Shape.scale)
+        original_point_size = getattr(self._ann_shape, "point_size", Shape.point_size)
+        had_vertex_render_overrides = hasattr(
+            self._ann_shape, "_vertex_render_overrides"
+        )
+        original_vertex_render_overrides = dict(
+            getattr(self._ann_shape, "_vertex_render_overrides", {}) or {}
+        )
+        try:
+            point_pixels = self._visual_metrics()
+            stroke = QtGui.QColor(str(other.get("overlay_stroke") or ""))
+            fill = QtGui.QColor(str(other.get("overlay_fill") or ""))
+            if stroke.isValid():
+                stroke.setAlpha(max(stroke.alpha(), 220))
+                self._ann_shape.line_color = stroke
+            if fill.isValid():
+                fill.setAlpha(max(fill.alpha(), 40))
+                self._ann_shape.fill_color = fill
+                self._ann_shape.fill = True
+            elif getattr(self._ann_shape, "selected", False):
+                self._ann_shape.fill = True
+            self._ann_shape.scale = self.current_scale
+            self._ann_shape.point_size = point_pixels
+            self._ann_shape._vertex_render_overrides = (
+                self._effective_vertex_render_overrides()
+            )
+            self._ann_shape.paint(painter, width or None, height or None)
+        finally:
+            self._ann_shape.line_color = original_line
+            self._ann_shape.fill_color = original_fill
+            self._ann_shape.fill = original_fill_flag
+            self._ann_shape.scale = original_scale
+            self._ann_shape.point_size = original_point_size
+            if had_vertex_render_overrides:
+                self._ann_shape._vertex_render_overrides = (
+                    original_vertex_render_overrides
+                )
+            elif hasattr(self._ann_shape, "_vertex_render_overrides"):
+                delattr(self._ann_shape, "_vertex_render_overrides")
+
+
 class TiledImageView(QtWidgets.QGraphicsView):
     """Foundation widget for large-image tile rendering."""
 
@@ -113,9 +295,14 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._preview_item = QtWidgets.QGraphicsPathItem()
         self._preview_item.setZValue(130.0)
         self._scene.addItem(self._preview_item)
+        self._preview_vertices_item = QtWidgets.QGraphicsPathItem()
+        self._preview_vertices_item.setZValue(131.0)
+        self._scene.addItem(self._preview_vertices_item)
+        self._preview_close_item = QtWidgets.QGraphicsPathItem()
+        self._preview_close_item.setZValue(132.0)
+        self._scene.addItem(self._preview_close_item)
         self._tile_items: dict[TileKey, QtWidgets.QGraphicsPixmapItem] = {}
         self._overlay_items: list[QtWidgets.QGraphicsItem] = []
-        self._vertex_items: list[QtWidgets.QGraphicsItem] = []
         self._pair_items: list[QtWidgets.QGraphicsItem] = []
         self._pair_endpoint_items: list[QtWidgets.QGraphicsItem] = []
         self._selected_overlay_landmark_pair_id: str | None = None
@@ -126,6 +313,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._dragging_shape = False
         self._shape_moved_during_drag = False
         self._last_scene_pos: QtCore.QPointF | None = None
+        self._host_window = None
         self._content_size: tuple[int, int] = (0, 0)
         self._fit_mode: str = "fit_window"
         self.mode = self.EDIT
@@ -136,6 +324,9 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self.setRenderHint(QtGui.QPainter.Antialiasing, True)
         self.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
         self.setMouseTracking(True)
+
+    def set_host_window(self, window) -> None:
+        self._host_window = window
 
     def set_backend(self, backend: LargeImageBackend) -> None:
         self.backend = backend
@@ -177,6 +368,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self.mode = self.EDIT
         self._pixmap_item.setPixmap(QtGui.QPixmap())
         self._preview_item.setPath(QtGui.QPainterPath())
+        self._preview_vertices_item.setPath(QtGui.QPainterPath())
+        self._preview_close_item.setPath(QtGui.QPainterPath())
         self._clear_tile_items()
         self.set_shapes([])
         self._scene.setSceneRect(QtCore.QRectF())
@@ -193,15 +386,12 @@ class TiledImageView(QtWidgets.QGraphicsView):
         if self.mode == self.EDIT:
             self.current = None
             self._preview_item.setPath(QtGui.QPainterPath())
+            self._preview_vertices_item.setPath(QtGui.QPainterPath())
+            self._preview_close_item.setPath(QtGui.QPainterPath())
             self.drawingPolygon.emit(False)
 
     def _supports_create_mode(self, create_mode: str) -> bool:
-        return str(create_mode or "").lower() in {
-            "point",
-            "line",
-            "linestrip",
-            "polygon",
-        }
+        return is_tile_native_create_mode(create_mode)
 
     def _clear_tile_items(self) -> None:
         for item in self._tile_items.values():
@@ -212,9 +402,6 @@ class TiledImageView(QtWidgets.QGraphicsView):
         for item in self._overlay_items:
             self._scene.removeItem(item)
         self._overlay_items = []
-        for item in self._vertex_items:
-            self._scene.removeItem(item)
-        self._vertex_items = []
         for item in self._pair_items:
             self._scene.removeItem(item)
         self._pair_items = []
@@ -238,9 +425,13 @@ class TiledImageView(QtWidgets.QGraphicsView):
             if item is not None:
                 self._scene.addItem(item)
                 self._overlay_items.append(item)
-            for vertex_item in self._make_vertex_handle_items(shape):
-                self._scene.addItem(vertex_item)
-                self._vertex_items.append(vertex_item)
+        self._refresh_overlay_render_metrics()
+
+    def _refresh_overlay_render_metrics(self) -> None:
+        scale = self.current_scale()
+        for item in self._overlay_items:
+            if isinstance(item, _ShapeGraphicsItem):
+                item.set_current_scale(scale)
 
     def set_selected_landmark_pair(self, pair_id: str | None) -> None:
         self._selected_overlay_landmark_pair_id = str(pair_id or "") or None
@@ -300,26 +491,43 @@ class TiledImageView(QtWidgets.QGraphicsView):
         path = QtGui.QPainterPath()
         if self.current is None:
             self._preview_item.setPath(path)
+            self._preview_vertices_item.setPath(QtGui.QPainterPath())
+            self._preview_close_item.setPath(QtGui.QPainterPath())
             return
         points = list(getattr(self.current, "points", []) or [])
         if not points:
             self._preview_item.setPath(path)
+            self._preview_vertices_item.setPath(QtGui.QPainterPath())
+            self._preview_close_item.setPath(QtGui.QPainterPath())
             return
         mode = str(self.createMode or "").lower()
-        scene_target = (
+        raw_target = (
             QtCore.QPointF(scene_pos)
             if scene_pos is not None
             else QtCore.QPointF(points[-1])
+        )
+        close_target = self._polygon_close_target(raw_target)
+        scene_target = (
+            QtCore.QPointF(close_target) if close_target is not None else raw_target
         )
         path.moveTo(points[0])
         if mode == "point":
             radius = 4.5
             path.addEllipse(points[0], radius, radius)
-        elif mode == "line":
+        elif mode in {"line", "rectangle", "circle"}:
             if len(points) == 1:
                 path.lineTo(scene_target)
             else:
-                path.lineTo(points[1])
+                if mode == "line":
+                    path.lineTo(points[1])
+                elif mode == "rectangle":
+                    rect = QtCore.QRectF(points[0], points[1]).normalized()
+                    path.addRect(rect)
+                else:
+                    dx = float(points[1].x()) - float(points[0].x())
+                    dy = float(points[1].y()) - float(points[0].y())
+                    radius = max(0.0, (dx * dx + dy * dy) ** 0.5)
+                    path.addEllipse(points[0], radius, radius)
         elif mode == "linestrip":
             for point in points[1:]:
                 path.lineTo(point)
@@ -328,11 +536,51 @@ class TiledImageView(QtWidgets.QGraphicsView):
             for point in points[1:]:
                 path.lineTo(point)
             path.lineTo(scene_target)
-        pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 240))
-        pen.setWidthF(2.0)
+        preview_color = QtGui.QColor(0, 255, 255, 235)
+        pen = QtGui.QPen(preview_color)
+        pen.setWidthF(max(2.0, 2.6 / max(self.current_scale(), 0.25)))
+        pen.setCapStyle(QtCore.Qt.RoundCap)
+        pen.setJoinStyle(QtCore.Qt.RoundJoin)
         self._preview_item.setPen(pen)
-        self._preview_item.setBrush(QtCore.Qt.NoBrush)
+        self._preview_item.setBrush(QtGui.QBrush(QtCore.Qt.NoBrush))
         self._preview_item.setPath(path)
+        vertex_path = QtGui.QPainterPath()
+        vertex_radius = max(2.0, min(5.0, 5.0 / max(self.current_scale(), 0.5)))
+        for point in points:
+            vertex_path.addEllipse(point, vertex_radius, vertex_radius)
+        if mode in {"polygon", "linestrip"} and scene_pos is not None:
+            vertex_path.addEllipse(
+                scene_target, vertex_radius * 0.75, vertex_radius * 0.75
+            )
+        vertex_pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 245))
+        vertex_pen.setWidthF(max(1.0, 1.4 / max(self.current_scale(), 0.5)))
+        self._preview_vertices_item.setPen(vertex_pen)
+        self._preview_vertices_item.setBrush(QtGui.QBrush(preview_color))
+        self._preview_vertices_item.setPath(vertex_path)
+        close_path = QtGui.QPainterPath()
+        if close_target is not None and points:
+            close_radius = vertex_radius * 1.9
+            close_path.addEllipse(points[0], close_radius, close_radius)
+            close_pen = QtGui.QPen(QtGui.QColor(255, 215, 0, 245))
+            close_pen.setWidthF(max(1.5, 2.2 / max(self.current_scale(), 0.5)))
+            self._preview_close_item.setPen(close_pen)
+            self._preview_close_item.setBrush(QtGui.QBrush(QtCore.Qt.NoBrush))
+        self._preview_close_item.setPath(close_path)
+
+    def _polygon_close_target(
+        self, scene_pos: QtCore.QPointF | None
+    ) -> QtCore.QPointF | None:
+        if self.current is None:
+            return None
+        if str(self.createMode or "").lower() != "polygon":
+            return None
+        points = list(getattr(self.current, "points", []) or [])
+        if len(points) < 2 or scene_pos is None:
+            return None
+        first_point = QtCore.QPointF(points[0])
+        if self._close_enough(scene_pos, first_point):
+            return first_point
+        return None
 
     def finalise(self) -> None:
         if self.current is None:
@@ -344,9 +592,11 @@ class TiledImageView(QtWidgets.QGraphicsView):
             if len(self.current.points) < 3:
                 return
             self.current.close()
-        elif mode == "line":
+        elif mode in {"line", "rectangle", "circle"}:
             if len(self.current.points) < 2:
                 return
+            if mode == "rectangle":
+                self.current.close()
         elif mode == "linestrip":
             if len(self.current.points) < 2:
                 return
@@ -359,6 +609,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
         finished = self.current
         self.current = None
         self._preview_item.setPath(QtGui.QPainterPath())
+        self._preview_vertices_item.setPath(QtGui.QPainterPath())
+        self._preview_close_item.setPath(QtGui.QPainterPath())
         self.drawingPolygon.emit(False)
         self.set_shapes(self._shapes)
         self._apply_selection([finished], emit_signal=True)
@@ -377,6 +629,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
         if self.current is not None:
             self.current = None
             self._preview_item.setPath(QtGui.QPainterPath())
+            self._preview_vertices_item.setPath(QtGui.QPainterPath())
+            self._preview_close_item.setPath(QtGui.QPainterPath())
             self.drawingPolygon.emit(False)
             return
         if not self._shapes:
@@ -392,30 +646,75 @@ class TiledImageView(QtWidgets.QGraphicsView):
         if not getattr(self.current, "points", None):
             self.current = None
             self._preview_item.setPath(QtGui.QPainterPath())
+            self._preview_vertices_item.setPath(QtGui.QPainterPath())
+            self._preview_close_item.setPath(QtGui.QPainterPath())
             self.drawingPolygon.emit(False)
             return
         self._update_drawing_preview(self.current.points[-1])
+
+    def _show_context_menu(self, global_pos) -> bool:
+        host = getattr(self, "_host_window", None)
+        if host is not None:
+            canvas = getattr(host, "canvas", None)
+            builder = getattr(canvas, "_build_context_menu", None)
+            if callable(builder):
+                try:
+                    menu = builder(host)
+                except Exception:
+                    return False
+                if menu is None:
+                    return False
+                menu.exec_(global_pos)
+                return True
+        seen = set()
+        queue = [self, self.parentWidget(), self.parent(), self.window()]
+        while queue:
+            candidate = queue.pop(0)
+            if candidate is None or id(candidate) in seen:
+                continue
+            seen.add(id(candidate))
+            canvas = getattr(candidate, "canvas", None)
+            builder = getattr(canvas, "_build_context_menu", None)
+            if callable(builder):
+                try:
+                    menu = builder(candidate)
+                except Exception:
+                    return False
+                if menu is None:
+                    return False
+                menu.exec_(global_pos)
+                return True
+            queue.append(getattr(candidate, "parentWidget", lambda: None)())
+            queue.append(getattr(candidate, "parent", lambda: None)())
+        return False
 
     def set_selected_shapes(self, shapes) -> None:
         self._apply_selection(shapes, emit_signal=False)
 
     @staticmethod
-    def _is_editable_overlay_shape(shape) -> bool:
+    def _is_editable_shape(shape) -> bool:
         other = dict(getattr(shape, "other_data", {}) or {})
-        if "overlay_id" not in other:
-            return False
         if not getattr(shape, "visible", True) or not bool(
             other.get("overlay_visible", True)
         ):
             return False
         if bool(other.get("overlay_locked", False)):
             return False
+        if str(getattr(shape, "shape_type", "") or "").lower() == "mask":
+            return False
         return bool(getattr(shape, "points", []) or [])
 
     def _shape_hit_test(self, scene_pos: QtCore.QPointF):
-        epsilon = max(4.0, 8.0 / max(self.current_scale(), 0.01))
+        scale = max(self.current_scale(), 0.01)
+        width, height = self._content_size
+        diagonal = math.hypot(float(width or 0), float(height or 0))
+        diagonal_factor = min(
+            1.0, max(0.0, (diagonal - 2048.0) / max(1.0, 32768.0 - 2048.0))
+        )
+        point_pixels = min(12.0, max(6.0, 8.0 + (2.0 * diagonal_factor)))
+        epsilon = max(4.0, (point_pixels * 0.95) / scale)
         for shape in reversed(list(self._shapes or [])):
-            if not self._is_editable_overlay_shape(shape):
+            if not self._is_editable_shape(shape):
                 continue
             vertex_index = None
             try:
@@ -435,9 +734,21 @@ class TiledImageView(QtWidgets.QGraphicsView):
                     edge = shape.nearestEdge(scene_pos, epsilon)
                 except Exception:
                     edge = None
+                if edge is not None and bool(
+                    getattr(shape, "canAddPoint", lambda: False)()
+                ):
+                    return shape, edge, "edge"
                 if edge is not None:
                     return shape, None, "shape"
             else:
+                try:
+                    edge = shape.nearestEdge(scene_pos, epsilon)
+                except Exception:
+                    edge = None
+                if edge is not None and bool(
+                    getattr(shape, "canAddPoint", lambda: False)()
+                ):
+                    return shape, edge, "edge"
                 try:
                     if shape.containsPoint(scene_pos):
                         return shape, None, "shape"
@@ -488,31 +799,6 @@ class TiledImageView(QtWidgets.QGraphicsView):
         for shape in self.selectedShapes:
             shape.moveBy(bounded)
         return True
-
-    def _make_vertex_handle_items(self, shape) -> list[QtWidgets.QGraphicsItem]:
-        if shape not in self.selectedShapes:
-            return []
-        items = []
-        highlight_index = getattr(shape, "_highlightIndex", None)
-        for index, point in enumerate(getattr(shape, "points", []) or []):
-            radius = 6.0 if index == highlight_index else 4.5
-            item = QtWidgets.QGraphicsEllipseItem(
-                float(point.x()) - radius,
-                float(point.y()) - radius,
-                radius * 2.0,
-                radius * 2.0,
-            )
-            item.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 230), 1.5))
-            item.setBrush(
-                QtGui.QBrush(
-                    QtGui.QColor(255, 140, 0, 220)
-                    if index == highlight_index
-                    else QtGui.QColor(0, 255, 255, 210)
-                )
-            )
-            item.setZValue(120.0)
-            items.append(item)
-        return items
 
     def _pair_item_at_view_pos(self, pos) -> _LandmarkPairItem | None:
         query = self.mapToScene(pos)
@@ -607,58 +893,13 @@ class TiledImageView(QtWidgets.QGraphicsView):
             other.get("overlay_visible", True)
         ):
             return None
-        points = [
-            QtCore.QPointF(float(p.x()), float(p.y()))
-            for p in getattr(shape, "points", [])
-        ]
-        if not points:
+        if not getattr(shape, "points", []):
             return None
-        stroke = QtGui.QColor(str(other.get("overlay_stroke") or "#00ff00"))
-        if not stroke.isValid():
-            stroke = QtGui.QColor(0, 255, 0, 220)
-        else:
-            stroke.setAlpha(220)
-        fill = QtGui.QColor(str(other.get("overlay_fill") or "#00ff00"))
-        if not fill.isValid():
-            fill = QtGui.QColor(0, 255, 0, 40)
-        else:
-            fill.setAlpha(40)
-        pen = QtGui.QPen(stroke)
-        pen.setWidthF(2.0)
-        brush = QtGui.QBrush(fill)
-        shape_type = str(getattr(shape, "shape_type", "") or "").lower()
-        if shape in self.selectedShapes or getattr(shape, "selected", False):
-            pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 245))
-            pen.setWidthF(3.0)
-            if shape_type != "point":
-                fill = QtGui.QColor(fill)
-                fill.setAlpha(max(fill.alpha(), 90))
-                brush = QtGui.QBrush(fill)
-        item = None
-        if shape_type == "point":
-            p = points[0]
-            item = QtWidgets.QGraphicsEllipseItem(p.x() - 4, p.y() - 4, 8, 8)
-            item.setPen(pen)
-            item.setBrush(QtGui.QBrush(QtGui.QColor(255, 0, 0, 220)))
-        elif shape_type == "line":
-            if len(points) < 2:
-                return None
-            item = QtWidgets.QGraphicsLineItem(
-                points[0].x(), points[0].y(), points[1].x(), points[1].y()
-            )
-            item.setPen(pen)
-        elif shape_type == "polygon":
-            polygon = QtGui.QPolygonF(points)
-            item = QtWidgets.QGraphicsPolygonItem(polygon)
-            item.setPen(pen)
-            item.setBrush(brush)
-        else:
-            path = QtGui.QPainterPath()
-            path.moveTo(points[0])
-            for point in points[1:]:
-                path.lineTo(point)
-            item = QtWidgets.QGraphicsPathItem(path)
-            item.setPen(pen)
+        item = _ShapeGraphicsItem(
+            shape,
+            content_size=self._content_size,
+            current_scale=self.current_scale(),
+        )
         item.setOpacity(max(0.0, min(1.0, float(other.get("overlay_opacity", 1.0)))))
         item.setZValue(100.0 + float(other.get("overlay_z_order", 0)))
         return item
@@ -749,11 +990,13 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self.resetTransform()
         factor = max(0.01, float(percent) / 100.0)
         self.scale(factor, factor)
+        self._refresh_overlay_render_metrics()
         self.refresh_visible_tiles()
 
     def fit_to_window(self) -> None:
         self._fit_mode = "fit_window"
         self.fitInView(self.sceneRect(), QtCore.Qt.KeepAspectRatio)
+        self._refresh_overlay_render_metrics()
         self.refresh_visible_tiles()
 
     def fit_to_width(self) -> None:
@@ -765,6 +1008,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         viewport_width = max(1, self.viewport().width())
         factor = viewport_width / rect.width()
         self.scale(factor, factor)
+        self._refresh_overlay_render_metrics()
         self.refresh_visible_tiles()
 
     def resizeEvent(self, event):
@@ -782,6 +1026,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
 
     def wheelEvent(self, event):
         super().wheelEvent(event)
+        self._refresh_overlay_render_metrics()
         self.refresh_visible_tiles()
 
     def mousePressEvent(self, event):
@@ -809,9 +1054,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 event.accept()
                 return
             if mode == "polygon":
-                if len(self.current.points) >= 2 and self._close_enough(
-                    scene_pos, self.current.points[0]
-                ):
+                if self._polygon_close_target(scene_pos) is not None:
                     self.finalise()
                 else:
                     self.current.addPoint(QtCore.QPointF(scene_pos))
@@ -821,7 +1064,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 self._update_drawing_preview(scene_pos)
                 if event.modifiers() & QtCore.Qt.ControlModifier:
                     self.finalise()
-            elif mode == "line":
+            elif mode in {"line", "rectangle", "circle"}:
                 if len(self.current.points) == 1:
                     self.current.addPoint(QtCore.QPointF(scene_pos))
                 else:
@@ -832,6 +1075,25 @@ class TiledImageView(QtWidgets.QGraphicsView):
         if event.button() == QtCore.Qt.LeftButton:
             shape, vertex_index, hit_kind = self._shape_hit_test(scene_pos)
             if shape is not None:
+                if hit_kind == "edge" and bool(
+                    getattr(shape, "canAddPoint", lambda: False)()
+                ):
+                    insert_index = int(vertex_index)
+                    target_point = self._clamp_scene_point(scene_pos)
+                    shape.insertPoint(insert_index, QtCore.QPointF(target_point))
+                    try:
+                        shape.highlightVertex(insert_index, shape.MOVE_VERTEX)
+                    except Exception:
+                        pass
+                    self._active_shape = shape
+                    self._active_vertex_index = insert_index
+                    self._dragging_shape = True
+                    self._shape_moved_during_drag = True
+                    self._last_scene_pos = QtCore.QPointF(target_point)
+                    self._apply_selection([shape], emit_signal=True)
+                    self.set_shapes(self._shapes)
+                    event.accept()
+                    return
                 multi = bool(event.modifiers() & QtCore.Qt.ControlModifier)
                 current = list(self.selectedShapes or [])
                 if multi:
@@ -862,9 +1124,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 event.accept()
                 return
             self._apply_selection([], emit_signal=True)
-        item = self.itemAt(pos)
-        if not isinstance(item, _LandmarkPairItem):
-            item = self._pair_item_at_view_pos(pos)
+        item = self._pair_item_at_view_pos(pos)
         if isinstance(item, _LandmarkPairItem):
             self.set_selected_landmark_pair(item.pair_id)
             self.overlayLandmarkPairSelected.emit(item.pair_id)
@@ -920,6 +1180,11 @@ class TiledImageView(QtWidgets.QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if event.button() == QtCore.Qt.RightButton:
+            global_pos = event.globalPos() if hasattr(event, "globalPos") else None
+            if global_pos is not None and self._show_context_menu(global_pos):
+                event.accept()
+                return
         if event.button() == QtCore.Qt.LeftButton and self._dragging_shape:
             moved = bool(self._shape_moved_during_drag)
             if self._active_shape is not None:
@@ -939,11 +1204,19 @@ class TiledImageView(QtWidgets.QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
+    def contextMenuEvent(self, event):
+        if self._show_context_menu(event.globalPos()):
+            event.accept()
+            return
+        super().contextMenuEvent(event)
+
     def keyPressEvent(self, event):
         if self.drawing():
             if event.key() == QtCore.Qt.Key_Escape:
                 self.current = None
                 self._preview_item.setPath(QtGui.QPainterPath())
+                self._preview_vertices_item.setPath(QtGui.QPainterPath())
+                self._preview_close_item.setPath(QtGui.QPainterPath())
                 self.drawingPolygon.emit(False)
                 event.accept()
                 return

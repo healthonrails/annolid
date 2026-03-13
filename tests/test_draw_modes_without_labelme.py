@@ -55,6 +55,32 @@ def test_draw_mode_actions_toggle_canvas_modes():
         w.close()
 
 
+def test_unsupported_large_image_ai_mode_switches_to_canvas_with_message():
+    _ensure_qapp()
+
+    from annolid.gui.app import AnnolidWindow
+
+    w = AnnolidWindow(config={})
+    try:
+        img = QtGui.QImage(120, 80, QtGui.QImage.Format_RGB32)
+        img.fill(QtGui.QColor(100, 120, 140))
+        w.image = img
+        w.canvas.loadPixmap(QtGui.QPixmap.fromImage(img), clear_shapes=False)
+        w._active_image_view = "tiled"
+        w._viewer_stack.setCurrentWidget(w.large_image_view)
+
+        w.toggleDrawMode(False, createMode="ai_polygon")
+
+        assert w._active_image_view == "canvas"
+        assert w._viewer_stack.currentWidget() is w.canvas
+        assert w.canvas.createMode == "ai_polygon"
+        message = w.statusBar().currentMessage()
+        assert "canvas preview mode" in message.lower()
+        assert "ai polygon tool" in message.lower()
+    finally:
+        w.close()
+
+
 def test_annotation_compat_provides_ai_models_without_labelme(monkeypatch):
     """AI polygon mode should still have usable models when labelme is absent."""
 

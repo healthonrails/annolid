@@ -31,6 +31,7 @@ from annolid.gui.large_image import (
     remove_large_image_cache_file,
     resolve_fresh_optimized_large_image_path,
 )
+from annolid.gui.status import post_window_status
 from annolid.gui.label_file import LabelFile, LabelFileError
 from annolid.gui.workers import FlexibleWorker
 from annolid.utils.annotation_compat import (
@@ -1076,6 +1077,9 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         except Exception:
             return default
 
+    def _post_window_status(self, message: str, timeout: int = 4000) -> None:
+        post_window_status(self, message, timeout)
+
     def largeImageCachePolicy(self) -> dict[str, int]:
         max_entries = self._settings_value(
             LARGE_IMAGE_CACHE_MAX_ENTRIES_KEY,
@@ -1484,13 +1488,12 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         )
         if hasattr(self.canvas, "setEditing"):
             self.canvas.setEditing(True)
-        if hasattr(self, "status"):
-            self.status(
-                self.tr(
-                    "Switched large-image overlay editing to canvas preview mode for %s"
-                )
-                % str(reason or self.tr("editing"))
+        self._post_window_status(
+            self.tr(
+                "Switched large-image overlay editing to canvas preview mode for %s"
             )
+            % str(reason or self.tr("editing"))
+        )
         return True
 
     def loadFile(self, filename: str) -> None:
