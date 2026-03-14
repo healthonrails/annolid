@@ -37,6 +37,7 @@ class ImportedVectorDocument:
     height: float | None
     view_box: list[float] | None
     shapes: list[ImportedPath]
+    source_kind: str = "svg"
 
 
 def _strip_ns(tag: str) -> str:
@@ -489,6 +490,7 @@ def _import_svg_root(root: ET.Element, *, source_path: str) -> ImportedVectorDoc
     )
     return ImportedVectorDocument(
         source_path=str(source_path),
+        source_kind="svg",
         width=_parse_float(root.get("width"), default=0.0) or None,
         height=_parse_float(root.get("height"), default=0.0) or None,
         view_box=view_box,

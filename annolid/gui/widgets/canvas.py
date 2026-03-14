@@ -1877,6 +1877,7 @@ class Canvas(QtWidgets.QWidget):
     def _collect_explicit_landmark_pairs_from_shapes(shapes):
         overlay_points = {}
         image_points = {}
+        pair_visible = {}
         for shape in list(shapes or []):
             if str(getattr(shape, "shape_type", "") or "").lower() != "point":
                 continue
@@ -1891,12 +1892,15 @@ class Canvas(QtWidgets.QWidget):
             coords = (float(point.x()), float(point.y()))
             if "overlay_id" in other:
                 overlay_points[pair_id] = coords
+                pair_visible[pair_id] = bool(
+                    other.get("overlay_landmarks_visible", True)
+                )
             else:
                 image_points[pair_id] = coords
         pairs = []
         for pair_id, src in overlay_points.items():
             dst = image_points.get(pair_id)
-            if dst is None:
+            if dst is None or not bool(pair_visible.get(pair_id, True)):
                 continue
             pairs.append((pair_id, src, dst))
         return pairs

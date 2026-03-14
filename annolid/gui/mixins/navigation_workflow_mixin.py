@@ -24,7 +24,12 @@ class NavigationWorkflowMixin:
                 hasattr(self, "_has_large_image_page_navigation")
                 and self._has_large_image_page_navigation()
             ):
-                if 0 <= input_frame_number < int(getattr(self, "num_frames", 0) or 0):
+                page_count = int(
+                    self._largeImagePageCount()
+                    if hasattr(self, "_largeImagePageCount")
+                    else getattr(self, "num_frames", 0) or 0
+                )
+                if 0 <= input_frame_number < page_count:
                     self.setLargeImagePageNumber(input_frame_number)
                 else:
                     QtWidgets.QMessageBox.warning(
@@ -70,11 +75,22 @@ class NavigationWorkflowMixin:
             if not self.mayContinue():
                 self._config["keep_prev"] = keep_prev
                 return
-            page_count = int(getattr(self, "num_frames", 0) or 0)
+            page_count = int(
+                self._largeImagePageCount()
+                if hasattr(self, "_largeImagePageCount")
+                else getattr(self, "num_frames", 0) or 0
+            )
             if page_count <= 0:
                 self._config["keep_prev"] = keep_prev
                 return
-            current_page = max(0, int(getattr(self, "frame_number", 0) or 0))
+            current_page = max(
+                0,
+                int(
+                    self._largeImageCurrentPage()
+                    if hasattr(self, "_largeImageCurrentPage")
+                    else getattr(self, "frame_number", 0) or 0
+                ),
+            )
             if current_page >= page_count - 1:
                 if getattr(self, "isPlaying", False):
                     self.stopPlaying()
@@ -152,11 +168,23 @@ class NavigationWorkflowMixin:
             if not self.mayContinue():
                 self._config["keep_prev"] = keep_prev
                 return
-            page_count = int(getattr(self, "num_frames", 0) or 0)
+            page_count = int(
+                self._largeImagePageCount()
+                if hasattr(self, "_largeImagePageCount")
+                else getattr(self, "num_frames", 0) or 0
+            )
             if page_count <= 0:
                 self._config["keep_prev"] = keep_prev
                 return
-            prev_page = max(0, int(getattr(self, "frame_number", 0) or 0) - 1)
+            prev_page = max(
+                0,
+                int(
+                    self._largeImageCurrentPage()
+                    if hasattr(self, "_largeImageCurrentPage")
+                    else getattr(self, "frame_number", 0) or 0
+                )
+                - 1,
+            )
             self.setLargeImagePageNumber(prev_page)
             self._config["keep_prev"] = keep_prev
             self._update_frame_display_and_emit_update()

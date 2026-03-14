@@ -50,6 +50,16 @@ class LargeImageLoadResult:
     metadata: Optional[LargeImageMetadata]
 
 
+@dataclass(frozen=True)
+class LargeImageBackendCapabilities:
+    supports_pages: bool = False
+    supports_pyramids: bool = False
+    supports_region_reads: bool = True
+    supports_label_stack: bool = False
+    supports_metadata_axes: bool = False
+    supports_cache_optimization: bool = False
+
+
 class LargeImageBackend(ABC):
     name: str
 
@@ -84,6 +94,16 @@ class LargeImageBackend(ABC):
     @abstractmethod
     def load(self, path: str | Path | None = None) -> LargeImageLoadResult:
         raise NotImplementedError
+
+    def capabilities(self) -> LargeImageBackendCapabilities:
+        return LargeImageBackendCapabilities(
+            supports_pages=self.get_page_count() > 1,
+            supports_pyramids=self.get_level_count() > 1,
+            supports_region_reads=True,
+            supports_label_stack=self.get_page_count() > 1,
+            supports_metadata_axes=False,
+            supports_cache_optimization=False,
+        )
 
     def get_page_count(self) -> int:
         return 1

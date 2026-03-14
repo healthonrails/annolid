@@ -4,7 +4,12 @@ import json
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from annolid.gui.overlay import OverlayDocument, VectorShape, overlay_transform_to_dict
+from annolid.gui.overlay import (
+    OverlayDocument,
+    VectorShape,
+    overlay_transform_to_dict,
+    vector_shape_to_dict,
+)
 
 
 def _shape_points_attribute(shape: VectorShape) -> str:
@@ -15,8 +20,13 @@ def export_overlay_document_json(document: OverlayDocument, path: str | Path) ->
     resolved = Path(path)
     payload = {
         "source_path": document.source_path,
+        "source_kind": document.source_kind,
         "layer_name": document.layer_name,
         "transform": overlay_transform_to_dict(document.transform),
+        "source_shapes": [
+            vector_shape_to_dict(shape) for shape in document.source_shapes
+        ],
+        "landmark_pairs": list(document.landmark_pairs or []),
         "shapes": [
             {
                 "id": shape.id,
@@ -87,8 +97,10 @@ def export_overlay_document_labelme(
         "otherData": {
             "overlay": {
                 "source_path": document.source_path,
+                "source_kind": document.source_kind,
                 "layer_name": document.layer_name,
                 "transform": overlay_transform_to_dict(document.transform),
+                "landmark_pairs": list(document.landmark_pairs or []),
             }
         },
     }
@@ -111,6 +123,7 @@ def export_overlay_document_svg(document: OverlayDocument, path: str | Path) -> 
         {
             "id": document.layer_name or "overlay",
             "data-source-path": str(document.source_path or ""),
+            "data-source-kind": str(document.source_kind or "svg"),
         },
     )
     transform = overlay_transform_to_dict(document.transform)

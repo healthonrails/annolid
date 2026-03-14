@@ -25,6 +25,7 @@ from annolid.gui.large_image import (
     remove_large_image_cache_file,
     sniff_large_image,
 )
+from annolid.io.large_image.base import LargeImageBackendCapabilities
 
 
 def test_large_tiff_suffix_detection() -> None:
@@ -73,6 +74,29 @@ def test_probe_tiff_with_yxs_axes_reports_width_height_correctly(
     assert metadata.width == 96
     assert metadata.height == 64
     assert metadata.channels == 3
+
+
+def test_large_image_backend_capabilities_are_explicit(tmp_path: Path) -> None:
+    image_path = tmp_path / "sample.ome.tiff"
+    data = np.stack(
+        [
+            np.full((16, 24), 1, dtype=np.uint8),
+            np.full((16, 24), 2, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    tifffile.imwrite(image_path, data, metadata={"axes": "QYX"})
+
+    backend = TiffFileBackend(image_path)
+    caps = backend.capabilities()
+
+    assert isinstance(caps, LargeImageBackendCapabilities)
+    assert caps.supports_pages is True
+    assert caps.supports_pyramids is False
+    assert caps.supports_region_reads is True
+    assert caps.supports_label_stack is True
+    assert caps.supports_metadata_axes is True
+    assert caps.supports_cache_optimization is True
 
 
 def test_tifffile_backend_supports_page_navigation_for_multipage_tiff(
@@ -324,3 +348,17 @@ def test_large_tiff_sniff_and_probe_fallback_without_tifffile(
     assert metadata.backend_name in {"qt", "pillow"}
     assert loaded.qimage.width() == 96
     assert loaded.qimage.height() == 64
+
+
+def test_large_image_wrapper_namespace_reexports_current_runtime_modules() -> None:
+    from annolid.large_image.backends.capabilities import (
+        LargeImageBackendCapabilities as WrapperCapabilities,
+    )
+    from annolid.large_image.gui import TiledImageView as WrapperTiledImageView
+    from annolid.large_image.model.document import LargeImageDocument as WrapperDocument
+    from annolid.large_image.tiles.tile_scheduler import TileRequestScheduler
+
+    assert WrapperCapabilities is LargeImageBackendCapabilities
+    assert WrapperDocument.__name__ == "LargeImageDocument"
+    assert WrapperTiledImageView.__name__ == "TiledImageView"
+    assert TileRequestScheduler.__name__ == "TileRequestScheduler"

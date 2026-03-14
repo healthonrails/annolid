@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from qtpy import QtCore
 
-from annolid.gui.overlay import OverlayTransform, overlay_transform_to_dict
+from annolid.gui.overlay import OverlayTransform, VectorShape, overlay_transform_to_dict
 from annolid.gui.shape import Shape
 from annolid.io.vector.svg_import import (
     ImportedVectorDocument,
@@ -44,6 +44,8 @@ def _imported_path_to_shape(
             "overlay_layer": imported.layer_name,
             "overlay_stroke": imported.stroke,
             "overlay_fill": imported.fill,
+            "overlay_role": "correction",
+            "overlay_locked": False,
             "overlay_visible": True,
             "overlay_opacity": 0.5,
             "overlay_z_order": 0,
@@ -74,6 +76,8 @@ def _imported_path_to_shape(
         "overlay_layer": imported.layer_name,
         "overlay_stroke": imported.stroke,
         "overlay_fill": imported.fill,
+        "overlay_role": "correction",
+        "overlay_locked": False,
         "overlay_visible": True,
         "overlay_opacity": 0.5,
         "overlay_z_order": 0,
@@ -97,11 +101,30 @@ def import_svg_shapes(path: str | Path) -> SvgImportResult:
     metadata = {
         "id": overlay_id,
         "source": document.source_path,
+        "source_kind": str(getattr(document, "source_kind", "svg") or "svg"),
         "document_width": document.width,
         "document_height": document.height,
         "view_box": document.view_box,
         "shape_count": len(shapes),
+        "source_shapes": [
+            VectorShape(
+                id=str(imported.id or f"shape_{index}"),
+                kind=str(imported.kind or "polyline"),
+                points=[(float(x), float(y)) for x, y in list(imported.points or [])],
+                label=str(imported.label or "") or None,
+                stroke=imported.stroke,
+                fill=imported.fill,
+                text=imported.text,
+                locked=True,
+                source_tag=imported.source_tag,
+                layer_name=imported.layer_name,
+                source_path=document.source_path,
+            )
+            for index, imported in enumerate(document.shapes)
+        ],
         "transform": overlay_transform_to_dict(initial_transform),
+        "locked_source": True,
+        "editable_layer_name": "Corrections",
     }
     return SvgImportResult(shapes=shapes, metadata=metadata)
 

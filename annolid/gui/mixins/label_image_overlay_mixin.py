@@ -7,6 +7,7 @@ from qtpy import QtCore, QtWidgets
 from annolid.gui.label_image_overlay import label_entry_text, load_label_mapping_csv
 from annolid.gui.status import post_window_status
 from annolid.gui.large_image import open_large_image
+from annolid.gui.viewer_layers import RasterLabelLayer, raster_label_layer_from_state
 
 
 class LabelImageOverlayMixin:
@@ -14,6 +15,16 @@ class LabelImageOverlayMixin:
 
     def _postLabelImageStatus(self, message: str, timeout: int = 4000) -> None:
         post_window_status(self, message, timeout)
+
+    def currentLabelImageLayer(self) -> RasterLabelLayer | None:
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is None or not hasattr(large_view, "label_overlay_state"):
+            return None
+        state = dict(large_view.label_overlay_state() or {})
+        mapping = {}
+        if hasattr(large_view, "_label_mapping"):
+            mapping = dict(getattr(large_view, "_label_mapping", {}) or {})
+        return raster_label_layer_from_state(state, mapping_table=mapping)
 
     def describeLabelImageOverlayValue(self, label_value: int) -> str:
         large_view = getattr(self, "large_image_view", None)
@@ -121,6 +132,8 @@ class LabelImageOverlayMixin:
             "page_index": int(selected_page),
             "transform": dict(transform),
         }
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
         self._postLabelImageStatus(
             self.tr("Loaded label image overlay from %s (page %d)")
             % (Path(filename).name, int(selected_page) + 1)
@@ -174,6 +187,8 @@ class LabelImageOverlayMixin:
             large_view.label_overlay_state().get("transform") or {}
         )
         self.otherData["label_image_overlay"] = record
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
         self._postLabelImageStatus(
             self.tr("Loaded %d label ids from %s") % (len(mapping), Path(filename).name)
         )
@@ -221,6 +236,8 @@ class LabelImageOverlayMixin:
             large_view.label_overlay_state().get("transform") or {}
         )
         self.otherData["label_image_overlay"] = record
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
         self._postLabelImageStatus(
             self.tr("Updated label overlay opacity to %d%%") % int(value)
         )
@@ -248,6 +265,8 @@ class LabelImageOverlayMixin:
         record["transform"] = dict(state.get("transform") or {})
         self.otherData["label_image_overlay"] = record
         self._syncLabelImageOverlayActionState()
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
         self._postLabelImageStatus(
             self.tr("Label image overlay %s")
             % (self.tr("shown") if visible_flag else self.tr("hidden"))
@@ -264,6 +283,8 @@ class LabelImageOverlayMixin:
             large_view.clear_label_layer()
         if isinstance(getattr(self, "otherData", None), dict):
             self.otherData.pop("label_image_overlay", None)
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
         self._postLabelImageStatus(self.tr("Cleared label image overlay"))
         self._syncLabelImageOverlayActionState()
 
@@ -332,22 +353,17 @@ class LabelImageOverlayMixin:
         )
         large_view.set_selected_label_value(record.get("selected_label"))
         self._syncLabelImageOverlayActionState()
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
 
     def _syncLabelImageOverlayActionState(self) -> None:
         actions = getattr(self, "actions", None)
         action = getattr(actions, "toggle_label_image_overlay_visible", None)
         if action is None:
             return
-        large_view = getattr(self, "large_image_view", None)
-        has_overlay = (
-            large_view is not None
-            and getattr(large_view, "label_layer_backend", lambda: None)() is not None
-        )
-        visible = (
-            bool(large_view.label_layer_visible())
-            if has_overlay and hasattr(large_view, "label_layer_visible")
-            else False
-        )
+        layer = self.currentLabelImageLayer()
+        has_overlay = layer is not None
+        visible = bool(layer.visible) if layer is not None else False
         if isinstance(action, QtCore.QObject):
             with QtCore.QSignalBlocker(action):
                 action.setEnabled(bool(has_overlay))

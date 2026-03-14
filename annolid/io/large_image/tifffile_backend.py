@@ -6,7 +6,12 @@ from typing import Any, Optional
 import numpy as np
 from PIL import Image
 
-from .base import LargeImageBackend, LargeImageLoadResult, LargeImageMetadata
+from .base import (
+    LargeImageBackend,
+    LargeImageBackendCapabilities,
+    LargeImageLoadResult,
+    LargeImageMetadata,
+)
 from .common import array_to_qimage, is_large_tiff_path
 
 
@@ -393,6 +398,20 @@ class TiffFileBackend(LargeImageBackend):
         if normalized < 0 or normalized >= page_count:
             raise IndexError(f"Invalid TIFF page index: {page_index}")
         self._active_page_index = normalized
+
+    def capabilities(self) -> LargeImageBackendCapabilities:
+        metadata = self.probe()
+        page_count = int(getattr(metadata, "page_count", 1) or 1) if metadata else 1
+        levels = int(getattr(metadata, "levels", 1) or 1) if metadata else 1
+        axes = str(getattr(metadata, "axes", "") or "") if metadata else ""
+        return LargeImageBackendCapabilities(
+            supports_pages=page_count > 1,
+            supports_pyramids=levels > 1,
+            supports_region_reads=True,
+            supports_label_stack=page_count > 1,
+            supports_metadata_axes=bool(axes),
+            supports_cache_optimization=True,
+        )
 
 
 def probe_tiff_metadata(path: str | Path) -> LargeImageMetadata:

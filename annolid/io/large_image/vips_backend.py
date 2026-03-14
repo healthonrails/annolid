@@ -4,7 +4,12 @@ from pathlib import Path
 
 import numpy as np
 
-from .base import LargeImageBackend, LargeImageLoadResult, LargeImageMetadata
+from .base import (
+    LargeImageBackend,
+    LargeImageBackendCapabilities,
+    LargeImageLoadResult,
+    LargeImageMetadata,
+)
 from .common import array_to_qimage, is_large_tiff_path
 
 
@@ -99,4 +104,14 @@ class VipsBackend(LargeImageBackend):
         return LargeImageLoadResult(
             qimage=array_to_qimage(np.asarray(thumbnail)),
             metadata=metadata,
+        )
+
+    def capabilities(self) -> LargeImageBackendCapabilities:
+        return LargeImageBackendCapabilities(
+            supports_pages=False,
+            supports_pyramids=False,
+            supports_region_reads=True,
+            supports_label_stack=False,
+            supports_metadata_axes=False,
+            supports_cache_optimization=True,
         )

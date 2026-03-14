@@ -382,3 +382,20 @@ class VectorOverlayDockWidget(QtWidgets.QDockWidget):
                     break
             self.landmark_pairs_list.setCurrentItem(matched_item)
         self._update_pair_buttons()
+
+    def set_current_overlay(self, overlay_id: str | None) -> None:
+        target = str(overlay_id or "")
+        if not target:
+            return
+        with QtCore.QSignalBlocker(self.overlay_list):
+            matched_item = None
+            for index in range(self.overlay_list.count()):
+                item = self.overlay_list.item(index)
+                if str(item.data(QtCore.Qt.UserRole) or "") == target:
+                    matched_item = item
+                    break
+            if matched_item is not None:
+                self.overlay_list.setCurrentItem(matched_item)
+                self._current_overlay_id = target
+                self._current_pair_id = None
+                self._load_overlay(self._overlay_map.get(target))

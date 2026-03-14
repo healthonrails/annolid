@@ -116,7 +116,23 @@ def test_build_vector_overlay_document_collects_overlay_shapes() -> None:
                 {
                     "id": "overlay_a",
                     "source": "/tmp/atlas.svg",
-                    "metadata": {},
+                    "metadata": {
+                        "source_kind": "ai",
+                        "source_shapes": [
+                            {
+                                "id": "region_a",
+                                "kind": "polygon",
+                                "points": [(1.0, 2.0), (5.0, 2.0), (5.0, 6.0)],
+                            }
+                        ],
+                    },
+                    "landmark_pairs": [
+                        {
+                            "pair_id": "pair_1",
+                            "overlay_label": "A",
+                            "image_label": "A_img",
+                        }
+                    ],
                     "transform": {"tx": 3.0, "opacity": 0.4, "visible": True},
                 }
             ]
@@ -127,6 +143,9 @@ def test_build_vector_overlay_document_collects_overlay_shapes() -> None:
         assert document is not None
         assert document.source_path == "/tmp/atlas.svg"
         assert document.transform.tx == 3.0
+        assert document.source_kind == "ai"
+        assert document.source_shapes
+        assert document.landmark_pairs[0]["pair_id"] == "pair_1"
         assert [shape.kind for shape in document.shapes] == ["polygon", "point"]
     finally:
         window.close()

@@ -10,6 +10,8 @@ This workflow is for users who want to open a large TIFF-family image in Annolid
 - Tile-native overlay editing for large TIFF sessions.
 - Explicit landmark pairing between overlay points and image points.
 - Affine alignment from landmark pairs.
+- Immutable import provenance for SVG / AI / PDF overlays.
+- Editable correction layers derived from the imported source overlay.
 - Export of corrected overlays as `SVG`, overlay `JSON`, or LabelMe-like `JSON`.
 
 ## Recommended source formats
@@ -29,6 +31,8 @@ For vector overlays:
 Annolid can now import PDF-compatible Illustrator `.ai` files directly by converting the embedded PDF page to SVG during import. Exporting `SVG` from Illustrator is still the cleanest path when you want the most predictable interchange.
 
 On import, Annolid ignores non-rendered SVG definition content such as clip paths in `<defs>`, converts PDF-compatible `.ai` files through an SVG import path, and can automatically fit a small atlas drawing to the currently open image when the document coordinates are clearly not already in image space. For PDF-compatible `.ai` and `.pdf` files, Annolid also extracts visible text from the source page and uses it as region labels when the text can be matched to nearby imported shapes.
+
+Internally, Annolid now normalizes `SVG`, PDF-compatible `.ai`, and `.pdf` imports into the same overlay model. The imported source geometry is preserved as immutable provenance data, and the shapes you edit in the viewer are treated as the derived correction layer for that overlay.
 
 ## Install the optional large-image dependencies
 
@@ -92,6 +96,8 @@ Annolid also prunes old optimized TIFF caches automatically after creating a new
 ## Landmark pairing options
 
 Annolid supports two pairing modes.
+
+Explicit landmark pairs are now stored as overlay-layer state, not only as temporary point-shape flags. That means the overlay model keeps the pair list, the pair labels, and the current alignment inputs together with the overlay record itself.
 
 ### Explicit pairing
 

@@ -5,7 +5,12 @@ from pathlib import Path
 
 from qtpy import QtCore, QtGui
 
-from .base import LargeImageBackend, LargeImageLoadResult, LargeImageMetadata
+from .base import (
+    LargeImageBackend,
+    LargeImageBackendCapabilities,
+    LargeImageLoadResult,
+    LargeImageMetadata,
+)
 from .common import is_large_tiff_path, load_with_pillow
 from .openslide_backend import OpenSlideBackend
 from .tifffile_backend import TiffFileBackend
@@ -18,12 +23,15 @@ def _backend_usability_report(path: Path) -> dict[str, dict[str, object]]:
         try:
             usable = bool(backend.can_handle(path))
             reason = "available" if usable else "unavailable"
+            capabilities = backend.capabilities() if usable else None
         except Exception as exc:
             usable = False
             reason = str(exc)
+            capabilities = None
         report[backend.name] = {
             "usable": usable,
             "reason": reason,
+            "capabilities": capabilities,
         }
     return report
 
@@ -135,6 +143,16 @@ class QtImageBackend(LargeImageBackend):
             raise ValueError(f"Qt could not load image: {resolved}")
         return LargeImageLoadResult(qimage=qimage, metadata=self.probe(resolved))
 
+    def capabilities(self) -> LargeImageBackendCapabilities:
+        return LargeImageBackendCapabilities(
+            supports_pages=False,
+            supports_pyramids=False,
+            supports_region_reads=True,
+            supports_label_stack=False,
+            supports_metadata_axes=False,
+            supports_cache_optimization=False,
+        )
+
 
 class PillowImageBackend(LargeImageBackend):
     name = "pillow"
@@ -197,6 +215,16 @@ class PillowImageBackend(LargeImageBackend):
             raise ValueError("Backend is not opened")
         return load_with_pillow(resolved)
 
+    def capabilities(self) -> LargeImageBackendCapabilities:
+        return LargeImageBackendCapabilities(
+            supports_pages=False,
+            supports_pyramids=False,
+            supports_region_reads=True,
+            supports_label_stack=False,
+            supports_metadata_axes=False,
+            supports_cache_optimization=False,
+        )
+
 
 def available_large_image_backends() -> list[LargeImageBackend]:
     return [
@@ -244,6 +272,11 @@ def sniff_large_image(path: str | Path) -> dict[str, object]:
     except Exception:
         info["openslide_compatible"] = False
     info["backend_support"] = support
+    info["backend_capabilities"] = {
+        name: data.get("capabilities")
+        for name, data in support.items()
+        if data.get("capabilities") is not None
+    }
     info["recommended_backend"] = _recommended_large_image_backend_name(info, support)
     info["performance_hint"] = _performance_hint_for_backend(
         info, support, str(info["recommended_backend"])

@@ -12,12 +12,24 @@ from annolid.gui.affine import (
 )
 from annolid.gui.overlay import (
     OverlayDocument,
+    OverlayLandmarkPairState,
+    OverlayRecordModel,
     OverlayTransform,
     VectorShape,
     overlay_delta_matrix,
+    overlay_landmark_pair_to_dict,
+    overlay_record_from_dict,
+    overlay_record_to_dict,
     overlay_transform_from_dict,
     overlay_transform_to_dict,
     points_bounds_center,
+)
+from annolid.gui.viewer_layers import (
+    AnnotationLayer,
+    LandmarkLayer,
+    LandmarkPair,
+    VectorOverlayLayer,
+    vector_overlay_layer_from_record,
 )
 from annolid.gui.status import post_window_status
 from annolid.io.vector import (
@@ -51,6 +63,129 @@ class VectorOverlayMixin:
             except Exception:
                 pass
         return None
+
+    def _overlay_records(self) -> list[OverlayRecordModel]:
+        if not isinstance(getattr(self, "otherData", None), dict):
+            return []
+        records = []
+        for record in list(self.otherData.get("svg_overlays") or []):
+            model = overlay_record_from_dict(record)
+            if model is not None:
+                records.append(model)
+        return records
+
+    def _set_overlay_records(self, records: list[OverlayRecordModel]) -> None:
+        if not isinstance(getattr(self, "otherData", None), dict):
+            self.otherData = {}
+        self.otherData["svg_overlays"] = [
+            overlay_record_to_dict(record) for record in list(records or [])
+        ]
+
+    def _overlay_record_model(
+        self, overlay_id: str
+    ) -> tuple[int | None, OverlayRecordModel | None]:
+        for index, record in enumerate(self._overlay_records()):
+            if str(record.id or "") == str(overlay_id or ""):
+                return index, record
+        return None, None
+
+    @staticmethod
+    def _shape_identity_key(shape) -> str:
+        other = dict(getattr(shape, "other_data", {}) or {})
+        element_id = str(other.get("overlay_element_id", "") or "")
+        if element_id:
+            return element_id
+        label = str(getattr(shape, "label", "") or "")
+        points = getattr(shape, "points", []) or []
+        first = points[0] if points else None
+        if first is not None:
+            return f"{label}:{float(first.x()):.3f}:{float(first.y()):.3f}"
+        return label or f"shape_{id(shape)}"
+
+    @classmethod
+    def _landmark_pair_state_from_shapes(cls, overlay_shape, image_shape, pair_id: str):
+        overlay_other = dict(getattr(overlay_shape, "other_data", {}) or {})
+        return OverlayLandmarkPairState(
+            pair_id=str(pair_id or ""),
+            overlay_label=str(getattr(overlay_shape, "label", "") or "") or None,
+            image_label=str(getattr(image_shape, "label", "") or "") or None,
+            overlay_element_id=str(overlay_other.get("overlay_element_id", "") or "")
+            or None,
+            image_shape_key=cls._shape_identity_key(image_shape) or None,
+        )
+
+    def _sync_overlay_record_landmark_pairs(self, overlay_id: str) -> None:
+        record_index, record = self._overlay_record_model(overlay_id)
+        if record_index is None or record is None:
+            return
+        pair_states = []
+        seen = set()
+        for shape in self._iter_overlay_shapes(overlay_id):
+            other = dict(getattr(shape, "other_data", {}) or {})
+            pair_id = str(other.get("overlay_landmark_pair_id") or "")
+            if not pair_id or pair_id in seen:
+                continue
+            image_shape = self._find_image_landmark_pair_shape(pair_id)
+            if image_shape is None:
+                continue
+            seen.add(pair_id)
+            pair_states.append(
+                self._landmark_pair_state_from_shapes(shape, image_shape, pair_id)
+            )
+        records = self._overlay_records()
+        updated = record
+        updated.landmark_pairs = pair_states
+        records[record_index] = updated
+        self._set_overlay_records(records)
+
+    def _shape_backed_overlay_landmark_pairs(
+        self, overlay_id: str
+    ) -> list[OverlayLandmarkPairState]:
+        pair_states = []
+        seen = set()
+        for shape in self._iter_overlay_shapes(overlay_id):
+            other = dict(getattr(shape, "other_data", {}) or {})
+            pair_id = str(other.get("overlay_landmark_pair_id") or "")
+            if not pair_id or pair_id in seen:
+                continue
+            image_shape = self._find_image_landmark_pair_shape(pair_id)
+            if image_shape is None:
+                continue
+            seen.add(pair_id)
+            pair_states.append(
+                self._landmark_pair_state_from_shapes(shape, image_shape, pair_id)
+            )
+        return pair_states
+
+    def _editable_shape_vector(self, shape) -> VectorShape:
+        other = dict(getattr(shape, "other_data", {}) or {})
+        shape_type = str(getattr(shape, "shape_type", "") or "").lower()
+        if shape_type == "polygon":
+            kind = "polygon"
+        elif shape_type == "point":
+            kind = "point"
+        else:
+            kind = "polyline"
+        return VectorShape(
+            id=str(
+                other.get("overlay_element_id")
+                or getattr(shape, "label", "")
+                or f"shape_{id(shape)}"
+            ),
+            kind=kind,
+            points=[
+                (float(point.x()), float(point.y()))
+                for point in getattr(shape, "points", []) or []
+            ],
+            label=str(getattr(shape, "label", "") or "") or None,
+            stroke=other.get("overlay_stroke"),
+            fill=other.get("overlay_fill"),
+            text=other.get("overlay_text"),
+            locked=bool(other.get("overlay_locked", False)),
+            source_tag=other.get("overlay_element"),
+            layer_name=other.get("overlay_layer"),
+            source_path=other.get("overlay_source"),
+        )
 
     @staticmethod
     def _shape_bounds(shapes) -> tuple[float, float, float, float] | None:
@@ -179,8 +314,12 @@ class VectorOverlayMixin:
     def _onVectorOverlayCanvasSelectionChanged(self, shapes) -> None:
         self._refreshVectorOverlayDock()
         if getattr(self, "_vector_overlay_pair_sync_in_progress", False):
+            if hasattr(self, "_syncLargeImageDocument"):
+                self._syncLargeImageDocument()
             return
         self._syncSelectedVectorOverlayPairFromShapes(shapes)
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
 
     def _refreshVectorOverlayDock(self) -> None:
         dock = getattr(self, "vector_overlay_dock", None)
@@ -447,72 +586,82 @@ class VectorOverlayMixin:
         self.loadShapes(result.shapes, replace=False)
         self.lastOpenDir = str(Path(filename).parent)
 
-        if not isinstance(self.otherData, dict):
-            self.otherData = {}
-        overlays = list(self.otherData.get("svg_overlays") or [])
-        overlays.append(
-            {
-                "id": result.metadata.get("id"),
-                "source": filename,
-                "shape_count": len(result.shapes),
-                "metadata": result.metadata,
-                "transform": dict(result.metadata.get("transform") or {}),
-            }
+        record = OverlayRecordModel(
+            id=str(result.metadata.get("id") or ""),
+            source_path=str(filename),
+            source_kind=str(result.metadata.get("source_kind", "svg") or "svg"),
+            shape_count=int(len(result.shapes)),
+            transform=overlay_transform_from_dict(result.metadata.get("transform")),
+            metadata=dict(result.metadata or {}),
+            source_shapes=list(result.metadata.get("source_shapes") or []),
+            editable_shapes=[
+                self._editable_shape_vector(shape)
+                for shape in list(result.shapes or [])
+            ],
+            landmark_pairs=[],
         )
-        self.otherData["svg_overlays"] = overlays
+        records = self._overlay_records()
+        records.append(record)
+        self._set_overlay_records(records)
         self._refreshVectorOverlayDock()
         self.setDirty()
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
         self._postVectorOverlayStatus(
             self.tr("Imported %d vector overlay shapes from %s")
             % (len(result.shapes), Path(filename).name)
         )
 
     def listVectorOverlays(self) -> list[dict]:
-        if not isinstance(getattr(self, "otherData", None), dict):
-            return []
-        overlays = list(self.otherData.get("svg_overlays") or [])
         normalized = []
-        for overlay in overlays:
-            record = dict(overlay or {})
-            overlay_id = str(record.get("id") or "")
-            record["transform"] = overlay_transform_to_dict(
-                overlay_transform_from_dict(record.get("transform"))
-            )
+        record_map = {record.id: record for record in self._overlay_records()}
+        for layer in self.vectorOverlayLayers():
+            overlay_id = str(layer.id or "")
+            record_model = record_map.get(overlay_id)
+            pair_state_models = list(getattr(record_model, "landmark_pairs", []) or [])
+            if not pair_state_models and overlay_id:
+                pair_state_models = self._shape_backed_overlay_landmark_pairs(
+                    overlay_id
+                )
+            record = {
+                "id": layer.id,
+                "source": layer.source_path,
+                "source_kind": str(
+                    getattr(record_model, "source_kind", "")
+                    or dict(layer.metadata or {}).get("source_kind")
+                    or "svg"
+                ),
+                "shape_count": int(layer.shape_count),
+                "metadata": dict(layer.metadata or {}),
+                "transform": overlay_transform_to_dict(
+                    OverlayTransform(
+                        tx=layer.transform.tx,
+                        ty=layer.transform.ty,
+                        sx=layer.transform.sx,
+                        sy=layer.transform.sy,
+                        rotation_deg=layer.transform.rotation_deg,
+                        opacity=layer.opacity,
+                        visible=layer.visible,
+                        z_order=layer.z_index,
+                    )
+                ),
+                "name": layer.name,
+                "source_locked": bool(
+                    dict(layer.metadata or {}).get("locked_source", True)
+                ),
+                "editable_layer_name": str(
+                    dict(layer.metadata or {}).get("editable_layer_name")
+                    or "Corrections"
+                ),
+            }
             pairs = (
                 self._collect_overlay_landmark_pairs(overlay_id) if overlay_id else []
             )
-            explicit_count = len(
-                [
-                    1
-                    for shape in self._iter_overlay_shapes(overlay_id)
-                    if str(
-                        dict(getattr(shape, "other_data", {}) or {}).get(
-                            "overlay_landmark_pair_id"
-                        )
-                        or ""
-                    )
-                ]
-            )
-            explicit_count = min(explicit_count, len(pairs))
+            explicit_pairs = [
+                overlay_landmark_pair_to_dict(pair) for pair in pair_state_models
+            ]
+            explicit_count = len(explicit_pairs)
             candidate = self._selected_point_pair_candidate(overlay_id)
-            explicit_pairs = []
-            seen_pairs = set()
-            for shape in self._iter_overlay_shapes(overlay_id):
-                other = dict(getattr(shape, "other_data", {}) or {})
-                pair_id = str(other.get("overlay_landmark_pair_id") or "")
-                if not pair_id or pair_id in seen_pairs:
-                    continue
-                image_shape = self._find_image_landmark_pair_shape(pair_id)
-                if image_shape is None:
-                    continue
-                seen_pairs.add(pair_id)
-                explicit_pairs.append(
-                    {
-                        "pair_id": pair_id,
-                        "overlay_label": str(getattr(shape, "label", "") or ""),
-                        "image_label": str(getattr(image_shape, "label", "") or ""),
-                    }
-                )
             record["landmark_summary"] = {
                 "matched_count": len(pairs),
                 "explicit_count": explicit_count,
@@ -533,6 +682,137 @@ class VectorOverlayMixin:
             }
             normalized.append(record)
         return normalized
+
+    def vectorOverlayLayers(self) -> list[VectorOverlayLayer]:
+        layers = []
+        for record_model in self._overlay_records():
+            overlay_id = str(record_model.id or "")
+            editable_shapes = []
+            for shape in self._iter_overlay_shapes(overlay_id):
+                editable_shapes.append(self._editable_shape_vector(shape))
+            record = overlay_record_to_dict(record_model)
+            record["editable_shapes"] = editable_shapes
+            layer = vector_overlay_layer_from_record(record, shapes=editable_shapes)
+            if layer is not None:
+                layers.append(layer)
+        return layers
+
+    def vectorOverlayLandmarkLayers(self) -> list[LandmarkLayer]:
+        layers = []
+        record_map = {record.id: record for record in self._overlay_records()}
+        for overlay_layer in self.vectorOverlayLayers():
+            pairs = []
+            record_model = record_map.get(overlay_layer.id)
+            landmarks_visible = True
+            if record_model is not None:
+                landmarks_visible = bool(
+                    dict(getattr(record_model, "metadata", {}) or {}).get(
+                        "landmarks_visible", True
+                    )
+                )
+            pair_id_order = [
+                str(pair.pair_id or "")
+                for pair in list(getattr(record_model, "landmark_pairs", []) or [])
+            ]
+            for pair_index, (src, dst, key) in enumerate(
+                self._collect_overlay_landmark_pairs(overlay_layer.id)
+            ):
+                pair_id = (
+                    pair_id_order[pair_index]
+                    if pair_index < len(pair_id_order) and pair_id_order[pair_index]
+                    else f"{overlay_layer.id}:{pair_index}"
+                )
+                pairs.append(
+                    LandmarkPair(
+                        pair_id=pair_id,
+                        source=(float(src[0]), float(src[1])),
+                        target=(float(dst[0]), float(dst[1])),
+                        key=(str(key[0]), str(key[1])),
+                    )
+                )
+            layers.append(
+                LandmarkLayer(
+                    id=f"{overlay_layer.id}_landmarks",
+                    name=f"{overlay_layer.name} landmarks",
+                    visible=landmarks_visible,
+                    opacity=1.0,
+                    locked=False,
+                    z_index=max(overlay_layer.z_index + 1, 1),
+                    pairs=pairs,
+                )
+            )
+        return layers
+
+    def setVectorOverlayLandmarkLayerVisible(
+        self, overlay_id: str, visible: bool
+    ) -> bool:
+        overlay_index, current_record = self._overlay_record_model(overlay_id)
+        if overlay_index is None or current_record is None:
+            return False
+        visible_flag = bool(visible)
+        metadata = dict(current_record.metadata or {})
+        if bool(metadata.get("landmarks_visible", True)) == visible_flag:
+            return False
+        metadata["landmarks_visible"] = visible_flag
+        updated_record = OverlayRecordModel(
+            id=current_record.id,
+            source_path=current_record.source_path,
+            source_kind=current_record.source_kind,
+            transform=current_record.transform,
+            shape_count=current_record.shape_count,
+            metadata=metadata,
+            source_shapes=list(current_record.source_shapes or []),
+            landmark_pairs=list(current_record.landmark_pairs or []),
+        )
+        records = self._overlay_records()
+        records[overlay_index] = updated_record
+        self._set_overlay_records(records)
+        for shape in self._iter_overlay_shapes(overlay_id):
+            other = dict(getattr(shape, "other_data", {}) or {})
+            other["overlay_landmarks_visible"] = visible_flag
+            shape.other_data = other
+        if not visible_flag and str(
+            getattr(self, "_selected_overlay_landmark_pair_id", "") or ""
+        ):
+            active_pair = str(
+                getattr(self, "_selected_overlay_landmark_pair_id", "") or ""
+            )
+            for pair in self.vectorOverlayLandmarkLayers():
+                if pair.id == f"{overlay_id}_landmarks":
+                    if any(
+                        str(item.pair_id or "") == active_pair
+                        for item in list(pair.pairs or [])
+                    ):
+                        self._setSelectedVectorOverlayLandmarkPair(None)
+                        break
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None:
+            canvas.update()
+        if getattr(self, "large_image_view", None) is not None:
+            self.large_image_view.set_shapes(getattr(canvas, "shapes", []))
+        self._refreshVectorOverlayDock()
+        if hasattr(self, "setDirty"):
+            self.setDirty()
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
+        return True
+
+    def currentAnnotationLayer(self) -> AnnotationLayer:
+        canvas = getattr(self, "canvas", None)
+        shapes = [
+            shape
+            for shape in list(getattr(canvas, "shapes", []) or [])
+            if "overlay_id" not in dict(getattr(shape, "other_data", {}) or {})
+        ]
+        return AnnotationLayer(
+            id="annotations",
+            name="Annotations",
+            visible=True,
+            opacity=1.0,
+            locked=False,
+            z_index=100,
+            shapes=shapes,
+        )
 
     def _iter_overlay_shapes(self, overlay_id: str):
         canvas = getattr(self, "canvas", None)
@@ -654,52 +934,29 @@ class VectorOverlayMixin:
         return None, None
 
     def buildVectorOverlayDocument(self, overlay_id: str) -> OverlayDocument | None:
-        _overlay_index, record = self._overlay_record(overlay_id)
-        if record is None:
+        _overlay_index, record_model = self._overlay_record_model(overlay_id)
+        if record_model is None:
             return None
-        metadata = dict(record.get("metadata") or {})
-        shapes = []
-        for shape in self._iter_overlay_shapes(overlay_id):
-            other = dict(getattr(shape, "other_data", {}) or {})
-            points = [
-                (float(point.x()), float(point.y()))
-                for point in getattr(shape, "points", [])
-            ]
-            shape_type = str(getattr(shape, "shape_type", "") or "").lower()
-            if shape_type == "polygon":
-                kind = "polygon"
-            elif shape_type == "point":
-                kind = "point"
-            elif "overlay_text" in other:
-                kind = "text"
-            else:
-                kind = "polyline"
-            shapes.append(
-                VectorShape(
-                    id=str(
-                        other.get("overlay_element_id")
-                        or getattr(shape, "label", "")
-                        or f"shape_{len(shapes)}"
-                    ),
-                    kind=kind,
-                    points=points,
-                    label=str(getattr(shape, "label", "") or "") or None,
-                    stroke=other.get("overlay_stroke"),
-                    fill=other.get("overlay_fill"),
-                    text=other.get("overlay_text"),
-                    locked=bool(other.get("overlay_locked", False)),
-                    source_tag=other.get("overlay_element"),
-                    layer_name=other.get("overlay_layer"),
-                    source_path=other.get("overlay_source"),
-                )
-            )
+        metadata = dict(record_model.metadata or {})
+        layer = next(
+            (item for item in self.vectorOverlayLayers() if item.id == str(overlay_id)),
+            None,
+        )
+        if layer is None:
+            return None
         return OverlayDocument(
-            source_path=str(record.get("source") or metadata.get("source") or ""),
+            source_path=str(layer.source_path or record_model.source_path or ""),
             layer_name=str(
-                metadata.get("layer_name") or Path(str(record.get("source") or "")).stem
+                metadata.get("layer_name") or Path(str(layer.source_path or "")).stem
             ),
-            transform=overlay_transform_from_dict(record.get("transform")),
-            shapes=shapes,
+            transform=record_model.transform,
+            shapes=list(layer.shapes),
+            source_kind=str(record_model.source_kind or "svg"),
+            source_shapes=list(record_model.source_shapes or []),
+            landmark_pairs=[
+                overlay_landmark_pair_to_dict(pair)
+                for pair in list(record_model.landmark_pairs or [])
+            ],
         )
 
     def _overlay_bounds_center(self, overlay_id: str) -> tuple[float, float]:
@@ -784,6 +1041,8 @@ class VectorOverlayMixin:
         self._syncVectorOverlayActionState()
         if hasattr(self, "setDirty"):
             self.setDirty()
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
         return changed
 
     def toggleVectorOverlaysVisible(self, value: bool = False) -> None:
@@ -817,23 +1076,11 @@ class VectorOverlayMixin:
         visible: bool | None = None,
         z_order: int | None = None,
     ) -> bool:
-        if not isinstance(getattr(self, "otherData", None), dict):
-            return False
-        overlays = list(self.otherData.get("svg_overlays") or [])
-        if not overlays:
+        overlay_index, current_record = self._overlay_record_model(overlay_id)
+        if overlay_index is None or current_record is None:
             return False
 
-        overlay_index = None
-        current = None
-        for idx, overlay in enumerate(overlays):
-            if str((overlay or {}).get("id") or "") == str(overlay_id):
-                overlay_index = idx
-                current = dict(overlay or {})
-                break
-        if overlay_index is None or current is None:
-            return False
-
-        current_transform = overlay_transform_from_dict(current.get("transform"))
+        current_transform = current_record.transform
         target_transform = OverlayTransform(
             tx=current_transform.tx if tx is None else float(tx),
             ty=current_transform.ty if ty is None else float(ty),
@@ -875,12 +1122,17 @@ class VectorOverlayMixin:
             shape.other_data = other
             shape.visible = bool(target_transform.visible)
 
-        current["transform"] = overlay_transform_to_dict(target_transform)
-        metadata = dict(current.get("metadata") or {})
-        metadata["transform"] = dict(current["transform"])
-        current["metadata"] = metadata
-        overlays[overlay_index] = current
-        self.otherData["svg_overlays"] = overlays
+        records = self._overlay_records()
+        current_record.transform = target_transform
+        metadata = dict(current_record.metadata or {})
+        metadata["transform"] = overlay_transform_to_dict(target_transform)
+        current_record.metadata = metadata
+        current_record.editable_shapes = [
+            self._editable_shape_vector(shape)
+            for shape in self._iter_overlay_shapes(overlay_id)
+        ]
+        records[overlay_index] = current_record
+        self._set_overlay_records(records)
 
         canvas = getattr(self, "canvas", None)
         if canvas is not None:
@@ -895,23 +1147,13 @@ class VectorOverlayMixin:
         self._syncVectorOverlayActionState()
         if hasattr(self, "setDirty"):
             self.setDirty()
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
         return True
 
     def alignVectorOverlayFromLandmarks(self, overlay_id: str) -> int:
-        if not isinstance(getattr(self, "otherData", None), dict):
-            return 0
-        overlays = list(self.otherData.get("svg_overlays") or [])
-        if not overlays:
-            return 0
-
-        overlay_index = None
-        current = None
-        for idx, overlay in enumerate(overlays):
-            if str((overlay or {}).get("id") or "") == str(overlay_id):
-                overlay_index = idx
-                current = dict(overlay or {})
-                break
-        if overlay_index is None or current is None:
+        overlay_index, current_record = self._overlay_record_model(overlay_id)
+        if overlay_index is None or current_record is None:
             return 0
 
         pairs = self._collect_overlay_landmark_pairs(overlay_id)
@@ -931,23 +1173,29 @@ class VectorOverlayMixin:
             other["overlay_landmark_pair_count"] = len(pairs)
             shape.other_data = other
 
-        current_transform = overlay_transform_from_dict(current.get("transform"))
+        current_transform = current_record.transform
         reset_transform = OverlayTransform(
             opacity=current_transform.opacity,
             visible=current_transform.visible,
             z_order=current_transform.z_order,
         )
-        current["transform"] = overlay_transform_to_dict(reset_transform)
-        metadata = dict(current.get("metadata") or {})
-        metadata["transform"] = dict(current["transform"])
+        metadata = dict(current_record.metadata or {})
+        metadata["transform"] = overlay_transform_to_dict(reset_transform)
         metadata["landmark_alignment"] = {
             "affine_matrix": np.asarray(matrix, dtype=float).tolist(),
             "pair_count": len(pairs),
             "keys": [list(key) for _src, _dst, key in pairs],
         }
-        current["metadata"] = metadata
-        overlays[overlay_index] = current
-        self.otherData["svg_overlays"] = overlays
+        records = self._overlay_records()
+        current_record.transform = reset_transform
+        current_record.metadata = metadata
+        current_record.editable_shapes = [
+            self._editable_shape_vector(shape)
+            for shape in self._iter_overlay_shapes(overlay_id)
+        ]
+        records[overlay_index] = current_record
+        self._set_overlay_records(records)
+        self._sync_overlay_record_landmark_pairs(overlay_id)
 
         canvas = getattr(self, "canvas", None)
         if canvas is not None:
@@ -960,6 +1208,8 @@ class VectorOverlayMixin:
         self._refreshVectorOverlayDock()
         if hasattr(self, "setDirty"):
             self.setDirty()
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
         return len(pairs)
 
     def pairSelectedVectorOverlayLandmarks(self, overlay_id: str) -> str:
@@ -977,6 +1227,7 @@ class VectorOverlayMixin:
         canvas = getattr(self, "canvas", None)
         if canvas is not None:
             canvas.update()
+        self._sync_overlay_record_landmark_pairs(overlay_id)
         self._applySelectedVectorOverlayPairHighlight(overlay_id, pair_id)
         self._refreshVectorOverlayDock()
         if hasattr(self, "setDirty"):
@@ -998,6 +1249,7 @@ class VectorOverlayMixin:
             canvas = getattr(self, "canvas", None)
             if canvas is not None:
                 canvas.update()
+            self._sync_overlay_record_landmark_pairs(overlay_id)
             if str(
                 getattr(self, "_selected_overlay_landmark_pair_id", "") or ""
             ) == str(pair_id):

@@ -32,6 +32,18 @@ from annolid.gui.large_image import (
     remove_large_image_cache_file,
     resolve_fresh_optimized_large_image_path,
 )
+from annolid.gui.large_image_modes import large_image_draw_mode_label
+from annolid.gui.large_image_document import (
+    LargeImageDocument,
+    LargeImageSelectionState,
+    LargeImageViewport,
+)
+from annolid.io.large_image.base import LargeImageBackendCapabilities
+from annolid.gui.viewer_layers import (
+    AffineTransform,
+    RasterImageLayer,
+    ViewerLayerModel,
+)
 from annolid.gui.status import post_window_status
 from annolid.gui.label_file import LabelFile, LabelFileError
 from annolid.gui.workers import FlexibleWorker
@@ -373,9 +385,14 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.labelFile = None
         self.otherData = {}
         self.large_image_backend = None
+        self.large_image_document: LargeImageDocument | None = None
         self._active_image_view = "canvas"
+        self._large_image_surface_reason: str = ""
         self._large_image_hidden_docks_states: dict[QtWidgets.QDockWidget, bool] = {}
         self._play_button_owner: str | None = None
+        self._large_image_surface_label = None
+        self._large_image_mode_label = None
+        self._large_image_return_button = None
         self.dirty = False
         self.output_dir: Optional[str] = None
         self.lastOpenDir: Optional[str] = None
@@ -1068,7 +1085,9 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         if hasattr(self, "_viewer_stack") and self._viewer_stack is not None:
             self._viewer_stack.setCurrentWidget(self.large_image_view)
         self._active_image_view = "tiled"
+        self._large_image_surface_reason = ""
         self.canvas.setEnabled(False)
+        self._syncLargeImageDocument()
         return True
 
     def _large_tiff_annotation_root(
@@ -1132,9 +1151,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         if annotation_dir is None:
             return None
         target_page = (
-            int(page_index)
-            if page_index is not None
-            else int(getattr(self, "frame_number", 0) or 0)
+            int(page_index) if page_index is not None else self._largeImageCurrentPage()
         )
         return str(annotation_dir / f"{annotation_dir.name}_{target_page:09}.json")
 
@@ -1233,10 +1250,10 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
     def _setup_large_image_stack_navigation(self, backend) -> None:
         from annolid.gui.widgets.video_slider import VideoSlider
 
-        page_count = max(1, int(getattr(backend, "get_page_count", lambda: 1)() or 1))
-        if page_count <= 1:
+        if not self._largeImageSupportsPages(backend):
             self._clear_large_image_stack_navigation()
             return
+        page_count = max(1, int(getattr(backend, "get_page_count", lambda: 1)() or 1))
         self._clear_status_bar_media_controls()
         seekbar = VideoSlider()
         seekbar.setMinimum(0)
@@ -1276,7 +1293,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
 
     def requestLargeImagePageNumber(self, page_index: int) -> bool:
         target = int(page_index)
-        current = int(getattr(self, "frame_number", 0) or 0)
+        current = self._largeImageCurrentPage()
         if target == current:
             return True
         if not self.mayContinue():
@@ -1316,6 +1333,8 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         large_view = getattr(self, "large_image_view", None)
         canvas = getattr(self, "canvas", None)
         if backend is None or large_view is None:
+            return False
+        if not self._largeImageSupportsPages(backend):
             return False
         page_count = max(1, int(getattr(backend, "get_page_count", lambda: 1)() or 1))
         if page_count <= 1:
@@ -1361,6 +1380,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                     seekbar.setValue(target)
             except Exception:
                 pass
+        self._syncLargeImageDocument()
         self._post_window_status(
             self.tr("Viewing TIFF page %d of %d") % (target + 1, page_count)
         )
@@ -1376,7 +1396,357 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             return default
 
     def _post_window_status(self, message: str, timeout: int = 4000) -> None:
+        image_path = str(getattr(self, "imagePath", "") or "")
+        if (
+            (image_path and bool(is_large_tiff_path(image_path)))
+            or getattr(self, "large_image_backend", None) is not None
+            or getattr(self, "_active_image_view", "canvas") == "tiled"
+        ):
+            return
         post_window_status(self, message, timeout)
+
+    def _ensureLargeImageModeWidgets(self) -> None:
+        if getattr(self, "_large_image_surface_label", None) is not None:
+            return
+        surface_label = QtWidgets.QLabel(self)
+        surface_label.setObjectName("largeImageSurfaceIndicator")
+        surface_label.setStyleSheet("font-weight: 600;")
+        surface_label.hide()
+        mode_label = QtWidgets.QLabel(self)
+        mode_label.setObjectName("largeImageModeIndicator")
+        mode_label.hide()
+        return_button = QtWidgets.QToolButton(self)
+        return_button.setObjectName("largeImageReturnButton")
+        return_button.setText(self.tr("Return to Tiled Viewer"))
+        return_button.clicked.connect(self.returnToLargeImageTiledView)
+        return_button.hide()
+        self._large_image_surface_label = surface_label
+        self._large_image_mode_label = mode_label
+        self._large_image_return_button = return_button
+
+    def _updateLargeImageModeWidgets(self) -> None:
+        self._ensureLargeImageModeWidgets()
+        surface_label = self._large_image_surface_label
+        mode_label = self._large_image_mode_label
+        return_button = self._large_image_return_button
+        document = getattr(self, "large_image_document", None)
+        if document is not None:
+            surface = str(getattr(document, "surface", "canvas") or "canvas")
+            draw_mode = str(getattr(document, "draw_mode", "polygon") or "polygon")
+            if surface == "tiled":
+                surface_label.setText(self.tr("Large Image: Tiled Viewer"))
+                mode_label.setText(
+                    self.tr("Mode: Editing")
+                    if bool(getattr(document, "editing", True))
+                    else self.tr("Mode: %s") % large_image_draw_mode_label(draw_mode)
+                )
+            else:
+                surface_label.setText(self.tr("Large Image: Canvas Preview"))
+                fallback_reason = str(
+                    getattr(self, "_large_image_surface_reason", "") or ""
+                ).strip()
+                mode_label.setText(
+                    self.tr("Fallback: %s") % fallback_reason
+                    if fallback_reason
+                    else self.tr("Mode: %s") % large_image_draw_mode_label(draw_mode)
+                )
+        for widget in (surface_label, mode_label, return_button):
+            try:
+                widget.hide()
+            except Exception:
+                pass
+
+    def returnToLargeImageTiledView(self, _value: bool = False) -> bool:
+        backend = getattr(self, "large_image_backend", None)
+        large_view = getattr(self, "large_image_view", None)
+        if backend is None or large_view is None:
+            return False
+        if hasattr(self, "toggleDrawMode"):
+            try:
+                self.toggleDrawMode(True)
+            except Exception:
+                pass
+        try:
+            large_view.set_shapes(list(getattr(self.canvas, "shapes", []) or []))
+        except Exception:
+            pass
+        if hasattr(self, "_viewer_stack") and self._viewer_stack is not None:
+            self._viewer_stack.setCurrentWidget(large_view)
+        self._active_image_view = "tiled"
+        self._large_image_surface_reason = ""
+        if hasattr(self, "canvas") and self.canvas is not None:
+            self.canvas.setEnabled(False)
+        self._syncLargeImageDocument()
+        return True
+
+    def _captureLargeImageViewport(self) -> LargeImageViewport:
+        tiled = getattr(self, "large_image_view", None)
+        zoom_widget = getattr(self, "zoomWidget", None)
+        default_zoom = int(zoom_widget.value()) if zoom_widget is not None else 100
+        if tiled is not None and hasattr(tiled, "viewport_state"):
+            try:
+                state = dict(tiled.viewport_state() or {})
+                return LargeImageViewport(
+                    zoom_percent=int(
+                        state.get("zoom_percent", default_zoom) or default_zoom
+                    ),
+                    center_x=float(state.get("center_x", 0.0) or 0.0),
+                    center_y=float(state.get("center_y", 0.0) or 0.0),
+                    fit_mode=str(state.get("fit_mode", "fit_window") or "fit_window"),
+                )
+            except Exception:
+                pass
+        return LargeImageViewport(
+            zoom_percent=default_zoom,
+            center_x=0.0,
+            center_y=0.0,
+            fit_mode="fit_window",
+        )
+
+    def _captureLargeImageSelection(self) -> LargeImageSelectionState:
+        canvas = getattr(self, "canvas", None)
+        large_view = getattr(self, "large_image_view", None)
+        selected_shapes = list(getattr(canvas, "selectedShapes", []) or [])
+        selected_overlay_id = None
+        for shape in selected_shapes:
+            other = dict(getattr(shape, "other_data", {}) or {})
+            overlay_id = str(other.get("overlay_id") or "")
+            if overlay_id:
+                selected_overlay_id = overlay_id
+                break
+        selected_label_value = None
+        if large_view is not None and hasattr(large_view, "selected_label_value"):
+            try:
+                selected_label_value = large_view.selected_label_value()
+            except Exception:
+                selected_label_value = None
+        return LargeImageSelectionState(
+            selected_shape_count=len(selected_shapes),
+            selected_shape_labels=[
+                str(getattr(shape, "label", "") or "") for shape in selected_shapes
+            ],
+            selected_overlay_id=selected_overlay_id or None,
+            selected_landmark_pair_id=(
+                str(getattr(self, "_selected_overlay_landmark_pair_id", "") or "")
+                or None
+            ),
+            selected_label_value=selected_label_value,
+        )
+
+    def _captureLargeImageCacheMetadata(self) -> dict:
+        other_data = getattr(self, "otherData", None)
+        if not isinstance(other_data, dict):
+            return {}
+        return dict(other_data.get("large_image") or {})
+
+    def _captureLargeImageDrawMode(self) -> tuple[str, bool]:
+        if getattr(self, "_active_image_view", "canvas") == "tiled":
+            tiled = getattr(self, "large_image_view", None)
+            if tiled is not None:
+                try:
+                    editing = bool(tiled.editing())
+                except Exception:
+                    editing = True
+                return str(
+                    getattr(tiled, "createMode", "polygon") or "polygon"
+                ), editing
+        canvas = getattr(self, "canvas", None)
+        editing = True
+        if canvas is not None and hasattr(canvas, "editing"):
+            try:
+                editing = bool(canvas.editing())
+            except Exception:
+                editing = True
+        create_mode = (
+            str(getattr(canvas, "createMode", "polygon") or "polygon")
+            if canvas is not None
+            else "polygon"
+        )
+        return create_mode, editing
+
+    def _syncLargeImageDocument(self) -> LargeImageDocument | None:
+        image_path = str(getattr(self, "imagePath", "") or "")
+        backend = getattr(self, "large_image_backend", None)
+        if (
+            not image_path
+            or not bool(is_large_tiff_path(image_path))
+            or backend is None
+        ):
+            self.large_image_document = None
+            self._updateLargeImageModeWidgets()
+            return None
+        page_count = max(1, int(getattr(backend, "get_page_count", lambda: 1)() or 1))
+        current_page = int(getattr(backend, "get_current_page", lambda: 0)() or 0)
+        draw_mode, editing = self._captureLargeImageDrawMode()
+        large_view = getattr(self, "large_image_view", None)
+        active_label_layer_id = None
+        if large_view is not None and hasattr(large_view, "label_layer_backend"):
+            try:
+                if large_view.label_layer_backend() is not None:
+                    active_label_layer_id = "label_image_overlay"
+            except Exception:
+                active_label_layer_id = None
+        label_overlay_state = {}
+        if large_view is not None and hasattr(large_view, "label_overlay_state"):
+            try:
+                label_overlay_state = dict(large_view.label_overlay_state() or {})
+            except Exception:
+                label_overlay_state = {}
+        capabilities = LargeImageBackendCapabilities()
+        if hasattr(backend, "capabilities"):
+            try:
+                capabilities = backend.capabilities()
+            except Exception:
+                capabilities = LargeImageBackendCapabilities()
+        self.large_image_document = LargeImageDocument(
+            image_path=image_path,
+            backend=backend,
+            backend_name=str(getattr(backend, "name", "") or ""),
+            backend_capabilities=capabilities,
+            current_page=current_page,
+            page_count=page_count,
+            surface=str(getattr(self, "_active_image_view", "canvas") or "canvas"),
+            draw_mode=draw_mode,
+            editing=bool(editing),
+            viewport=self._captureLargeImageViewport(),
+            active_layers=self.viewerLayerModels(),
+            active_label_layer_id=active_label_layer_id,
+            label_overlay_state=label_overlay_state,
+            cache_metadata=self._captureLargeImageCacheMetadata(),
+            selection=self._captureLargeImageSelection(),
+        )
+        self._updateLargeImageModeWidgets()
+        refresh_layer_dock = getattr(self, "_refreshViewerLayerDock", None)
+        if callable(refresh_layer_dock):
+            try:
+                refresh_layer_dock()
+            except Exception:
+                pass
+        return self.large_image_document
+
+    def currentLargeImageDocument(self) -> LargeImageDocument | None:
+        return self._syncLargeImageDocument()
+
+    def currentLargeImageBackendCapabilities(self) -> LargeImageBackendCapabilities:
+        return self._largeImageBackendCapabilities()
+
+    def _largeImageBackendCapabilities(
+        self, backend=None
+    ) -> LargeImageBackendCapabilities:
+        backend = (
+            backend
+            if backend is not None
+            else getattr(self, "large_image_backend", None)
+        )
+        document = getattr(self, "large_image_document", None)
+        if (
+            document is not None
+            and backend is not None
+            and backend is getattr(document, "backend", None)
+        ):
+            return document.backend_capabilities
+        if backend is None:
+            document = self.currentLargeImageDocument()
+            if document is not None:
+                return document.backend_capabilities
+        if backend is not None and hasattr(backend, "capabilities"):
+            try:
+                return backend.capabilities()
+            except Exception:
+                pass
+        return LargeImageBackendCapabilities()
+
+    def _largeImageSupportsPages(self, backend=None) -> bool:
+        backend = (
+            backend
+            if backend is not None
+            else getattr(self, "large_image_backend", None)
+        )
+        if backend is None:
+            return False
+        capabilities = self._largeImageBackendCapabilities(backend)
+        if not bool(capabilities.supports_pages):
+            return False
+        if not hasattr(backend, "get_page_count"):
+            return False
+        try:
+            return int(backend.get_page_count() or 1) > 1
+        except Exception:
+            return False
+
+    def _largeImageCurrentPage(self) -> int:
+        document = getattr(self, "large_image_document", None)
+        if document is not None:
+            return int(document.current_page or 0)
+        return int(getattr(self, "frame_number", 0) or 0)
+
+    def _largeImagePageCount(self) -> int:
+        document = getattr(self, "large_image_document", None)
+        if document is not None:
+            return max(1, int(document.page_count or 1))
+        backend = getattr(self, "large_image_backend", None)
+        if backend is not None and hasattr(backend, "get_page_count"):
+            try:
+                return max(1, int(backend.get_page_count() or 1))
+            except Exception:
+                pass
+        return max(1, int(getattr(self, "num_frames", 1) or 1))
+
+    def currentRasterImageLayer(self) -> RasterImageLayer | None:
+        image_path = str(getattr(self, "imagePath", "") or "")
+        if not image_path:
+            return None
+        backend = getattr(self, "large_image_backend", None)
+        page_index = 0
+        if backend is not None and hasattr(backend, "get_current_page"):
+            try:
+                page_index = int(backend.get_current_page() or 0)
+            except Exception:
+                page_index = 0
+        return RasterImageLayer(
+            id="raster_image",
+            name=Path(image_path).name,
+            visible=bool(
+                getattr(self, "_active_image_view", "canvas") in {"canvas", "tiled"}
+            ),
+            opacity=1.0,
+            locked=True,
+            z_index=-100,
+            transform=AffineTransform(),
+            backend_page_index=page_index,
+            channel=None,
+        )
+
+    def viewerLayerModels(self) -> list[ViewerLayerModel]:
+        layers: list[ViewerLayerModel] = []
+        raster_layer = self.currentRasterImageLayer()
+        if raster_layer is not None:
+            layers.append(raster_layer)
+        if hasattr(self, "currentLabelImageLayer"):
+            try:
+                label_layer = self.currentLabelImageLayer()
+            except Exception:
+                label_layer = None
+            if label_layer is not None:
+                layers.append(label_layer)
+        if hasattr(self, "vectorOverlayLayers"):
+            try:
+                layers.extend(list(self.vectorOverlayLayers() or []))
+            except Exception:
+                pass
+        if hasattr(self, "vectorOverlayLandmarkLayers"):
+            try:
+                layers.extend(list(self.vectorOverlayLandmarkLayers() or []))
+            except Exception:
+                pass
+        if hasattr(self, "currentAnnotationLayer"):
+            try:
+                annotation_layer = self.currentAnnotationLayer()
+            except Exception:
+                annotation_layer = None
+            if annotation_layer is not None:
+                layers.append(annotation_layer)
+        return sorted(layers, key=lambda layer: int(getattr(layer, "z_index", 0)))
 
     def _large_image_irrelevant_docks(self) -> list[QtWidgets.QDockWidget]:
         docks = []
@@ -1402,6 +1772,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             "flag_dock",
             "label_dock",
             "shape_dock",
+            "viewer_layer_dock",
             "vector_overlay_dock",
             "keypoint_sequence_dock",
         ):
@@ -1844,6 +2215,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             self._viewer_stack.setCurrentWidget(self.canvas)
         pixmap = QtGui.QPixmap.fromImage(image)
         self.canvas.loadPixmap(pixmap, clear_shapes=not bool(preserve_shapes))
+        self._syncLargeImageDocument()
 
     def activateLargeImageCanvasEditMode(
         self, *, reason: str = "overlay editing"
@@ -1858,14 +2230,9 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             preserve_shapes=True,
             clear_large_image_view=False,
         )
+        self._large_image_surface_reason = str(reason or self.tr("editing"))
         if hasattr(self.canvas, "setEditing"):
             self.canvas.setEditing(True)
-        self._post_window_status(
-            self.tr(
-                "Switched large-image overlay editing to canvas preview mode for %s"
-            )
-            % str(reason or self.tr("editing"))
-        )
         return True
 
     def loadFile(self, filename: str) -> None:
@@ -1990,7 +2357,10 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                     self._restoreLabelImageOverlayFromState()
             elif large_backend is not None:
                 self.setLargeImageDocksActive(True)
-                if initial_large_image_page is not None:
+                if (
+                    initial_large_image_page is not None
+                    and self._largeImageSupportsPages(large_backend)
+                ):
                     try:
                         page_count = int(
                             getattr(large_backend, "get_page_count", lambda: 1)() or 1
@@ -2001,9 +2371,9 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                     except Exception:
                         pass
                 self._setup_large_image_stack_navigation(large_backend)
-                if int(
-                    getattr(large_backend, "get_page_count", lambda: 1)() or 1
-                ) > 1 and hasattr(self, "_loadLargeImagePageAnnotations"):
+                if self._largeImageSupportsPages(large_backend) and hasattr(
+                    self, "_loadLargeImagePageAnnotations"
+                ):
                     handled_page_shapes = True
                     self.frame_number = int(
                         getattr(large_backend, "get_current_page", lambda: 0)() or 0
@@ -2026,6 +2396,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 self.loadLabels(shapes)
             elif hasattr(self, "loadShapes"):
                 self.loadShapes(shapes, replace=True)
+            self._syncLargeImageDocument()
 
         # Ensure image workflows (Open / Open Dir) activate toolbar actions.
         if hasattr(self, "toggleActions"):

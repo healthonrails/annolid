@@ -21,6 +21,7 @@ from annolid.gui.window_base import (
     AnnolidWindowBase,
 )
 import annolid.gui.window_base as window_base_module
+from annolid.io.large_image.base import LargeImageBackendCapabilities
 
 
 os.environ.setdefault("QT_QPA_PLATFORM", "minimal")
@@ -399,6 +400,46 @@ def test_multipage_tiff_load_sets_up_large_image_page_navigation(
         window.close()
 
 
+def test_large_image_page_navigation_respects_backend_capabilities(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "multipage_stack_capabilities.tif"
+    data = np.stack(
+        [
+            np.full((40, 60), 5, dtype=np.uint8),
+            np.full((40, 60), 180, dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    tifffile.imwrite(image_path, data)
+
+    backend = window_base_module.open_large_image(image_path)
+    monkeypatch.setattr(
+        backend,
+        "capabilities",
+        lambda: LargeImageBackendCapabilities(
+            supports_pages=False,
+            supports_pyramids=False,
+            supports_region_reads=True,
+            supports_label_stack=True,
+            supports_metadata_axes=True,
+            supports_cache_optimization=True,
+        ),
+    )
+
+    window = _WindowStub()
+    try:
+        window._setup_large_image_stack_navigation(backend)
+
+        assert window._has_large_image_page_navigation() is False
+        assert getattr(window, "seekbar", None) is None
+        assert getattr(window, "playButton", None) is None
+    finally:
+        window.close()
+
+
 def test_large_image_next_prev_navigation_stays_in_tiled_view(tmp_path: Path) -> None:
     _ensure_qapp()
 
@@ -738,7 +779,7 @@ def test_activate_large_image_canvas_edit_mode_preserves_shapes(tmp_path: Path) 
         assert window.canvas.shapes == [shape]
         assert window.canvas.editing_values[-1] is True
         assert window.large_image_backend is not None
-        assert "canvas preview mode" in window._status_messages[-1]
+        assert window._status_messages == []
     finally:
         window.close()
 
@@ -1277,6 +1318,36 @@ def test_tiled_image_view_clamps_tiles_and_renders_visible_shapes(
         view.close()
 
 
+def test_tiled_image_view_tile_scheduler_reuses_cached_tiles(tmp_path: Path) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "scheduler.ome.tiff"
+    data = np.arange(512 * 512, dtype=np.uint16).reshape(512, 512)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    from annolid.io.large_image import open_large_image
+
+    backend = open_large_image(image_path)
+    view = TiledImageView(tile_size=128)
+    try:
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+
+        view.set_backend(backend)
+        first_stats = view.tile_scheduler_stats()["raster"]
+
+        assert first_stats["loads_completed"] >= 1
+
+        view.refresh_visible_tiles()
+        second_stats = view.tile_scheduler_stats()["raster"]
+
+        assert second_stats["cache_hits"] > first_stats["cache_hits"]
+        assert second_stats["loads_completed"] == first_stats["loads_completed"]
+    finally:
+        view.close()
+
+
 def test_label_visibility_toggle_refreshes_tiled_view(
     tmp_path: Path,
 ) -> None:
@@ -1735,3 +1806,87 @@ def test_tiled_image_view_supports_native_circle_creation(tmp_path: Path) -> Non
         ]
     finally:
         view.close()
+
+
+def test_large_image_mode_widgets_show_surface_fallback_and_return(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "sample_mode_widgets.ome.tiff"
+    data = np.arange(120 * 180, dtype=np.uint16).reshape(120, 180)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    window = _WindowNavigationStub()
+    try:
+        image = QtGui.QImage(180, 120, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(25, 35, 45))
+        window.image = image
+        window.canvas.loadPixmap(QtGui.QPixmap.fromImage(image), clear_shapes=False)
+        window.loadFile(str(image_path))
+
+        surface_label = window._large_image_surface_label
+        mode_label = window._large_image_mode_label
+        return_button = window._large_image_return_button
+        assert surface_label is not None
+        assert mode_label is not None
+        assert return_button is not None
+        assert surface_label.parent() is window
+        assert mode_label.parent() is window
+        assert return_button.parent() is window
+
+        window.toggleDrawMode(False, createMode="ai_polygon")
+
+        assert window._active_image_view == "canvas"
+        assert surface_label.isHidden() is True
+        assert mode_label.isHidden() is True
+        assert return_button.isHidden() is True
+
+        changed = window.returnToLargeImageTiledView()
+
+        assert changed is True
+        assert window._active_image_view == "tiled"
+        assert surface_label.isHidden() is True
+        assert return_button.isHidden() is True
+    finally:
+        if window.timer is not None:
+            window.timer.stop()
+        window.close()
+
+
+def test_tiled_image_view_debug_status_reports_backend_tiles_and_cache(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "sample_debug_status.ome.tiff"
+    data = np.arange(220 * 340, dtype=np.uint16).reshape(220, 340)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    from annolid.io.large_image import open_large_image
+
+    backend = open_large_image(image_path)
+    window = _WindowStub()
+    try:
+        window.imagePath = str(image_path)
+        window.large_image_backend = backend
+        window._active_image_view = "tiled"
+        window._viewer_stack.setCurrentWidget(window.large_image_view)
+        view = window.large_image_view
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.set_backend(backend)
+
+        status_text = view.debug_status_text()
+        overlay_text = view._status_overlay.current_text()
+
+        assert "backend=" in status_text
+        assert "page=" in status_text
+        assert "zoom=" in status_text
+        assert "tiles=" in status_text
+        assert "cache=" in status_text
+        assert "Tiled Viewer" in overlay_text
+        assert "visible tiles=" in overlay_text
+    finally:
+        window.close()

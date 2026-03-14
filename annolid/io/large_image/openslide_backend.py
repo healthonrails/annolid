@@ -4,7 +4,12 @@ from pathlib import Path
 
 import numpy as np
 
-from .base import LargeImageBackend, LargeImageLoadResult, LargeImageMetadata
+from .base import (
+    LargeImageBackend,
+    LargeImageBackendCapabilities,
+    LargeImageLoadResult,
+    LargeImageMetadata,
+)
 from .common import array_to_qimage, is_large_tiff_path
 
 
@@ -87,4 +92,16 @@ class OpenSlideBackend(LargeImageBackend):
         return LargeImageLoadResult(
             qimage=array_to_qimage(np.asarray(thumbnail)),
             metadata=metadata,
+        )
+
+    def capabilities(self) -> LargeImageBackendCapabilities:
+        slide = self._opened_slide() if self.path is not None else None
+        levels = int(getattr(slide, "level_count", 1) or 1) if slide is not None else 1
+        return LargeImageBackendCapabilities(
+            supports_pages=False,
+            supports_pyramids=levels > 1,
+            supports_region_reads=True,
+            supports_label_stack=False,
+            supports_metadata_axes=False,
+            supports_cache_optimization=False,
         )

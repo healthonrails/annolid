@@ -15,6 +15,7 @@ from .file_browser_mixin import FileBrowserMixin
 from .flags_overlay_mixin import FlagsOverlayMixin
 from .frame_playback_mixin import FramePlaybackMixin
 from .label_image_overlay_mixin import LabelImageOverlayMixin
+from .layer_dock_mixin import LayerDockMixin
 from .label_panel_mixin import LabelPanelMixin
 from .lifecycle_mixin import LifecycleMixin
 from .media_workflow_mixin import MediaWorkflowMixin
@@ -57,6 +58,7 @@ class AnnolidWindowMixinBundle(
     SchemaBehaviorLoaderMixin,
     FramePlaybackMixin,
     LabelImageOverlayMixin,
+    LayerDockMixin,
     BehaviorLogMixin,
     AgentAnalysisMixin,
     ProjectWorkflowMixin,

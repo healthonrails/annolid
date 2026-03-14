@@ -253,6 +253,10 @@ def import_vector_document(path: str | Path) -> ImportedVectorDocument:
             )
         svg_text = _pdf_like_to_svg_text(resolved)
         document = import_svg_string(svg_text, source_path=str(resolved))
+        document = replace(
+            document,
+            source_kind="ai" if suffix == ".ai" else "pdf",
+        )
         try:
             text_items = _extract_pdf_text_labels(resolved)
         except Exception:

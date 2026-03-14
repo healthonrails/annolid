@@ -107,6 +107,19 @@ Best for:
 
 If Annolid has to fall back to a slower backend, it reports that in the status message when the image opens.
 
+Annolid also tracks backend capabilities explicitly, so the UI can adapt
+without guessing. In practice, the important capability differences are:
+
+- page navigation support
+- pyramid/level support
+- region-read support
+- metadata-axis support
+- optimized-cache generation support
+- label-stack suitability
+
+That is why, for example, TIFF page navigation only appears when the active
+backend actually reports paged-stack support.
+
 ## Optimizing large TIFF files for fast viewing
 
 If you open a large flat TIFF repeatedly, the source format itself may be the bottleneck. Annolid can generate a pyramidal viewing cache.
@@ -141,6 +154,16 @@ Annolid uses two image-editing surfaces for large-image workflows:
 - `Tiled large-image viewer`
 - `Canvas`
 
+For large TIFF workflows, the status bar is now kept intentionally minimal so
+page navigation remains clear. In practice, it should only show the page
+controls such as:
+
+- play/pause
+- page slider
+
+Large-image mode/debug information lives in the viewer overlay instead of the
+status bar.
+
 ### Tiled large-image viewer
 
 Best for:
@@ -169,12 +192,43 @@ It keeps the annotation-focused docks available:
 
 - Files
 - Flags
+- Layers
 - Labels
 - Label Instances
 - Vector Overlays, when overlays are present
 
 When you leave the large-image workflow and go back to ordinary image or video
 work, those hidden docks are restored.
+
+## Layer model and layer dock
+
+Annolid now treats the large-image viewer as a true layer-based workflow even
+though it still preserves the existing annotation data model underneath.
+
+The current runtime layer stack includes:
+
+- raster image layer
+- label-image overlay layer
+- vector overlay layer
+- landmark layer
+- annotation layer
+
+The `Layers` dock reflects that runtime model directly. Today it gives you a
+single place to inspect and control the current layer stack, including:
+
+- hiding/showing label-image overlays
+- hiding/showing imported vector overlays
+- hiding/showing landmark-pair guide layers
+- hiding/showing manual annotation layers
+- adjusting opacity for label-image and vector-overlay layers
+
+Selecting a vector-overlay or landmark layer in the `Layers` dock also keeps
+the vector overlay dock aligned with that overlay, so the layer list and the
+overlay/alignment tools do not drift out of sync.
+
+That layer dock is intentionally built on top of the shared
+`ViewerLayerModel`/`LargeImageDocument` path rather than introducing another
+overlay-specific state store.
 
 ## What is tile-native
 
@@ -219,6 +273,9 @@ Why:
 
 When this happens, Annolid now shows a status message explaining that it switched to canvas preview mode for that tool.
 
+The fallback reason is reflected in the large-image viewer state and overlay,
+without adding more persistent status-bar text.
+
 ## What happens during canvas fallback
 
 If you choose an unsupported tool while working on a large TIFF:
@@ -229,6 +286,50 @@ If you choose an unsupported tool while working on a large TIFF:
 4. You continue working in the same project.
 
 This is a workflow handoff, not a data conversion.
+
+After you finish the canvas-only step, you can switch back to the tiled
+large-image surface without reopening the TIFF.
+
+## Viewer status and debugging overlay
+
+The tiled viewer now shows a compact translucent status overlay in the
+upper-left corner. This is useful both for everyday troubleshooting and for
+understanding which backend/path Annolid is using.
+
+The overlay reports:
+
+- backend in use
+- current page
+- current level
+- current zoom
+- visible raster tile count
+- visible label tile count
+- outstanding tile requests
+- cache hits and misses
+- whether you are viewing the source image or an optimized TIFF cache
+
+This is especially useful when comparing behavior between:
+
+- `tifffile`
+- `pyvips`
+- `OpenSlide`
+- source TIFF vs optimized pyramidal cache
+
+## Progressive tile loading
+
+Tile loading is now split into planning and scheduling instead of being treated
+as one paint-time action.
+
+In practice, Annolid now uses a progressive strategy:
+
+1. show the thumbnail/preview immediately
+2. load a small set of center-priority visible tiles first
+3. queue the remaining visible tiles in the background
+4. prefetch nearby tiles after that
+5. drop stale queued work when the viewport changes
+
+This keeps the viewer responsive during fast pan/zoom/page changes while still
+preserving deterministic visible results once the queued work settles.
 
 ## Atlas and vector overlay workflows
 

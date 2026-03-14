@@ -235,6 +235,7 @@ def test_import_svg_overlay_uses_post_status_message_when_status_is_missing(
         assert (
             "Imported 1 vector overlay shapes" in window.posted_status_messages[-1][0]
         )
+        assert window.otherData["svg_overlays"][0]["metadata"]["source_kind"] == "svg"
     finally:
         window.close()
 
@@ -576,6 +577,14 @@ def test_pair_selected_vector_overlay_landmarks_creates_explicit_pair() -> None:
         assert overlays[0]["landmark_summary"]["auto_count"] == 0
         assert (
             overlays[0]["landmark_summary"]["explicit_pairs"][0]["pair_id"] == pair_id
+        )
+        assert (
+            window.otherData["svg_overlays"][0]["landmark_pairs"][0]["pair_id"]
+            == pair_id
+        )
+        assert (
+            window.otherData["svg_overlays"][0]["landmark_pairs"][0]["overlay_label"]
+            == "atlas_a"
         )
     finally:
         window.close()

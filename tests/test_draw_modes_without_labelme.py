@@ -75,8 +75,8 @@ def test_unsupported_large_image_ai_mode_switches_to_canvas_with_message():
         assert w._viewer_stack.currentWidget() is w.canvas
         assert w.canvas.createMode == "ai_polygon"
         message = w.statusBar().currentMessage()
-        assert "canvas preview mode" in message.lower()
-        assert "ai polygon tool" in message.lower()
+        assert "canvas preview mode" not in message.lower()
+        assert "ai polygon tool" not in message.lower()
     finally:
         w.close()
 
