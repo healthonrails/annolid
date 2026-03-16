@@ -2953,35 +2953,72 @@ class AgentLoop:
         provider: Optional[str],
         model: Optional[str],
     ) -> tuple[LLMCallable, str, Any]:
-        cfg = resolve_llm_config(
-            profile=profile,
-            provider=provider,
-            model=model,
-            persist=False,
-        )
-        provider_name = str(cfg.provider or "").strip().lower()
-        openai_compat_names = {"openai", "ollama", "openrouter", "aihubmix", "vllm"}
-        model_name = str(cfg.model)
-        if provider_name == "openai_codex":
-            resolved = resolve_openai_codex(cfg)
-            model_name = resolved.model
-            provider_impl = OpenAICodexProvider(resolved=resolved)
-        elif provider_name == "codex_cli":
-            resolved = resolve_codex_cli(cfg)
-            model_name = resolved.model
-            provider_impl = CodexCLIProvider(resolved=resolved)
-        elif provider_name in openai_compat_names:
-            resolved = resolve_openai_compat(cfg)
-            model_name = resolved.model
-            provider_impl = OpenAICompatProvider(resolved=resolved)
-        else:
-            provider_impl = LiteLLMProvider(
-                provider_name=provider_name or None,
-                api_key=cfg.params.get("api_key"),
-                api_base=cfg.params.get("base_url") or cfg.params.get("host"),
-                default_model=model_name,
-                extra_headers=cfg.params.get("extra_headers"),
+        try:
+            cfg = resolve_llm_config(
+                profile=profile,
+                provider=provider,
+                model=model,
+                persist=False,
             )
+            provider_name = str(cfg.provider or "").strip().lower()
+            openai_compat_names = {"openai", "ollama", "openrouter", "aihubmix", "vllm"}
+            model_name = str(cfg.model)
+            if provider_name == "openai_codex":
+                resolved = resolve_openai_codex(cfg)
+                model_name = resolved.model
+                provider_impl = OpenAICodexProvider(resolved=resolved)
+            elif provider_name == "codex_cli":
+                resolved = resolve_codex_cli(cfg)
+                model_name = resolved.model
+                provider_impl = CodexCLIProvider(resolved=resolved)
+            elif provider_name in openai_compat_names:
+                resolved = resolve_openai_compat(cfg)
+                model_name = resolved.model
+                provider_impl = OpenAICompatProvider(resolved=resolved)
+            else:
+                provider_impl = LiteLLMProvider(
+                    provider_name=provider_name or None,
+                    api_key=cfg.params.get("api_key"),
+                    api_base=cfg.params.get("base_url") or cfg.params.get("host"),
+                    default_model=model_name,
+                    extra_headers=cfg.params.get("extra_headers"),
+                )
+        except (ValueError, KeyError, ImportError) as exc:
+            error_text = str(exc)
+            self._logger.warning(
+                "Failed to resolve LLM configuration for %s: %s. "
+                "The agent loop will start but LLM requests will fail until configured.",
+                provider or "default",
+                error_text,
+            )
+            model_name = model or "unconfigured"
+            # Return a placeholder provider_impl that doesn't crash on chat()
+            provider_impl = LiteLLMProvider(
+                provider_name="placeholder",
+                default_model=model_name,
+            )
+
+            async def _error_call(
+                messages: Sequence[Mapping[str, Any]],
+                tools: Sequence[Mapping[str, Any]],
+                model_id: str,
+                on_token: Optional[Callable[[str], None]] = None,
+            ) -> Mapping[str, Any]:
+                error_msg = (
+                    f"LLM is not configured correctly: {error_text}. "
+                    "Please check your LLM settings in the preferences."
+                )
+                if on_token:
+                    on_token(error_msg)
+                return {
+                    "content": error_msg,
+                    "tool_calls": [],
+                    "finish_reason": "error",
+                    "usage": {},
+                    "reasoning_content": None,
+                }
+
+            return _error_call, model_name, provider_impl
 
         async def _call(
             messages: Sequence[Mapping[str, Any]],
