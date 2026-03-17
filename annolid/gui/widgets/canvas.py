@@ -1786,6 +1786,8 @@ class Canvas(QtWidgets.QWidget):
         if self.current is None:
             return
         drawing_shape = self.current.copy()
+        if len(self.line.points) < 2:
+            return
         drawing_shape.addPoint(
             point=self.line.points[1],
             label=self.line.point_labels[1],
@@ -1809,12 +1811,16 @@ class Canvas(QtWidgets.QWidget):
                 drawing_shape.fill = self.fillDrawing()
                 drawing_shape.paint(painter)
         except Exception as e:
-            logger.error(f"An error occurred during AI polygon prediction: {e}")
+            # Downgrade to warning since this can happen frequently with invalid inputs
+            # and is often a non-critical model error (e.g. Expand node errors).
+            logger.warning(f"AI polygon prediction failed: {e}")
 
     def _paint_ai_mask_preview(self, painter):
         if self.current is None:
             return
         drawing_shape = self.current.copy()
+        if len(self.line.points) < 2:
+            return
         drawing_shape.addPoint(
             point=self.line.points[1],
             label=self.line.point_labels[1],
@@ -1840,7 +1846,8 @@ class Canvas(QtWidgets.QWidget):
             drawing_shape.selected = True
             drawing_shape.paint(painter)
         except Exception as e:
-            logger.error(f"An error occurred during AI mask prediction: {e}")
+            # Downgrade to warning as this is often a recoverable model/input error.
+            logger.warning(f"AI mask prediction failed: {e}")
 
     @staticmethod
     def _mask_bbox(mask):
@@ -2030,7 +2037,8 @@ class Canvas(QtWidgets.QWidget):
                 and len(self.current.points) >= 2
             ):
                 drawing_shape = self.current.copy()
-                drawing_shape.addPoint(self.line[1])
+                if len(self.line.points) >= 2:
+                    drawing_shape.addPoint(self.line[1])
                 drawing_shape.fill = True
                 drawing_shape.paint(painter)
             elif self.createMode == "ai_polygon" and self.current is not None:
@@ -2043,6 +2051,8 @@ class Canvas(QtWidgets.QWidget):
                 and self.current
                 and len(self.current.points) > 0
             ):
+                if len(self.line.points) < 2:
+                    return
                 start_point = self.current.points[-1]
                 end_point = self.line.points[1]
 

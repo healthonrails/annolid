@@ -109,38 +109,63 @@ class ToolingDialogsMixin:
         dlg.exec_()
 
     def _set_active_view(self, mode: str = "canvas") -> None:
+        logger.debug("Switching active view to: %s", mode)
         # Toggle main toolbar visibility.
         if hasattr(self, "tools"):
             self.tools.setVisible(mode == "canvas")
 
         if mode == "canvas":
             self.set_unrelated_docks_visible(True)
+            self._viewer_stack.setCurrentIndex(0)
+            return
 
-        if mode == "pdf" and getattr(self, "pdf_manager", None) is not None:
-            self.set_unrelated_docks_visible(False)
-            viewer = self.pdf_manager.pdf_widget()
-            if viewer is not None:
-                pdf_index = self._viewer_stack.indexOf(viewer)
-                if pdf_index != -1:
-                    self._viewer_stack.setCurrentIndex(pdf_index)
-                    return
-        if mode == "web" and getattr(self, "web_manager", None) is not None:
-            self.set_unrelated_docks_visible(False)
-            viewer = self.web_manager.viewer_widget()
-            if viewer is not None:
-                web_index = self._viewer_stack.indexOf(viewer)
-                if web_index != -1:
-                    self._viewer_stack.setCurrentIndex(web_index)
-                    return
-        if mode == "threejs" and getattr(self, "threejs_manager", None) is not None:
-            self.set_unrelated_docks_visible(False)
-            viewer = self.threejs_manager.viewer_widget()
-            if viewer is not None:
-                three_index = self._viewer_stack.indexOf(viewer)
-                if three_index != -1:
-                    self._viewer_stack.setCurrentIndex(three_index)
-                    return
-        self._viewer_stack.setCurrentIndex(0)
+        stack = getattr(self, "_viewer_stack", None)
+        if stack is None:
+            logger.warning("Cannot switch view to %s: _viewer_stack is missing.", mode)
+            return
+
+        if mode == "pdf":
+            pdf_manager = getattr(self, "pdf_manager", None)
+            if pdf_manager is not None:
+                self.set_unrelated_docks_visible(False)
+                viewer = pdf_manager.pdf_widget()
+                if viewer is not None:
+                    idx = stack.indexOf(viewer)
+                    if idx != -1:
+                        stack.setCurrentIndex(idx)
+                        return
+                    logger.warning("PDF viewer widget not found in stack.")
+            else:
+                logger.warning("pdf_manager is missing, cannot switch to PDF view.")
+
+        if mode == "web":
+            web_manager = getattr(self, "web_manager", None)
+            if web_manager is not None:
+                self.set_unrelated_docks_visible(False)
+                viewer = web_manager.viewer_widget()
+                if viewer is not None:
+                    idx = stack.indexOf(viewer)
+                    if idx != -1:
+                        stack.setCurrentIndex(idx)
+                        return
+                    logger.warning("Web viewer widget not found in stack.")
+
+        if mode == "threejs":
+            threejs_manager = getattr(self, "threejs_manager", None)
+            if threejs_manager is not None:
+                self.set_unrelated_docks_visible(False)
+                viewer = threejs_manager.viewer_widget()
+                if viewer is not None:
+                    idx = stack.indexOf(viewer)
+                    if idx != -1:
+                        stack.setCurrentIndex(idx)
+                        return
+                    logger.warning("ThreeJS viewer widget not found in stack.")
+
+        logger.warning(
+            "Fallback: Switching to default canvas view (mode was: %s)", mode
+        )
+        stack.setCurrentIndex(0)
 
     def show_pdf_in_viewer(self, pdf_path: str) -> None:
         if self.pdf_manager is not None:

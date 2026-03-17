@@ -4,6 +4,7 @@ from pathlib import Path
 
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
+import warnings
 
 from annolid.annotation.keypoint_visibility import (
     KeypointVisibility,
@@ -99,16 +100,24 @@ class LabelPanelMixin:
             finally:
                 self._noSelectionSlot = False
 
-        try:
-            self.labelList.itemSelectionChanged.disconnect()
-        except Exception:
-            pass
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=RuntimeWarning, message="Failed to disconnect.*"
+            )
+            try:
+                self.labelList.itemSelectionChanged.disconnect()
+            except Exception:
+                pass
         self.labelList.itemSelectionChanged.connect(on_selection_changed)
 
-        try:
-            self.labelList.itemDoubleClicked.disconnect()
-        except Exception:
-            pass
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=RuntimeWarning, message="Failed to disconnect.*"
+            )
+            try:
+                self.labelList.itemDoubleClicked.disconnect()
+            except Exception:
+                pass
         self.labelList.itemDoubleClicked.connect(self.editLabel)
 
         def on_shape_visibility_changed(shape: Shape, visible: bool) -> None:
@@ -181,18 +190,22 @@ class LabelPanelMixin:
             except Exception:
                 pass
 
-        try:
-            self.labelList.shapeVisibilityChanged.disconnect()
-        except Exception:
-            pass
-        try:
-            self.labelList.shapeDeleteRequested.disconnect()
-        except Exception:
-            pass
-        try:
-            self.labelList.shapesDeleteRequested.disconnect()
-        except Exception:
-            pass
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=RuntimeWarning, message="Failed to disconnect.*"
+            )
+            try:
+                self.labelList.shapeVisibilityChanged.disconnect()
+            except Exception:
+                pass
+            try:
+                self.labelList.shapeDeleteRequested.disconnect()
+            except Exception:
+                pass
+            try:
+                self.labelList.shapesDeleteRequested.disconnect()
+            except Exception:
+                pass
         try:
             self.labelList.shapeVisibilityChanged.connect(on_shape_visibility_changed)
             self.labelList.shapeDeleteRequested.connect(on_shape_delete_requested)

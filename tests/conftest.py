@@ -1,7 +1,10 @@
-from __future__ import annotations
+import os
+
+# Select PySide6 as the default Qt backend for tests to avoid collection errors
+# when PyQt5 is missing or mis-detected.
+os.environ.setdefault("QT_API", "pyside6")
 
 import importlib.util
-import os
 
 import pytest
 

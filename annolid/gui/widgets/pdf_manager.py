@@ -332,20 +332,33 @@ class PdfManager(QtCore.QObject):
 
         self.window.video_loader = None
         self.window.filename = None
-        self.window._set_active_view("pdf")
-        self._disable_labelme_file_selection()
-        self._close_unrelated_docks_for_pdf()
-        self.ensure_pdf_tts_dock()
-        # Pick a reasonable default TTS language/voice early so the dock reflects it immediately.
-        self._auto_select_tts_from_pdf_language(str(candidate))
-        self.ensure_pdf_controls_dock()
-        self.ensure_pdf_reader_dock()
-        self.ensure_pdf_log_dock()
-        self._tighten_right_docks()
-        try:
-            self.pdf_viewer.fit_to_width()
-        except Exception:
-            pass
+
+        def finalize_pdf_view():
+            try:
+                self.window._set_active_view("pdf")
+            except Exception as e:
+                logger.error("Failed to switch to PDF view: %s", e)
+                return
+
+            self._disable_labelme_file_selection()
+            self._close_unrelated_docks_for_pdf()
+            self.ensure_pdf_tts_dock()
+            # Pick a reasonable default TTS language/voice early so the dock reflects it immediately.
+            self._auto_select_tts_from_pdf_language(str(candidate))
+            self.ensure_pdf_controls_dock()
+            self.ensure_pdf_reader_dock()
+            self.ensure_pdf_log_dock()
+            self._tighten_right_docks()
+            try:
+                if self.pdf_viewer is not None:
+                    self.pdf_viewer.fit_to_width()
+            except Exception:
+                pass
+
+        # Use a singleShot timer to ensure this happens after any pending state resets
+        # (e.g. from closeFile or resetState triggered by side effects).
+        QtCore.QTimer.singleShot(0, finalize_pdf_view)
+
         self._record_pdf_entry(str(candidate))
         self.window.lastOpenDir = str(candidate.parent)
         self.window.statusBar().showMessage(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from qtpy import QtCore, QtWidgets
+import warnings
 
 from annolid.gui.large_image_modes import (
     is_tile_native_create_mode,
@@ -241,11 +242,15 @@ class PlaybackDrawMixin:
         self._draw_mode_action_group = group
 
         def _safe_disconnect(action: QtWidgets.QAction) -> None:
-            for sig in ("triggered", "toggled"):
-                try:
-                    getattr(action, sig).disconnect()
-                except Exception:
-                    pass
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", category=RuntimeWarning, message="Failed to disconnect.*"
+                )
+                for sig in ("triggered", "toggled"):
+                    try:
+                        getattr(action, sig).disconnect()
+                    except Exception:
+                        pass
 
         def _wire(action: QtWidgets.QAction, *, edit: bool, mode: str) -> None:
             if action is None:
