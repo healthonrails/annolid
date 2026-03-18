@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
+import copy
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import numpy as np
@@ -43,6 +46,13 @@ from annolid.gui.widgets.vector_overlay_dock import VectorOverlayDockWidget
 
 class VectorOverlayMixin:
     """Import external vector overlays as standard editable Annolid shapes."""
+
+    _OVERLAY_IMPORT_FIT_MODES = {"auto", "document", "shape"}
+    _OVERLAY_AUTO_REFIT_KEY = "auto_refit_on_fit_window"
+    _OVERLAY_DEFAULT_FIT_MARGIN = 1.0
+    _OVERLAY_LARGE_IMAGE_REFRESH_PENDING_KEY = (
+        "_vector_overlay_large_image_refresh_pending"
+    )
 
     def _postVectorOverlayStatus(self, message: str, timeout: int = 4000) -> None:
         post_window_status(self, message, timeout)
@@ -199,13 +209,147 @@ class VectorOverlayMixin:
             return None
         return min(xs), min(ys), max(xs), max(ys)
 
-    def _fitImportedOverlayToImage(self, result) -> None:
+    @staticmethod
+    def _document_bounds_from_metadata(
+        metadata: dict | None,
+    ) -> tuple[float, float, float, float] | None:
+        data = dict(metadata or {})
+        view_box = list(data.get("view_box") or [])
+        if len(view_box) == 4:
+            vx, vy, vw, vh = [float(value) for value in view_box]
+            if vw > 1e-6 and vh > 1e-6:
+                return (vx, vy, vx + vw, vy + vh)
+        width = float(data.get("document_width") or 0.0)
+        height = float(data.get("document_height") or 0.0)
+        if width > 1e-6 and height > 1e-6:
+            return (0.0, 0.0, width, height)
+        return None
+
+    @staticmethod
+    def _overlay_fit_transform(
+        source_bounds: tuple[float, float, float, float],
+        image_size: tuple[float, float],
+        *,
+        margin_ratio: float,
+    ) -> OverlayTransform | None:
+        image_width, image_height = image_size
+        min_x, min_y, max_x, max_y = source_bounds
+        source_width = max(1e-6, max_x - min_x)
+        source_height = max(1e-6, max_y - min_y)
+        target_width = image_width * max(0.0, min(1.0, float(margin_ratio)))
+        target_height = image_height * max(0.0, min(1.0, float(margin_ratio)))
+        if target_width <= 0.0 or target_height <= 0.0:
+            return None
+        target_scale = min(target_width / source_width, target_height / source_height)
+        if target_scale <= 0.0:
+            return None
+        source_center = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+        target_center = (image_width / 2.0, image_height / 2.0)
+        return OverlayTransform(
+            tx=float(target_center[0] - (source_center[0] * target_scale)),
+            ty=float(target_center[1] - (source_center[1] * target_scale)),
+            sx=float(target_scale),
+            sy=float(target_scale),
+            rotation_deg=0.0,
+            opacity=0.5,
+            visible=True,
+            z_order=0,
+        )
+
+    def _vectorOverlayImportFitMode(self) -> str:
+        other_data = (
+            getattr(self, "otherData", None)
+            if isinstance(getattr(self, "otherData", None), dict)
+            else {}
+        )
+        mode = (
+            str(other_data.get("vector_overlay_import_fit_mode", "auto"))
+            .strip()
+            .lower()
+        )
+        return mode if mode in self._OVERLAY_IMPORT_FIT_MODES else "auto"
+
+    def _setVectorOverlayImportFitMode(self, mode: str) -> None:
+        normalized = str(mode or "").strip().lower()
+        if normalized not in self._OVERLAY_IMPORT_FIT_MODES:
+            normalized = "auto"
+        if not isinstance(getattr(self, "otherData", None), dict):
+            self.otherData = {}
+        self.otherData["vector_overlay_import_fit_mode"] = normalized
+
+    def _vectorOverlayImportFitMargin(self) -> float:
+        other_data = (
+            getattr(self, "otherData", None)
+            if isinstance(getattr(self, "otherData", None), dict)
+            else {}
+        )
+        value = float(
+            other_data.get(
+                "vector_overlay_import_fit_margin", self._OVERLAY_DEFAULT_FIT_MARGIN
+            )
+        )
+        return max(0.1, min(1.0, value))
+
+    def _setVectorOverlayImportFitMargin(self, margin: float) -> None:
+        value = max(0.1, min(1.0, float(margin)))
+        if not isinstance(getattr(self, "otherData", None), dict):
+            self.otherData = {}
+        self.otherData["vector_overlay_import_fit_margin"] = value
+
+    @staticmethod
+    def _cloneVectorOverlayShapes(shapes) -> list:
+        cloned = []
+        for shape in list(shapes or []):
+            try:
+                clone = shape.copy() if hasattr(shape, "copy") else copy.deepcopy(shape)
+            except Exception:
+                clone = shape
+            cloned.append(clone)
+        return cloned
+
+    def _queueVectorOverlayLargeImageRefresh(
+        self, *, sync_document: bool = True
+    ) -> None:
+        if bool(getattr(self, self._OVERLAY_LARGE_IMAGE_REFRESH_PENDING_KEY, False)):
+            return
+        setattr(self, self._OVERLAY_LARGE_IMAGE_REFRESH_PENDING_KEY, True)
+
+        def _refresh() -> None:
+            setattr(self, self._OVERLAY_LARGE_IMAGE_REFRESH_PENDING_KEY, False)
+            large_image_view = getattr(self, "large_image_view", None)
+            active_view = str(getattr(self, "_active_image_view", "canvas") or "canvas")
+            if large_image_view is not None and active_view == "tiled":
+                canvas = getattr(self, "canvas", None)
+                try:
+                    large_image_view.set_shapes(
+                        self._cloneVectorOverlayShapes(
+                            list(getattr(canvas, "shapes", []) or [])
+                        )
+                    )
+                except Exception:
+                    pass
+            if sync_document and hasattr(self, "_syncLargeImageDocument"):
+                try:
+                    self._syncLargeImageDocument()
+                except Exception:
+                    pass
+
+        QtCore.QTimer.singleShot(0, _refresh)
+
+    def _fitImportedOverlayToImage(
+        self,
+        result,
+        *,
+        fit_mode: str = "auto",
+        fit_margin: float | None = None,
+    ) -> None:
         image_size = self._currentOverlayImportImageSize()
-        bounds = self._shape_bounds(getattr(result, "shapes", []))
-        if image_size is None or bounds is None:
+        metadata = dict(getattr(result, "metadata", None) or {})
+        shape_bounds = self._shape_bounds(getattr(result, "shapes", []))
+        if image_size is None or shape_bounds is None:
             return
         image_width, image_height = image_size
-        min_x, min_y, max_x, max_y = bounds
+        min_x, min_y, max_x, max_y = shape_bounds
         overlay_width = max(1e-6, max_x - min_x)
         overlay_height = max(1e-6, max_y - min_y)
         image_max = max(image_width, image_height)
@@ -217,34 +361,77 @@ class VectorOverlayMixin:
             or max_y > (1.1 * image_height)
         )
         scale_ratio = image_max / overlay_max if overlay_max > 0 else 1.0
-        if not is_far_outside and 0.35 <= scale_ratio <= 2.5:
+        source_kind = str(metadata.get("source_kind", "") or "").lower()
+        selected_fit_mode = str(fit_mode or "").strip().lower()
+        if selected_fit_mode not in self._OVERLAY_IMPORT_FIT_MODES:
+            selected_fit_mode = "auto"
+        document_bounds = self._document_bounds_from_metadata(metadata)
+        fit_bounds = shape_bounds
+        selected_margin = (
+            self._vectorOverlayImportFitMargin()
+            if fit_margin is None
+            else max(0.1, min(1.0, float(fit_margin)))
+        )
+        fit_margin_value = selected_margin
+        mismatch_threshold = 1.0
+        if selected_fit_mode == "document" and document_bounds is not None:
+            fit_bounds = document_bounds
+        elif selected_fit_mode == "shape":
+            fit_bounds = shape_bounds
+        elif source_kind in {"ai", "pdf"} and document_bounds is not None:
+            doc_min_x, doc_min_y, doc_max_x, doc_max_y = document_bounds
+            doc_width = max(1e-6, doc_max_x - doc_min_x)
+            doc_height = max(1e-6, doc_max_y - doc_min_y)
+            shape_width = max(1e-6, max_x - min_x)
+            shape_height = max(1e-6, max_y - min_y)
+            image_aspect = image_width / max(1e-6, image_height)
+            doc_aspect = doc_width / max(1e-6, doc_height)
+            shape_aspect = shape_width / max(1e-6, shape_height)
+            doc_aspect_error = abs(math.log(max(1e-6, doc_aspect / image_aspect)))
+            shape_aspect_error = abs(math.log(max(1e-6, shape_aspect / image_aspect)))
+            shape_outside_doc = (
+                min_x < (doc_min_x - (0.1 * doc_width))
+                or min_y < (doc_min_y - (0.1 * doc_height))
+                or max_x > (doc_max_x + (0.1 * doc_width))
+                or max_y > (doc_max_y + (0.1 * doc_height))
+            )
+            # Prefer document/page bounds only when they look geometrically
+            # consistent with both image aspect and imported vector extents.
+            use_document_bounds = (not shape_outside_doc) and (
+                doc_aspect_error <= (shape_aspect_error + 0.08)
+            )
+            if use_document_bounds:
+                fit_bounds = document_bounds
+                mismatch_threshold = abs(
+                    min(image_width / doc_width, image_height / doc_height) - 1.0
+                )
+            else:
+                fit_bounds = shape_bounds
+                mismatch_threshold = 1.0
+        explicit_mode = selected_fit_mode in {"document", "shape"}
+        if (
+            not explicit_mode
+            and not is_far_outside
+            and 0.35 <= scale_ratio <= 2.5
+            and mismatch_threshold < 0.15
+        ):
             return
 
-        target_scale = min(
-            (image_width * 0.9) / overlay_width, (image_height * 0.9) / overlay_height
+        target_transform = self._overlay_fit_transform(
+            fit_bounds,
+            image_size,
+            margin_ratio=fit_margin_value,
         )
-        if target_scale <= 0:
+        if target_transform is None:
             return
-        current_center = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
-        target_center = (image_width / 2.0, image_height / 2.0)
-        target_transform = OverlayTransform(
-            tx=float(target_center[0] - current_center[0]),
-            ty=float(target_center[1] - current_center[1]),
-            sx=float(target_scale),
-            sy=float(target_scale),
-            rotation_deg=0.0,
-            opacity=float(
-                (result.metadata or {}).get("transform", {}).get("opacity", 0.5)
-            ),
-            visible=bool(
-                (result.metadata or {}).get("transform", {}).get("visible", True)
-            ),
-            z_order=int((result.metadata or {}).get("transform", {}).get("z_order", 0)),
-        )
+        current_transform = dict(metadata.get("transform") or {})
+        target_transform.opacity = float(current_transform.get("opacity", 0.5))
+        target_transform.visible = bool(current_transform.get("visible", True))
+        target_transform.z_order = int(current_transform.get("z_order", 0))
         affine_delta = overlay_delta_matrix(
             OverlayTransform(),
             target_transform,
-            pivot=current_center,
+            pivot=(0.0, 0.0),
         )
         for shape in list(getattr(result, "shapes", []) or []):
             apply_affine_to_shape_points(shape, affine_delta)
@@ -253,10 +440,14 @@ class VectorOverlayMixin:
                 target_transform
             )
             shape.other_data = other
-        metadata = getattr(result, "metadata", None)
-        if isinstance(metadata, dict):
-            metadata["transform"] = overlay_transform_to_dict(target_transform)
-            metadata["initial_fit_to_image"] = True
+        if isinstance(getattr(result, "metadata", None), dict):
+            result.metadata["transform"] = overlay_transform_to_dict(target_transform)
+            result.metadata["initial_fit_to_image"] = True
+            result.metadata["initial_fit_bounds"] = (
+                "document" if fit_bounds == document_bounds else "shape"
+            )
+            result.metadata["initial_fit_mode"] = selected_fit_mode
+            result.metadata["initial_fit_margin"] = fit_margin_value
 
     def setupVectorOverlayDock(self) -> None:
         if not hasattr(self, "_selected_overlay_landmark_pair_id"):
@@ -277,8 +468,16 @@ class VectorOverlayMixin:
         dock.overlayRemovePairRequested.connect(self._removeVectorOverlayPairFromDock)
         dock.overlayClearPairsRequested.connect(self._clearVectorOverlayPairsFromDock)
         dock.overlayLandmarkAlignRequested.connect(self._alignVectorOverlayFromDock)
+        dock.overlayImportFitModeChanged.connect(self._setVectorOverlayImportFitMode)
+        dock.overlayImportFitMarginChanged.connect(
+            self._setVectorOverlayImportFitMargin
+        )
+        dock.overlayRefitRequested.connect(self._refitVectorOverlayFromDock)
+        dock.set_import_fit_mode(self._vectorOverlayImportFitMode())
+        dock.set_import_fit_margin(self._vectorOverlayImportFitMargin())
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
         self.vector_overlay_dock = dock
+        dock.hide()
         if hasattr(self, "shape_dock"):
             try:
                 self.tabifyDockWidget(self.shape_dock, dock)
@@ -327,14 +526,19 @@ class VectorOverlayMixin:
         if isinstance(dock, VectorOverlayDockWidget):
             overlays = self.listVectorOverlays()
             dock.set_overlays(overlays)
-            dock.setVisible(bool(overlays))
+            dock.set_import_fit_mode(self._vectorOverlayImportFitMode())
+            dock.set_import_fit_margin(self._vectorOverlayImportFitMargin())
             overlay_id = dock._selected_overlay_id()
             self._applySelectedVectorOverlayPairHighlight(
                 overlay_id, getattr(self, "_selected_overlay_landmark_pair_id", None)
             )
 
     def _applyVectorOverlayFromDock(self, overlay_id: str, payload: dict) -> None:
-        self.setVectorOverlayTransform(overlay_id, **dict(payload or {}))
+        self.setVectorOverlayTransform(
+            overlay_id,
+            refresh_dock=False,
+            **dict(payload or {}),
+        )
 
     def _resetVectorOverlayFromDock(self, overlay_id: str) -> None:
         self.setVectorOverlayTransform(
@@ -362,6 +566,131 @@ class VectorOverlayMixin:
         self._postVectorOverlayStatus(
             self.tr("Aligned overlay from %d landmark pairs") % int(pair_count)
         )
+
+    def _refitVectorOverlayFromDock(self, overlay_id: str) -> None:
+        dock = getattr(self, "vector_overlay_dock", None)
+        if isinstance(dock, VectorOverlayDockWidget):
+            self._setVectorOverlayImportFitMargin(dock.import_fit_margin())
+        changed = self._refitVectorOverlay(
+            overlay_id,
+            fit_mode=None,
+            fit_margin=None,
+            sync_mode_from_dock=True,
+            mark_dirty=True,
+            sync_large_image=True,
+            refresh_dock=True,
+        )
+        if changed:
+            self._postVectorOverlayStatus(self.tr("Re-fit overlay to current image"))
+        else:
+            self._postVectorOverlayStatus(self.tr("Overlay already fits current image"))
+
+    def _refitVectorOverlay(
+        self,
+        overlay_id: str,
+        *,
+        fit_mode: str | None,
+        fit_margin: float | None,
+        sync_mode_from_dock: bool,
+        mark_dirty: bool,
+        sync_large_image: bool,
+        refresh_dock: bool,
+    ) -> bool:
+        record_index, record = self._overlay_record_model(overlay_id)
+        if record_index is None or record is None:
+            return False
+        overlay_shapes = list(self._iter_overlay_shapes(overlay_id))
+        if not overlay_shapes:
+            return False
+        mode = self._vectorOverlayImportFitMode() if fit_mode is None else str(fit_mode)
+        margin = (
+            self._vectorOverlayImportFitMargin()
+            if fit_margin is None
+            else max(0.1, min(1.0, float(fit_margin)))
+        )
+        dock = getattr(self, "vector_overlay_dock", None)
+        if sync_mode_from_dock and isinstance(dock, VectorOverlayDockWidget):
+            mode = dock.import_fit_mode()
+            margin = dock.import_fit_margin()
+            self._setVectorOverlayImportFitMode(mode)
+            self._setVectorOverlayImportFitMargin(margin)
+        snapshot_before = [
+            [
+                (float(point.x()), float(point.y()))
+                for point in list(getattr(shape, "points", []) or [])
+            ]
+            for shape in overlay_shapes
+        ]
+        metadata = dict(record.metadata or {})
+        metadata.setdefault("source_kind", str(record.source_kind or "svg"))
+        result = SimpleNamespace(shapes=overlay_shapes, metadata=metadata)
+        self._fitImportedOverlayToImage(result, fit_mode=mode, fit_margin=margin)
+        snapshot_after = [
+            [
+                (float(point.x()), float(point.y()))
+                for point in list(getattr(shape, "points", []) or [])
+            ]
+            for shape in overlay_shapes
+        ]
+        changed = snapshot_before != snapshot_after
+        if not changed:
+            return False
+        records = self._overlay_records()
+        updated = record
+        updated.transform = overlay_transform_from_dict(
+            result.metadata.get("transform"), default=record.transform
+        )
+        updated.metadata = dict(result.metadata or {})
+        updated.editable_shapes = [
+            self._editable_shape_vector(shape) for shape in list(overlay_shapes)
+        ]
+        records[record_index] = updated
+        self._set_overlay_records(records)
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None and hasattr(canvas, "update"):
+            canvas.update()
+        if refresh_dock:
+            self._refreshVectorOverlayDock()
+        if mark_dirty:
+            self.setDirty()
+        if sync_large_image and hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
+        return True
+
+    def _onFitModeApplied(self, mode: str) -> None:
+        if str(mode or "") not in {"fit_window", "fit_width"}:
+            return
+        records = self._overlay_records()
+        if not records:
+            return
+        changed = False
+        fit_mode = self._vectorOverlayImportFitMode()
+        fit_margin = self._vectorOverlayImportFitMargin()
+        for record in records:
+            metadata = dict(record.metadata or {})
+            if not bool(metadata.get(self._OVERLAY_AUTO_REFIT_KEY, False)):
+                continue
+            changed = (
+                self._refitVectorOverlay(
+                    str(record.id or ""),
+                    fit_mode=fit_mode,
+                    fit_margin=fit_margin,
+                    sync_mode_from_dock=False,
+                    mark_dirty=False,
+                    sync_large_image=False,
+                    refresh_dock=False,
+                )
+                or changed
+            )
+        if not changed:
+            return
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None and hasattr(canvas, "update"):
+            canvas.update()
+        self._refreshVectorOverlayDock()
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
+        self.setDirty()
 
     def _pairVectorOverlayFromDock(self, overlay_id: str) -> None:
         try:
@@ -582,7 +911,17 @@ class VectorOverlayMixin:
             )
             return
 
-        self._fitImportedOverlayToImage(result)
+        fit_mode = self._vectorOverlayImportFitMode()
+        fit_margin = self._vectorOverlayImportFitMargin()
+        dock = getattr(self, "vector_overlay_dock", None)
+        if isinstance(dock, VectorOverlayDockWidget):
+            fit_mode = dock.import_fit_mode()
+            fit_margin = dock.import_fit_margin()
+            self._setVectorOverlayImportFitMode(fit_mode)
+            self._setVectorOverlayImportFitMargin(fit_margin)
+        self._fitImportedOverlayToImage(
+            result, fit_mode=fit_mode, fit_margin=fit_margin
+        )
         self.loadShapes(result.shapes, replace=False)
         self.lastOpenDir = str(Path(filename).parent)
 
@@ -600,6 +939,10 @@ class VectorOverlayMixin:
             ],
             landmark_pairs=[],
         )
+        record.metadata.setdefault(
+            self._OVERLAY_AUTO_REFIT_KEY,
+            str(record.source_kind or "").lower() in {"ai", "pdf"},
+        )
         records = self._overlay_records()
         records.append(record)
         self._set_overlay_records(records)
@@ -607,10 +950,18 @@ class VectorOverlayMixin:
         self.setDirty()
         if hasattr(self, "_syncLargeImageDocument"):
             self._syncLargeImageDocument()
+        if hasattr(self, "paintCanvas"):
+            try:
+                self.paintCanvas()
+            except Exception:
+                pass
         self._postVectorOverlayStatus(
             self.tr("Imported %d vector overlay shapes from %s")
             % (len(result.shapes), Path(filename).name)
         )
+        warning = str((result.metadata or {}).get("import_warning") or "").strip()
+        if warning:
+            self._postVectorOverlayStatus(self.tr(warning), 7000)
 
     def listVectorOverlays(self) -> list[dict]:
         normalized = []
@@ -788,13 +1139,10 @@ class VectorOverlayMixin:
         canvas = getattr(self, "canvas", None)
         if canvas is not None:
             canvas.update()
-        if getattr(self, "large_image_view", None) is not None:
-            self.large_image_view.set_shapes(getattr(canvas, "shapes", []))
+        self._queueVectorOverlayLargeImageRefresh(sync_document=True)
         self._refreshVectorOverlayDock()
         if hasattr(self, "setDirty"):
             self.setDirty()
-        if hasattr(self, "_syncLargeImageDocument"):
-            self._syncLargeImageDocument()
         return True
 
     def currentAnnotationLayer(self) -> AnnotationLayer:
@@ -1035,14 +1383,11 @@ class VectorOverlayMixin:
         canvas = getattr(self, "canvas", None)
         if canvas is not None:
             canvas.update()
-        if getattr(self, "large_image_view", None) is not None:
-            self.large_image_view.set_shapes(getattr(canvas, "shapes", []))
+        self._queueVectorOverlayLargeImageRefresh(sync_document=True)
         self._refreshVectorOverlayDock()
         self._syncVectorOverlayActionState()
         if hasattr(self, "setDirty"):
             self.setDirty()
-        if hasattr(self, "_syncLargeImageDocument"):
-            self._syncLargeImageDocument()
         return changed
 
     def toggleVectorOverlaysVisible(self, value: bool = False) -> None:
@@ -1075,6 +1420,7 @@ class VectorOverlayMixin:
         opacity: float | None = None,
         visible: bool | None = None,
         z_order: int | None = None,
+        refresh_dock: bool = True,
     ) -> bool:
         overlay_index, current_record = self._overlay_record_model(overlay_id)
         if overlay_index is None or current_record is None:
@@ -1137,18 +1483,16 @@ class VectorOverlayMixin:
         canvas = getattr(self, "canvas", None)
         if canvas is not None:
             canvas.update()
-        if getattr(self, "large_image_view", None) is not None:
-            self.large_image_view.set_shapes(getattr(canvas, "shapes", []))
-            self._applySelectedVectorOverlayPairHighlight(
-                overlay_id, getattr(self, "_selected_overlay_landmark_pair_id", None)
-            )
+        self._queueVectorOverlayLargeImageRefresh(sync_document=True)
+        self._applySelectedVectorOverlayPairHighlight(
+            overlay_id, getattr(self, "_selected_overlay_landmark_pair_id", None)
+        )
         self._sync_overlay_visibility_items(overlay_id, target_transform.visible)
-        self._refreshVectorOverlayDock()
+        if refresh_dock:
+            self._refreshVectorOverlayDock()
         self._syncVectorOverlayActionState()
         if hasattr(self, "setDirty"):
             self.setDirty()
-        if hasattr(self, "_syncLargeImageDocument"):
-            self._syncLargeImageDocument()
         return True
 
     def alignVectorOverlayFromLandmarks(self, overlay_id: str) -> int:
@@ -1200,16 +1544,13 @@ class VectorOverlayMixin:
         canvas = getattr(self, "canvas", None)
         if canvas is not None:
             canvas.update()
-        if getattr(self, "large_image_view", None) is not None:
-            self.large_image_view.set_shapes(getattr(canvas, "shapes", []))
-            self._applySelectedVectorOverlayPairHighlight(
-                overlay_id, getattr(self, "_selected_overlay_landmark_pair_id", None)
-            )
+        self._queueVectorOverlayLargeImageRefresh(sync_document=True)
+        self._applySelectedVectorOverlayPairHighlight(
+            overlay_id, getattr(self, "_selected_overlay_landmark_pair_id", None)
+        )
         self._refreshVectorOverlayDock()
         if hasattr(self, "setDirty"):
             self.setDirty()
-        if hasattr(self, "_syncLargeImageDocument"):
-            self._syncLargeImageDocument()
         return len(pairs)
 
     def pairSelectedVectorOverlayLandmarks(self, overlay_id: str) -> str:

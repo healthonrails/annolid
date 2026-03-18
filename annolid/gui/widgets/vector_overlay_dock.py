@@ -13,6 +13,9 @@ class VectorOverlayDockWidget(QtWidgets.QDockWidget):
     overlayPairSelectionChanged = QtCore.Signal(str, str)
     overlayRemovePairRequested = QtCore.Signal(str, str)
     overlayClearPairsRequested = QtCore.Signal(str)
+    overlayImportFitModeChanged = QtCore.Signal(str)
+    overlayImportFitMarginChanged = QtCore.Signal(float)
+    overlayRefitRequested = QtCore.Signal(str)
 
     def __init__(self, parent=None):
         super().__init__("Vector Overlays", parent)
@@ -42,60 +45,92 @@ class VectorOverlayDockWidget(QtWidgets.QDockWidget):
         )
         layout.addWidget(self.landmark_pairs_list)
 
-        form = QtWidgets.QFormLayout()
-        form.setContentsMargins(0, 0, 0, 0)
+        import_group = QtWidgets.QGroupBox("Import Fit", container)
+        import_layout = QtWidgets.QFormLayout(import_group)
+        import_layout.setContentsMargins(10, 10, 10, 10)
+        import_layout.setLabelAlignment(QtCore.Qt.AlignLeft)
+        self.import_fit_combo = QtWidgets.QComboBox(import_group)
+        self.import_fit_combo.addItem("Auto", "auto")
+        self.import_fit_combo.addItem("Document Bounds", "document")
+        self.import_fit_combo.addItem("Shape Bounds", "shape")
+        self.import_fit_combo.currentIndexChanged.connect(self._emit_import_fit_mode)
+        self.import_fit_margin_spin = QtWidgets.QDoubleSpinBox(import_group)
+        self.import_fit_margin_spin.setRange(0.1, 1.0)
+        self.import_fit_margin_spin.setSingleStep(0.05)
+        self.import_fit_margin_spin.setDecimals(2)
+        self.import_fit_margin_spin.setValue(1.0)
+        self.import_fit_margin_spin.valueChanged.connect(self._emit_import_fit_margin)
+        import_layout.addRow("Mode", self.import_fit_combo)
+        import_layout.addRow("Margin", self.import_fit_margin_spin)
+        layout.addWidget(import_group)
 
-        self.visible_checkbox = QtWidgets.QCheckBox("Visible", container)
-        form.addRow("State", self.visible_checkbox)
+        transform_group = QtWidgets.QGroupBox("Transform", container)
+        transform_layout = QtWidgets.QFormLayout(transform_group)
+        transform_layout.setContentsMargins(10, 10, 10, 10)
+        transform_layout.setLabelAlignment(QtCore.Qt.AlignLeft)
 
-        self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, container)
+        self.visible_checkbox = QtWidgets.QCheckBox("Visible", transform_group)
+        transform_layout.addRow("State", self.visible_checkbox)
+
+        self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, transform_group)
         self.opacity_slider.setRange(0, 100)
-        form.addRow("Opacity", self.opacity_slider)
+        transform_layout.addRow("Opacity", self.opacity_slider)
 
         self.tx_spin = self._double_spin(
-            container, minimum=-1_000_000.0, maximum=1_000_000.0
+            transform_group, minimum=-1_000_000.0, maximum=1_000_000.0
         )
         self.ty_spin = self._double_spin(
-            container, minimum=-1_000_000.0, maximum=1_000_000.0
+            transform_group, minimum=-1_000_000.0, maximum=1_000_000.0
         )
         self.sx_spin = self._double_spin(
-            container, minimum=0.01, maximum=1_000.0, value=1.0
+            transform_group, minimum=0.01, maximum=1_000.0, value=1.0
         )
         self.sy_spin = self._double_spin(
-            container, minimum=0.01, maximum=1_000.0, value=1.0
+            transform_group, minimum=0.01, maximum=1_000.0, value=1.0
         )
-        self.rotation_spin = self._double_spin(container, minimum=-360.0, maximum=360.0)
-        self.z_order_spin = QtWidgets.QSpinBox(container)
+        self.rotation_spin = self._double_spin(
+            transform_group, minimum=-360.0, maximum=360.0
+        )
+        self.z_order_spin = QtWidgets.QSpinBox(transform_group)
         self.z_order_spin.setRange(-1000, 1000)
 
-        form.addRow("Translate X", self.tx_spin)
-        form.addRow("Translate Y", self.ty_spin)
-        form.addRow("Scale X", self.sx_spin)
-        form.addRow("Scale Y", self.sy_spin)
-        form.addRow("Rotation", self.rotation_spin)
-        form.addRow("Z Order", self.z_order_spin)
-        layout.addLayout(form)
+        transform_layout.addRow("Translate X", self.tx_spin)
+        transform_layout.addRow("Translate Y", self.ty_spin)
+        transform_layout.addRow("Scale X", self.sx_spin)
+        transform_layout.addRow("Scale Y", self.sy_spin)
+        transform_layout.addRow("Rotation", self.rotation_spin)
+        transform_layout.addRow("Z Order", self.z_order_spin)
+        layout.addWidget(transform_group)
 
-        buttons = QtWidgets.QHBoxLayout()
+        actions_group = QtWidgets.QGroupBox("Actions", container)
+        buttons = QtWidgets.QGridLayout(actions_group)
+        buttons.setContentsMargins(10, 10, 10, 10)
+        buttons.setHorizontalSpacing(8)
+        buttons.setVerticalSpacing(8)
         self.apply_button = QtWidgets.QPushButton("Apply", container)
         self.reset_button = QtWidgets.QPushButton("Reset", container)
+        self.refit_button = QtWidgets.QPushButton("Re-fit", container)
         self.pair_selected_button = QtWidgets.QPushButton("Pair Selected", container)
         self.remove_pair_button = QtWidgets.QPushButton("Remove Pair", container)
         self.clear_pairs_button = QtWidgets.QPushButton("Clear Pairs", container)
         self.align_landmarks_button = QtWidgets.QPushButton("Align Points", container)
         self.apply_button.clicked.connect(self._emit_apply_request)
         self.reset_button.clicked.connect(self._emit_reset_request)
+        self.refit_button.clicked.connect(self._emit_refit_request)
         self.pair_selected_button.clicked.connect(self._emit_pair_selected_request)
         self.remove_pair_button.clicked.connect(self._emit_remove_pair_request)
         self.clear_pairs_button.clicked.connect(self._emit_clear_pairs_request)
         self.align_landmarks_button.clicked.connect(self._emit_landmark_align_request)
-        buttons.addWidget(self.apply_button)
-        buttons.addWidget(self.reset_button)
-        buttons.addWidget(self.pair_selected_button)
-        buttons.addWidget(self.remove_pair_button)
-        buttons.addWidget(self.clear_pairs_button)
-        buttons.addWidget(self.align_landmarks_button)
-        layout.addLayout(buttons)
+        buttons.addWidget(self.apply_button, 0, 0)
+        buttons.addWidget(self.reset_button, 0, 1)
+        buttons.addWidget(self.refit_button, 1, 0)
+        buttons.addWidget(self.pair_selected_button, 1, 1)
+        buttons.addWidget(self.remove_pair_button, 2, 0)
+        buttons.addWidget(self.clear_pairs_button, 2, 1)
+        buttons.addWidget(self.align_landmarks_button, 3, 0, 1, 2)
+        layout.addWidget(actions_group)
+
+        layout.addStretch(1)
 
         self.setWidget(container)
         self._set_controls_enabled(False)
@@ -133,13 +168,45 @@ class VectorOverlayDockWidget(QtWidgets.QDockWidget):
             self.z_order_spin,
             self.apply_button,
             self.reset_button,
+            self.refit_button,
             self.pair_selected_button,
             self.remove_pair_button,
             self.clear_pairs_button,
             self.align_landmarks_button,
         ):
             widget.setEnabled(bool(enabled))
+        self.import_fit_combo.setEnabled(True)
+        self.import_fit_margin_spin.setEnabled(True)
         self._update_pair_buttons()
+
+    def import_fit_mode(self) -> str:
+        value = str(self.import_fit_combo.currentData() or "").strip().lower()
+        return value if value in {"auto", "document", "shape"} else "auto"
+
+    def set_import_fit_mode(self, mode: str) -> None:
+        target = str(mode or "").strip().lower()
+        if target not in {"auto", "document", "shape"}:
+            target = "auto"
+        with QtCore.QSignalBlocker(self.import_fit_combo):
+            for index in range(self.import_fit_combo.count()):
+                if str(self.import_fit_combo.itemData(index) or "") == target:
+                    self.import_fit_combo.setCurrentIndex(index)
+                    return
+            self.import_fit_combo.setCurrentIndex(0)
+
+    def import_fit_margin(self) -> float:
+        return max(0.1, min(1.0, float(self.import_fit_margin_spin.value())))
+
+    def set_import_fit_margin(self, margin: float) -> None:
+        value = max(0.1, min(1.0, float(margin)))
+        with QtCore.QSignalBlocker(self.import_fit_margin_spin):
+            self.import_fit_margin_spin.setValue(value)
+
+    def _emit_import_fit_mode(self, _index: int) -> None:
+        self.overlayImportFitModeChanged.emit(self.import_fit_mode())
+
+    def _emit_import_fit_margin(self, value: float) -> None:
+        self.overlayImportFitMarginChanged.emit(max(0.1, min(1.0, float(value))))
 
     def _update_pair_buttons(self) -> None:
         enabled = bool(self._selected_overlay_id())
@@ -344,6 +411,11 @@ class VectorOverlayDockWidget(QtWidgets.QDockWidget):
         overlay_id = self._selected_overlay_id()
         if overlay_id:
             self.overlayResetRequested.emit(overlay_id)
+
+    def _emit_refit_request(self) -> None:
+        overlay_id = self._selected_overlay_id()
+        if overlay_id:
+            self.overlayRefitRequested.emit(overlay_id)
 
     def _emit_landmark_align_request(self) -> None:
         overlay_id = self._selected_overlay_id()

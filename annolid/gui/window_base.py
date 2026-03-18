@@ -856,6 +856,12 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         )
         if self._has_renderable_image():
             self.adjustScale()
+            hook = getattr(self, "_onFitModeApplied", None)
+            if enabled and callable(hook):
+                try:
+                    hook("fit_window")
+                except Exception:
+                    pass
 
     def setFitWidth(self, value=True) -> None:
         enabled = bool(value)
@@ -866,6 +872,12 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         )
         if self._has_renderable_image():
             self.adjustScale()
+            hook = getattr(self, "_onFitModeApplied", None)
+            if enabled and callable(hook):
+                try:
+                    hook("fit_width")
+                except Exception:
+                    pass
 
     def _canvas_pixmap_size(self) -> tuple[int, int]:
         if getattr(self, "_active_image_view", "canvas") == "tiled":

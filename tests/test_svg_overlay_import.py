@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+import types
 
 from annolid.gui.svg_overlay import flatten_svg_path, import_svg_shapes
 from annolid.gui.svg_overlay import import_vector_shapes
@@ -11,6 +13,7 @@ from annolid.io.vector.svg_import import (
     import_svg_document,
 )
 from annolid.io.vector.document_import import _assign_text_labels_to_shapes
+from annolid.io.vector.document_import import _extract_pdf_text_labels
 
 
 def test_flatten_svg_path_samples_curves() -> None:
@@ -214,6 +217,89 @@ def test_import_vector_shapes_preserves_assigned_overlay_text(
     assert result.shapes[0].other_data["overlay_text"] == "Hp"
 
 
+def test_import_vector_shapes_disambiguates_duplicate_labels(
+    monkeypatch, tmp_path: Path
+) -> None:
+    svg_path = tmp_path / "atlas.svg"
+    svg_path.write_text("<svg xmlns='http://www.w3.org/2000/svg' />", encoding="utf-8")
+    monkeypatch.setattr(
+        "annolid.gui.svg_overlay.import_vector_document",
+        lambda path: ImportedVectorDocument(
+            source_path=str(path),
+            width=100.0,
+            height=100.0,
+            view_box=[0.0, 0.0, 100.0, 100.0],
+            shapes=[
+                ImportedPath(
+                    id="shape_0",
+                    label="Layer 1",
+                    kind="polygon",
+                    points=[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+                ),
+                ImportedPath(
+                    id="shape_1",
+                    label="Layer 1",
+                    kind="polygon",
+                    points=[(20.0, 20.0), (30.0, 20.0), (30.0, 30.0), (20.0, 30.0)],
+                ),
+            ],
+        ),
+    )
+
+    result = import_vector_shapes(svg_path)
+
+    labels = [shape.label for shape in result.shapes]
+    assert labels == ["Layer 1_1", "Layer 1_2"]
+
+
+def test_import_vector_shapes_marks_bbox_only_overlay_for_ai(
+    monkeypatch, tmp_path: Path
+) -> None:
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "annolid.gui.svg_overlay.import_vector_document",
+        lambda path: ImportedVectorDocument(
+            source_path=str(path),
+            width=400.0,
+            height=100.0,
+            view_box=[0.0, 0.0, 400.0, 100.0],
+            source_kind="ai",
+            shapes=[
+                ImportedPath(
+                    id="shape_0",
+                    label="Layer 1",
+                    kind="polygon",
+                    points=[
+                        (0.0, 0.0),
+                        (100.0, 0.0),
+                        (100.0, 40.0),
+                        (0.0, 40.0),
+                        (0.0, 0.0),
+                    ],
+                ),
+                ImportedPath(
+                    id="shape_1",
+                    label="Layer 1",
+                    kind="polygon",
+                    points=[
+                        (120.0, 0.0),
+                        (200.0, 0.0),
+                        (200.0, 40.0),
+                        (120.0, 40.0),
+                        (120.0, 0.0),
+                    ],
+                ),
+            ],
+        ),
+    )
+
+    result = import_vector_shapes(ai_path)
+
+    assert result.metadata["bbox_only_overlay"] is True
+    assert "rectangular" in str(result.metadata.get("import_warning") or "").lower()
+
+
 def test_import_svg_skips_defs_and_clip_paths(tmp_path: Path) -> None:
     svg_path = tmp_path / "clip.svg"
     svg_path.write_text(
@@ -252,3 +338,50 @@ def test_import_svg_open_path_uses_linestrip_shape_type(tmp_path: Path) -> None:
 
     assert len(result.shapes) == 1
     assert result.shapes[0].shape_type == "linestrip"
+
+
+def test_extract_pdf_text_labels_prefers_line_spans(
+    monkeypatch, tmp_path: Path
+) -> None:
+    pdf_path = tmp_path / "atlas.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%fake\n")
+
+    class _FakePage:
+        def get_text(self, mode):
+            if mode == "dict":
+                return {
+                    "blocks": [
+                        {
+                            "type": 0,
+                            "lines": [
+                                {
+                                    "spans": [
+                                        {"text": "Area", "bbox": [10, 20, 40, 30]},
+                                        {"text": "A", "bbox": [42, 20, 52, 30]},
+                                    ]
+                                }
+                            ],
+                        }
+                    ]
+                }
+            if mode == "words":
+                return [(10, 20, 20, 30, "A"), (21, 20, 30, 30, "B")]
+            return {}
+
+    class _FakeDoc:
+        page_count = 1
+
+        def load_page(self, _idx):
+            return _FakePage()
+
+        def close(self):
+            return None
+
+    fake_fitz = types.SimpleNamespace(open=lambda _path: _FakeDoc())
+    monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+
+    items = _extract_pdf_text_labels(pdf_path)
+
+    assert len(items) == 1
+    assert items[0]["text"] == "Area A"
+    assert tuple(items[0]["bbox"]) == (10.0, 20.0, 52.0, 30.0)

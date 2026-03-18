@@ -92,6 +92,7 @@ class _OverlayHost(VectorOverlayMixin, AnnolidWindowBase):
         self._viewer_stack.addWidget(self.canvas)
         self._viewer_stack.addWidget(self.large_image_view)
         self._active_image_view = "canvas"
+        self.paint_canvas_calls = 0
 
     def toggleActions(self, value):
         self._toggle_calls.append(bool(value))
@@ -111,6 +112,9 @@ class _OverlayHost(VectorOverlayMixin, AnnolidWindowBase):
 
     def post_status_message(self, message, timeout=4000):
         self.posted_status_messages.append((str(message), int(timeout)))
+
+    def paintCanvas(self):
+        self.paint_canvas_calls += 1
 
 
 def _make_overlay_shape() -> Shape:
@@ -154,6 +158,8 @@ def test_set_vector_overlay_transform_updates_shapes_and_metadata() -> None:
         item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
         item.setCheckState(QtCore.Qt.Checked)
         window.labelList.addItem(item)
+        window._active_image_view = "tiled"
+        window._viewer_stack.setCurrentWidget(window.large_image_view)
         window.otherData = {
             "svg_overlays": [
                 {
@@ -191,8 +197,15 @@ def test_set_vector_overlay_transform_updates_shapes_and_metadata() -> None:
         assert window.otherData["svg_overlays"][0]["transform"]["tx"] == 3.0
         assert window.otherData["svg_overlays"][0]["metadata"]["transform"]["ty"] == 4.0
         assert item.checkState() == QtCore.Qt.Unchecked
+        QtWidgets.QApplication.processEvents()
         assert window.canvas.update_calls == 1
-        assert window.large_image_view.last_shapes == [shape]
+        assert len(window.large_image_view.last_shapes or []) == 1
+        cloned = window.large_image_view.last_shapes[0]
+        assert [(round(p.x(), 3), round(p.y(), 3)) for p in cloned.points] == [
+            (4.0, 6.0),
+            (8.0, 6.0),
+            (8.0, 10.0),
+        ]
         assert window.dirty_calls == 1
     finally:
         window.close()
@@ -236,6 +249,58 @@ def test_import_svg_overlay_uses_post_status_message_when_status_is_missing(
             "Imported 1 vector overlay shapes" in window.posted_status_messages[-1][0]
         )
         assert window.otherData["svg_overlays"][0]["metadata"]["source_kind"] == "svg"
+        assert window.paint_canvas_calls >= 1
+    finally:
+        window.close()
+
+
+def test_import_svg_overlay_posts_import_warning_status(tmp_path, monkeypatch) -> None:
+    _ensure_qapp()
+
+    svg_path = tmp_path / "atlas.svg"
+    svg_path.write_text("<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
+
+    from annolid.gui.svg_overlay import SvgImportResult
+
+    window = _OverlayHost()
+    try:
+        window.imagePath = str(svg_path.with_suffix(".png"))
+        window.image = QtGui.QImage(16, 16, QtGui.QImage.Format_RGB32)
+        window.image.fill(QtGui.QColor(10, 20, 30))
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog,
+            "getOpenFileName",
+            lambda *args, **kwargs: (str(svg_path), "Vector files (*.svg *.pdf)"),
+        )
+        monkeypatch.setattr(
+            "annolid.gui.mixins.vector_overlay_mixin.import_vector_shapes",
+            lambda filename: SvgImportResult(
+                shapes=[_make_overlay_shape()],
+                metadata={
+                    "id": "overlay_a",
+                    "transform": {},
+                    "import_warning": "Imported overlay appears to contain only rectangular bounds.",
+                },
+            ),
+        )
+
+        window.importSvgOverlay()
+
+        assert any(
+            "rectangular bounds" in message.lower()
+            for message, _timeout in window.posted_status_messages
+        )
+    finally:
+        window.close()
+
+
+def test_vector_overlay_dock_is_hidden_by_default() -> None:
+    _ensure_qapp()
+
+    window = _OverlayHost()
+    try:
+        window.setupVectorOverlayDock()
+        assert window.vector_overlay_dock.isHidden() is True
     finally:
         window.close()
 
@@ -344,10 +409,341 @@ def test_import_svg_overlay_initially_fits_small_overlay_to_image(
         assert min(ys) >= 0.0
         assert max(ys) <= 800.0
         assert transform["sx"] > 1.0
+        assert abs(transform["sx"] - 8.0) < 1e-6
+        assert abs(transform["sy"] - 8.0) < 1e-6
         assert (
             window.otherData["svg_overlays"][0]["metadata"]["initial_fit_to_image"]
             is True
         )
+        assert (
+            abs(
+                window.otherData["svg_overlays"][0]["metadata"]["initial_fit_margin"]
+                - 1.0
+            )
+            < 1e-6
+        )
+    finally:
+        window.close()
+
+
+def test_import_ai_overlay_uses_document_bounds_for_initial_fit(
+    tmp_path, monkeypatch
+) -> None:
+    _ensure_qapp()
+
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_text("", encoding="utf-8")
+
+    from annolid.gui.svg_overlay import SvgImportResult
+
+    window = _OverlayHost()
+    try:
+        window.imagePath = str(ai_path.with_suffix(".png"))
+        window.image = QtGui.QImage(2000, 1500, QtGui.QImage.Format_RGB32)
+        window.image.fill(QtGui.QColor(10, 20, 30))
+        page_shape = _make_overlay_shape()
+        page_shape.points = [
+            QtCore.QPointF(0.0, 0.0),
+            QtCore.QPointF(800.0, 0.0),
+            QtCore.QPointF(800.0, 600.0),
+        ]
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog,
+            "getOpenFileName",
+            lambda *args, **kwargs: (str(ai_path), "Vector files (*.svg *.ai *.pdf)"),
+        )
+        monkeypatch.setattr(
+            "annolid.gui.mixins.vector_overlay_mixin.import_vector_shapes",
+            lambda filename: SvgImportResult(
+                shapes=[page_shape],
+                metadata={
+                    "id": "overlay_a",
+                    "source_kind": "ai",
+                    "document_width": 800.0,
+                    "document_height": 600.0,
+                    "view_box": [0.0, 0.0, 800.0, 600.0],
+                    "transform": {
+                        "tx": 0.0,
+                        "ty": 0.0,
+                        "sx": 1.0,
+                        "sy": 1.0,
+                        "rotation_deg": 0.0,
+                        "opacity": 0.5,
+                        "visible": True,
+                        "z_order": 0,
+                    },
+                },
+            ),
+        )
+
+        window.importSvgOverlay()
+
+        imported = window.canvas.shapes[-1]
+        xs = [point.x() for point in imported.points]
+        ys = [point.y() for point in imported.points]
+        metadata = window.otherData["svg_overlays"][0]["metadata"]
+        transform = window.otherData["svg_overlays"][0]["transform"]
+
+        assert min(xs) >= 0.0
+        assert max(xs) <= 2000.0
+        assert min(ys) >= 0.0
+        assert max(ys) <= 1500.0
+        assert abs(transform["sx"] - 2.5) < 1e-6
+        assert abs(transform["sy"] - 2.5) < 1e-6
+        assert metadata["initial_fit_to_image"] is True
+        assert metadata["initial_fit_bounds"] == "document"
+    finally:
+        window.close()
+
+
+def test_import_ai_overlay_auto_falls_back_to_shape_bounds_when_document_unreliable(
+    tmp_path, monkeypatch
+) -> None:
+    _ensure_qapp()
+
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_text("", encoding="utf-8")
+
+    from annolid.gui.svg_overlay import SvgImportResult
+
+    window = _OverlayHost()
+    try:
+        window.imagePath = str(ai_path.with_suffix(".png"))
+        window.image = QtGui.QImage(3008, 2000, QtGui.QImage.Format_RGB32)
+        window.image.fill(QtGui.QColor(10, 20, 30))
+        irregular_shape = _make_overlay_shape()
+        irregular_shape.points = [
+            QtCore.QPointF(-186.0, -145.0),
+            QtCore.QPointF(535.92, -145.0),
+            QtCore.QPointF(535.92, 335.0),
+        ]
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog,
+            "getOpenFileName",
+            lambda *args, **kwargs: (str(ai_path), "Vector files (*.svg *.ai *.pdf)"),
+        )
+        monkeypatch.setattr(
+            "annolid.gui.mixins.vector_overlay_mixin.import_vector_shapes",
+            lambda filename: SvgImportResult(
+                shapes=[irregular_shape],
+                metadata={
+                    "id": "overlay_a",
+                    "source_kind": "ai",
+                    "document_width": 400.0,
+                    "document_height": 100.0,
+                    "view_box": [0.0, 0.0, 400.0, 100.0],
+                    "transform": {
+                        "tx": 0.0,
+                        "ty": 0.0,
+                        "sx": 1.0,
+                        "sy": 1.0,
+                        "rotation_deg": 0.0,
+                        "opacity": 0.5,
+                        "visible": True,
+                        "z_order": 0,
+                    },
+                },
+            ),
+        )
+
+        window.importSvgOverlay()
+
+        metadata = window.otherData["svg_overlays"][0]["metadata"]
+        assert metadata["initial_fit_bounds"] == "shape"
+    finally:
+        window.close()
+
+
+def test_import_ai_overlay_shape_mode_uses_shape_bounds_for_fit(
+    tmp_path, monkeypatch
+) -> None:
+    _ensure_qapp()
+
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_text("", encoding="utf-8")
+
+    from annolid.gui.svg_overlay import SvgImportResult
+
+    window = _OverlayHost()
+    try:
+        window.imagePath = str(ai_path.with_suffix(".png"))
+        window.image = QtGui.QImage(2000, 1500, QtGui.QImage.Format_RGB32)
+        window.image.fill(QtGui.QColor(10, 20, 30))
+        window._setVectorOverlayImportFitMode("shape")
+        tiny_shape = _make_overlay_shape()
+        tiny_shape.points = [
+            QtCore.QPointF(0.0, 0.0),
+            QtCore.QPointF(100.0, 0.0),
+            QtCore.QPointF(100.0, 100.0),
+        ]
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog,
+            "getOpenFileName",
+            lambda *args, **kwargs: (str(ai_path), "Vector files (*.svg *.ai *.pdf)"),
+        )
+        monkeypatch.setattr(
+            "annolid.gui.mixins.vector_overlay_mixin.import_vector_shapes",
+            lambda filename: SvgImportResult(
+                shapes=[tiny_shape],
+                metadata={
+                    "id": "overlay_a",
+                    "source_kind": "ai",
+                    "document_width": 800.0,
+                    "document_height": 600.0,
+                    "view_box": [0.0, 0.0, 800.0, 600.0],
+                    "transform": {
+                        "tx": 0.0,
+                        "ty": 0.0,
+                        "sx": 1.0,
+                        "sy": 1.0,
+                        "rotation_deg": 0.0,
+                        "opacity": 0.5,
+                        "visible": True,
+                        "z_order": 0,
+                    },
+                },
+            ),
+        )
+
+        window.importSvgOverlay()
+
+        metadata = window.otherData["svg_overlays"][0]["metadata"]
+        transform = window.otherData["svg_overlays"][0]["transform"]
+
+        assert abs(transform["sx"] - 15.0) < 1e-6
+        assert abs(transform["sy"] - 15.0) < 1e-6
+        assert metadata["initial_fit_mode"] == "shape"
+        assert metadata["initial_fit_bounds"] == "shape"
+    finally:
+        window.close()
+
+
+def test_refit_overlay_from_dock_updates_selected_overlay() -> None:
+    _ensure_qapp()
+
+    window = _OverlayHost()
+    try:
+        window.setupVectorOverlayDock()
+        window.image = QtGui.QImage(2000, 1500, QtGui.QImage.Format_RGB32)
+        window.image.fill(QtGui.QColor(10, 20, 30))
+        overlay_shape = _make_overlay_shape()
+        overlay_shape.points = [
+            QtCore.QPointF(0.0, 0.0),
+            QtCore.QPointF(100.0, 0.0),
+            QtCore.QPointF(100.0, 100.0),
+        ]
+        window.canvas.shapes = [overlay_shape]
+        window.otherData = {
+            "svg_overlays": [
+                {
+                    "id": "overlay_a",
+                    "source": "atlas.ai",
+                    "source_kind": "ai",
+                    "shape_count": 1,
+                    "metadata": {
+                        "source_kind": "ai",
+                        "document_width": 800.0,
+                        "document_height": 600.0,
+                        "view_box": [0.0, 0.0, 800.0, 600.0],
+                        "transform": {
+                            "tx": 0.0,
+                            "ty": 0.0,
+                            "sx": 1.0,
+                            "sy": 1.0,
+                            "rotation_deg": 0.0,
+                            "opacity": 0.5,
+                            "visible": True,
+                            "z_order": 0,
+                        },
+                    },
+                    "transform": {
+                        "tx": 0.0,
+                        "ty": 0.0,
+                        "sx": 1.0,
+                        "sy": 1.0,
+                        "rotation_deg": 0.0,
+                        "opacity": 0.5,
+                        "visible": True,
+                        "z_order": 0,
+                    },
+                }
+            ]
+        }
+        window._refreshVectorOverlayDock()
+        window.vector_overlay_dock.set_import_fit_mode("shape")
+
+        window._refitVectorOverlayFromDock("overlay_a")
+
+        transform = window.otherData["svg_overlays"][0]["transform"]
+        metadata = window.otherData["svg_overlays"][0]["metadata"]
+        assert abs(transform["sx"] - 15.0) < 1e-6
+        assert abs(transform["sy"] - 15.0) < 1e-6
+        assert metadata["initial_fit_mode"] == "shape"
+        assert window.dirty_calls >= 1
+    finally:
+        window.close()
+
+
+def test_fit_window_auto_refits_ai_overlay_when_enabled() -> None:
+    _ensure_qapp()
+
+    window = _OverlayHost()
+    try:
+        window.image = QtGui.QImage(2000, 1500, QtGui.QImage.Format_RGB32)
+        window.image.fill(QtGui.QColor(10, 20, 30))
+        overlay_shape = _make_overlay_shape()
+        overlay_shape.points = [
+            QtCore.QPointF(0.0, 0.0),
+            QtCore.QPointF(100.0, 0.0),
+            QtCore.QPointF(100.0, 100.0),
+        ]
+        window.canvas.shapes = [overlay_shape]
+        window.otherData = {
+            "svg_overlays": [
+                {
+                    "id": "overlay_a",
+                    "source": "atlas.ai",
+                    "source_kind": "ai",
+                    "shape_count": 1,
+                    "metadata": {
+                        "source_kind": "ai",
+                        "document_width": 800.0,
+                        "document_height": 600.0,
+                        "view_box": [0.0, 0.0, 800.0, 600.0],
+                        "auto_refit_on_fit_window": True,
+                        "transform": {
+                            "tx": 0.0,
+                            "ty": 0.0,
+                            "sx": 1.0,
+                            "sy": 1.0,
+                            "rotation_deg": 0.0,
+                            "opacity": 0.5,
+                            "visible": True,
+                            "z_order": 0,
+                        },
+                    },
+                    "transform": {
+                        "tx": 0.0,
+                        "ty": 0.0,
+                        "sx": 1.0,
+                        "sy": 1.0,
+                        "rotation_deg": 0.0,
+                        "opacity": 0.5,
+                        "visible": True,
+                        "z_order": 0,
+                    },
+                }
+            ]
+        }
+        window._setVectorOverlayImportFitMode("document")
+
+        window.setFitWindow(True)
+
+        transform = window.otherData["svg_overlays"][0]["transform"]
+        metadata = window.otherData["svg_overlays"][0]["metadata"]
+        assert abs(transform["sx"] - 2.5) < 1e-6
+        assert abs(transform["sy"] - 2.5) < 1e-6
+        assert metadata["initial_fit_bounds"] == "document"
     finally:
         window.close()
 
@@ -770,6 +1166,64 @@ def test_vector_overlay_dock_reflects_selected_overlay_state() -> None:
         assert dock.remove_pair_button.isEnabled() is True
         assert dock.clear_pairs_button.isEnabled() is True
         assert dock.align_landmarks_button.isEnabled() is False
+        assert dock.import_fit_mode() == "auto"
+        assert dock.refit_button.isEnabled() is True
+    finally:
+        dock.close()
+
+
+def test_vector_overlay_dock_emits_import_fit_mode_signal() -> None:
+    _ensure_qapp()
+
+    dock = VectorOverlayDockWidget()
+    try:
+        received = []
+        dock.overlayImportFitModeChanged.connect(received.append)
+
+        dock.set_import_fit_mode("document")
+        dock._emit_import_fit_mode(1)
+        dock.set_import_fit_mode("shape")
+        dock._emit_import_fit_mode(2)
+
+        assert received[-2:] == ["document", "shape"]
+        assert dock.import_fit_combo.isEnabled() is True
+    finally:
+        dock.close()
+
+
+def test_vector_overlay_dock_emits_import_fit_margin_signal() -> None:
+    _ensure_qapp()
+
+    dock = VectorOverlayDockWidget()
+    try:
+        received = []
+        dock.overlayImportFitMarginChanged.connect(received.append)
+
+        dock.set_import_fit_margin(0.95)
+        dock._emit_import_fit_margin(0.95)
+        dock.set_import_fit_margin(0.8)
+        dock._emit_import_fit_margin(0.8)
+
+        assert received[-2:] == [0.95, 0.8]
+        assert abs(dock.import_fit_margin() - 0.8) < 1e-6
+    finally:
+        dock.close()
+
+
+def test_vector_overlay_dock_emits_refit_signal() -> None:
+    _ensure_qapp()
+
+    dock = VectorOverlayDockWidget()
+    try:
+        dock.set_overlays(
+            [{"id": "overlay_a", "source": "/tmp/atlas.svg", "transform": {}}]
+        )
+        received = []
+        dock.overlayRefitRequested.connect(received.append)
+
+        dock._emit_refit_request()
+
+        assert received == ["overlay_a"]
     finally:
         dock.close()
 

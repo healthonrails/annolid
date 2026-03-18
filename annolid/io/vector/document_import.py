@@ -70,6 +70,49 @@ def _extract_pdf_text_labels(path: Path) -> list[dict[str, object]]:
             return []
         page = document.load_page(0)
         items: list[dict[str, object]] = []
+        # Prefer line/span extraction because Illustrator/PDF labels often split
+        # poorly in "words" mode (single-character fragments).
+        text_dict = page.get_text("dict")
+        blocks = (
+            list(text_dict.get("blocks") or []) if isinstance(text_dict, dict) else []
+        )
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if int(block.get("type", 0) or 0) != 0:
+                continue
+            for line in list(block.get("lines") or []):
+                spans = list((line or {}).get("spans") or [])
+                if not spans:
+                    continue
+                parts = []
+                x0 = y0 = x1 = y1 = None
+                for span in spans:
+                    text = str((span or {}).get("text") or "").strip()
+                    if not text:
+                        continue
+                    parts.append(text)
+                    bbox = list((span or {}).get("bbox") or [])
+                    if len(bbox) >= 4:
+                        sx0, sy0, sx1, sy1 = map(float, bbox[:4])
+                        x0 = sx0 if x0 is None else min(x0, sx0)
+                        y0 = sy0 if y0 is None else min(y0, sy0)
+                        x1 = sx1 if x1 is None else max(x1, sx1)
+                        y1 = sy1 if y1 is None else max(y1, sy1)
+                merged = " ".join(part for part in parts if part).strip()
+                if not merged or x0 is None or y0 is None or x1 is None or y1 is None:
+                    continue
+                items.append(
+                    {
+                        "text": merged,
+                        "center": ((x0 + x1) / 2.0, (y0 + y1) / 2.0),
+                        "bbox": (x0, y0, x1, y1),
+                    }
+                )
+        if items:
+            return items
+
+        items: list[dict[str, object]] = []
         for word in page.get_text("words"):
             if len(word) < 5:
                 continue
