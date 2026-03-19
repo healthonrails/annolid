@@ -25,58 +25,101 @@ import numpy as np
 import pandas as pd
 from qtpy import QtCore, QtWidgets, QtGui
 
-# VTK imports (modular) — if these fail, the caller should fall back
-from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
-from vtkmodules.vtkRenderingCore import (
-    vtkRenderer,
-    vtkVolume,
-    vtkVolumeProperty,
-    vtkWindowToImageFilter,
-    vtkTexture,
-    vtkPointPicker,
-    vtkColorTransferFunction,
-    vtkPolyDataMapper,
-    vtkActor,
-    vtkProperty,
-    vtkImageActor,
-    vtkLight,
-    vtkGlyph3DMapper,
-)
-from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
-from vtkmodules.vtkCommonDataModel import (
-    vtkImageData,
-    vtkPolyData,
-    vtkCellArray,
-    vtkPiecewiseFunction,
-    vtkPlane,
-)
-from vtkmodules.vtkCommonCore import vtkPoints
-from vtkmodules.vtkCommonCore import vtkStringArray
-from vtkmodules.vtkInteractionStyle import (
-    vtkInteractorStyleTrackballCamera,
-    vtkInteractorStyleUser,
-)
-from vtkmodules.util.numpy_support import numpy_to_vtk, get_vtk_array_type
-from vtkmodules.vtkIOImage import vtkPNGWriter, vtkImageReader2Factory
-from vtkmodules.vtkFiltersSources import vtkSphereSource
-
+# VTK imports are optional at module-import time so non-VTK environments can
+# still import and monkeypatch this module during tests.
+_VTK_IMPORT_ERROR: Exception | None = None
+_HAS_VTK = False
 try:
-    from vtkmodules.vtkRenderingOpenGL2 import vtkOpenGLPolyDataMapper
-except Exception:  # pragma: no cover - optional renderer
-    vtkOpenGLPolyDataMapper = None
-try:  # Prefer GDCM when available (more robust series handling)
-    from vtkmodules.vtkIOImage import vtkGDCMImageReader  # type: ignore
+    from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+    from vtkmodules.vtkRenderingCore import (
+        vtkRenderer,
+        vtkVolume,
+        vtkVolumeProperty,
+        vtkWindowToImageFilter,
+        vtkTexture,
+        vtkPointPicker,
+        vtkColorTransferFunction,
+        vtkPolyDataMapper,
+        vtkActor,
+        vtkProperty,
+        vtkImageActor,
+        vtkLight,
+        vtkGlyph3DMapper,
+    )
+    from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
+    from vtkmodules.vtkCommonDataModel import (
+        vtkImageData,
+        vtkPolyData,
+        vtkCellArray,
+        vtkPiecewiseFunction,
+        vtkPlane,
+    )
+    from vtkmodules.vtkCommonCore import vtkPoints
+    from vtkmodules.vtkCommonCore import vtkStringArray
+    from vtkmodules.vtkInteractionStyle import (
+        vtkInteractorStyleTrackballCamera,
+        vtkInteractorStyleUser,
+    )
+    from vtkmodules.util.numpy_support import numpy_to_vtk, get_vtk_array_type
+    from vtkmodules.vtkIOImage import vtkPNGWriter, vtkImageReader2Factory
+    from vtkmodules.vtkFiltersSources import vtkSphereSource
 
-    _HAS_GDCM = True
-except Exception:  # pragma: no cover
-    _HAS_GDCM = False
-try:
-    from vtkmodules.vtkInteractionWidgets import vtkImagePlaneWidget
-except Exception:
+    _HAS_VTK = True
+except Exception as exc:  # pragma: no cover - optional dependency path
+    _VTK_IMPORT_ERROR = exc
+    QVTKRenderWindowInteractor = None  # type: ignore[assignment]
+    vtkRenderer = None  # type: ignore[assignment]
+    vtkVolume = None  # type: ignore[assignment]
+    vtkVolumeProperty = None  # type: ignore[assignment]
+    vtkWindowToImageFilter = None  # type: ignore[assignment]
+    vtkTexture = None  # type: ignore[assignment]
+    vtkPointPicker = None  # type: ignore[assignment]
+    vtkColorTransferFunction = None  # type: ignore[assignment]
+    vtkPolyDataMapper = None  # type: ignore[assignment]
+    vtkActor = None  # type: ignore[assignment]
+    vtkProperty = None  # type: ignore[assignment]
+    vtkImageActor = None  # type: ignore[assignment]
+    vtkLight = None  # type: ignore[assignment]
+    vtkGlyph3DMapper = None  # type: ignore[assignment]
+    vtkSmartVolumeMapper = None  # type: ignore[assignment]
+    vtkImageData = None  # type: ignore[assignment]
+    vtkPolyData = None  # type: ignore[assignment]
+    vtkCellArray = None  # type: ignore[assignment]
+    vtkPiecewiseFunction = None  # type: ignore[assignment]
+    vtkPlane = None  # type: ignore[assignment]
+    vtkPoints = None  # type: ignore[assignment]
+    vtkStringArray = None  # type: ignore[assignment]
+    vtkInteractorStyleTrackballCamera = None  # type: ignore[assignment]
+    vtkInteractorStyleUser = None  # type: ignore[assignment]
+    numpy_to_vtk = None  # type: ignore[assignment]
+    get_vtk_array_type = None  # type: ignore[assignment]
+    vtkPNGWriter = None  # type: ignore[assignment]
+    vtkImageReader2Factory = None  # type: ignore[assignment]
+    vtkSphereSource = None  # type: ignore[assignment]
+
+if _HAS_VTK:
     try:
-        from vtkmodules.vtkInteractionImage import vtkImagePlaneWidget
+        from vtkmodules.vtkRenderingOpenGL2 import vtkOpenGLPolyDataMapper
+    except Exception:  # pragma: no cover - optional renderer
+        vtkOpenGLPolyDataMapper = None
+    try:  # Prefer GDCM when available (more robust series handling)
+        from vtkmodules.vtkIOImage import vtkGDCMImageReader  # type: ignore
+
+        _HAS_GDCM = True
     except Exception:  # pragma: no cover
-        vtkImagePlaneWidget = None
+        _HAS_GDCM = False
+    try:
+        from vtkmodules.vtkInteractionWidgets import vtkImagePlaneWidget
+    except Exception:
+        try:
+            from vtkmodules.vtkInteractionImage import vtkImagePlaneWidget
+        except Exception:  # pragma: no cover
+            vtkImagePlaneWidget = None
+else:  # pragma: no cover - optional dependency path
+    vtkOpenGLPolyDataMapper = None
+    vtkGDCMImageReader = None  # type: ignore[assignment]
+    _HAS_GDCM = False
+    vtkImagePlaneWidget = None
 _HAS_PLANE_WIDGET = vtkImagePlaneWidget is not None
 
 
@@ -640,6 +683,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
     def __init__(
         self, src_path: Optional[str | Path], parent: Optional[QtWidgets.QWidget] = None
     ):
+        if not _HAS_VTK:
+            detail = f": {_VTK_IMPORT_ERROR}" if _VTK_IMPORT_ERROR is not None else ""
+            raise ModuleNotFoundError(f"VTK Qt modules are not available{detail}")
         super().__init__(parent)
         self.setWindowTitle("3D Volume Renderer (VTK)")
         self.resize(1150, 820)
