@@ -8,6 +8,7 @@ from typing import Optional
 
 from qtpy import QtCore, QtWidgets
 
+from annolid.gui.cursor_utils import set_widget_busy_cursor
 from annolid.data.videos import download_youtube_video
 
 
@@ -95,7 +96,7 @@ class YouTubeVideoDialog(QtWidgets.QDialog):
 
         python_executable = sys.executable or "python"
         self._set_status(self.tr("Installing yt-dlp..."))
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        set_widget_busy_cursor(self, True)
         try:
             subprocess.check_call([python_executable, "-m", "pip", "install", "yt-dlp"])
         except subprocess.CalledProcessError as exc:
@@ -103,7 +104,7 @@ class YouTubeVideoDialog(QtWidgets.QDialog):
                 self.tr("Failed to install yt-dlp (pip exit code %d).") % exc.returncode
             ) from exc
         finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
+            set_widget_busy_cursor(self, False)
 
         importlib.invalidate_caches()
         try:
@@ -145,7 +146,7 @@ class YouTubeVideoDialog(QtWidgets.QDialog):
         self._set_status(self.tr("Downloading YouTube video..."))
 
         downloaded_path: Optional[Path] = None
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        set_widget_busy_cursor(self, True)
         try:
             downloaded_path = download_youtube_video(url)
         except Exception as exc:  # pragma: no cover - pass error upstream to UI
@@ -156,7 +157,7 @@ class YouTubeVideoDialog(QtWidgets.QDialog):
                 self.tr("Failed to download the video:\n%s") % exc,
             )
         finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
+            set_widget_busy_cursor(self, False)
             if self.ok_button is not None:
                 self.ok_button.setEnabled(True)
 

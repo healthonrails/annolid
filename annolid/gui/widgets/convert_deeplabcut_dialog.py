@@ -8,6 +8,7 @@ from qtpy import QtCore, QtWidgets
 
 from annolid.annotation.deeplabcut2labelme import deeplabcut_to_labelme_json
 from annolid.domain import DeepLabCutTrainingImportConfig
+from annolid.gui.cursor_utils import set_widget_busy_cursor
 from annolid.services.export import import_deeplabcut_dataset
 
 
@@ -298,7 +299,7 @@ class ConvertDLCDialog(QtWidgets.QDialog):
 
     def _start_worker(self, fn) -> None:
         self._set_running(True)
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        set_widget_busy_cursor(self, True)
 
         thread = QtCore.QThread(self)
         worker = _ConversionWorker(fn)
@@ -313,7 +314,11 @@ class ConvertDLCDialog(QtWidgets.QDialog):
 
         self._thread = thread
         self._worker = worker
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            self._cleanup_worker()
+            raise
 
     def _on_finished(self, summary: Dict[str, Any]) -> None:
         self._cleanup_worker()
@@ -328,7 +333,7 @@ class ConvertDLCDialog(QtWidgets.QDialog):
 
     def _cleanup_worker(self) -> None:
         try:
-            QtWidgets.QApplication.restoreOverrideCursor()
+            set_widget_busy_cursor(self, False)
         except Exception:
             pass
         self._thread = None

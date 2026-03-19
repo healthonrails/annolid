@@ -383,7 +383,7 @@ def test_open_3d_viewer_does_not_fallback_to_pil_for_nifti(
     widget.filename = ""
 
     monkeypatch.setattr(
-        "annolid.gui.widgets.vtk_volume_viewer.VTKVolumeViewerDialog",
+        "annolid.gui.widgets.pyvista_volume_viewer.PyVistaVolumeViewerDialog",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             RuntimeError("vtk viewer failed")
         ),
@@ -411,7 +411,7 @@ def test_open_3d_viewer_does_not_fallback_to_pil_for_nifti(
     )
 
 
-def test_open_3d_viewer_retains_vtk_dialog_reference(
+def test_open_3d_viewer_retains_volume_dialog_reference(
     monkeypatch, tmp_path: Path
 ) -> None:
     widget = _DummyViewerHost()
@@ -431,12 +431,16 @@ def test_open_3d_viewer_retains_vtk_dialog_reference(
                 (),
                 {"connect": lambda self, cb: None},
             )()
+            self._schedule_calls: list[int] = []
 
         def setModal(self, modal: bool):
             return None
 
         def show(self):
             return None
+
+        def _schedule_scene_initialization(self, delay_ms: int):
+            self._schedule_calls.append(delay_ms)
 
         def raise_(self):
             return None
@@ -450,7 +454,7 @@ def test_open_3d_viewer_retains_vtk_dialog_reference(
     widget.imagePath = ""
     widget.filename = ""
     monkeypatch.setattr(
-        "annolid.gui.widgets.vtk_volume_viewer.VTKVolumeViewerDialog",
+        "annolid.gui.widgets.pyvista_volume_viewer.PyVistaVolumeViewerDialog",
         _FakeDlg,
     )
     monkeypatch.setattr(
@@ -467,5 +471,6 @@ def test_open_3d_viewer_retains_vtk_dialog_reference(
 
     widget.open_3d_viewer()
 
-    assert hasattr(widget, "_vtk_volume_viewer_dialog")
-    assert widget._vtk_volume_viewer_dialog is not None
+    assert hasattr(widget, "_volume_viewer_dialog")
+    assert widget._volume_viewer_dialog is not None
+    assert widget._volume_viewer_dialog._schedule_calls == [0]

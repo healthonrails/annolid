@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import numpy as np
 
-from annolid.gui.widgets.vtk_volume_readers import VolumeReaderConfig, VolumeReaders
+from annolid.gui.widgets.volume_readers import VolumeReaderConfig, VolumeReaders
 
 
 def _make_volume_readers() -> VolumeReaders:
@@ -16,13 +15,6 @@ def _make_volume_readers() -> VolumeReaders:
     )
     return VolumeReaders(
         config=cfg,
-        make_volume_data=lambda **kwargs: kwargs,
-        make_slice_volume_data=lambda *args, **kwargs: kwargs,
-        find_companion_file=lambda _path, _suffix: None,
-        memmap_slice_loader_cls=object,
-        tiff_slice_loader_cls=object,
-        zarr_slice_loader_cls=object,
-        zarr_v3_array_cls=np.ndarray,
     )
 
 

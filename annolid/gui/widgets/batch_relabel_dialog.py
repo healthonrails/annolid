@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from qtpy import QtCore, QtWidgets
+from qtpy import QtWidgets
 
+from annolid.gui.cursor_utils import set_widget_busy_cursor
 from annolid.annotation.batch_relabel import (
     BatchRelabelResult,
     collect_label_counts,
@@ -150,7 +151,7 @@ class BatchRelabelDialog(QtWidgets.QDialog):
             return None
         root, old, new = validated
 
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        set_widget_busy_cursor(self, True)
         try:
             before_counts = collect_label_counts(
                 root=root,
@@ -205,7 +206,7 @@ class BatchRelabelDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.critical(self, "Batch Rename Failed", str(exc))
             return None
         finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
+            set_widget_busy_cursor(self, False)
 
     def _on_preview(self) -> None:
         self._run(dry_run=True)

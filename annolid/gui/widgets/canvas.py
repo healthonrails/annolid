@@ -2714,12 +2714,33 @@ class Canvas(QtWidgets.QWidget):
         self.update()
 
     def overrideCursor(self, cursor):
-        self.restoreCursor()
         self._cursor = cursor
-        QtWidgets.QApplication.setOverrideCursor(cursor)
+        try:
+            self.setCursor(cursor)
+        except Exception:
+            pass
+        viewport = getattr(self, "viewport", None)
+        if callable(viewport):
+            try:
+                vp = viewport()
+                if vp is not None:
+                    vp.setCursor(cursor)
+            except Exception:
+                pass
 
     def restoreCursor(self):
-        QtWidgets.QApplication.restoreOverrideCursor()
+        try:
+            self.unsetCursor()
+        except Exception:
+            pass
+        viewport = getattr(self, "viewport", None)
+        if callable(viewport):
+            try:
+                vp = viewport()
+                if vp is not None:
+                    vp.unsetCursor()
+            except Exception:
+                pass
 
     def resetState(self):
         self.restoreCursor()

@@ -23,7 +23,7 @@ from annolid.gui.threejs_examples import (
     attach_flybody_mesh,
     generate_threejs_example,
 )
-from annolid.gui.widgets.vtk_volume_utils import path_matches_ext
+from annolid.gui.widgets.volume_utils import path_matches_ext
 from annolid.gui.workers import FlexibleWorker
 from annolid.simulation import (
     SimulationRunRequest,
@@ -314,37 +314,66 @@ class ViewerToolsMixin:
             paths = [folder]
         return _normalize_volume_selection(paths[0]) if paths else None
 
-    def _open_vtk_volume_viewer(
+    def _open_3d_volume_viewer(
         self, source_path: str
     ) -> tuple[bool, Exception | None, bool]:
-        vtk_missing = False
-        vtk_error = None
+        backend_missing = False
+        backend_error = None
+        logger.info("3D viewer: opening PyVista viewer for source '%s'.", source_path)
         try:
-            from annolid.gui.widgets.vtk_volume_viewer import VTKVolumeViewerDialog  # type: ignore
+            from annolid.gui.widgets.pyvista_volume_viewer import (
+                PyVistaVolumeViewerDialog,
+            )  # type: ignore
 
-            dlg = VTKVolumeViewerDialog(source_path, parent=self)
-            _retain_dialog(self, "_vtk_volume_viewer_dialog", dlg)
+            dlg = PyVistaVolumeViewerDialog(source_path, parent=self)
+            _retain_dialog(self, "_volume_viewer_dialog", dlg)
             dlg.setModal(False)
             dlg.show()
+            try:
+                schedule_init = getattr(dlg, "_schedule_scene_initialization", None)
+                if callable(schedule_init):
+                    schedule_init(0)
+                    logger.info(
+                        "3D viewer: explicitly scheduled render initialization for '%s'.",
+                        source_path,
+                    )
+            except Exception:
+                logger.exception(
+                    "3D viewer: failed to explicitly schedule render initialization for '%s'.",
+                    source_path,
+                )
             dlg.raise_()
             dlg.activateWindow()
             return True, None, False
         except ModuleNotFoundError as exc:
-            vtk_error = exc
-            vtk_missing = True
+            backend_error = exc
+            backend_missing = True
+            logger.warning(
+                "3D viewer: PyVista viewer backend module missing for '%s': %s",
+                source_path,
+                exc,
+            )
         except ImportError as exc:
-            vtk_error = exc
-            vtk_missing = True
+            backend_error = exc
+            backend_missing = True
+            logger.warning(
+                "3D viewer: PyVista viewer import failed for '%s': %s",
+                source_path,
+                exc,
+            )
         except Exception as exc:
-            vtk_error = exc
-        return False, vtk_error, vtk_missing
+            backend_error = exc
+            logger.exception(
+                "3D viewer: unexpected error while opening PyVista viewer for '%s'.",
+                source_path,
+            )
+        return False, backend_error, backend_missing
 
-    def _probe_vtk_available(self) -> tuple[bool, str | None]:
+    def _probe_3d_backend_available(self) -> tuple[bool, str | None]:
         try:
-            try:
-                import vtkmodules  # noqa: F401
-            except Exception:
-                import vtk  # noqa: F401
+            import pyvista  # noqa: F401
+            import pyvistaqt  # noqa: F401
+
             return True, None
         except Exception as exc:
             return False, str(exc)
@@ -373,17 +402,30 @@ class ViewerToolsMixin:
         source_path = (
             self._detect_existing_3d_source() or self._pick_3d_source_from_dialog()
         )
+        if source_path:
+            logger.info("3D viewer: selected source '%s'.", source_path)
         if not source_path:
+            logger.info("3D viewer: no source selected.")
             return
 
-        opened, vtk_error, vtk_missing = self._open_vtk_volume_viewer(source_path)
+        opened, backend_error, backend_missing = self._open_3d_volume_viewer(
+            source_path
+        )
         if opened:
+            logger.info("3D viewer: PyVista viewer opened for '%s'.", source_path)
             return
 
         try:
             suffix = Path(source_path).suffix.lower()
         except Exception:
             suffix = ""
+        logger.info(
+            "3D viewer: PyVista open failed for '%s' (suffix='%s', backend_missing=%s, error=%s).",
+            source_path,
+            suffix,
+            backend_missing,
+            backend_error,
+        )
 
         if suffix in _THREEJS_SUFFIXES:
             manager = getattr(self, "threejs_manager", None)
@@ -394,38 +436,38 @@ class ViewerToolsMixin:
                 except Exception:
                     pass
 
-        requires_vtk = suffix in _POINT_CLOUD_SUFFIXES or suffix in _MESH_SUFFIXES
-        vtk_ok, vtk_probe_error = self._probe_vtk_available()
-        vtk_missing = not vtk_ok
+        requires_backend = suffix in _POINT_CLOUD_SUFFIXES or suffix in _MESH_SUFFIXES
+        backend_ok, backend_probe_error = self._probe_3d_backend_available()
+        backend_missing = not backend_ok
 
-        if requires_vtk:
-            if vtk_missing:
+        if requires_backend:
+            if backend_missing:
                 QtWidgets.QMessageBox.information(
                     self,
-                    self.tr("Mesh/Point Cloud Viewer Requires VTK"),
+                    self.tr("Mesh/Point Cloud Viewer Requires PyVista"),
                     self.tr(
-                        "PLY/CSV/XYZ point clouds and STL/OBJ meshes require VTK with Qt support.\n\n"
-                        f"Details: {vtk_probe_error or 'Unknown import error'}\n\n"
-                        "Conda:  conda install -c conda-forge vtk\n"
-                        "Pip:    pip install vtk"
+                        "PLY/CSV/XYZ point clouds and STL/OBJ meshes require PyVista with Qt support.\n\n"
+                        f"Details: {backend_probe_error or 'Unknown import error'}\n\n"
+                        "Conda:  conda install -c conda-forge pyvista pyvistaqt\n"
+                        "Pip:    pip install pyvista pyvistaqt"
                     ),
                 )
             else:
                 QtWidgets.QMessageBox.warning(
                     self,
                     self.tr("Mesh/Point Cloud Viewer"),
-                    self.tr("Failed to open the VTK mesh/point cloud viewer.\n%s")
-                    % (str(vtk_error) if vtk_error else ""),
+                    self.tr("Failed to open the 3D mesh/point cloud viewer.\n%s")
+                    % (str(backend_error) if backend_error else ""),
                 )
             return
 
         if not _supports_builtin_stack_viewer(source_path):
-            details = f": {vtk_error}" if vtk_error else ""
+            details = f": {backend_error}" if backend_error else ""
             QtWidgets.QMessageBox.warning(
                 self,
                 self.tr("3D Viewer"),
                 self.tr(
-                    "Unable to open the VTK 3D viewer for this source.\n\n"
+                    "Unable to open the 3D viewer for this source.\n\n"
                     "The built-in fallback viewer only supports TIFF stacks.\n"
                     f"Source: {source_path}{details}"
                 ),
@@ -435,14 +477,14 @@ class ViewerToolsMixin:
         if not self._open_builtin_stack_viewer(source_path):
             return
 
-        if vtk_missing:
+        if backend_missing:
             QtWidgets.QMessageBox.information(
                 self,
                 self.tr("True 3D Rendering (Optional)"),
                 self.tr(
-                    "For interactive 3D volume rendering, install VTK with Qt support.\n\n"
-                    "Conda:  conda install -c conda-forge vtk\n"
-                    "Pip:    pip install vtk\n\n"
+                    "For interactive 3D volume rendering, install PyVista with Qt support.\n\n"
+                    "Conda:  conda install -c conda-forge pyvista pyvistaqt\n"
+                    "Pip:    pip install pyvista pyvistaqt\n\n"
                     "You are currently using the built-in slice/MIP viewer."
                 ),
             )

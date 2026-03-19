@@ -87,8 +87,9 @@ large_image = [
 ]
 
 vtk = [
-    # 3D volume rendering and Analyze/NIfTI readers for Open 3D workflows.
-    "vtk>=9.2.0",
+    # 3D volume rendering via PyVista/PyVistaQt (VTK is pulled transitively).
+    "pyvista>=0.43.0",
+    "pyvistaqt>=0.11.0",
 ]
 
 sam3 = [

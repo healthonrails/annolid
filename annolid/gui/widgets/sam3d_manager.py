@@ -226,17 +226,19 @@ class Sam3DManager(QtCore.QObject):
                 self.window.tr("PLY saved to:\n%s") % str(result.ply_path),
             )
             try:
-                from annolid.gui.widgets.vtk_volume_viewer import (  # type: ignore
-                    VTKVolumeViewerDialog,
+                from annolid.gui.widgets.pyvista_volume_viewer import (  # type: ignore
+                    PyVistaVolumeViewerDialog,
                 )
 
-                dlg = VTKVolumeViewerDialog(str(result.ply_path), parent=self.window)
+                dlg = PyVistaVolumeViewerDialog(
+                    str(result.ply_path), parent=self.window
+                )
                 dlg.setModal(False)
                 dlg.show()
                 dlg.raise_()
                 dlg.activateWindow()
             except Exception as exc:
-                logger.debug("Unable to open VTK viewer for SAM3D result: %s", exc)
+                logger.debug("Unable to open 3D viewer for SAM3D result: %s", exc)
             self.window.statusBar().showMessage(
                 self.window.tr("SAM 3D complete: %s") % str(result.ply_path), 5000
             )

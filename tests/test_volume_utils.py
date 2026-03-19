@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from annolid.gui.widgets.vtk_volume_utils import (
+from annolid.gui.widgets.volume_utils import (
     first_file_with_suffix,
     normalize_to_float01,
     path_matches_ext,

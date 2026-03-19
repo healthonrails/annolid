@@ -28,6 +28,7 @@ from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
 from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
 from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDialog
 from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
+from annolid.gui.cursor_utils import set_widget_busy_cursor
 from annolid.gui.window_base import newAction
 from annolid.postprocessing.video_timestamp_annotator import process_directory
 from annolid.utils.logger import logger
@@ -235,7 +236,7 @@ class ToolingDialogsMixin:
             self.statusBar().showMessage(
                 self.tr(f"Analyzing {video_file.name}, please wait...")
             )
-            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+            set_widget_busy_cursor(self, True)
 
             from annolid.postprocessing.tracking_reports import (
                 find_tracking_gaps,
@@ -244,8 +245,6 @@ class ToolingDialogsMixin:
 
             gaps = find_tracking_gaps(video_file)
             md_filepath = generate_reports(gaps, video_file)
-
-            QtWidgets.QApplication.restoreOverrideCursor()
             report_path = str(md_filepath)
             self.statusBar().showMessage(self.tr("Gap analysis complete."), 5000)
 
@@ -260,12 +259,13 @@ class ToolingDialogsMixin:
                 QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(report_path))
 
         except Exception as e:
-            QtWidgets.QApplication.restoreOverrideCursor()
             logger.error(f"An error occurred during gap analysis: {e}", exc_info=True)
             QtWidgets.QMessageBox.critical(
                 self, "Analysis Error", f"An unexpected error occurred:\n\n{e}"
             )
             self.statusBar().showMessage(self.tr("Gap analysis failed."), 5000)
+        finally:
+            set_widget_busy_cursor(self, False)
 
     def _add_real_time_stamps(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(

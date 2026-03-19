@@ -5,6 +5,7 @@ from typing import Dict, Literal, Optional, Tuple
 from PIL import Image
 from qtpy import QtCore, QtWidgets
 
+from annolid.gui.cursor_utils import set_widget_busy_cursor
 from annolid.gui.workers import FlexibleWorker
 from annolid.utils.logger import logger
 from annolid.vision.florence_2 import (
@@ -283,10 +284,19 @@ class Florence2DockWidget(QtWidgets.QDockWidget):
         self._florence_thread.finished.connect(self._florence_thread.deleteLater)
 
         self._running_florence_request = request
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-        self.window.statusBar().showMessage(self.window.tr("Running Florence-2…"))
-        self._florence_thread.start()
-        QtCore.QTimer.singleShot(0, lambda: self._florence_worker.start_signal.emit())
+        try:
+            set_widget_busy_cursor(self.window, True)
+            self.window.statusBar().showMessage(self.window.tr("Running Florence-2…"))
+            self._florence_thread.start()
+            QtCore.QTimer.singleShot(
+                0, lambda: self._florence_worker.start_signal.emit()
+            )
+        except Exception:
+            try:
+                set_widget_busy_cursor(self.window, False)
+            except Exception:
+                pass
+            raise
 
     @staticmethod
     def _execute_florence_job(
@@ -362,7 +372,7 @@ class Florence2DockWidget(QtWidgets.QDockWidget):
 
     def _handle_florence_finished(self, outcome: object) -> None:
         try:
-            QtWidgets.QApplication.restoreOverrideCursor()
+            set_widget_busy_cursor(self.window, False)
         except Exception:
             pass
 

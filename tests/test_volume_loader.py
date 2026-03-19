@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from annolid.gui.widgets.vtk_volume_loader import VolumeSourceLoader
+from annolid.gui.widgets.volume_loader import VolumeSourceLoader
 
 
 class _ReaderStub:
@@ -123,3 +123,29 @@ def test_read_volume_any_unsupported_raises_context(tmp_path: Path):
         msg = str(exc)
         assert "Failed to read volume from" in msg
         assert "Unsupported volume format" in msg
+
+
+def test_read_volume_any_uses_pyvista_for_nifti(tmp_path: Path, monkeypatch):
+    nii = tmp_path / "structural.nii.gz"
+    nii.write_text("x", encoding="utf-8")
+    loader, calls = _make_loader()
+
+    class _FakeImage:
+        spacing = (0.5, 0.6, 1.5)
+
+    class _FakeReader:
+        def read(self):
+            return _FakeImage()
+
+    class _FakePyVista:
+        def get_reader(self, filename: str):
+            calls["nifti_reader"] = filename
+            return _FakeReader()
+
+    import annolid.gui.widgets.volume_loader as loader_mod
+
+    monkeypatch.setattr(loader_mod, "pv", _FakePyVista())
+    out = loader.read_volume_any(nii)
+    assert out["spacing"] == (0.5, 0.6, 1.5)
+    assert out["array"].shape == (2, 2, 2)
+    assert calls["nifti_reader"] == str(nii)
