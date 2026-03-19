@@ -23,6 +23,7 @@ from annolid.gui.threejs_examples import (
     attach_flybody_mesh,
     generate_threejs_example,
 )
+from annolid.gui.widgets.vtk_volume_utils import path_matches_ext
 from annolid.gui.workers import FlexibleWorker
 from annolid.simulation import (
     SimulationRunRequest,
@@ -36,6 +37,75 @@ _LIVE_FLYBODY_EXAMPLE_SEED = 7
 _LIVE_FLYBODY_EXAMPLE_CACHE_TTL_SECONDS = 300.0
 _LIVE_FLYBODY_SUBPROCESS_TIMEOUT_SECONDS = 45.0
 _LIVE_FLYBODY_PAYLOAD_VERSION = 3
+_BUILTIN_STACK_SUFFIXES = (
+    ".tif",
+    ".tiff",
+    ".ome.tif",
+    ".ome.tiff",
+)
+_POINT_CLOUD_SUFFIXES = {".ply", ".csv", ".xyz"}
+_MESH_SUFFIXES = {".stl", ".obj"}
+_THREEJS_SUFFIXES = _POINT_CLOUD_SUFFIXES | _MESH_SUFFIXES
+
+
+def _supports_builtin_stack_viewer(path: str | Path | None) -> bool:
+    try:
+        if not path:
+            return False
+        return path_matches_ext(Path(path), _BUILTIN_STACK_SUFFIXES)
+    except Exception:
+        return False
+
+
+def _normalize_volume_selection(raw: str) -> str:
+    try:
+        p = Path(raw)
+        if p.is_file():
+            if p.suffix.lower() in (".img", ".hdr"):
+                stem_l = p.stem.lower()
+                for child in p.parent.iterdir():
+                    if (
+                        child.is_file()
+                        and child.stem.lower() == stem_l
+                        and child.suffix.lower() == ".hdr"
+                    ):
+                        return str(child)
+            if p.name.lower() == "zarr.json":
+                return str(p.parent)
+            if p.name.lower() == ".zgroup":
+                return str(p.parent)
+            if (p.parent / ".zarray").exists():
+                return str(p.parent)
+        cur = p
+        for _ in range(3):
+            if (
+                cur.name.lower().endswith(".zarr")
+                or (cur / ".zarray").exists()
+                or (cur / "zarr.json").exists()
+                or (cur / ".zgroup").exists()
+            ):
+                return str(cur)
+            if (cur / "data" / ".zarray").exists() or (
+                cur / "data" / "zarr.json"
+            ).exists():
+                return str(cur / "data")
+            cur = cur.parent
+    except Exception:
+        pass
+    return raw
+
+
+def _retain_dialog(host: object, attr_name: str, dialog: object) -> None:
+    try:
+        setattr(host, attr_name, dialog)
+    except Exception:
+        return
+    destroyed = getattr(dialog, "destroyed", None)
+    if destroyed is not None:
+        try:
+            destroyed.connect(lambda *_args: setattr(host, attr_name, None))
+        except Exception:
+            pass
 
 
 def _is_recent_live_flybody_payload(
@@ -188,9 +258,8 @@ class ViewerToolsMixin:
             return True
         return False
 
-    def open_3d_viewer(self):
-        """Open Annolid's built-in 3D stack viewer."""
-        tiff_path = None
+    def _detect_existing_3d_source(self) -> str | None:
+        source_path = None
         try:
             from annolid.data import videos as _videos_mod
 
@@ -198,107 +267,68 @@ class ViewerToolsMixin:
                 isinstance(self.video_loader, _videos_mod.TiffStackVideo)
                 and self.video_file
             ):
-                tiff_path = str(self.video_file)
+                source_path = str(self.video_file)
         except Exception:
             pass
 
-        if not tiff_path:
-            current_image = Path(str(getattr(self, "imagePath", "") or "")).expanduser()
-            large_backend = getattr(self, "large_image_backend", None)
-            if current_image.exists() and current_image.suffix.lower() in {
-                ".tif",
-                ".tiff",
-            }:
-                if (
-                    large_backend is not None
-                    and int(getattr(large_backend, "get_page_count", lambda: 1)() or 1)
-                    > 1
-                ):
-                    tiff_path = str(current_image)
+        if source_path:
+            return source_path
 
-        if not tiff_path:
-            start_dir = (
-                str(Path(self.filename).parent)
-                if getattr(self, "filename", None)
-                else "."
+        current_image = Path(str(getattr(self, "imagePath", "") or "")).expanduser()
+        large_backend = getattr(self, "large_image_backend", None)
+        if current_image.exists() and current_image.suffix.lower() in {".tif", ".tiff"}:
+            if (
+                large_backend is not None
+                and int(getattr(large_backend, "get_page_count", lambda: 1)() or 1) > 1
+            ):
+                return str(current_image)
+        return None
+
+    def _pick_3d_source_from_dialog(self) -> str | None:
+        start_dir = (
+            str(Path(self.filename).parent) if getattr(self, "filename", None) else "."
+        )
+        filters = self.tr(
+            "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.hdr *.img *.dcm *.dicom *.ima *.IMA *.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.zarr *.zarr.json *.zgroup);;All files (*.*)"
+        )
+        dialog = QtWidgets.QFileDialog(
+            self, self.tr("Choose 3D Volume (TIFF/NIfTI/DICOM/Zarr)")
+        )
+        dialog.setDirectory(start_dir)
+        dialog.setNameFilter(filters)
+        dialog.setFileMode(QtWidgets.QFileDialog.ExistingFiles)
+        dialog.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, True)
+        dialog.setOption(QtWidgets.QFileDialog.ReadOnly, True)
+        paths: list[str] = []
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            paths = dialog.selectedFiles()
+        if not paths:
+            folder = QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                self.tr("Choose Volume Folder (DICOM/Zarr)"),
+                start_dir,
+                QtWidgets.QFileDialog.ShowDirsOnly | QtWidgets.QFileDialog.ReadOnly,
             )
-            filters = self.tr(
-                "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.hdr *.img *.dcm *.dicom *.ima *.IMA *.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.zarr *.zarr.json *.zgroup);;All files (*.*)"
-            )
-            dialog = QtWidgets.QFileDialog(
-                self, self.tr("Choose 3D Volume (TIFF/NIfTI/DICOM/Zarr)")
-            )
-            dialog.setDirectory(start_dir)
-            dialog.setNameFilter(filters)
-            dialog.setFileMode(QtWidgets.QFileDialog.ExistingFiles)
-            dialog.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, True)
-            dialog.setOption(QtWidgets.QFileDialog.ReadOnly, True)
-            paths: list[str] = []
-            if dialog.exec_() == QtWidgets.QDialog.Accepted:
-                paths = dialog.selectedFiles()
-            if not paths:
-                folder = QtWidgets.QFileDialog.getExistingDirectory(
-                    self,
-                    self.tr("Choose Volume Folder (DICOM/Zarr)"),
-                    start_dir,
-                    QtWidgets.QFileDialog.ShowDirsOnly | QtWidgets.QFileDialog.ReadOnly,
-                )
-                if folder:
-                    paths = [folder]
-                else:
-                    return
-            if paths:
+            if not folder:
+                return None
+            paths = [folder]
+        return _normalize_volume_selection(paths[0]) if paths else None
 
-                def _normalize_volume_selection(raw: str) -> str:
-                    try:
-                        p = Path(raw)
-                        if p.is_file():
-                            if p.suffix.lower() in (".img", ".hdr"):
-                                stem_l = p.stem.lower()
-                                for child in p.parent.iterdir():
-                                    if (
-                                        child.is_file()
-                                        and child.stem.lower() == stem_l
-                                        and child.suffix.lower() == ".hdr"
-                                    ):
-                                        return str(child)
-                            if p.name.lower() == "zarr.json":
-                                return str(p.parent)
-                            if p.name.lower() == ".zgroup":
-                                return str(p.parent)
-                            if (p.parent / ".zarray").exists():
-                                return str(p.parent)
-                        cur = p
-                        for _ in range(3):
-                            if (
-                                cur.name.lower().endswith(".zarr")
-                                or (cur / ".zarray").exists()
-                                or (cur / "zarr.json").exists()
-                                or (cur / ".zgroup").exists()
-                            ):
-                                return str(cur)
-                            if (cur / "data" / ".zarray").exists() or (
-                                cur / "data" / "zarr.json"
-                            ).exists():
-                                return str(cur / "data")
-                            cur = cur.parent
-                    except Exception:
-                        pass
-                    return raw
-
-                tiff_path = _normalize_volume_selection(paths[0])
-
+    def _open_vtk_volume_viewer(
+        self, source_path: str
+    ) -> tuple[bool, Exception | None, bool]:
         vtk_missing = False
         vtk_error = None
         try:
             from annolid.gui.widgets.vtk_volume_viewer import VTKVolumeViewerDialog  # type: ignore
 
-            dlg = VTKVolumeViewerDialog(tiff_path, parent=self)
+            dlg = VTKVolumeViewerDialog(source_path, parent=self)
+            _retain_dialog(self, "_vtk_volume_viewer_dialog", dlg)
             dlg.setModal(False)
             dlg.show()
             dlg.raise_()
             dlg.activateWindow()
-            return
+            return True, None, False
         except ModuleNotFoundError as exc:
             vtk_error = exc
             vtk_missing = True
@@ -307,40 +337,66 @@ class ViewerToolsMixin:
             vtk_missing = True
         except Exception as exc:
             vtk_error = exc
+        return False, vtk_error, vtk_missing
+
+    def _probe_vtk_available(self) -> tuple[bool, str | None]:
+        try:
+            try:
+                import vtkmodules  # noqa: F401
+            except Exception:
+                import vtk  # noqa: F401
+            return True, None
+        except Exception as exc:
+            return False, str(exc)
+
+    def _open_builtin_stack_viewer(self, source_path: str) -> bool:
+        try:
+            from annolid.gui.widgets.volume_viewer import VolumeViewerDialog
+
+            dlg = VolumeViewerDialog(source_path, parent=self)
+            _retain_dialog(self, "_builtin_volume_viewer_dialog", dlg)
+            dlg.setModal(False)
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+            return True
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("3D Viewer"),
+                self.tr(f"Unable to open 3D viewer: {exc}"),
+            )
+            return False
+
+    def open_3d_viewer(self):
+        """Open Annolid's 3D viewer for volume, mesh, or point-cloud sources."""
+        source_path = (
+            self._detect_existing_3d_source() or self._pick_3d_source_from_dialog()
+        )
+        if not source_path:
+            return
+
+        opened, vtk_error, vtk_missing = self._open_vtk_volume_viewer(source_path)
+        if opened:
+            return
 
         try:
-            suffix = Path(tiff_path).suffix.lower() if tiff_path else ""
+            suffix = Path(source_path).suffix.lower()
         except Exception:
             suffix = ""
 
-        point_cloud_suffixes = {".ply", ".csv", ".xyz"}
-        mesh_suffixes = {".stl", ".obj"}
-        threejs_suffixes = point_cloud_suffixes | mesh_suffixes
-
-        if suffix in threejs_suffixes:
+        if suffix in _THREEJS_SUFFIXES:
             manager = getattr(self, "threejs_manager", None)
             if manager is not None:
                 try:
-                    if manager.show_model_in_viewer(tiff_path):
+                    if manager.show_model_in_viewer(source_path):
                         return
                 except Exception:
                     pass
 
-        requires_vtk = suffix in point_cloud_suffixes or suffix in mesh_suffixes
-
-        def _vtk_available() -> tuple[bool, str | None]:
-            try:
-                try:
-                    import vtkmodules  # noqa: F401
-                except Exception:
-                    import vtk  # noqa: F401
-
-                return True, None
-            except Exception as exc:
-                return False, str(exc)
-
-        _ok, _probe = _vtk_available()
-        vtk_missing = not _ok
+        requires_vtk = suffix in _POINT_CLOUD_SUFFIXES or suffix in _MESH_SUFFIXES
+        vtk_ok, vtk_probe_error = self._probe_vtk_available()
+        vtk_missing = not vtk_ok
 
         if requires_vtk:
             if vtk_missing:
@@ -349,7 +405,7 @@ class ViewerToolsMixin:
                     self.tr("Mesh/Point Cloud Viewer Requires VTK"),
                     self.tr(
                         "PLY/CSV/XYZ point clouds and STL/OBJ meshes require VTK with Qt support.\n\n"
-                        f"Details: {_probe or 'Unknown import error'}\n\n"
+                        f"Details: {vtk_probe_error or 'Unknown import error'}\n\n"
                         "Conda:  conda install -c conda-forge vtk\n"
                         "Pip:    pip install vtk"
                     ),
@@ -363,20 +419,20 @@ class ViewerToolsMixin:
                 )
             return
 
-        try:
-            from annolid.gui.widgets.volume_viewer import VolumeViewerDialog
-
-            dlg = VolumeViewerDialog(tiff_path, parent=self)
-            dlg.setModal(False)
-            dlg.show()
-            dlg.raise_()
-            dlg.activateWindow()
-        except Exception as e:
+        if not _supports_builtin_stack_viewer(source_path):
+            details = f": {vtk_error}" if vtk_error else ""
             QtWidgets.QMessageBox.warning(
                 self,
                 self.tr("3D Viewer"),
-                self.tr(f"Unable to open 3D viewer: {e}"),
+                self.tr(
+                    "Unable to open the VTK 3D viewer for this source.\n\n"
+                    "The built-in fallback viewer only supports TIFF stacks.\n"
+                    f"Source: {source_path}{details}"
+                ),
             )
+            return
+
+        if not self._open_builtin_stack_viewer(source_path):
             return
 
         if vtk_missing:

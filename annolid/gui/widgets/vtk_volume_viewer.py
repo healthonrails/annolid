@@ -2,9 +2,6 @@ from __future__ import annotations
 import os
 import re
 import struct
-import tempfile
-import json
-import types
 import zlib
 from collections import OrderedDict
 import itertools
@@ -14,10 +11,18 @@ from typing import Callable, Mapping, Optional, Sequence, Tuple
 from functools import partial
 
 from annolid.utils.logger import logger
+from annolid.gui.widgets.vtk_volume_utils import (
+    first_file_with_suffix,
+)
+from annolid.gui.widgets.vtk_render_lifecycle import VTKRenderLifecycleController
+from annolid.gui.widgets.vtk_volume_loader import VolumeSourceLoader
+from annolid.gui.widgets.vtk_volume_readers import (
+    VolumeReaderConfig,
+    VolumeReaders,
+)
 
 import numpy as np
 import pandas as pd
-from PIL import Image
 from qtpy import QtCore, QtWidgets, QtGui
 
 # VTK imports (modular) — if these fail, the caller should fall back
@@ -77,17 +82,6 @@ _HAS_PLANE_WIDGET = vtkImagePlaneWidget is not None
 
 POINT_CLOUD_EXTS = (".ply", ".csv", ".xyz")
 MESH_EXTS = (".stl", ".obj")
-VOLUME_FILE_EXTS = (
-    ".tif",
-    ".tiff",
-    ".nii",
-    ".nii.gz",
-    ".hdr",
-    ".img",
-    ".zarr",
-    ".zarr.json",
-    ".zgroup",
-)
 DICOM_EXTS = (".dcm", ".dicom", ".ima")
 VOLUME_SOURCE_FILTERS = (
     "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff "
@@ -112,6 +106,8 @@ try:
     SLICE_MODE_BYTES = float(_slice_mode_bytes_raw.strip())
 except Exception:
     SLICE_MODE_BYTES = 68719476736.0
+VTK_INIT_MAX_RETRIES = 3
+VTK_INIT_RETRY_BASE_MS = 150
 
 PLANE_DEFS = (
     (0, "Axial (Z)", "SetPlaneOrientationToZAxes"),
@@ -659,7 +655,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             except Exception:
                 pass
             self._source_path = candidate
-            self._path = self._resolve_initial_source(candidate)
+            self._path = self._volume_readers().resolve_initial_source(candidate)
 
         # Volume state placeholders
         self._has_volume: bool = False
@@ -705,14 +701,28 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._gaussian_glyph_res: int = 24
         self._scene_light: Optional[vtkLight] = None
         self._light_intensity: float = 1.0
+        self._load_in_progress = False
+        self._render_pending = False
+        self._render_reset_camera_pending = False
+        self._initial_source_load_pending = bool(src_path)
+        self._initial_source_load_scheduled = False
+        self._vtk_initialized = False
+        self._vtk_init_scheduled = False
+        self._vtk_init_failures = 0
+        self._vtk_init_last_error = ""
+        self._volume_readers_obj = None
 
         central_widget = QtWidgets.QWidget(self)
         self.setCentralWidget(central_widget)
         central_layout = QtWidgets.QVBoxLayout(central_widget)
         central_layout.setContentsMargins(2, 2, 2, 2)
         central_layout.setSpacing(6)
-        self.vtk_widget = QVTKRenderWindowInteractor(central_widget)
-        central_layout.addWidget(self.vtk_widget, 1)
+        self._vtk_placeholder = QtWidgets.QWidget(central_widget)
+        self._vtk_placeholder.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
+        central_layout.addWidget(self._vtk_placeholder, 1)
+        self.vtk_widget: Optional[QVTKRenderWindowInteractor] = None
 
         # Controls panel (dockable)
         controls_panel = QtWidgets.QWidget()
@@ -1198,54 +1208,27 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         controls_layout.addWidget(self.status_group)
         controls_layout.addStretch(1)
 
-        # Build pipeline
+        # Deferred VTK pipeline state; the native render window is created lazily
+        # in showEvent to avoid macOS/Qt initialization crashes.
         self.renderer = vtkRenderer()
-        self.vtk_widget.GetRenderWindow().AddRenderer(self.renderer)
-        self._configure_render_quality()
-
-        self.interactor = self.vtk_widget.GetRenderWindow().GetInteractor()
-        # Camera interaction style (rotate/pan/zoom)
-        self._style_trackball = vtkInteractorStyleTrackballCamera()
-        self._style_inactive = vtkInteractorStyleUser()
-        self.interactor.SetInteractorStyle(self._style_trackball)
-        # Create a volume and add it
         self.volume = vtkVolume()
         self.mapper = vtkSmartVolumeMapper()
         self.property = vtkVolumeProperty()
         self.property.ShadeOn()
         self.property.SetInterpolationTypeToLinear()
-
-        # Conditionally load volume if path looks like a volume source
-        _loaded_volume = False
-        if src_path and self._is_volume_candidate(self._path):
-            try:
-                _loaded_volume = self._load_volume()
-            except Exception:
-                _loaded_volume = False
-
         self.volume.SetMapper(self.mapper)
         self.volume.SetProperty(self.property)
-        # Only add the volume actor if we actually loaded a volume
-        if _loaded_volume:
-            self.renderer.AddVolume(self.volume)
-            self.renderer.ResetCamera()
         self.renderer.SetBackground(0.1, 0.1, 0.12)
 
-        # Setup for interactive point picking
+        # Setup for interactive point picking and interaction state.
         self._picker = vtkPointPicker()
         self._picker.SetTolerance(0.005)  # Adjust sensitivity
         self._last_picked_id = -1
         self._last_picked_actor = None
-        self._ensure_scene_light()
-
-        # Setup interactive window/level mode and key/mouse bindings
         self._wl_mode = False
         self._wl_drag = False
         self._wl_last = (0, 0)
-        self._install_interaction_bindings()
 
-        self.vtk_widget.Initialize()
-        self.vtk_widget.Start()
         self._point_actors: list[vtkActor] = []
         self._region_actors: dict[str, vtkActor] = {}
         self._region_entries: dict[str, _RegionSelectionEntry] = {}
@@ -1255,39 +1238,241 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._mesh_actor_names: dict[int, str] = {}
         self._active_mesh_actor: Optional[vtkActor] = None
 
-        # If the provided path is a point cloud, add it now
-        if (
-            src_path
-            and not _loaded_volume
-            and self._is_point_cloud_candidate(self._path)
-        ):
-            try:
-                ext = self._path.suffix.lower()
-                if ext == ".ply":
-                    self._add_point_cloud_ply(str(self._path))
-                elif ext in (".csv", ".xyz"):
-                    self._add_point_cloud_csv_or_xyz(str(self._path))
-                self._update_point_sizes()
-                self.renderer.ResetCamera()
-                self.vtk_widget.GetRenderWindow().Render()
-            except Exception:
-                pass
-        elif src_path and not _loaded_volume and self._is_mesh_candidate(self._path):
-            try:
-                self._load_mesh_file(str(self._path))
-                self.renderer.ResetCamera()
-                self.vtk_widget.GetRenderWindow().Render()
-            except Exception:
-                pass
-
-        # Enable/disable volume-related controls based on whether a volume was loaded
-        self._set_volume_controls_enabled(_loaded_volume)
+        # Enable/disable volume-related controls before async source load.
+        self._set_volume_controls_enabled(False)
         self._update_mesh_status_label()
         self._refresh_status_summary()
 
     def setModal(self, modal: bool):
         """QMainWindow cannot be modal; keep compatibility with QDialog API."""
         return
+
+    def showEvent(self, event):  # type: ignore[override]
+        super().showEvent(event)
+        self._lifecycle().on_show()
+
+    def _lifecycle(self) -> VTKRenderLifecycleController:
+        lifecycle = getattr(self, "_render_lifecycle", None)
+        if lifecycle is None:
+            lifecycle = VTKRenderLifecycleController(
+                self,
+                single_shot=QtCore.QTimer.singleShot,
+                max_retries=VTK_INIT_MAX_RETRIES,
+                retry_base_ms=VTK_INIT_RETRY_BASE_MS,
+            )
+            self._render_lifecycle = lifecycle
+        return lifecycle
+
+    def _schedule_vtk_initialization(self, delay_ms: int) -> None:
+        self._lifecycle().schedule_initialization(delay_ms)
+
+    def _start_vtk_initialization(self) -> None:
+        self._lifecycle().start_initialization()
+
+    @staticmethod
+    def _clear_wait_cursor_stack() -> None:
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            return
+        try:
+            while app.overrideCursor() is not None:
+                app.restoreOverrideCursor()
+        except Exception:
+            pass
+
+    def _set_load_busy(self, busy: bool) -> None:
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            return
+        try:
+            if busy:
+                app.setOverrideCursor(QtCore.Qt.WaitCursor)
+            else:
+                self._clear_wait_cursor_stack()
+        except Exception:
+            pass
+
+    def _get_render_window(self):
+        vtk_widget = getattr(self, "vtk_widget", None)
+        if vtk_widget is None:
+            return None
+        try:
+            return vtk_widget.GetRenderWindow()
+        except Exception:
+            return None
+
+    def _ensure_vtk_initialized(self) -> bool:
+        if self._vtk_initialized:
+            return True
+        try:
+            if self.vtk_widget is None:
+                central_widget = self.centralWidget()
+                if central_widget is None:
+                    self._vtk_init_last_error = "Central widget is unavailable."
+                    return False
+                self.vtk_widget = QVTKRenderWindowInteractor(central_widget)
+                central_layout = central_widget.layout()
+                if central_layout is not None and hasattr(self, "_vtk_placeholder"):
+                    try:
+                        placeholder_index = central_layout.indexOf(
+                            self._vtk_placeholder
+                        )
+                    except Exception:
+                        placeholder_index = -1
+                    if placeholder_index >= 0:
+                        central_layout.takeAt(placeholder_index)
+                        self._vtk_placeholder.setParent(None)
+                        self._vtk_placeholder.deleteLater()
+                        central_layout.insertWidget(
+                            placeholder_index, self.vtk_widget, 1
+                        )
+                    else:
+                        central_layout.addWidget(self.vtk_widget, 1)
+                elif central_layout is not None:
+                    central_layout.addWidget(self.vtk_widget, 1)
+            render_window = self._get_render_window()
+            if render_window is None:
+                self._vtk_init_last_error = "Render window is unavailable."
+                return False
+            render_window.AddRenderer(self.renderer)
+            self._configure_render_quality()
+            self.interactor = render_window.GetInteractor()
+            self._style_trackball = vtkInteractorStyleTrackballCamera()
+            self._style_inactive = vtkInteractorStyleUser()
+            self.interactor.SetInteractorStyle(self._style_trackball)
+            self._install_interaction_bindings()
+            self._ensure_scene_light()
+            self._vtk_initialized = True
+            self._vtk_init_last_error = ""
+            return True
+        except Exception as exc:
+            self._vtk_init_last_error = str(exc) or exc.__class__.__name__
+            return False
+
+    def _request_render(self, *, reset_camera: bool = False) -> None:
+        self._lifecycle().request_render(reset_camera=reset_camera)
+
+    @staticmethod
+    def _first_file_with_suffix(path: Path, exts: Tuple[str, ...]) -> Optional[Path]:
+        return first_file_with_suffix(path, exts)
+
+    def _load_point_cloud_source(self, path: Path) -> bool:
+        target = path
+        if path.is_dir():
+            candidate = self._first_file_with_suffix(path, POINT_CLOUD_EXTS)
+            if candidate is None:
+                return False
+            target = candidate
+        ext = target.suffix.lower()
+        if ext == ".ply":
+            self._add_point_cloud_ply(str(target))
+        elif ext in (".csv", ".xyz"):
+            self._add_point_cloud_csv_or_xyz(str(target))
+        else:
+            return False
+        self._update_point_sizes()
+        return True
+
+    def _load_mesh_source(self, path: Path) -> bool:
+        target = path
+        if path.is_dir():
+            candidate = self._first_file_with_suffix(path, MESH_EXTS)
+            if candidate is None:
+                return False
+            target = candidate
+        if target.suffix.lower() not in MESH_EXTS:
+            return False
+        self._load_mesh_file(str(target))
+        return True
+
+    def _load_initial_source(self) -> None:
+        self._initial_source_load_pending = False
+        self._initial_source_load_scheduled = False
+        if not self._ensure_vtk_initialized():
+            return
+        source = getattr(self, "_path", None)
+        if source is None:
+            return
+        self._load_source_path(source, show_errors=True)
+
+    def _load_source_path(self, path: Path, *, show_errors: bool) -> bool:
+        if self._load_in_progress:
+            return False
+        if not self._ensure_vtk_initialized():
+            if show_errors:
+                detail = (
+                    f"\n\nDetails: {self._vtk_init_last_error}"
+                    if self._vtk_init_last_error
+                    else ""
+                )
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "3D Volume Renderer",
+                    f"The VTK render widget is not ready yet.{detail}",
+                )
+            return False
+        self._load_in_progress = True
+        self._set_load_busy(True)
+        loaded_volume = False
+        loaded_any = False
+        try:
+            if self._volume_readers().is_volume_candidate(path):
+                try:
+                    loaded_volume = bool(self._load_volume())
+                    loaded_any = loaded_any or loaded_volume or bool(self._slice_mode)
+                    if loaded_volume or self._slice_mode:
+                        self._request_render(reset_camera=True)
+                except Exception as exc:
+                    loaded_volume = False
+                    if show_errors:
+                        QtWidgets.QMessageBox.warning(
+                            self,
+                            "3D Volume Renderer",
+                            f"Failed to load volume source:\n{exc}",
+                        )
+
+            if (not loaded_volume) and self._volume_readers().is_point_cloud_candidate(
+                path
+            ):
+                try:
+                    loaded_any = self._load_point_cloud_source(path) or loaded_any
+                    if loaded_any:
+                        self._request_render(reset_camera=True)
+                except Exception as exc:
+                    if show_errors:
+                        QtWidgets.QMessageBox.warning(
+                            self,
+                            "3D Volume Renderer",
+                            f"Failed to load point cloud:\n{exc}",
+                        )
+
+            elif (not loaded_volume) and self._volume_readers().is_mesh_candidate(path):
+                try:
+                    loaded_any = self._load_mesh_source(path) or loaded_any
+                    if loaded_any:
+                        self._request_render(reset_camera=True)
+                except Exception as exc:
+                    if show_errors:
+                        QtWidgets.QMessageBox.warning(
+                            self,
+                            "3D Volume Renderer",
+                            f"Failed to load mesh:\n{exc}",
+                        )
+
+            if show_errors and not loaded_volume and not loaded_any:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "3D Volume Renderer",
+                    f"No supported 3D data could be loaded from:\n{path}",
+                )
+
+            self._set_volume_controls_enabled(loaded_volume)
+            self._update_mesh_status_label()
+            self._refresh_status_summary()
+            return loaded_volume
+        finally:
+            self._set_load_busy(False)
+            self._load_in_progress = False
 
     def _apply_default_dock_width(self):
         if not hasattr(self, "_controls_dock") or not self._controls_dock:
@@ -1337,7 +1522,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
 
     def _configure_render_quality(self) -> None:
         """Tune render window for better translucent gaussian splat compositing."""
-        rw = self.vtk_widget.GetRenderWindow()
+        rw = self._get_render_window()
+        if rw is None:
+            return
         try:
             rw.SetAlphaBitPlanes(1)
         except Exception:
@@ -1401,7 +1588,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self.slice_view_group.setVisible(False)
 
     def _reload_volume(self):
-        if not self._is_volume_candidate(getattr(self, "_path", Path("."))):
+        if not self._volume_readers().is_volume_candidate(
+            getattr(self, "_path", Path("."))
+        ):
             QtWidgets.QMessageBox.information(
                 self,
                 "Reload Volume",
@@ -1419,8 +1608,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._has_volume = False
             loaded = self._load_volume()
             if loaded:
-                self.renderer.ResetCamera()
-            self.vtk_widget.GetRenderWindow().Render()
+                self._request_render(reset_camera=True)
+            else:
+                self._request_render()
         except Exception as exc:
             QtWidgets.QMessageBox.warning(
                 self,
@@ -1464,7 +1654,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 candidate = candidate.resolve()
             except Exception:
                 pass
-            candidates.append(self._normalize_volume_selection(candidate))
+            candidates.append(
+                self._volume_readers().normalize_volume_selection(candidate)
+            )
         if not candidates:
             return
         replace_primary = False
@@ -1481,8 +1673,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         for idx, candidate in enumerate(candidates):
             if idx == 0 and (not self._has_volume or replace_primary):
                 self._source_path = candidate
-                self._path = self._resolve_initial_source(candidate)
-                self._reload_volume()
+                self._path = self._volume_readers().resolve_initial_source(candidate)
+                self._load_source_path(self._path, show_errors=True)
             else:
                 self._add_overlay_volume(candidate)
 
@@ -1536,7 +1728,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         )
         self._overlay_volumes.append(entry)
         self._refresh_overlay_list()
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
         self._refresh_status_summary()
 
     def _load_volume(self) -> bool:
@@ -1568,12 +1760,13 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._update_volume_io_label(self._out_of_core_active)
 
         # Initialize window controls
+        window_min, window_max = self._initial_window_range(volume_array)
         for spin in (self.min_spin, self.max_spin):
             spin.blockSignals(True)
         self.min_spin.setRange(self._vmin, max(self._vmin + 1e-6, self._vmax))
         self.max_spin.setRange(self._vmin, self._vmax)
-        self.min_spin.setValue(self._vmin)
-        self.max_spin.setValue(self._vmax)
+        self.min_spin.setValue(window_min)
+        self.max_spin.setValue(window_max)
         for spin in (self.min_spin, self.max_spin):
             spin.blockSignals(False)
 
@@ -1658,6 +1851,31 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         vtk_img.GetPointData().SetScalars(vtk_array)
         return vtk_img, volume
 
+    def _initial_window_range(self, volume: np.ndarray) -> tuple[float, float]:
+        data = np.asarray(volume)
+        if data.size == 0:
+            return self._vmin, max(self._vmin + 1e-6, self._vmax)
+        finite = np.isfinite(data)
+        if not np.any(finite):
+            return self._vmin, max(self._vmin + 1e-6, self._vmax)
+        values = data[finite]
+        if values.size > 1_000_000:
+            step = max(1, values.size // 1_000_000)
+            values = values[::step]
+        low = float(np.percentile(values, 2.0))
+        high = float(np.percentile(values, 98.0))
+        if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+            low = float(np.min(values))
+            high = float(np.max(values))
+        if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+            low = self._vmin
+            high = max(self._vmin + 1e-6, self._vmax)
+        low = max(self._vmin, low)
+        high = min(self._vmax, high)
+        if high <= low:
+            high = max(low + 1e-6, self._vmax)
+        return low, high
+
     def _init_slice_mode(self, volume_data: _VolumeData):
         self._teardown_slice_mode()
         if volume_data.slice_loader is None:
@@ -1667,8 +1885,8 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._slice_axis = volume_data.slice_axis or 0
         self._slice_vmin = volume_data.vmin
         self._slice_vmax = volume_data.vmax
-        self._slice_start_index_hint = self._initial_slice_index_for_loader(
-            self._slice_loader
+        self._slice_start_index_hint = (
+            self._volume_readers().initial_slice_index_for_loader(self._slice_loader)
         )
         self._slice_window_override = False
         if self._overlay_volumes:
@@ -1738,7 +1956,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         slice_array = self._slice_loader.read_slice(self._slice_axis, sanitized)
         arr = np.asarray(slice_array)
         if arr.ndim == 3 and arr.shape[-1] in (3, 4):
-            arr = self._convert_frame_to_plane(arr, arr.dtype)
+            arr = self._volume_readers().convert_frame_to_plane(arr, arr.dtype)
         if arr.ndim != 2:
             arr = np.squeeze(arr)
             if arr.ndim != 2:
@@ -1773,7 +1991,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._slice_current_index = sanitized
             self._update_slice_status_label(sanitized, total)
             self.renderer.ResetCamera()
-            self.vtk_widget.GetRenderWindow().Render()
+            self._request_render()
             return
 
         raw_min = float(np.min(arr))
@@ -1827,7 +2045,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._slice_current_index = sanitized
         self._update_slice_status_label(sanitized, total)
         self.renderer.ResetCamera()
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _configure_slice_window_controls(self):
         if not hasattr(self, "slice_min_spin"):
@@ -1944,6 +2162,43 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             pass
         self._slice_loader = None
 
+    def _make_slice_volume_data(
+        self,
+        loader: "_BaseSliceLoader",
+        *,
+        spacing: Optional[Tuple[float, float, float]] = None,
+        value_range: Optional[tuple[float, float]] = None,
+        is_grayscale: bool = True,
+        is_label_map: bool = False,
+    ) -> _VolumeData:
+        """Build slice-mode metadata for deferred, on-demand stack reading."""
+        if value_range is None:
+            dtype = loader.dtype()
+            if np.issubdtype(dtype, np.integer):
+                info = np.iinfo(dtype)
+                vmin, vmax = float(info.min), float(info.max)
+            else:
+                vmin, vmax = 0.0, 1.0
+        else:
+            vmin, vmax = float(value_range[0]), float(value_range[1])
+        shape = loader.shape()
+        volume_shape = tuple(int(x) for x in shape[:3]) if shape else None
+        return _VolumeData(
+            array=None,
+            spacing=spacing,
+            vmin=vmin,
+            vmax=vmax,
+            is_grayscale=bool(is_grayscale),
+            is_out_of_core=True,
+            backing_path=None,
+            vtk_image=None,
+            slice_mode=True,
+            slice_loader=loader,
+            slice_axis=0,
+            volume_shape=volume_shape,
+            is_label_map=bool(is_label_map),
+        )
+
     def _cleanup_out_of_core_backing(
         self,
         array: Optional[np.memmap] = None,
@@ -1973,84 +2228,40 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 pass
 
     def _read_volume_any(self, source: Optional[Path] = None) -> _VolumeData:
-        """Read a 3D volume from TIFF/NIfTI/DICOM or directory (DICOM series)."""
         path = source or self._path
-        try:
-            if path.is_dir() and self._is_zarr_candidate(path):
-                return self._read_zarr(path)
-            if path.is_dir():
-                volume, spacing = self._read_dicom_series(path)
-                return _VolumeData(
-                    array=volume,
-                    spacing=spacing,
-                    vmin=float(volume.min()),
-                    vmax=float(volume.max()),
-                    is_grayscale=volume.ndim == 3,
-                    is_out_of_core=False,
-                    volume_shape=tuple(int(x) for x in volume.shape[:3]),
-                )
+        return self._volume_loader().read_volume_any(path)
 
-            suffix = path.suffix.lower()
-            name_lower = path.name.lower()
-            if name_lower.endswith(".nii") or name_lower.endswith(".nii.gz"):
-                # NIfTI via VTK reader
-                try:
-                    from vtkmodules.vtkIOImage import vtkNIFTIImageReader
-                except Exception as exc:
-                    raise RuntimeError(
-                        "VTK NIFTI reader is not available in this build."
-                    ) from exc
-                reader = vtkNIFTIImageReader()
-                reader.SetFileName(str(path))
-                reader.Update()
-                vtk_img = reader.GetOutput()
-                vol = self._vtk_image_to_numpy(vtk_img)
-                s = vtk_img.GetSpacing()
-                spacing = (s[0], s[1], s[2])
-                vol = self._normalize_to_float01(vol)
-                return _VolumeData(
-                    array=vol,
-                    spacing=spacing,
-                    vmin=float(vol.min()),
-                    vmax=float(vol.max()),
-                    is_grayscale=vol.ndim == 3,
-                    is_out_of_core=False,
-                    volume_shape=tuple(int(x) for x in vol.shape[:3]),
-                )
-            if suffix in (".hdr", ".img"):
-                return self._read_analyze_volume(path)
-            if suffix in (".dcm", ".ima", ".dicom"):
-                # Treat as a DICOM series from the containing folder
-                volume, spacing = self._read_dicom_series(path.parent)
-                return _VolumeData(
-                    array=volume,
-                    spacing=spacing,
-                    vmin=float(volume.min()),
-                    vmax=float(volume.max()),
-                    is_grayscale=volume.ndim == 3,
-                    is_out_of_core=False,
-                    volume_shape=tuple(int(x) for x in volume.shape[:3]),
-                )
-            if self._is_zarr_candidate(path):
-                return self._read_zarr(path)
+    def _volume_loader(self) -> VolumeSourceLoader:
+        loader = getattr(self, "_source_loader", None)
+        if loader is None:
+            loader = VolumeSourceLoader(readers=self._volume_readers())
+            self._source_loader = loader
+        return loader
 
-            if self._is_tiff_candidate(path):
-                preferred_out_of_core = self._should_use_out_of_core_tiff(path)
-                if preferred_out_of_core:
-                    return self._read_tiff_out_of_core(path)
-                try:
-                    return self._read_tiff_eager(path)
-                except MemoryError as exc:
-                    logger.warning(
-                        "Standard TIFF loading failed (%s). Retrying with out-of-core caching.",
-                        exc,
-                    )
-                    return self._read_tiff_out_of_core(path)
-
-            raise RuntimeError(f"Unsupported volume format: {path}")
-        except Exception as e:
-            # Re-raise with context so upper layer shows a concise message
-            raise RuntimeError(f"Failed to read volume from '{path}': {e}")
+    def _volume_readers(self) -> VolumeReaders:
+        readers = getattr(self, "_volume_readers_obj", None)
+        if readers is None:
+            readers = VolumeReaders(
+                config=VolumeReaderConfig(
+                    dicom_exts=DICOM_EXTS,
+                    tiff_suffixes=TIFF_SUFFIXES,
+                    ome_tiff_suffixes=OME_TIFF_SUFFIXES,
+                    auto_out_of_core_mb=AUTO_OUT_OF_CORE_MB,
+                    max_volume_voxels=MAX_VOLUME_VOXELS,
+                    slice_mode_bytes=SLICE_MODE_BYTES,
+                ),
+                make_volume_data=_VolumeData,
+                make_slice_volume_data=self._make_slice_volume_data,
+                find_companion_file=self._find_companion_file,
+                memmap_slice_loader_cls=_MemmapSliceLoader,
+                tiff_slice_loader_cls=_TiffSliceLoader,
+                zarr_slice_loader_cls=_ZarrSliceLoader,
+                zarr_v3_array_cls=_ZarrV3Array,
+                use_gdcm=_HAS_GDCM,
+                vtk_gdcm_image_reader_cls=vtkGDCMImageReader if _HAS_GDCM else None,
+            )
+            self._volume_readers_obj = readers
+        return readers
 
     def _find_companion_file(self, path: Path, suffix: str) -> Optional[Path]:
         """Find sibling file with suffix using a case-insensitive lookup."""
@@ -2191,1070 +2402,6 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         volume = arr
         return volume, spacing, np.dtype(dtype)
 
-    def _read_analyze_via_vtk_reader(self, header_path: Path):
-        try:
-            from vtkmodules.vtkIOImage import vtkAnalyzeReader
-        except Exception:
-            return None
-        try:
-            reader = vtkAnalyzeReader()
-            reader.SetFileName(str(header_path))
-            reader.Update()
-            vtk_img = reader.GetOutput()
-            if self._vtk_image_has_scalars(vtk_img):
-                return vtk_img
-        except Exception:
-            return None
-        return None
-
-    def _read_analyze_volume(self, path: Path) -> _VolumeData:
-        header = path if path.suffix.lower() == ".hdr" else None
-        image = path if path.suffix.lower() == ".img" else None
-        if header is None:
-            header = self._find_companion_file(path, ".hdr")
-        if image is None:
-            image = self._find_companion_file(path, ".img")
-        if header is None:
-            raise RuntimeError("Analyze header (.hdr) file was not found.")
-        if image is None:
-            raise RuntimeError("Analyze image (.img) file was not found.")
-
-        analyze_error = None
-        source_dtype: Optional[np.dtype] = None
-        try:
-            vol, spacing, source_dtype = self._read_analyze_numpy(header, image)
-        except Exception as exc:
-            analyze_error = exc
-            vtk_img = self._read_analyze_via_vtk_reader(header)
-            if vtk_img is None:
-                raise RuntimeError(
-                    f"Unable to decode Analyze volume. {analyze_error}"
-                ) from exc
-            vol = self._vtk_image_to_numpy(vtk_img)
-            s = vtk_img.GetSpacing()
-            spacing = (s[0], s[1], s[2])
-            source_dtype = np.dtype(vol.dtype)
-
-        if vol.size == 0:
-            raise RuntimeError("Analyze volume contains no voxels.")
-        # Preserve integer label maps; normalize scalar intensity volumes.
-        is_label_volume = self._is_label_volume(
-            source_dtype or np.dtype(vol.dtype),
-            types.SimpleNamespace(path=header.stem, name=header.name),
-            path,
-        )
-        if not is_label_volume:
-            vol = self._normalize_to_float01(vol)
-        return _VolumeData(
-            array=vol,
-            spacing=spacing,
-            vmin=float(vol.min()),
-            vmax=float(vol.max()),
-            is_grayscale=vol.ndim == 3,
-            is_out_of_core=False,
-            volume_shape=tuple(int(x) for x in vol.shape[:3]),
-            is_label_map=is_label_volume,
-        )
-
-    def _is_tiff_candidate(self, path: Path) -> bool:
-        name_lower = path.name.lower()
-        suffix = path.suffix.lower()
-        if suffix in TIFF_SUFFIXES:
-            return True
-        return any(name_lower.endswith(ext) for ext in OME_TIFF_SUFFIXES)
-
-    def _is_zarr_candidate(self, path: Path) -> bool:
-        if not path:
-            return False
-        suffix = path.suffix.lower()
-        if suffix == ".zarr":
-            return True
-        try:
-            if path.is_file():
-                name = path.name.lower()
-                if name.endswith("zarr.json") or name.endswith(".zgroup"):
-                    return True
-                parent = path.parent
-                if (
-                    (parent / ".zarray").exists()
-                    or (parent / "zarr.json").exists()
-                    or (parent / ".zgroup").exists()
-                ):
-                    return True
-                if (parent / "data" / ".zarray").exists():
-                    return True
-            if path.is_dir():
-                if (
-                    (path / ".zarray").exists()
-                    or (path / "zarr.json").exists()
-                    or (path / ".zgroup").exists()
-                ):
-                    return True
-                if (path / "data" / ".zarray").exists() or (
-                    path / "data" / "zarr.json"
-                ).exists():
-                    return True
-        except Exception:
-            return False
-        return False
-
-    def _should_use_out_of_core_tiff(self, path: Path) -> bool:
-        size_bytes = self._safe_file_size(path)
-        avail_bytes = self._available_memory_bytes()
-        logger.debug(
-            "VTK viewer source size=%s bytes, available RAM=%s bytes",
-            size_bytes,
-            avail_bytes,
-        )
-        if avail_bytes > 0 and size_bytes > 0 and size_bytes >= avail_bytes:
-            logger.info(
-                "TIFF stack (%s) is larger than available RAM; enabling out-of-core caching.",
-                path,
-            )
-            return True
-        if AUTO_OUT_OF_CORE_MB > 0 and size_bytes > 0:
-            if size_bytes >= AUTO_OUT_OF_CORE_MB * 1024 * 1024:
-                logger.info(
-                    "TIFF stack (%s) exceeds configured threshold (%.0f MB); enabling out-of-core caching.",
-                    path,
-                    AUTO_OUT_OF_CORE_MB,
-                )
-                return True
-        return False
-
-    def _safe_file_size(self, path: Path) -> int:
-        try:
-            return int(path.stat().st_size)
-        except Exception:
-            return 0
-
-    def _available_memory_bytes(self) -> int:
-        try:
-            import psutil  # type: ignore
-        except Exception:
-            return 0
-        try:
-            mem = psutil.virtual_memory()
-        except Exception:
-            return 0
-        return int(getattr(mem, "available", 0) or 0)
-
-    def _read_tiff_eager(self, path: Path) -> _VolumeData:
-        frames: list[np.ndarray] = []
-        with Image.open(str(path)) as img:
-            n = max(1, int(getattr(img, "n_frames", 1) or 1))
-            for i in range(n):
-                img.seek(i)
-                frames.append(np.array(img))
-        if not frames:
-            raise RuntimeError("No frames found in TIFF stack.")
-        vol = np.stack(frames, axis=0)
-        vol = self._normalize_to_float01(vol)
-        return _VolumeData(
-            array=vol,
-            spacing=None,
-            vmin=float(vol.min()),
-            vmax=float(vol.max()),
-            is_grayscale=vol.ndim == 3,
-            is_out_of_core=False,
-            volume_shape=tuple(int(x) for x in vol.shape[:3]),
-        )
-
-    def _read_tiff_out_of_core(self, path: Path) -> _VolumeData:
-        meta = self._probe_tiff_metadata(path)
-        shape = meta[0] if meta else None
-        dtype = meta[1] if meta else None
-        memmap_arr = self._open_tiff_memmap(path)
-        if memmap_arr is not None:
-            mem_shape = tuple(int(x) for x in memmap_arr.shape)
-            shape = shape or mem_shape
-            dtype = dtype or memmap_arr.dtype
-            if shape and dtype and self._should_use_slice_mode(shape, dtype):
-                loader = _MemmapSliceLoader(memmap_arr)
-                logger.info(
-                    "Slice mode (memmap) for TIFF stack '%s' (shape=%s, dtype=%s)",
-                    path,
-                    loader.shape(),
-                    loader.dtype(),
-                )
-                return self._make_slice_volume_data(loader)
-            vmin, vmax = self._dtype_value_range(memmap_arr.dtype)
-            logger.info(
-                "Using tifffile.memmap for TIFF stack '%s' (shape=%s, dtype=%s)",
-                path,
-                mem_shape,
-                memmap_arr.dtype,
-            )
-            return _VolumeData(
-                array=memmap_arr,
-                spacing=None,
-                vmin=vmin,
-                vmax=vmax,
-                is_grayscale=True,
-                is_out_of_core=True,
-                backing_path=None,
-                volume_shape=mem_shape,
-            )
-        if shape and dtype and self._should_use_slice_mode(shape, dtype):
-            loader = _TiffSliceLoader(path, shape, dtype)
-            logger.info(
-                "Slice mode (paged) for TIFF stack '%s' (shape=%s, dtype=%s)",
-                path,
-                shape,
-                dtype,
-            )
-            return self._make_slice_volume_data(loader, spacing=None)
-        with Image.open(str(path)) as img:
-            n_frames = max(1, int(getattr(img, "n_frames", 1) or 1))
-            img.seek(0)
-            first = np.array(img)
-            convert_color = first.ndim == 3 and first.shape[-1] in (3, 4)
-            if convert_color:
-                target_dtype = first.dtype
-                first_plane = self._convert_frame_to_plane(first, target_dtype)
-            else:
-                target_dtype = first.dtype
-                first_plane = np.asarray(first, dtype=target_dtype)
-                if first_plane.ndim == 3 and first_plane.shape[-1] == 1:
-                    first_plane = first_plane[..., 0]
-            if first_plane.ndim != 2:
-                raise RuntimeError("Only grayscale TIFF stacks are supported.")
-            plane_shape = first_plane.shape
-            fd, tmp_path = tempfile.mkstemp(prefix="annolid_vtk_", suffix=".mmap")
-            os.close(fd)
-            backing_path = Path(tmp_path)
-            try:
-                writer = np.memmap(
-                    backing_path,
-                    mode="w+",
-                    dtype=target_dtype,
-                    shape=(n_frames, plane_shape[0], plane_shape[1]),
-                )
-                min_val = float(np.min(first_plane))
-                max_val = float(np.max(first_plane))
-                writer[0] = first_plane
-                for idx in range(1, n_frames):
-                    img.seek(idx)
-                    arr = np.array(img)
-                    if convert_color:
-                        arr = self._convert_frame_to_plane(arr, target_dtype)
-                    else:
-                        arr = np.asarray(arr, dtype=target_dtype)
-                        if arr.ndim == 3 and arr.shape[-1] == 1:
-                            arr = arr[..., 0]
-                    writer[idx] = arr
-                    min_val = min(min_val, float(np.min(arr)))
-                    max_val = max(max_val, float(np.max(arr)))
-                writer.flush()
-            except Exception:
-                try:
-                    backing_path.unlink()
-                except Exception:
-                    pass
-                raise
-            finally:
-                try:
-                    del writer
-                except UnboundLocalError:
-                    pass
-        reader = np.memmap(
-            backing_path,
-            mode="r+",
-            dtype=target_dtype,
-            shape=(n_frames, plane_shape[0], plane_shape[1]),
-        )
-        return _VolumeData(
-            reader,
-            None,
-            float(min_val),
-            float(max_val),
-            is_grayscale=True,
-            is_out_of_core=True,
-            backing_path=backing_path,
-            volume_shape=(n_frames, plane_shape[0], plane_shape[1]),
-        )
-
-    def _first_3d_array_from_group(self, grp):
-        """Breadth-first search for the first array with >=3 dimensions."""
-        try:
-            from zarr.hierarchy import Group  # type: ignore
-        except Exception:
-            Group = ()  # type: ignore[assignment]
-
-        queue = [grp]
-        while queue:
-            node = queue.pop(0)
-            try:
-                # Arrays directly under this node
-                for key in getattr(node, "array_keys", lambda: [])():
-                    try:
-                        arr = node[key]
-                        shp = getattr(arr, "shape", ())
-                        if shp and len(shp) >= 3:
-                            try:
-                                logger.info(
-                                    "VTK viewer: BFS picked array '%s' (shape=%s)",
-                                    getattr(arr, "path", None)
-                                    or getattr(arr, "name", None),
-                                    shp,
-                                )
-                            except Exception:
-                                pass
-                            return arr
-                    except Exception:
-                        continue
-                # Child groups
-                for key in getattr(node, "group_keys", lambda: [])():
-                    try:
-                        child = node[key]
-                        if isinstance(child, Group):
-                            queue.append(child)
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-        return None
-
-    def _sample_zarr_minmax(
-        self,
-        arr_obj,
-        zyx_axes: tuple[int, int, int],
-        fixed_idx: dict[int, int],
-    ) -> Optional[tuple[float, float]]:
-        """Read a tiny block to estimate value range without loading everything."""
-        shape = getattr(arr_obj, "shape", ())
-        if not shape:
-            return None
-        slicer: list[object] = []
-        for dim, size in enumerate(shape):
-            if dim == zyx_axes[0]:
-                slicer.append(0)
-            elif dim in zyx_axes:
-                slicer.append(slice(0, min(64, int(size))))
-            else:
-                slicer.append(fixed_idx.get(dim, 0))
-        try:
-            sample = np.asarray(arr_obj[tuple(slicer)])
-            if sample.size == 0:
-                return None
-            sample = np.squeeze(sample)
-            return float(np.min(sample)), float(np.max(sample))
-        except Exception:
-            return None
-
-    def _is_label_volume(self, dtype: np.dtype, arr_obj, source_path: Path) -> bool:
-        """Heuristic: keep integer masks (annotation/label/seg) un-normalized."""
-        if not np.issubdtype(dtype, np.integer) or np.issubdtype(dtype, np.bool_):
-            return False
-        tokens = ("label", "mask", "annot", "seg")
-        name = str(getattr(arr_obj, "path", "") or getattr(arr_obj, "name", "")).lower()
-        if any(tok in name for tok in tokens):
-            return True
-        if any(tok in source_path.name.lower() for tok in tokens):
-            return True
-        attrs = getattr(arr_obj, "attrs", None)
-        if attrs:
-            try:
-                keys = [str(k).lower() for k in getattr(attrs, "keys", lambda: [])()]
-                if any(tok in k for k in keys for tok in tokens):
-                    return True
-                for key in (
-                    "labels",
-                    "label",
-                    "annotation",
-                    "annotations",
-                    "image-label",
-                    "image_label",
-                    "segmentation",
-                ):
-                    if key in attrs:
-                        return True
-            except Exception:
-                pass
-        return False
-
-    def _allen_mouse_color(self, label: int) -> tuple[float, float, float]:
-        """Return an atlas-inspired RGB triple in [0,1] for a label id."""
-        if label <= 0:
-            return (0.0, 0.0, 0.0)
-        try:
-            idx = label % len(ALLEN_MOUSE_ATLAS_COLORS)
-            hex_color = ALLEN_MOUSE_ATLAS_COLORS[idx].lstrip("#")
-            r = int(hex_color[0:2], 16) / 255.0
-            g = int(hex_color[2:4], 16) / 255.0
-            b = int(hex_color[4:6], 16) / 255.0
-            return (r, g, b)
-        except Exception:
-            return (0.8, 0.8, 0.8)
-
-    def _collect_label_values(self, limit: int = 256) -> list[int]:
-        """Collect a limited set of label ids for transfer functions."""
-        if self._volume_np is None:
-            return []
-        try:
-            arr = np.asarray(self._volume_np)
-            flat = arr.ravel()
-            if flat.size > limit * 8000:
-                step = max(1, flat.size // (limit * 8000))
-                flat = flat[::step]
-            vals = np.unique(flat)
-            if vals.size > limit:
-                vals = vals[:limit]
-            return [int(v) for v in vals]
-        except Exception:
-            return []
-
-    def _apply_allen_color_tf(
-        self, label_values: Sequence[int], vmin: float, vmax: float
-    ) -> None:
-        """Populate the color transfer function with atlas-inspired colors."""
-        self._color_tf.RemoveAllPoints()
-        if not label_values:
-            self._color_tf.AddRGBPoint(vmin, 0.0, 0.0, 0.0)
-            self._color_tf.AddRGBPoint(vmax, 1.0, 1.0, 1.0)
-            return
-        added: set[int] = set()
-        for val in label_values:
-            if val in added:
-                continue
-            r, g, b = self._allen_mouse_color(val)
-            self._color_tf.AddRGBPoint(float(val), r, g, b)
-            added.add(val)
-        if 0 not in added:
-            self._color_tf.AddRGBPoint(0.0, 0.0, 0.0, 0.0)
-
-    def _labels_to_rgb(self, arr: np.ndarray) -> np.ndarray:
-        """Convert a 2D integer label plane to RGB using the atlas palette."""
-        flattened = np.asarray(arr).astype(np.int64, copy=False)
-        vals = np.unique(flattened)
-        palette = {
-            int(v): (np.array(self._allen_mouse_color(int(v))) * 255).astype(np.uint8)
-            for v in vals
-        }
-        rgb = np.zeros(flattened.shape + (3,), dtype=np.uint8)
-        for v, color in palette.items():
-            mask = flattened == v
-            if np.any(mask):
-                rgb[mask] = color
-        return rgb
-
-    def _load_zarr_json(self, meta_path: Path) -> Optional[dict]:
-        """Safely load a zarr.json file or return None."""
-        try:
-            path = meta_path
-            if path.is_dir():
-                path = path / "zarr.json"
-            if not path.exists():
-                return None
-            with open(path, "r") as f:
-                return json.load(f)
-        except Exception:
-            return None
-
-    def _find_zarr_array_metadata(
-        self, base: Path
-    ) -> tuple[Optional[Path], Optional[dict]]:
-        """
-        Locate the nearest Zarr array metadata starting from `base`.
-        Returns the directory containing the metadata and the parsed JSON.
-        """
-        try:
-            base_path = base
-            if base_path.is_file():
-                base_path = base_path.parent
-        except Exception:
-            base_path = base
-
-        queue: list[tuple[Path, int]] = [(base_path, 0)]
-        visited: set[Path] = set()
-        max_depth = 3
-
-        while queue:
-            current, depth = queue.pop(0)
-            if current in visited:
-                continue
-            visited.add(current)
-
-            zarr_json = current / "zarr.json"
-            dot_zarray = current / ".zarray"
-            if zarr_json.exists():
-                meta = self._load_zarr_json(zarr_json)
-                if meta and (meta.get("node_type") == "array" or "shape" in meta):
-                    return current, meta
-            if dot_zarray.exists():
-                try:
-                    with open(dot_zarray, "r") as f:
-                        meta = json.load(f)
-                    meta.setdefault("zarr_format", 2)
-                    meta.setdefault("node_type", "array")
-                    return current, meta
-                except Exception:
-                    pass
-
-            if depth >= max_depth:
-                continue
-
-            try:
-                for child in current.iterdir():
-                    if not child.is_dir():
-                        continue
-                    if child.name in {"c", ".zattrs", ".zgroup"}:
-                        continue
-                    if current.name == "c":
-                        continue
-                    if child.name.startswith("."):
-                        continue
-                    queue.append((child, depth + 1))
-            except Exception:
-                continue
-
-        return None, None
-
-    def _open_zarr_array(self, path: Path):
-        """Open a Zarr array, with fallback support for v3 directory stores."""
-        meta_path, meta = self._find_zarr_array_metadata(path)
-        errors: list[str] = []
-
-        zarr_mod = None
-        try:
-            import zarr as zarr_mod  # type: ignore
-        except Exception as exc:
-            errors.append(f"zarr not available: {exc}")
-
-        if zarr_mod is not None:
-            candidate = meta_path or path
-            try:
-                root = self._open_zarr_store(candidate, zarr_mod)
-                if root is not None:
-                    arr_obj = self._select_zarr_array(root)
-                    try:
-                        from zarr.core import Array  # type: ignore
-                        from zarr.hierarchy import Group  # type: ignore
-                    except Exception:
-                        Array = ()  # type: ignore[assignment]
-                        Group = ()  # type: ignore[assignment]
-                    if isinstance(arr_obj, Group):
-                        arr_obj = self._first_3d_array_from_group(arr_obj)
-                    if isinstance(arr_obj, (Array, _ZarrV3Array)) or hasattr(
-                        arr_obj, "shape"
-                    ):
-                        return arr_obj, root
-            except Exception as exc:
-                errors.append(f"zarr reader failed: {exc}")
-
-        if meta and int(meta.get("zarr_format", 0) or 0) == 3:
-            arr_dir = meta_path or path
-            try:
-                arr_obj = _ZarrV3Array(arr_dir, meta)
-                root_meta = self._load_zarr_json(path) or {}
-                root_proxy = types.SimpleNamespace(
-                    attrs=root_meta.get("attributes", {}) or {}
-                )
-                return arr_obj, root_proxy
-            except Exception as exc:
-                errors.append(f"v3 fallback failed: {exc}")
-
-        msg = "Could not open Zarr store."
-        if errors:
-            msg += " " + "; ".join(errors)
-        raise RuntimeError(msg)
-
-    def _read_zarr(self, path: Path) -> _VolumeData:
-        """Robust Zarr reader supporting v2/v3 stores and slice-mode fallback."""
-        arr_obj, root_obj = self._open_zarr_array(path)
-
-        shape = tuple(int(x) for x in getattr(arr_obj, "shape", ()))
-        if not shape or len(shape) < 3:
-            raise RuntimeError(f"Zarr array must be at least 3D. Got: {shape}")
-        dtype = np.dtype(getattr(arr_obj, "dtype", np.float32))
-        is_label_volume = self._is_label_volume(dtype, arr_obj, path)
-
-        zyx_axes, fixed_idx = self._zarr_axis_info(arr_obj)
-        shape_zyx = (
-            int(shape[zyx_axes[0]]),
-            int(shape[zyx_axes[1]]),
-            int(shape[zyx_axes[2]]),
-        )
-        spacing = self._extract_zarr_spacing(root_obj or arr_obj, arr_obj)
-        sample_minmax = self._sample_zarr_minmax(arr_obj, zyx_axes, fixed_idx)
-
-        total_voxels = int(np.prod(shape_zyx))
-        itemsize = max(1, dtype.itemsize)
-        bytes_needed = total_voxels * itemsize
-        avail_ram = self._available_memory_bytes()
-
-        # Heuristic: prefer full in-memory load when it will comfortably fit
-        # (under configured threshold and <50% of available RAM).
-        use_slice_mode = False
-        if bytes_needed <= 0:
-            use_slice_mode = False
-        else:
-            over_threshold = (
-                AUTO_OUT_OF_CORE_MB > 0
-                and (bytes_needed / 1024**2) > AUTO_OUT_OF_CORE_MB
-            )
-            over_memory = avail_ram > 0 and bytes_needed >= (avail_ram * 0.5)
-            use_slice_mode = over_threshold or over_memory
-
-        logger.info(
-            "Zarr Load Strategy: %s (Size: %.2f MB, Shape: %s)",
-            "Slice Mode" if use_slice_mode else "Full Load",
-            bytes_needed / 1024**2,
-            shape_zyx,
-        )
-
-        value_range = sample_minmax
-        if value_range is None and is_label_volume:
-            try:
-                value_range = self._dtype_value_range(dtype)
-            except Exception:
-                value_range = None
-
-        if use_slice_mode:
-            loader = _ZarrSliceLoader(arr_obj, zyx_axes, fixed_idx)
-            return self._make_slice_volume_data(
-                loader,
-                spacing=spacing,
-                value_range=value_range,
-                is_grayscale=True,
-                is_label_map=is_label_volume,
-            )
-
-        try:
-            vol = self._zarr_to_numpy_zyx(arr_obj, zyx_axes, fixed_idx)
-            if not is_label_volume:
-                vol = self._normalize_to_float01(vol)
-            return _VolumeData(
-                array=vol,
-                spacing=spacing,
-                vmin=float(vol.min()),
-                vmax=float(vol.max()),
-                is_grayscale=vol.ndim == 3,
-                is_out_of_core=False,
-                volume_shape=shape_zyx,
-                is_label_map=is_label_volume,
-            )
-        except (MemoryError, RuntimeError) as exc:
-            logger.warning(
-                "In-memory Zarr load failed (%s), falling back to slice mode.", exc
-            )
-            loader = _ZarrSliceLoader(arr_obj, zyx_axes, fixed_idx)
-            return self._make_slice_volume_data(
-                loader,
-                spacing=spacing,
-                value_range=value_range,
-                is_grayscale=True,
-                is_label_map=is_label_volume,
-            )
-
-    def _open_tiff_memmap(self, path: Path) -> Optional[np.ndarray]:
-        try:
-            import tifffile  # type: ignore
-        except Exception:
-            return None
-        try:
-            try:
-                reader = tifffile.memmap(str(path), mode="r+")
-            except PermissionError:
-                reader = tifffile.memmap(str(path), mode="r")
-        except Exception:
-            return None
-        if reader.ndim not in (3, 4):
-            return None
-        if reader.ndim == 4 and reader.shape[-1] == 1:
-            reader = reader[..., 0]
-        if reader.ndim != 3:
-            return None
-        if not reader.flags.c_contiguous:
-            reader = np.ascontiguousarray(reader)
-        return reader
-
-    def _make_slice_volume_data(
-        self,
-        loader: _BaseSliceLoader,
-        spacing: Optional[tuple[float, float, float]] = None,
-        value_range: Optional[tuple[float, float]] = None,
-        is_grayscale: bool = True,
-        is_label_map: bool = False,
-    ) -> _VolumeData:
-        shape = loader.shape()
-        dtype = loader.dtype()
-        if value_range is not None:
-            vmin, vmax = value_range
-        else:
-            vmin, vmax = self._dtype_value_range(dtype)
-        return _VolumeData(
-            array=None,
-            spacing=spacing,
-            vmin=vmin,
-            vmax=vmax,
-            is_grayscale=is_grayscale,
-            is_out_of_core=True,
-            slice_mode=True,
-            slice_loader=loader,
-            slice_axis=0,
-            volume_shape=shape,
-            is_label_map=is_label_map,
-        )
-
-    def _initial_slice_index_for_loader(
-        self, loader: Optional[_BaseSliceLoader]
-    ) -> int:
-        """Estimate a non-empty starting slice for sparse label volumes."""
-        if loader is None:
-            return 0
-        try:
-            arr = getattr(loader, "_arr", None)
-            z_axis = getattr(loader, "_zyx_axes", (0, 1, 2))[0]
-            if isinstance(arr, _ZarrV3Array) and z_axis == 0:
-                return arr.first_nonempty_index(axis=0)
-        except Exception:
-            return 0
-        return 0
-
-    def _probe_tiff_metadata(
-        self, path: Path
-    ) -> Optional[tuple[tuple[int, int, int], np.dtype]]:
-        try:
-            import tifffile  # type: ignore
-        except Exception:
-            return None
-        try:
-            with tifffile.TiffFile(str(path)) as tif:
-                series = tif.series[0]
-                shape = tuple(int(x) for x in series.shape)
-                dtype = np.dtype(series.dtype)
-        except Exception:
-            return None
-        if len(shape) == 2:
-            shape = (1, shape[0], shape[1])
-        elif len(shape) > 3:
-            shape = shape[:3]
-        return shape, dtype
-
-    def _should_use_slice_mode(
-        self, shape: tuple[int, int, int], dtype: np.dtype
-    ) -> bool:
-        if not shape or len(shape) < 3:
-            return False
-        total_voxels = int(shape[0]) * int(shape[1]) * int(shape[2])
-        itemsize = max(1, np.dtype(dtype).itemsize)
-        size_bytes = total_voxels * itemsize
-        if MAX_VOLUME_VOXELS > 0 and total_voxels > MAX_VOLUME_VOXELS:
-            return True
-        if SLICE_MODE_BYTES > 0 and size_bytes >= SLICE_MODE_BYTES:
-            return True
-        available = self._available_memory_bytes()
-        if available > 0 and size_bytes >= available * 0.8:
-            return True
-        return False
-
-    def _dtype_value_range(self, dtype: np.dtype) -> tuple[float, float]:
-        if np.issubdtype(dtype, np.bool_):
-            return 0.0, 1.0
-        if np.issubdtype(dtype, np.integer):
-            info = np.iinfo(dtype)
-            return float(info.min), float(info.max)
-        if np.issubdtype(dtype, np.floating):
-            return 0.0, 1.0
-        return 0.0, 1.0
-
-    def _convert_frame_to_plane(self, frame: np.ndarray, dtype: np.dtype) -> np.ndarray:
-        arr = np.asarray(frame)
-        if arr.ndim == 3 and arr.shape[-1] in (3, 4):
-            rgb = arr[..., :3].astype(np.float32)
-            gray = np.dot(rgb, [0.299, 0.587, 0.114])
-            if np.issubdtype(dtype, np.bool_):
-                gray = (gray > 0.5).astype(dtype)
-            elif np.issubdtype(dtype, np.integer):
-                info = np.iinfo(dtype)
-                gray = np.clip(np.round(gray), info.min, info.max).astype(dtype)
-            else:
-                gray = gray.astype(dtype)
-            return gray
-        if arr.ndim == 3 and arr.shape[-1] == 1:
-            arr = arr[..., 0]
-        if arr.dtype != dtype:
-            arr = arr.astype(dtype)
-        return arr
-
-    def _select_zarr_array(self, obj):
-        """Smart selection of the image array from a Zarr group."""
-        try:
-            from zarr.hierarchy import Group
-            from zarr.core import Array
-        except ImportError:
-            return obj
-
-        if isinstance(obj, Array):
-            return obj
-
-        if isinstance(obj, Group):
-            # Priority 1: OME-NGFF (multiscales) - Pick level 0 (highest res)
-            if "multiscales" in obj.attrs:
-                try:
-                    datasets = obj.attrs["multiscales"][0]["datasets"]
-                    path = datasets[0]["path"]
-                    return obj[path]
-                except (IndexError, KeyError):
-                    pass
-
-            # Priority 2: Common convention keys
-            for key in ["0", "data", "image", "volume"]:
-                if key in obj:
-                    item = obj[key]
-                    if isinstance(item, Array) and item.ndim >= 3:
-                        return item
-                    if isinstance(item, Group):
-                        # Recurse once if we found a 'data' group
-                        return self._select_zarr_array(item)
-
-        return obj
-
-    def _extract_zarr_spacing(self, obj, arr) -> Optional[tuple[float, float, float]]:
-        """Attempt to read spacing from zarr attrs or OME-Zarr multiscales."""
-        # Direct attrs on array
-        for source in (getattr(arr, "attrs", None), getattr(obj, "attrs", None)):
-            if not source:
-                continue
-            for key in ("spacing", "voxel_size", "voxel_spacing"):
-                try:
-                    candidate = source.get(key)
-                    if candidate is not None and len(candidate) >= 3:
-                        return (
-                            float(candidate[0]),
-                            float(candidate[1]),
-                            float(candidate[2]),
-                        )
-                except Exception:
-                    continue
-
-        # OME-Zarr multiscales
-        try:
-            multiscales = getattr(obj, "attrs", {}).get("multiscales")
-            if multiscales and isinstance(multiscales, (list, tuple)):
-                meta = multiscales[0]
-                axes = [
-                    a.get("name", "").lower() if isinstance(a, dict) else str(a).lower()
-                    for a in meta.get("axes", [])
-                ]
-                datasets = meta.get("datasets", [])
-                if datasets:
-                    transforms = datasets[0].get("coordinateTransformations", [])
-                    for tf in transforms:
-                        if tf.get("type") == "scale":
-                            scale = tf.get("scale", [])
-                            if axes and scale and len(scale) == len(axes):
-                                axis_map = {ax: i for i, ax in enumerate(axes)}
-                                try:
-                                    return (
-                                        float(scale[axis_map.get("z", -1)]),
-                                        float(scale[axis_map.get("y", -1)]),
-                                        float(scale[axis_map.get("x", -1)]),
-                                    )
-                                except Exception:
-                                    pass
-                            if scale and len(scale) >= 3:
-                                return (
-                                    float(scale[-3]),
-                                    float(scale[-2]),
-                                    float(scale[-1]),
-                                )
-        except Exception:
-            pass
-        return None
-
-    def _normalize_volume_selection(self, path: Path) -> Path:
-        """If user picks a file inside a Zarr store, return the store root."""
-        try:
-            p = path
-            if p.is_file() and p.suffix.lower() in (".img", ".hdr"):
-                hdr_candidate = self._find_companion_file(p, ".hdr")
-                if hdr_candidate is not None:
-                    return hdr_candidate
-            if p.is_file():
-                if p.name.lower() in ("zarr.json", ".zgroup"):
-                    return p.parent
-                if (p.parent / ".zarray").exists():
-                    return p.parent
-                if (p.parent / "data" / ".zarray").exists() or (
-                    p.parent / "data" / "zarr.json"
-                ).exists():
-                    return p.parent / "data"
-            # Walk up a couple of levels to find a .zarr root
-            cur = p
-            for _ in range(3):
-                if (
-                    cur.name.lower().endswith(".zarr")
-                    or (cur / ".zarray").exists()
-                    or (cur / "zarr.json").exists()
-                    or (cur / ".zgroup").exists()
-                ):
-                    return cur
-                if (cur / "data" / ".zarray").exists() or (
-                    cur / "data" / "zarr.json"
-                ).exists():
-                    return cur / "data"
-                cur = cur.parent
-        except Exception:
-            pass
-        return path
-
-    def _zarr_axis_info(self, arr) -> tuple[tuple[int, int, int], dict[int, int]]:
-        """
-        Infer (Z, Y, X) axis indices.
-        Returns:
-            zyx_axes: tuple of (z_index, y_index, x_index)
-            fixed_indices: dict {axis_index: default_value} for non-spatial axes (Time/Channel)
-        """
-        ndim = arr.ndim
-
-        # Default to last 3 dimensions as Z, Y, X
-        z_ix, y_ix, x_ix = ndim - 3, ndim - 2, ndim - 1
-
-        # Try to find OME-Zarr axis names
-        axes_meta = None
-        if hasattr(arr, "attrs") and "multiscales" in arr.attrs:
-            try:
-                axes_meta = arr.attrs["multiscales"][0].get("axes")
-            except Exception:
-                pass
-
-        # If we found metadata names, map them
-        if axes_meta and len(axes_meta) == ndim:
-            names = [
-                x["name"].lower() if isinstance(x, dict) else x.lower()
-                for x in axes_meta
-            ]
-            if "z" in names and "y" in names and "x" in names:
-                z_ix = names.index("z")
-                y_ix = names.index("y")
-                x_ix = names.index("x")
-
-        # Handle edge case: 2D array (treat as 1 slice Z)
-        if ndim == 2:
-            # We can't really handle 2D in a 3D viewer easily without faking Z
-            # This assumes the data will be reshaped upstream or handled by loader
-            return (0, 0, 1), {}
-
-        # Identify "Extra" axes (Time, Channel)
-        # We usually fix them to index 0 (first timepoint, first channel)
-        fixed_indices = {}
-        for i in range(ndim):
-            if i not in (z_ix, y_ix, x_ix):
-                # Default to the middle of the range? No, usually index 0 is safer.
-                fixed_indices[i] = 0
-
-        return (z_ix, y_ix, x_ix), fixed_indices
-
-    def _zarr_to_numpy_zyx(
-        self,
-        arr,
-        zyx_axes: tuple[int, int, int],
-        fixed_indices: dict[int, int],
-    ) -> np.ndarray:
-        """Convert a zarr array to numpy in (Z, Y, X) order, selecting fixed indices for other axes."""
-        slicer: list[object] = []
-        keep_axes: list[int] = []
-        for dim in range(len(getattr(arr, "shape", ()))):
-            if dim in zyx_axes:
-                slicer.append(slice(None))
-                keep_axes.append(dim)
-            else:
-                slicer.append(fixed_indices.get(dim, 0))
-        arr_sel = np.asarray(arr[tuple(slicer)])
-        axis_map = {orig: idx for idx, orig in enumerate(keep_axes)}
-        order = [
-            axis_map.get(zyx_axes[0], 0),
-            axis_map.get(zyx_axes[1], 1),
-            axis_map.get(zyx_axes[2], 2),
-        ]
-        if order != [0, 1, 2]:
-            arr_sel = np.moveaxis(arr_sel, order, [0, 1, 2])
-        while arr_sel.ndim > 3:
-            arr_sel = np.take(arr_sel, indices=0, axis=-1)
-        return arr_sel
-
-    def _open_zarr_store(self, path: Path, zarr_mod):
-        """Robustly open Zarr path, handling consolidated metadata automatically."""
-        path_str = str(path)
-
-        # Attempt 1: Consolidated (Optimized for OME-Zarr)
-        try:
-            return zarr_mod.open_consolidated(path_str, mode="r")
-        except Exception:
-            pass
-
-        # Attempt 2: Standard Group/Array open
-        try:
-            return zarr_mod.open(path_str, mode="r")
-        except Exception:
-            pass
-
-        # Attempt 3: Check for nested 'data' folder (common in some exports)
-        if (path / "data").exists():
-            try:
-                return zarr_mod.open(str(path / "data"), mode="r")
-            except Exception:
-                pass
-
-        return None
-
-    def _vtk_image_to_numpy(self, vtk_img) -> np.ndarray:
-        from vtkmodules.util.numpy_support import vtk_to_numpy
-
-        dims = vtk_img.GetDimensions()  # (x, y, z)
-        scalars = vtk_img.GetPointData().GetScalars()
-        if scalars is None:
-            raise RuntimeError("No scalar data in volume.")
-        arr = vtk_to_numpy(scalars)
-        # VTK stores as x-fastest; reshape and permute to (Z, Y, X)
-        arr = arr.reshape(dims[2], dims[1], dims[0])
-        return arr
-
-    def _normalize_to_float01(self, vol: np.ndarray) -> np.ndarray:
-        if np.issubdtype(vol.dtype, np.integer):
-            vmin = float(vol.min())
-            vmax = float(vol.max())
-            if vmax > vmin:
-                vol = (vol.astype(np.float32) - vmin) / (vmax - vmin)
-            else:
-                vol = np.zeros_like(vol, dtype=np.float32)
-        else:
-            vol = vol.astype(np.float32)
-            vol = np.clip(vol, 0.0, 1.0)
-        return vol
-
-    def _read_dicom_series(
-        self, directory: Path
-    ) -> tuple[np.ndarray, Optional[tuple[float, float, float]]]:
-        # First try GDCM (if present), then fallback to VTK's basic reader
-        reader = None
-        if _HAS_GDCM:
-            try:
-                reader = vtkGDCMImageReader()  # type: ignore[name-defined]
-                reader.SetDirectoryName(str(directory))
-                reader.Update()
-            except Exception:
-                reader = None
-        if reader is None:
-            try:
-                from vtkmodules.vtkIOImage import vtkDICOMImageReader
-            except Exception as exc:
-                raise RuntimeError(
-                    "VTK DICOM reader is not available in this build."
-                ) from exc
-            reader = vtkDICOMImageReader()
-            reader.SetDirectoryName(str(directory))
-            reader.Update()
-
-        vtk_img = reader.GetOutput()
-        vol = self._vtk_image_to_numpy(vtk_img)
-        s = vtk_img.GetSpacing()
-        spacing = (s[0], s[1], s[2])
-        vol = self._normalize_to_float01(vol)
-        return vol, spacing
-
     def _update_opacity(self):
         if not getattr(self, "_has_volume", False):
             return
@@ -3267,7 +2414,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._ensure_volume_actor_added()
         except Exception:
             pass
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _update_shading(self):
         if not getattr(self, "_has_volume", False):
@@ -3276,7 +2423,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self.property.ShadeOn()
         else:
             self.property.ShadeOff()
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _configure_plane_controls(self):
         for axis, control in self._slice_plane_controls.items():
@@ -3409,7 +2556,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             widget.SetEnabled(control.checkbox.isChecked())
         self._update_clipping_for_plane(axis, control.checkbox.isChecked())
         if render:
-            self.vtk_widget.GetRenderWindow().Render()
+            self._request_render()
 
     def _on_plane_slider_changed(self, axis: int, value: int):
         control = self._slice_plane_controls.get(axis)
@@ -3432,7 +2579,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._apply_plane_slice(axis, control.slider.value())
         else:
             self._update_clipping_for_plane(axis, False)
-            self.vtk_widget.GetRenderWindow().Render()
+            self._request_render()
 
     def _update_clipping_for_plane(self, axis: int, enabled: bool):
         plane = self._slice_clipping_planes.get(axis)
@@ -3467,6 +2614,9 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
                 self.wl_mode_checkbox.setChecked(False)
             except Exception:
                 pass
+            self._wl_mode = False
+            return
+        if not getattr(self, "interactor", None):
             self._wl_mode = False
             return
         self._wl_mode = self.wl_mode_checkbox.isChecked()
@@ -3525,7 +2675,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self.max_spin.blockSignals(False)
 
             self._update_transfer_functions()
-            self.vtk_widget.GetRenderWindow().Render()
+            self._request_render()
 
             # End processing for this event; do not proceed to picking logic
             return
@@ -3610,7 +2760,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self.property.SetInterpolationTypeToNearest()
         else:
             self.property.SetInterpolationTypeToLinear()
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _update_spacing(self):
         if not getattr(self, "_has_volume", False):
@@ -3620,13 +2770,13 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             sy = float(self.spacing_y.value())
             sz = float(self.spacing_z.value())
             self._vtk_img.SetSpacing(sx, sy, sz)
-            self.vtk_widget.GetRenderWindow().Render()
+            self._request_render()
         except Exception:
             pass
 
     def _reset_camera(self):
         self.renderer.ResetCamera()
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _save_snapshot(self):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -3638,7 +2788,15 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if not path:
             return
         w2i = vtkWindowToImageFilter()
-        w2i.SetInput(self.vtk_widget.GetRenderWindow())
+        render_window = self._get_render_window()
+        if render_window is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Save Snapshot",
+                "The 3D view is not ready yet.",
+            )
+            return
+        w2i.SetInput(render_window)
         w2i.Update()
         writer = vtkPNGWriter()
         writer.SetFileName(path)
@@ -3659,7 +2817,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self.max_spin.setValue(vmax)
             self.max_spin.blockSignals(False)
         self._update_transfer_functions()
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _auto_window(self):
         if self._slice_mode:
@@ -3667,11 +2825,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             return
         if not getattr(self, "_has_volume", False) or self._volume_np is None:
             return
-        # 2-98 percentile auto window on current volume
-        vol = self._volume_np
-        p2, p98 = float(np.percentile(vol, 2)), float(np.percentile(vol, 98))
-        if p98 <= p2:
-            p2, p98 = float(vol.min()), float(vol.max())
+        p2, p98 = self._initial_window_range(self._volume_np)
         self.min_spin.blockSignals(True)
         self.max_spin.blockSignals(True)
         self.min_spin.setValue(p2)
@@ -3679,7 +2833,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self.min_spin.blockSignals(False)
         self.max_spin.blockSignals(False)
         self._update_transfer_functions()
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _update_transfer_functions(self):
         if self._slice_mode:
@@ -3755,7 +2909,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         except Exception:
             # Some mappers may not support all modes; ignore
             pass
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _maybe_align_point_cloud_to_volume(self, pts: np.ndarray) -> np.ndarray:
         """Reorder axes/offset grid-derived points to match the active volume."""
@@ -3905,7 +3059,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if combined_bounds:
             self._focus_on_bounds(combined_bounds)
         self._update_point_sizes()
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
         self._refresh_status_summary()
 
     def _add_point_cloud_ply(self, path: str):
@@ -4373,7 +3527,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             if actor is None:
                 continue
             self._apply_gaussian_scale_to_actor(actor, self._gaussian_scale_mult)
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _apply_gaussian_opacity_to_all(self) -> None:
         for data_id, data in list(getattr(self, "_gaussian_actor_data", {}).items()):
@@ -4381,7 +3535,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             if actor is None:
                 continue
             self._apply_gaussian_opacity_to_actor(actor, self._gaussian_opacity_mult)
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _apply_gaussian_resolution_to_all(self) -> None:
         for data_id, data in list(getattr(self, "_gaussian_actor_data", {}).items()):
@@ -4389,7 +3543,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             if actor is None:
                 continue
             self._apply_gaussian_resolution_to_actor(actor, self._gaussian_glyph_res)
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _decode_gaussian_ply_colors(
         self, path: str, expected_points: int
@@ -5088,7 +4242,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         size = int(self.point_size_slider.value())
         for actor in getattr(self, "_point_actors", []):
             actor.GetProperty().SetPointSize(size)
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _ensure_scene_light(self) -> None:
         if getattr(self, "_scene_light", None) is None:
@@ -5108,7 +4262,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             self._scene_light.SetIntensity(self._light_intensity)  # type: ignore[union-attr]
         except Exception:
             pass
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _update_gaussian_scale(self, value: float):
         self._gaussian_scale_mult = float(value)
@@ -5150,7 +4304,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._region_actors = {}
         self._clear_region_selection()
         self._update_point_controls_visibility()
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
         self._point_cloud_visible = False
         if hasattr(self, "show_point_cloud_checkbox"):
             self.show_point_cloud_checkbox.blockSignals(True)
@@ -5312,13 +4466,13 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             actor = self._region_actors.get(label)
             if actor:
                 actor.SetVisibility(entry.checkbox.isChecked())
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _set_region_visibility(self, label: str, visible: bool) -> None:
         actor = self._region_actors.get(label)
         if actor:
             actor.SetVisibility(visible)
-            self.vtk_widget.GetRenderWindow().Render()
+            self._request_render()
 
     def _pick_region_color(self, label: str) -> None:
         current = self._region_colors.get(label, QtGui.QColor(255, 255, 255))
@@ -5355,7 +4509,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         mapper = actor.GetMapper()
         if hasattr(mapper, "ScalarVisibilityOff"):
             mapper.ScalarVisibilityOff()
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
 
     def _infer_region_color(self, colors: Optional[np.ndarray]) -> QtGui.QColor:
         fallback = QtGui.QColor(255, 255, 255)
@@ -5399,7 +4553,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         try:
             self._load_mesh_file(path)
             self.renderer.ResetCamera()
-            self.vtk_widget.GetRenderWindow().Render()
+            self._request_render()
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Mesh Viewer", f"Failed to load: {e}")
 
@@ -5509,7 +4663,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._mesh_actor_names.clear()
         self._active_mesh_actor = None
         self._update_mesh_controls_visibility()
-        self.vtk_widget.GetRenderWindow().Render()
+        self._request_render()
         if not getattr(self, "_has_volume", False) and not getattr(
             self, "_point_actors", []
         ):
@@ -5537,7 +4691,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             return
         try:
             self._apply_texture_from_path(actor, kind, path)
-            self.vtk_widget.GetRenderWindow().Render()
+            self._request_render()
         except Exception as exc:
             QtWidgets.QMessageBox.warning(
                 self,
@@ -5688,7 +4842,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             except Exception:
                 pass
         try:
-            self.vtk_widget.GetRenderWindow().Render()
+            self._request_render()
         except Exception:
             pass
 
@@ -5699,7 +4853,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             except Exception:
                 pass
         try:
-            self.vtk_widget.GetRenderWindow().Render()
+            self._request_render()
         except Exception:
             pass
 
@@ -5763,7 +4917,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         except Exception:
             pass
         try:
-            self.vtk_widget.GetRenderWindow().Render()
+            self._request_render()
         except Exception:
             pass
         self._refresh_status_summary()
@@ -5779,7 +4933,7 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         self._overlay_volumes = []
         self._refresh_overlay_list()
         try:
-            self.vtk_widget.GetRenderWindow().Render()
+            self._request_render()
         except Exception:
             pass
         self._refresh_status_summary()
@@ -5809,6 +4963,13 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
             mode_txt = f"Mode: slice viewer ({dims_txt})"
         elif getattr(self, "_has_volume", False):
             mode_txt = f"Mode: volume ({dims_txt})"
+        elif not getattr(self, "_vtk_initialized", False) and getattr(
+            self, "_vtk_init_failures", 0
+        ):
+            if getattr(self, "_vtk_init_failures", 0) >= 3:
+                mode_txt = "Mode: VTK initialization failed"
+            else:
+                mode_txt = "Mode: initializing VTK..."
         else:
             mode_txt = "Mode: scene (no volume loaded)"
         self.mode_status_label.setText(mode_txt)
@@ -5869,101 +5030,3 @@ class VTKVolumeViewerDialog(QtWidgets.QMainWindow):
         if poly is None or poly.GetNumberOfPoints() == 0:
             raise RuntimeError("Mesh contains no points")
         return poly
-
-    # -------------------- Source type helpers --------------------
-    @staticmethod
-    def _path_matches_ext(path: Path, exts: Tuple[str, ...]) -> bool:
-        """Match both simple suffixes and compound extensions like '.nii.gz'."""
-        name = path.name.lower()
-        suffix = path.suffix.lower()
-        for ext in exts:
-            ext_l = str(ext or "").lower()
-            if not ext_l:
-                continue
-            if suffix == ext_l or name.endswith(ext_l):
-                return True
-        return False
-
-    def _resolve_initial_source(self, path: Path) -> Path:
-        """If a directory was provided, auto-pick the first supported file."""
-        try:
-            if not path.exists():
-                return path
-        except Exception:
-            return path
-        if not path.is_dir():
-            return path
-        if self._is_zarr_candidate(path):
-            return path
-
-        try:
-            entries = sorted(path.iterdir())
-        except Exception:
-            return path
-
-        # DICOM or other volume directories should remain directories
-        for entry in entries:
-            if entry.is_file() and entry.suffix.lower() in DICOM_EXTS:
-                return path
-
-        def _find(exts: Tuple[str, ...]) -> Optional[Path]:
-            for entry in entries:
-                if entry.is_file() and self._path_matches_ext(entry, exts):
-                    return entry
-                if entry.is_dir() and self._is_zarr_candidate(entry):
-                    return entry
-            return None
-
-        for ext_group in (POINT_CLOUD_EXTS, MESH_EXTS, VOLUME_FILE_EXTS):
-            candidate = _find(ext_group)
-            if candidate is not None:
-                logger.info(
-                    "VTK viewer: auto-selecting '%s' inside '%s'.",
-                    candidate.name,
-                    path,
-                )
-                return candidate
-        return path
-
-    def _is_volume_candidate(self, path: Path) -> bool:
-        if path.is_dir():
-            try:
-                if self._is_zarr_candidate(path):
-                    return True
-                return any(
-                    entry.is_file() and entry.suffix.lower() in DICOM_EXTS
-                    for entry in path.iterdir()
-                )
-            except Exception:
-                return False
-        ext = path.suffix.lower()
-        name = path.name.lower()
-        return (
-            self._path_matches_ext(path, VOLUME_FILE_EXTS)
-            or ext in DICOM_EXTS
-            or name.endswith(".zarr")
-            or name.endswith("zarr.json")
-            or name.endswith(".zgroup")
-        )
-
-    def _is_point_cloud_candidate(self, path: Path) -> bool:
-        if path.is_dir():
-            try:
-                return any(
-                    entry.is_file() and entry.suffix.lower() in POINT_CLOUD_EXTS
-                    for entry in path.iterdir()
-                )
-            except Exception:
-                return False
-        return path.suffix.lower() in POINT_CLOUD_EXTS
-
-    def _is_mesh_candidate(self, path: Path) -> bool:
-        if path.is_dir():
-            try:
-                return any(
-                    entry.is_file() and entry.suffix.lower() in MESH_EXTS
-                    for entry in path.iterdir()
-                )
-            except Exception:
-                return False
-        return path.suffix.lower() in MESH_EXTS

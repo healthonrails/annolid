@@ -11,6 +11,7 @@ from annolid.gui.mixins.viewer_tools_mixin import (
     _is_recent_live_flybody_payload,
     _prepare_live_flybody_view_payload,
     _run_logged_subprocess,
+    _supports_builtin_stack_viewer,
 )
 from qtpy import QtWidgets
 
@@ -351,3 +352,120 @@ def test_prepare_live_flybody_view_payload_uses_combined_mesh_and_hides_overlays
         "show_edges": False,
         "show_trails": False,
     }
+
+
+def test_supports_builtin_stack_viewer_only_for_tiff_like_sources() -> None:
+    assert _supports_builtin_stack_viewer(Path("stack.tif")) is True
+    assert _supports_builtin_stack_viewer(Path("stack.ome.tiff")) is True
+    assert _supports_builtin_stack_viewer(Path("structural_brain.nii.gz")) is False
+
+
+def test_open_3d_viewer_does_not_fallback_to_pil_for_nifti(
+    monkeypatch, tmp_path: Path
+) -> None:
+    widget = _DummyViewerHost()
+    nifti_path = tmp_path / "structural_brain.nii.gz"
+    nifti_path.write_text("not-a-real-volume", encoding="utf-8")
+
+    class _TiffStackVideo:
+        pass
+
+    class _VideoLoader(_TiffStackVideo):
+        pass
+
+    monkeypatch.setattr(
+        "annolid.data.videos.TiffStackVideo",
+        _TiffStackVideo,
+    )
+    widget.video_loader = _VideoLoader()
+    widget.video_file = nifti_path
+    widget.imagePath = ""
+    widget.filename = ""
+
+    monkeypatch.setattr(
+        "annolid.gui.widgets.vtk_volume_viewer.VTKVolumeViewerDialog",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("vtk viewer failed")
+        ),
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.volume_viewer.VolumeViewerDialog",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("built-in viewer must not run for NIfTI")
+        ),
+    )
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: warnings.append(args[2] if len(args) > 2 else ""),
+    )
+
+    widget.open_3d_viewer()
+
+    assert warnings
+    assert (
+        "built-in fallback viewer only supports TIFF stacks".lower()
+        in warnings[0].lower()
+    )
+
+
+def test_open_3d_viewer_retains_vtk_dialog_reference(
+    monkeypatch, tmp_path: Path
+) -> None:
+    widget = _DummyViewerHost()
+    nifti_path = tmp_path / "structural_brain.nii.gz"
+    nifti_path.write_text("not-a-real-volume", encoding="utf-8")
+
+    class _TiffStackVideo:
+        pass
+
+    class _VideoLoader(_TiffStackVideo):
+        pass
+
+    class _FakeDlg:
+        def __init__(self, *args, **kwargs):
+            self.destroyed = type(
+                "_Signal",
+                (),
+                {"connect": lambda self, cb: None},
+            )()
+
+        def setModal(self, modal: bool):
+            return None
+
+        def show(self):
+            return None
+
+        def raise_(self):
+            return None
+
+        def activateWindow(self):
+            return None
+
+    monkeypatch.setattr("annolid.data.videos.TiffStackVideo", _TiffStackVideo)
+    widget.video_loader = _VideoLoader()
+    widget.video_file = nifti_path
+    widget.imagePath = ""
+    widget.filename = ""
+    monkeypatch.setattr(
+        "annolid.gui.widgets.vtk_volume_viewer.VTKVolumeViewerDialog",
+        _FakeDlg,
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.volume_viewer.VolumeViewerDialog",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("built-in viewer must not run")
+        ),
+    )
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: None,
+    )
+
+    widget.open_3d_viewer()
+
+    assert hasattr(widget, "_vtk_volume_viewer_dialog")
+    assert widget._vtk_volume_viewer_dialog is not None
