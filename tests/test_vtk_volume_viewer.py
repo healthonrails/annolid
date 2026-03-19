@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
+
+pytest.importorskip("vtkmodules")
 
 from annolid.gui.widgets.vtk_volume_viewer import VTKVolumeViewerDialog
 from annolid.gui.widgets.vtk_volume_utils import normalize_to_float01

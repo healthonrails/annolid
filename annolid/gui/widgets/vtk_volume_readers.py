@@ -176,9 +176,10 @@ class VolumeReaders:
                     return entry
             return None
 
+        # Prefer volume sources over companion geometry/annotation files so that
+        # selecting a folder opens the image data by default; point-cloud/mesh
+        # overlays can still be loaded explicitly from the viewer controls.
         for ext_group in (
-            {".ply", ".csv", ".xyz"},
-            {".stl", ".obj"},
             {
                 ".tif",
                 ".tiff",
@@ -190,6 +191,8 @@ class VolumeReaders:
                 ".zarr.json",
                 ".zgroup",
             },
+            {".stl", ".obj"},
+            {".ply", ".csv", ".xyz"},
         ):
             candidate = _find(tuple(ext_group))
             if candidate is not None:
