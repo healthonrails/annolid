@@ -235,9 +235,11 @@ class PredictionProgressMixin:
         self.seg_pred_thread = None
         self._force_stop_thread_ref = None
 
-    def _initialize_progress_bar(self, *, owner: str) -> None:
+    def _initialize_progress_bar(self, *, owner: str = "prediction") -> None:
         """Initialize progress state without rendering a status-bar widget."""
-        self._progress_bar_owner = owner
+        self._progress_bar_owner = str(owner or "prediction")
+        if not hasattr(self, "progress_bar"):
+            return
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
 
