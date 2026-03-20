@@ -5,7 +5,7 @@ import os
 import platform
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from annolid.core.agent.config.loader import get_config_path, load_config
 from annolid.core.agent.skill_registry.registry import (
@@ -36,6 +36,9 @@ class AgentSkillsLoader:
         managed_skills_dir: Optional[Path] = None,
         watch: Optional[bool] = None,
         watch_poll_seconds: Optional[float] = None,
+        skill_retrieval_mode: Optional[str] = None,
+        embedding_model_path: Optional[str] = None,
+        embedding_client: Any = None,
     ):
         self.workspace = Path(workspace)
         self.workspace_skills = self.workspace / "skills"
@@ -60,10 +63,24 @@ class AgentSkillsLoader:
             watch_poll_seconds=watch_poll_seconds,
         )
         self._config_dict_cache: Optional[Dict[str, Any]] = None
+        env_mode = str(os.getenv("ANNOLID_AGENT_SKILL_RETRIEVAL_MODE", "")).strip()
+        self._skill_retrieval_mode = (
+            str(skill_retrieval_mode or env_mode or "lexical").strip().lower()
+        )
+        self._embedding_model_path = str(
+            embedding_model_path
+            or os.getenv("ANNOLID_AGENT_SKILL_EMBEDDING_MODEL", "")
+            or "all-MiniLM-L6-v2"
+        ).strip()
+        self._embedding_client = embedding_client
+        self._embedding_cache_signature: Optional[tuple[str, ...]] = None
+        self._embedding_cache_pairs: list[tuple[str, list[float]]] = []
 
     def refresh_snapshot(self) -> None:
         self.registry.refresh()
         self._config_dict_cache = None
+        self._embedding_cache_signature = None
+        self._embedding_cache_pairs = []
 
     def list_skills(self, filter_unavailable: bool = True) -> List[Dict[str, Any]]:
         skills = self.registry.list_skills()
@@ -157,8 +174,8 @@ class AgentSkillsLoader:
         self, task_description: str, top_k: int = 3
     ) -> List[str]:
         """
-        Suggest relevant skill names for a task description using lightweight
-        lexical matching against skill name and description.
+        Suggest relevant skill names for a task description.
+        Supports lexical matching (default) and optional embedding retrieval.
         """
         text = str(task_description or "").strip().lower()
         if not text:
@@ -166,10 +183,25 @@ class AgentSkillsLoader:
         k = max(0, int(top_k))
         if k == 0:
             return []
+        if self._skill_retrieval_mode == "embedding":
+            suggested = self._suggest_skills_embedding(text, k)
+            if suggested:
+                return suggested
+        if self._skill_retrieval_mode == "hybrid":
+            suggested = self._suggest_skills_hybrid(text, k)
+            if suggested:
+                return suggested
+        return self._suggest_skills_lexical(text, k)
+
+    def _suggest_skills_lexical(self, text: str, k: int) -> List[str]:
+        ranked = self._rank_skills_lexical(text)
+        return [name for name, _ in ranked[:k]]
+
+    def _rank_skills_lexical(self, text: str) -> List[tuple[str, float]]:
         task_tokens = {
             token for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", text) if token
         }
-        ranked: List[tuple[int, str]] = []
+        scored: List[tuple[str, float]] = []
         for skill in self.list_skills(filter_unavailable=True):
             name = str(skill.get("name") or "").strip()
             if not name:
@@ -187,9 +219,132 @@ class AgentSkillsLoader:
                 }
                 score += len(task_tokens & haystack_tokens)
             if score > 0:
-                ranked.append((score, name))
-        ranked.sort(key=lambda row: (-row[0], row[1].lower()))
-        return [name for _, name in ranked[:k]]
+                scored.append((name, float(score)))
+        if not scored:
+            return []
+        max_score = max(score for _, score in scored) or 1.0
+        ranked = [(name, float(score) / float(max_score)) for name, score in scored]
+        ranked.sort(key=lambda row: (-row[1], row[0].lower()))
+        return ranked
+
+    def _suggest_skills_embedding(self, text: str, k: int) -> List[str]:
+        ranked = self._rank_skills_embedding(text)
+        return [name for name, _ in ranked[:k]]
+
+    def _rank_skills_embedding(self, text: str) -> List[tuple[str, float]]:
+        skills = self.list_skills(filter_unavailable=True)
+        if not skills:
+            return []
+        signature = tuple(
+            f"{str(s.get('name') or '').strip()}|{str(s.get('description') or '').strip()}"
+            for s in skills
+            if str(s.get("name") or "").strip()
+        )
+        if not signature:
+            return []
+        model = self._get_embedding_model()
+        if model is None:
+            return []
+        if self._embedding_cache_signature != signature:
+            pairs: list[tuple[str, list[float]]] = []
+            texts: list[str] = []
+            names: list[str] = []
+            for s in skills:
+                name = str(s.get("name") or "").strip()
+                if not name:
+                    continue
+                desc = str(s.get("description") or "").strip()
+                texts.append(f"{name}. {desc}".strip())
+                names.append(name)
+            vectors = self._encode_texts(model, texts)
+            if len(vectors) != len(names):
+                return []
+            for name, vec in zip(names, vectors):
+                pairs.append((name, vec))
+            self._embedding_cache_signature = signature
+            self._embedding_cache_pairs = pairs
+        query_vectors = self._encode_texts(model, [text])
+        if not query_vectors:
+            return []
+        query = query_vectors[0]
+        scored: list[tuple[float, str]] = []
+        for name, vec in self._embedding_cache_pairs:
+            sim = self._cosine_similarity(query, vec)
+            scored.append((sim, name))
+        scored.sort(key=lambda row: (-row[0], row[1].lower()))
+        if not scored:
+            return []
+        best = max(sim for sim, _ in scored)
+        worst = min(sim for sim, _ in scored)
+        if best == worst:
+            return [(name, 1.0) for _, name in scored]
+        span = float(best - worst) or 1.0
+        return [(name, (float(sim) - float(worst)) / span) for sim, name in scored]
+
+    def _suggest_skills_hybrid(self, text: str, k: int) -> List[str]:
+        lexical = self._rank_skills_lexical(text)
+        embedding = self._rank_skills_embedding(text)
+        if not embedding:
+            return [name for name, _ in lexical[:k]]
+        combined: dict[str, float] = {}
+        for name, score in lexical:
+            combined[name] = combined.get(name, 0.0) + (0.4 * float(score))
+        for name, score in embedding:
+            combined[name] = combined.get(name, 0.0) + (0.6 * float(score))
+        ranked = sorted(combined.items(), key=lambda row: (-row[1], row[0].lower()))
+        return [name for name, _ in ranked[:k]]
+
+    def _get_embedding_model(self) -> Any:
+        if self._embedding_client is not None:
+            return self._embedding_client
+        try:
+            from sentence_transformers import SentenceTransformer
+        except Exception:
+            return None
+        try:
+            self._embedding_client = SentenceTransformer(self._embedding_model_path)
+        except Exception:
+            return None
+        return self._embedding_client
+
+    @staticmethod
+    def _encode_texts(model: Any, texts: Sequence[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        encoded: Any
+        try:
+            encoded = model.encode(
+                list(texts),
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            )
+        except TypeError:
+            encoded = model.encode(list(texts))
+        except Exception:
+            return []
+        rows = encoded.tolist() if hasattr(encoded, "tolist") else encoded
+        if not isinstance(rows, list):
+            return []
+        out: list[list[float]] = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)):
+                return []
+            try:
+                out.append([float(v) for v in row])
+            except Exception:
+                return []
+        return out
+
+    @staticmethod
+    def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
+        if not left or not right or len(left) != len(right):
+            return 0.0
+        dot = sum(float(a) * float(b) for a, b in zip(left, right))
+        left_norm = sum(float(a) * float(a) for a in left) ** 0.5
+        right_norm = sum(float(b) * float(b) for b in right) ** 0.5
+        if left_norm <= 0.0 or right_norm <= 0.0:
+            return 0.0
+        return dot / (left_norm * right_norm)
 
     def _get_skill_description(self, path: str) -> str:
         meta = self._get_frontmatter(path) or {}

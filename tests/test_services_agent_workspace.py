@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from annolid.services.agent_workspace import (
     add_agent_feedback,
     flush_agent_memory,
+    inspect_agent_meta_learning,
+    inspect_agent_meta_learning_history,
+    inspect_agent_meta_learning_maintenance_status,
     inspect_agent_memory,
     inspect_agent_skills,
     refresh_agent_skills,
+    run_agent_meta_learning_maintenance,
     shadow_agent_skills,
 )
 
@@ -183,3 +188,157 @@ def test_add_feedback_and_memory_ops(monkeypatch, tmp_path: Path) -> None:
     assert "(session_id=s1)" in flush_payload["entry"]
     assert inspect_payload["retrieval_plugin"] == "lexical"
     assert captured["memory_event"]["event_type"] == "memory"
+
+
+def test_inspect_agent_meta_learning(tmp_path: Path, monkeypatch) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    workspace = tmp_path / "workspace"
+    meta_dir = workspace / "memory" / "meta_learning"
+    skills_dir = workspace / "skills"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    (skills_dir / "meta-recover-read-file-12345678").mkdir()
+    (meta_dir / "events.jsonl").write_text(
+        (
+            '{"session_id":"s1","failures":[{"tool":"read_file","signature":"read_file:a1","count":1}]}\n'
+            '{"session_id":"s2","failures":[{"tool":"read_file","signature":"read_file:a1","count":1},{"tool":"web_fetch","signature":"web_fetch:b2","count":1}]}\n'
+        ),
+        encoding="utf-8",
+    )
+    (meta_dir / "failure_patterns.json").write_text(
+        '{"read_file:a1": 3, "web_fetch:b2": 1}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        utils_mod, "get_agent_workspace_path", lambda value=None: workspace
+    )
+
+    payload = inspect_agent_meta_learning(workspace=str(workspace), limit=5)
+    assert payload["events_count"] == 2
+    assert payload["evolved_skill_count"] == 1
+    assert payload["evolved_skills"] == ["meta-recover-read-file-12345678"]
+    assert payload["top_patterns"][0]["signature"] == "read_file:a1"
+    assert payload["top_patterns"][0]["count"] == 3
+    assert payload["top_failure_tools"][0]["tool"] == "read_file"
+
+
+def test_inspect_agent_meta_learning_brief(tmp_path: Path, monkeypatch) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    workspace = tmp_path / "workspace"
+    meta_dir = workspace / "memory" / "meta_learning"
+    skills_dir = workspace / "skills"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    (skills_dir / "meta-recover-read-file-12345678").mkdir()
+    (meta_dir / "events.jsonl").write_text(
+        '{"session_id":"s1","failures":[{"tool":"read_file","signature":"read_file:a1","count":1}]}\n',
+        encoding="utf-8",
+    )
+    (meta_dir / "failure_patterns.json").write_text(
+        '{"read_file:a1": 3}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        utils_mod, "get_agent_workspace_path", lambda value=None: workspace
+    )
+
+    payload = inspect_agent_meta_learning(workspace=str(workspace), brief=True)
+    assert payload["events_count"] == 1
+    assert payload["evolved_skill_count"] == 1
+    assert "events_path" not in payload
+    assert "patterns_path" not in payload
+    assert "recent_events" not in payload
+    assert "evolved_skills" not in payload
+
+
+def test_inspect_agent_meta_learning_history(tmp_path: Path, monkeypatch) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    workspace = tmp_path / "workspace"
+    history_path = workspace / "memory" / "meta_learning" / "evolution_history.jsonl"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    history_path.write_text(
+        (
+            '{"ts":"2026-03-20T12:00:00+00:00","trigger":"failure_threshold","tool":"read_file","skill_name":"meta-recover-read-file-a1"}\n'
+            '{"ts":"2026-03-20T12:01:00+00:00","trigger":"reward_window","tool":"read_file","skill_name":"meta-recover-read-file-a2"}\n'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        utils_mod, "get_agent_workspace_path", lambda value=None: workspace
+    )
+
+    payload = inspect_agent_meta_learning_history(workspace=str(workspace), limit=1)
+    assert payload["events_count"] == 2
+    assert len(payload["events"]) == 1
+    assert payload["events"][0]["trigger"] == "reward_window"
+    assert payload["skills_generated_in_window"] == 1
+    assert payload["top_triggers"][0]["trigger"] == "reward_window"
+
+
+def test_run_agent_meta_learning_maintenance(tmp_path: Path, monkeypatch) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    workspace = tmp_path / "workspace"
+    pending_path = (
+        workspace / "memory" / "meta_learning" / "pending_evolution_jobs.json"
+    )
+    pending_path.parent.mkdir(parents=True, exist_ok=True)
+    pending_path.write_text(
+        json.dumps(
+            {
+                "read_file:testsig": {
+                    "signature": "read_file:testsig",
+                    "tool_name": "read_file",
+                    "reason": "File not found: /tmp/x.txt",
+                    "trigger": "failure_threshold",
+                    "signature_count": 3,
+                    "outcome_score": 0.2,
+                    "reward_window_avg": 0.3,
+                    "queued_at": "2026-03-20T12:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        utils_mod, "get_agent_workspace_path", lambda value=None: workspace
+    )
+
+    payload = run_agent_meta_learning_maintenance(
+        workspace=str(workspace), force=True, max_jobs=1
+    )
+    assert payload["processed_jobs"] == 1
+    assert isinstance(payload["evolved_skills"], list)
+
+
+def test_inspect_agent_meta_learning_maintenance_status(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    workspace = tmp_path / "workspace"
+    meta_dir = workspace / "memory" / "meta_learning"
+    pending_path = meta_dir / "pending_evolution_jobs.json"
+    pending_path.parent.mkdir(parents=True, exist_ok=True)
+    pending_path.write_text(
+        json.dumps(
+            {
+                "sig1": {
+                    "signature": "sig1",
+                    "tool_name": "read_file",
+                    "reason": "x",
+                    "queued_at": "2026-03-20T12:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        utils_mod, "get_agent_workspace_path", lambda value=None: workspace
+    )
+    payload = inspect_agent_meta_learning_maintenance_status(workspace=str(workspace))
+    assert payload["pending_jobs_count"] == 1
+    assert "window_open" in payload

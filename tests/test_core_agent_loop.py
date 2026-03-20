@@ -1266,6 +1266,58 @@ def test_agent_loop_tool_only_fallback_wraps_non_ready_tool_output() -> None:
     assert "name: weather" in fallback
 
 
+def test_agent_loop_skips_repair_for_user_ready_tool_output(monkeypatch) -> None:
+    state = {"n": 0}
+
+    class _ReadableFileTool(FunctionTool):
+        @property
+        def name(self) -> str:
+            return "read_file"
+
+        @property
+        def description(self) -> str:
+            return "Return readable text."
+
+        @property
+        def parameters(self) -> dict[str, Any]:
+            return {"type": "object", "properties": {}, "required": []}
+
+        async def execute(self, **kwargs: Any) -> str:
+            del kwargs
+            return json.dumps(
+                {
+                    "text": (
+                        "Annolid meta-learning status: repeated read_file failures "
+                        "clustered by signature and one mitigation was generated."
+                    )
+                }
+            )
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [{"id": "c1", "name": "read_file", "arguments": {}}],
+            }
+        return {"content": "   ", "tool_calls": []}
+
+    monkeypatch.setenv("ANNOLID_AGENT_EMPTY_FINAL_FASTPATH", "1")
+    registry = FunctionToolRegistry()
+    registry.register(_ReadableFileTool())
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+
+    result = asyncio.run(loop.run("show status", session_id="s-empty-fastpath"))
+    assert "Annolid meta-learning status:" in result.content
+    assert state["n"] == 2
+
+
 def test_agent_loop_consolidates_large_history_into_history_file(
     tmp_path: Path,
 ) -> None:

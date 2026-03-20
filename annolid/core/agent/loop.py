@@ -30,6 +30,7 @@ from annolid.utils.llm_settings import resolve_agent_runtime_config, resolve_llm
 
 from .context import AgentContextBuilder
 from .eval.telemetry import RunTraceStore
+from .meta_learning import AgentMetaLearner
 from .memory import AgentMemoryStore
 from .memory_store.flush import append_pre_compaction_flush
 from .providers import (
@@ -324,6 +325,9 @@ class AgentLoop:
 
         if self._context_builder is None and self._workspace:
             self._context_builder = AgentContextBuilder(Path(self._workspace))
+        self._meta_learner: AgentMetaLearner | None = None
+        if self._workspace:
+            self._meta_learner = AgentMetaLearner(Path(self._workspace))
 
         self._wire_tools()
 
@@ -698,43 +702,54 @@ class AgentLoop:
                     and tool_runs
                     and not empty_final_repair_used
                 ):
-                    empty_final_repair_used = True
-                    empty_final_repair_passes += 1
-                    self._logger.info(
-                        "annolid-bot empty final response session=%s model=%s iteration=%d; requesting no-tool finalization pass",
-                        session_id,
-                        self.model,
-                        iteration,
-                    )
-                    (
-                        final_content,
-                        repair_llm_ms,
-                    ) = await self._repair_empty_final_answer(
-                        session_id=session_id,
-                        iteration=iteration,
-                        messages=messages,
-                        on_token=_on_llm_token,
-                    )
-                    llm_total_ms += repair_llm_ms
-                    if str(final_content or "").strip():
-                        self._logger.info(
-                            "annolid-bot empty final response repaired session=%s model=%s iteration=%d repair_llm_ms=%.1f",
-                            session_id,
-                            self.model,
-                            iteration,
-                            repair_llm_ms,
-                        )
-                    else:
+                    if self._can_skip_empty_final_repair(tool_runs=tool_runs):
                         final_content = self._build_tool_only_fallback_answer(
                             tool_runs=tool_runs
                         )
-                        self._logger.warning(
-                            "annolid-bot synthesized fallback final response session=%s model=%s iteration=%d tool_runs=%d",
+                        self._logger.info(
+                            "annolid-bot empty final response session=%s model=%s iteration=%d; synthesized from tool output without repair pass",
                             session_id,
                             self.model,
                             iteration,
-                            len(tool_runs),
                         )
+                    else:
+                        empty_final_repair_used = True
+                        empty_final_repair_passes += 1
+                        self._logger.info(
+                            "annolid-bot empty final response session=%s model=%s iteration=%d; requesting no-tool finalization pass",
+                            session_id,
+                            self.model,
+                            iteration,
+                        )
+                        (
+                            final_content,
+                            repair_llm_ms,
+                        ) = await self._repair_empty_final_answer(
+                            session_id=session_id,
+                            iteration=iteration,
+                            messages=messages,
+                            on_token=_on_llm_token,
+                        )
+                        llm_total_ms += repair_llm_ms
+                        if str(final_content or "").strip():
+                            self._logger.info(
+                                "annolid-bot empty final response repaired session=%s model=%s iteration=%d repair_llm_ms=%.1f",
+                                session_id,
+                                self.model,
+                                iteration,
+                                repair_llm_ms,
+                            )
+                        else:
+                            final_content = self._build_tool_only_fallback_answer(
+                                tool_runs=tool_runs
+                            )
+                            self._logger.warning(
+                                "annolid-bot synthesized fallback final response session=%s model=%s iteration=%d tool_runs=%d",
+                                session_id,
+                                self.model,
+                                iteration,
+                                len(tool_runs),
+                            )
                 if memory_enabled and str(final_content).strip():
                     tools_used = self._extract_tools_used(tool_runs)
                     self._memory_store.append_history(
@@ -776,6 +791,15 @@ class AgentLoop:
                     user_message_text=user_message_text,
                     result=result,
                     turn_id=turn_id,
+                )
+                self._record_meta_learning_turn(
+                    session_id=session_id,
+                    user_message_text=user_message_text,
+                    result=result,
+                    tool_runs=tool_runs,
+                    empty_final_repair_used=empty_final_repair_used,
+                    llm_total_ms=llm_total_ms,
+                    run_started=run_started,
                 )
                 return result
 
@@ -865,6 +889,15 @@ class AgentLoop:
                 result=result,
                 turn_id=turn_id,
             )
+            self._record_meta_learning_turn(
+                session_id=session_id,
+                user_message_text=user_message_text,
+                result=result,
+                tool_runs=tool_runs,
+                empty_final_repair_used=empty_final_repair_used,
+                llm_total_ms=llm_total_ms,
+                run_started=run_started,
+            )
             return result
         finally:
             total_ms = (time.perf_counter() - run_started) * 1000.0
@@ -903,6 +936,47 @@ class AgentLoop:
                 other_ms,
             )
             await self._disconnect_mcp()
+
+    def _record_meta_learning_turn(
+        self,
+        *,
+        session_id: str,
+        user_message_text: str,
+        result: AgentLoopResult,
+        tool_runs: Sequence[AgentToolRun],
+        empty_final_repair_used: bool,
+        llm_total_ms: float,
+        run_started: float,
+    ) -> None:
+        learner = self._meta_learner
+        if learner is None:
+            return
+        try:
+            meta = learner.record_turn(
+                session_id=session_id,
+                user_text=user_message_text,
+                assistant_text=str(result.content or ""),
+                tool_runs=tool_runs,
+                stopped_reason=result.stopped_reason,
+                empty_repair_used=empty_final_repair_used,
+                llm_total_ms=llm_total_ms,
+                total_ms=(time.perf_counter() - run_started) * 1000.0,
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "annolid-bot meta-learning record failed session=%s err=%s",
+                session_id,
+                exc,
+            )
+            return
+        evolved = meta.get("evolved_skills", []) if isinstance(meta, Mapping) else []
+        if evolved:
+            self._logger.info(
+                "annolid-bot meta-learning evolved_skills session=%s count=%d skills=%s",
+                session_id,
+                len(evolved),
+                ",".join(str(s) for s in evolved),
+            )
 
     @asynccontextmanager
     async def _mcp_run_guard(self):
@@ -1229,6 +1303,19 @@ class AgentLoop:
         if text.lower().startswith(("results for:", "current conditions", "weather")):
             return True
         return False
+
+    @staticmethod
+    def _can_skip_empty_final_repair(*, tool_runs: Sequence[AgentToolRun]) -> bool:
+        raw = str(os.getenv("ANNOLID_AGENT_EMPTY_FINAL_FASTPATH", "1")).strip().lower()
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        if not tool_runs:
+            return False
+        last = tool_runs[-1]
+        preview = AgentLoop._extract_tool_result_preview(last.result)
+        if not preview:
+            return False
+        return AgentLoop._tool_result_looks_user_ready(last.name, preview)
 
     async def _repair_empty_final_answer(
         self,

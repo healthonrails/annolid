@@ -294,6 +294,153 @@ def test_context_builder_auto_selects_skills_from_task_hint(tmp_path: Path) -> N
     assert "### Skill: weather-helper" in system_content
 
 
+def test_skills_loader_embedding_retrieval_mode(tmp_path: Path) -> None:
+    weather_dir = tmp_path / "skills" / "weather-helper"
+    weather_dir.mkdir(parents=True, exist_ok=True)
+    (weather_dir / "SKILL.md").write_text(
+        "---\ndescription: Check weather and forecast details\n---\nWeather skill\n",
+        encoding="utf-8",
+    )
+    code_dir = tmp_path / "skills" / "code-helper"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    (code_dir / "SKILL.md").write_text(
+        "---\ndescription: Debug python errors and stack traces\n---\nCode skill\n",
+        encoding="utf-8",
+    )
+
+    class _FakeEmbedder:
+        def encode(
+            self,
+            texts,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        ):
+            del normalize_embeddings, show_progress_bar
+            vectors = []
+            for text in texts:
+                t = str(text or "").lower()
+                if "weather" in t or "forecast" in t:
+                    vectors.append([1.0, 0.0])
+                elif "debug" in t or "python" in t:
+                    vectors.append([0.0, 1.0])
+                else:
+                    vectors.append([0.1, 0.1])
+            return vectors
+
+    loader = AgentSkillsLoader(
+        tmp_path,
+        builtin_skills_dir=tmp_path / "builtin",
+        skill_retrieval_mode="embedding",
+        embedding_client=_FakeEmbedder(),
+    )
+    suggested = loader.suggest_skills_for_task(
+        "Can you check today's weather in Boston?", top_k=1
+    )
+    assert suggested == ["weather-helper"]
+
+
+def test_skills_loader_embedding_mode_falls_back_to_lexical(tmp_path: Path) -> None:
+    weather_dir = tmp_path / "skills" / "weather-helper"
+    weather_dir.mkdir(parents=True, exist_ok=True)
+    (weather_dir / "SKILL.md").write_text(
+        "---\n"
+        "description: Use for weather and forecast questions\n"
+        "---\n"
+        "Weather skill\n",
+        encoding="utf-8",
+    )
+
+    class _BrokenEmbedder:
+        def encode(self, texts, normalize_embeddings=True, show_progress_bar=False):
+            del texts, normalize_embeddings, show_progress_bar
+            raise RuntimeError("embedder unavailable")
+
+    loader = AgentSkillsLoader(
+        tmp_path,
+        builtin_skills_dir=tmp_path / "builtin",
+        skill_retrieval_mode="embedding",
+        embedding_client=_BrokenEmbedder(),
+    )
+    suggested = loader.suggest_skills_for_task("weather forecast", top_k=1)
+    assert suggested == ["weather-helper"]
+
+
+def test_skills_loader_hybrid_mode_uses_embedding_and_lexical(tmp_path: Path) -> None:
+    weather_dir = tmp_path / "skills" / "weather-helper"
+    weather_dir.mkdir(parents=True, exist_ok=True)
+    (weather_dir / "SKILL.md").write_text(
+        "---\n"
+        "description: Use for weather and forecast questions\n"
+        "---\n"
+        "Weather skill\n",
+        encoding="utf-8",
+    )
+    code_dir = tmp_path / "skills" / "code-helper"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    (code_dir / "SKILL.md").write_text(
+        "---\ndescription: Debug python errors and stack traces\n---\nCode skill\n",
+        encoding="utf-8",
+    )
+
+    class _FakeEmbedder:
+        def encode(
+            self,
+            texts,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        ):
+            del normalize_embeddings, show_progress_bar
+            vectors = []
+            for text in texts:
+                t = str(text or "").lower()
+                if "atmosphere" in t:
+                    vectors.append([1.0, 0.0])
+                elif "weather" in t or "forecast" in t:
+                    vectors.append([0.9, 0.1])
+                elif "debug" in t or "python" in t:
+                    vectors.append([0.0, 1.0])
+                else:
+                    vectors.append([0.1, 0.1])
+            return vectors
+
+    loader = AgentSkillsLoader(
+        tmp_path,
+        builtin_skills_dir=tmp_path / "builtin",
+        skill_retrieval_mode="hybrid",
+        embedding_client=_FakeEmbedder(),
+    )
+    suggested = loader.suggest_skills_for_task(
+        "Need atmosphere update for today", top_k=1
+    )
+    assert suggested == ["weather-helper"]
+
+
+def test_skills_loader_hybrid_mode_falls_back_to_lexical(tmp_path: Path) -> None:
+    weather_dir = tmp_path / "skills" / "weather-helper"
+    weather_dir.mkdir(parents=True, exist_ok=True)
+    (weather_dir / "SKILL.md").write_text(
+        "---\n"
+        "description: Use for weather and forecast questions\n"
+        "---\n"
+        "Weather skill\n",
+        encoding="utf-8",
+    )
+
+    class _BrokenEmbedder:
+        def encode(self, texts, normalize_embeddings=True, show_progress_bar=False):
+            del texts, normalize_embeddings, show_progress_bar
+            raise RuntimeError("embedder unavailable")
+
+    loader = AgentSkillsLoader(
+        tmp_path,
+        builtin_skills_dir=tmp_path / "builtin",
+        skill_retrieval_mode="hybrid",
+        embedding_client=_BrokenEmbedder(),
+    )
+    suggested = loader.suggest_skills_for_task("weather forecast", top_k=1)
+    assert suggested == ["weather-helper"]
+
+
 def test_context_builder_bounds_system_prompt_size(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

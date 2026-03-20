@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+import json
+from collections import Counter
 from pathlib import Path
 
 
@@ -181,11 +183,246 @@ def inspect_agent_memory(*, workspace: str | None = None) -> dict:
     }
 
 
+def inspect_agent_meta_learning(
+    *,
+    workspace: str | None = None,
+    limit: int = 20,
+    brief: bool = False,
+) -> dict:
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    resolved_workspace = get_agent_workspace_path(workspace)
+    meta_dir = resolved_workspace / "memory" / "meta_learning"
+    events_path = meta_dir / "events.jsonl"
+    patterns_path = meta_dir / "failure_patterns.json"
+    history_path = meta_dir / "evolution_history.jsonl"
+    pending_path = meta_dir / "pending_evolution_jobs.json"
+    skills_dir = resolved_workspace / "skills"
+    n = max(1, int(limit))
+
+    events: list[dict] = []
+    events_count = 0
+    if events_path.exists():
+        try:
+            tail: list[dict] = []
+            with events_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    row = line.strip()
+                    if not row:
+                        continue
+                    events_count += 1
+                    try:
+                        parsed = json.loads(row)
+                    except Exception:
+                        continue
+                    if isinstance(parsed, dict):
+                        tail.append(parsed)
+                        if len(tail) > n:
+                            tail = tail[-n:]
+            events = tail
+        except OSError:
+            events = []
+            events_count = 0
+    recent_events = events[-n:]
+
+    patterns: dict[str, int] = {}
+    if patterns_path.exists():
+        try:
+            loaded = json.loads(patterns_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                for key, value in loaded.items():
+                    try:
+                        patterns[str(key)] = int(value)
+                    except Exception:
+                        continue
+        except Exception:
+            patterns = {}
+    top_patterns = [
+        {"signature": key, "count": count}
+        for key, count in sorted(patterns.items(), key=lambda row: (-row[1], row[0]))[
+            :n
+        ]
+    ]
+
+    evolved_skills: list[str] = []
+    if skills_dir.exists():
+        for p in sorted(skills_dir.iterdir()):
+            if p.is_dir() and p.name.startswith("meta-recover-"):
+                evolved_skills.append(p.name)
+    evolved_recent = evolved_skills[-n:]
+
+    tool_counter: Counter[str] = Counter()
+    for evt in recent_events:
+        failures = evt.get("failures")
+        if not isinstance(failures, list):
+            continue
+        for row in failures:
+            if not isinstance(row, dict):
+                continue
+            tool = str(row.get("tool") or "").strip()
+            if tool:
+                tool_counter[tool] += 1
+    top_failure_tools = [
+        {"tool": tool, "count": count} for tool, count in tool_counter.most_common(n)
+    ]
+    evolution_rows = _read_jsonl_tail(history_path, n)
+    recent_evolution_events = evolution_rows["rows"]
+    evolution_events_count = int(evolution_rows["count"])
+    pending_jobs_count = 0
+    if pending_path.exists():
+        try:
+            pending_loaded = json.loads(pending_path.read_text(encoding="utf-8"))
+            if isinstance(pending_loaded, dict):
+                pending_jobs_count = len(pending_loaded)
+        except Exception:
+            pending_jobs_count = 0
+
+    payload = {
+        "workspace": str(resolved_workspace),
+        "meta_learning_dir": str(meta_dir),
+        "events_path": str(events_path),
+        "patterns_path": str(patterns_path),
+        "evolution_history_path": str(history_path),
+        "pending_jobs_path": str(pending_path),
+        "events_count": events_count,
+        "recent_events": recent_events,
+        "top_patterns": top_patterns,
+        "evolved_skill_count": len(evolved_skills),
+        "evolved_skills": evolved_recent,
+        "top_failure_tools": top_failure_tools,
+        "evolution_events_count": evolution_events_count,
+        "recent_evolution_events": recent_evolution_events,
+        "pending_jobs_count": pending_jobs_count,
+    }
+    if brief:
+        payload.pop("events_path", None)
+        payload.pop("patterns_path", None)
+        payload.pop("evolution_history_path", None)
+        payload.pop("pending_jobs_path", None)
+        payload.pop("recent_events", None)
+        payload.pop("evolved_skills", None)
+        payload.pop("recent_evolution_events", None)
+    return payload
+
+
+def inspect_agent_meta_learning_history(
+    *,
+    workspace: str | None = None,
+    limit: int = 20,
+) -> dict:
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    resolved_workspace = get_agent_workspace_path(workspace)
+    history_path = (
+        resolved_workspace / "memory" / "meta_learning" / "evolution_history.jsonl"
+    )
+    n = max(1, int(limit))
+    rows = _read_jsonl_tail(history_path, n)
+    events = list(rows["rows"])
+    trigger_counter: Counter[str] = Counter()
+    tool_counter: Counter[str] = Counter()
+    skills_generated = 0
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        trig = str(row.get("trigger") or "").strip()
+        if trig:
+            trigger_counter[trig] += 1
+        tool = str(row.get("tool") or "").strip()
+        if tool:
+            tool_counter[tool] += 1
+        if str(row.get("skill_name") or "").strip():
+            skills_generated += 1
+    return {
+        "workspace": str(resolved_workspace),
+        "history_path": str(history_path),
+        "events_count": int(rows["count"]),
+        "skills_generated_in_window": int(skills_generated),
+        "top_triggers": [
+            {"trigger": key, "count": count}
+            for key, count in trigger_counter.most_common(n)
+        ],
+        "top_tools": [
+            {"tool": key, "count": count} for key, count in tool_counter.most_common(n)
+        ],
+        "events": events,
+    }
+
+
+def run_agent_meta_learning_maintenance(
+    *,
+    workspace: str | None = None,
+    force: bool = False,
+    max_jobs: int | None = None,
+) -> dict:
+    from annolid.core.agent.meta_learning import AgentMetaLearner
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    resolved_workspace = get_agent_workspace_path(workspace)
+    learner = AgentMetaLearner(
+        resolved_workspace,
+        enabled=True,
+    )
+    payload = learner.run_idle_maintenance(
+        force=bool(force),
+        max_jobs=max_jobs,
+    )
+    payload["workspace"] = str(resolved_workspace)
+    return payload
+
+
+def inspect_agent_meta_learning_maintenance_status(
+    *,
+    workspace: str | None = None,
+) -> dict:
+    from annolid.core.agent.meta_learning import AgentMetaLearner
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    resolved_workspace = get_agent_workspace_path(workspace)
+    learner = AgentMetaLearner(
+        resolved_workspace,
+        enabled=True,
+    )
+    payload = learner.get_idle_maintenance_status()
+    payload["workspace"] = str(resolved_workspace)
+    return payload
+
+
+def _read_jsonl_tail(path: Path, limit: int) -> dict[str, object]:
+    n = max(1, int(limit))
+    rows: list[dict] = []
+    count = 0
+    if not path.exists():
+        return {"count": 0, "rows": []}
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                text = line.strip()
+                if not text:
+                    continue
+                count += 1
+                try:
+                    parsed = json.loads(text)
+                except Exception:
+                    continue
+                if isinstance(parsed, dict):
+                    rows.append(parsed)
+                    if len(rows) > n:
+                        rows = rows[-n:]
+    except OSError:
+        return {"count": 0, "rows": []}
+    return {"count": count, "rows": rows}
+
+
 __all__ = [
     "add_agent_feedback",
     "flush_agent_memory",
+    "inspect_agent_meta_learning",
+    "inspect_agent_meta_learning_history",
+    "inspect_agent_meta_learning_maintenance_status",
     "inspect_agent_memory",
     "inspect_agent_skills",
     "refresh_agent_skills",
+    "run_agent_meta_learning_maintenance",
     "shadow_agent_skills",
 ]

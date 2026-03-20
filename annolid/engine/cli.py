@@ -30,6 +30,10 @@ _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "agent-secrets-migrate",
             "agent-update",
             "agent-eval",
+            "agent-meta-learning-status",
+            "agent-meta-learning-history",
+            "agent-meta-learning-maintenance-status",
+            "agent-meta-learning-maintenance-run",
             "agent-cron-list",
             "agent-cron-add",
             "agent-cron-remove",
@@ -1123,6 +1127,53 @@ def _cmd_agent_memory_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_agent_meta_learning_status(args: argparse.Namespace) -> int:
+    from annolid.services.agent_workspace import inspect_agent_meta_learning
+
+    payload = inspect_agent_meta_learning(
+        workspace=getattr(args, "workspace", None),
+        limit=int(getattr(args, "limit", 20)),
+        brief=bool(getattr(args, "brief", False)),
+    )
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_agent_meta_learning_history(args: argparse.Namespace) -> int:
+    from annolid.services.agent_workspace import inspect_agent_meta_learning_history
+
+    payload = inspect_agent_meta_learning_history(
+        workspace=getattr(args, "workspace", None),
+        limit=int(getattr(args, "limit", 20)),
+    )
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_agent_meta_learning_maintenance_run(args: argparse.Namespace) -> int:
+    from annolid.services.agent_workspace import run_agent_meta_learning_maintenance
+
+    payload = run_agent_meta_learning_maintenance(
+        workspace=getattr(args, "workspace", None),
+        force=bool(getattr(args, "force", False)),
+        max_jobs=getattr(args, "max_jobs", None),
+    )
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_agent_meta_learning_maintenance_status(args: argparse.Namespace) -> int:
+    from annolid.services.agent_workspace import (
+        inspect_agent_meta_learning_maintenance_status,
+    )
+
+    payload = inspect_agent_meta_learning_maintenance_status(
+        workspace=getattr(args, "workspace", None),
+    )
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
 def _cmd_agent_acp_bridge(args: argparse.Namespace) -> int:
     from annolid.services.agent_bridge import run_agent_acp_bridge
 
@@ -1246,6 +1297,69 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
         p.add_argument("--workspace", default=None)
         args = p.parse_args(argv[3:])
         return _cmd_agent_memory_inspect(args)
+
+    # annolid-run agent meta-learning status
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "meta-learning"
+        and argv[2] == "status"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent meta-learning status")
+        p.add_argument("--workspace", default=None)
+        p.add_argument("--limit", type=int, default=20)
+        p.add_argument(
+            "--brief",
+            action="store_true",
+            help="Show concise summary output without event and file details.",
+        )
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_meta_learning_status(args)
+
+    # annolid-run agent meta-learning history
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "meta-learning"
+        and argv[2] == "history"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent meta-learning history")
+        p.add_argument("--workspace", default=None)
+        p.add_argument("--limit", type=int, default=20)
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_meta_learning_history(args)
+
+    # annolid-run agent meta-learning maintenance run
+    if (
+        len(argv) >= 4
+        and argv[0] == "agent"
+        and argv[1] == "meta-learning"
+        and argv[2] == "maintenance"
+        and argv[3] == "status"
+    ):
+        p = argparse.ArgumentParser(
+            prog="annolid-run agent meta-learning maintenance status"
+        )
+        p.add_argument("--workspace", default=None)
+        args = p.parse_args(argv[4:])
+        return _cmd_agent_meta_learning_maintenance_status(args)
+
+    # annolid-run agent meta-learning maintenance run
+    if (
+        len(argv) >= 4
+        and argv[0] == "agent"
+        and argv[1] == "meta-learning"
+        and argv[2] == "maintenance"
+        and argv[3] == "run"
+    ):
+        p = argparse.ArgumentParser(
+            prog="annolid-run agent meta-learning maintenance run"
+        )
+        p.add_argument("--workspace", default=None)
+        p.add_argument("--force", action="store_true")
+        p.add_argument("--max-jobs", type=int, default=None)
+        args = p.parse_args(argv[4:])
+        return _cmd_agent_meta_learning_maintenance_run(args)
 
     # annolid-run agent acp bridge
     if (
@@ -1994,6 +2108,77 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Show Annolid agent workspace/cron status.",
     )
     status_p.set_defaults(_handler=_cmd_agent_status)
+
+    meta_status_p = sub.add_parser(
+        "agent-meta-learning-status",
+        help="Show meta-learning events, failure patterns, and evolved skills.",
+    )
+    meta_status_p.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace path (default: ~/.annolid/workspace).",
+    )
+    meta_status_p.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum number of recent rows/items to include.",
+    )
+    meta_status_p.add_argument(
+        "--brief",
+        action="store_true",
+        help="Show concise summary output without event and file details.",
+    )
+    meta_status_p.set_defaults(_handler=_cmd_agent_meta_learning_status)
+    meta_history_p = sub.add_parser(
+        "agent-meta-learning-history",
+        help="Show detailed meta-learning evolution history.",
+    )
+    meta_history_p.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace path (default: ~/.annolid/workspace).",
+    )
+    meta_history_p.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum number of recent evolution events to include.",
+    )
+    meta_history_p.set_defaults(_handler=_cmd_agent_meta_learning_history)
+    meta_maintenance_status_p = sub.add_parser(
+        "agent-meta-learning-maintenance-status",
+        help="Show idle-window maintenance scheduler status.",
+    )
+    meta_maintenance_status_p.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace path (default: ~/.annolid/workspace).",
+    )
+    meta_maintenance_status_p.set_defaults(
+        _handler=_cmd_agent_meta_learning_maintenance_status
+    )
+    meta_maintenance_p = sub.add_parser(
+        "agent-meta-learning-maintenance-run",
+        help="Run idle-window meta-learning maintenance/evolution jobs.",
+    )
+    meta_maintenance_p.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace path (default: ~/.annolid/workspace).",
+    )
+    meta_maintenance_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Run maintenance regardless of current idle-window state.",
+    )
+    meta_maintenance_p.add_argument(
+        "--max-jobs",
+        type=int,
+        default=None,
+        help="Maximum pending jobs to process in this run.",
+    )
+    meta_maintenance_p.set_defaults(_handler=_cmd_agent_meta_learning_maintenance_run)
 
     security_check_p = sub.add_parser(
         "agent-security-check",
