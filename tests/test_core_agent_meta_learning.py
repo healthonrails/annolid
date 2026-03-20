@@ -324,6 +324,8 @@ def test_meta_learner_idle_scheduler_queues_and_runs_on_force(
     maintenance = learner.run_idle_maintenance(force=True, max_jobs=5)
     assert maintenance["processed_jobs"] == 1
     assert maintenance["evolved_skills"]
+    assert "scheduler_state_before" in maintenance
+    assert "scheduler_state_after" in maintenance
 
 
 def test_meta_learner_generation_increments_on_evolution(
@@ -443,3 +445,6 @@ def test_meta_learner_prm_majority_scoring(tmp_path: Path) -> None:
     events_path = tmp_path / "memory" / "meta_learning" / "events.jsonl"
     row = json.loads(events_path.read_text(encoding="utf-8").splitlines()[-1])
     assert float(row.get("outcome_score") or 0.0) == 0.0
+    assert row.get("score_source") == "prm"
+    assert row.get("prm_vote_count") == 3
+    assert row.get("prm_votes") == [-1, -1, 1]

@@ -1697,13 +1697,29 @@ class StreamingChatTask(QRunnable):
         return get_chat_pdf_state(invoke_widget_json_slot=self._invoke_widget_json_slot)
 
     def _tool_gui_pdf_get_text(
-        self, max_chars: int = 8000, pages: int = 2
+        self,
+        max_chars: int = 8000,
+        pages: int = 2,
+        path: str = "",
     ) -> Dict[str, Any]:
-        return get_chat_pdf_text(
+        path_text = str(path or "").strip()
+        if path_text:
+            opened = self._run_async(self._tool_gui_open_pdf(path_text))
+            if isinstance(opened, dict) and bool(opened.get("error")):
+                return {
+                    "ok": False,
+                    "error": str(opened.get("error") or "Failed to open PDF."),
+                    "open_pdf": opened,
+                }
+        payload = get_chat_pdf_text(
             invoke_widget_json_slot=self._invoke_widget_json_slot,
             max_chars=max_chars,
             pages=pages,
+            path=path_text,
         )
+        if path_text:
+            payload["path"] = path_text
+        return payload
 
     def _tool_gui_pdf_find_sections(
         self,

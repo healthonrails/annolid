@@ -3402,8 +3402,9 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         ),
         open_pdf_callback=lambda path="": _mark("open_pdf", path or None),
         pdf_get_state_callback=lambda: _mark("pdf_get_state"),
-        pdf_get_text_callback=lambda max_chars=8000, pages=2: _mark(
-            "pdf_get_text", {"max_chars": int(max_chars), "pages": int(pages)}
+        pdf_get_text_callback=lambda max_chars=8000, pages=2, path="": _mark(
+            "pdf_get_text",
+            {"max_chars": int(max_chars), "pages": int(pages), "path": str(path or "")},
         ),
         pdf_find_sections_callback=lambda max_sections=20, max_pages=12: _mark(
             "pdf_find_sections",
@@ -3616,6 +3617,13 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         registry.execute("gui_pdf_get_text", {"max_chars": 1200, "pages": 2})
     )
     assert json.loads(pdf_text)["ok"] is True
+    pdf_text_with_path = asyncio.run(
+        registry.execute(
+            "gui_pdf_get_text",
+            {"max_chars": 1200, "pages": 2, "path": "/tmp/paper.pdf"},
+        )
+    )
+    assert json.loads(pdf_text_with_path)["ok"] is True
     pdf_sections = asyncio.run(
         registry.execute("gui_pdf_find_sections", {"max_sections": 10, "max_pages": 8})
     )
@@ -3775,7 +3783,8 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         ("open_pdf", None),
         ("open_pdf", "/tmp/paper.pdf"),
         ("pdf_get_state", None),
-        ("pdf_get_text", {"max_chars": 1200, "pages": 2}),
+        ("pdf_get_text", {"max_chars": 1200, "pages": 2, "path": ""}),
+        ("pdf_get_text", {"max_chars": 1200, "pages": 2, "path": "/tmp/paper.pdf"}),
         ("pdf_find_sections", {"max_sections": 10, "max_pages": 8}),
         ("set_frame", 3),
         ("set_prompt", "describe this"),

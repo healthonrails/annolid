@@ -344,7 +344,9 @@ def pdf_get_text(
     invoke_widget_json_slot: Callable[..., Dict[str, Any]],
     max_chars: int = 8000,
     pages: int = 2,
+    path: str = "",
 ) -> Dict[str, Any]:
+    del path
     limit = max(200, min(int(max_chars or 8000), 200000))
     pages_limit = max(1, min(int(pages or 2), 5))
     payload = invoke_widget_json_slot(

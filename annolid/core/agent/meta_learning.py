@@ -65,6 +65,13 @@ def _normalize_reason(reason: str) -> str:
 
 
 _PRM_SCORE_RE = re.compile(r"score\s*:\s*([-+]?\d)", re.IGNORECASE)
+_SCHEDULER_STATES = {
+    "disabled",
+    "idle_wait",
+    "window_open",
+    "updating",
+    "pausing",
+}
 
 
 def _coerce_float(value: Any, default: float) -> float:
@@ -76,6 +83,26 @@ def _coerce_float(value: Any, default: float) -> float:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, float(value)))
+
+
+def _extract_frontmatter_fields(raw_text: str) -> dict[str, str]:
+    text = str(raw_text or "")
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---", 4)
+    if end < 0:
+        return {}
+    out: dict[str, str] = {}
+    block = text[4:end].strip()
+    for line in block.splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        k = str(key).strip().lower()
+        v = str(value).strip()
+        if k and v:
+            out[k] = v
+    return out
 
 
 @dataclass(frozen=True)
@@ -229,6 +256,7 @@ class AgentMetaLearner:
         self._pending_jobs_path = root / "pending_evolution_jobs.json"
         self._last_activity_path = root / "last_activity.json"
         self._generation_state_path = root / "generation_state.json"
+        self._scheduler_state_path = root / "scheduler_state.json"
 
     def record_turn(
         self,
@@ -253,11 +281,16 @@ class AgentMetaLearner:
             stopped_reason=stopped_reason,
             empty_repair_used=empty_repair_used,
         )
-        outcome_score = self._score_turn_with_prm(
+        prm_result = self._score_turn_with_prm(
             user_text=user_text,
             assistant_text=assistant_text,
             fallback_score=heuristic_score,
         )
+        prm_score = prm_result.get("score")
+        if prm_score is None:
+            outcome_score = float(heuristic_score)
+        else:
+            outcome_score = float(prm_score)
         rolling_avg = outcome_score
         rolling_scores: list[float] = [outcome_score]
         if self.reward_trigger_enabled:
@@ -274,6 +307,12 @@ class AgentMetaLearner:
             "total_ms": float(total_ms),
             "outcome_score": float(outcome_score),
             "reward_window_avg": float(rolling_avg),
+            "score_source": str(prm_result.get("source") or "heuristic"),
+            "prm_votes": list(prm_result.get("votes") or []),
+            "prm_vote_count": int(prm_result.get("vote_count") or 0),
+            "prm_representative_eval": str(prm_result.get("representative_eval") or "")[
+                :300
+            ],
             "failures": [
                 {
                     "signature": hit.signature,
@@ -558,6 +597,8 @@ class AgentMetaLearner:
             jobs = self._load_pending_jobs()
             open_window, reason = self._is_idle_window_open()
             last_activity = self._load_last_activity_dt()
+            self._sync_scheduler_state(open_window=open_window, window_reason=reason)
+            scheduler_state = self._load_scheduler_state()
             now_utc = datetime.now(timezone.utc)
             last_activity_age_s: float | None = None
             if last_activity is not None:
@@ -566,6 +607,7 @@ class AgentMetaLearner:
                 )
             return {
                 "scheduler_enabled": bool(self.idle_scheduler_enabled),
+                "scheduler_state": str(scheduler_state.get("state") or "idle_wait"),
                 "window_open": bool(open_window),
                 "window_reason": str(reason),
                 "pending_jobs_count": len(jobs),
@@ -590,10 +632,19 @@ class AgentMetaLearner:
             jobs = self._load_pending_jobs()
             pending_before = len(jobs)
             open_window, reason = self._is_idle_window_open()
+            self._sync_scheduler_state(open_window=open_window, window_reason=reason)
+            scheduler_state_before = str(
+                self._load_scheduler_state().get("state") or "idle_wait"
+            )
             if bool(force):
                 open_window = True
                 reason = "forced"
+            if self.idle_scheduler_enabled and open_window:
+                self._set_scheduler_state("window_open", reason=reason)
             if not jobs:
+                scheduler_state_after = str(
+                    self._load_scheduler_state().get("state") or "idle_wait"
+                )
                 return {
                     "ran": False,
                     "window_open": bool(open_window),
@@ -605,8 +656,11 @@ class AgentMetaLearner:
                     "generation_before": self._get_current_generation(),
                     "generation_after": self._get_current_generation(),
                     "discarded_stale_jobs": 0,
+                    "scheduler_state_before": scheduler_state_before,
+                    "scheduler_state_after": scheduler_state_after,
                 }
             if not self.idle_scheduler_enabled and not force:
+                self._set_scheduler_state("disabled", reason="scheduler_disabled")
                 return {
                     "ran": False,
                     "window_open": False,
@@ -618,8 +672,11 @@ class AgentMetaLearner:
                     "generation_before": self._get_current_generation(),
                     "generation_after": self._get_current_generation(),
                     "discarded_stale_jobs": 0,
+                    "scheduler_state_before": scheduler_state_before,
+                    "scheduler_state_after": "disabled",
                 }
             if not open_window:
+                self._set_scheduler_state("idle_wait", reason=reason)
                 return {
                     "ran": False,
                     "window_open": False,
@@ -631,6 +688,8 @@ class AgentMetaLearner:
                     "generation_before": self._get_current_generation(),
                     "generation_after": self._get_current_generation(),
                     "discarded_stale_jobs": 0,
+                    "scheduler_state_before": scheduler_state_before,
+                    "scheduler_state_after": "idle_wait",
                 }
             generation_before = self._get_current_generation()
             current_generation = generation_before
@@ -649,12 +708,22 @@ class AgentMetaLearner:
                     selected_jobs.append((str(key), parsed, version_token))
             selected_jobs.sort(key=lambda item: str(item[1].get("queued_at") or ""))
             selected_jobs = selected_jobs[:limit]
+            if self.idle_scheduler_enabled:
+                self._set_scheduler_state("updating", reason=reason)
 
         evolved_skills: list[str] = []
         processed = 0
         stale_discarded = 0
+        paused_due_activity = False
         consumed_jobs: dict[str, str] = {}
         for job_key, row, version_token in selected_jobs:
+            if self.idle_scheduler_enabled and not force:
+                still_open, still_reason = self._is_idle_window_open()
+                if not still_open:
+                    self._set_scheduler_state("pausing", reason=still_reason)
+                    reason = still_reason
+                    paused_due_activity = True
+                    break
             signature = str(row.get("signature") or job_key).strip()
             tool_name = str(row.get("tool_name") or "").strip()
             reason_text = str(row.get("reason") or "").strip()
@@ -687,6 +756,9 @@ class AgentMetaLearner:
                 tool_name=tool_name,
                 reason=reason_text,
             )
+            skill_snapshot = (
+                self._read_skill_snapshot(skill_name) if skill_name else None
+            )
             processed += 1
             if skill_name:
                 current_generation = self._increment_generation()
@@ -707,6 +779,7 @@ class AgentMetaLearner:
                         row.get("reward_threshold"), self.reward_threshold
                     ),
                     "skill_name": skill_name,
+                    "skill": skill_snapshot,
                     "queued_generation": queued_generation,
                     "applied_generation": current_generation,
                     "queued_at": str(row.get("queued_at") or ""),
@@ -732,6 +805,15 @@ class AgentMetaLearner:
                 jobs_after.pop(key, None)
             self._save_pending_jobs(jobs_after)
             pending_after = len(jobs_after)
+            if self.idle_scheduler_enabled:
+                open_after, reason_after = self._is_idle_window_open()
+                if paused_due_activity or not open_after:
+                    self._set_scheduler_state("idle_wait", reason=reason_after)
+                else:
+                    self._set_scheduler_state("window_open", reason=reason_after)
+            scheduler_state_after = str(
+                self._load_scheduler_state().get("state") or "idle_wait"
+            )
 
         return {
             "ran": True,
@@ -744,6 +826,35 @@ class AgentMetaLearner:
             "generation_before": generation_before,
             "generation_after": current_generation,
             "discarded_stale_jobs": stale_discarded,
+            "paused_due_activity": bool(paused_due_activity),
+            "scheduler_state_before": scheduler_state_before,
+            "scheduler_state_after": scheduler_state_after,
+        }
+
+    def _read_skill_snapshot(self, skill_name: str) -> dict[str, Any] | None:
+        name = str(skill_name or "").strip()
+        if not name:
+            return None
+        skill_file = self.workspace / "skills" / name / "SKILL.md"
+        if not skill_file.exists():
+            return None
+        try:
+            raw = skill_file.read_text(encoding="utf-8")
+        except Exception:
+            return None
+        fm = _extract_frontmatter_fields(raw)
+        content = raw
+        if raw.startswith("---\n"):
+            end = raw.find("\n---", 4)
+            if end >= 0:
+                content = raw[end + 4 :].strip()
+        description = str(fm.get("description") or "").strip()
+        return {
+            "name": name,
+            "path": str(skill_file),
+            "description": description[:240],
+            "content_excerpt": content[:800],
+            "content_length": len(content),
         }
 
     def _load_generation_state(self) -> dict[str, Any]:
@@ -851,9 +962,15 @@ class AgentMetaLearner:
         user_text: str,
         assistant_text: str,
         fallback_score: float,
-    ) -> float:
+    ) -> dict[str, Any]:
         if not self.prm_enabled:
-            return float(fallback_score)
+            return {
+                "score": float(fallback_score),
+                "source": "heuristic",
+                "votes": [],
+                "vote_count": 0,
+                "representative_eval": "",
+            }
         prompt = (
             "You are scoring assistant quality for a single user turn.\n"
             "Return ONLY one line in format: Score: 1 or Score: 0 or Score: -1.\n"
@@ -865,28 +982,48 @@ class AgentMetaLearner:
             f"Assistant:\n{str(assistant_text or '')[:1200]}\n"
         )
         votes: list[int] = []
+        vote_details: list[int | str] = []
+        representative_eval = ""
         for _ in range(int(self._prm_votes)):
-            score = self._query_prm_once(prompt)
+            score, raw = self._query_prm_once(prompt)
             if score is not None:
                 votes.append(score)
+                vote_details.append(int(score))
+            else:
+                vote_details.append("fail")
+            if not representative_eval and raw:
+                representative_eval = str(raw).strip()[:300]
         if not votes:
-            return float(fallback_score)
+            return {
+                "score": float(fallback_score),
+                "source": "heuristic_fallback",
+                "votes": vote_details,
+                "vote_count": 0,
+                "representative_eval": representative_eval,
+            }
         positive = sum(1 for v in votes if v > 0)
         negative = sum(1 for v in votes if v < 0)
         neutral = len(votes) - positive - negative
+        score = 0.5
         if positive > max(negative, neutral):
-            return 1.0
-        if negative > max(positive, neutral):
-            return 0.0
-        return 0.5
+            score = 1.0
+        elif negative > max(positive, neutral):
+            score = 0.0
+        return {
+            "score": float(score),
+            "source": "prm",
+            "votes": vote_details,
+            "vote_count": len(votes),
+            "representative_eval": representative_eval,
+        }
 
-    def _query_prm_once(self, prompt: str) -> int | None:
+    def _query_prm_once(self, prompt: str) -> tuple[int | None, str]:
         client = self._prm_client or self._llm_client
         if client is None:
             try:
                 client = self._build_default_llm_client()
             except Exception:
-                return None
+                return None, ""
 
         def _invoke() -> str:
             if hasattr(client, "chat_complete"):
@@ -905,19 +1042,64 @@ class AgentMetaLearner:
             raw = str(fut.result(timeout=self._prm_timeout_s) or "")
         except FutureTimeoutError:
             fut.cancel()
-            return None
+            return None, ""
         except Exception:
-            return None
+            return None, ""
         match = _PRM_SCORE_RE.search(raw)
         if not match:
-            return None
+            return None, raw
         try:
             score = int(match.group(1))
         except Exception:
-            return None
+            return None, raw
         if score not in {-1, 0, 1}:
-            return None
-        return score
+            return None, raw
+        return score, raw
+
+    def _load_scheduler_state(self) -> dict[str, Any]:
+        if not self._scheduler_state_path.exists():
+            return {"state": "idle_wait", "updated_at": _now_iso()}
+        try:
+            loaded = json.loads(self._scheduler_state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {"state": "idle_wait", "updated_at": _now_iso()}
+        if not isinstance(loaded, Mapping):
+            return {"state": "idle_wait", "updated_at": _now_iso()}
+        state = str(loaded.get("state") or "idle_wait")
+        if state not in _SCHEDULER_STATES:
+            state = "idle_wait"
+        return {
+            "state": state,
+            "updated_at": str(loaded.get("updated_at") or _now_iso()),
+            "reason": str(loaded.get("reason") or ""),
+        }
+
+    def _set_scheduler_state(self, state: str, *, reason: str = "") -> None:
+        normalized = str(state or "").strip().lower()
+        if normalized not in _SCHEDULER_STATES:
+            normalized = "idle_wait"
+        with self._io_lock:
+            self._scheduler_state_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "state": normalized,
+                "reason": str(reason or ""),
+                "updated_at": _now_iso(),
+            }
+            self._scheduler_state_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+
+    def _sync_scheduler_state(self, *, open_window: bool, window_reason: str) -> None:
+        if not self.idle_scheduler_enabled:
+            self._set_scheduler_state("disabled", reason="scheduler_disabled")
+            return
+        current = str(self._load_scheduler_state().get("state") or "idle_wait")
+        if current in {"updating", "pausing"}:
+            return
+        if open_window:
+            self._set_scheduler_state("window_open", reason=window_reason)
+            return
+        self._set_scheduler_state("idle_wait", reason=window_reason)
 
     def _load_pattern_counts(self) -> dict[str, int]:
         if not self._patterns_path.exists():

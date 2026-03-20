@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import datetime
 import json
+import re
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -75,6 +76,139 @@ def inspect_agent_skills(*, workspace: str | None = None) -> dict:
     }
 
 
+def _slugify_skill_name(raw: str) -> str:
+    text = str(raw or "").strip().lower()
+    text = re.sub(r"[^a-z0-9-]+", "-", text)
+    text = re.sub(r"-{2,}", "-", text).strip("-")
+    if not text:
+        return "imported-skill"
+    if not re.match(r"^[a-z]", text):
+        text = f"skill-{text}"
+    return text[:80].strip("-") or "imported-skill"
+
+
+def _extract_frontmatter_description(raw: str) -> str:
+    for line in str(raw or "").splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return "Imported external skill for structured task execution."
+
+
+def _render_annolid_skill_doc(
+    *,
+    description: str,
+    content: str,
+    original_name: str,
+    source_tag: str,
+    category: str,
+) -> str:
+    desc = json.dumps(str(description or "").strip()[:500], ensure_ascii=False)
+    src = json.dumps(str(source_tag or "").strip()[:80], ensure_ascii=False)
+    orig = json.dumps(str(original_name or "").strip()[:120], ensure_ascii=False)
+    cat = json.dumps(str(category or "general").strip()[:80], ensure_ascii=False)
+    return (
+        "---\n"
+        f"description: {desc}\n"
+        "metadata:\n"
+        "  annolid:\n"
+        "    user_invocable: false\n"
+        f"    source: {src}\n"
+        f"    original_name: {orig}\n"
+        f"    category: {cat}\n"
+        "---\n\n"
+        f"{str(content or '').strip()}\n"
+    )
+
+
+def import_agent_skills_pack(
+    *,
+    workspace: str | None = None,
+    source_dir: str | Path,
+    overwrite: bool = False,
+) -> dict:
+    from annolid.core.agent.skills import AgentSkillsLoader
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    resolved_workspace = get_agent_workspace_path(workspace)
+    source_root = Path(source_dir).expanduser()
+    if not source_root.exists() or not source_root.is_dir():
+        raise FileNotFoundError(f"Skills source directory not found: {source_root}")
+    workspace_skills = resolved_workspace / "skills"
+    workspace_skills.mkdir(parents=True, exist_ok=True)
+
+    source_files = sorted(source_root.glob("*/SKILL.md"))
+    imported: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    renamed: list[dict[str, str]] = []
+    for src in source_files:
+        try:
+            raw = src.read_text(encoding="utf-8")
+        except OSError:
+            skipped.append({"source": str(src), "reason": "unreadable"})
+            continue
+        meta = AgentSkillsLoader._read_frontmatter(raw)
+        body = AgentSkillsLoader._strip_frontmatter(raw)
+        original_name = str(meta.get("name") or src.parent.name).strip()
+        description = str(meta.get("description") or "").strip()
+        category = str(meta.get("category") or "general").strip()
+        if not description:
+            description = _extract_frontmatter_description(body)
+        target_name = _slugify_skill_name(original_name)
+        rendered = _render_annolid_skill_doc(
+            description=description,
+            content=body,
+            original_name=original_name,
+            source_tag="metaclaw",
+            category=category,
+        )
+        target_dir = workspace_skills / target_name
+        target_file = target_dir / "SKILL.md"
+
+        if target_file.exists() and not overwrite:
+            try:
+                current = target_file.read_text(encoding="utf-8")
+            except OSError:
+                current = ""
+            if current == rendered:
+                skipped.append({"source": str(src), "reason": "already_imported"})
+                continue
+            suffix = 2
+            alt_name = f"{target_name}-metaclaw"
+            alt_dir = workspace_skills / alt_name
+            alt_file = alt_dir / "SKILL.md"
+            while alt_file.exists():
+                alt_name = f"{target_name}-metaclaw-{suffix}"
+                alt_dir = workspace_skills / alt_name
+                alt_file = alt_dir / "SKILL.md"
+                suffix += 1
+            renamed.append({"source_name": target_name, "target_name": alt_name})
+            target_name = alt_name
+            target_dir = alt_dir
+            target_file = alt_file
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_file.write_text(rendered, encoding="utf-8")
+        imported.append(
+            {
+                "source": str(src),
+                "target_name": target_name,
+                "target_path": str(target_file),
+            }
+        )
+
+    return {
+        "workspace": str(resolved_workspace),
+        "source_dir": str(source_root),
+        "source_skill_count": len(source_files),
+        "imported_count": len(imported),
+        "skipped_count": len(skipped),
+        "renamed_count": len(renamed),
+        "imported": imported,
+        "skipped": skipped,
+        "renamed": renamed,
+    }
+
+
 def shadow_agent_skills(
     *, workspace: str | None = None, candidate_pack: str | Path
 ) -> dict:
@@ -136,7 +270,7 @@ def flush_agent_memory(
 
     resolved_workspace = get_agent_workspace_path(workspace)
     store = AgentMemoryStore(resolved_workspace)
-    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     note_text = str(note or "").strip() or "operator memory flush"
     session_text = str(session_id or "").strip()
     entry = (
@@ -309,6 +443,7 @@ def inspect_agent_meta_learning_history(
     *,
     workspace: str | None = None,
     limit: int = 20,
+    full: bool = False,
 ) -> dict:
     from annolid.core.agent.utils import get_agent_workspace_path
 
@@ -333,17 +468,45 @@ def inspect_agent_meta_learning_history(
             tool_counter[tool] += 1
         if str(row.get("skill_name") or "").strip():
             skills_generated += 1
+        if not bool(full):
+            skill = row.get("skill")
+            if isinstance(skill, dict):
+                compact_skill = dict(skill)
+                compact_skill.pop("content_excerpt", None)
+                row["skill"] = compact_skill
+        else:
+            skill = row.get("skill")
+            if isinstance(skill, dict):
+                excerpt = str(skill.get("content_excerpt") or "")
+                if len(excerpt) > 4000:
+                    skill["content_excerpt"] = excerpt[:4000]
+    status_counter: Counter[str] = Counter()
+    generated_names: list[str] = []
+    for row in events:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "").strip()
+        if status:
+            status_counter[status] += 1
+        skill_name = str(row.get("skill_name") or "").strip()
+        if skill_name:
+            generated_names.append(skill_name)
     return {
         "workspace": str(resolved_workspace),
         "history_path": str(history_path),
         "events_count": int(rows["count"]),
         "skills_generated_in_window": int(skills_generated),
+        "generated_skill_names": generated_names,
         "top_triggers": [
             {"trigger": key, "count": count}
             for key, count in trigger_counter.most_common(n)
         ],
         "top_tools": [
             {"tool": key, "count": count} for key, count in tool_counter.most_common(n)
+        ],
+        "top_statuses": [
+            {"status": key, "count": count}
+            for key, count in status_counter.most_common(n)
         ],
         "events": events,
     }
@@ -388,6 +551,39 @@ def inspect_agent_meta_learning_maintenance_status(
     return payload
 
 
+def inspect_agent_meta_learning_next_window(
+    *,
+    workspace: str | None = None,
+) -> dict:
+    from annolid.core.agent.meta_learning import AgentMetaLearner
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    resolved_workspace = get_agent_workspace_path(workspace)
+    learner = AgentMetaLearner(
+        resolved_workspace,
+        enabled=True,
+    )
+    status = learner.get_idle_maintenance_status()
+    eta_seconds = status.get("next_window_eta_seconds")
+    next_window_at = None
+    if isinstance(eta_seconds, (int, float)):
+        try:
+            next_window_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=float(eta_seconds))
+            ).isoformat(timespec="seconds")
+        except Exception:
+            next_window_at = None
+    return {
+        "workspace": str(resolved_workspace),
+        "window_open": bool(status.get("window_open")),
+        "window_reason": str(status.get("window_reason") or ""),
+        "next_window_eta_seconds": eta_seconds,
+        "next_window_at": next_window_at,
+        "scheduler_enabled": bool(status.get("scheduler_enabled")),
+        "scheduler_state": str(status.get("scheduler_state") or ""),
+    }
+
+
 def _read_jsonl_tail(path: Path, limit: int) -> dict[str, object]:
     n = max(1, int(limit))
     rows: list[dict] = []
@@ -417,9 +613,11 @@ def _read_jsonl_tail(path: Path, limit: int) -> dict[str, object]:
 __all__ = [
     "add_agent_feedback",
     "flush_agent_memory",
+    "import_agent_skills_pack",
     "inspect_agent_meta_learning",
     "inspect_agent_meta_learning_history",
     "inspect_agent_meta_learning_maintenance_status",
+    "inspect_agent_meta_learning_next_window",
     "inspect_agent_memory",
     "inspect_agent_skills",
     "refresh_agent_skills",

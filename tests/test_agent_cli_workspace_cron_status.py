@@ -238,6 +238,37 @@ def test_agent_meta_learning_history_operator_alias(
     assert payload["events_count"] == 0
 
 
+def test_agent_meta_learning_history_cli_full(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    workspace = tmp_path / "workspace"
+    history_path = workspace / "memory" / "meta_learning" / "evolution_history.jsonl"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    history_path.write_text(
+        '{"ts":"2026-03-20T12:00:00+00:00","trigger":"reward_window","tool":"read_file","skill_name":"s1","skill":{"name":"s1","content_excerpt":"abc"}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        utils_mod,
+        "get_agent_workspace_path",
+        lambda workspace=None: Path(workspace).expanduser() if workspace else workspace,
+    )
+
+    rc = annolid_run(
+        [
+            "agent-meta-learning-history",
+            "--workspace",
+            str(workspace),
+            "--full",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["events"][0]["skill"]["content_excerpt"] == "abc"
+
+
 def test_agent_meta_learning_maintenance_run_cli(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -377,6 +408,126 @@ def test_agent_meta_learning_maintenance_status_operator_alias(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert "window_open" in payload
+
+
+def test_agent_meta_learning_maintenance_next_window_cli(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    workspace = tmp_path / "workspace"
+    pending_path = (
+        workspace / "memory" / "meta_learning" / "pending_evolution_jobs.json"
+    )
+    pending_path.parent.mkdir(parents=True, exist_ok=True)
+    pending_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        utils_mod,
+        "get_agent_workspace_path",
+        lambda workspace=None: Path(workspace).expanduser() if workspace else workspace,
+    )
+    rc = annolid_run(
+        ["agent-meta-learning-maintenance-next-window", "--workspace", str(workspace)]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "next_window_eta_seconds" in payload
+
+
+def test_agent_meta_learning_maintenance_next_window_operator_alias(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    ws = tmp_path / "workspace"
+    pending_path = ws / "memory" / "meta_learning" / "pending_evolution_jobs.json"
+    pending_path.parent.mkdir(parents=True, exist_ok=True)
+    pending_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        utils_mod,
+        "get_agent_workspace_path",
+        lambda workspace=None: Path(workspace).expanduser() if workspace else ws,
+    )
+
+    rc = annolid_run(["agent", "meta-learning", "maintenance", "next-window"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "next_window_eta_seconds" in payload
+
+
+def test_agent_skills_import_cli(tmp_path: Path, monkeypatch, capsys) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    workspace = tmp_path / "workspace"
+    source_root = tmp_path / "metaclaw_skills"
+    skill_dir = source_root / "debug-systematically"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: debug-systematically\n"
+        "description: Structured debugging workflow.\n"
+        "category: coding\n"
+        "---\n\n"
+        "# Debug\n\n"
+        "Test body\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        utils_mod,
+        "get_agent_workspace_path",
+        lambda workspace=None: Path(workspace).expanduser() if workspace else workspace,
+    )
+    rc = annolid_run(
+        [
+            "agent-skills-import",
+            "--workspace",
+            str(workspace),
+            "--source-dir",
+            str(source_root),
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["imported_count"] == 1
+
+
+def test_agent_skills_import_operator_alias(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    ws = tmp_path / "workspace"
+    source_root = tmp_path / "metaclaw_skills"
+    skill_dir = source_root / "debug-systematically"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: debug-systematically\n"
+        "description: Structured debugging workflow.\n"
+        "---\n\n"
+        "# Debug\n\n"
+        "Test body\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        utils_mod,
+        "get_agent_workspace_path",
+        lambda workspace=None: Path(workspace).expanduser() if workspace else ws,
+    )
+    rc = annolid_run(
+        [
+            "agent",
+            "skills",
+            "import",
+            "--workspace",
+            str(ws),
+            "--source-dir",
+            str(source_root),
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["imported_count"] == 1
 
 
 def test_agent_cron_add_list_remove(tmp_path: Path, monkeypatch, capsys) -> None:

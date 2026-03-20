@@ -6,9 +6,11 @@ from pathlib import Path
 from annolid.services.agent_workspace import (
     add_agent_feedback,
     flush_agent_memory,
+    import_agent_skills_pack,
     inspect_agent_meta_learning,
     inspect_agent_meta_learning_history,
     inspect_agent_meta_learning_maintenance_status,
+    inspect_agent_meta_learning_next_window,
     inspect_agent_memory,
     inspect_agent_skills,
     refresh_agent_skills,
@@ -114,6 +116,40 @@ def test_inspect_and_shadow_agent_skills(monkeypatch, tmp_path: Path) -> None:
     assert inspect_payload["invalid_skills"][0]["name"] == "broken"
     assert shadow_payload["workspace"] == str(workspace)
     assert shadow_payload["overlap"] == ["broken", "ok"]
+
+
+def test_import_agent_skills_pack(tmp_path: Path, monkeypatch) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    workspace = tmp_path / "workspace"
+    source_root = tmp_path / "metaclaw_skills"
+    skill_dir = source_root / "debug-systematically"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: debug-systematically\n"
+        "description: Structured debugging workflow.\n"
+        "category: coding\n"
+        "---\n\n"
+        "# Debug Systematically\n\n"
+        "Use a hypothesis-driven debugging loop.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        utils_mod, "get_agent_workspace_path", lambda value=None: workspace
+    )
+
+    payload = import_agent_skills_pack(
+        workspace=str(workspace),
+        source_dir=str(source_root),
+    )
+    assert payload["imported_count"] == 1
+    imported = workspace / "skills" / "debug-systematically" / "SKILL.md"
+    assert imported.exists()
+    text = imported.read_text(encoding="utf-8")
+    assert "metadata:" in text
+    assert "annolid:" in text
+    assert 'source: "metaclaw"' in text
 
 
 def test_add_feedback_and_memory_ops(monkeypatch, tmp_path: Path) -> None:
@@ -278,6 +314,30 @@ def test_inspect_agent_meta_learning_history(tmp_path: Path, monkeypatch) -> Non
     assert payload["top_triggers"][0]["trigger"] == "reward_window"
 
 
+def test_inspect_agent_meta_learning_history_full(tmp_path: Path, monkeypatch) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    workspace = tmp_path / "workspace"
+    history_path = workspace / "memory" / "meta_learning" / "evolution_history.jsonl"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    history_path.write_text(
+        (
+            '{"ts":"2026-03-20T12:01:00+00:00","trigger":"reward_window","tool":"read_file","skill_name":"meta-recover-read-file-a2","skill":{"name":"meta-recover-read-file-a2","content_excerpt":"## Recover\\nline"}}\n'
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        utils_mod, "get_agent_workspace_path", lambda value=None: workspace
+    )
+
+    payload = inspect_agent_meta_learning_history(
+        workspace=str(workspace), limit=5, full=True
+    )
+    assert payload["events_count"] == 1
+    assert payload["generated_skill_names"] == ["meta-recover-read-file-a2"]
+    assert payload["events"][0]["skill"]["content_excerpt"].startswith("## Recover")
+
+
 def test_run_agent_meta_learning_maintenance(tmp_path: Path, monkeypatch) -> None:
     import annolid.core.agent.utils as utils_mod
 
@@ -342,3 +402,21 @@ def test_inspect_agent_meta_learning_maintenance_status(
     payload = inspect_agent_meta_learning_maintenance_status(workspace=str(workspace))
     assert payload["pending_jobs_count"] == 1
     assert "window_open" in payload
+    assert "scheduler_state" in payload
+
+
+def test_inspect_agent_meta_learning_next_window(tmp_path: Path, monkeypatch) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    workspace = tmp_path / "workspace"
+    pending_path = (
+        workspace / "memory" / "meta_learning" / "pending_evolution_jobs.json"
+    )
+    pending_path.parent.mkdir(parents=True, exist_ok=True)
+    pending_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        utils_mod, "get_agent_workspace_path", lambda value=None: workspace
+    )
+    payload = inspect_agent_meta_learning_next_window(workspace=str(workspace))
+    assert "next_window_eta_seconds" in payload
+    assert "next_window_at" in payload

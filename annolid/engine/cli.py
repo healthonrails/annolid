@@ -33,7 +33,9 @@ _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "agent-meta-learning-status",
             "agent-meta-learning-history",
             "agent-meta-learning-maintenance-status",
+            "agent-meta-learning-maintenance-next-window",
             "agent-meta-learning-maintenance-run",
+            "agent-skills-import",
             "agent-cron-list",
             "agent-cron-add",
             "agent-cron-remove",
@@ -1092,6 +1094,18 @@ def _cmd_agent_skills_shadow(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_agent_skills_import(args: argparse.Namespace) -> int:
+    from annolid.services.agent_workspace import import_agent_skills_pack
+
+    payload = import_agent_skills_pack(
+        workspace=getattr(args, "workspace", None),
+        source_dir=str(getattr(args, "source_dir")),
+        overwrite=bool(getattr(args, "overwrite", False)),
+    )
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
 def _cmd_agent_feedback_add(args: argparse.Namespace) -> int:
     from annolid.services.agent_workspace import add_agent_feedback
 
@@ -1145,6 +1159,7 @@ def _cmd_agent_meta_learning_history(args: argparse.Namespace) -> int:
     payload = inspect_agent_meta_learning_history(
         workspace=getattr(args, "workspace", None),
         limit=int(getattr(args, "limit", 20)),
+        full=bool(getattr(args, "full", False)),
     )
     print(json.dumps(payload, indent=2))
     return 0
@@ -1168,6 +1183,16 @@ def _cmd_agent_meta_learning_maintenance_status(args: argparse.Namespace) -> int
     )
 
     payload = inspect_agent_meta_learning_maintenance_status(
+        workspace=getattr(args, "workspace", None),
+    )
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_agent_meta_learning_maintenance_next_window(args: argparse.Namespace) -> int:
+    from annolid.services.agent_workspace import inspect_agent_meta_learning_next_window
+
+    payload = inspect_agent_meta_learning_next_window(
         workspace=getattr(args, "workspace", None),
     )
     print(json.dumps(payload, indent=2))
@@ -1272,6 +1297,20 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
         args = p.parse_args(argv[3:])
         return _cmd_agent_skills_shadow(args)
 
+    # annolid-run agent skills import
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "skills"
+        and argv[2] == "import"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent skills import")
+        p.add_argument("--workspace", default=None)
+        p.add_argument("--source-dir", required=True)
+        p.add_argument("--overwrite", action="store_true")
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_skills_import(args)
+
     # annolid-run agent memory flush
     if (
         len(argv) >= 3
@@ -1326,10 +1365,11 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
         p = argparse.ArgumentParser(prog="annolid-run agent meta-learning history")
         p.add_argument("--workspace", default=None)
         p.add_argument("--limit", type=int, default=20)
+        p.add_argument("--full", action="store_true")
         args = p.parse_args(argv[3:])
         return _cmd_agent_meta_learning_history(args)
 
-    # annolid-run agent meta-learning maintenance run
+    # annolid-run agent meta-learning maintenance status
     if (
         len(argv) >= 4
         and argv[0] == "agent"
@@ -1343,6 +1383,21 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
         p.add_argument("--workspace", default=None)
         args = p.parse_args(argv[4:])
         return _cmd_agent_meta_learning_maintenance_status(args)
+
+    # annolid-run agent meta-learning maintenance next-window
+    if (
+        len(argv) >= 4
+        and argv[0] == "agent"
+        and argv[1] == "meta-learning"
+        and argv[2] == "maintenance"
+        and argv[3] == "next-window"
+    ):
+        p = argparse.ArgumentParser(
+            prog="annolid-run agent meta-learning maintenance next-window"
+        )
+        p.add_argument("--workspace", default=None)
+        args = p.parse_args(argv[4:])
+        return _cmd_agent_meta_learning_maintenance_next_window(args)
 
     # annolid-run agent meta-learning maintenance run
     if (
@@ -2145,6 +2200,11 @@ def _build_root_parser() -> argparse.ArgumentParser:
         default=20,
         help="Maximum number of recent evolution events to include.",
     )
+    meta_history_p.add_argument(
+        "--full",
+        action="store_true",
+        help="Include larger skill content excerpts in history output.",
+    )
     meta_history_p.set_defaults(_handler=_cmd_agent_meta_learning_history)
     meta_maintenance_status_p = sub.add_parser(
         "agent-meta-learning-maintenance-status",
@@ -2157,6 +2217,18 @@ def _build_root_parser() -> argparse.ArgumentParser:
     )
     meta_maintenance_status_p.set_defaults(
         _handler=_cmd_agent_meta_learning_maintenance_status
+    )
+    meta_maintenance_next_window_p = sub.add_parser(
+        "agent-meta-learning-maintenance-next-window",
+        help="Estimate when the next maintenance/evolution window will open.",
+    )
+    meta_maintenance_next_window_p.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace path (default: ~/.annolid/workspace).",
+    )
+    meta_maintenance_next_window_p.set_defaults(
+        _handler=_cmd_agent_meta_learning_maintenance_next_window
     )
     meta_maintenance_p = sub.add_parser(
         "agent-meta-learning-maintenance-run",
@@ -2179,6 +2251,26 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Maximum pending jobs to process in this run.",
     )
     meta_maintenance_p.set_defaults(_handler=_cmd_agent_meta_learning_maintenance_run)
+    skills_import_p = sub.add_parser(
+        "agent-skills-import",
+        help="Import and adapt external skill packs into workspace skills.",
+    )
+    skills_import_p.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace path (default: ~/.annolid/workspace).",
+    )
+    skills_import_p.add_argument(
+        "--source-dir",
+        required=True,
+        help="Directory containing */SKILL.md skills (e.g. MetaClaw memory_data/skills).",
+    )
+    skills_import_p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing workspace skills with same name.",
+    )
+    skills_import_p.set_defaults(_handler=_cmd_agent_skills_import)
 
     security_check_p = sub.add_parser(
         "agent-security-check",

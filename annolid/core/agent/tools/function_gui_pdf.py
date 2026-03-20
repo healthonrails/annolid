@@ -76,6 +76,10 @@ class GuiPdfGetTextTool(FunctionTool):
             "properties": {
                 "max_chars": {"type": "integer", "minimum": 200},
                 "pages": {"type": "integer", "minimum": 1, "maximum": 5},
+                "path": {
+                    "type": "string",
+                    "description": "Optional PDF path to open before extracting text.",
+                },
             },
             "required": [],
         }

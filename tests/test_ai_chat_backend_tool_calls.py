@@ -509,6 +509,11 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
     open_pdf_by_path_payload = asyncio.run(task._tool_gui_open_pdf(str(pdf_file)))
     assert open_pdf_by_path_payload["ok"] is True
     assert open_pdf_by_path_payload["path"] == str(pdf_file)
+    pdf_text_with_path_payload = task._tool_gui_pdf_get_text(
+        max_chars=900, pages=2, path=str(pdf_file)
+    )
+    assert pdf_text_with_path_payload["ok"] is True
+    assert pdf_text_with_path_payload["path"] == str(pdf_file)
 
     frame_payload = task._tool_gui_set_frame(42)
     assert frame_payload["ok"] is True
@@ -563,6 +568,8 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
         "bot_pdf_find_sections",
         "bot_open_pdf",
         "bot_open_pdf",
+        "bot_open_pdf",
+        "bot_pdf_get_text",
         "bot_set_frame",
         "bot_set_chat_prompt",
         "bot_send_chat_prompt",
