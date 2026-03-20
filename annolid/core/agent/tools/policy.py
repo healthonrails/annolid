@@ -70,6 +70,7 @@ _CAPABILITY_GUI: Set[str] = {
     "gui_label_behavior_segments",
     "gui_save_citation",
     "gui_generate_annolid_tutorial",
+    "gui_self_update",
     "gui_list_logs",
     "gui_open_log_folder",
     "gui_remove_log_folder",
@@ -222,6 +223,7 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "gui_check_stream_source",
         "gui_save_citation",
         "gui_generate_annolid_tutorial",
+        "gui_self_update",
     },
     "group:automation": {
         "cron",

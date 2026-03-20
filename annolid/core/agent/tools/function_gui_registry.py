@@ -9,6 +9,7 @@ from .function_gui_core import (
     GuiContextTool,
     GuiGenerateAnnolidTutorialTool,
     GuiSharedImagePathTool,
+    GuiSelfUpdateTool,
     GuiSetPromptTool,
     GuiSendPromptTool,
     GuiSetChatModelTool,
@@ -99,6 +100,7 @@ def register_annolid_gui_tools(
     list_pdfs_callback: Optional[ActionCallback] = None,
     save_citation_callback: Optional[ActionCallback] = None,
     generate_annolid_tutorial_callback: Optional[ActionCallback] = None,
+    self_update_callback: Optional[ActionCallback] = None,
     set_frame_callback: Optional[ActionCallback] = None,
     set_prompt_callback: Optional[ActionCallback] = None,
     send_prompt_callback: Optional[ActionCallback] = None,
@@ -182,6 +184,7 @@ def register_annolid_gui_tools(
             generate_tutorial_callback=generate_annolid_tutorial_callback
         )
     )
+    registry.register(GuiSelfUpdateTool(self_update_callback=self_update_callback))
     registry.register(GuiSetFrameTool(set_frame_callback=set_frame_callback))
     registry.register(GuiSetPromptTool(set_prompt_callback=set_prompt_callback))
     registry.register(GuiSendPromptTool(send_prompt_callback=send_prompt_callback))

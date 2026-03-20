@@ -57,6 +57,7 @@ _WRAPPED_GUI_TOOL_SPECS: Tuple[Tuple[str, str], ...] = (
     ("list_pdfs_callback", "list_pdfs"),
     ("save_citation_callback", "save_citation"),
     ("generate_annolid_tutorial_callback", "generate_annolid_tutorial"),
+    ("self_update_callback", "self_update"),
 )
 
 

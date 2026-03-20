@@ -80,6 +80,7 @@ from .shell_sessions import ExecProcessTool, ExecStartTool
 from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
 from .function_gui_core import (
     GuiContextTool,
+    GuiSelfUpdateTool,
     GuiSaveCitationTool,
     GuiSelectAnnotationModelTool,
     GuiSendPromptTool,
@@ -226,6 +227,7 @@ __all__ = [
     "ResolvedToolPolicy",
     "resolve_allowed_tools",
     "GuiContextTool",
+    "GuiSelfUpdateTool",
     "GuiOpenUrlTool",
     "GuiOpenInBrowserTool",
     "GuiOpenThreeJsTool",

@@ -2732,6 +2732,26 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_annolid_help_train["args"]["command"] == "help train"
     assert parsed_annolid_help_train["args"]["allow_mutation"] is False
 
+    parsed_annolid_update_now = task._parse_direct_gui_command("annolid update now")
+    assert parsed_annolid_update_now["name"] == "self_update"
+    assert parsed_annolid_update_now["args"]["execute"] is True
+    assert parsed_annolid_update_now["args"]["channel"] == "stable"
+    assert parsed_annolid_update_now["args"]["operator_consent"] == "approved_by_user"
+
+    parsed_annolid_update_check = task._parse_direct_gui_command(
+        "check annolid update on beta channel"
+    )
+    assert parsed_annolid_update_check["name"] == "self_update"
+    assert parsed_annolid_update_check["args"]["execute"] is False
+    assert parsed_annolid_update_check["args"]["channel"] == "beta"
+    assert parsed_annolid_update_check["args"]["operator_consent"] == ""
+
+    parsed_annolid_git_pull_update = task._parse_direct_gui_command(
+        "update annolid with git pull and pip install -e ."
+    )
+    assert parsed_annolid_git_pull_update["name"] == "self_update"
+    assert parsed_annolid_git_pull_update["args"]["execute"] is True
+
     parsed_git_changes = task._parse_direct_gui_command("check git changes")
     assert parsed_git_changes["name"] == "git_status"
     assert parsed_git_changes["args"]["short"] is True
@@ -3122,6 +3142,15 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         "ok": True,
         "result": "All checks passed",
     }
+    task._tool_gui_self_update = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "status": "updated" if bool(kwargs.get("execute", False)) else "checked",
+        "channel": str(kwargs.get("channel") or "stable"),
+        "install_mode": "source",
+        "update_available": True,
+        "target_version": "9.9.9",
+        "restart_required": bool(kwargs.get("execute", False)),
+    }
 
     out_pdf = asyncio.run(task._execute_direct_gui_command("open pdf"))
     assert "Opened PDF in Annolid:" in out_pdf
@@ -3321,6 +3350,12 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
     out_pr_checks = asyncio.run(task._execute_direct_gui_command("github pr checks"))
     assert "checks passed" in out_pr_checks
 
+    out_annolid_update = asyncio.run(
+        task._execute_direct_gui_command("annolid update now")
+    )
+    assert "Annolid update completed" in out_annolid_update
+    assert "Install mode: source" in out_annolid_update
+
     out_tutorial = asyncio.run(
         task._execute_direct_gui_command(
             "create on demand tutorial for realtime camera setup in annolid"
@@ -3328,6 +3363,92 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
     )
     assert "Annolid Tutorial" in out_tutorial
     assert "realtime camera setup" in out_tutorial.lower()
+
+
+def test_tool_gui_self_update_blocks_without_required_operator_consent(
+    monkeypatch,
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("hi", widget=None)
+    monkeypatch.setattr(backend, "bot_update_requires_operator_consent", lambda: True)
+    monkeypatch.setattr(backend, "has_operator_consent", lambda _text: False)
+    monkeypatch.setattr(backend, "operator_consent_phrase", lambda: "ALLOW UPDATE")
+
+    payload = asyncio.run(
+        task._tool_gui_self_update(
+            channel="stable",
+            execute=True,
+            operator_consent="",
+        )
+    )
+    assert payload["ok"] is False
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "operator_consent_required"
+    assert payload["required_phrase"] == "ALLOW UPDATE"
+
+
+def test_tool_gui_self_update_executes_run_agent_update(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("hi", widget=None)
+    monkeypatch.setattr(backend, "bot_update_requires_operator_consent", lambda: False)
+
+    called: dict[str, object] = {}
+
+    def _fake_run_agent_update(**kwargs):
+        called.update(kwargs)
+        return {"status": "updated", "restart_required": True}, 0
+
+    monkeypatch.setattr(backend, "run_agent_update", _fake_run_agent_update)
+    payload = asyncio.run(
+        task._tool_gui_self_update(
+            channel="stable",
+            timeout_s=8.0,
+            require_signature=True,
+            execute=True,
+            run_post_check=True,
+        )
+    )
+    assert called["project"] == "annolid"
+    assert called["channel"] == "stable"
+    assert called["execute"] is True
+    assert called["skip_post_check"] is False
+    assert payload["ok"] is True
+    assert payload["status"] == "updated"
+
+
+def test_tool_gui_self_update_check_mode_uses_check_api(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("hi", widget=None)
+    called: dict[str, object] = {}
+
+    def _fake_check_gui_agent_update(**kwargs):
+        called.update(kwargs)
+        return {
+            "current_version": "1.0.0",
+            "target_version": "1.1.0",
+            "channel": kwargs.get("channel", "stable"),
+            "update_available": True,
+            "verification_reason": "ok",
+        }
+
+    monkeypatch.setattr(backend, "check_gui_agent_update", _fake_check_gui_agent_update)
+    payload = asyncio.run(
+        task._tool_gui_self_update(
+            channel="beta",
+            timeout_s=6.0,
+            require_signature=True,
+            execute=False,
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["status"] == "checked"
+    assert payload["update_available"] is True
+    assert called["channel"] == "beta"
+    assert called["timeout_s"] == 6.0
+    assert called["require_signature"] is True
 
 
 def test_direct_camera_email_to_me_uses_default_recipient(

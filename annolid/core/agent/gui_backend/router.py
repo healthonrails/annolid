@@ -90,6 +90,7 @@ async def execute_direct_gui_command(
     annolid_run: Callable[..., Any],
     exec_start: Callable[..., Any],
     exec_process: Callable[..., Any],
+    self_update: Callable[..., Any] | None = None,
 ) -> Dict[str, Any]:
     if not command:
         return {"message": "", "payload": {}}
@@ -833,6 +834,47 @@ async def execute_direct_gui_command(
                 "Then run the typed `annolid_run` tool with `allow_mutation=true` only when needed."
             )
         return error_text
+
+    if name == "self_update":
+        if self_update is None:
+            return "Direct self-update command is not available in this runtime."
+        payload = await _run(
+            self_update,
+            channel=str(args.get("channel") or "stable"),
+            timeout_s=float(args.get("timeout_s") or 4.0),
+            require_signature=bool(args.get("require_signature", False)),
+            execute=bool(args.get("execute", False)),
+            run_post_check=bool(args.get("run_post_check", True)),
+            operator_consent=str(args.get("operator_consent") or ""),
+        )
+        if payload.get("ok"):
+            status = str(payload.get("status") or "").strip().lower()
+            channel = str(payload.get("channel") or args.get("channel") or "stable")
+            install_mode = str(payload.get("install_mode") or "").strip()
+            update_available = payload.get("update_available")
+            target_version = str(payload.get("target_version") or "").strip()
+            if bool(args.get("execute", False)):
+                suffix = ""
+                if install_mode:
+                    suffix += f" Install mode: {install_mode}."
+                if bool(payload.get("restart_required", False)):
+                    suffix += " Restart Annolid to finish applying the update."
+                return f"Annolid update completed ({status or 'updated'}) on channel {channel}.{suffix}".strip()
+            detail_bits = []
+            if update_available is not None:
+                detail_bits.append(f"update_available={bool(update_available)}")
+            if target_version:
+                detail_bits.append(f"target={target_version}")
+            detail = f" ({', '.join(detail_bits)})" if detail_bits else ""
+            return f"Checked Annolid updates on channel {channel}{detail}."
+        reason = str(payload.get("reason") or payload.get("error") or "").strip()
+        required_phrase = str(payload.get("required_phrase") or "").strip()
+        if required_phrase:
+            return (
+                "Update is blocked until operator consent is provided. "
+                f"Required phrase: {required_phrase}"
+            )
+        return reason or "Annolid self-update failed."
 
     if name == "exec_start":
         payload = await _run(

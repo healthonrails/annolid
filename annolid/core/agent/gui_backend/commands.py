@@ -1252,6 +1252,75 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             "args": {"command": exec_match.group("cmd").strip()},
         }
 
+    annolid_update_match = re.search(
+        r"\bannolid(?:-bot)?\b[\s\S]*\b(?:self[-\s]?update|upgrade|update)\b",
+        lower,
+    ) or re.search(
+        r"\b(?:self[-\s]?update|upgrade|update)\b[\s\S]*\bannolid(?:-bot)?\b",
+        lower,
+    )
+    explicit_annolid_run = re.match(
+        r"\s*(?:/)?(?:run\s+)?annolid(?:-run|\s+run)\s+",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if annolid_update_match and not explicit_annolid_run:
+        channel = "stable"
+        channel_arg_match = re.search(
+            r"--channel\s+(stable|beta|dev)\b",
+            lower,
+        )
+        channel_text_match = re.search(
+            r"\b(?:channel\s+(stable|beta|dev)|(stable|beta|dev)\s+channel)\b",
+            lower,
+        )
+        if channel_arg_match:
+            channel = str(channel_arg_match.group(1) or "stable").strip().lower()
+        elif channel_text_match:
+            channel = (
+                str(
+                    channel_text_match.group(1)
+                    or channel_text_match.group(2)
+                    or "stable"
+                )
+                .strip()
+                .lower()
+            )
+        if channel not in {"stable", "beta", "dev"}:
+            channel = "stable"
+
+        execute_update = bool(
+            re.search(
+                r"\b(?:update\s+now|run\s+update|apply\s+update|execute\s+update)\b",
+                lower,
+            )
+            or re.search(r"\bgit\s+pull\b", lower)
+            or re.search(r"\bpip\s+install\s+-e\b", lower)
+            or re.search(r"\bupgrade\b", lower)
+            or "--execute" in lower
+        )
+        run_post_check = not bool(
+            re.search(
+                r"\b(?:skip|without|no)\s+(?:post[-\s]?)?check(?:s)?\b",
+                lower,
+            )
+            or "--skip-post-check" in lower
+        )
+        require_signature = bool(
+            re.search(r"\b(?:signed|signature)\b", lower)
+            or "--require-signature" in lower
+        )
+        return {
+            "name": "self_update",
+            "args": {
+                "channel": channel,
+                "execute": execute_update,
+                "run_post_check": run_post_check,
+                "require_signature": require_signature,
+                "operator_consent": "approved_by_user" if execute_update else "",
+            },
+        }
+
     annolid_run_match = re.match(
         r"\s*(?:/)?(?:run\s+)?annolid(?:-run|\s+run)\s+(?P<cmd>.+?)\s*$",
         text,

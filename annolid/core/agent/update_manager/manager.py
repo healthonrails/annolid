@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
@@ -35,15 +36,30 @@ def _build_apply_commands(
     *, install_mode: str, channel: str, project: str
 ) -> List[List[str]]:
     if install_mode == "source":
+        use_uv = _use_uv_for_source_update()
+        reinstall_cmd = (
+            ["uv", "pip", "install", "-e", "."]
+            if use_uv
+            else [sys.executable, "-m", "pip", "install", "-e", "."]
+        )
         return [
             ["git", "fetch", "--all", "--tags"],
             ["git", "pull", "--ff-only"],
-            [sys.executable, "-m", "pip", "install", "-e", "."],
+            reinstall_cmd,
         ]
     cmd = [sys.executable, "-m", "pip", "install", "--upgrade", project]
     if str(channel).lower() in {"beta", "dev"}:
         cmd.append("--pre")
     return [cmd]
+
+
+def _use_uv_for_source_update() -> bool:
+    raw = str(os.getenv("ANNOLID_UPDATE_USE_UV", "")).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return bool(shutil.which("uv"))
 
 
 def _run_step(

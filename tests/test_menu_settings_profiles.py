@@ -195,3 +195,88 @@ def test_reorder_top_menus_recreates_stale_menu_reference(monkeypatch) -> None:
         "&Settings",
         "&Help",
     ]
+
+
+def test_help_update_options_prefer_env_and_sanitize(monkeypatch) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    controller = MenuController(window)
+    window._agent_config = SimpleNamespace(
+        update=SimpleNamespace(
+            auto=SimpleNamespace(
+                channel="beta",
+                timeout_s=6.5,
+                require_signature=False,
+            )
+        )
+    )
+
+    monkeypatch.setenv("ANNOLID_AUTO_UPDATE_CHANNEL", "dev")
+    monkeypatch.setenv("ANNOLID_AUTO_UPDATE_TIMEOUT_S", "2.5")
+    monkeypatch.setenv("ANNOLID_AUTO_UPDATE_REQUIRE_SIGNATURE", "1")
+
+    channel, timeout_s, require_signature = (
+        controller._resolve_auto_update_runtime_options()
+    )
+
+    assert channel == "dev"
+    assert timeout_s == 2.5
+    assert require_signature is True
+
+
+def test_help_check_updates_shows_result(monkeypatch) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    controller = MenuController(window)
+    payload = {
+        "current_version": "1.0.0",
+        "target_version": "1.1.0",
+        "channel": "stable",
+        "update_available": True,
+        "verification_reason": "ok",
+    }
+    monkeypatch.setattr(
+        "annolid.gui.controllers.menu.check_gui_agent_update",
+        lambda **kwargs: payload,
+    )
+    shown: list[str] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "information",
+        lambda _parent, _title, text: shown.append(str(text)),
+    )
+
+    controller._check_for_updates_from_help()
+
+    assert shown
+    assert "Update available: True" in shown[0]
+    assert "Target version: 1.1.0" in shown[0]
+
+
+def test_help_update_now_runs_update(monkeypatch) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    controller = MenuController(window)
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QtWidgets.QMessageBox.Yes,
+    )
+    monkeypatch.setattr(
+        "annolid.gui.controllers.menu.run_agent_update",
+        lambda **kwargs: (calls.append(kwargs) or ({"status": "updated"}, 0)),
+    )
+    shown: list[str] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "information",
+        lambda _parent, _title, text: shown.append(str(text)),
+    )
+
+    controller._run_update_from_help()
+
+    assert calls
+    assert calls[0]["execute"] is True
+    assert calls[0]["skip_post_check"] is False
+    assert shown and "Update completed successfully." in shown[0]

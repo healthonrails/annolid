@@ -3482,6 +3482,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         generate_annolid_tutorial_callback=lambda **kwargs: _mark(
             "generate_annolid_tutorial", kwargs
         ),
+        self_update_callback=lambda **kwargs: _mark("self_update", kwargs),
     )
     assert registry.has("gui_context")
     assert registry.has("gui_shared_image_path")
@@ -3526,6 +3527,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_search_logs")
     assert registry.has("gui_save_citation")
     assert registry.has("gui_generate_annolid_tutorial")
+    assert registry.has("gui_self_update")
     ctx = asyncio.run(registry.execute("gui_context", {}))
     ctx_payload = json.loads(ctx)
     assert ctx_payload["provider"] == "ollama"
@@ -3748,6 +3750,17 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
             },
         )
     )
+    asyncio.run(
+        registry.execute(
+            "gui_self_update",
+            {
+                "channel": "stable",
+                "execute": False,
+                "run_post_check": True,
+                "require_signature": False,
+            },
+        )
+    )
     assert calls == [
         ("open_video", "/tmp/a.mp4"),
         ("open_url", "https://example.org"),
@@ -3865,6 +3878,15 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
                 "level": "beginner",
                 "save_to_file": True,
                 "include_code_refs": True,
+            },
+        ),
+        (
+            "self_update",
+            {
+                "channel": "stable",
+                "execute": False,
+                "run_post_check": True,
+                "require_signature": False,
             },
         ),
     ]

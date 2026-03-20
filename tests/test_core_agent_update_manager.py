@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 from annolid.core.agent.update_manager.manager import (
     SignedUpdateManager,
@@ -104,3 +105,39 @@ def test_stage_enforces_signature_in_production(
     plan = manager.stage(channel="stable", require_signature=False)
     assert plan.verification.ok is False
     assert plan.verification.reason == "signature_required_missing"
+
+
+def test_build_apply_commands_source_prefers_uv_when_available(monkeypatch) -> None:
+    import annolid.core.agent.update_manager.manager as manager_mod
+
+    monkeypatch.setattr(
+        manager_mod.shutil,
+        "which",
+        lambda name: "/usr/local/bin/uv" if name == "uv" else None,
+    )
+    monkeypatch.delenv("ANNOLID_UPDATE_USE_UV", raising=False)
+
+    commands = manager_mod._build_apply_commands(
+        install_mode="source",
+        channel="stable",
+        project="annolid",
+    )
+    assert commands[-1] == ["uv", "pip", "install", "-e", "."]
+
+
+def test_build_apply_commands_source_can_disable_uv(monkeypatch) -> None:
+    import annolid.core.agent.update_manager.manager as manager_mod
+
+    monkeypatch.setattr(
+        manager_mod.shutil,
+        "which",
+        lambda name: "/usr/local/bin/uv" if name == "uv" else None,
+    )
+    monkeypatch.setenv("ANNOLID_UPDATE_USE_UV", "0")
+
+    commands = manager_mod._build_apply_commands(
+        install_mode="source",
+        channel="stable",
+        project="annolid",
+    )
+    assert commands[-1] == [sys.executable, "-m", "pip", "install", "-e", "."]

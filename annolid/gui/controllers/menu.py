@@ -1,4 +1,5 @@
 import functools
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, TYPE_CHECKING
@@ -17,6 +18,7 @@ from annolid.gui.window_base import newAction, format_tool_button_text
 
 from annolid.gui.widgets.text_prompt import AiRectangleWidget
 from annolid.gui.widgets import RecordingWidget
+from annolid.services.agent_update import check_gui_agent_update, run_agent_update
 
 
 if TYPE_CHECKING:
@@ -570,6 +572,18 @@ class MenuController:
                     "https://github.com/healthonrails/annolid/tree/main/docs/tutorials"
                 ),
                 "tip": w.tr("Open Annolid tutorials on GitHub"),
+            },
+            {
+                "name": "help_check_updates",
+                "text": w.tr("Check for &Updates"),
+                "slot": self._check_for_updates_from_help,
+                "tip": w.tr("Check Annolid update availability"),
+            },
+            {
+                "name": "help_update_now",
+                "text": w.tr("&Update Annolid Now"),
+                "slot": self._run_update_from_help,
+                "tip": w.tr("Run Annolid self-update now"),
             },
             {
                 "name": "coco",
@@ -1473,6 +1487,10 @@ class MenuController:
                     actions["help_docs"],
                     actions["help_tutorials"],
                 ),
+                (
+                    actions["help_check_updates"],
+                    actions["help_update_now"],
+                ),
                 (actions["about_annolid"],),
             ],
         )
@@ -1554,6 +1572,142 @@ class MenuController:
             webbrowser.open(url)
         except Exception:
             pass
+
+    def _resolve_auto_update_runtime_options(self) -> tuple[str, float, bool]:
+        channel = "stable"
+        timeout_s = 4.0
+        require_signature = False
+        try:
+            auto_cfg = getattr(
+                getattr(getattr(self._window, "_agent_config", None), "update", None),
+                "auto",
+                None,
+            )
+            if auto_cfg is not None:
+                channel = str(getattr(auto_cfg, "channel", channel) or channel).strip()
+                timeout_s = float(
+                    getattr(auto_cfg, "timeout_s", timeout_s) or timeout_s
+                )
+                require_signature = bool(
+                    getattr(auto_cfg, "require_signature", require_signature)
+                )
+        except Exception:
+            pass
+        env_channel = str(os.environ.get("ANNOLID_AUTO_UPDATE_CHANNEL") or "").strip()
+        if env_channel:
+            channel = env_channel
+        env_timeout = str(os.environ.get("ANNOLID_AUTO_UPDATE_TIMEOUT_S") or "").strip()
+        if env_timeout:
+            try:
+                timeout_s = float(env_timeout)
+            except Exception:
+                pass
+        env_sig = str(
+            os.environ.get("ANNOLID_AUTO_UPDATE_REQUIRE_SIGNATURE") or ""
+        ).strip()
+        if env_sig:
+            require_signature = env_sig.lower() in {"1", "true", "yes", "on"}
+        channel = channel.lower()
+        if channel not in {"stable", "beta", "dev"}:
+            channel = "stable"
+        timeout_s = max(1.0, float(timeout_s))
+        return channel, timeout_s, bool(require_signature)
+
+    def _check_for_updates_from_help(self) -> None:
+        channel, timeout_s, require_signature = (
+            self._resolve_auto_update_runtime_options()
+        )
+        try:
+            payload = check_gui_agent_update(
+                project="annolid",
+                channel=channel,
+                timeout_s=timeout_s,
+                require_signature=require_signature,
+            )
+            details = [
+                f"Current version: {payload.get('current_version')}",
+                f"Target version: {payload.get('target_version')}",
+                f"Channel: {payload.get('channel')}",
+                f"Update available: {payload.get('update_available')}",
+                f"Verification: {payload.get('verification_reason')}",
+            ]
+            QtWidgets.QMessageBox.information(
+                self._window,
+                self._window.tr("Update Check"),
+                "\n".join(details),
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self._window,
+                self._window.tr("Update Check Failed"),
+                self._window.tr("Could not check updates.\n\n%s") % str(exc),
+            )
+
+    def _run_update_from_help(self) -> None:
+        channel, timeout_s, require_signature = (
+            self._resolve_auto_update_runtime_options()
+        )
+        reply = QtWidgets.QMessageBox.question(
+            self._window,
+            self._window.tr("Confirm Update"),
+            self._window.tr(
+                "Run update now?\n\n"
+                "Channel: %s\n"
+                "This may run package manager commands and may require an app restart."
+            )
+            % channel,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+
+        try:
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+            payload, exit_code = run_agent_update(
+                project="annolid",
+                channel=channel,
+                timeout_s=timeout_s,
+                require_signature=require_signature,
+                execute=True,
+                skip_post_check=False,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self._window,
+                self._window.tr("Update Failed"),
+                self._window.tr("Could not execute update.\n\n%s") % str(exc),
+            )
+            return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
+        status = str((payload or {}).get("status") or "").strip().lower()
+        if int(exit_code) == 0 and status in {"updated", "staged"}:
+            restart_required = bool((payload or {}).get("restart_required", False))
+            message = self._window.tr("Update completed successfully.")
+            if restart_required:
+                message += self._window.tr(
+                    "\n\nRestart Annolid to finish applying the update."
+                )
+            QtWidgets.QMessageBox.information(
+                self._window,
+                self._window.tr("Update Complete"),
+                message,
+            )
+            return
+
+        reason = str((payload or {}).get("reason") or "").strip()
+        if not reason:
+            reason = status or "unknown_error"
+        QtWidgets.QMessageBox.warning(
+            self._window,
+            self._window.tr("Update Result"),
+            self._window.tr(
+                "Update did not complete successfully.\n\nStatus: %s\nReason: %s"
+            )
+            % (status or "unknown", reason),
+        )
 
     def _apply_settings_profile(self, workflow: str, panel_label: str) -> None:
         try:

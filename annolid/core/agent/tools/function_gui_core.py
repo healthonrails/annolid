@@ -249,3 +249,37 @@ class GuiGenerateAnnolidTutorialTool(FunctionTool):
 
     async def execute(self, **kwargs: Any) -> str:
         return await _run_callback(self._generate_tutorial_callback, **kwargs)
+
+
+class GuiSelfUpdateTool(FunctionTool):
+    def __init__(self, self_update_callback: Optional[ActionCallback] = None) -> None:
+        self._self_update_callback = self_update_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_self_update"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Check for Annolid updates or run an update transaction. "
+            "Use execute=true only with explicit operator consent."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "channel": {"type": "string", "enum": ["stable", "beta", "dev"]},
+                "timeout_s": {"type": "number", "minimum": 1.0, "maximum": 120.0},
+                "require_signature": {"type": "boolean", "default": False},
+                "execute": {"type": "boolean", "default": False},
+                "run_post_check": {"type": "boolean", "default": True},
+                "operator_consent": {"type": "string"},
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._self_update_callback, **kwargs)

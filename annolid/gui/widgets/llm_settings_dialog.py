@@ -12,6 +12,7 @@ from annolid.infrastructure.agent_config import (
 from annolid.services.agent_update import (
     check_gui_agent_update,
     execute_gui_agent_rollback,
+    run_agent_update,
 )
 from annolid.utils.llm_settings import (
     detect_openai_codex_auth_state,
@@ -726,9 +727,12 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             "Check now", update_actions
         )
         self.update_check_now_button.clicked.connect(self._check_now_update)
+        self.update_run_now_button = QtWidgets.QPushButton("Update now", update_actions)
+        self.update_run_now_button.clicked.connect(self._run_update_now)
         self.update_rollback_button = QtWidgets.QPushButton("Rollback", update_actions)
         self.update_rollback_button.clicked.connect(self._rollback_update)
         update_actions_layout.addWidget(self.update_check_now_button)
+        update_actions_layout.addWidget(self.update_run_now_button)
         update_actions_layout.addWidget(self.update_rollback_button)
         update_actions_layout.addStretch(1)
         layout.addRow("Update actions:", update_actions)
@@ -819,6 +823,71 @@ class LLMSettingsDialog(QtWidgets.QDialog):
                 "Rollback Failed",
                 f"Could not execute rollback.\n\n{exc}",
             )
+
+    def _run_update_now(self) -> None:
+        channel = str(self.auto_update_channel_combo.currentData() or "stable")
+        timeout_s = float(self.auto_update_timeout_spin.value())
+        require_signature = bool(self.auto_update_require_sig_checkbox.isChecked())
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Confirm Update",
+            (
+                "Run update now?\n\n"
+                f"Channel: {channel}\n"
+                "This may run package manager commands and may require an app restart."
+            ),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+
+        buttons = [
+            self.update_check_now_button,
+            self.update_run_now_button,
+            self.update_rollback_button,
+        ]
+        try:
+            for btn in buttons:
+                btn.setEnabled(False)
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+            payload, exit_code = run_agent_update(
+                project="annolid",
+                channel=channel,
+                timeout_s=timeout_s,
+                require_signature=require_signature,
+                execute=True,
+                skip_post_check=False,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Update Failed",
+                f"Could not execute update.\n\n{exc}",
+            )
+            return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            for btn in buttons:
+                btn.setEnabled(True)
+
+        status = str((payload or {}).get("status") or "").strip().lower()
+        if int(exit_code) == 0 and status in {"updated", "staged"}:
+            restart_required = bool((payload or {}).get("restart_required", False))
+            msg = "Update completed successfully."
+            if restart_required:
+                msg += "\n\nRestart Annolid to finish applying the update."
+            QtWidgets.QMessageBox.information(self, "Update Complete", msg)
+            return
+
+        reason = str((payload or {}).get("reason") or "").strip()
+        if not reason:
+            reason = status or "unknown_error"
+        QtWidgets.QMessageBox.warning(
+            self,
+            "Update Result",
+            f"Update did not complete successfully.\n\nStatus: {status or 'unknown'}\nReason: {reason}",
+        )
 
     @QtCore.Slot()
     def _browse_chatterbox_voice_prompt(self) -> None:

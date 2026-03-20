@@ -21,6 +21,13 @@ from qtpy.QtCore import QRunnable
 
 from annolid.infrastructure.agent_config import load_agent_config as load_config
 from annolid.infrastructure.agent_workspace import get_agent_workspace_path
+from annolid.services.agent_update import (
+    bot_update_requires_operator_consent,
+    check_gui_agent_update,
+    has_operator_consent,
+    operator_consent_phrase,
+    run_agent_update,
+)
 from annolid.services.chat_agent_core import (
     AgentMemoryStore,
     BusInboundMessage,
@@ -1237,6 +1244,7 @@ class StreamingChatTask(QRunnable):
                 "list_pdfs": self._tool_gui_list_pdfs,
                 "save_citation": self._tool_gui_save_citation,
                 "generate_annolid_tutorial": self._tool_gui_generate_annolid_tutorial,
+                "self_update": self._tool_gui_self_update,
             },
         )
 
@@ -1965,6 +1973,7 @@ class StreamingChatTask(QRunnable):
             "annolid_run": self._tool_gui_annolid_run,
             "exec_start": self._tool_gui_exec_start,
             "exec_process": self._tool_gui_exec_process,
+            "self_update": self._tool_gui_self_update,
         }
 
     @staticmethod
@@ -3040,6 +3049,61 @@ class StreamingChatTask(QRunnable):
             "generated_with_model": generated_with_model,
             "model_error": model_error,
         }
+
+    async def _tool_gui_self_update(
+        self,
+        *,
+        channel: str = "stable",
+        timeout_s: float = 4.0,
+        require_signature: bool = False,
+        execute: bool = False,
+        run_post_check: bool = True,
+        operator_consent: str = "",
+    ) -> Dict[str, Any]:
+        channel_name = str(channel or "stable").strip().lower()
+        if channel_name not in {"stable", "beta", "dev"}:
+            channel_name = "stable"
+
+        if not bool(execute):
+            payload = check_gui_agent_update(
+                project="annolid",
+                channel=channel_name,
+                timeout_s=max(1.0, float(timeout_s)),
+                require_signature=bool(require_signature),
+            )
+            result = dict(payload or {})
+            result["status"] = "checked"
+            result["ok"] = True
+            return result
+
+        if bool(execute) and bot_update_requires_operator_consent():
+            if not has_operator_consent(operator_consent):
+                return {
+                    "ok": False,
+                    "status": "blocked",
+                    "reason": "operator_consent_required",
+                    "required_phrase": operator_consent_phrase(),
+                }
+
+        payload, exit_code = run_agent_update(
+            project="annolid",
+            channel=channel_name,
+            timeout_s=max(1.0, float(timeout_s)),
+            require_signature=bool(require_signature),
+            execute=bool(execute),
+            skip_post_check=not bool(run_post_check),
+        )
+        result = dict(payload or {})
+        result["ok"] = int(exit_code) == 0 and str(
+            result.get("status") or ""
+        ).strip().lower() not in {
+            "failed",
+            "failed_post_check",
+            "failed_stage_artifact",
+            "failed_canary",
+            "blocked",
+        }
+        return result
 
     @staticmethod
     def _normalize_email_recipient(value: str) -> str:

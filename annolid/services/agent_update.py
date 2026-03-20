@@ -6,6 +6,30 @@ import json
 from pathlib import Path
 
 
+def bot_update_requires_operator_consent() -> bool:
+    from annolid.core.agent.security_policy import (
+        bot_update_requires_operator_consent as _bot_update_requires_operator_consent,
+    )
+
+    return bool(_bot_update_requires_operator_consent())
+
+
+def operator_consent_phrase() -> str:
+    from annolid.core.agent.security_policy import (
+        operator_consent_phrase as _operator_consent_phrase,
+    )
+
+    return str(_operator_consent_phrase() or "")
+
+
+def has_operator_consent(value: str) -> bool:
+    from annolid.core.agent.security_policy import (
+        has_operator_consent as _has_operator_consent,
+    )
+
+    return bool(_has_operator_consent(value))
+
+
 def check_for_agent_update(
     *,
     project: str = "annolid",
@@ -89,8 +113,11 @@ def rollback_agent_update(
 
 
 __all__ = [
+    "bot_update_requires_operator_consent",
     "check_gui_agent_update",
     "execute_gui_agent_rollback",
+    "has_operator_consent",
+    "operator_consent_phrase",
     "check_for_agent_update",
     "run_legacy_agent_update",
     "rollback_agent_update",
