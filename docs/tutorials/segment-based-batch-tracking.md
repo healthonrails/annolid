@@ -58,6 +58,31 @@
   - CSV exports summarising the tracking run.
   - Optional overlay videos when enabled in tracking settings.
 
+## 9. Retrack a Video
+
+If you want to rerun tracking, remove only the auto-generated tracking outputs, then run tracking again.
+
+Delete these generated files next to the video:
+
+- `<video_name>*_tracking.csv`
+- `<video_name>*_tracked.csv`
+- `<video_name>*_gaps_report.csv`
+- `<video_name>*_tracking_gaps_report.md`
+- `<video_name>/<video_name>_annotations.ndjson` (if present)
+
+Keep these manual labels inside `<video_name>/`:
+
+- Labeled `.png` frame images
+- Matching `.json` annotation files
+
+After deleting generated outputs:
+
+1. Reopen Annolid.
+2. Import videos
+3. Run **Track All** again to regenerate tracking from your existing manual labels.
+
+If you only need to retrack one video, load that video directly from the toolbar/Video Manager and run tracking for that video only. This avoids reprocessing videos that are already correct.
+
 ## Tips
 
 - If the dialog reports a missing annotation, open that frame in the main window, save the polygon (`Ctrl+S`), then re-open the Segment Editor.
