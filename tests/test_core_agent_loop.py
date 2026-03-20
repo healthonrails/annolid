@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -1104,6 +1105,48 @@ def test_agent_loop_retries_once_when_final_response_empty_after_tools() -> None
     assert result.content == "final answer"
     assert result.iterations == 2
     assert state["repair_tools"] == []
+
+
+def test_agent_loop_logs_info_not_warning_when_empty_response_is_repaired(
+    caplog,
+) -> None:
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "echo", "arguments": {"text": "x"}}
+                ],
+            }
+        if state["n"] == 2:
+            return {"content": "   ", "tool_calls": []}
+        return {"content": "final repaired", "tool_calls": []}
+
+    registry = FunctionToolRegistry()
+    registry.register(_EchoTool())
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    loop._logger = logging.getLogger("test.agent.loop.repair")  # type: ignore[attr-defined]
+
+    with caplog.at_level(logging.INFO, logger="test.agent.loop.repair"):
+        result = asyncio.run(loop.run("hello", session_id="s-log-repair"))
+
+    assert result.content == "final repaired"
+    warning_messages = [
+        rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING
+    ]
+    assert not any("empty final response" in msg for msg in warning_messages)
+    assert any(
+        "empty final response repaired" in rec.getMessage() for rec in caplog.records
+    )
 
 
 def test_agent_loop_compacts_oversized_tool_result_for_llm_messages() -> None:

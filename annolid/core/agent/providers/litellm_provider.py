@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any, Callable, Dict, List, Optional
 
@@ -10,6 +11,8 @@ from .registry import find_by_model, find_by_name, find_gateway
 
 class LiteLLMProvider(LLMProvider):
     """LiteLLM-backed multi-provider adapter with graceful optional import."""
+
+    _litellm_logging_configured = False
 
     def __init__(
         self,
@@ -160,8 +163,7 @@ class LiteLLMProvider(LLMProvider):
                 finish_reason="error",
             )
 
-        litellm.suppress_debug_info = True
-        litellm.drop_params = True
+        self._configure_litellm_runtime_logging(litellm)
 
         resolved_model = self._resolve_model(model or self.default_model)
         payload: Dict[str, Any] = {
@@ -240,6 +242,33 @@ class LiteLLMProvider(LLMProvider):
             return LLMResponse(
                 content=f"Error calling LLM: {exc}", finish_reason="error"
             )
+
+    @classmethod
+    def _configure_litellm_runtime_logging(cls, litellm_module: Any) -> None:
+        """
+        Keep LiteLLM operational noise out of normal Annolid INFO logs.
+        This preserves warnings/errors while suppressing per-request INFO lines.
+        """
+        litellm_module.suppress_debug_info = True
+        litellm_module.drop_params = True
+        if hasattr(litellm_module, "set_verbose"):
+            try:
+                litellm_module.set_verbose = False
+            except Exception:
+                pass
+        os.environ.setdefault("LITELLM_LOG", "ERROR")
+        if cls._litellm_logging_configured:
+            return
+        for name in (
+            "LiteLLM",
+            "LiteLLM Proxy",
+            "litellm",
+            "litellm.utils",
+        ):
+            logger = logging.getLogger(name)
+            logger.setLevel(logging.WARNING)
+            logger.propagate = False
+        cls._litellm_logging_configured = True
 
     def _parse_response(self, completion: Any) -> LLMResponse:
         choice = completion.choices[0]

@@ -274,6 +274,39 @@ def test_context_builder_redacts_session_identifiers(tmp_path: Path) -> None:
     assert "us***r@example.com" in system_content
 
 
+def test_context_builder_auto_selects_skills_from_task_hint(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "weather-helper"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "description: Use for weather and forecast questions\n"
+        "---\n"
+        "Use weather tools and summarize forecast.\n",
+        encoding="utf-8",
+    )
+    ctx = AgentContextBuilder(tmp_path)
+    messages = ctx.build_messages(
+        history=[],
+        current_message="Can you check today's weather forecast in Boston?",
+    )
+    system_content = str(messages[0]["content"])
+    assert "# Auto-selected Skills" in system_content
+    assert "### Skill: weather-helper" in system_content
+
+
+def test_context_builder_bounds_system_prompt_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANNOLID_AGENT_SYSTEM_PROMPT_MAX_CHARS", "1800")
+    (tmp_path / "AGENTS.md").write_text("A" * 6000, encoding="utf-8")
+    (tmp_path / "SOUL.md").write_text("B" * 6000, encoding="utf-8")
+    ctx = AgentContextBuilder(tmp_path)
+    prompt = ctx.build_system_prompt()
+    assert len(prompt) <= 1800
+    assert "truncated to fit system prompt budget" in prompt
+
+
 def test_subagent_manager_runs_background_task(tmp_path: Path) -> None:
     async def fake_llm(
         messages: Sequence[Mapping[str, Any]],

@@ -700,7 +700,7 @@ class AgentLoop:
                 ):
                     empty_final_repair_used = True
                     empty_final_repair_passes += 1
-                    self._logger.warning(
+                    self._logger.info(
                         "annolid-bot empty final response session=%s model=%s iteration=%d; requesting no-tool finalization pass",
                         session_id,
                         self.model,
@@ -716,7 +716,15 @@ class AgentLoop:
                         on_token=_on_llm_token,
                     )
                     llm_total_ms += repair_llm_ms
-                    if not str(final_content or "").strip():
+                    if str(final_content or "").strip():
+                        self._logger.info(
+                            "annolid-bot empty final response repaired session=%s model=%s iteration=%d repair_llm_ms=%.1f",
+                            session_id,
+                            self.model,
+                            iteration,
+                            repair_llm_ms,
+                        )
+                    else:
                         final_content = self._build_tool_only_fallback_answer(
                             tool_runs=tool_runs
                         )
@@ -1305,7 +1313,8 @@ class AgentLoop:
             messages.append({"role": "system", "content": str(system_prompt)})
         elif self._context_builder is not None:
             contextual = self._context_builder.build_system_prompt(
-                skill_names=skill_names
+                skill_names=skill_names,
+                task_hint=user_message_text,
             )
             if channel and chat_id:
                 contextual += (

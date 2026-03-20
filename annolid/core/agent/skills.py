@@ -153,6 +153,44 @@ class AgentSkillsLoader:
             return skill.get("raw_meta", self._get_frontmatter(skill["path"]))
         return None
 
+    def suggest_skills_for_task(
+        self, task_description: str, top_k: int = 3
+    ) -> List[str]:
+        """
+        Suggest relevant skill names for a task description using lightweight
+        lexical matching against skill name and description.
+        """
+        text = str(task_description or "").strip().lower()
+        if not text:
+            return []
+        k = max(0, int(top_k))
+        if k == 0:
+            return []
+        task_tokens = {
+            token for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", text) if token
+        }
+        ranked: List[tuple[int, str]] = []
+        for skill in self.list_skills(filter_unavailable=True):
+            name = str(skill.get("name") or "").strip()
+            if not name:
+                continue
+            desc = str(skill.get("description") or "").strip()
+            haystack = f"{name} {desc}".lower()
+            score = 0
+            if name.lower() in text:
+                score += 4
+            if task_tokens:
+                haystack_tokens = {
+                    token
+                    for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", haystack)
+                    if token
+                }
+                score += len(task_tokens & haystack_tokens)
+            if score > 0:
+                ranked.append((score, name))
+        ranked.sort(key=lambda row: (-row[0], row[1].lower()))
+        return [name for _, name in ranked[:k]]
+
     def _get_skill_description(self, path: str) -> str:
         meta = self._get_frontmatter(path) or {}
         fallback = Path(path).parent.name

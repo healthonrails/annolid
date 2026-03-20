@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import types
 from types import SimpleNamespace
@@ -238,6 +239,21 @@ def test_litellm_provider_parse_response_defaults_missing_tool_call_id() -> None
     resp = provider._parse_response(completion)
     assert resp.has_tool_calls is True
     assert resp.tool_calls[0].id == "call_0"
+
+
+def test_litellm_provider_configures_runtime_logging(monkeypatch) -> None:
+    class _FakeLiteLLM:
+        suppress_debug_info = False
+        drop_params = False
+        set_verbose = True
+
+    monkeypatch.delenv("LITELLM_LOG", raising=False)
+    LiteLLMProvider._litellm_logging_configured = False
+    LiteLLMProvider._configure_litellm_runtime_logging(_FakeLiteLLM)
+    assert _FakeLiteLLM.suppress_debug_info is True
+    assert _FakeLiteLLM.drop_params is True
+    assert _FakeLiteLLM.set_verbose is False
+    assert os.environ.get("LITELLM_LOG") == "ERROR"
 
 
 def test_provider_registry_matches_openai_codex_explicit_prefix() -> None:

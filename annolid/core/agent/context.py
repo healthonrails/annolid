@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import os
 import platform
 from datetime import datetime
 import re
@@ -18,55 +19,106 @@ class AgentContextBuilder:
     """Build system prompts and LLM message payloads for conversational loops."""
 
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
+    DEFAULT_SYSTEM_PROMPT_MAX_CHARS = 24_000
+    DEFAULT_AUTO_SKILL_TOP_K = 3
 
     def __init__(self, workspace: Path):
         self.workspace = Path(workspace)
         self.memory = AgentMemoryStore(self.workspace)
         self.skills = AgentSkillsLoader(self.workspace)
         self._bootstrap_cache: Optional[str] = None
+        self._system_prompt_max_chars = self._read_int_env(
+            "ANNOLID_AGENT_SYSTEM_PROMPT_MAX_CHARS",
+            self.DEFAULT_SYSTEM_PROMPT_MAX_CHARS,
+            minimum=1_200,
+        )
+        self._auto_skill_top_k = self._read_int_env(
+            "ANNOLID_AGENT_AUTO_SKILL_TOP_K",
+            self.DEFAULT_AUTO_SKILL_TOP_K,
+            minimum=0,
+        )
 
-    def build_system_prompt(self, skill_names: Optional[List[str]] = None) -> str:
+    def build_system_prompt(
+        self,
+        skill_names: Optional[List[str]] = None,
+        task_hint: Optional[str] = None,
+    ) -> str:
         started = time.perf_counter()
         parts: List[str] = []
-        parts.append(self._get_identity())
+        identity = self._get_identity()
+        parts.append(identity)
 
         t0 = time.perf_counter()
         bootstrap = self._load_bootstrap_files()
         t1 = time.perf_counter()
-        if bootstrap:
-            parts.append(bootstrap)
+        auto_skill_names: List[str] = []
+        explicit_skill_names = [s for s in (skill_names or []) if str(s).strip()]
+        if not explicit_skill_names and task_hint and self._auto_skill_top_k > 0:
+            auto_skill_names = self.skills.suggest_skills_for_task(
+                str(task_hint),
+                top_k=self._auto_skill_top_k,
+            )
 
         memory_context = self.memory.get_memory_context()
         t2 = time.perf_counter()
-        if memory_context:
-            parts.append(f"# Memory\n\n{memory_context}")
 
         always_skills = self.skills.get_always_skills()
         t3 = time.perf_counter()
+        always_content = ""
         if always_skills:
             always_content = self.skills.load_skills_for_context(always_skills)
-            if always_content:
-                parts.append(f"# Active Skills\n\n{always_content}")
         t4 = time.perf_counter()
 
-        if skill_names:
-            selected = self.skills.load_skills_for_context(skill_names)
-            if selected:
-                parts.append(f"# Requested Skills\n\n{selected}")
+        requested_content = ""
+        resolved_skill_names = explicit_skill_names or auto_skill_names
+        if resolved_skill_names:
+            requested_content = self.skills.load_skills_for_context(
+                resolved_skill_names
+            )
         t5 = time.perf_counter()
 
         skills_summary = self.skills.build_skills_summary()
         t6 = time.perf_counter()
+
+        section_map: dict[str, str] = {}
+        if bootstrap:
+            section_map["bootstrap"] = bootstrap
+        if memory_context:
+            section_map["memory"] = f"# Memory\n\n{memory_context}"
+        if always_content:
+            section_map["active_skills"] = f"# Active Skills\n\n{always_content}"
+        if requested_content:
+            title = (
+                "# Requested Skills"
+                if explicit_skill_names
+                else "# Auto-selected Skills"
+            )
+            section_map["requested_skills"] = f"{title}\n\n{requested_content}"
         if skills_summary:
-            parts.append(
+            section_map["skills_summary"] = (
                 "# Skills\n\n"
                 "The following skills extend capabilities. To use a skill, read its "
                 "`SKILL.md` file via `read_file`.\n\n"
                 f"{skills_summary}"
             )
+        fitted = self._fit_system_prompt_sections(
+            identity=identity,
+            section_map=section_map,
+            max_chars=self._system_prompt_max_chars,
+        )
+        for key in (
+            "bootstrap",
+            "memory",
+            "active_skills",
+            "requested_skills",
+            "skills_summary",
+        ):
+            value = fitted.get(key)
+            if value:
+                parts.append(value)
         result = "\n\n---\n\n".join(parts)
         logger.info(
-            "annolid-bot profile system_prompt workspace=%s bootstrap_ms=%.1f memory_ms=%.1f always_skill_scan_ms=%.1f always_skill_load_ms=%.1f requested_skill_load_ms=%.1f skills_summary_ms=%.1f total_ms=%.1f chars=%d",
+            "annolid-bot profile system_prompt workspace=%s bootstrap_ms=%.1f memory_ms=%.1f always_skill_scan_ms=%.1f always_skill_load_ms=%.1f requested_skill_load_ms=%.1f skills_summary_ms=%.1f total_ms=%.1f chars=%d max_chars=%d auto_skills=%d explicit_skills=%d",
             str(self.workspace),
             (t1 - t0) * 1000.0,
             (t2 - t1) * 1000.0,
@@ -76,6 +128,9 @@ class AgentContextBuilder:
             (t6 - t5) * 1000.0,
             (t6 - started) * 1000.0,
             len(result),
+            self._system_prompt_max_chars,
+            len(auto_skill_names),
+            len(explicit_skill_names),
         )
         return result
 
@@ -90,7 +145,10 @@ class AgentContextBuilder:
         chat_id: Optional[str] = None,
     ) -> List[dict[str, Any]]:
         messages: List[dict[str, Any]] = []
-        system_prompt = self.build_system_prompt(skill_names)
+        system_prompt = self.build_system_prompt(
+            skill_names=skill_names,
+            task_hint=current_message,
+        )
         if channel and chat_id:
             system_prompt += (
                 "\n\n## Current Session\n"
@@ -190,3 +248,90 @@ class AgentContextBuilder:
     ) -> str | List[dict[str, Any]]:
         """Public wrapper used by loops/providers."""
         return self._build_user_content(text, media)
+
+    @staticmethod
+    def _read_int_env(name: str, default: int, *, minimum: int = 0) -> int:
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return max(minimum, int(default))
+        try:
+            value = int(raw)
+        except ValueError:
+            return max(minimum, int(default))
+        return max(minimum, value)
+
+    @staticmethod
+    def _truncate_section(text: str, max_chars: int, label: str) -> str:
+        cleaned = str(text or "")
+        if max_chars <= 0:
+            return ""
+        if len(cleaned) <= max_chars:
+            return cleaned
+        marker = f"\n...[{label} truncated to fit system prompt budget]"
+        keep = max(0, max_chars - len(marker))
+        return cleaned[:keep].rstrip() + marker
+
+    def _fit_system_prompt_sections(
+        self,
+        *,
+        identity: str,
+        section_map: Mapping[str, str],
+        max_chars: int,
+    ) -> dict[str, str]:
+        if max_chars <= 0:
+            return dict(section_map)
+        divider = "\n\n---\n\n"
+        section_order = [
+            ("bootstrap", 0.35),
+            ("memory", 0.14),
+            ("active_skills", 0.2),
+            ("requested_skills", 0.16),
+            ("skills_summary", 0.15),
+        ]
+        present = [
+            (name, weight) for name, weight in section_order if section_map.get(name)
+        ]
+        if not present:
+            return {}
+        divider_count = len(present)
+        overhead = len(identity) + (divider_count * len(divider))
+        available = max_chars - overhead
+        if available <= 0:
+            return {key: "" for key in section_map.keys()}
+        weight_total = sum(weight for _, weight in present) or 1.0
+        budgets: dict[str, int] = {}
+        consumed = 0
+        for idx, (name, weight) in enumerate(present):
+            if idx == len(present) - 1:
+                budget = max(0, available - consumed)
+            else:
+                budget = max(120, int((available * weight) / weight_total))
+                consumed += budget
+            budgets[name] = budget
+        fitted: dict[str, str] = {}
+        for name in section_map.keys():
+            raw = section_map.get(name) or ""
+            if not raw:
+                fitted[name] = ""
+                continue
+            budget = budgets.get(name, len(raw))
+            fitted[name] = self._truncate_section(raw, budget, name)
+
+        result = divider.join([identity, *[fitted[n] for n, _ in present if fitted[n]]])
+        if len(result) <= max_chars:
+            return fitted
+
+        overflow = len(result) - max_chars
+        for name, _ in reversed(present):
+            current = fitted.get(name, "")
+            if not current:
+                continue
+            target = max(120, len(current) - overflow)
+            fitted[name] = self._truncate_section(current, target, name)
+            result = divider.join(
+                [identity, *[fitted[n] for n, _ in present if fitted[n]]]
+            )
+            if len(result) <= max_chars:
+                break
+            overflow = len(result) - max_chars
+        return fitted
