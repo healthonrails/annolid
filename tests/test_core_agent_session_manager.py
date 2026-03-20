@@ -190,6 +190,115 @@ def test_persistent_session_store_sanitizes_loaded_polluted_history(
     ]
 
 
+def test_persistent_session_store_delete_history_message_by_index(
+    tmp_path: Path,
+) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    store = PersistentSessionStore(manager)
+    session_id = "gui:delete-index"
+    store.append_history(
+        session_id,
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+            {"role": "assistant", "content": "done"},
+        ],
+        max_messages=20,
+    )
+    deleted = store.delete_history_message(
+        session_id,
+        history_index=1,
+        expected_role="assistant",
+        expected_content="world",
+    )
+    assert deleted is True
+    history = store.get_history(session_id)
+    assert [item["content"] for item in history] == ["hello", "done"]
+
+
+def test_persistent_session_store_delete_history_message_guard_rejects_mismatch(
+    tmp_path: Path,
+) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    store = PersistentSessionStore(manager)
+    session_id = "gui:delete-guard"
+    store.append_history(
+        session_id,
+        [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ],
+        max_messages=20,
+    )
+    deleted = store.delete_history_message(
+        session_id,
+        history_index=1,
+        expected_role="assistant",
+        expected_content="changed",
+    )
+    assert deleted is False
+    history = store.get_history(session_id)
+    assert [item["content"] for item in history] == ["hello", "world"]
+
+
+def test_persistent_session_store_assigns_message_id_and_deletes_by_message_id(
+    tmp_path: Path,
+) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    store = PersistentSessionStore(manager)
+    session_id = "gui:delete-id"
+    store.append_history(
+        session_id,
+        [
+            {"role": "assistant", "content": "same"},
+            {"role": "assistant", "content": "same"},
+        ],
+        max_messages=20,
+    )
+    history = store.get_history(session_id)
+    first_id = str(history[0].get("message_id") or "")
+    second_id = str(history[1].get("message_id") or "")
+    assert first_id
+    assert second_id
+    assert first_id != second_id
+
+    deleted = store.delete_history_message(
+        session_id,
+        message_id=first_id,
+        expected_role="assistant",
+        expected_content="same",
+    )
+    assert deleted is True
+    remaining = store.get_history(session_id)
+    assert len(remaining) == 1
+    assert str(remaining[0].get("message_id") or "") == second_id
+
+
+def test_persistent_session_store_delete_by_message_id_ignores_content_guard(
+    tmp_path: Path,
+) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    store = PersistentSessionStore(manager)
+    session_id = "gui:delete-id-guard"
+    store.append_history(
+        session_id,
+        [{"role": "assistant", "content": "- [Paper](https://example.com)"}],
+        max_messages=20,
+    )
+    history = store.get_history(session_id)
+    message_id = str(history[0].get("message_id") or "")
+    assert message_id
+
+    deleted = store.delete_history_message(
+        session_id,
+        message_id=message_id,
+        expected_role="assistant",
+        expected_content="Paper https://example.com",
+    )
+    assert deleted is True
+    assert store.get_history(session_id) == []
+
+
 def test_session_manager_overview_includes_counts_and_paths(tmp_path: Path) -> None:
     manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
     session = manager.get_or_create("gui:chat/overview")

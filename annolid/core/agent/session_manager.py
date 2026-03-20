@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any, Dict, List, Mapping, Optional, Sequence
+from uuid import uuid4
 
 from .tool_call_utils import (
     sanitize_tool_call_id,
@@ -235,7 +236,12 @@ class PersistentSessionStore:
     def get_history(self, session_id: str) -> List[Dict[str, Any]]:
         with self._lock:
             session = self._manager.get_or_create(session_id)
-            return self._compact_messages(session.messages)
+            compacted = self._compact_messages(session.messages)
+            if compacted != list(session.messages):
+                session.messages = compacted
+                session.updated_at = datetime.now()
+                self._manager.save(session)
+            return list(session.messages)
 
     def append_history(
         self,
@@ -262,6 +268,55 @@ class PersistentSessionStore:
             session = self._manager.get_or_create(session_id)
             session.clear_messages()
             self._manager.save(session)
+
+    def delete_history_message(
+        self,
+        session_id: str,
+        *,
+        message_id: str = "",
+        history_index: int = -1,
+        expected_role: str = "",
+        expected_content: str = "",
+    ) -> bool:
+        """Delete one persisted history message by absolute index.
+
+        Optional expected role/content guards prevent accidental deletion when
+        the caller's index is stale.
+        """
+        with self._lock:
+            session = self._manager.get_or_create(session_id)
+            session.messages = self._compact_messages(session.messages)
+            idx = -1
+            matched_by_id = False
+            target_id = str(message_id or "").strip()
+            if target_id:
+                for pos, item in enumerate(session.messages):
+                    if str(item.get("message_id") or "").strip() == target_id:
+                        idx = pos
+                        matched_by_id = True
+                        break
+            if idx < 0:
+                idx = int(history_index)
+            if idx < 0 or idx >= len(session.messages):
+                return False
+            candidate = dict(session.messages[idx] or {})
+            if not matched_by_id:
+                want_role = str(expected_role or "").strip().lower()
+                if (
+                    want_role
+                    and str(candidate.get("role") or "").strip().lower() != want_role
+                ):
+                    return False
+                want_content = str(expected_content or "").strip()
+                if (
+                    want_content
+                    and str(candidate.get("content") or "").strip() != want_content
+                ):
+                    return False
+            del session.messages[idx]
+            session.updated_at = datetime.now()
+            self._manager.save(session)
+            return True
 
     def get_facts(self, session_id: str) -> Dict[str, str]:
         with self._lock:
@@ -536,6 +591,7 @@ class PersistentSessionStore:
         cls, message: Mapping[str, Any]
     ) -> Optional[Dict[str, Any]]:
         msg = dict(message)
+        msg["message_id"] = cls._sanitize_message_id(msg.get("message_id"))
         role = str(msg.get("role") or "")
         content = msg.get("content")
         if role in {"user", "assistant", "system"}:
@@ -555,6 +611,15 @@ class PersistentSessionStore:
             else:
                 msg.pop("tool_call_id", None)
         return msg
+
+    @classmethod
+    def _sanitize_message_id(cls, raw_id: Any) -> str:
+        text = str(raw_id or "").strip()
+        if text:
+            safe = cls._sanitize_tool_call_id_segment(text)
+            if safe:
+                return safe
+        return uuid4().hex
 
     @classmethod
     def _sanitize_assistant_tool_calls(cls, payload: Any) -> List[Dict[str, Any]]:

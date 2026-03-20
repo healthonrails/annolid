@@ -35,6 +35,27 @@ def clear_chat_session(
     store.clear_session(str(session_id or "gui:annolid_bot:default"))
 
 
+def delete_chat_history_message(
+    session_id: str,
+    *,
+    message_id: str = "",
+    history_index: int = -1,
+    expected_role: str = "",
+    expected_content: str = "",
+    session_store: PersistentSessionStore | None = None,
+) -> bool:
+    store = session_store or get_chat_session_store()
+    return bool(
+        store.delete_history_message(
+            str(session_id or "gui:annolid_bot:default"),
+            message_id=str(message_id or ""),
+            history_index=int(history_index),
+            expected_role=str(expected_role or ""),
+            expected_content=str(expected_content or ""),
+        )
+    )
+
+
 def emit_chat_chunk(*, widget: Any, chunk: str, turn_id: str = "") -> None:
     gui_emit_chunk(widget=widget, chunk=chunk, turn_id=turn_id)
 
@@ -115,6 +136,7 @@ __all__ = [
     "AgentSessionManager",
     "PersistentSessionStore",
     "clear_chat_session",
+    "delete_chat_history_message",
     "emit_chat_chunk",
     "emit_chat_final",
     "emit_chat_progress",

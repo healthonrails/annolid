@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from annolid.services.chat_session import (
     clear_chat_session,
+    delete_chat_history_message,
     emit_chat_chunk,
     emit_chat_final,
     emit_chat_progress,
@@ -41,6 +42,24 @@ def test_chat_session_wrappers(monkeypatch) -> None:
         def clear_session(self, session_id):
             captured["cleared"] = session_id
 
+        def delete_history_message(
+            self,
+            session_id,
+            *,
+            message_id="",
+            history_index,
+            expected_role="",
+            expected_content="",
+        ):
+            captured["deleted"] = {
+                "session_id": session_id,
+                "message_id": message_id,
+                "history_index": history_index,
+                "expected_role": expected_role,
+                "expected_content": expected_content,
+            }
+            return True
+
     monkeypatch.setattr(
         session_mod,
         "gui_emit_chunk",
@@ -68,6 +87,14 @@ def test_chat_session_wrappers(monkeypatch) -> None:
     )
 
     clear_chat_session("gui:test", session_store=_Store())
+    deleted = delete_chat_history_message(
+        "gui:test",
+        message_id="msg-3",
+        history_index=3,
+        expected_role="assistant",
+        expected_content="done",
+        session_store=_Store(),
+    )
     emit_chat_chunk(widget="widget", chunk="hi", turn_id="turn-1")
     progress = emit_chat_progress(
         widget="widget",
@@ -101,6 +128,10 @@ def test_chat_session_wrappers(monkeypatch) -> None:
     )
 
     assert captured["cleared"] == "gui:test"
+    assert deleted is True
+    assert captured["deleted"]["session_id"] == "gui:test"
+    assert captured["deleted"]["message_id"] == "msg-3"
+    assert captured["deleted"]["history_index"] == 3
     assert captured["chunk"]["chunk"] == "hi"
     assert captured["progress"]["update"] == "loading"
     assert progress == captured["progress"]

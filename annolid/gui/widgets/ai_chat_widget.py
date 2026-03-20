@@ -251,6 +251,7 @@ class _ChatBubble(QtWidgets.QFrame):
         on_copy=None,
         on_regenerate=None,
         on_stop=None,
+        on_delete=None,
         on_open_link=None,
         on_open_link_in_browser=None,
         allow_regenerate: bool = False,
@@ -265,6 +266,7 @@ class _ChatBubble(QtWidgets.QFrame):
         self._on_copy = on_copy
         self._on_regenerate = on_regenerate
         self._on_stop = on_stop
+        self._on_delete = on_delete
         self._on_open_link = on_open_link
         self._on_open_link_in_browser = on_open_link_in_browser
         self._allow_regenerate = bool(allow_regenerate)
@@ -354,6 +356,7 @@ class _ChatBubble(QtWidgets.QFrame):
         self.copy_button = self._create_action_button("📋", "Copy text")
         self.regenerate_button = self._create_action_button("🔄", "Regenerate")
         self.stop_button = self._create_action_button("⏹", "Stop running")
+        self.delete_button = self._create_action_button("🗑", "Delete message")
         self.regenerate_button.setVisible(
             (not self._is_user) and self._allow_regenerate
         )
@@ -364,11 +367,13 @@ class _ChatBubble(QtWidgets.QFrame):
         self.copy_button.clicked.connect(self._copy_text)
         self.regenerate_button.clicked.connect(self._regenerate)
         self.stop_button.clicked.connect(self._stop)
+        self.delete_button.clicked.connect(self._delete)
 
         self.actions_layout.addWidget(self.speak_button)
         self.actions_layout.addWidget(self.copy_button)
         self.actions_layout.addWidget(self.regenerate_button)
         self.actions_layout.addWidget(self.stop_button)
+        self.actions_layout.addWidget(self.delete_button)
         self.actions_layout.addStretch(1)
 
         self.footer_layout.addLayout(self.actions_layout)
@@ -472,6 +477,9 @@ class _ChatBubble(QtWidgets.QFrame):
     def text(self) -> str:
         return str(self.message_doc.toPlainText() or "").strip()
 
+    def raw_text(self) -> str:
+        return str(self._raw_text or "").strip()
+
     def _render_markdown(self, text: str) -> None:
         content = str(text or "")
         if hasattr(self.message_doc, "setMarkdown"):
@@ -551,6 +559,10 @@ class _ChatBubble(QtWidgets.QFrame):
         if callable(self._on_stop):
             self._on_stop()
 
+    def _delete(self) -> None:
+        if callable(self._on_delete):
+            self._on_delete(self)
+
     def set_stop_visible(self, visible: bool) -> None:
         self.stop_button.setVisible(bool(visible))
 
@@ -600,6 +612,10 @@ class _ChatBubble(QtWidgets.QFrame):
                 lambda _checked=False,
                 value=link: QtGui.QGuiApplication.clipboard().setText(value)
             )
+        if callable(self._on_delete):
+            menu.addSeparator()
+            delete_action = menu.addAction("Delete Message")
+            delete_action.triggered.connect(self._delete)
 
         menu.exec_(self.message_view.viewport().mapToGlobal(position))
 
@@ -1744,6 +1760,9 @@ class AIChatWidget(QtWidgets.QWidget):
         text: str,
         *,
         is_user: bool,
+        history_index: Optional[int] = None,
+        history_message_id: str = "",
+        history_role: str = "",
         allow_regenerate: bool = False,
         allow_stop: bool = False,
     ) -> _ChatBubble:
@@ -1765,6 +1784,7 @@ class AIChatWidget(QtWidgets.QWidget):
             on_copy=self._copy_message_text,
             on_regenerate=self._regenerate_from_bubble,
             on_stop=self._stop_running_response,
+            on_delete=self._confirm_delete_bubble,
             on_open_link=self._open_chat_link_default,
             on_open_link_in_browser=self._open_chat_link_in_browser,
             allow_regenerate=allow_regenerate,
@@ -1777,6 +1797,15 @@ class AIChatWidget(QtWidgets.QWidget):
         )
         bubble.apply_layout_width(
             self._bubble_max_width() - 24, self._bubble_max_width()
+        )
+        bubble.setProperty(
+            "history_index",
+            int(history_index) if history_index is not None else -1,
+        )
+        bubble.setProperty("history_message_id", str(history_message_id or "").strip())
+        bubble.setProperty(
+            "history_role",
+            str(history_role or ("user" if is_user else "assistant")),
         )
         # Remove addStretch and Alignment to force full width
         row.addWidget(bubble)
@@ -1797,6 +1826,90 @@ class AIChatWidget(QtWidgets.QWidget):
         clipboard = QtGui.QGuiApplication.clipboard()
         clipboard.setText(str(text or ""))
         self.status_label.setText("Message copied.")
+
+    def _confirm_delete_bubble(self, bubble: _ChatBubble) -> None:
+        if not isinstance(bubble, _ChatBubble):
+            return
+        if self.is_streaming_chat and bubble is self._current_response_bubble:
+            self.status_label.setText("Wait for current response to finish.")
+            return
+
+        role = str(bubble.property("history_role") or "").strip().lower()
+        role_label = "message" if role not in {"user", "assistant", "system"} else role
+        confirm = QtWidgets.QMessageBox.question(
+            self,
+            "Delete Message",
+            f"Delete this {role_label} message?\n\nThis action cannot be undone.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if confirm != QtWidgets.QMessageBox.Yes:
+            return
+
+        deleted_idx = int(bubble.property("history_index") or -1)
+        message_id = str(bubble.property("history_message_id") or "").strip()
+        persisted_deleted = False
+        if message_id or deleted_idx >= 0:
+            persisted_deleted = bool(
+                self._session_store.delete_history_message(
+                    self.session_id,
+                    message_id=message_id,
+                    history_index=deleted_idx,
+                    expected_role=str(bubble.property("history_role") or ""),
+                    expected_content=str(bubble.raw_text() or "").strip(),
+                )
+            )
+            if not persisted_deleted:
+                self.status_label.setText(
+                    "Message changed in history; reload session and try again."
+                )
+                return
+
+        removed = self._remove_bubble_from_chat_layout(bubble)
+        if not removed:
+            return
+        if persisted_deleted and deleted_idx >= 0:
+            self._shift_visible_history_indices_after_delete(deleted_idx)
+        if bubble is self._current_response_bubble:
+            self._current_response_bubble = None
+        if message_id or deleted_idx >= 0:
+            self.status_label.setText("Message deleted.")
+        else:
+            self.status_label.setText("Message removed from chat view.")
+        self._update_empty_state_visibility()
+        QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
+        QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def _remove_bubble_from_chat_layout(self, bubble: _ChatBubble) -> bool:
+        for idx in range(self.chat_layout.count()):
+            item = self.chat_layout.itemAt(idx)
+            if item is None:
+                continue
+            row_widget = item.widget()
+            if row_widget is None:
+                continue
+            row_layout = row_widget.layout()
+            if row_layout is None:
+                continue
+            found = False
+            for j in range(row_layout.count()):
+                if row_layout.itemAt(j).widget() is bubble:
+                    found = True
+                    break
+            if not found:
+                continue
+            removed_item = self.chat_layout.takeAt(idx)
+            removed_widget = removed_item.widget()
+            if removed_widget is not None:
+                removed_widget.deleteLater()
+            return True
+        return False
+
+    def _shift_visible_history_indices_after_delete(self, deleted_idx: int) -> None:
+        for row_bubble in self._iter_chat_bubbles():
+            current_idx = int(row_bubble.property("history_index") or -1)
+            if current_idx > deleted_idx:
+                row_bubble.setProperty("history_index", current_idx - 1)
 
     def _regenerate_from_bubble(self, _text: str) -> None:
         prompt = str(self._last_user_prompt or "").strip()
@@ -2003,19 +2116,7 @@ class AIChatWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _update_empty_state_visibility(self) -> None:
-        bubble_count = 0
-        for idx in range(self.chat_layout.count()):
-            item = self.chat_layout.itemAt(idx)
-            if item is None:
-                continue
-            row = item.layout()
-            if row is None:
-                continue
-            for j in range(row.count()):
-                widget = row.itemAt(j).widget()
-                if isinstance(widget, _ChatBubble):
-                    bubble_count += 1
-        self.empty_state_label.setVisible(bubble_count == 0)
+        self.empty_state_label.setVisible(len(self._iter_chat_bubbles()) == 0)
 
     def _load_session_history_into_bubbles(self, session_id: str) -> None:
         self._clear_chat_bubbles()
@@ -2023,17 +2124,39 @@ class AIChatWidget(QtWidgets.QWidget):
             history = self._session_store.get_history(str(session_id or ""))
         except Exception:
             history = []
-        for msg in history[-80:]:
+        start_idx = max(0, len(history) - 80)
+        for idx, msg in enumerate(history[start_idx:], start=start_idx):
             role = str(msg.get("role") or "")
             content = str(msg.get("content") or "").strip()
             if not content:
                 continue
             if role == "user":
-                self._add_bubble("You", content, is_user=True)
+                self._add_bubble(
+                    "You",
+                    content,
+                    is_user=True,
+                    history_index=idx,
+                    history_message_id=str(msg.get("message_id") or ""),
+                    history_role=role,
+                )
             elif role == "assistant":
-                self._add_bubble(self._assistant_display_name(), content, is_user=False)
+                self._add_bubble(
+                    self._assistant_display_name(),
+                    content,
+                    is_user=False,
+                    history_index=idx,
+                    history_message_id=str(msg.get("message_id") or ""),
+                    history_role=role,
+                )
             elif role == "system":
-                self._add_bubble("System", content, is_user=False)
+                self._add_bubble(
+                    "System",
+                    content,
+                    is_user=False,
+                    history_index=idx,
+                    history_message_id=str(msg.get("message_id") or ""),
+                    history_role=role,
+                )
 
     def open_session_manager_dialog(self) -> None:
         dialog = ChatSessionManagerDialog(
