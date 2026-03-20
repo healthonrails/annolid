@@ -19,12 +19,46 @@ def get_chat_workspace() -> Path:
     return get_agent_workspace_path()
 
 
+def _detect_annolid_repo_root() -> Optional[Path]:
+    cur = Path(__file__).resolve()
+    for parent in [cur] + list(cur.parents):
+        if (parent / "pyproject.toml").exists() and (parent / ".git").exists():
+            return parent
+    return None
+
+
+def get_chat_default_allowed_read_roots() -> list[str]:
+    repo_root = _detect_annolid_repo_root()
+    if repo_root is None:
+        return []
+    return [str(repo_root)]
+
+
+def _normalize_allowed_read_roots(read_roots: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in [*get_chat_default_allowed_read_roots(), *(read_roots or [])]:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        try:
+            canonical = str(Path(text).expanduser().resolve())
+        except Exception:
+            canonical = text
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        ordered.append(canonical)
+    return ordered
+
+
 def get_chat_allowed_read_roots() -> list[str]:
     try:
         cfg = load_config()
-        return list(getattr(cfg.tools, "allowed_read_roots", []) or [])
+        configured = list(getattr(cfg.tools, "allowed_read_roots", []) or [])
+        return _normalize_allowed_read_roots(configured)
     except Exception:
-        return []
+        return _normalize_allowed_read_roots([])
 
 
 def build_chat_workspace_roots() -> list[Path]:
@@ -109,6 +143,7 @@ __all__ = [
     "get_chat_attachment_roots",
     "get_chat_allowed_read_roots",
     "get_chat_camera_snapshots_dir",
+    "get_chat_default_allowed_read_roots",
     "get_chat_email_defaults",
     "get_chat_realtime_defaults",
     "get_chat_tutorials_dir",

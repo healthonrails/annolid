@@ -31,12 +31,44 @@ class ContextToolPreparation:
     t_after_policy: float
 
 
+def _detect_annolid_repo_root() -> Path | None:
+    cur = Path(__file__).resolve()
+    for parent in [cur] + list(cur.parents):
+        if (parent / "pyproject.toml").exists() and (parent / ".git").exists():
+            return parent
+    return None
+
+
+def _normalize_allowed_read_roots(read_roots: List[str]) -> List[str]:
+    ordered: List[str] = []
+    seen: set[str] = set()
+    defaults: list[str] = []
+    repo_root = _detect_annolid_repo_root()
+    if repo_root is not None:
+        defaults.append(str(repo_root))
+    for raw in [*defaults, *(read_roots or [])]:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        try:
+            canonical = str(Path(text).expanduser().resolve())
+        except Exception:
+            canonical = text
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        ordered.append(canonical)
+    return ordered
+
+
 def load_execution_prerequisites() -> ExecutionPrerequisites:
     workspace = get_agent_workspace_path()
     t_after_workspace = time.perf_counter()
     agent_cfg = load_config()
     t_after_config = time.perf_counter()
-    allowed_read_roots = list(getattr(agent_cfg.tools, "allowed_read_roots", []) or [])
+    allowed_read_roots = _normalize_allowed_read_roots(
+        list(getattr(agent_cfg.tools, "allowed_read_roots", []) or [])
+    )
     return ExecutionPrerequisites(
         workspace=workspace,
         agent_cfg=agent_cfg,

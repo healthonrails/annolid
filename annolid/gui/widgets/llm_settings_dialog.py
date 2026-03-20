@@ -14,6 +14,7 @@ from annolid.services.agent_update import (
     execute_gui_agent_rollback,
     run_agent_update,
 )
+from annolid.services.chat_runtime import get_chat_default_allowed_read_roots
 from annolid.utils.llm_settings import (
     detect_openai_codex_auth_state,
     default_settings,
@@ -596,6 +597,7 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         skills_watch_default = False
         memory_mode_default = "semantic_keyword"
         skills_extra_dirs_default: list[str] = []
+        allowed_read_roots_default: list[str] = []
         if self._agent_config is not None:
             skills_cfg = getattr(self._agent_config, "skills", None)
             skills_load_cfg = getattr(skills_cfg, "load", None)
@@ -610,6 +612,14 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             ).strip()
             skills_extra_dirs_default = list(
                 getattr(skills_load_cfg, "extra_dirs", []) or []
+            )
+            allowed_read_roots_default = list(
+                getattr(
+                    getattr(self._agent_config, "tools", None),
+                    "allowed_read_roots",
+                    [],
+                )
+                or []
             )
 
         self.skills_hot_reload_checkbox = QtWidgets.QCheckBox(
@@ -637,6 +647,58 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             os.pathsep.join(skills_extra_dirs_default)
         )
         layout.addRow("Skill source locations:", self.skill_source_locations_edit)
+
+        self._default_allowed_bot_roots = list(get_chat_default_allowed_read_roots())
+        defaults_text = (
+            "\n".join(self._default_allowed_bot_roots)
+            if self._default_allowed_bot_roots
+            else "(none detected)"
+        )
+        defaults_label = QtWidgets.QLabel(
+            "Default allowed bot folder(s):\n" + defaults_text
+        )
+        defaults_label.setWordWrap(True)
+        defaults_label.setStyleSheet("color: #6b7280;")
+        layout.addRow(defaults_label)
+
+        allowed_widget = QtWidgets.QWidget(content_widget)
+        allowed_layout = QtWidgets.QVBoxLayout(allowed_widget)
+        allowed_layout.setContentsMargins(0, 0, 0, 0)
+        allowed_layout.setSpacing(6)
+
+        self.allowed_bot_folders_list = QtWidgets.QListWidget(allowed_widget)
+        self.allowed_bot_folders_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.ExtendedSelection
+        )
+        default_roots_set = {str(p) for p in self._default_allowed_bot_roots}
+        seen_custom: set[str] = set()
+        for raw in allowed_read_roots_default:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            normalized = str(QtCore.QDir(text).absolutePath())
+            if normalized in default_roots_set or normalized in seen_custom:
+                continue
+            seen_custom.add(normalized)
+            self.allowed_bot_folders_list.addItem(normalized)
+        allowed_layout.addWidget(self.allowed_bot_folders_list)
+
+        allowed_actions = QtWidgets.QHBoxLayout()
+        self.allowed_bot_add_button = QtWidgets.QPushButton(
+            "Add Folder", allowed_widget
+        )
+        self.allowed_bot_add_button.clicked.connect(self._add_allowed_bot_folder)
+        self.allowed_bot_remove_button = QtWidgets.QPushButton(
+            "Remove Selected", allowed_widget
+        )
+        self.allowed_bot_remove_button.clicked.connect(
+            self._remove_selected_allowed_bot_folders
+        )
+        allowed_actions.addWidget(self.allowed_bot_add_button)
+        allowed_actions.addWidget(self.allowed_bot_remove_button)
+        allowed_actions.addStretch(1)
+        allowed_layout.addLayout(allowed_actions)
+        layout.addRow("Extra allowed bot folders:", allowed_widget)
 
         update_note = QtWidgets.QLabel(
             "Update settings control automatic checks and release channel policy."
@@ -899,6 +961,42 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         )
         if path:
             self.tts_chatterbox_voice_edit.setText(path)
+
+    def _add_allowed_bot_folder(self) -> None:
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Select Allowed Folder for Annolid Bot",
+            os.path.expanduser("~"),
+        )
+        if not folder:
+            return
+        normalized = str(QtCore.QDir(folder).absolutePath())
+        if not normalized:
+            return
+        existing = set(self._collect_allowed_bot_folders()) | set(
+            str(p) for p in getattr(self, "_default_allowed_bot_roots", [])
+        )
+        if normalized in existing:
+            return
+        self.allowed_bot_folders_list.addItem(normalized)
+
+    def _remove_selected_allowed_bot_folders(self) -> None:
+        for item in list(self.allowed_bot_folders_list.selectedItems()):
+            row = self.allowed_bot_folders_list.row(item)
+            if row >= 0:
+                self.allowed_bot_folders_list.takeItem(row)
+
+    def _collect_allowed_bot_folders(self) -> list[str]:
+        values: list[str] = []
+        seen: set[str] = set()
+        for idx in range(self.allowed_bot_folders_list.count()):
+            item = self.allowed_bot_folders_list.item(idx)
+            text = str(item.text() if item is not None else "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            values.append(text)
+        return values
 
     def _browse_pocket_prompt(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -1559,6 +1657,9 @@ class LLMSettingsDialog(QtWidgets.QDialog):
                     part.strip() for part in raw_extra.split(os.pathsep) if part.strip()
                 ]
                 self._agent_config.skills.load.extra_dirs = extra_dirs
+                self._agent_config.tools.allowed_read_roots = (
+                    self._collect_allowed_bot_folders()
+                )
                 memory_mode = str(
                     self.memory_mode_combo.currentData() or "semantic_keyword"
                 ).strip()

@@ -23,6 +23,7 @@ def test_chat_runtime_workspace_and_roots(monkeypatch, tmp_path: Path) -> None:
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    default_root = str(tmp_path / "annolid_repo")
 
     class _Cfg:
         class tools:
@@ -30,6 +31,11 @@ def test_chat_runtime_workspace_and_roots(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(chat_runtime_mod, "get_agent_workspace_path", lambda: workspace)
     monkeypatch.setattr(chat_runtime_mod, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(
+        chat_runtime_mod,
+        "get_chat_default_allowed_read_roots",
+        lambda: [default_root],
+    )
     monkeypatch.setattr(
         chat_runtime_mod,
         "build_workspace_roots",
@@ -45,11 +51,22 @@ def test_chat_runtime_workspace_and_roots(monkeypatch, tmp_path: Path) -> None:
     )
 
     assert get_chat_workspace() == workspace
-    assert get_chat_allowed_read_roots() == ["/tmp/alpha", "/tmp/beta"]
-    assert build_chat_workspace_roots() == [workspace, Path("/tmp/alpha")]
-    assert build_chat_pdf_search_roots() == [workspace / "pdfs", Path("/tmp/beta")]
-    assert build_chat_vcs_read_roots() == [str(workspace), "/tmp/alpha"]
-    assert get_chat_attachment_roots() == [workspace, "/tmp/alpha", "/tmp/beta"]
+    alpha_resolved = str(Path("/tmp/alpha").resolve())
+    beta_resolved = str(Path("/tmp/beta").resolve())
+    assert get_chat_allowed_read_roots() == [
+        default_root,
+        alpha_resolved,
+        beta_resolved,
+    ]
+    assert build_chat_workspace_roots() == [workspace, Path(default_root)]
+    assert build_chat_pdf_search_roots() == [workspace / "pdfs", Path(alpha_resolved)]
+    assert build_chat_vcs_read_roots() == [str(workspace), default_root]
+    assert get_chat_attachment_roots() == [
+        workspace,
+        default_root,
+        alpha_resolved,
+        beta_resolved,
+    ]
 
 
 def test_resolve_chat_pdf_path_uses_workspace_roots(
@@ -97,6 +114,11 @@ def test_chat_runtime_config_defaults_and_dirs(monkeypatch, tmp_path: Path) -> N
 
     monkeypatch.setattr(chat_runtime_mod, "get_agent_workspace_path", lambda: workspace)
     monkeypatch.setattr(chat_runtime_mod, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(
+        chat_runtime_mod,
+        "get_chat_default_allowed_read_roots",
+        lambda: [],
+    )
 
     memory_dir = workspace / "memory"
     memory_dir.mkdir()
