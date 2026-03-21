@@ -544,14 +544,17 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
                         dock.hide()
         else:
             # Restore previously hidden docks.
-            for dock, was_visible in self._other_docks_states.items():
+            restore_states = list(self._other_docks_states.items())
+            # Clear first so re-entrant visibility changes can store fresh state
+            # without being wiped after this restore pass.
+            self._other_docks_states.clear()
+            for dock, was_visible in restore_states:
                 if was_visible:
                     try:
                         dock.show()
                         dock.raise_()
                     except (RuntimeError, Exception):
                         continue
-            self._other_docks_states.clear()
 
 
 def main(argv=None, *, config=None):
