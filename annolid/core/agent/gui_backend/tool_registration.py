@@ -23,6 +23,7 @@ _WRAPPED_GUI_TOOL_SPECS: Tuple[Tuple[str, str], ...] = (
     ("open_pdf_callback", "open_pdf"),
     ("pdf_get_state_callback", "pdf_get_state"),
     ("pdf_get_text_callback", "pdf_get_text"),
+    ("pdf_summarize_callback", "pdf_summarize"),
     ("pdf_find_sections_callback", "pdf_find_sections"),
     ("set_frame_callback", "set_frame"),
     ("set_prompt_callback", "set_prompt"),
@@ -56,6 +57,7 @@ _WRAPPED_GUI_TOOL_SPECS: Tuple[Tuple[str, str], ...] = (
     ("arxiv_search_callback", "arxiv_search"),
     ("list_pdfs_callback", "list_pdfs"),
     ("save_citation_callback", "save_citation"),
+    ("verify_citations_callback", "verify_citations"),
     ("generate_annolid_tutorial_callback", "generate_annolid_tutorial"),
     ("self_update_callback", "self_update"),
 )

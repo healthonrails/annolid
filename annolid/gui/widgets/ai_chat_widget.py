@@ -86,6 +86,10 @@ from annolid.utils.citations import (
     validate_basic_citation_fields,
     validate_citation_metadata,
 )
+from annolid.services.citation_verify import (
+    build_citation_verification_report,
+    write_citation_verification_report,
+)
 
 
 def _safe_stream_source_for_bot(source: str) -> str:
@@ -2340,6 +2344,7 @@ class AIChatWidget(QtWidgets.QWidget):
         bib_path: Optional[Path] = None,
         validate_before_save: bool = True,
         strict_validation: bool = False,
+        verify_after_save: bool = False,
     ) -> Dict[str, Any]:
         source_norm = str(source or "auto").strip().lower()
         if source_norm not in {"auto", "pdf", "web"}:
@@ -2412,7 +2417,7 @@ class AIChatWidget(QtWidgets.QWidget):
         entries = load_bibtex(target_bib) if target_bib.exists() else []
         updated, created = upsert_entry(entries, entry)
         save_bibtex(target_bib, updated, sort_keys=True)
-        return {
+        payload: Dict[str, Any] = {
             "ok": True,
             "created": bool(created),
             "key": entry.key,
@@ -2420,6 +2425,24 @@ class AIChatWidget(QtWidgets.QWidget):
             "source": used_source,
             "validation": validation,
         }
+        if bool(verify_after_save):
+            report = build_citation_verification_report(
+                key=str(entry.key or ""),
+                bib_file=str(target_bib),
+                source=used_source,
+                fields=dict(entry.fields),
+                validation=validation,
+            )
+            payload["verification"] = dict(report.get("verification") or {})
+            report_path = write_citation_verification_report(
+                report,
+                reports_dir=target_bib.parent
+                / ".annolid_cache"
+                / "citation_verification",
+                report_stem=f"{target_bib.stem}_{entry.key}",
+            )
+            payload["verification_report"] = str(report_path)
+        return payload
 
     def _open_citation_manager(self) -> None:
         dialog = CitationManagerDialog(
@@ -2988,7 +3011,8 @@ class AIChatWidget(QtWidgets.QWidget):
         self._set_bot_action_result("pdf_get_state", payload)
 
     @QtCore.Slot(int, int)
-    def bot_pdf_get_text(self, max_chars: int, pages: int) -> None:
+    @QtCore.Slot(int, int, int)
+    def bot_pdf_get_text(self, max_chars: int, pages: int, start_page: int = 0) -> None:
         manager = self._resolve_pdf_manager()
         if manager is None:
             payload = {"ok": False, "error": "PDF manager is unavailable."}
@@ -2996,7 +3020,11 @@ class AIChatWidget(QtWidgets.QWidget):
             self.status_label.setText("Bot action failed: PDF manager unavailable.")
             return
         try:
-            payload = manager.get_pdf_text(max_chars=int(max_chars), pages=int(pages))
+            payload = manager.get_pdf_text(
+                max_chars=int(max_chars),
+                pages=int(pages),
+                start_page=int(start_page or 0),
+            )
         except Exception as exc:
             payload = {"ok": False, "error": str(exc)}
         self._set_bot_action_result("pdf_get_text", payload)

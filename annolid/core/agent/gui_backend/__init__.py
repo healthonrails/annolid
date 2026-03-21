@@ -103,6 +103,7 @@ from .tool_handlers_citations import (
     normalize_citation_key,
     resolve_bib_output_path,
     save_citation_tool,
+    verify_citations_tool,
 )
 from .tool_handlers_filesystem import rename_file_tool
 from .tool_handlers_realtime import (
@@ -263,6 +264,7 @@ __all__ = [
     "save_citation_tool",
     "add_citation_raw_tool",
     "list_citations_tool",
+    "verify_citations_tool",
     "start_realtime_stream_tool",
     "stop_realtime_stream_tool",
     "get_realtime_status_tool",

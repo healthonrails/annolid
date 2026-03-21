@@ -108,9 +108,68 @@ The report output is designed to support common ML reporting practice:
 - explicit dataset/model/split metadata
 - primary test metrics in a compact table
 - confidence intervals when the source metrics support them
+- explicit quality checks that flag missing CI coverage, weak sample size, or run-stability gaps
 - artifact inventory for confusion matrices, curves, and raw metric files
 - reproducibility notes so the bot reports from saved artifacts instead of handwritten numbers
 
 For `yolo`, prefer launching evaluation with `save_json=true` so Ultralytics writes `predictions.json`. When the run directory also lets the report tool resolve a COCO-style annotation file from `args.yaml` and the dataset YAML, `annolid_eval_report` can add deterministic bootstrap confidence intervals for mAP@50 and mAP@50-95 instead of leaving those cells as `NA`.
 
 For `behavior_classifier`, the eval launcher can now also write confusion-matrix and precision-recall curve figures directly during evaluation via `--plot-dir`, so the resulting run is closer to paper-ready without a separate plotting step.
+
+## Citation Integrity Workflow
+
+Annolid Bot and the Citation Manager now support citation verification reports for research-pipeline quality checks.
+
+- `gui_save_citation` supports `verify_after_save=true` to emit a per-entry integrity result and report artifact.
+- `gui_verify_citations` verifies an existing `.bib` file in batch and returns `verified/suspicious/hallucinated/skipped` counts plus an aggregate integrity score.
+- Direct command example: `verify citations from refs.bib limit 200`
+- Citation Manager dialog now includes:
+  - `Verify after save` for context saves
+  - `Verify .bib` for batch verification of the selected BibTeX file
+
+Report artifacts are written under `.annolid_cache/citation_verification/` next to the selected `.bib` file.
+
+`annolid_eval_report` can optionally enforce citation-quality gates when generating paper-ready model reports:
+
+- `citation_gate=true` enables citation checks
+- `citation_report_path` points to a batch verification report JSON (or auto-discovery can be used)
+- `citation_hallucinated_max` sets a hard fail threshold
+- `citation_suspicious_rate_warn` and `citation_integrity_min_warn` set warning thresholds
+- `citation_gate_required=true` upgrades missing citation reports from warn to fail
+
+## Novelty Preflight
+
+For paper-drafting workflows, use `annolid_novelty_check` before writing claims.
+
+- It scores lexical overlap between your proposed idea and related-work summaries.
+- It reports coverage quality (`low/medium/high`) for the provided literature context.
+- It returns a recommendation:
+  - `proceed` when overlap is low and coverage is acceptable
+  - `differentiate` when overlap is moderate or literature coverage is weak
+  - `abort` when overlap crosses the configured high-risk threshold
+
+You can provide related work inline (`related_work`) or via `related_work_json_path`.
+
+## Unified Paper-Run Report
+
+To consolidate paper-drafting signals in one artifact, use `annolid_paper_run_report`.
+
+- It keeps `annolid_eval_report` unchanged and composes a new additive report.
+- It merges:
+  - model evaluation table from `annolid_eval_report`,
+  - citation verification batch summary,
+  - novelty preflight summary,
+  - warnings and reproducibility checklist.
+- Inputs can be passed as an in-memory eval report object or as `eval_report_json_path`, plus optional `citation_report_path` and `novelty_report_path`.
+- It returns a unified markdown+JSON payload and can optionally write files when `report_dir` is provided with `allow_mutation=true`.
+
+### Paper-Ready Quality Gates
+
+For export-time paper readiness, `annolid_paper_run_report` supports configurable gates:
+
+- `paper_ready_gate=true` enables gating checks.
+- `citation_integrity_floor` sets the minimum allowed citation integrity score (`0.0` to `1.0`).
+- `novelty_coverage_floor` sets the minimum allowed novelty coverage score (`idea_token_coverage`, `0.0` to `1.0`).
+- `require_citation_summary` and `require_novelty_summary` control whether missing summaries are treated as blocking failures.
+
+When `paper_ready_gate=true` and a gate check fails, file export to `report_dir` is blocked and the tool returns `ok=false` with the assembled report payload for inspection.

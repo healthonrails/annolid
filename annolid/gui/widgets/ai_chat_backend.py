@@ -89,12 +89,17 @@ from annolid.services.chat_backend_support import (
     gui_sanitize_final_response_text,
     gui_apply_web_response_fallbacks,
     gui_ensure_non_empty_final_text,
+    gui_looks_like_raw_pdf_extract_response,
     gui_log_agent_result,
+    gui_summarize_active_pdf_with_cache,
     gui_should_apply_web_refusal_fallback,
     gui_wrap_tool_callback,
     list_available_pdfs_in_roots,
     looks_like_local_access_refusal,
     looks_like_knowledge_gap_response,
+    looks_like_pdf_phrase_miss_response,
+    looks_like_pdf_summary_request,
+    looks_like_pdf_read_promise,
     looks_like_open_pdf_suggestion,
     looks_like_open_url_suggestion,
     looks_like_url_request,
@@ -141,6 +146,7 @@ from annolid.services.chat_citations import (
     normalize_citation_key as gui_normalize_citation_key,
     resolve_bib_output_path as gui_resolve_bib_output_path,
     save_citation_tool as gui_save_citation_tool,
+    verify_citations_tool as gui_verify_citations_tool,
 )
 from annolid.services.chat_filesystem import (
     rename_file_tool as gui_rename_file_tool,
@@ -1210,6 +1216,7 @@ class StreamingChatTask(QRunnable):
                 "open_pdf": self._tool_gui_open_pdf,
                 "pdf_get_state": self._tool_gui_pdf_get_state,
                 "pdf_get_text": self._tool_gui_pdf_get_text,
+                "pdf_summarize": self._tool_gui_pdf_summarize,
                 "pdf_find_sections": self._tool_gui_pdf_find_sections,
                 "set_frame": self._tool_gui_set_frame,
                 "set_prompt": self._tool_gui_set_chat_prompt,
@@ -1243,6 +1250,7 @@ class StreamingChatTask(QRunnable):
                 "arxiv_search": self._tool_gui_arxiv_search,
                 "list_pdfs": self._tool_gui_list_pdfs,
                 "save_citation": self._tool_gui_save_citation,
+                "verify_citations": self._tool_gui_verify_citations,
                 "generate_annolid_tutorial": self._tool_gui_generate_annolid_tutorial,
                 "self_update": self._tool_gui_self_update,
             },
@@ -1280,6 +1288,7 @@ class StreamingChatTask(QRunnable):
             text, tools=tools, tool_run_count=tool_run_count
         )
         text = self._apply_pdf_response_fallback(text, tool_run_count=tool_run_count)
+        text = self._upgrade_pdf_summary_response(text)
         text, used_recovery = self._apply_empty_ollama_recovery(
             text,
             used_direct_gui_fallback=used_direct_gui_fallback,
@@ -1369,6 +1378,14 @@ class StreamingChatTask(QRunnable):
         *,
         tool_run_count: int,
     ) -> Tuple[str, bool, str]:
+        prompt_lower = str(self.prompt or "").lower()
+        if self._looks_like_local_access_refusal(text) and (
+            self._looks_like_pdf_summary_request(self.prompt)
+            or ("source:" in prompt_lower and ".pdf" in prompt_lower)
+        ):
+            # Let PDF-specific fallback logic handle these prompts so we don't
+            # mark a direct-GUI fallback or route to a generic direct command.
+            return text, False, ""
         return await gui_apply_direct_gui_fallback(
             text=text,
             provider=self.provider,
@@ -1433,9 +1450,13 @@ class StreamingChatTask(QRunnable):
     def _apply_pdf_response_fallback(self, text: str, *, tool_run_count: int) -> str:
         return gui_apply_pdf_response_fallback(
             text,
+            prompt=self.prompt,
             tool_run_count=tool_run_count,
             looks_like_local_access_refusal=self._looks_like_local_access_refusal,
             looks_like_open_pdf_suggestion=self._looks_like_open_pdf_suggestion,
+            looks_like_pdf_read_promise=self._looks_like_pdf_read_promise,
+            looks_like_pdf_phrase_miss_response=self._looks_like_pdf_phrase_miss_response,
+            looks_like_pdf_summary_request=self._looks_like_pdf_summary_request,
             try_open_pdf_content_fallback=self._try_open_pdf_content_fallback,
         )
 
@@ -1699,6 +1720,7 @@ class StreamingChatTask(QRunnable):
             invoke_open_pdf=lambda resolved_path: self._invoke_widget_slot(
                 "bot_open_pdf", QtCore.Q_ARG(str, str(resolved_path))
             ),
+            get_pdf_state=self._tool_gui_pdf_get_state,
         )
 
     def _tool_gui_pdf_get_state(self) -> Dict[str, Any]:
@@ -1708,6 +1730,7 @@ class StreamingChatTask(QRunnable):
         self,
         max_chars: int = 8000,
         pages: int = 2,
+        start_page: int = 0,
         path: str = "",
     ) -> Dict[str, Any]:
         path_text = str(path or "").strip()
@@ -1723,6 +1746,7 @@ class StreamingChatTask(QRunnable):
             invoke_widget_json_slot=self._invoke_widget_json_slot,
             max_chars=max_chars,
             pages=pages,
+            start_page=start_page,
             path=path_text,
         )
         if path_text:
@@ -1739,6 +1763,44 @@ class StreamingChatTask(QRunnable):
             max_sections=max_sections,
             max_pages=max_pages,
         )
+
+    def _tool_gui_pdf_summarize(
+        self,
+        path: str = "",
+        max_pages: int = 80,
+        max_extract_chars: int = 350000,
+    ) -> Dict[str, Any]:
+        path_text = str(path or "").strip()
+        if path_text:
+            opened = self._run_async(self._tool_gui_open_pdf(path_text))
+            if isinstance(opened, dict) and bool(opened.get("error")):
+                return {
+                    "ok": False,
+                    "error": str(opened.get("error") or "Failed to open PDF."),
+                    "open_pdf": opened,
+                }
+        summary_text = gui_summarize_active_pdf_with_cache(
+            workspace=self.workspace,
+            get_pdf_state=self._tool_gui_pdf_get_state,
+            build_summary=self._build_extractive_summary,
+            max_pages=max(1, min(int(max_pages or 80), 200)),
+            max_extract_chars=max(
+                10000, min(int(max_extract_chars or 350000), 2000000)
+            ),
+        )
+        if not summary_text:
+            return {
+                "ok": False,
+                "error": "Failed to summarize active PDF. Ensure a readable PDF is open.",
+            }
+        state = self._tool_gui_pdf_get_state()
+        return {
+            "ok": True,
+            "path": str(state.get("path") or ""),
+            "title": str(state.get("title") or ""),
+            "summary": summary_text,
+            "text": summary_text,
+        }
 
     async def _download_pdf_for_gui_tool(self, url: str) -> Optional[Path]:
         text = str(url or "").strip()
@@ -1935,6 +1997,7 @@ class StreamingChatTask(QRunnable):
             "open_threejs": self._tool_gui_open_threejs,
             "open_threejs_example": self._tool_gui_open_threejs_example,
             "open_pdf": self._tool_gui_open_pdf,
+            "pdf_summarize": self._tool_gui_pdf_summarize,
             "set_frame": self._tool_gui_set_frame,
             "track_next_frames": self._tool_gui_track_next_frames,
             "segment_track_video": self._tool_gui_segment_track_video,
@@ -1962,6 +2025,7 @@ class StreamingChatTask(QRunnable):
             "set_chat_model": self._tool_gui_set_chat_model,
             "rename_file": self._tool_gui_rename_file,
             "list_citations": self._tool_gui_list_citations,
+            "verify_citations": self._tool_gui_verify_citations,
             "add_citation_raw": self._tool_gui_add_citation_raw,
             "save_citation": self._tool_gui_save_citation,
             "generate_annolid_tutorial": self._tool_gui_generate_annolid_tutorial,
@@ -1995,6 +2059,18 @@ class StreamingChatTask(QRunnable):
     @staticmethod
     def _looks_like_open_pdf_suggestion(text: str) -> bool:
         return looks_like_open_pdf_suggestion(text)
+
+    @staticmethod
+    def _looks_like_pdf_read_promise(text: str) -> bool:
+        return looks_like_pdf_read_promise(text)
+
+    @staticmethod
+    def _looks_like_pdf_phrase_miss_response(text: str) -> bool:
+        return looks_like_pdf_phrase_miss_response(text)
+
+    @staticmethod
+    def _looks_like_pdf_summary_request(text: str) -> bool:
+        return looks_like_pdf_summary_request(text)
 
     @staticmethod
     def _extract_web_urls(text: str) -> List[str]:
@@ -2070,10 +2146,26 @@ class StreamingChatTask(QRunnable):
 
     def _try_open_pdf_content_fallback(self) -> str:
         return try_open_pdf_content_fallback(
+            prompt=self.prompt,
             get_state=self._tool_gui_pdf_get_state,
             get_text=self._tool_gui_pdf_get_text,
             build_summary=self._build_extractive_summary,
         )
+
+    def _summarize_active_pdf_with_cache(self) -> str:
+        return gui_summarize_active_pdf_with_cache(
+            workspace=self.workspace,
+            get_pdf_state=self._tool_gui_pdf_get_state,
+            build_summary=self._build_extractive_summary,
+        )
+
+    def _upgrade_pdf_summary_response(self, text: str) -> str:
+        if not self._looks_like_pdf_summary_request(self.prompt):
+            return text
+        if text and not gui_looks_like_raw_pdf_extract_response(text):
+            return text
+        upgraded = self._summarize_active_pdf_with_cache()
+        return upgraded or text
 
     def _tool_gui_set_frame(self, frame_index: int) -> Dict[str, Any]:
         return gui_set_frame_tool(
@@ -2431,6 +2523,7 @@ class StreamingChatTask(QRunnable):
         entry_type: str = "article",
         validate_before_save: bool = True,
         strict_validation: bool = False,
+        verify_after_save: bool = False,
     ) -> Dict[str, Any]:
         return gui_save_citation_tool(
             key=key,
@@ -2439,6 +2532,7 @@ class StreamingChatTask(QRunnable):
             entry_type=entry_type,
             validate_before_save=validate_before_save,
             strict_validation=strict_validation,
+            verify_after_save=verify_after_save,
             choose_pdf_fields=self._citation_fields_from_pdf_state,
             choose_web_fields=self._citation_fields_from_web_state,
             resolve_bib_path=self._resolve_bib_output_path,
@@ -2490,6 +2584,22 @@ class StreamingChatTask(QRunnable):
             load_bibtex=load_bibtex,
             search_entries=search_entries,
             entry_to_dict=entry_to_dict,
+        )
+
+    def _tool_gui_verify_citations(
+        self,
+        *,
+        bib_file: str = "",
+        limit: int = 200,
+    ) -> Dict[str, Any]:
+        return gui_verify_citations_tool(
+            bib_file=bib_file,
+            limit=limit,
+            resolve_bib_path=self._resolve_bib_output_path,
+            load_bibtex=load_bibtex,
+            validate_metadata=lambda fields, timeout: validate_citation_metadata(
+                fields, timeout_s=timeout
+            ),
         )
 
     async def _tool_clawhub_search_skills(
@@ -3629,11 +3739,12 @@ class StreamingChatTask(QRunnable):
         )
 
     def _build_live_pdf_context_prompt_block(
-        self, *, include_snapshot: bool = True
+        self, *, include_snapshot: bool = True, prompt: str = ""
     ) -> str:
         return build_live_pdf_context_prompt_block(
             get_state=self._tool_gui_pdf_get_state,
             get_text=self._tool_gui_pdf_get_text,
+            prompt=str(prompt or self.prompt or ""),
             include_snapshot=include_snapshot,
         )
 

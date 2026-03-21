@@ -127,6 +127,7 @@ async def open_pdf_tool(
     resolve_pdf_path: Callable[[str], Optional[Path]],
     list_available_pdfs: Callable[[int], List[Path]],
     invoke_open_pdf: Callable[[Path], bool],
+    get_pdf_state: Optional[Callable[[], Dict[str, object]]] = None,
 ) -> Dict[str, object]:
     path_text = str(path or "").strip()
     path_candidates = extract_pdf_path_candidates(path_text) if path_text else []
@@ -178,6 +179,29 @@ async def open_pdf_tool(
                 "choices": choices,
             }
         resolved_path = available[0]
+
+    active_state = get_pdf_state() if callable(get_pdf_state) else {}
+    active_path_text = ""
+    if (
+        isinstance(active_state, dict)
+        and bool(active_state.get("ok"))
+        and bool(active_state.get("has_pdf"))
+    ):
+        active_path_text = str(active_state.get("path") or "").strip()
+    if active_path_text:
+        try:
+            active_resolved = Path(active_path_text).expanduser().resolve()
+            target_resolved = Path(resolved_path).expanduser().resolve()
+            if active_resolved == target_resolved:
+                return {
+                    "ok": True,
+                    "queued": False,
+                    "already_open": True,
+                    "path": str(target_resolved),
+                }
+        except Exception:
+            # If normalization fails, continue with open request.
+            pass
 
     if not invoke_open_pdf(resolved_path):
         return {"ok": False, "error": "Failed to queue GUI PDF open action"}

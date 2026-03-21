@@ -25,16 +25,31 @@ def should_apply_web_refusal_fallback(
 def apply_pdf_response_fallback(
     text: str,
     *,
+    prompt: str,
     tool_run_count: int,
     looks_like_local_access_refusal: Callable[[str], bool],
     looks_like_open_pdf_suggestion: Callable[[str], bool],
+    looks_like_pdf_read_promise: Callable[[str], bool],
+    looks_like_pdf_phrase_miss_response: Callable[[str], bool],
+    looks_like_pdf_summary_request: Callable[[str], bool],
     try_open_pdf_content_fallback: Callable[[], str],
 ) -> str:
-    if tool_run_count > 0:
-        return text
-    if not (
-        looks_like_local_access_refusal(text) or looks_like_open_pdf_suggestion(text)
+    needs_pdf_read_recovery = bool(
+        not str(text or "").strip() and looks_like_pdf_summary_request(prompt)
+    )
+    has_pdf_refusal_like_text = bool(
+        looks_like_local_access_refusal(text)
+        or looks_like_open_pdf_suggestion(text)
+        or looks_like_pdf_read_promise(text)
+        or looks_like_pdf_phrase_miss_response(text)
+    )
+    if (
+        tool_run_count > 0
+        and not needs_pdf_read_recovery
+        and not has_pdf_refusal_like_text
     ):
+        return text
+    if not needs_pdf_read_recovery and not has_pdf_refusal_like_text:
         return text
     open_pdf_fallback = try_open_pdf_content_fallback()
     return open_pdf_fallback or text

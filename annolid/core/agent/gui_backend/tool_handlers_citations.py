@@ -166,6 +166,7 @@ def save_citation_tool(
     entry_type: str,
     validate_before_save: bool,
     strict_validation: bool,
+    verify_after_save: bool,
     choose_pdf_fields: Callable[[], Dict[str, Any]],
     choose_web_fields: Callable[[], Dict[str, Any]],
     resolve_bib_path: Callable[[str], Path],
@@ -274,7 +275,7 @@ def save_citation_tool(
         ),
     )
     save_bibtex(resolved_bib, updated, sort_keys=True)
-    return {
+    payload: Dict[str, Any] = {
         "ok": True,
         "created": bool(created),
         "key": normalized_key,
@@ -283,6 +284,34 @@ def save_citation_tool(
         "fields": fields,
         "validation": validation,
     }
+    if bool(verify_after_save):
+        from annolid.services.citation_verify import (
+            build_citation_verification_report,
+            write_citation_verification_report,
+        )
+
+        report = build_citation_verification_report(
+            key=normalized_key,
+            bib_file=str(resolved_bib),
+            source=str(chosen.get("source") or source_pref),
+            fields=fields,
+            validation=validation,
+        )
+        payload["verification"] = dict(report.get("verification") or {})
+        try:
+            report_dir = (
+                resolved_bib.parent / ".annolid_cache" / "citation_verification"
+            )
+            report_stem = f"{resolved_bib.stem}_{normalized_key}"
+            report_path = write_citation_verification_report(
+                report,
+                reports_dir=report_dir,
+                report_stem=report_stem,
+            )
+            payload["verification_report"] = str(report_path)
+        except Exception as exc:  # pragma: no cover - defensive
+            payload["verification_report_error"] = str(exc)
+    return payload
 
 
 def add_citation_raw_tool(
@@ -366,4 +395,80 @@ def list_citations_tool(
         "entries": [entry_to_dict(e) for e in capped],
         "bib_file": str(resolved_bib),
         "query": q,
+    }
+
+
+def verify_citations_tool(
+    *,
+    bib_file: str,
+    limit: int,
+    resolve_bib_path: Callable[[str], Path],
+    load_bibtex: Callable[[Path], Any],
+    validate_metadata: Callable[[Dict[str, str], float], Dict[str, Any]],
+) -> Dict[str, Any]:
+    from annolid.services.citation_verify import (
+        build_citation_batch_report,
+        build_citation_verification_report,
+        write_citation_verification_report,
+    )
+
+    resolved_bib = resolve_bib_path(str(bib_file or ""))
+    if not resolved_bib.exists():
+        return {
+            "ok": False,
+            "error": f"BibTeX file not found: {resolved_bib}",
+            "bib_file": str(resolved_bib),
+        }
+
+    entries = list(load_bibtex(resolved_bib) or [])
+    capped = entries[: max(1, int(limit or 200))]
+    rows: list[Dict[str, Any]] = []
+    for entry in capped:
+        key = str(getattr(entry, "key", "") or "").strip()
+        fields_in = dict(getattr(entry, "fields", {}) or {})
+        fields = {
+            str(k or "").strip().lower(): str(v or "").strip()
+            for k, v in fields_in.items()
+            if str(k or "").strip()
+        }
+        validation = validate_metadata(fields, 1.8)
+        report = build_citation_verification_report(
+            key=key,
+            bib_file=str(resolved_bib),
+            source="bib",
+            fields=fields,
+            validation=validation,
+        )
+        verification = dict(report.get("verification") or {})
+        rows.append(
+            {
+                "key": key,
+                "status": str(verification.get("status") or "skipped"),
+                "integrity_score": float(verification.get("integrity_score") or 0.0),
+                "provider": str(verification.get("provider") or ""),
+                "reason": str(verification.get("reason") or ""),
+                "checked": bool(verification.get("checked")),
+                "verified": bool(verification.get("verified")),
+                "score": float(verification.get("score") or 0.0),
+            }
+        )
+
+    batch = build_citation_batch_report(
+        bib_file=str(resolved_bib),
+        entries=rows,
+    )
+    report_dir = resolved_bib.parent / ".annolid_cache" / "citation_verification"
+    report_stem = f"{resolved_bib.stem}_batch"
+    report_path = write_citation_verification_report(
+        batch, reports_dir=report_dir, report_stem=report_stem
+    )
+    summary = dict(batch.get("summary") or {})
+    return {
+        "ok": True,
+        "bib_file": str(resolved_bib),
+        "total": int(summary.get("total") or 0),
+        "counts": dict(summary.get("counts") or {}),
+        "integrity_score": float(summary.get("integrity_score") or 0.0),
+        "entries": rows,
+        "report_path": str(report_path),
     }

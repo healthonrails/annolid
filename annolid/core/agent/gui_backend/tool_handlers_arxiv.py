@@ -2,13 +2,170 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import threading
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+import urllib.error
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 
 from annolid.core.agent.tools.pdf import DownloadPdfTool
+from annolid.services.literature_search import search_literature
+
+_LOGGER = logging.getLogger(__name__)
+
+_ARXIV_API_URL = "https://export.arxiv.org/api/query"
+_ARXIV_CB_CLOSED = "closed"
+_ARXIV_CB_OPEN = "open"
+_ARXIV_CB_HALF_OPEN = "half_open"
+_ARXIV_CB_FAIL_THRESHOLD = 3
+_ARXIV_CB_COOLDOWN_SEC = 180.0
+
+_arxiv_cb_state = _ARXIV_CB_CLOSED
+_arxiv_cb_failures = 0
+_arxiv_cb_opened_at = 0.0
+_arxiv_cb_lock = threading.Lock()
+
+
+def _reset_arxiv_circuit_breaker() -> None:
+    global _arxiv_cb_state, _arxiv_cb_failures, _arxiv_cb_opened_at  # noqa: PLW0603
+    with _arxiv_cb_lock:
+        _arxiv_cb_state = _ARXIV_CB_CLOSED
+        _arxiv_cb_failures = 0
+        _arxiv_cb_opened_at = 0.0
+
+
+def _arxiv_circuit_allow_request() -> bool:
+    global _arxiv_cb_state  # noqa: PLW0603
+    with _arxiv_cb_lock:
+        if _arxiv_cb_state == _ARXIV_CB_CLOSED:
+            return True
+        if _arxiv_cb_state == _ARXIV_CB_OPEN:
+            elapsed = time.monotonic() - float(_arxiv_cb_opened_at)
+            if elapsed >= _ARXIV_CB_COOLDOWN_SEC:
+                _arxiv_cb_state = _ARXIV_CB_HALF_OPEN
+                return True
+            return False
+        return True
+
+
+def _arxiv_circuit_on_success() -> None:
+    global _arxiv_cb_state, _arxiv_cb_failures  # noqa: PLW0603
+    with _arxiv_cb_lock:
+        _arxiv_cb_state = _ARXIV_CB_CLOSED
+        _arxiv_cb_failures = 0
+
+
+def _arxiv_circuit_on_rate_limit() -> None:
+    global _arxiv_cb_state, _arxiv_cb_failures, _arxiv_cb_opened_at  # noqa: PLW0603
+    with _arxiv_cb_lock:
+        _arxiv_cb_failures += 1
+        if (
+            _arxiv_cb_state == _ARXIV_CB_HALF_OPEN
+            or _arxiv_cb_failures >= _ARXIV_CB_FAIL_THRESHOLD
+        ):
+            _arxiv_cb_state = _ARXIV_CB_OPEN
+            _arxiv_cb_opened_at = time.monotonic()
+
+
+def _parse_retry_after_seconds(raw_value: object) -> float:
+    text = str(raw_value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        return max(0.0, float(int(text)))
+    except Exception:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+    except Exception:
+        return 0.0
+    try:
+        dt = parsedate_to_datetime(text)
+        if dt is None:
+            return 0.0
+        if dt.tzinfo is None:
+            from datetime import timezone
+
+            dt = dt.replace(tzinfo=timezone.utc)
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        delta = (dt - now).total_seconds()
+        return max(0.0, float(delta))
+    except Exception:
+        return 0.0
+
+
+def _fetch_arxiv_feed_bytes(
+    *,
+    url: str,
+    timeout_s: float = 10.0,
+    max_attempts: int = 4,
+    emit_progress: Callable[[str], None] | None = None,
+) -> bytes:
+    if not _arxiv_circuit_allow_request():
+        raise RuntimeError(
+            "arXiv temporarily unavailable due to repeated rate limiting. Retry later."
+        )
+    attempts = max(1, int(max_attempts))
+    delay = 1.0
+    for attempt in range(1, attempts + 1):
+        if not _arxiv_circuit_allow_request():
+            raise RuntimeError(
+                "arXiv temporarily unavailable due to repeated rate limiting. Retry later."
+            )
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "annolid-arxiv-client/1.0"},
+            )
+            with urllib.request.urlopen(
+                req, timeout=max(1.0, float(timeout_s))
+            ) as response:
+                payload = response.read()
+            _arxiv_circuit_on_success()
+            return payload
+        except urllib.error.HTTPError as exc:
+            if int(getattr(exc, "code", 0)) == 429:
+                _arxiv_circuit_on_rate_limit()
+                retry_after = _parse_retry_after_seconds(
+                    getattr(exc, "headers", {}).get("Retry-After")
+                )
+                wait_s = max(retry_after, delay)
+                if emit_progress is not None:
+                    emit_progress(
+                        f"[rate-limit] arXiv responded with 429; retrying in {wait_s:.1f}s "
+                        f"(attempt {attempt}/{attempts})."
+                    )
+                if attempt >= attempts:
+                    break
+                time.sleep(wait_s)
+                delay = min(30.0, delay * 2.0)
+                continue
+            if attempt >= attempts:
+                raise
+            if emit_progress is not None:
+                emit_progress(
+                    f"arXiv request failed (HTTP {exc.code}); retrying in {delay:.1f}s "
+                    f"(attempt {attempt}/{attempts})."
+                )
+            time.sleep(delay)
+            delay = min(30.0, delay * 2.0)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            if attempt >= attempts:
+                raise RuntimeError(
+                    f"arXiv request failed after {attempts} attempts: {exc}"
+                ) from exc
+            if emit_progress is not None:
+                emit_progress(
+                    f"arXiv network error; retrying in {delay:.1f}s (attempt {attempt}/{attempts})."
+                )
+            time.sleep(delay)
+            delay = min(30.0, delay * 2.0)
+    raise RuntimeError("arXiv request failed after repeated rate-limit responses.")
 
 
 async def safe_run_arxiv_search(
@@ -85,46 +242,70 @@ async def arxiv_search_tool(
 ) -> Dict[str, Any]:
     try:
         emit_progress(f"Searching arXiv for '{query}'...")
-        base_url = "http://export.arxiv.org/api/query"
-        final_query = query if query.startswith("id:") else f"all:{query}"
-        safe_query = urllib.parse.quote(final_query)
-        url = f"{base_url}?search_query={safe_query}&start=0&max_results={max_results}"
         emit_progress(f"arXiv: {query}")
         loop = asyncio.get_running_loop()
+        sources: tuple[str, ...] = (
+            ("arxiv", "openalex", "crossref")
+            if str(query or "").strip().startswith("id:")
+            else ("openalex", "crossref", "arxiv")
+        )
+        emit_progress(f"[literature] searching sources: {', '.join(sources)}")
 
-        def fetch_feed():
-            with urllib.request.urlopen(url, timeout=10) as response:
-                return response.read()
-
-        xml_data = await loop.run_in_executor(None, fetch_feed)
-        emit_progress("Metadata received. Parsing...")
-        root = ET.fromstring(xml_data)
-        ns = {"atom": "http://www.w3.org/2005/Atom"}
-        entry = root.find("atom:entry", ns)
-        if entry is None:
+        search_payload = await loop.run_in_executor(
+            None,
+            lambda: search_literature(
+                str(query or ""),
+                max_results=max(1, int(max_results or 1)),
+                sources=sources,
+                cache_dir=workspace / ".annolid_cache" / "literature",
+            ),
+        )
+        candidates = search_payload.get("results")
+        rows = candidates if isinstance(candidates, list) else []
+        if not rows:
             return {
                 "ok": False,
                 "error": f"No papers found for query: {query}",
                 "query": query,
+                "search": {
+                    "source_counts": search_payload.get("source_counts", {}),
+                    "degraded_sources": search_payload.get("degraded_sources", []),
+                    "cache_hit": bool(search_payload.get("cache_hit")),
+                },
+            }
+        emit_progress("Metadata received. Selecting best downloadable result...")
+
+        selected = None
+        for row in rows:
+            if isinstance(row, dict) and str(row.get("pdf_url") or "").strip():
+                selected = row
+                break
+        if selected is None:
+            for row in rows:
+                if isinstance(row, dict) and str(row.get("arxiv_id") or "").strip():
+                    selected = row
+                    break
+        if selected is None and rows and isinstance(rows[0], dict):
+            selected = rows[0]
+
+        if not isinstance(selected, dict):
+            return {
+                "ok": False,
+                "error": f"No usable paper metadata found for query: {query}",
+                "query": query,
             }
 
-        title_elem = entry.find("atom:title", ns)
-        title = (title_elem.text or "Untitled").strip().replace("\n", " ")
-        id_elem = entry.find("atom:id", ns)
-        id_url = (id_elem.text or "").strip()
-        pdf_link = None
-        for link in entry.findall("atom:link", ns):
-            if link.attrib.get("title") == "pdf":
-                pdf_link = link.attrib.get("href")
-                break
-        if not pdf_link and id_url:
-            arxiv_id = id_url.split("/")[-1]
-            pdf_link = f"http://arxiv.org/pdf/{arxiv_id}.pdf"
+        title = str(selected.get("title") or "Untitled").strip()
+        pdf_link = str(selected.get("pdf_url") or "").strip()
+        arxiv_id = str(selected.get("arxiv_id") or "").strip()
+        if not pdf_link and arxiv_id:
+            pdf_link = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
         if not pdf_link:
             return {
                 "ok": False,
                 "error": "Could not find PDF link for paper.",
                 "title": title,
+                "source": str(selected.get("source") or ""),
             }
 
         emit_progress(f"Found: {title}")
@@ -155,6 +336,18 @@ async def arxiv_search_tool(
         final_path = dl_result.get("output_path", output_path)
         emit_progress("Opening PDF...")
         open_res = await open_pdf(final_path)
-        return {"ok": True, "title": title, "path": final_path, "open_result": open_res}
+        return {
+            "ok": True,
+            "title": title,
+            "path": final_path,
+            "open_result": open_res,
+            "source": str(selected.get("source") or ""),
+            "search": {
+                "source_counts": search_payload.get("source_counts", {}),
+                "degraded_sources": search_payload.get("degraded_sources", []),
+                "cache_hit": bool(search_payload.get("cache_hit")),
+            },
+        }
     except Exception as exc:
+        _LOGGER.warning("arXiv search workflow failed: %s", exc)
         return {"ok": False, "error": str(exc)}

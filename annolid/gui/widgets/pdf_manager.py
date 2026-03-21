@@ -957,7 +957,9 @@ class PdfManager(QtCore.QObject):
             "pdfjs_active": bool(getattr(viewer, "pdfjs_active", lambda: False)()),
         }
 
-    def get_pdf_text(self, max_chars: int = 8000, pages: int = 2) -> dict:
+    def get_pdf_text(
+        self, max_chars: int = 8000, pages: int = 2, start_page: int = 0
+    ) -> dict:
         state = self.get_pdf_state()
         if not bool(state.get("has_pdf")):
             return {"ok": False, "error": "No PDF is currently open in Annolid."}
@@ -975,7 +977,11 @@ class PdfManager(QtCore.QObject):
         limit = max(200, min(int(max_chars or 8000), 200000))
         pages_limit = max(1, min(int(pages or 2), 5))
         total_pages = int(state.get("total_pages") or 0)
-        start_index = max(0, int(state.get("current_page") or 1) - 1)
+        requested_page = max(0, int(start_page or 0))
+        if requested_page > 0:
+            start_index = requested_page - 1
+        else:
+            start_index = max(0, int(state.get("current_page") or 1) - 1)
         if total_pages > 0:
             start_index = min(start_index, total_pages - 1)
 

@@ -18,7 +18,8 @@ class GuiOpenPdfTool(FunctionTool):
     def description(self) -> str:
         return (
             "Open a PDF in Annolid using the same workflow as File > Open PDF... "
-            "If path is provided, open that file directly without prompting."
+            "If path is provided, open that file directly without prompting. "
+            "For reading/summarization after open, use `gui_pdf_get_text`."
         )
 
     @property
@@ -76,6 +77,11 @@ class GuiPdfGetTextTool(FunctionTool):
             "properties": {
                 "max_chars": {"type": "integer", "minimum": 200},
                 "pages": {"type": "integer", "minimum": 1, "maximum": 5},
+                "start_page": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional 1-based page number override for extraction start.",
+                },
                 "path": {
                     "type": "string",
                     "description": "Optional PDF path to open before extracting text.",
@@ -86,6 +92,44 @@ class GuiPdfGetTextTool(FunctionTool):
 
     async def execute(self, **kwargs: Any) -> str:
         return await _run_callback(self._pdf_get_text_callback, **kwargs)
+
+
+class GuiPdfSummarizeTool(FunctionTool):
+    def __init__(self, pdf_summarize_callback: Optional[ActionCallback] = None):
+        self._pdf_summarize_callback = pdf_summarize_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_pdf_summarize"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Summarize the active PDF deterministically and cache extracted text "
+            "to a markdown file for reuse."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Optional PDF path to open before summarizing.",
+                },
+                "max_pages": {"type": "integer", "minimum": 1, "maximum": 200},
+                "max_extract_chars": {
+                    "type": "integer",
+                    "minimum": 10000,
+                    "maximum": 2000000,
+                },
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._pdf_summarize_callback, **kwargs)
 
 
 class GuiPdfFindSectionsTool(FunctionTool):

@@ -12,6 +12,7 @@ from annolid.core.agent.gui_backend.tool_handlers_citations import (
     normalize_citation_key,
     resolve_bib_output_path,
     save_citation_tool,
+    verify_citations_tool,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "normalize_citation_key",
     "resolve_bib_output_path",
     "save_citation_tool",
+    "verify_citations_tool",
 ]

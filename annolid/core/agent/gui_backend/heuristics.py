@@ -73,6 +73,32 @@ OPEN_PDF_SUGGESTION_HINTS: Tuple[str, ...] = (
     "can't access local file",
 )
 
+PDF_READ_PROMISE_HINTS: Tuple[str, ...] = (
+    "i'll read",
+    "i will read",
+    "let me read",
+    "i'll review",
+    "i will review",
+    "let me review",
+    "i'll check",
+    "i will check",
+    "let me check",
+    "i'll look at",
+    "i will look at",
+    "let me look at",
+)
+
+PDF_PHRASE_MISS_HINTS: Tuple[str, ...] = (
+    "don't see that specific phrase",
+    "do not see that specific phrase",
+    "don't see this phrase",
+    "do not see this phrase",
+    "phrase is not on page",
+    "phrase not found on page",
+    "can't find that phrase on page",
+    "cannot find that phrase on page",
+)
+
 WEB_CONTEXT_HINTS: Tuple[str, ...] = (
     "this page",
     "current page",
@@ -90,6 +116,16 @@ PDF_CONTEXT_HINTS: Tuple[str, ...] = (
     "paper",
     "article",
     "manuscript",
+)
+
+PDF_SUMMARY_ACTION_HINTS: Tuple[str, ...] = (
+    "summarize",
+    "summary",
+    "explain",
+    "overview",
+    "key points",
+    "tldr",
+    "main findings",
 )
 
 EMBEDDED_SEARCH_URL_TEMPLATE = "https://html.duckduckgo.com/html/?q={query}"
@@ -137,6 +173,42 @@ def looks_like_open_url_suggestion(text: str) -> bool:
 
 def looks_like_open_pdf_suggestion(text: str) -> bool:
     return contains_hint(text, OPEN_PDF_SUGGESTION_HINTS)
+
+
+def looks_like_pdf_read_promise(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    if len(lowered) > 280:
+        return False
+    if not contains_hint(lowered, PDF_READ_PROMISE_HINTS):
+        return False
+    return bool(
+        ("pdf" in lowered)
+        or ("page" in lowered)
+        or ("section" in lowered)
+        or ("document" in lowered)
+    )
+
+
+def looks_like_pdf_phrase_miss_response(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    if len(lowered) > 420:
+        return False
+    if not contains_hint(lowered, PDF_PHRASE_MISS_HINTS):
+        return False
+    return ("pdf" in lowered) or ("page" in lowered) or ("document" in lowered)
+
+
+def looks_like_pdf_summary_request(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    if not contains_hint(lowered, PDF_CONTEXT_HINTS):
+        return False
+    return contains_hint(lowered, PDF_SUMMARY_ACTION_HINTS)
 
 
 def extract_web_urls(text: str) -> List[str]:

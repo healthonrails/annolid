@@ -205,12 +205,40 @@ class GuiSaveCitationTool(FunctionTool):
                 "entry_type": {"type": "string"},
                 "validate_before_save": {"type": "boolean", "default": True},
                 "strict_validation": {"type": "boolean", "default": False},
+                "verify_after_save": {"type": "boolean", "default": False},
             },
             "required": [],
         }
 
     async def execute(self, **kwargs: Any) -> str:
         return await _run_callback(self._save_citation_callback, **kwargs)
+
+
+class GuiVerifyCitationsTool(FunctionTool):
+    def __init__(self, verify_citations_callback: Optional[ActionCallback] = None):
+        self._verify_citations_callback = verify_citations_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_verify_citations"
+
+    @property
+    def description(self) -> str:
+        return "Verify citations in a BibTeX file and generate an integrity report."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "bib_file": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 2000},
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._verify_citations_callback, **kwargs)
 
 
 class GuiGenerateAnnolidTutorialTool(FunctionTool):

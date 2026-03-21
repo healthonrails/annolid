@@ -72,6 +72,298 @@ def _paper_csv(*, row: Dict[str, object]) -> str:
     return stream.getvalue()
 
 
+def _quality_status_from_checks(
+    checks: Sequence[dict[str, object]],
+) -> str:
+    for item in checks:
+        if str(item.get("status") or "").strip().lower() == "fail":
+            return "fail"
+    for item in checks:
+        if str(item.get("status") or "").strip().lower() == "warn":
+            return "warn"
+    return "pass"
+
+
+def _quality_checks_markdown(
+    checks: Sequence[dict[str, object]],
+) -> str:
+    if not checks:
+        return "No quality checks were recorded."
+    lines = [
+        "| Check | Status | Details |",
+        "|---|---|---|",
+    ]
+    for item in checks:
+        check_id = str(item.get("id") or "check")
+        status = str(item.get("status") or "pass").strip().upper()
+        message = str(item.get("message") or "")
+        lines.append(f"| `{check_id}` | {status} | {message} |")
+    return "\n".join(lines)
+
+
+def _report_quality_check(
+    *,
+    check_id: str,
+    status: str,
+    message: str,
+) -> dict[str, object]:
+    normalized = str(status or "pass").strip().lower()
+    if normalized not in {"pass", "warn", "fail"}:
+        normalized = "warn"
+    return {
+        "id": str(check_id or "check"),
+        "status": normalized,
+        "message": str(message or ""),
+    }
+
+
+def _resolve_citation_report_path(
+    *,
+    source_path: Path,
+    citation_report_path: Optional[Path],
+) -> Optional[Path]:
+    if citation_report_path is not None:
+        return citation_report_path
+    root = source_path if source_path.is_dir() else source_path.parent
+    report_dir = root / ".annolid_cache" / "citation_verification"
+    if not report_dir.exists():
+        return None
+    batch_candidates = sorted(
+        report_dir.glob("*_batch.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if batch_candidates:
+        return batch_candidates[0]
+    all_candidates = sorted(
+        report_dir.glob("*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return all_candidates[0] if all_candidates else None
+
+
+def _load_citation_report_summary(path: Path) -> dict[str, object]:
+    payload = _read_json(path)
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    total = _safe_int(summary.get("total"))
+    if total is None:
+        total = sum(int(_safe_int(v) or 0) for v in counts.values())
+    return {
+        "path": str(path),
+        "total": max(0, int(total or 0)),
+        "counts": {
+            "verified": int(_safe_int(counts.get("verified")) or 0),
+            "suspicious": int(_safe_int(counts.get("suspicious")) or 0),
+            "hallucinated": int(_safe_int(counts.get("hallucinated")) or 0),
+            "skipped": int(_safe_int(counts.get("skipped")) or 0),
+        },
+        "integrity_score": _safe_float(summary.get("integrity_score")),
+    }
+
+
+def _apply_citation_quality_gate(
+    *,
+    report: Dict[str, object],
+    source_path: Path,
+    citation_gate: bool,
+    citation_gate_required: bool,
+    citation_report_path: Optional[Path],
+    citation_hallucinated_max: int,
+    citation_suspicious_rate_warn: float,
+    citation_integrity_min_warn: float,
+) -> Dict[str, object]:
+    def _citation_gate_markdown_block(
+        *,
+        status: str,
+        details: str,
+        thresholds: Optional[dict[str, object]] = None,
+    ) -> str:
+        lines = [
+            "## Citation Quality Gate",
+            "",
+            f"- Status: `{str(status or '').upper()}`",
+            f"- Details: {details}",
+        ]
+        if isinstance(thresholds, dict):
+            lines.extend(
+                [
+                    "- Thresholds:",
+                    (
+                        f"  - hallucinated_max={int(thresholds.get('hallucinated_max') or 0)}"
+                    ),
+                    (
+                        "  - suspicious_rate_warn="
+                        f"{float(thresholds.get('suspicious_rate_warn') or 0.0):.3f}"
+                    ),
+                    (
+                        "  - integrity_min_warn="
+                        f"{float(thresholds.get('integrity_min_warn') or 0.0):.3f}"
+                    ),
+                ]
+            )
+        return "\n".join(lines).strip()
+
+    def _append_markdown_gate(report_obj: Dict[str, object], block: str) -> None:
+        markdown = str(report_obj.get("report_markdown") or "").strip()
+        if not markdown:
+            report_obj["report_markdown"] = f"{block}\n"
+            return
+        if "## Citation Quality Gate" in markdown:
+            return
+        report_obj["report_markdown"] = f"{markdown}\n\n{block}\n"
+
+    if not bool(citation_gate):
+        return report
+    checks = list(report.get("quality_checks") or [])
+    resolved = _resolve_citation_report_path(
+        source_path=source_path,
+        citation_report_path=citation_report_path,
+    )
+    if resolved is None:
+        checks.append(
+            _report_quality_check(
+                check_id="citation_report_presence",
+                status=("fail" if citation_gate_required else "warn"),
+                message=(
+                    "Citation verification report is required but was not found."
+                    if citation_gate_required
+                    else "Citation verification report was not found; citation gate is advisory."
+                ),
+            )
+        )
+        report["quality_checks"] = checks
+        report["quality_status"] = _quality_status_from_checks(checks)
+        _append_markdown_gate(
+            report,
+            _citation_gate_markdown_block(
+                status=report.get("quality_status", "warn"),
+                details=(
+                    "Citation verification report missing."
+                    if citation_gate_required
+                    else "Citation verification report missing (advisory mode)."
+                ),
+            ),
+        )
+        return report
+    try:
+        citation_summary = _load_citation_report_summary(resolved)
+    except Exception as exc:
+        checks.append(
+            _report_quality_check(
+                check_id="citation_report_parse",
+                status="fail",
+                message=f"Failed to parse citation verification report: {exc}",
+            )
+        )
+        report["quality_checks"] = checks
+        report["quality_status"] = _quality_status_from_checks(checks)
+        _append_markdown_gate(
+            report,
+            _citation_gate_markdown_block(
+                status=report.get("quality_status", "fail"),
+                details=f"Failed to parse citation verification report: {exc}",
+            ),
+        )
+        return report
+
+    counts = dict(citation_summary.get("counts") or {})
+    total = int(citation_summary.get("total") or 0)
+    hallucinated = int(counts.get("hallucinated") or 0)
+    suspicious = int(counts.get("suspicious") or 0)
+    integrity_score = _safe_float(citation_summary.get("integrity_score"))
+    suspicious_rate = (float(suspicious) / float(total)) if total > 0 else 0.0
+
+    checks.append(
+        _report_quality_check(
+            check_id="citation_report_presence",
+            status="pass",
+            message=(
+                f"Citation report loaded from {resolved} "
+                f"(total={total}, hallucinated={hallucinated}, suspicious={suspicious})."
+            ),
+        )
+    )
+    checks.append(
+        _report_quality_check(
+            check_id="citation_hallucination_gate",
+            status=(
+                "fail" if hallucinated > int(citation_hallucinated_max) else "pass"
+            ),
+            message=(
+                f"Hallucinated citations={hallucinated} exceeds threshold={citation_hallucinated_max}."
+                if hallucinated > int(citation_hallucinated_max)
+                else f"Hallucinated citations={hallucinated} within threshold={citation_hallucinated_max}."
+            ),
+        )
+    )
+    checks.append(
+        _report_quality_check(
+            check_id="citation_suspicious_rate",
+            status=(
+                "warn"
+                if suspicious_rate > float(citation_suspicious_rate_warn)
+                else "pass"
+            ),
+            message=(
+                f"Suspicious citation rate={suspicious_rate:.3f} exceeds warning threshold={float(citation_suspicious_rate_warn):.3f}."
+                if suspicious_rate > float(citation_suspicious_rate_warn)
+                else f"Suspicious citation rate={suspicious_rate:.3f} within warning threshold={float(citation_suspicious_rate_warn):.3f}."
+            ),
+        )
+    )
+    if integrity_score is None:
+        checks.append(
+            _report_quality_check(
+                check_id="citation_integrity_score",
+                status="warn",
+                message="Citation integrity score missing from report summary.",
+            )
+        )
+    else:
+        checks.append(
+            _report_quality_check(
+                check_id="citation_integrity_score",
+                status=(
+                    "warn"
+                    if integrity_score < float(citation_integrity_min_warn)
+                    else "pass"
+                ),
+                message=(
+                    f"Citation integrity score={integrity_score:.3f} below warning threshold={float(citation_integrity_min_warn):.3f}."
+                    if integrity_score < float(citation_integrity_min_warn)
+                    else f"Citation integrity score={integrity_score:.3f} meets threshold={float(citation_integrity_min_warn):.3f}."
+                ),
+            )
+        )
+
+    report["citation_quality_gate"] = {
+        "report_path": str(resolved),
+        "summary": citation_summary,
+        "thresholds": {
+            "hallucinated_max": int(citation_hallucinated_max),
+            "suspicious_rate_warn": float(citation_suspicious_rate_warn),
+            "integrity_min_warn": float(citation_integrity_min_warn),
+        },
+    }
+    report["quality_checks"] = checks
+    report["quality_status"] = _quality_status_from_checks(checks)
+    _append_markdown_gate(
+        report,
+        _citation_gate_markdown_block(
+            status=report.get("quality_status", "warn"),
+            details=(
+                f"Loaded `{resolved}` "
+                f"(total={total}, hallucinated={hallucinated}, suspicious={suspicious}, "
+                f"integrity={float(integrity_score or 0.0):.3f})."
+            ),
+            thresholds=dict(report["citation_quality_gate"].get("thresholds") or {}),
+        ),
+    )
+    return report
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -554,6 +846,7 @@ def _build_generic_metric_report(
     summary: Dict[str, object],
     artifacts: Sequence[str],
     per_class_rows: Sequence[dict[str, object]] = (),
+    quality_checks: Sequence[dict[str, object]] = (),
 ) -> Dict[str, object]:
     table_markdown = _paper_markdown_table(rows=rows)
     table_latex = _paper_latex_table(rows=rows)
@@ -605,7 +898,16 @@ def _build_generic_metric_report(
                 )
             )
         markdown_lines.append("")
-    markdown_lines.extend(["## Artifacts", ""])
+    markdown_lines.extend(
+        [
+            "## Quality Checks",
+            "",
+            _quality_checks_markdown(quality_checks),
+            "",
+            "## Artifacts",
+            "",
+        ]
+    )
     if artifacts:
         markdown_lines.extend([f"- `{artifact}`" for artifact in artifacts])
     else:
@@ -626,6 +928,8 @@ def _build_generic_metric_report(
         "report_markdown": "\n".join(markdown_lines).strip() + "\n",
         "artifacts": list(artifacts),
         "per_class": list(per_class_rows),
+        "quality_status": _quality_status_from_checks(quality_checks),
+        "quality_checks": list(quality_checks),
     }
 
 
@@ -657,6 +961,54 @@ def _build_dino_report(
                 "source_path": str(source_path),
             }
         )
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    images_total = _safe_int(summary.get("images_total")) if summary else None
+    images_used = _safe_int(summary.get("images_used")) if summary else None
+    pck_rows = [
+        row
+        for row in (
+            report.get("paper_table", {}).get("rows", [])
+            if isinstance(report.get("paper_table"), dict)
+            else []
+        )
+        if isinstance(row, dict) and str(row.get("metric") or "").startswith("PCK@")
+    ]
+    has_missing_pck_ci = any(str(row.get("ci95") or "NA") == "NA" for row in pck_rows)
+    quality_checks: list[dict[str, object]] = []
+    if images_total is not None and images_total > 0 and images_used is not None:
+        if images_used < images_total:
+            quality_checks.append(
+                _report_quality_check(
+                    check_id="dataset_coverage",
+                    status="warn",
+                    message=(
+                        f"Only {images_used}/{images_total} images were evaluated. "
+                        "Confirm filtering behavior before citing results."
+                    ),
+                )
+            )
+        else:
+            quality_checks.append(
+                _report_quality_check(
+                    check_id="dataset_coverage",
+                    status="pass",
+                    message=f"All {images_used} available images were evaluated.",
+                )
+            )
+    if pck_rows:
+        quality_checks.append(
+            _report_quality_check(
+                check_id="pck_ci_coverage",
+                status=("warn" if has_missing_pck_ci else "pass"),
+                message=(
+                    "Some PCK rows are missing CI values."
+                    if has_missing_pck_ci
+                    else "All PCK rows include Wilson 95% confidence intervals."
+                ),
+            )
+        )
+    report["quality_status"] = _quality_status_from_checks(quality_checks)
+    report["quality_checks"] = quality_checks
     report["report_markdown"] = (
         f"# Evaluation Report: {model_name}\n\n"
         f"- Dataset: `{dataset_name}`\n"
@@ -664,7 +1016,9 @@ def _build_dino_report(
         f"- Model family: `dino_kpseg`\n"
         f"- Metrics source: `{source_path}`\n\n"
         "## Primary Metrics\n\n"
-        f"{report.get('paper_table', {}).get('markdown', '')}\n"
+        f"{report.get('paper_table', {}).get('markdown', '')}\n\n"
+        "## Quality Checks\n\n"
+        f"{_quality_checks_markdown(quality_checks)}\n"
     )
     return report
 
@@ -728,6 +1082,74 @@ def _build_yolo_report(
                     )
         except Exception:
             ci_map = {}
+    quality_checks: list[dict[str, object]] = []
+    if prediction_json.exists():
+        quality_checks.append(
+            _report_quality_check(
+                check_id="prediction_json_present",
+                status="pass",
+                message="predictions.json is present for downstream reproducibility.",
+            )
+        )
+    else:
+        quality_checks.append(
+            _report_quality_check(
+                check_id="prediction_json_present",
+                status="warn",
+                message=(
+                    "predictions.json was not found; report cannot verify per-image "
+                    "prediction outputs."
+                ),
+            )
+        )
+    if annotation_json is None:
+        quality_checks.append(
+            _report_quality_check(
+                check_id="annotation_linkage",
+                status="warn",
+                message=(
+                    "COCO annotation JSON could not be resolved from args.yaml/data "
+                    "config; bootstrap CI remains unavailable."
+                ),
+            )
+        )
+    else:
+        quality_checks.append(
+            _report_quality_check(
+                check_id="annotation_linkage",
+                status="pass",
+                message=f"Resolved annotation JSON at {annotation_json}.",
+            )
+        )
+    ci_ready = all(
+        ci_map.get(name, (None, None))[0] is not None for name in ("map50", "map50_95")
+    )
+    quality_checks.append(
+        _report_quality_check(
+            check_id="ci_coverage",
+            status=("pass" if ci_ready else "warn"),
+            message=(
+                "mAP@50 and mAP@50-95 include bootstrap 95% CI values."
+                if ci_ready
+                else "Bootstrap CI values are missing for one or more primary mAP metrics."
+            ),
+        )
+    )
+    best_map = _safe_float(best_row.get(score_key))
+    final_map = _safe_float(final_row.get(score_key))
+    if best_map is not None and final_map is not None:
+        drop = float(best_map) - float(final_map)
+        quality_checks.append(
+            _report_quality_check(
+                check_id="best_final_gap",
+                status=("warn" if drop > 0.03 else "pass"),
+                message=(
+                    f"Best-vs-final {score_key} gap is {drop:.4f}."
+                    if drop > 0.03
+                    else f"Best-vs-final {score_key} gap is {drop:.4f} (stable)."
+                ),
+            )
+        )
     metric_rows = [
         (
             "Precision",
@@ -799,6 +1221,7 @@ def _build_yolo_report(
         metadata=metadata,
         summary=summary,
         artifacts=_collect_run_artifacts(root),
+        quality_checks=quality_checks,
     )
 
 
@@ -928,6 +1351,65 @@ def _build_behavior_report(
         "source_path": str(json_path),
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
     }
+    quality_checks: list[dict[str, object]] = []
+    sample_count = len(y_true)
+    quality_checks.append(
+        _report_quality_check(
+            check_id="prediction_sample_size",
+            status=("warn" if sample_count < 30 else "pass"),
+            message=(
+                f"Only {sample_count} prediction rows were available; bootstrap CI may be unstable."
+                if sample_count < 30
+                else f"{sample_count} prediction rows available for bootstrap CI estimation."
+            ),
+        )
+    )
+    has_core_ci = all(
+        intervals.get(key, (None, None))[0] is not None
+        for key in ("accuracy", "macro_f1")
+    )
+    quality_checks.append(
+        _report_quality_check(
+            check_id="core_ci_coverage",
+            status=("pass" if has_core_ci else "warn"),
+            message=(
+                "Accuracy and Macro F1 include 95% CI values."
+                if has_core_ci
+                else "One or more core classification metrics are missing CI values."
+            ),
+        )
+    )
+    has_probabilities = bool(prob_rows)
+    quality_checks.append(
+        _report_quality_check(
+            check_id="probability_coverage",
+            status=("pass" if has_probabilities else "warn"),
+            message=(
+                "Class probability rows are available for macro mAP/per-class AP checks."
+                if has_probabilities
+                else "class_probabilities are missing, so AP-oriented confidence intervals may be NA."
+            ),
+        )
+    )
+    supports = [
+        _safe_int(stats.get("support"))
+        for stats in per_class.values()
+        if isinstance(stats, dict)
+    ]
+    supports = [int(v) for v in supports if v is not None]
+    if supports:
+        min_support = min(supports)
+        quality_checks.append(
+            _report_quality_check(
+                check_id="class_support",
+                status=("warn" if min_support < 5 else "pass"),
+                message=(
+                    f"At least one class has low support (min={min_support}); interpret per-class metrics carefully."
+                    if min_support < 5
+                    else f"Per-class support is adequate (minimum support={min_support})."
+                ),
+            )
+        )
     root = source_path if source_path.is_dir() else source_path.parent
     return _build_generic_metric_report(
         rows=rows,
@@ -936,6 +1418,7 @@ def _build_behavior_report(
         summary={"test_metrics": test_metrics},
         artifacts=_collect_run_artifacts(root),
         per_class_rows=per_class_rows,
+        quality_checks=quality_checks,
     )
 
 
@@ -948,6 +1431,12 @@ def build_model_eval_report(
     split: str = "test",
     bootstrap_samples: int = 200,
     bootstrap_seed: int = 0,
+    citation_gate: bool = False,
+    citation_gate_required: bool = False,
+    citation_report_path: Optional[Path] = None,
+    citation_hallucinated_max: int = 0,
+    citation_suspicious_rate_warn: float = 0.20,
+    citation_integrity_min_warn: float = 0.60,
 ) -> Dict[str, object]:
     family, resolved_source = _detect_report_source(
         Path(source_path).expanduser().resolve(), model_family
@@ -957,14 +1446,14 @@ def build_model_eval_report(
     split_name = str(split or "test").strip() or "test"
 
     if family == "dino_kpseg":
-        return _build_dino_report(
+        report = _build_dino_report(
             source_path=resolved_source,
             dataset_name=ds_name,
             model_name=mdl_name,
             split=split_name,
         )
-    if family == "yolo":
-        return _build_yolo_report(
+    elif family == "yolo":
+        report = _build_yolo_report(
             source_path=resolved_source,
             dataset_name=ds_name,
             model_name=mdl_name,
@@ -972,15 +1461,26 @@ def build_model_eval_report(
             bootstrap_samples=bootstrap_samples,
             bootstrap_seed=bootstrap_seed,
         )
-    if family == "behavior_classifier":
-        return _build_behavior_report(
+    elif family == "behavior_classifier":
+        report = _build_behavior_report(
             source_path=resolved_source,
             dataset_name=ds_name,
             model_name=mdl_name,
             split=split_name,
         )
-    raise ValueError(
-        f"Unsupported or unrecognized evaluation source for model_family={family!r}"
+    else:
+        raise ValueError(
+            f"Unsupported or unrecognized evaluation source for model_family={family!r}"
+        )
+    return _apply_citation_quality_gate(
+        report=report,
+        source_path=resolved_source,
+        citation_gate=citation_gate,
+        citation_gate_required=citation_gate_required,
+        citation_report_path=citation_report_path,
+        citation_hallucinated_max=citation_hallucinated_max,
+        citation_suspicious_rate_warn=citation_suspicious_rate_warn,
+        citation_integrity_min_warn=citation_integrity_min_warn,
     )
 
 
@@ -1063,6 +1563,27 @@ class AnnolidEvalReportTool(FunctionTool):
                     "maximum": 2000,
                 },
                 "bootstrap_seed": {"type": "integer"},
+                "citation_gate": {"type": "boolean", "default": False},
+                "citation_gate_required": {"type": "boolean", "default": False},
+                "citation_report_path": {"type": "string"},
+                "citation_hallucinated_max": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000,
+                    "default": 0,
+                },
+                "citation_suspicious_rate_warn": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.2,
+                },
+                "citation_integrity_min_warn": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.6,
+                },
                 "allow_mutation": {"type": "boolean"},
             },
             "required": ["path"],
@@ -1079,6 +1600,12 @@ class AnnolidEvalReportTool(FunctionTool):
         report_basename: str = "eval_report",
         bootstrap_samples: int = 200,
         bootstrap_seed: int = 0,
+        citation_gate: bool = False,
+        citation_gate_required: bool = False,
+        citation_report_path: str = "",
+        citation_hallucinated_max: int = 0,
+        citation_suspicious_rate_warn: float = 0.2,
+        citation_integrity_min_warn: float = 0.6,
         allow_mutation: bool = False,
         **kwargs: Any,
     ) -> str:
@@ -1097,6 +1624,20 @@ class AnnolidEvalReportTool(FunctionTool):
                 split=split,
                 bootstrap_samples=bootstrap_samples,
                 bootstrap_seed=bootstrap_seed,
+                citation_gate=bool(citation_gate),
+                citation_gate_required=bool(citation_gate_required),
+                citation_report_path=(
+                    _resolve_read_path(
+                        citation_report_path,
+                        allowed_dir=self._allowed_dir,
+                        allowed_read_roots=self._allowed_read_roots,
+                    )
+                    if str(citation_report_path or "").strip()
+                    else None
+                ),
+                citation_hallucinated_max=int(citation_hallucinated_max),
+                citation_suspicious_rate_warn=float(citation_suspicious_rate_warn),
+                citation_integrity_min_warn=float(citation_integrity_min_warn),
             )
             if str(report_dir or "").strip():
                 if not allow_mutation:

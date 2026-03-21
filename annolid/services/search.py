@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from annolid.services.embedding_search import EmbeddingSearchMatch, run_embedding_search
+from annolid.services.literature_search import search_literature
 
 
 def search_indexed_frames(*args: Any, **kwargs: Any):
@@ -22,6 +23,7 @@ def search_video_frames(*args: Any, **kwargs: Any):
 __all__ = [
     "EmbeddingSearchMatch",
     "run_embedding_search",
+    "search_literature",
     "search_indexed_frames",
     "search_video_frames",
 ]

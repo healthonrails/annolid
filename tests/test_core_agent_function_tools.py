@@ -24,6 +24,8 @@ from annolid.core.agent.tools.function_builtin import (
     AnnolidDatasetPrepareTool,
     AnnolidEvalReportTool,
     AnnolidEvalStartTool,
+    AnnolidNoveltyCheckTool,
+    AnnolidPaperRunReportTool,
     AnnolidRunTool,
     AnnolidTrainHelpTool,
     AnnolidTrainModelsTool,
@@ -346,6 +348,8 @@ def test_register_nanobot_style_tools_includes_annolid_run(tmp_path: Path) -> No
     assert registry.has("annolid_dataset_prepare")
     assert registry.has("annolid_eval_report")
     assert registry.has("annolid_eval_start")
+    assert registry.has("annolid_novelty_check")
+    assert registry.has("annolid_paper_run_report")
     assert registry.has("annolid_train_models")
     assert registry.has("annolid_train_help")
     assert registry.has("annolid_train_start")
@@ -1014,6 +1018,11 @@ def test_annolid_eval_report_builds_dino_report_from_summary_json(
     assert report["metadata"]["model_family"] == "dino_kpseg"
     assert "PCK@4px" in report["paper_table"]["markdown"]
     assert "95% CI" in report["paper_table"]["markdown"]
+    assert report["quality_status"] == "pass"
+    assert any(
+        item["id"] == "pck_ci_coverage" and item["status"] == "pass"
+        for item in report["quality_checks"]
+    )
 
 
 def test_annolid_eval_report_builds_yolo_report_and_writes_files(
@@ -1067,6 +1076,15 @@ def test_annolid_eval_report_builds_yolo_report_and_writes_files(
     report = payload["report"]
     assert report["metadata"]["model_family"] == "yolo"
     assert "mAP@50-95" in report["paper_table"]["markdown"]
+    assert report["quality_status"] == "warn"
+    assert any(
+        item["id"] == "prediction_json_present" and item["status"] == "warn"
+        for item in report["quality_checks"]
+    )
+    assert any(
+        item["id"] == "ci_coverage" and item["status"] == "warn"
+        for item in report["quality_checks"]
+    )
     written = report["written_files"]
     assert Path(written["json"]).exists()
     assert Path(written["markdown"]).exists()
@@ -1152,6 +1170,11 @@ def test_annolid_eval_report_builds_yolo_report_with_bootstrap_ci(
     report = payload["report"]
     assert report["metadata"]["annotation_json"].endswith("instances_test.json")
     assert report["metadata"]["prediction_json"].endswith("predictions.json")
+    assert report["quality_status"] == "pass"
+    assert any(
+        item["id"] == "ci_coverage" and item["status"] == "pass"
+        for item in report["quality_checks"]
+    )
     rows = {row["metric"]: row for row in report["paper_table"]["rows"]}
     assert rows["mAP@50"]["ci95"] != "NA"
     assert rows["mAP@50-95"]["ci95"] != "NA"
@@ -1231,10 +1254,488 @@ def test_annolid_eval_report_builds_behavior_report(tmp_path: Path) -> None:
     assert "accuracy_ci95_low" in report["paper_table"]["csv"]
     assert report["per_class"][0]["precision_ci95"] != "NA"
     assert report["per_class"][0]["ap_ci95"] != "NA"
+    assert report["quality_status"] == "warn"
+    assert any(
+        item["id"] == "prediction_sample_size" and item["status"] == "warn"
+        for item in report["quality_checks"]
+    )
     assert "grooming" in report["report_markdown"]
     assert "(" in report["report_markdown"]
     assert any("confusion_matrix.png" in artifact for artifact in report["artifacts"])
     assert report["per_class"][0]["label"] == "grooming"
+
+
+def test_annolid_eval_report_citation_gate_fails_on_hallucinated_entries(
+    tmp_path: Path,
+) -> None:
+    metrics_path = tmp_path / "dino_eval.json"
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "images_total": 10,
+                "images_used": 10,
+                "instances_total": 10,
+                "keypoints_visible_total": 100,
+                "mean_error_px": 2.25,
+                "pck": {"4.0": 0.7, "8.0": 0.9},
+                "pck_counts": {"4.0": 70, "8.0": 90},
+            }
+        ),
+        encoding="utf-8",
+    )
+    citation_report = tmp_path / "refs_batch.json"
+    citation_report.write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "total": 3,
+                    "counts": {
+                        "verified": 1,
+                        "suspicious": 1,
+                        "hallucinated": 1,
+                        "skipped": 0,
+                    },
+                    "integrity_score": 0.42,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    tool = AnnolidEvalReportTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                path=str(metrics_path),
+                model_family="dino_kpseg",
+                dataset_name="mouse_pose",
+                model_name="dino_best",
+                split="test",
+                citation_gate=True,
+                citation_report_path=str(citation_report),
+                citation_hallucinated_max=0,
+                citation_suspicious_rate_warn=0.2,
+                citation_integrity_min_warn=0.6,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    report = payload["report"]
+    assert report["quality_status"] == "fail"
+    assert any(
+        item["id"] == "citation_hallucination_gate" and item["status"] == "fail"
+        for item in report["quality_checks"]
+    )
+    assert "## Citation Quality Gate" in report["report_markdown"]
+    assert "hallucinated=1" in report["report_markdown"]
+
+
+def test_annolid_eval_report_citation_gate_required_fails_when_missing_report(
+    tmp_path: Path,
+) -> None:
+    metrics_path = tmp_path / "dino_eval.json"
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "images_total": 10,
+                "images_used": 10,
+                "instances_total": 10,
+                "keypoints_visible_total": 100,
+                "mean_error_px": 2.25,
+                "pck": {"4.0": 0.7, "8.0": 0.9},
+                "pck_counts": {"4.0": 70, "8.0": 90},
+            }
+        ),
+        encoding="utf-8",
+    )
+    tool = AnnolidEvalReportTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                path=str(metrics_path),
+                model_family="dino_kpseg",
+                dataset_name="mouse_pose",
+                model_name="dino_best",
+                split="test",
+                citation_gate=True,
+                citation_gate_required=True,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    report = payload["report"]
+    assert report["quality_status"] == "fail"
+    assert any(
+        item["id"] == "citation_report_presence" and item["status"] == "fail"
+        for item in report["quality_checks"]
+    )
+    assert "## Citation Quality Gate" in report["report_markdown"]
+    assert "report missing" in report["report_markdown"].lower()
+
+
+def test_annolid_novelty_check_tool_recommends_differentiate(tmp_path: Path) -> None:
+    tool = AnnolidNoveltyCheckTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                idea_title="Behavioral segmentation with active priors",
+                idea_summary=(
+                    "We combine segmentation and behavior classification using "
+                    "active-learning priors over mouse interaction videos."
+                ),
+                related_work=[
+                    {
+                        "title": "Active learning for behavior classification",
+                        "abstract": (
+                            "We use active learning for behavior classification in "
+                            "mouse social interaction videos."
+                        ),
+                    },
+                    {
+                        "title": "Segmentation priors in video models",
+                        "abstract": (
+                            "Priors improve segmentation for interaction videos with "
+                            "self-training and weak supervision."
+                        ),
+                    },
+                ],
+                differentiate_overlap_threshold=0.2,
+                abort_overlap_threshold=0.85,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["recommendation"] in {"differentiate", "abort"}
+    assert payload["coverage_quality"] in {"low", "medium", "high"}
+
+
+def test_annolid_novelty_check_tool_supports_related_work_json_path(
+    tmp_path: Path,
+) -> None:
+    json_path = tmp_path / "related.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "related_work": [
+                    {
+                        "title": "Non-overlapping approach",
+                        "abstract": "Completely unrelated domain and setup.",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    tool = AnnolidNoveltyCheckTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                idea_summary=(
+                    "A closed-loop neuroscience annotation framework with "
+                    "human-in-the-loop model adaptation."
+                ),
+                related_work_json_path=str(json_path),
+            )
+        )
+    )
+    assert payload["ok"] is True
+    assert payload["scores"]["related_work_count"] == 1
+
+
+def test_annolid_paper_run_report_merges_eval_citation_and_novelty(
+    tmp_path: Path,
+) -> None:
+    eval_report_path = tmp_path / "eval_report.json"
+    eval_report_path.write_text(
+        json.dumps(
+            {
+                "report": {
+                    "metadata": {
+                        "model": "dino_best",
+                        "dataset": "mouse_pose",
+                        "split": "test",
+                        "model_family": "dino_kpseg",
+                        "source_path": str(tmp_path / "dino_eval.json"),
+                    },
+                    "summary": {"images_total": 12, "images_used": 12},
+                    "paper_table": {
+                        "markdown": (
+                            "| Metric | Value | 95% CI |\\n"
+                            "|---|---:|---:|\\n"
+                            "| PCK@4px | 0.8120 | [0.73, 0.88] |"
+                        ),
+                        "rows": [
+                            {
+                                "metric": "PCK@4px",
+                                "value": "0.8120",
+                                "ci95": "[0.73, 0.88]",
+                            }
+                        ],
+                    },
+                    "quality_status": "pass",
+                    "quality_checks": [],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    citation_path = tmp_path / "citation_batch.json"
+    citation_path.write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "total": 10,
+                    "counts": {
+                        "verified": 8,
+                        "suspicious": 2,
+                        "hallucinated": 0,
+                        "skipped": 0,
+                    },
+                    "integrity_score": 0.78,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    novelty_path = tmp_path / "novelty.json"
+    novelty_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "recommendation": "differentiate",
+                "reason": "Overlap indicates adjacent prior art.",
+                "coverage_quality": "medium",
+                "scores": {
+                    "max_overlap": 0.51,
+                    "mean_top3_overlap": 0.42,
+                    "idea_token_coverage": 0.38,
+                    "related_work_count": 6,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tool = AnnolidPaperRunReportTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                eval_report_json_path=str(eval_report_path),
+                citation_report_path=str(citation_path),
+                novelty_report_path=str(novelty_path),
+            )
+        )
+    )
+    assert payload["ok"] is True
+    report = payload["report"]
+    assert report["evaluation"]["paper_table"]["rows"][0]["metric"] == "PCK@4px"
+    assert report["citation"]["counts"]["suspicious"] == 2
+    assert report["novelty"]["recommendation"] == "differentiate"
+    assert report["quality_status"] == "warn"
+    assert "## Reproducibility Checklist" in report["report_markdown"]
+
+
+def test_annolid_paper_run_report_requires_eval_report(tmp_path: Path) -> None:
+    tool = AnnolidPaperRunReportTool(allowed_dir=tmp_path)
+    payload = json.loads(asyncio.run(tool.execute()))
+    assert payload["ok"] is False
+    assert "eval_report" in payload["error"]
+
+
+def test_annolid_paper_run_report_blocks_export_when_gate_fails(
+    tmp_path: Path,
+) -> None:
+    eval_report_path = tmp_path / "eval_report.json"
+    eval_report_path.write_text(
+        json.dumps(
+            {
+                "report": {
+                    "metadata": {
+                        "model": "dino_best",
+                        "dataset": "mouse_pose",
+                        "split": "test",
+                        "model_family": "dino_kpseg",
+                        "source_path": str(tmp_path / "dino_eval.json"),
+                    },
+                    "summary": {"images_total": 12, "images_used": 12},
+                    "paper_table": {"markdown": "| Metric | Value | 95% CI |"},
+                    "quality_status": "pass",
+                    "quality_checks": [],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    citation_path = tmp_path / "citation_batch.json"
+    citation_path.write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "total": 4,
+                    "counts": {
+                        "verified": 2,
+                        "suspicious": 2,
+                        "hallucinated": 0,
+                        "skipped": 0,
+                    },
+                    "integrity_score": 0.45,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    novelty_path = tmp_path / "novelty.json"
+    novelty_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "recommendation": "differentiate",
+                "coverage_quality": "low",
+                "scores": {
+                    "max_overlap": 0.41,
+                    "mean_top3_overlap": 0.33,
+                    "idea_token_coverage": 0.11,
+                    "related_work_count": 2,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_dir = tmp_path / "report_out"
+    tool = AnnolidPaperRunReportTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                eval_report_json_path=str(eval_report_path),
+                citation_report_path=str(citation_path),
+                novelty_report_path=str(novelty_path),
+                paper_ready_gate=True,
+                citation_integrity_floor=0.7,
+                novelty_coverage_floor=0.3,
+                report_dir=str(report_dir),
+                allow_mutation=True,
+            )
+        )
+    )
+    assert payload["ok"] is False
+    assert "Paper-ready gate failed" in payload["error"]
+    assert payload["report"]["paper_ready"] is False
+    assert not (report_dir / "paper_run_report.json").exists()
+
+
+def test_annolid_paper_run_report_writes_export_when_gate_passes(
+    tmp_path: Path,
+) -> None:
+    eval_report_path = tmp_path / "eval_report.json"
+    eval_report_path.write_text(
+        json.dumps(
+            {
+                "report": {
+                    "metadata": {
+                        "model": "dino_best",
+                        "dataset": "mouse_pose",
+                        "split": "test",
+                        "model_family": "dino_kpseg",
+                        "source_path": str(tmp_path / "dino_eval.json"),
+                    },
+                    "summary": {"images_total": 12, "images_used": 12},
+                    "paper_table": {"markdown": "| Metric | Value | 95% CI |"},
+                    "quality_status": "pass",
+                    "quality_checks": [],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    citation_path = tmp_path / "citation_batch.json"
+    citation_path.write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "total": 4,
+                    "counts": {
+                        "verified": 4,
+                        "suspicious": 0,
+                        "hallucinated": 0,
+                        "skipped": 0,
+                    },
+                    "integrity_score": 0.92,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    novelty_path = tmp_path / "novelty.json"
+    novelty_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "recommendation": "proceed",
+                "coverage_quality": "high",
+                "scores": {
+                    "max_overlap": 0.12,
+                    "mean_top3_overlap": 0.1,
+                    "idea_token_coverage": 0.58,
+                    "related_work_count": 8,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_dir = tmp_path / "report_out"
+    tool = AnnolidPaperRunReportTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                eval_report_json_path=str(eval_report_path),
+                citation_report_path=str(citation_path),
+                novelty_report_path=str(novelty_path),
+                paper_ready_gate=True,
+                citation_integrity_floor=0.7,
+                novelty_coverage_floor=0.3,
+                report_dir=str(report_dir),
+                report_basename="paper_ready",
+                allow_mutation=True,
+            )
+        )
+    )
+    assert payload["ok"] is True
+    report = payload["report"]
+    assert report["paper_ready"] is True
+    assert report["paper_ready_gate"]["status"] == "pass"
+    assert Path(report["written_files"]["json"]).exists()
+    assert Path(report["written_files"]["markdown"]).exists()
+
+
+def test_annolid_paper_run_report_rejects_invalid_gate_thresholds(
+    tmp_path: Path,
+) -> None:
+    eval_report_path = tmp_path / "eval_report.json"
+    eval_report_path.write_text(
+        json.dumps(
+            {
+                "report": {
+                    "metadata": {"source_path": str(tmp_path / "metrics.json")},
+                    "summary": {},
+                    "paper_table": {"markdown": "| Metric | Value | 95% CI |"},
+                    "quality_status": "pass",
+                    "quality_checks": [],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    tool = AnnolidPaperRunReportTool(allowed_dir=tmp_path)
+    payload = json.loads(
+        asyncio.run(
+            tool.execute(
+                eval_report_json_path=str(eval_report_path),
+                paper_ready_gate=True,
+                citation_integrity_floor=1.2,
+            )
+        )
+    )
+    assert payload["ok"] is False
+    assert "citation_integrity_floor" in payload["error"]
 
 
 def test_annolid_eval_start_blocks_without_mutation(tmp_path: Path) -> None:
@@ -2694,6 +3195,8 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("annolid_train_start")
     assert registry.has("annolid_eval_start")
     assert registry.has("annolid_eval_report")
+    assert registry.has("annolid_novelty_check")
+    assert registry.has("annolid_paper_run_report")
     assert registry.has("cron")
     assert registry.has("download_url")
     assert registry.has("download_pdf")
@@ -3402,9 +3905,27 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         ),
         open_pdf_callback=lambda path="": _mark("open_pdf", path or None),
         pdf_get_state_callback=lambda: _mark("pdf_get_state"),
-        pdf_get_text_callback=lambda max_chars=8000, pages=2, path="": _mark(
+        pdf_get_text_callback=lambda max_chars=8000,
+        pages=2,
+        start_page=0,
+        path="": _mark(
             "pdf_get_text",
-            {"max_chars": int(max_chars), "pages": int(pages), "path": str(path or "")},
+            {
+                "max_chars": int(max_chars),
+                "pages": int(pages),
+                "start_page": int(start_page),
+                "path": str(path or ""),
+            },
+        ),
+        pdf_summarize_callback=lambda path="",
+        max_pages=80,
+        max_extract_chars=350000: _mark(
+            "pdf_summarize",
+            {
+                "path": str(path or ""),
+                "max_pages": int(max_pages),
+                "max_extract_chars": int(max_extract_chars),
+            },
         ),
         pdf_find_sections_callback=lambda max_sections=20, max_pages=12: _mark(
             "pdf_find_sections",
@@ -3479,6 +4000,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
             },
         ),
         save_citation_callback=lambda **kwargs: _mark("save_citation", kwargs),
+        verify_citations_callback=lambda **kwargs: _mark("verify_citations", kwargs),
         generate_annolid_tutorial_callback=lambda **kwargs: _mark(
             "generate_annolid_tutorial", kwargs
         ),
@@ -3503,6 +4025,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_open_pdf")
     assert registry.has("gui_pdf_get_state")
     assert registry.has("gui_pdf_get_text")
+    assert registry.has("gui_pdf_summarize")
     assert registry.has("gui_pdf_find_sections")
     assert registry.has("gui_set_frame")
     assert registry.has("gui_set_chat_prompt")
@@ -3526,6 +4049,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_read_log_file")
     assert registry.has("gui_search_logs")
     assert registry.has("gui_save_citation")
+    assert registry.has("gui_verify_citations")
     assert registry.has("gui_generate_annolid_tutorial")
     assert registry.has("gui_self_update")
     ctx = asyncio.run(registry.execute("gui_context", {}))
@@ -3626,6 +4150,17 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         )
     )
     assert json.loads(pdf_text_with_path)["ok"] is True
+    pdf_summary = asyncio.run(
+        registry.execute(
+            "gui_pdf_summarize",
+            {
+                "path": "/tmp/paper.pdf",
+                "max_pages": 30,
+                "max_extract_chars": 250000,
+            },
+        )
+    )
+    assert json.loads(pdf_summary)["ok"] is True
     pdf_sections = asyncio.run(
         registry.execute("gui_pdf_find_sections", {"max_sections": 10, "max_pages": 8})
     )
@@ -3741,6 +4276,12 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     )
     asyncio.run(
         registry.execute(
+            "gui_verify_citations",
+            {"bib_file": "references.bib", "limit": 20},
+        )
+    )
+    asyncio.run(
+        registry.execute(
             "gui_generate_annolid_tutorial",
             {
                 "topic": "Realtime camera workflow",
@@ -3796,8 +4337,27 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         ("open_pdf", None),
         ("open_pdf", "/tmp/paper.pdf"),
         ("pdf_get_state", None),
-        ("pdf_get_text", {"max_chars": 1200, "pages": 2, "path": ""}),
-        ("pdf_get_text", {"max_chars": 1200, "pages": 2, "path": "/tmp/paper.pdf"}),
+        (
+            "pdf_get_text",
+            {"max_chars": 1200, "pages": 2, "start_page": 0, "path": ""},
+        ),
+        (
+            "pdf_get_text",
+            {
+                "max_chars": 1200,
+                "pages": 2,
+                "start_page": 0,
+                "path": "/tmp/paper.pdf",
+            },
+        ),
+        (
+            "pdf_summarize",
+            {
+                "path": "/tmp/paper.pdf",
+                "max_pages": 30,
+                "max_extract_chars": 250000,
+            },
+        ),
         ("pdf_find_sections", {"max_sections": 10, "max_pages": 8}),
         ("set_frame", 3),
         ("set_prompt", "describe this"),
@@ -3870,6 +4430,10 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         (
             "save_citation",
             {"key": "annolid2024", "bib_file": "references.bib", "source": "pdf"},
+        ),
+        (
+            "verify_citations",
+            {"bib_file": "references.bib", "limit": 20},
         ),
         (
             "generate_annolid_tutorial",

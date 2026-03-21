@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict
 
+from annolid.core.agent.gui_backend.pdf_hints import (
+    parse_source_page_hint,
+    source_matches_active_pdf,
+)
+
 
 def build_live_web_context_prompt_block(
     *,
@@ -42,6 +47,7 @@ def build_live_pdf_context_prompt_block(
     *,
     get_state: Callable[[], Dict[str, Any]],
     get_text: Callable[..., Dict[str, Any]],
+    prompt: str = "",
     include_snapshot: bool = True,
 ) -> str:
     state = get_state()
@@ -55,7 +61,15 @@ def build_live_pdf_context_prompt_block(
     total = int(state.get("total_pages") or 0)
     snapshot_block = "Text snapshot: [omitted to save tokens]"
     if include_snapshot:
-        payload = get_text(max_chars=1200, pages=1)
+        hint = parse_source_page_hint(prompt)
+        use_page_target = bool(hint and source_matches_active_pdf(hint[0], path, title))
+        if use_page_target:
+            try:
+                payload = get_text(max_chars=1200, pages=1, start_page=int(hint[1]))
+            except TypeError:
+                payload = get_text(max_chars=1200, pages=1)
+        else:
+            payload = get_text(max_chars=1200, pages=1)
         if isinstance(payload, dict) and bool(payload.get("ok")):
             text = str(payload.get("text") or "").strip()
             if len(text) > 600:

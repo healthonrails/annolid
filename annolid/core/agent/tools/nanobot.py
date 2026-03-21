@@ -61,6 +61,8 @@ from .annolid_run import AnnolidRunTool
 from .dataset import AnnolidDatasetInspectTool, AnnolidDatasetPrepareTool
 from .eval_reporting import AnnolidEvalReportTool
 from .eval_start import AnnolidEvalStartTool
+from .novelty import AnnolidNoveltyCheckTool
+from .paper_reporting import AnnolidPaperRunReportTool
 from .training import (
     AnnolidTrainHelpTool,
     AnnolidTrainModelsTool,
@@ -242,6 +244,18 @@ async def register_nanobot_style_tools(
     )
     registry.register(
         AnnolidEvalStartTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        AnnolidNoveltyCheckTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        AnnolidPaperRunReportTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )

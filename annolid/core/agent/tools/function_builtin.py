@@ -26,6 +26,8 @@ from .eval_reporting import (
     write_model_eval_report_files,
 )
 from .eval_start import AnnolidEvalStartTool
+from .novelty import AnnolidNoveltyCheckTool
+from .paper_reporting import AnnolidPaperRunReportTool
 from .training import (
     AnnolidTrainHelpTool,
     AnnolidTrainModelsTool,
@@ -132,6 +134,8 @@ __all__ = [
     "AnnolidDatasetPrepareTool",
     "AnnolidEvalReportTool",
     "AnnolidEvalStartTool",
+    "AnnolidNoveltyCheckTool",
+    "AnnolidPaperRunReportTool",
     "build_model_eval_report",
     "write_model_eval_report_files",
     "AnnolidTrainModelsTool",

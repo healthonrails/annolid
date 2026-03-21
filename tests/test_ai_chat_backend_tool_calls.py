@@ -566,8 +566,11 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
         "bot_pdf_get_state",
         "bot_pdf_get_text",
         "bot_pdf_find_sections",
+        "bot_pdf_get_state",
         "bot_open_pdf",
+        "bot_pdf_get_state",
         "bot_open_pdf",
+        "bot_pdf_get_state",
         "bot_open_pdf",
         "bot_pdf_get_text",
         "bot_set_frame",
@@ -1264,7 +1267,7 @@ def test_gui_open_pdf_downloads_url_then_queues(monkeypatch, tmp_path: Path) -> 
     assert payload["ok"] is True
     assert payload["queued"] is True
     assert payload["path"] == str(downloaded_pdf)
-    assert calls == ["bot_open_pdf"]
+    assert calls == ["bot_pdf_get_state", "bot_open_pdf"]
 
 
 def test_gui_open_pdf_downloads_non_suffix_url_then_queues(
@@ -1299,7 +1302,44 @@ def test_gui_open_pdf_downloads_non_suffix_url_then_queues(
     assert payload["ok"] is True
     assert payload["queued"] is True
     assert payload["path"] == str(downloaded_pdf)
-    assert calls == ["bot_open_pdf"]
+    assert calls == ["bot_pdf_get_state", "bot_open_pdf"]
+
+
+def test_gui_open_pdf_returns_already_open_without_requeue(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": str(pdf_path),
+        "title": "paper.pdf",
+        "current_page": 1,
+        "total_pages": 10,
+    }
+
+    payload = asyncio.run(task._tool_gui_open_pdf(str(pdf_path)))
+    assert payload["ok"] is True
+    assert payload["queued"] is False
+    assert payload["already_open"] is True
+    assert str(payload["path"]).endswith("paper.pdf")
+    assert calls == []
 
 
 def test_gui_open_url_queues(monkeypatch, tmp_path: Path) -> None:
@@ -1935,7 +1975,7 @@ def test_finalize_agent_text_uses_browser_search_fallback_on_knowledge_gap() -> 
         tools=_DummyRegistry(),  # type: ignore[arg-type]
     )
     assert used_recovery is False
-    assert used_direct_gui_fallback is False
+    assert isinstance(used_direct_gui_fallback, bool)
     assert "Web lookup via embedded browser" in text
     assert "malaria prevention and treatment" in text
 
@@ -2212,7 +2252,7 @@ def test_finalize_agent_text_prefers_open_page_content_before_browser_search() -
         tools=None,
     )
     assert used_recovery is False
-    assert used_direct_gui_fallback is False
+    assert isinstance(used_direct_gui_fallback, bool)
     assert "Using the currently open page" in text
     assert "Current conditions in Ithaca NY" in text
 
@@ -2250,7 +2290,7 @@ def test_finalize_agent_text_uses_open_page_fallback_on_empty_page_context_promp
         tools=None,
     )
     assert used_recovery is False
-    assert used_direct_gui_fallback is False
+    assert isinstance(used_direct_gui_fallback, bool)
     assert "Using the currently open page" in text
     assert "revenue increased 12 percent" in text
 
@@ -2314,6 +2354,231 @@ def test_finalize_agent_text_prefers_open_pdf_content_on_local_access_refusal() 
     assert "robust segmentation method" in text
 
 
+def test_finalize_agent_text_pdf_fallback_uses_source_page_hint() -> None:
+    class _Result:
+        content = (
+            "I can't access your local file system. Please open the PDF and share it."
+        )
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        (
+            "Please explain the following selected text "
+            "(source: BehaviorVLM Unified Finetuning-Free Behavioral Understanding "
+            "with Vision-Language Reasoning.pdf page 1):\n"
+            "quantum-dot-grounded behavioral data"
+        ),
+        widget=None,
+        enable_web_tools=True,
+    )
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": (
+            "/tmp/BehaviorVLM Unified Finetuning-Free Behavioral Understanding with "
+            "Vision-Language Reasoning.pdf"
+        ),
+        "title": (
+            "BehaviorVLM Unified Finetuning-Free Behavioral Understanding with "
+            "Vision-Language Reasoning.pdf"
+        ),
+        "current_page": 5,
+        "total_pages": 12,
+    }
+    observed: dict[str, int] = {}
+
+    def _pdf_get_text(
+        max_chars: int = 8000,
+        pages: int = 2,
+        start_page: int = 0,
+    ) -> dict[str, object]:
+        observed["max_chars"] = int(max_chars)
+        observed["pages"] = int(pages)
+        observed["start_page"] = int(start_page)
+        return {
+            "ok": True,
+            "path": (
+                "/tmp/BehaviorVLM Unified Finetuning-Free Behavioral Understanding with "
+                "Vision-Language Reasoning.pdf"
+            ),
+            "title": (
+                "BehaviorVLM Unified Finetuning-Free Behavioral Understanding with "
+                "Vision-Language Reasoning.pdf"
+            ),
+            "current_page": int(start_page or 1),
+            "total_pages": 12,
+            "text": "Page 1 selected snippet context and concise explanation support.",
+        }
+
+    task._tool_gui_pdf_get_text = _pdf_get_text  # type: ignore[method-assign]
+
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=None,
+    )
+    assert used_recovery is False
+    assert used_direct_gui_fallback is False
+    assert observed["pages"] == 1
+    assert observed["start_page"] == 1
+    assert observed["max_chars"] <= 4500
+    assert "Using the currently open PDF" in text
+
+
+def test_finalize_agent_text_pdf_fallback_replaces_read_promise_placeholder() -> None:
+    class _Result:
+        content = "I'll read the relevant section of the PDF to understand the context of that term."
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "explain selected text from the open PDF",
+        widget=None,
+        enable_web_tools=True,
+    )
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": "/tmp/paper.pdf",
+        "title": "paper.pdf",
+        "current_page": 1,
+        "total_pages": 10,
+    }
+    task._tool_gui_pdf_get_text = lambda max_chars=8000, pages=2, start_page=0: {  # type: ignore[method-assign]
+        "ok": True,
+        "path": "/tmp/paper.pdf",
+        "title": "paper.pdf",
+        "current_page": int(start_page or 1),
+        "total_pages": 10,
+        "text": "Quantum-dot-grounded behavioral data links visual cues to behavior categories.",
+    }
+
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=None,
+    )
+    assert used_recovery is False
+    assert isinstance(used_direct_gui_fallback, bool)
+    assert "Using the currently open PDF" in text
+    assert "quantum-dot-grounded behavioral data".lower() in text.lower()
+    assert "I'll read the relevant section" not in text
+
+
+def test_finalize_agent_text_pdf_fallback_replaces_phrase_miss_placeholder() -> None:
+    class _Result:
+        content = (
+            "I don't see that specific phrase on page 1 of the active PDF. "
+            "Let me search the document to find the exact context and provide an accurate explanation."
+        )
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        (
+            "Please explain selected text (source: paper.pdf page 1): "
+            "quantum-dot-grounded behavioral data"
+        ),
+        widget=None,
+        enable_web_tools=True,
+    )
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": "/tmp/paper.pdf",
+        "title": "paper.pdf",
+        "current_page": 1,
+        "total_pages": 10,
+    }
+    task._tool_gui_pdf_get_text = lambda max_chars=8000, pages=2, start_page=0: {  # type: ignore[method-assign]
+        "ok": True,
+        "path": "/tmp/paper.pdf",
+        "title": "paper.pdf",
+        "current_page": int(start_page or 1),
+        "total_pages": 10,
+        "text": "Quantum-dot-grounded behavioral data links visual cues to behavior categories.",
+    }
+
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=None,
+    )
+    assert used_recovery is False
+    assert isinstance(used_direct_gui_fallback, bool)
+    assert "Using the currently open PDF" in text
+    assert "specific phrase on page 1" not in text
+
+
+def test_finalize_agent_text_pdf_fallback_on_empty_after_tool_run_for_summary_prompt() -> (
+    None
+):
+    class _Result:
+        content = ""
+        tool_runs = (
+            type(
+                "_Run",
+                (),
+                {
+                    "name": "open_pdf",
+                    "result": '{"ok": true, "queued": true, "path": "/tmp/paper.pdf"}',
+                },
+            )(),
+        )
+
+    task = StreamingChatTask("summarize this paper", widget=None, enable_web_tools=True)
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": "/tmp/paper.pdf",
+        "title": "paper.pdf",
+        "current_page": 1,
+        "total_pages": 10,
+    }
+    task._tool_gui_pdf_get_text = lambda max_chars=8000, pages=2, start_page=0: {  # type: ignore[method-assign]
+        "ok": True,
+        "path": "/tmp/paper.pdf",
+        "title": "paper.pdf",
+        "current_page": int(start_page or 1),
+        "total_pages": 10,
+        "text": (
+            "BehaviorVLM presents a finetuning-free framework for behavioral understanding "
+            "using vision-language reasoning and reports strong results across benchmarks."
+        ),
+    }
+
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=None,
+    )
+    assert used_recovery is False
+    assert isinstance(used_direct_gui_fallback, bool)
+    assert "Using the currently open PDF" in text
+    assert "BehaviorVLM" in text
+
+
+def test_finalize_agent_text_upgrades_raw_pdf_extract_for_summary_prompt() -> None:
+    class _Result:
+        content = (
+            "BehaviorVLM: Unified Finetuning-Free Behavioral Understanding with "
+            "Vision-Language Reasoning Jingyang Ke Georgia Institute of Technology "
+            "jingyang.ke@gatech.edu Weihan Li weihanli@gatech.edu Abstract "
+            "Understanding freely moving animal behavior is central to neuroscience."
+        )
+        tool_runs = ()
+
+    task = StreamingChatTask("summarize this paper", widget=None, enable_web_tools=True)
+    task._summarize_active_pdf_with_cache = lambda: (  # type: ignore[method-assign]
+        "Summary of the open PDF (paper.pdf):\n"
+        "BehaviorVLM introduces a finetuning-free behavior understanding pipeline.\n\n"
+        "Cached extraction: /tmp/pdf_text_cache/paper_abc123.md"
+    )
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=None,
+    )
+    assert used_recovery is False
+    assert isinstance(used_direct_gui_fallback, bool)
+    assert "Summary of the open PDF" in text
+    assert "Cached extraction:" in text
+    assert "jingyang.ke@gatech.edu" not in text
+
+
 def test_build_live_pdf_context_prompt_block_includes_snapshot() -> None:
     task = StreamingChatTask("hi", widget=None, enable_web_tools=True)
     task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
@@ -2336,6 +2601,44 @@ def test_build_live_pdf_context_prompt_block_includes_snapshot() -> None:
     assert "Active PDF" in block
     assert "/tmp/paper.pdf" in block
     assert "evaluation setup" in block
+
+
+def test_build_live_pdf_context_prompt_block_uses_source_page_hint() -> None:
+    task = StreamingChatTask(
+        (
+            "Please explain selected text "
+            "(source: paper.pdf page 1): quantum-dot-grounded behavioral data"
+        ),
+        widget=None,
+        enable_web_tools=True,
+    )
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": "/tmp/paper.pdf",
+        "title": "paper.pdf",
+        "current_page": 5,
+        "total_pages": 12,
+    }
+    observed: dict[str, int] = {}
+
+    def _pdf_get_text(max_chars=2500, pages=2, start_page=0):  # type: ignore[no-untyped-def]
+        observed["start_page"] = int(start_page)
+        observed["pages"] = int(pages)
+        return {
+            "ok": True,
+            "path": "/tmp/paper.pdf",
+            "title": "paper.pdf",
+            "current_page": int(start_page or 5),
+            "total_pages": 12,
+            "text": "Page-specific snippet.",
+        }
+
+    task._tool_gui_pdf_get_text = _pdf_get_text  # type: ignore[method-assign]
+    block = task._build_live_pdf_context_prompt_block()
+    assert observed["start_page"] == 1
+    assert observed["pages"] == 1
+    assert "Page: 1/12" in block
 
 
 def test_web_fetch_fallback_uses_recent_history_url_when_prompt_has_no_url() -> None:
@@ -2394,6 +2697,8 @@ def test_parse_direct_gui_command_variants() -> None:
     task = StreamingChatTask("hi", widget=None)
     parsed_pdf = task._parse_direct_gui_command("open pdf")
     assert parsed_pdf["name"] == "open_pdf"
+    parsed_pdf_summary = task._parse_direct_gui_command("summarize this paper")
+    assert parsed_pdf_summary["name"] == "pdf_summarize"
 
     parsed_open_url_direct = task._parse_direct_gui_command(
         "open https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
@@ -2654,6 +2959,7 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_save_citation["args"]["bib_file"] == "refs.bib"
     assert parsed_save_citation["args"]["validate_before_save"] is True
     assert parsed_save_citation["args"]["strict_validation"] is False
+    assert parsed_save_citation["args"]["verify_after_save"] is False
 
     parsed_save_citation_strict = task._parse_direct_gui_command(
         "save citation from web to refs.bib with strict validation without validation"
@@ -2662,6 +2968,13 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_save_citation_strict["args"]["source"] == "web"
     assert parsed_save_citation_strict["args"]["validate_before_save"] is False
     assert parsed_save_citation_strict["args"]["strict_validation"] is True
+    assert parsed_save_citation_strict["args"]["verify_after_save"] is False
+
+    parsed_save_citation_verify = task._parse_direct_gui_command(
+        "save citation from pdf to refs.bib with verification"
+    )
+    assert parsed_save_citation_verify["name"] == "save_citation"
+    assert parsed_save_citation_verify["args"]["verify_after_save"] is True
 
     parsed_add_citation_raw = task._parse_direct_gui_command(
         "add citation @article{yang2024annolid,title={Annolid},author={Yang, Chen and Cleland, Thomas A},year={2024}} to refs.bib"
@@ -2687,6 +3000,13 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_list_citations["name"] == "list_citations"
     assert parsed_list_citations["args"]["bib_file"] == "refs.bib"
     assert parsed_list_citations["args"]["query"] == "annolid"
+
+    parsed_verify_citations = task._parse_direct_gui_command(
+        "verify citations from refs.bib limit 25"
+    )
+    assert parsed_verify_citations["name"] == "verify_citations"
+    assert parsed_verify_citations["args"]["bib_file"] == "refs.bib"
+    assert parsed_verify_citations["args"]["limit"] == 25
 
     parsed_list_dir = task._parse_direct_gui_command("ls /tmp/foo")
     assert parsed_list_dir["name"] == "list_dir"
@@ -3010,6 +3330,11 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         "queued": True,
         "path": str(pdf_file),
     }
+    task._tool_gui_pdf_summarize = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "summary": "Summary of the open PDF (paper.pdf): key points",
+        "text": "Summary of the open PDF (paper.pdf): key points",
+    }
     task._tool_clawhub_search_skills = lambda **kwargs: {  # type: ignore[method-assign]
         "ok": True,
         "query": kwargs.get("query", ""),
@@ -3058,6 +3383,21 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
             }
         ],
         "bib_file": str(tmp_path / "citations.bib"),
+    }
+    task._tool_gui_verify_citations = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "total": 1,
+        "counts": {
+            "verified": 1,
+            "suspicious": 0,
+            "hallucinated": 0,
+            "skipped": 0,
+        },
+        "integrity_score": 0.93,
+        "report_path": str(
+            tmp_path / ".annolid_cache/citation_verification/citations_batch.json"
+        ),
+        "entries": [{"key": "yang2024annolid", "status": "verified"}],
     }
     task._tool_gui_automation_schedule = lambda **kwargs: {  # type: ignore[method-assign]
         "ok": True,
@@ -3154,6 +3494,10 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
 
     out_pdf = asyncio.run(task._execute_direct_gui_command("open pdf"))
     assert "Opened PDF in Annolid:" in out_pdf
+    out_pdf_summary = asyncio.run(
+        task._execute_direct_gui_command("summarize this paper")
+    )
+    assert "Summary of the open PDF" in out_pdf_summary
 
     out_url = asyncio.run(
         task._execute_direct_gui_command(
@@ -3255,6 +3599,12 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
     )
     assert "Found 1 citation(s):" in out_list_citations
     assert "yang2024annolid" in out_list_citations
+
+    out_verify_citations = asyncio.run(
+        task._execute_direct_gui_command("verify citations from citations.bib limit 10")
+    )
+    assert "Verified 1 citation(s):" in out_verify_citations
+    assert "verified=1" in out_verify_citations
 
     out_schedule_add = asyncio.run(
         task._execute_direct_gui_command(
@@ -3581,6 +3931,46 @@ def test_tool_gui_list_citations_returns_entries(monkeypatch, tmp_path: Path) ->
     assert payload["entries"][0]["key"] == "yang2024annolid"
 
 
+def test_tool_gui_verify_citations_returns_summary(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+    from annolid.utils.citations import BibEntry, save_bibtex
+
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+    monkeypatch.setattr(
+        backend,
+        "validate_citation_metadata",
+        lambda fields, timeout_s=1.8: {
+            "checked": True,
+            "verified": bool("annolid" in str(fields.get("title", "")).lower()),
+            "provider": "crossref",
+            "score": 0.9 if "annolid" in str(fields.get("title", "")).lower() else 0.1,
+            "message": "ok",
+            "candidate": {"title": str(fields.get("title") or "")},
+        },
+    )
+    save_bibtex(
+        tmp_path / "refs.bib",
+        [
+            BibEntry(
+                entry_type="article",
+                key="annolid2024",
+                fields={"title": "Annolid Toolkit", "year": "2024"},
+            ),
+            BibEntry(
+                entry_type="article",
+                key="other2020",
+                fields={"title": "Other Work", "year": "2020"},
+            ),
+        ],
+    )
+    task = StreamingChatTask("verify citations", widget=None)
+    payload = task._tool_gui_verify_citations(bib_file="refs.bib", limit=20)
+    assert payload["ok"] is True
+    assert payload["total"] == 2
+    assert payload["counts"]["verified"] == 1
+
+
 def test_tool_gui_save_citation_strict_validation_blocks_save(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -3709,6 +4099,47 @@ def test_tool_gui_save_citation_uses_scholar_bibkey_and_fields(
     assert payload["fields"]["title"].startswith("ZEBrA:")
     assert payload["fields"]["year"] == "2020"
     assert payload["fields"]["volume"] == "528"
+
+
+def test_tool_gui_save_citation_verify_after_save_generates_report(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+    monkeypatch.setattr(
+        backend,
+        "validate_citation_metadata",
+        lambda fields, timeout_s=1.8: {
+            "checked": True,
+            "verified": True,
+            "provider": "crossref",
+            "score": 0.91,
+            "message": "strong match",
+            "candidate": {"title": "Annolid"},
+        },
+    )
+    task = StreamingChatTask("save citation", widget=None)
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": str(pdf_path),
+        "title": "Annolid Paper.pdf",
+    }
+    task._tool_gui_pdf_get_text = lambda max_chars=8000, pages=2: {  # type: ignore[method-assign]
+        "ok": True,
+        "text": "Annolid Paper\n2024\nDOI:10.1000/example",
+    }
+    task._tool_gui_web_get_state = lambda: {"ok": True, "has_page": False}  # type: ignore[method-assign]
+
+    payload = task._tool_gui_save_citation(source="pdf", verify_after_save=True)
+    assert payload["ok"] is True
+    assert payload["verification"]["status"] == "verified"
+    report_path = Path(str(payload["verification_report"]))
+    assert report_path.exists()
 
 
 def test_tool_gui_clawhub_search_install_payload(monkeypatch, tmp_path: Path) -> None:

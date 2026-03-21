@@ -24,7 +24,10 @@ from annolid.core.agent.gui_backend.heuristics import (
     build_extractive_summary,
     contains_hint,
     extract_web_urls,
+    looks_like_pdf_phrase_miss_response,
+    looks_like_pdf_summary_request,
     looks_like_knowledge_gap_response,
+    looks_like_pdf_read_promise,
     looks_like_open_pdf_suggestion,
     looks_like_open_url_suggestion,
     looks_like_url_request,
@@ -62,6 +65,10 @@ from annolid.core.agent.gui_backend.response_finalize import (
     ensure_non_empty_final_text as gui_ensure_non_empty_final_text,
     sanitize_final_response_text as gui_sanitize_final_response_text,
     should_apply_web_refusal_fallback as gui_should_apply_web_refusal_fallback,
+)
+from annolid.core.agent.gui_backend.pdf_summary import (
+    looks_like_raw_pdf_extract_response as gui_looks_like_raw_pdf_extract_response,
+    summarize_active_pdf_with_cache as gui_summarize_active_pdf_with_cache,
 )
 from annolid.core.agent.gui_backend.runtime_flow import (
     emit_agent_loop_result,
@@ -127,9 +134,14 @@ __all__ = [
     "gui_log_agent_result",
     "gui_sanitize_final_response_text",
     "gui_should_apply_web_refusal_fallback",
+    "gui_looks_like_raw_pdf_extract_response",
+    "gui_summarize_active_pdf_with_cache",
     "gui_wrap_tool_callback",
     "list_available_pdfs_in_roots",
     "looks_like_knowledge_gap_response",
+    "looks_like_pdf_phrase_miss_response",
+    "looks_like_pdf_summary_request",
+    "looks_like_pdf_read_promise",
     "looks_like_local_access_refusal",
     "looks_like_open_pdf_suggestion",
     "looks_like_open_url_suggestion",

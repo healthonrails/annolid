@@ -439,6 +439,33 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             },
         }
 
+    verify_citation_match = re.search(
+        r"\b(?:verify|validate|check)\b.*\b(?:citations?|bib(?:tex)?\s+entries?)\b",
+        lower,
+    )
+    if verify_citation_match:
+        bib_file_match = re.search(
+            r"\bfrom\s+([^\n]+?\.bib)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        limit_match = re.search(
+            r"\b(?:limit|top|first)\s+(\d{1,4})\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return {
+            "name": "verify_citations",
+            "args": {
+                "bib_file": (
+                    _strip_wrapping_quotes(bib_file_match.group(1).strip())
+                    if bib_file_match
+                    else ""
+                ),
+                "limit": int(limit_match.group(1)) if limit_match else 200,
+            },
+        }
+
     save_citation_match = re.search(
         r"\b(?:save|add|store|export)\b.*\b(?:citation|cite|bib(?:tex)?\b)\b",
         lower,
@@ -479,6 +506,11 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                 ),
                 "strict_validation": bool(
                     re.search(r"\bstrict(?:\s+validation)?\b", lower)
+                ),
+                "verify_after_save": bool(
+                    re.search(r"\bverify(?:\s+after\s+save)?\b", lower)
+                    or re.search(r"\bverification\b", lower)
+                    or re.search(r"\bintegrity\s+report\b", lower)
                 ),
             },
         }
@@ -608,6 +640,18 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                 "query": query_match.group("query").strip() if query_match else None
             },
         }
+
+    summarize_pdf_match = re.search(
+        r"^\s*(?:please\s+)?(?:summarize|summary|tldr|tl;dr|overview|explain)\b"
+        r"[\s\S]*\b(?:paper|pdf|document)\b",
+        lower,
+    )
+    if summarize_pdf_match:
+        # Keep this direct command narrowly scoped; source-page extraction/explanation
+        # prompts are handled better by the normal tool loop + PDF fallback path.
+        if "source:" in lower:
+            return {}
+        return {"name": "pdf_summarize", "args": {}}
 
     clawhub_install_match = re.search(
         r"\b(?:install|add)\s+(?:the\s+)?(?:skill\s+)?(?P<slug>[a-z0-9][a-z0-9._-]{0,127})\s+"

@@ -344,20 +344,25 @@ def pdf_get_text(
     invoke_widget_json_slot: Callable[..., Dict[str, Any]],
     max_chars: int = 8000,
     pages: int = 2,
+    start_page: int = 0,
     path: str = "",
 ) -> Dict[str, Any]:
     del path
     limit = max(200, min(int(max_chars or 8000), 200000))
     pages_limit = max(1, min(int(pages or 2), 5))
+    start_page_value = max(0, int(start_page or 0))
     payload = invoke_widget_json_slot(
         "bot_pdf_get_text",
         QtCore.Q_ARG(int, limit),
         QtCore.Q_ARG(int, pages_limit),
+        QtCore.Q_ARG(int, start_page_value),
     )
     if "max_chars" not in payload:
         payload["max_chars"] = limit
     if "pages" not in payload:
         payload["pages"] = pages_limit
+    if "start_page" not in payload:
+        payload["start_page"] = start_page_value
     return payload
 
 

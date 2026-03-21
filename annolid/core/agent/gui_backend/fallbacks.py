@@ -8,6 +8,10 @@ from annolid.core.agent.gui_backend.heuristics import (
     EMBEDDED_SEARCH_SOURCE,
     EMBEDDED_SEARCH_URL_TEMPLATE,
 )
+from annolid.core.agent.gui_backend.pdf_hints import (
+    parse_source_page_hint,
+    source_matches_active_pdf,
+)
 from annolid.core.agent.tools import FunctionToolRegistry
 
 
@@ -225,6 +229,7 @@ def try_open_page_content_fallback(
 
 def try_open_pdf_content_fallback(
     *,
+    prompt: str = "",
     get_state: Callable[[], Dict[str, Any]],
     get_text: Callable[..., Dict[str, Any]],
     build_summary: Callable[..., str],
@@ -234,7 +239,22 @@ def try_open_pdf_content_fallback(
         return ""
     if not bool(state.get("ok")) or not bool(state.get("has_pdf")):
         return ""
-    pdf_payload = get_text(max_chars=9000, pages=2)
+    path = str(state.get("path") or "").strip()
+    title = str(state.get("title") or "").strip()
+    hint = parse_source_page_hint(prompt)
+    use_page_target = bool(hint and source_matches_active_pdf(hint[0], path, title))
+    if use_page_target:
+        try:
+            pdf_payload = get_text(
+                max_chars=4500,
+                pages=1,
+                start_page=int(hint[1]),
+            )
+        except TypeError:
+            # Backward-compatible fallback for call sites that do not support start_page.
+            pdf_payload = get_text(max_chars=9000, pages=2)
+    else:
+        pdf_payload = get_text(max_chars=9000, pages=2)
     if not isinstance(pdf_payload, dict) or not bool(pdf_payload.get("ok")):
         return ""
     pdf_text = str(pdf_payload.get("text") or "").strip()
@@ -243,7 +263,7 @@ def try_open_pdf_content_fallback(
     summary = build_summary(pdf_text, max_sentences=8, max_chars=1400)
     if not summary:
         return ""
-    title = str(pdf_payload.get("title") or state.get("title") or "").strip()
-    path = str(pdf_payload.get("path") or state.get("path") or "").strip()
+    title = str(pdf_payload.get("title") or title or "").strip()
+    path = str(pdf_payload.get("path") or path or "").strip()
     source = title or path or "active PDF"
     return f"Using the currently open PDF ({source}):\n{summary}"

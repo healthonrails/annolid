@@ -249,7 +249,7 @@ def build_compact_system_prompt(
             parts.append(live_web_context)
 
     live_pdf_context = build_live_pdf_context_prompt_block(
-        include_snapshot=should_attach_live_pdf_context(prompt_text)
+        prompt=prompt_text, include_snapshot=should_attach_live_pdf_context(prompt_text)
     )
     if live_pdf_context:
         parts.append(live_pdf_context)

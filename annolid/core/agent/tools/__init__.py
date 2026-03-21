@@ -41,6 +41,8 @@ from .eval_reporting import (
     write_model_eval_report_files,
 )
 from .eval_start import AnnolidEvalStartTool
+from .novelty import AnnolidNoveltyCheckTool
+from .paper_reporting import AnnolidPaperRunReportTool
 from .training import (
     AnnolidTrainHelpTool,
     AnnolidTrainModelsTool,
@@ -82,6 +84,7 @@ from .function_gui_core import (
     GuiContextTool,
     GuiSelfUpdateTool,
     GuiSaveCitationTool,
+    GuiVerifyCitationsTool,
     GuiSelectAnnotationModelTool,
     GuiSendPromptTool,
     GuiSetChatModelTool,
@@ -127,6 +130,7 @@ from .function_gui_pdf import (
     GuiPdfFindSectionsTool,
     GuiPdfGetStateTool,
     GuiPdfGetTextTool,
+    GuiPdfSummarizeTool,
 )
 from .function_gui_registry import register_annolid_gui_tools
 from .function_video import (
@@ -198,6 +202,8 @@ __all__ = [
     "AnnolidDatasetPrepareTool",
     "AnnolidEvalReportTool",
     "AnnolidEvalStartTool",
+    "AnnolidNoveltyCheckTool",
+    "AnnolidPaperRunReportTool",
     "build_model_eval_report",
     "write_model_eval_report_files",
     "AnnolidTrainModelsTool",
@@ -244,6 +250,7 @@ __all__ = [
     "GuiOpenPdfTool",
     "GuiPdfGetStateTool",
     "GuiPdfGetTextTool",
+    "GuiPdfSummarizeTool",
     "GuiPdfFindSectionsTool",
     "GuiArxivSearchTool",
     "GuiListPdfsTool",
@@ -257,6 +264,7 @@ __all__ = [
     "GuiSetAiTextPromptTool",
     "GuiRunAiTextSegmentationTool",
     "GuiSaveCitationTool",
+    "GuiVerifyCitationsTool",
     "GuiSegmentTrackVideoTool",
     "GuiLabelBehaviorSegmentsTool",
     "GuiStartRealtimeStreamTool",

@@ -33,7 +33,8 @@ Best practices:
 - `gui_pdf_find_sections`: Locate headings and page anchors.
 - `gui_arxiv_search`: Resolve and open arXiv papers quickly.
 - `gui_list_pdfs`: Discover available downloaded PDFs.
-- `gui_save_citation`: Persist citation metadata to BibTeX.
+- `gui_save_citation`: Persist citation metadata to BibTeX (supports optional `verify_after_save` citation integrity report).
+- `gui_verify_citations`: Verify existing BibTeX entries and emit an integrity report artifact.
 
 Best practices:
 1. Call `gui_pdf_get_state` before extraction to confirm a PDF is loaded.

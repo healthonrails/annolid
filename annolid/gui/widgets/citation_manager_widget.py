@@ -17,6 +17,11 @@ from annolid.utils.citations import (
     validate_basic_citation_fields,
     validate_citation_metadata,
 )
+from annolid.services.citation_verify import (
+    build_citation_batch_report,
+    build_citation_verification_report,
+    write_citation_verification_report,
+)
 
 
 class CitationManagerDialog(QtWidgets.QDialog):
@@ -91,6 +96,11 @@ class CitationManagerDialog(QtWidgets.QDialog):
         self.strict_checkbox.setToolTip(
             "Fail save when external metadata validation is weak."
         )
+        self.verify_after_save_checkbox = QtWidgets.QCheckBox("Verify after save", self)
+        self.verify_after_save_checkbox.setChecked(False)
+        self.verify_after_save_checkbox.setToolTip(
+            "Generate citation integrity report artifact after context save."
+        )
         add_empty_btn = QtWidgets.QPushButton("Add Manual Row", self)
         add_empty_btn.clicked.connect(self._add_manual_row)
         save_row_btn = QtWidgets.QPushButton("Save Row Edits", self)
@@ -101,6 +111,8 @@ class CitationManagerDialog(QtWidgets.QDialog):
         from_web_btn.clicked.connect(lambda: self._save_from_active_context("web"))
         auto_btn = QtWidgets.QPushButton("Save Auto", self)
         auto_btn.clicked.connect(lambda: self._save_from_active_context("auto"))
+        verify_bib_btn = QtWidgets.QPushButton("Verify .bib", self)
+        verify_bib_btn.clicked.connect(self._verify_bib_file)
         validate_all_btn = QtWidgets.QPushButton("Validate All", self)
         validate_all_btn.clicked.connect(self._validate_all_rows)
         remove_btn = QtWidgets.QPushButton("Remove Selected", self)
@@ -108,11 +120,13 @@ class CitationManagerDialog(QtWidgets.QDialog):
         controls.addWidget(self.key_edit, 1)
         controls.addWidget(self.validate_checkbox)
         controls.addWidget(self.strict_checkbox)
+        controls.addWidget(self.verify_after_save_checkbox)
         controls.addWidget(add_empty_btn)
         controls.addWidget(save_row_btn)
         controls.addWidget(from_pdf_btn)
         controls.addWidget(from_web_btn)
         controls.addWidget(auto_btn)
+        controls.addWidget(verify_bib_btn)
         controls.addWidget(validate_all_btn)
         controls.addWidget(remove_btn)
         root.addLayout(controls)
@@ -196,13 +210,23 @@ class CitationManagerDialog(QtWidgets.QDialog):
 
     def _save_from_active_context(self, source: str) -> None:
         key = str(self.key_edit.text() or "").strip()
-        payload = self._save_from_context(
-            source=source,
-            key=key,
-            bib_path=self._resolved_bib_path(),
-            validate_before_save=bool(self.validate_checkbox.isChecked()),
-            strict_validation=bool(self.strict_checkbox.isChecked()),
-        )
+        try:
+            payload = self._save_from_context(
+                source=source,
+                key=key,
+                bib_path=self._resolved_bib_path(),
+                validate_before_save=bool(self.validate_checkbox.isChecked()),
+                strict_validation=bool(self.strict_checkbox.isChecked()),
+                verify_after_save=bool(self.verify_after_save_checkbox.isChecked()),
+            )
+        except TypeError:
+            payload = self._save_from_context(
+                source=source,
+                key=key,
+                bib_path=self._resolved_bib_path(),
+                validate_before_save=bool(self.validate_checkbox.isChecked()),
+                strict_validation=bool(self.strict_checkbox.isChecked()),
+            )
         if not payload.get("ok"):
             self.status_label.setText(str(payload.get("error") or "Save failed."))
             return
@@ -216,8 +240,78 @@ class CitationManagerDialog(QtWidgets.QDialog):
             state = "verified" if bool(validation.get("verified")) else "unverified"
             label = f"{provider} {state}" if provider else state
             suffix = f" | validation: {label} ({score:.2f})"
+        verification = dict(payload.get("verification") or {})
+        if verification:
+            v_status = str(verification.get("status") or "skipped").strip()
+            v_score = float(verification.get("integrity_score") or 0.0)
+            report_path = str(payload.get("verification_report") or "").strip()
+            suffix += f" | verify: {v_status} ({v_score:.2f})"
+            if report_path:
+                suffix += f" | report: {Path(report_path).name}"
         self.status_label.setText(
             f"{'Created' if payload.get('created') else 'Updated'} {payload.get('key')}{suffix}"
+        )
+
+    def _verify_bib_file(self) -> None:
+        self.status_label.setText("Verifying citations in .bib ...")
+        QtWidgets.QApplication.processEvents()
+        path = self._resolved_bib_path()
+        if not path.exists():
+            self.status_label.setText(f"BibTeX file not found: {path}")
+            return
+        entries = load_bibtex(path)
+        rows: list[dict[str, Any]] = []
+        for entry in entries:
+            key = str(entry.key or "").strip()
+            fields = {
+                str(k or "").strip().lower(): str(v or "").strip()
+                for k, v in dict(entry.fields).items()
+                if str(k or "").strip()
+            }
+            validation = validate_citation_metadata(fields, timeout_s=1.8)
+            report = build_citation_verification_report(
+                key=key,
+                bib_file=str(path),
+                source="bib",
+                fields=fields,
+                validation=validation,
+            )
+            verification = dict(report.get("verification") or {})
+            rows.append(
+                {
+                    "key": key,
+                    "status": str(verification.get("status") or "skipped"),
+                    "integrity_score": float(
+                        verification.get("integrity_score") or 0.0
+                    ),
+                    "provider": str(verification.get("provider") or ""),
+                    "reason": str(verification.get("reason") or ""),
+                    "checked": bool(verification.get("checked")),
+                    "verified": bool(verification.get("verified")),
+                    "score": float(verification.get("score") or 0.0),
+                }
+            )
+        batch = build_citation_batch_report(
+            bib_file=str(path),
+            entries=rows,
+        )
+        report_dir = path.parent / ".annolid_cache" / "citation_verification"
+        report_path = write_citation_verification_report(
+            batch,
+            reports_dir=report_dir,
+            report_stem=f"{path.stem}_batch",
+        )
+        summary = dict(batch.get("summary") or {})
+        counts = dict(summary.get("counts") or {})
+        self.status_label.setText(
+            (
+                f"Verified {int(summary.get('total') or 0)} citation(s): "
+                f"verified={int(counts.get('verified') or 0)}, "
+                f"suspicious={int(counts.get('suspicious') or 0)}, "
+                f"hallucinated={int(counts.get('hallucinated') or 0)}, "
+                f"skipped={int(counts.get('skipped') or 0)} | "
+                f"report: {report_path.name}"
+            )
         )
 
     def _remove_selected(self) -> None:

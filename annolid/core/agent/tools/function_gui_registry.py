@@ -15,6 +15,7 @@ from .function_gui_core import (
     GuiSetChatModelTool,
     GuiSelectAnnotationModelTool,
     GuiSaveCitationTool,
+    GuiVerifyCitationsTool,
 )
 from .function_gui_web import (
     GuiOpenUrlTool,
@@ -58,6 +59,7 @@ from .function_gui_pdf import (
     GuiOpenPdfTool,
     GuiPdfGetStateTool,
     GuiPdfGetTextTool,
+    GuiPdfSummarizeTool,
     GuiPdfFindSectionsTool,
     GuiArxivSearchTool,
     GuiListPdfsTool,
@@ -95,10 +97,12 @@ def register_annolid_gui_tools(
     open_pdf_callback: Optional[ActionCallback] = None,
     pdf_get_state_callback: Optional[ActionCallback] = None,
     pdf_get_text_callback: Optional[ActionCallback] = None,
+    pdf_summarize_callback: Optional[ActionCallback] = None,
     pdf_find_sections_callback: Optional[ActionCallback] = None,
     arxiv_search_callback: Optional[ActionCallback] = None,
     list_pdfs_callback: Optional[ActionCallback] = None,
     save_citation_callback: Optional[ActionCallback] = None,
+    verify_citations_callback: Optional[ActionCallback] = None,
     generate_annolid_tutorial_callback: Optional[ActionCallback] = None,
     self_update_callback: Optional[ActionCallback] = None,
     set_frame_callback: Optional[ActionCallback] = None,
@@ -172,12 +176,18 @@ def register_annolid_gui_tools(
     registry.register(GuiPdfGetStateTool(pdf_get_state_callback=pdf_get_state_callback))
     registry.register(GuiPdfGetTextTool(pdf_get_text_callback=pdf_get_text_callback))
     registry.register(
+        GuiPdfSummarizeTool(pdf_summarize_callback=pdf_summarize_callback)
+    )
+    registry.register(
         GuiPdfFindSectionsTool(pdf_find_sections_callback=pdf_find_sections_callback)
     )
     registry.register(GuiArxivSearchTool(arxiv_search_callback=arxiv_search_callback))
     registry.register(GuiListPdfsTool(list_pdfs_callback=list_pdfs_callback))
     registry.register(
         GuiSaveCitationTool(save_citation_callback=save_citation_callback)
+    )
+    registry.register(
+        GuiVerifyCitationsTool(verify_citations_callback=verify_citations_callback)
     )
     registry.register(
         GuiGenerateAnnolidTutorialTool(

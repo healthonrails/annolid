@@ -52,6 +52,7 @@ async def execute_direct_gui_command(
     open_threejs: Callable[[str], Any],
     open_threejs_example: Callable[[str], Any],
     open_pdf: Callable[[str], Any],
+    pdf_summarize: Callable[..., Any],
     set_frame: Callable[[int], Any],
     track_next_frames: Callable[[int], Any],
     segment_track_video: Callable[..., Any],
@@ -79,6 +80,7 @@ async def execute_direct_gui_command(
     set_chat_model: Callable[[str, str], Any],
     rename_file: Callable[..., Any],
     list_citations: Callable[..., Any],
+    verify_citations: Callable[..., Any],
     add_citation_raw: Callable[..., Any],
     save_citation: Callable[..., Any],
     generate_annolid_tutorial: Callable[..., Any],
@@ -161,6 +163,20 @@ async def execute_direct_gui_command(
             lines.extend(f"- {item}" for item in choices)
             return "\n".join(lines)
         return str(payload.get("error") or "Failed to open PDF.")
+
+    if name == "pdf_summarize":
+        payload = await _run(
+            pdf_summarize,
+            path=str(args.get("path") or ""),
+            max_pages=int(args.get("max_pages") or 80),
+            max_extract_chars=int(args.get("max_extract_chars") or 350000),
+        )
+        if payload.get("ok"):
+            summary = str(payload.get("summary") or payload.get("text") or "").strip()
+            if summary:
+                return summary
+            return "Summarized the active PDF."
+        return str(payload.get("error") or "Failed to summarize PDF.")
 
     if name == "set_frame":
         payload = await _run(set_frame, int(args.get("frame_index") or 0))
@@ -633,6 +649,7 @@ async def execute_direct_gui_command(
             source=str(args.get("source") or "auto"),
             validate_before_save=bool(args.get("validate_before_save", True)),
             strict_validation=bool(args.get("strict_validation", False)),
+            verify_after_save=bool(args.get("verify_after_save", False)),
         )
         if payload.get("ok"):
             key = str(payload.get("key") or "").strip()
@@ -648,6 +665,14 @@ async def execute_direct_gui_command(
                 state = "verified" if verified else "unverified"
                 label = f"{provider} {state}" if provider else state
                 hint = f" Validation: {label} ({score:.2f})."
+            verification = dict(payload.get("verification") or {})
+            if verification:
+                report_path = str(payload.get("verification_report") or "").strip()
+                verify_status = str(verification.get("status") or "skipped").strip()
+                verify_score = float(verification.get("integrity_score") or 0.0)
+                hint += f" Verification: {verify_status} integrity={verify_score:.2f}."
+                if report_path:
+                    hint += f" Report: {report_path}."
             if key and bib_path:
                 return (
                     f"{action} citation '{key}' in {bib_path} "
@@ -683,6 +708,32 @@ async def execute_direct_gui_command(
                 lines.append("... (showing top results)")
             return "\n".join(lines)
         return str(payload.get("error") or "Failed to list citations.")
+
+    if name == "verify_citations":
+        payload = await _run(
+            verify_citations,
+            bib_file=str(args.get("bib_file") or ""),
+            limit=int(args.get("limit") or 200),
+        )
+        if payload.get("ok"):
+            total = int(payload.get("total") or 0)
+            counts = dict(payload.get("counts") or {})
+            integrity = float(payload.get("integrity_score") or 0.0)
+            report = str(payload.get("report_path") or "").strip()
+            verified = int(counts.get("verified") or 0)
+            suspicious = int(counts.get("suspicious") or 0)
+            hallucinated = int(counts.get("hallucinated") or 0)
+            skipped = int(counts.get("skipped") or 0)
+            summary = (
+                f"Verified {total} citation(s): "
+                f"verified={verified}, suspicious={suspicious}, "
+                f"hallucinated={hallucinated}, skipped={skipped}. "
+                f"Integrity={integrity:.2f}."
+            )
+            if report:
+                return f"{summary} Report: {report}."
+            return summary
+        return str(payload.get("error") or "Failed to verify citations.")
 
     if name == "add_citation_raw":
         payload = await _run(

@@ -1296,9 +1296,14 @@ class AgentLoop:
         text = str(preview or "").strip()
         if not text:
             return False
-        if name in {"web_search", "gui_web_get_dom_text", "gui_pdf_get_text"}:
+        if name in {
+            "web_search",
+            "gui_web_get_dom_text",
+            "gui_pdf_get_text",
+            "gui_pdf_summarize",
+        }:
             return True
-        if name in {"read_file", "extract_pdf_text", "open_pdf"} and len(text) >= 80:
+        if name in {"read_file", "extract_pdf_text"} and len(text) >= 80:
             return True
         if text.lower().startswith(("results for:", "current conditions", "weather")):
             return True
@@ -2573,6 +2578,7 @@ class AgentLoop:
         "gui_web_find_forms",
         "gui_web_run_steps",
         "gui_open_pdf",
+        "gui_pdf_summarize",
         "gui_set_frame",
         "gui_set_ai_text_prompt",
         "gui_run_ai_text_segmentation",
