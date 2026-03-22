@@ -112,6 +112,7 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
   ```
 - Pick between Ollama, OpenAI GPT, or Google Gemini for caption chat features by opening the caption panel and clicking `Configure…` next to the model selector. API keys are stored in `~/.annolid/llm_settings.json`.
 - Open **AI & Models → Annolid Bot…** to launch a dedicated right-side WhatsApp-style multimodal chat dock (streaming chat, local `openai/whisper-tiny` speech-to-text for Talk/Record, voice talk/read controls, and one-click canvas/window sharing).
+- Open **AI & Models → Draft Research Paper with Swarm…** to seed Annolid Bot with the multi-agent paper-drafting workflow and an active PDF context when available.
 - In Annolid Bot, enable `Allow web` to let Annolid Bot use `web_search`/`web_fetch` tools for web browsing in that chat turn (requires `BRAVE_API_KEY` for search).
 - To show or hide intermediate tool/planning updates while Annolid Bot is thinking, open Annolid Bot settings and toggle `Agent Runtime → Enable intermediate progress stream`.
 - To cap slow tool calls in the agent loop, tune `Agent Runtime → Agent tool timeout` (seconds).

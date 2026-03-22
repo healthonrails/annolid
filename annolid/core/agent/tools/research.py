@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from annolid.core.agent.swarm_budget import resolve_swarm_turn_budget
 from .function_base import FunctionTool
 from annolid.services.literature_search import search_literature
 
@@ -122,7 +123,15 @@ class DraftPaperSwarmTool(FunctionTool):
             # but the swarm will operate with empty literature sequence and can rely on the topic
             # and its intrinsic knowledge for now, or the user can do a literature search first.
             result = await run_paper_drafting_swarm(
-                topic=topic, papers=[], loop_factory=self._loop_factory, max_turns=6
+                topic=topic,
+                papers=[],
+                loop_factory=self._loop_factory,
+                max_turns=resolve_swarm_turn_budget(
+                    topic,
+                    8,
+                    paper_context=True,
+                    agent_count=3,
+                ),
             )
             return f"Paper drafting swarm completed successfully:\n\n{result}"
         except Exception as exc:

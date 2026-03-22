@@ -7,7 +7,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import unquote, urlparse
 import json
 
@@ -35,7 +35,7 @@ _THREEJS_ALLOWED_ASSETS = {
 }
 
 # Global Swarm State for 3D Visualizer
-_SWARM_STATE: dict[str, dict[str, str]] = {}
+_SWARM_STATE: dict[str, dict[str, Any]] = {}
 _SWARM_STATE_LOCK = threading.Lock()
 
 
@@ -46,6 +46,7 @@ def update_swarm_node(
     thinking: str = "",
     output: str = "",
     parent: str = "",
+    turn_latency_ms: float | None = None,
 ) -> None:
     """Update the status, current task, thinking, and output of a specific swarm agent node."""
     with _SWARM_STATE_LOCK:
@@ -55,6 +56,7 @@ def update_swarm_node(
             "thinking": thinking,
             "output": output,
             "parent": parent,
+            "turn_latency_ms": turn_latency_ms,
         }
 
 
@@ -65,7 +67,7 @@ def clear_swarm_state() -> None:
         _SWARM_STATE = {}
 
 
-def get_swarm_state() -> dict[str, dict[str, str]]:
+def get_swarm_state() -> dict[str, dict[str, Any]]:
     """Get a copy of the current swarm state."""
     with _SWARM_STATE_LOCK:
         return {k: dict(v) for k, v in _SWARM_STATE.items()}

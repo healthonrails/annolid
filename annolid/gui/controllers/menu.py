@@ -403,6 +403,14 @@ class MenuController:
                 "icon_path": here / "icons/icon_annolid.png",
             },
             {
+                "name": "draft_research_paper",
+                "text": w.tr("Draft Research Paper with Swarm…"),
+                "slot": w.open_research_paper_swarm,
+                "tip": w.tr(
+                    "Seed Annolid Bot with the multi-agent research paper workflow"
+                ),
+            },
+            {
                 "name": "open_memory_manager",
                 "text": w.tr("&Memory Manager…"),
                 "slot": self._open_memory_manager,
@@ -1239,6 +1247,7 @@ class MenuController:
             # AI-assisted annotation tools
             (
                 actions["open_ai_chat"],
+                actions["draft_research_paper"],
                 w.createPolygonSAMMode,
                 actions["open_florence2"],
                 actions["open_image_editing"],

@@ -214,6 +214,19 @@
             color: #ccc;
         }
 
+        .latency-badge {
+            margin-top: 8px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: rgba(51, 153, 255, 0.14);
+            border: 1px solid rgba(51, 153, 255, 0.28);
+            color: #c7e4ff;
+            font-size: 11px;
+            letter-spacing: 0.4px;
+            text-align: center;
+            display: none;
+        }
+
         .control-btn {
             background: rgba(100, 180, 255, 0.1);
             border: 1px solid rgba(100, 180, 255, 0.3);
@@ -263,6 +276,7 @@
         </div>
         <div class="detail-item"><strong>Role:</strong> <span id="detail-role">-</span></div>
         <div class="detail-item"><strong>Status:</strong> <span id="detail-status">-</span></div>
+        <div class="detail-item"><strong>Last Turn:</strong> <span id="detail-latency">-</span></div>
         <div class="detail-item" id="detail-logs"
             style="max-height: 150px; overflow-y: auto; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 8px; font-family: monospace;">
             Awaiting activity...</div>
@@ -364,6 +378,7 @@
         const detailName = document.getElementById('detail-name');
         const detailRole = document.getElementById('detail-role');
         const detailStatus = document.getElementById('detail-status');
+        const detailLatency = document.getElementById('detail-latency');
         const detailLogs = document.getElementById('detail-logs');
 
         function updateDetails(id) {
@@ -375,6 +390,7 @@
             detailRole.innerText = agent.role;
             detailStatus.innerText = agent.state;
             detailStatus.style.color = agent.state === 'active' ? '#33ff66' : '#aaa';
+            detailLatency.innerText = agent.turnLatencyMs !== null ? `${agent.turnLatencyMs.toFixed(1)} ms` : '-';
         }
 
         const nodeGeometry = new THREE.SphereGeometry(0.8, 32, 32);
@@ -547,6 +563,10 @@
             outputDiv.onclick = (e) => e.stopPropagation();
             containerDiv.appendChild(outputDiv);
 
+            const latencyDiv = document.createElement('div');
+            latencyDiv.className = 'latency-badge';
+            containerDiv.appendChild(latencyDiv);
+
             const label = new CSS2DObject(containerDiv);
             label.position.set(0, 2.5, 0);
             group.add(label);
@@ -567,10 +587,11 @@
             scene.add(pulse);
 
             const agentObj = {
-                group, mesh, ring, glow, label, labelDiv: div, thinkingDiv, outputDiv,
+                group, mesh, ring, glow, label, labelDiv: div, thinkingDiv, outputDiv, latencyDiv,
                 role, baseColor: mat.color.clone(),
                 state: 'idle', targetIntensity: 0.3, currentIntensity: 0.3,
-                line, pulse, pulseProgress: 0, parentId: null, collabLine: null
+                line, pulse, pulseProgress: 0, parentId: null, collabLine: null,
+                turnLatencyMs: null
             };
             agentObj.eyesGroup = eyesGroup;
             agents.set(id, agentObj);
@@ -835,6 +856,8 @@
                     const thinking = nodeState.thinking || "";
                     const output = nodeState.output || "";
                     agent.parentId = nodeState.parent || null;
+                    const latencyValue = Number(nodeState.turn_latency_ms);
+                    agent.turnLatencyMs = Number.isFinite(latencyValue) ? latencyValue : null;
 
                     if (agent.state === 'active') {
                         activeCount++;
@@ -856,6 +879,14 @@
                         if (agent.outputDiv.scrollHeight > agent.outputDiv.clientHeight) {
                             agent.outputDiv.scrollTop = agent.outputDiv.scrollHeight;
                         }
+                    }
+
+                    if (agent.turnLatencyMs !== null) {
+                        agent.latencyDiv.style.display = 'block';
+                        agent.latencyDiv.innerText = `Last turn: ${agent.turnLatencyMs.toFixed(1)} ms`;
+                    } else {
+                        agent.latencyDiv.style.display = 'none';
+                        agent.latencyDiv.innerText = '';
                     }
                 });
 

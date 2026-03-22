@@ -107,7 +107,7 @@ def test_chat_provider_runtime_wrappers(monkeypatch) -> None:
         chat_agent_loop_tool_timeout_seconds(
             settings={}, provider="openai", prompt="swarm test"
         )
-        == 600.0
+        == 900.0
     )
     assert chat_browser_first_for_web({}) is True
     assert chat_ollama_agent_plain_timeout_seconds({}) == 20.0

@@ -10,6 +10,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
 from annolid.data.audios import AudioLoader
+from annolid.services.paper_writer import build_paper_swarm_prompt
 from annolid.gui.widgets.caption import CaptionWidget
 from annolid.gui.widgets.florence2_widget import Florence2DockWidget
 from annolid.gui.widgets.image_editing_widget import ImageEditingDockWidget
@@ -280,6 +281,48 @@ class MediaWorkflowMixin:
         from annolid.gui.widgets.research_paper_widget import open_research_paper_dock
 
         open_research_paper_dock(self)  # type: ignore[arg-type]
+
+    def open_research_paper_swarm(self) -> None:
+        """Seed Annolid Bot with a paper-drafting swarm prompt."""
+        topic_default = ""
+        pdf_state: dict[str, object] = {}
+        pdf_manager = getattr(self, "pdf_manager", None)
+        if pdf_manager is not None and hasattr(pdf_manager, "get_pdf_state"):
+            try:
+                pdf_state = dict(pdf_manager.get_pdf_state() or {})
+                topic_default = str(pdf_state.get("title") or "").strip()
+                if topic_default.lower().endswith(".pdf"):
+                    topic_default = Path(topic_default).stem
+            except Exception:
+                pdf_state = {}
+                topic_default = ""
+
+        topic, ok = QtWidgets.QInputDialog.getText(
+            self,
+            self.tr("Draft Paper with Swarm"),
+            self.tr("Research topic:"),
+            text=topic_default,
+        )
+        if not ok:
+            return
+        topic_text = str(topic or "").strip()
+        if not topic_text:
+            return
+
+        self.open_annolid_bot_dock()
+        manager = getattr(self, "ai_chat_manager", None)
+        widget = getattr(manager, "ai_chat_widget", None) if manager else None
+        if widget is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("Draft Paper with Swarm"),
+                self.tr("Annolid Bot is unavailable."),
+            )
+            return
+
+        prompt = build_paper_swarm_prompt(topic_text, pdf_state=pdf_state)
+        widget.bot_set_chat_prompt(prompt)
+        widget.bot_send_chat_prompt()
 
     def _apply_timeline_caption_if_available(
         self,

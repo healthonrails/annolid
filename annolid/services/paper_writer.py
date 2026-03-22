@@ -16,10 +16,11 @@ Public API
 - ``format_draft_markdown``    — stitch sections + references into markdown.
 """
 
-from dataclasses import dataclass, field
 import re
-from typing import Callable, Sequence, Any
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping, Sequence
 
+from annolid.core.agent.swarm_budget import resolve_swarm_turn_budget
 from annolid.services.literature_search import LiteratureResult
 from annolid.core.agent.swarm import SwarmAgent, SwarmManager
 
@@ -118,6 +119,47 @@ def _format_paper_list(
     return "\n".join(lines) if lines else "(no papers provided)"
 
 
+def build_paper_swarm_prompt(
+    topic: str,
+    *,
+    pdf_state: Mapping[str, Any] | None = None,
+) -> str:
+    topic_text = str(topic or "").strip()
+    if not topic_text:
+        topic_text = "the current research topic"
+
+    pdf_title = ""
+    pdf_path = ""
+    if isinstance(pdf_state, Mapping):
+        pdf_title = str(pdf_state.get("title") or "").strip()
+        pdf_path = str(pdf_state.get("path") or "").strip()
+
+    lines = [
+        "Use the `draft_paper_swarm` tool to draft a complete research paper.",
+        f"Topic: {topic_text}",
+    ]
+    if pdf_title or pdf_path:
+        lines.append(
+            "Active PDF context: "
+            + ", ".join(
+                value
+                for value in [
+                    f"title={pdf_title}" if pdf_title else "",
+                    f"path={pdf_path}" if pdf_path else "",
+                ]
+                if value
+            )
+        )
+    lines.extend(
+        [
+            "Start by grounding the draft in literature search results and any open PDF context.",
+            "Produce a structured paper with outline, sections, citations, and a concise completion note.",
+            "If the current context is insufficient, search literature first rather than drafting from guesswork.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Core Swarm Generation
 # ---------------------------------------------------------------------------
@@ -127,7 +169,7 @@ async def run_paper_drafting_swarm(
     topic: str,
     papers: Sequence[LiteratureResult],
     loop_factory: Callable[[], Any],
-    max_turns: int = 6,
+    max_turns: int = 8,
 ) -> str:
     """Draft a complete research paper by orchestrating subagents.
 
@@ -195,7 +237,13 @@ async def run_paper_drafting_swarm(
         "Outliner, please start by proposing the sections."
     )
 
-    return await manager.run_swarm(initial_task, max_turns=max_turns)
+    resolved_turns = resolve_swarm_turn_budget(
+        initial_task,
+        max_turns,
+        agent_count=3,
+        paper_context=True,
+    )
+    return await manager.run_swarm(initial_task, max_turns=resolved_turns)
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +353,7 @@ __all__ = [
     "PaperDraft",
     "PaperSection",
     "build_bibtex",
+    "build_paper_swarm_prompt",
     "run_paper_drafting_swarm",
     "format_draft_markdown",
 ]

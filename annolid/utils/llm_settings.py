@@ -157,7 +157,7 @@ def _build_default_settings() -> Dict[str, Any]:
             "fallback_retry_timeout_seconds": 20,
             "loop_llm_timeout_seconds": 600,
             "loop_llm_timeout_seconds_no_tools": 180,
-            "loop_tool_timeout_seconds": 600,
+            "loop_tool_timeout_seconds": 900,
             "ollama_tool_timeout_seconds": 360,
             "ollama_plain_timeout_seconds": 90,
             "ollama_plain_recovery_timeout_seconds": 45,

@@ -5,7 +5,7 @@ from annolid.core.agent.loop import AgentLoop
 
 
 @pytest.mark.anyio
-async def test_agent_loop_streaming_visualizer_updates():
+async def test_agent_loop_streaming_visualizer_updates(monkeypatch):
     """Test that AgentLoop correctly calls update_swarm_node during streaming."""
 
     # Mock update_swarm_node
@@ -36,23 +36,24 @@ async def test_agent_loop_streaming_visualizer_updates():
     # Since update_swarm_node is imported locally in loop.py:
     # from annolid.gui.widgets.threejs_viewer_server import update_swarm_node
 
-    with MagicMock() as mock_update:
-        import annolid.gui.widgets.threejs_viewer_server
+    mock_update = MagicMock()
+    monkeypatch.setattr(
+        "annolid.gui.widgets.threejs_viewer_server.update_swarm_node",
+        mock_update,
+    )
 
-        annolid.gui.widgets.threejs_viewer_server.update_swarm_node = mock_update
+    await loop.run("test", session_id="swarm:agent1")
 
-        await loop.run("test", session_id="swarm:agent1")
-
-        # Check if update_swarm_node was called during streaming
-        # Note: the mock_update might be called multiple times due to throttling
-        assert mock_update.called
-        # Check one of the calls
-        found_active = False
-        for call in mock_update.call_args_list:
-            if call.args[0] == "agent1" and call.args[1] == "active":
-                found_active = True
-                break
-        assert found_active
+    # Check if update_swarm_node was called during streaming
+    # Note: the mock_update might be called multiple times due to throttling
+    assert mock_update.called
+    # Check one of the calls
+    found_active = False
+    for call in mock_update.call_args_list:
+        if call.args[0] == "agent1" and call.args[1] == "active":
+            found_active = True
+            break
+    assert found_active
 
 
 @pytest.mark.anyio

@@ -57,6 +57,7 @@ from .tools.function_builtin import (
     SpawnTool,
 )
 from annolid.core.agent.tools.swarm_tool import SwarmTool
+from annolid.core.agent.swarm_budget import resolve_swarm_turn_budget
 from .tool_call_utils import (
     normalize_tool_arguments,
     sanitize_tool_call_id,
@@ -2428,12 +2429,13 @@ class AgentLoop:
 
     def _build_subagent_loop_factory(self) -> Callable[[], "AgentLoop"]:
         def _loop_factory() -> "AgentLoop":
-            # For brevity in the swarm, limit iterations heavily per turn
+            # Give each swarm turn enough room to think and use tools so we
+            # don't force the outer swarm to burn extra turns on partial work.
             return AgentLoop(
                 tools=self._tools,
                 llm_callable=self._llm_callable,
                 model=self.model,
-                max_iterations=min(self._max_iterations, 3),
+                max_iterations=min(self._max_iterations, 5),
                 workspace=self._workspace,
                 allowed_read_roots=self._allowed_read_roots,
                 mcp_servers=self._mcp_servers,
@@ -2444,7 +2446,7 @@ class AgentLoop:
         return _loop_factory
 
     async def _create_swarm_manager_and_run(
-        self, task: str, max_turns: int = 5, agents: list[str] | None = None
+        self, task: str, max_turns: int = 8, agents: list[str] | None = None
     ) -> str:
         try:
             from .swarm import SwarmAgent, SwarmManager
@@ -2494,7 +2496,12 @@ class AgentLoop:
 
             manager.register_agent(SwarmAgent(role, role, prompt, _loop_factory))
 
-        return await manager.run_swarm(task, max_turns=max_turns)
+        resolved_turns = resolve_swarm_turn_budget(
+            task,
+            max_turns,
+            agent_count=len(roles),
+        )
+        return await manager.run_swarm(task, max_turns=resolved_turns)
 
     _TOOL_SELECTOR_STOPWORDS = {
         "a",

@@ -54,13 +54,13 @@ def agent_loop_tool_timeout_seconds(
     agent_cfg = settings.get("agent", {})
     if provider == "ollama":
         return ollama_agent_tool_timeout_seconds(settings)
-    raw = 600.0
+    raw = 900.0
     if isinstance(agent_cfg, dict):
         raw = agent_cfg.get("loop_tool_timeout_seconds", raw)
     try:
         value = float(raw)
     except (TypeError, ValueError):
-        value = 20.0
+        value = 900.0
     return max(3.0, min(1800.0, value))
 
 

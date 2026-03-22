@@ -116,6 +116,14 @@ For `yolo`, prefer launching evaluation with `save_json=true` so Ultralytics wri
 
 For `behavior_classifier`, the eval launcher can now also write confusion-matrix and precision-recall curve figures directly during evaluation via `--plot-dir`, so the resulting run is closer to paper-ready without a separate plotting step.
 
+## Research Paper Swarm Launcher
+
+The GUI now includes **AI & Models → Draft Research Paper with Swarm…**, which opens Annolid Bot with a prefilled prompt that invokes `draft_paper_swarm`.
+
+- If a PDF is open, the launcher passes the current PDF title and path into the prompt so the swarm can ground the draft in the active paper.
+- The prompt asks the bot to search literature first when needed, then draft a structured paper with outline, sections, and citations.
+- This is a thin GUI entry point over the same swarm-backed paper drafting workflow used by the agent tools.
+
 ## Citation Integrity Workflow
 
 Annolid Bot and the Citation Manager now support citation verification reports for research-pipeline quality checks.

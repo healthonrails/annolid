@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable
 
+from annolid.core.agent.swarm_budget import resolve_swarm_turn_budget
+
 from .function_base import FunctionTool
 
 
@@ -44,8 +46,8 @@ class SwarmTool(FunctionTool):
                 },
                 "max_turns": {
                     "type": "integer",
-                    "description": "Maximum number of turn cycles the swarm is allowed to take (default: 5).",
-                    "default": 5,
+                    "description": "Maximum number of turn cycles the swarm is allowed to take (default: 8).",
+                    "default": 8,
                 },
                 "agents": {
                     "type": "array",
@@ -59,7 +61,7 @@ class SwarmTool(FunctionTool):
     async def execute(
         self,
         task: str,
-        max_turns: int = 5,
+        max_turns: int = 8,
         agents: list[str] | None = None,
         **kwargs: Any,
     ) -> str:
@@ -68,7 +70,12 @@ class SwarmTool(FunctionTool):
             return "Error: swarm callback not configured in AgentLoop"
 
         try:
-            ret = self._run_swarm_callback(task, max_turns, agents)
+            resolved_turns = resolve_swarm_turn_budget(
+                task,
+                max_turns,
+                agent_count=len(agents or []),
+            )
+            ret = self._run_swarm_callback(task, resolved_turns, agents)
         except Exception as exc:
             return f"Error triggering swarm: {exc}"
 

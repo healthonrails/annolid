@@ -117,7 +117,7 @@ def chat_agent_loop_tool_timeout_seconds(
 ) -> float:
     base = gui_agent_loop_tool_timeout_seconds(settings, provider=provider)
     if prompt and ("swarm" in prompt.lower() or "agents" in prompt.lower()):
-        return max(base, 600.0)
+        return max(base, 900.0)
     return base
 
 

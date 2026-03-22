@@ -10,9 +10,11 @@ from annolid.services.paper_writer import (
     PaperDraft,
     PaperSection,
     build_bibtex,
+    build_paper_swarm_prompt,
     run_paper_drafting_swarm,
     format_draft_markdown,
 )
+from annolid.core.agent.tools.research import DraftPaperSwarmTool
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -164,3 +166,69 @@ def test_run_paper_drafting_swarm(monkeypatch) -> None:
     )
     assert "## Introduction" in result
     assert "Draft content." in result
+
+
+def test_run_paper_drafting_swarm_defaults_to_longer_turn_budget(monkeypatch) -> None:
+    captured: dict[str, int] = {}
+
+    class DummySwarmManager:
+        def register_agent(self, agent):
+            pass
+
+        async def run_swarm(self, task: str, max_turns: int = 8) -> str:
+            captured["max_turns"] = max_turns
+            return "## Introduction\nDraft content."
+
+    import annolid.services.paper_writer
+
+    monkeypatch.setattr(
+        annolid.services.paper_writer, "SwarmManager", DummySwarmManager
+    )
+
+    def dummy_loop_factory():
+        return None
+
+    papers = [_make_paper(title="Test", summary="Context")]
+
+    import asyncio
+
+    result = asyncio.run(
+        run_paper_drafting_swarm("Neuroscience", papers, dummy_loop_factory)
+    )
+    assert "## Introduction" in result
+    assert captured["max_turns"] > 8
+
+
+def test_draft_paper_swarm_tool_uses_new_default_turn_budget(monkeypatch) -> None:
+    captured: dict[str, int] = {}
+
+    async def _fake_run(topic: str, papers, loop_factory, max_turns: int = 8):
+        captured["max_turns"] = max_turns
+        return f"topic={topic}"
+
+    import annolid.core.agent.tools.research as research_mod
+
+    monkeypatch.setattr(research_mod, "run_paper_drafting_swarm", _fake_run)
+
+    tool = DraftPaperSwarmTool()
+    tool.set_loop_factory(lambda: object())
+
+    import asyncio
+
+    result = asyncio.run(tool.execute("Behavioral Understanding"))
+    assert "topic=Behavioral Understanding" in result
+    assert captured["max_turns"] > 8
+
+
+def test_build_paper_swarm_prompt_includes_pdf_context() -> None:
+    prompt = build_paper_swarm_prompt(
+        "Behavioral understanding",
+        pdf_state={
+            "title": "BehaviorVLM.pdf",
+            "path": "/tmp/BehaviorVLM.pdf",
+        },
+    )
+    assert "draft_paper_swarm" in prompt
+    assert "Behavioral understanding" in prompt
+    assert "title=BehaviorVLM.pdf" in prompt
+    assert "path=/tmp/BehaviorVLM.pdf" in prompt
