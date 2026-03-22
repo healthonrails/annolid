@@ -120,6 +120,10 @@ PDF_CONTEXT_HINTS: Tuple[str, ...] = (
 
 PDF_SUMMARY_ACTION_HINTS: Tuple[str, ...] = (
     "summarize",
+    "summarise",
+    "summarization",
+    "summarisation",
+    "summarzie",
     "summary",
     "explain",
     "overview",

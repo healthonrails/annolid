@@ -2699,6 +2699,8 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_pdf["name"] == "open_pdf"
     parsed_pdf_summary = task._parse_direct_gui_command("summarize this paper")
     assert parsed_pdf_summary["name"] == "pdf_summarize"
+    parsed_pdf_summary_typo = task._parse_direct_gui_command("summarzie this paper")
+    assert parsed_pdf_summary_typo["name"] == "pdf_summarize"
 
     parsed_open_url_direct = task._parse_direct_gui_command(
         "open https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"

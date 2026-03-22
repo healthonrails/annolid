@@ -1787,6 +1787,7 @@ class StreamingChatTask(QRunnable):
             max_extract_chars=max(
                 10000, min(int(max_extract_chars or 350000), 2000000)
             ),
+            on_telemetry=self._log_pdf_summary_telemetry,
         )
         if not summary_text:
             return {
@@ -2157,6 +2158,36 @@ class StreamingChatTask(QRunnable):
             workspace=self.workspace,
             get_pdf_state=self._tool_gui_pdf_get_state,
             build_summary=self._build_extractive_summary,
+            on_telemetry=self._log_pdf_summary_telemetry,
+        )
+
+    def _log_pdf_summary_telemetry(self, telemetry: Dict[str, Any]) -> None:
+        payload = dict(telemetry or {})
+        if not payload:
+            return
+        ok = bool(payload.get("ok"))
+        if ok:
+            logger.info(
+                "annolid-bot pdf summarize session=%s model=%s ok=1 cache_hit=%d pages=%s text_chars=%s extract_ms=%.1f summary_ms=%.1f total_ms=%.1f path=%s cache=%s",
+                self.session_id,
+                self.model,
+                int(bool(payload.get("cache_hit"))),
+                int(payload.get("pages_scanned") or 0),
+                int(payload.get("text_chars") or 0),
+                float(payload.get("extract_ms") or 0.0),
+                float(payload.get("summary_ms") or 0.0),
+                float(payload.get("total_ms") or 0.0),
+                str(payload.get("pdf_path") or ""),
+                str(payload.get("cache_path") or ""),
+            )
+            return
+        logger.warning(
+            "annolid-bot pdf summarize session=%s model=%s ok=0 reason=%s total_ms=%.1f path=%s",
+            self.session_id,
+            self.model,
+            str(payload.get("reason") or "unknown"),
+            float(payload.get("total_ms") or 0.0),
+            str(payload.get("pdf_path") or ""),
         )
 
     def _upgrade_pdf_summary_response(self, text: str) -> str:

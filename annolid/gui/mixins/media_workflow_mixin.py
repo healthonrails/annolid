@@ -275,6 +275,12 @@ class MediaWorkflowMixin:
             return
         self.openCaption()
 
+    def open_research_paper_dock(self) -> None:
+        """Open or raise the Research Paper panel dock."""
+        from annolid.gui.widgets.research_paper_widget import open_research_paper_dock
+
+        open_research_paper_dock(self)  # type: ignore[arg-type]
+
     def _apply_timeline_caption_if_available(
         self,
         frame_number: Optional[int],

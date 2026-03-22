@@ -642,7 +642,8 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         }
 
     summarize_pdf_match = re.search(
-        r"^\s*(?:please\s+)?(?:summarize|summary|tldr|tl;dr|overview|explain)\b"
+        r"^\s*(?:please\s+)?"
+        r"(?:summarize|summarise|summarization|summarisation|summarzie|summary|tldr|tl;dr|overview|explain)\b"
         r"[\s\S]*\b(?:paper|pdf|document)\b",
         lower,
     )

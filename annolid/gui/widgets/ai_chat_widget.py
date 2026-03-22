@@ -90,6 +90,17 @@ from annolid.services.citation_verify import (
     build_citation_verification_report,
     write_citation_verification_report,
 )
+from annolid.services.chat_research import (
+    ResearchIntent,
+    detect_research_intent,
+    format_literature_results_for_chat,
+)
+from annolid.services.literature_search import LiteratureResult
+from annolid.gui.widgets.research_workers import (
+    LiteratureSearchWorker,
+    DraftWorker,
+    make_sync_llm_call,
+)
 
 
 def _safe_stream_source_for_bot(source: str) -> str:
@@ -662,6 +673,10 @@ class AIChatWidget(QtWidgets.QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("AIChatWidget")
+        self._active_research_draft_text = ""
+        self._active_research_papers: list[LiteratureResult] = []
+        self._active_search_topic = ""
+        self._active_search_auto_draft = False
         self.llm_settings = load_llm_settings()
         self._providers = ProviderRegistry(self.llm_settings, save_llm_settings)
         self.provider_labels: Dict[str, str] = self._providers.labels()
@@ -720,6 +735,8 @@ class AIChatWidget(QtWidgets.QWidget):
         self._zulip_target_summary = ""
         self._seen_event_keys: "OrderedDict[str, float]" = OrderedDict()
         self._seen_event_key_limit = 512
+        self._research_search_worker: Optional[LiteratureSearchWorker] = None
+        self._research_search_thread: Optional[QtCore.QThread] = None
 
         self._build_ui()
         self._apply_theme_styles()
@@ -4593,6 +4610,164 @@ class AIChatWidget(QtWidgets.QWidget):
                 is_user=False,
             )
 
+    # ---- Research Intent Handling ----
+    def _handle_research_intent(self, intent: ResearchIntent) -> None:
+        if intent.kind == "draft":
+            self.bot_trigger_search_literature(
+                intent.topic, intent.max_results, auto_draft=True
+            )
+        else:
+            self.bot_trigger_search_literature(
+                intent.topic, intent.max_results, auto_draft=False
+            )
+
+    def _set_current_response_text(self, text: str) -> None:
+        bubble = self._current_response_bubble
+        if bubble is not None:
+            bubble.set_text(str(text or ""))
+
+    def _clear_research_search_refs(
+        self,
+        worker: Optional[LiteratureSearchWorker],
+        thread: Optional[QtCore.QThread],
+    ) -> None:
+        if self._research_search_worker is worker:
+            self._research_search_worker = None
+        if self._research_search_thread is thread:
+            self._research_search_thread = None
+        if worker is not None:
+            with contextlib.suppress(Exception):
+                worker.deleteLater()
+        if thread is not None:
+            with contextlib.suppress(Exception):
+                thread.deleteLater()
+
+    def _stop_active_research_search(self) -> None:
+        worker = self._research_search_worker
+        thread = self._research_search_thread
+        if worker is not None:
+            with contextlib.suppress(Exception):
+                worker.finished.disconnect()
+            with contextlib.suppress(Exception):
+                worker.error.disconnect()
+        if thread is not None:
+            with contextlib.suppress(Exception):
+                thread.started.disconnect()
+            if thread.isRunning():
+                with contextlib.suppress(Exception):
+                    thread.quit()
+            self._clear_research_search_refs(worker, thread)
+
+    def bot_trigger_search_literature(
+        self, topic: str, max_results: int = 8, auto_draft: bool = False
+    ) -> None:
+        self._stop_active_research_search()
+        self._prepare_streaming_turn_ui(f"research {topic}")
+        self.status_label.setText("Searching literature...")
+        self.status_label.setText("Searching literature...")
+
+        self._active_search_topic = topic
+        self._active_search_auto_draft = auto_draft
+
+        worker = LiteratureSearchWorker(topic, max_results)
+        thread = QtCore.QThread(self)
+        worker.moveToThread(thread)
+        self._research_search_worker = worker
+        self._research_search_thread = thread
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_search_literature_done_slot)
+        worker.error.connect(self._on_search_literature_error_slot)
+        thread.start()
+
+    @QtCore.Slot(list)
+    def _on_search_literature_done_slot(self, papers: list) -> None:
+        thread = self._research_search_thread
+        worker = self._research_search_worker
+        if thread:
+            thread.quit()
+        if worker and thread:
+            self._clear_research_search_refs(worker, thread)
+        self._on_search_literature_done(
+            self._active_search_topic, papers, self._active_search_auto_draft
+        )
+
+    @QtCore.Slot(str)
+    def _on_search_literature_error_slot(self, msg: str) -> None:
+        thread = self._research_search_thread
+        worker = self._research_search_worker
+        if thread:
+            thread.quit()
+        if worker and thread:
+            self._clear_research_search_refs(worker, thread)
+        self.update_chat_response(
+            f"⚠ Search failed: {msg}", is_error=True, error_type="Search"
+        )
+
+    def _on_search_literature_done(
+        self, topic: str, papers: list[LiteratureResult], auto_draft: bool
+    ) -> None:
+        msg = format_literature_results_for_chat(papers, topic=topic)
+        self.update_chat_response(msg, is_error=False, turn_status="Done")
+
+        if auto_draft:
+            self.bot_trigger_draft_paper(topic, papers)
+
+    def bot_trigger_draft_paper(
+        self, topic: str, papers: list[LiteratureResult]
+    ) -> None:
+        if not papers:
+            self._add_bubble(
+                "Annolid Bot", "⚠ No literature found to draft.", is_user=False
+            )
+            return
+
+        self._prepare_streaming_turn_ui(f"write a paper about {topic}")
+        self.status_label.setText("Drafting paper...")
+
+        self._active_research_draft_text = f"# Draft: {topic}\n\n"
+        self._active_research_papers = list(papers)
+        self._set_current_response_text(
+            self._active_research_draft_text + "_Generating outline..._"
+        )
+
+        try:
+            llm_call = make_sync_llm_call(dict(self.llm_settings or {}))
+        except Exception as exc:
+            self.update_chat_response(f"LLM not configured: {exc}", is_error=True)
+            return
+
+        worker = DraftWorker(topic, papers, llm_call)
+        worker.signals.section_done.connect(self._on_draft_section)
+        worker.signals.progress.connect(self.stream_chat_progress)
+        worker.signals.finished.connect(self._on_draft_finished)
+        worker.signals.error.connect(self._on_draft_error)
+        self.thread_pool.start(worker)
+
+    @QtCore.Slot(str, str)
+    def _on_draft_section(self, title: str, content: str) -> None:
+        self._active_research_draft_text += f"## {title}\n\n{content}\n\n"
+        self._set_current_response_text(self._active_research_draft_text)
+
+    @QtCore.Slot()
+    def _on_draft_finished(self) -> None:
+        if self._active_research_papers:
+            refs = ["## References\n"]
+            for i, p in enumerate(self._active_research_papers, 1):
+                refs.append(f"{i}. {p.title}")
+            self._active_research_draft_text += "\n".join(refs) + "\n"
+        self._active_research_draft_text += "\n\n_✅ Draft generation complete._"
+        self.update_chat_response(
+            self._active_research_draft_text, is_error=False, turn_status="Done"
+        )
+
+    @QtCore.Slot(str)
+    def _on_draft_error(self, msg: str) -> None:
+        self._active_research_draft_text += f"\n\n_⚠ Draft failed: {msg}_"
+        self.update_chat_response(
+            self._active_research_draft_text, is_error=True, error_type="DraftError"
+        )
+
     def _prepare_chat_image(self) -> Optional[str]:
         use_window = self.attach_window_checkbox.isChecked()
         use_canvas = self.attach_canvas_checkbox.isChecked()
@@ -4615,6 +4790,12 @@ class AIChatWidget(QtWidgets.QWidget):
 
         self._add_bubble("You", raw_prompt, is_user=True)
         self.prompt_text_edit.clear()
+
+        intent = detect_research_intent(raw_prompt)
+        if intent is not None:
+            self._handle_research_intent(intent)
+            return
+
         chat_mode = self._consume_next_chat_mode()
         chat_image_path = self._prepare_chat_image()
         ui_prepared = False
