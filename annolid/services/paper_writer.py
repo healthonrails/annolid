@@ -16,17 +16,12 @@ Public API
 - ``format_draft_markdown``    — stitch sections + references into markdown.
 """
 
-from __future__ import annotations
-
-import json
-import logging
-import re
 from dataclasses import dataclass, field
-from typing import Callable, Sequence
+import re
+from typing import Callable, Sequence, Any
 
 from annolid.services.literature_search import LiteratureResult
-
-_LOGGER = logging.getLogger(__name__)
+from annolid.core.agent.swarm import SwarmAgent, SwarmManager
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -124,116 +119,83 @@ def _format_paper_list(
 
 
 # ---------------------------------------------------------------------------
-# Core generation functions
+# Core Swarm Generation
 # ---------------------------------------------------------------------------
 
-LLMCall = Callable[[str, str], str]  # (system_prompt, user_prompt) -> text
 
-
-def generate_outline(
+async def run_paper_drafting_swarm(
     topic: str,
     papers: Sequence[LiteratureResult],
-    llm_call: LLMCall,
-) -> list[dict[str, str]]:
-    """Ask the LLM for a paper section outline.
+    loop_factory: Callable[[], Any],
+    max_turns: int = 6,
+) -> str:
+    """Draft a complete research paper by orchestrating subagents.
 
     Parameters
     ----------
     topic:
         The research topic / hypothesis.
     papers:
-        Literature results to ground the outline.
-    llm_call:
-        ``callable(system_prompt, user_prompt) -> str``  — the LLM gateway.
+        Literature results to ground the paper.
+    loop_factory:
+        A callable that returns a fresh ``AgentLoop`` or ``_SupportsRun`` instance
+        for the swarm agents to use.
+    max_turns:
+        Maximum number of iterative agent turns.
 
     Returns
     -------
-    list[dict[str, str]]
-        Each dict has ``"title"`` and ``"guidance"`` keys.
-        Falls back to a hard-coded five-section outline on parse failure.
+    str
+        The final paper draft or conversation transcript from the swarm.
     """
-    paper_list = _format_paper_list(papers)
-    user_msg = _OUTLINE_USER_TPL.format(topic=topic, paper_list=paper_list)
-    try:
-        raw = llm_call(_OUTLINE_SYSTEM, user_msg)
-    except Exception as exc:
-        _LOGGER.warning("generate_outline: LLM call failed: %s", exc)
-        return _default_outline(topic)
+    manager = SwarmManager()
 
-    # Strip markdown fences if present
-    cleaned = re.sub(r"```[a-z]*\n?", "", str(raw or "")).strip()
-    # Find the JSON array
-    match = re.search(r"\[.*\]", cleaned, re.DOTALL)
-    if match:
-        cleaned = match.group(0)
-    try:
-        parsed = json.loads(cleaned)
-        if isinstance(parsed, list):
-            result: list[dict[str, str]] = []
-            for item in parsed:
-                if isinstance(item, dict):
-                    title = str(item.get("title") or "").strip()
-                    guidance = str(item.get("guidance") or "").strip()
-                    if title:
-                        result.append({"title": title, "guidance": guidance})
-            if result:
-                return result
-    except (json.JSONDecodeError, ValueError) as exc:
-        _LOGGER.warning(
-            "generate_outline: JSON parse failed (%s); using default outline.", exc
-        )
-    return _default_outline(topic)
-
-
-def _default_outline(topic: str) -> list[dict[str, str]]:
-    """Fallback five-section outline."""
-    _ = topic  # reserved for future personalisation
-    return [
-        {
-            "title": "Introduction",
-            "guidance": "Motivate the problem and state contributions.",
-        },
-        {
-            "title": "Related Work",
-            "guidance": "Survey relevant prior work and highlight gaps.",
-        },
-        {"title": "Method", "guidance": "Describe the proposed approach in detail."},
-        {
-            "title": "Experiments",
-            "guidance": "Present experimental setup and quantitative results.",
-        },
-        {
-            "title": "Conclusion",
-            "guidance": "Summarize findings and discuss future directions.",
-        },
-    ]
-
-
-def draft_section(
-    section_title: str,
-    guidance: str,
-    topic: str,
-    papers: Sequence[LiteratureResult],
-    llm_call: LLMCall,
-) -> str:
-    """Ask the LLM to write one paper section.
-
-    Returns the written section text (plain markdown, no heading).
-    Returns an empty string on failure (caller should handle gracefully).
-    """
-    paper_list = _format_paper_list(papers)
-    user_msg = _SECTION_USER_TPL.format(
-        topic=topic,
-        section_title=section_title,
-        guidance=guidance,
-        paper_list=paper_list,
+    outliner = SwarmAgent(
+        name="Outliner",
+        role="Literature Review and Planner",
+        system_prompt=(
+            "You are the Outliner Agent. Your job is to read the provided topic and literature, "
+            "then propose a strong 5-7 section structure for the paper (e.g., Introduction, "
+            "Related Work, Method, Results). Only propose the structure and provide short guidance "
+            "for each section. Do not write the full paper."
+        ),
+        loop_factory=loop_factory,
     )
-    try:
-        text = llm_call(_SECTION_SYSTEM, user_msg)
-        return str(text or "").strip()
-    except Exception as exc:
-        _LOGGER.warning("draft_section(%r): LLM call failed: %s", section_title, exc)
-        return ""
+
+    writer = SwarmAgent(
+        name="Writer",
+        role="Academic Author",
+        system_prompt=(
+            "You are the Paper-Writing Agent. Your job is to write the paper sections according "
+            "to the Outliner's proposed structure and the literature context. "
+            "Write in flowing, formal academic prose. Cite papers using their titles."
+        ),
+        loop_factory=loop_factory,
+    )
+
+    reviewer = SwarmAgent(
+        name="Reviewer",
+        role="Peer Reviewer",
+        system_prompt=(
+            "You are the Reviewer Agent. Your job is to critique the written sections, "
+            "point out weak arguments, missing citations, or poor transitions, and suggest improvements. "
+            "If the drafted paper meets high academic standards, say 'TASK COMPLETE' exactly to finish the swarm."
+        ),
+        loop_factory=loop_factory,
+    )
+
+    manager.register_agent(outliner)
+    manager.register_agent(writer)
+    manager.register_agent(reviewer)
+
+    paper_list = _format_paper_list(papers)
+    initial_task = (
+        f"Draft a comprehensive research paper on: {topic}\n\n"
+        f"Relevant Literature to use:\n{paper_list}\n\n"
+        "Outliner, please start by proposing the sections."
+    )
+
+    return await manager.run_swarm(initial_task, max_turns=max_turns)
 
 
 # ---------------------------------------------------------------------------
@@ -340,11 +302,9 @@ def format_draft_markdown(draft: PaperDraft) -> str:
 
 
 __all__ = [
-    "LLMCall",
     "PaperDraft",
     "PaperSection",
     "build_bibtex",
-    "draft_section",
+    "run_paper_drafting_swarm",
     "format_draft_markdown",
-    "generate_outline",
 ]

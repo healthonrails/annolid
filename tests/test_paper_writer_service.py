@@ -10,11 +10,9 @@ from annolid.services.paper_writer import (
     PaperDraft,
     PaperSection,
     build_bibtex,
-    draft_section,
+    run_paper_drafting_swarm,
     format_draft_markdown,
-    generate_outline,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -38,15 +36,6 @@ def _make_paper(
         year=year,
         summary=summary,
     )
-
-
-def _noop_llm(_system: str, _user: str) -> str:
-    """LLM stub returning a canned response."""
-    return '[{"title": "Introduction", "guidance": "Motivate the problem."}, {"title": "Conclusion", "guidance": "Summarize."}]'
-
-
-def _section_llm(_system: str, user: str) -> str:
-    return f"This section covers the topic as indicated. Topic extracted from prompt: {user[:20]}..."
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +67,6 @@ def test_build_bibtex_multiple_unique_keys() -> None:
     p1 = _make_paper(title="Paper A", arxiv_id="2401.00001")
     p2 = _make_paper(title="Paper B", arxiv_id="2401.00001")  # same id
     bib = build_bibtex([p1, p2])
-    # Both should be present; keys must be unique
     entries = [line for line in bib.splitlines() if line.startswith("@misc{")]
     assert len(entries) == 2
     keys = [e.split("{", 1)[1].rstrip(",") for e in entries]
@@ -143,64 +131,36 @@ def test_format_draft_markdown_references() -> None:
 
 
 # ---------------------------------------------------------------------------
-# generate_outline tests
+# run_paper_drafting_swarm tests
 # ---------------------------------------------------------------------------
 
 
-def test_generate_outline_parses_llm_json() -> None:
-    papers = [_make_paper()]
-    outline = generate_outline("pose estimation", papers, _noop_llm)
-    assert isinstance(outline, list)
-    assert len(outline) == 2
-    assert outline[0]["title"] == "Introduction"
+def test_run_paper_drafting_swarm(monkeypatch) -> None:
+    # A dummy SwarmManager that just returns a fixed string
+    class DummySwarmManager:
+        def register_agent(self, agent):
+            pass
 
+        async def run_swarm(self, task: str, max_turns: int = 5) -> str:
+            return "## Introduction\nDraft content."
 
-def test_generate_outline_fallback_on_bad_json() -> None:
-    def _bad_llm(_sys: str, _usr: str) -> str:
-        return "this is not JSON"
+    import annolid.services.paper_writer
 
-    papers = [_make_paper()]
-    outline = generate_outline("test topic", papers, _bad_llm)
-    # Should fall back to default 5-section outline
-    assert len(outline) >= 2
-    assert all("title" in item for item in outline)
-
-
-def test_generate_outline_empty_papers() -> None:
-    outline = generate_outline("robot navigation", [], _noop_llm)
-    assert isinstance(outline, list)
-    assert len(outline) >= 2
-
-
-# ---------------------------------------------------------------------------
-# draft_section tests
-# ---------------------------------------------------------------------------
-
-
-def test_draft_section_calls_llm() -> None:
-    called: list[tuple[str, str]] = []
-
-    def _tracking_llm(sys_prompt: str, user_prompt: str) -> str:
-        called.append((sys_prompt, user_prompt))
-        return "This is the section content."
-
-    papers = [_make_paper()]
-    result = draft_section(
-        "Introduction",
-        "Motivate the problem.",
-        "pose estimation",
-        papers,
-        _tracking_llm,
+    monkeypatch.setattr(
+        annolid.services.paper_writer, "SwarmManager", DummySwarmManager
     )
-    assert len(called) == 1
-    assert "Introduction" in called[0][1]
-    assert "pose estimation" in called[0][1]
-    assert result == "This is the section content."
 
+    def dummy_loop_factory():
+        return None
 
-def test_draft_section_handles_llm_error() -> None:
-    def _failing_llm(_s: str, _u: str) -> str:
-        raise RuntimeError("LLM unavailable")
+    papers = [_make_paper(title="Test", summary="Context")]
 
-    result = draft_section("Conclusion", "", "test topic", [], _failing_llm)
-    assert result == ""
+    import asyncio
+
+    result = asyncio.run(
+        run_paper_drafting_swarm(
+            "Neuroscience", papers, dummy_loop_factory, max_turns=2
+        )
+    )
+    assert "## Introduction" in result
+    assert "Draft content." in result

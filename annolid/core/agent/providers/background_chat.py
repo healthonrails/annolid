@@ -211,18 +211,21 @@ def run_openai_compat_chat(
     async def _chat_once() -> str:
         model_lower = (model or "").lower()
         temperature = 0.7 if "gpt-5" not in model_lower else None
-        coro = provider.chat(
-            messages=messages,
-            model=model,
-            max_tokens=int(max_tokens),
-            temperature=temperature,
-            timeout_seconds=timeout_s,
-        )
-        if timeout_s is not None and float(timeout_s) > 0:
-            resp = await asyncio.wait_for(coro, timeout=float(timeout_s))
-        else:
-            resp = await coro
-        return str(resp.content or "")
+        try:
+            coro = provider.chat(
+                messages=messages,
+                model=model,
+                max_tokens=int(max_tokens),
+                temperature=temperature,
+                timeout_seconds=timeout_s,
+            )
+            if timeout_s is not None and float(timeout_s) > 0:
+                resp = await asyncio.wait_for(coro, timeout=float(timeout_s))
+            else:
+                resp = await coro
+            return str(resp.content or "")
+        finally:
+            await provider.close()
 
     try:
         text = asyncio.run(_chat_once())
@@ -270,18 +273,21 @@ def run_openai_codex_chat(
     messages.append({"role": "user", "content": user_content})
 
     async def _chat_once() -> str:
-        resp = await provider.chat(
-            messages=messages,
-            model=model,
-            max_tokens=int(max_tokens),
-            timeout_seconds=timeout_s,
-        )
-        if str(resp.finish_reason or "").strip().lower() == "error":
-            detail = str(resp.content or "").strip() or "Error calling Codex."
-            if "timed out" in detail.lower():
-                raise TimeoutError(detail)
-            raise RuntimeError(detail)
-        return str(resp.content or "")
+        try:
+            resp = await provider.chat(
+                messages=messages,
+                model=model,
+                max_tokens=int(max_tokens),
+                timeout_seconds=timeout_s,
+            )
+            if str(resp.finish_reason or "").strip().lower() == "error":
+                detail = str(resp.content or "").strip() or "Error calling Codex."
+                if "timed out" in detail.lower():
+                    raise TimeoutError(detail)
+                raise RuntimeError(detail)
+            return str(resp.content or "")
+        finally:
+            await provider.close()
 
     try:
         text = asyncio.run(_chat_once())
@@ -328,23 +334,30 @@ def run_codex_cli_chat(
     messages.append({"role": "user", "content": user_content})
 
     async def _chat_once() -> str:
-        coro = provider.chat(
-            messages=messages,
-            model=model,
-            max_tokens=int(max_tokens),
-            timeout_seconds=timeout_s,
-            cancel_event=cancel_event,
-        )
-        if timeout_s is not None and float(timeout_s) > 0:
-            resp = await asyncio.wait_for(coro, timeout=float(timeout_s) + 5.0)
-        else:
-            resp = await coro
-        if str(resp.finish_reason or "").strip().lower() == "error":
-            detail = str(resp.content or "").strip() or "Error calling Codex CLI."
-            if "timed out" in detail.lower():
-                raise TimeoutError(detail)
-            raise RuntimeError(detail)
-        return str(resp.content or "")
+        try:
+            coro = provider.chat(
+                messages=messages,
+                model=model,
+                max_tokens=int(max_tokens),
+                timeout_seconds=timeout_s,
+                cancel_event=cancel_event,
+            )
+            if timeout_s is not None and float(timeout_s) > 0:
+                resp = await asyncio.wait_for(coro, timeout=float(timeout_s) + 5.0)
+            else:
+                resp = await coro
+            if str(resp.finish_reason or "").strip().lower() == "error":
+                detail = str(resp.content or "").strip() or "Error calling Codex CLI."
+                if "timed out" in detail.lower():
+                    raise TimeoutError(detail)
+                raise RuntimeError(detail)
+            return str(resp.content or "")
+        finally:
+            close_fn = getattr(provider, "close", None)
+            if callable(close_fn):
+                result = close_fn()
+                if hasattr(result, "__await__"):
+                    await result
 
     try:
         text = asyncio.run(_chat_once())

@@ -22,6 +22,7 @@ from .filesystem import (
     WriteFileTool,
 )
 from .function_registry import FunctionToolRegistry
+from .research import DraftPaperSwarmTool, LiteratureSearchTool
 from .function_video import (
     VideoInfoTool,
     VideoListInferenceModelsTool,
@@ -278,6 +279,10 @@ async def register_nanobot_style_tools(
     registry.register(AdminMemoryFlushTool())
     registry.register(AdminEvalRunTool())
     registry.register(AdminUpdateRunTool())
+
+    registry.register(LiteratureSearchTool())
+    registry.register(DraftPaperSwarmTool())
+
     if "message" not in ignored_tools:
         registry.register(MessageTool(send_callback=send_callback))
     if "spawn" not in ignored_tools:

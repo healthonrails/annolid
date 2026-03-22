@@ -133,7 +133,7 @@ def save_pdf_with_annolid_bot(
         return False, err or "Unable to open Annolid Bot."
     if bool(getattr(widget, "is_streaming_chat", False)):
         return False, "Annolid Bot is currently responding. Please try again."
-    
+
     prompt_input = getattr(widget, "prompt_text_edit", None)
     send_chat = getattr(widget, "chat_with_model", None)
     if prompt_input is None or not callable(send_chat):

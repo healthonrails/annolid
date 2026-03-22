@@ -2344,6 +2344,19 @@ class AgentLoop:
         if isinstance(swarm_tool, SwarmTool):
             swarm_tool.set_swarm_callback(self._create_swarm_manager_and_run)
 
+        # Inject loop factory to any tools that support it (like custom Swarm constructors)
+        loop_factory = self._build_subagent_loop_factory()
+        if hasattr(self._tools, "values"):
+            tool_items = self._tools.values()
+        elif hasattr(self._tools, "_tools"):
+            tool_items = self._tools._tools.values()
+        else:
+            tool_items = []
+
+        for t in tool_items:
+            if hasattr(t, "set_loop_factory"):
+                t.set_loop_factory(loop_factory)
+
     def _set_tool_context(
         self,
         *,
@@ -2413,14 +2426,7 @@ class AgentLoop:
             workspace=workspace_path,
         )
 
-    async def _create_swarm_manager_and_run(
-        self, task: str, max_turns: int = 5, agents: list[str] | None = None
-    ) -> str:
-        try:
-            from .swarm import SwarmAgent, SwarmManager
-        except Exception as e:
-            return f"Cannot initialize swarm: {e}"
-
+    def _build_subagent_loop_factory(self) -> Callable[[], "AgentLoop"]:
         def _loop_factory() -> "AgentLoop":
             # For brevity in the swarm, limit iterations heavily per turn
             return AgentLoop(
@@ -2434,6 +2440,18 @@ class AgentLoop:
                 llm_timeout_seconds=self._llm_timeout_seconds,
                 strict_runtime_tool_guard=self._strict_runtime_tool_guard,
             )
+
+        return _loop_factory
+
+    async def _create_swarm_manager_and_run(
+        self, task: str, max_turns: int = 5, agents: list[str] | None = None
+    ) -> str:
+        try:
+            from .swarm import SwarmAgent, SwarmManager
+        except Exception as e:
+            return f"Cannot initialize swarm: {e}"
+
+        _loop_factory = self._build_subagent_loop_factory()
 
         manager = SwarmManager()
 
