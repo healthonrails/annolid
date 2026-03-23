@@ -37,6 +37,8 @@ class ImportedVectorDocument:
     height: float | None
     view_box: list[float] | None
     shapes: list[ImportedPath]
+    page_box: list[float] | None = None
+    art_box: list[float] | None = None
     source_kind: str = "svg"
 
 
@@ -494,6 +496,8 @@ def _import_svg_root(root: ET.Element, *, source_path: str) -> ImportedVectorDoc
         width=_parse_float(root.get("width"), default=0.0) or None,
         height=_parse_float(root.get("height"), default=0.0) or None,
         view_box=view_box,
+        page_box=None,
+        art_box=None,
         shapes=items,
     )
 

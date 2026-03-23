@@ -8,10 +8,12 @@ import tifffile
 from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.gui.mixins.annotation_loading_mixin import AnnotationLoadingMixin
+from annolid.gui.mixins.canvas_workflow_mixin import CanvasWorkflowMixin
 from annolid.gui.mixins.file_browser_mixin import FileBrowserMixin
 from annolid.gui.mixins.frame_playback_mixin import FramePlaybackMixin
 from annolid.gui.mixins.label_panel_mixin import LabelPanelMixin
 from annolid.gui.mixins.navigation_workflow_mixin import NavigationWorkflowMixin
+from annolid.gui.mixins.core_interaction_mixin import CoreInteractionMixin
 from annolid.gui.mixins.playback_draw_mixin import PlaybackDrawMixin
 from annolid.gui.shape import Shape
 from annolid.gui.widgets.tiled_image_view import TiledImageView, _ShapeGraphicsItem
@@ -183,21 +185,6 @@ class _WindowNavigationStub(
         self.frame_number = 0
         self.num_frames = 0
 
-    def _set_active_view(self, mode: str = "canvas") -> None:
-        self._active_view_requests.append(str(mode))
-
-    def mayContinue(self) -> bool:
-        return True
-
-    def _update_frame_display_and_emit_update(self) -> None:
-        return None
-
-    def _checked_file_paths(self):
-        return []
-
-    def _set_current_file_item(self, _filename: str) -> None:
-        return None
-
     def sync_large_image_page_state(self) -> None:
         if self.large_image_backend is None:
             return
@@ -207,6 +194,29 @@ class _WindowNavigationStub(
         self.num_frames = int(
             getattr(self.large_image_backend, "get_page_count", lambda: 1)() or 1
         )
+
+    def _set_active_view(self, mode: str = "canvas") -> None:
+        self._active_view_requests.append(str(mode))
+
+    def _update_frame_display_and_emit_update(self) -> None:
+        return None
+
+
+class _CanvasFitWindowStub(
+    CanvasWorkflowMixin,
+    CoreInteractionMixin,
+    _WindowStub,
+):
+    def __init__(self):
+        super().__init__()
+        self._active_image_view = "tiled"
+        self.large_image_backend = object()
+        self._fit_calls = 0
+
+        def _fit_to_window():
+            self._fit_calls += 1
+
+        self.large_image_view.fit_to_window = _fit_to_window
 
 
 class _PageAnnotationWindow(
@@ -644,6 +654,48 @@ def test_large_tiff_load_hides_unrelated_docks_and_keeps_annotation_docks(
         assert window.shape_dock.isHidden() is True
         assert window.file_dock.isHidden() is False
         assert window.flag_dock.isHidden() is False
+    finally:
+        window.close()
+
+
+def test_large_tiff_load_hides_keypoint_sequencer_dock_by_default(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "atlas.ome.tiff"
+    data = np.arange(128 * 128, dtype=np.uint16).reshape(128, 128)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    window = _WindowStub()
+    try:
+        window.keypoint_sequence_dock = QtWidgets.QDockWidget(
+            "Keypoint Sequencer", window
+        )
+        window.addDockWidget(
+            QtCore.Qt.RightDockWidgetArea, window.keypoint_sequence_dock
+        )
+        window.keypoint_sequence_dock.setVisible(True)
+        assert window.keypoint_sequence_dock.isHidden() is False
+
+        window.loadFile(str(image_path))
+
+        assert window._active_image_view == "tiled"
+        assert window.keypoint_sequence_dock.isHidden() is True
+    finally:
+        window.close()
+
+
+def test_fit_window_uses_tiled_view_when_large_image_is_active() -> None:
+    _ensure_qapp()
+
+    window = _CanvasFitWindowStub()
+    try:
+        window.setFitWindow(True)
+
+        assert window.zoomMode == window.FIT_WINDOW
+        assert window.actions.fitWindow.isChecked() is True
+        assert window._fit_calls == 1
     finally:
         window.close()
 

@@ -196,7 +196,7 @@ Annolid now supports a practical atlas workflow for large TIFF-family images and
 - Keep immutable source provenance for imported overlays while editing a derived correction layer.
 - Export corrected overlays as `SVG`, overlay `JSON`, or `*.labelme.json`.
 
-Imported vector overlays now skip definition-only geometry such as clip paths, PDF-compatible Illustrator `.ai` files can be opened directly, small atlas drawings can auto-fit to the current image on import when their coordinates are clearly not already in image space, and explicit landmark pairs are stored with the overlay record instead of only existing as transient point metadata.
+Imported vector overlays now skip definition-only geometry such as clip paths, PDF-compatible Illustrator `.ai` files can be opened directly, small atlas drawings can auto-fit to the current image on import when their coordinates are clearly not already in image space, and PDF-compatible `.ai`/`.pdf` overlays preserve the source art box when available, then the page box and image origin during auto-fit so the imported geometry stays aligned to the underlying raster coordinate system. Explicit landmark pairs are stored with the overlay record instead of only existing as transient point metadata.
 
 For step-by-step instructions, install notes, and landmark pairing details, see [Large TIFF and Atlas Overlay Workflow](docs/atlas_overlay_workflow.md).
 For a broader overview of large TIFF support, viewing backends, caches, tile-native editing, and canvas fallback behavior, see [Large Image Guide](docs/large_image_guide.md).

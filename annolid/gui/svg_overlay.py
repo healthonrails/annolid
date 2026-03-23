@@ -162,6 +162,8 @@ def import_svg_shapes(path: str | Path) -> SvgImportResult:
         "document_width": document.width,
         "document_height": document.height,
         "view_box": document.view_box,
+        "page_box": list(document.page_box) if document.page_box else None,
+        "art_box": list(document.art_box) if document.art_box else None,
         "shape_count": len(shapes),
         "source_shapes": [
             VectorShape(

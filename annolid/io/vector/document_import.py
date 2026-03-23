@@ -10,6 +10,16 @@ from .svg_import import ImportedVectorDocument, import_svg_document, import_svg_
 
 
 _GENERIC_LABEL_PREFIXES = ("path", "shape", "layer")
+_PDF_LIKE_CACHE: dict[
+    str,
+    tuple[
+        tuple[int, int],
+        str,
+        list[dict[str, object]],
+        tuple[float, float, float, float] | None,
+        tuple[float, float, float, float] | None,
+    ],
+] = {}
 
 
 def _looks_like_generic_label(value: str | None) -> bool:
@@ -62,6 +72,13 @@ def _distance_to_bounds(
 
 
 def _extract_pdf_text_labels(path: Path) -> list[dict[str, object]]:
+    signature = _path_signature(path)
+    cache_key = str(path.expanduser())
+    if signature is not None:
+        cached = _PDF_LIKE_CACHE.get(cache_key)
+        if cached is not None and cached[0] == signature:
+            return list(cached[2])
+
     import fitz
 
     document = fitz.open(path)
@@ -131,6 +148,184 @@ def _extract_pdf_text_labels(path: Path) -> list[dict[str, object]]:
                 }
             )
         return items
+    finally:
+        document.close()
+
+
+def _extract_pdf_page_box(path: Path) -> tuple[float, float, float, float] | None:
+    signature = _path_signature(path)
+    cache_key = str(path.expanduser())
+    if signature is not None:
+        cached = _PDF_LIKE_CACHE.get(cache_key)
+        if cached is not None and cached[0] == signature:
+            return cached[3]
+
+    import fitz
+
+    try:
+        document = fitz.open(path)
+    except Exception:
+        return None
+    try:
+        if document.page_count < 1:
+            return None
+        page = document.load_page(0)
+        rect = getattr(page, "rect", None) or page.bound()
+        if rect is None:
+            return None
+        return (
+            float(rect.x0),
+            float(rect.y0),
+            float(rect.x1),
+            float(rect.y1),
+        )
+    finally:
+        document.close()
+
+
+def _extract_pdf_art_box(path: Path) -> tuple[float, float, float, float] | None:
+    signature = _path_signature(path)
+    cache_key = str(path.expanduser())
+    if signature is not None:
+        cached = _PDF_LIKE_CACHE.get(cache_key)
+        if cached is not None and cached[0] == signature:
+            return cached[4]
+
+    import fitz
+
+    try:
+        document = fitz.open(path)
+    except Exception:
+        return None
+    try:
+        if document.page_count < 1:
+            return None
+        page = document.load_page(0)
+        rect = getattr(page, "artbox", None)
+        if rect is None:
+            return None
+        rect = rect or None
+        if rect is None:
+            return None
+        return (
+            float(rect.x0),
+            float(rect.y0),
+            float(rect.x1),
+            float(rect.y1),
+        )
+    finally:
+        document.close()
+
+
+def _path_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return int(stat.st_mtime_ns), int(stat.st_size)
+
+
+def _extract_pdf_text_labels_from_page(
+    page,
+) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+    # Prefer line/span extraction because Illustrator/PDF labels often split
+    # poorly in "words" mode (single-character fragments).
+    text_dict = page.get_text("dict")
+    blocks = list(text_dict.get("blocks") or []) if isinstance(text_dict, dict) else []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if int(block.get("type", 0) or 0) != 0:
+            continue
+        for line in list(block.get("lines") or []):
+            spans = list((line or {}).get("spans") or [])
+            if not spans:
+                continue
+            parts = []
+            x0 = y0 = x1 = y1 = None
+            for span in spans:
+                text = str((span or {}).get("text") or "").strip()
+                if not text:
+                    continue
+                parts.append(text)
+                bbox = list((span or {}).get("bbox") or [])
+                if len(bbox) >= 4:
+                    sx0, sy0, sx1, sy1 = map(float, bbox[:4])
+                    x0 = sx0 if x0 is None else min(x0, sx0)
+                    y0 = sy0 if y0 is None else min(y0, sy0)
+                    x1 = sx1 if x1 is None else max(x1, sx1)
+                    y1 = sy1 if y1 is None else max(y1, sy1)
+            merged = " ".join(part for part in parts if part).strip()
+            if not merged or x0 is None or y0 is None or x1 is None or y1 is None:
+                continue
+            items.append(
+                {
+                    "text": merged,
+                    "center": ((x0 + x1) / 2.0, (y0 + y1) / 2.0),
+                    "bbox": (x0, y0, x1, y1),
+                }
+            )
+    if items:
+        return items
+
+    for word in page.get_text("words"):
+        if len(word) < 5:
+            continue
+        x0, y0, x1, y1, text = word[:5]
+        text = str(text or "").strip()
+        if not text:
+            continue
+        items.append(
+            {
+                "text": text,
+                "center": (
+                    (float(x0) + float(x1)) / 2.0,
+                    (float(y0) + float(y1)) / 2.0,
+                ),
+                "bbox": (float(x0), float(y0), float(x1), float(y1)),
+            }
+        )
+    return items
+
+
+def _pdf_like_to_svg_and_labels_with_pymupdf(
+    path: Path,
+) -> tuple[
+    str,
+    list[dict[str, object]],
+    tuple[float, float, float, float] | None,
+]:
+    import fitz
+
+    document = fitz.open(path)
+    try:
+        if document.page_count < 1:
+            raise ValueError(f"Vector document has no pages: {path}")
+        page = document.load_page(0)
+        svg_text = str(page.get_svg_image())
+        text_items = _extract_pdf_text_labels_from_page(page)
+        rect = getattr(page, "rect", None) or page.bound()
+        page_box = (
+            (
+                float(rect.x0),
+                float(rect.y0),
+                float(rect.x1),
+                float(rect.y1),
+            )
+            if rect is not None
+            else None
+        )
+        signature = _path_signature(path)
+        if signature is not None:
+            _PDF_LIKE_CACHE[str(path.expanduser())] = (
+                signature,
+                svg_text,
+                list(text_items),
+                page_box,
+                _extract_pdf_art_box(path),
+            )
+        return svg_text, text_items, page_box
     finally:
         document.close()
 
@@ -231,16 +426,8 @@ def _looks_like_pdf(path: Path) -> bool:
 
 
 def _pdf_to_svg_text_with_pymupdf(path: Path) -> str:
-    import fitz
-
-    document = fitz.open(path)
-    try:
-        if document.page_count < 1:
-            raise ValueError(f"Vector document has no pages: {path}")
-        page = document.load_page(0)
-        return str(page.get_svg_image())
-    finally:
-        document.close()
+    svg_text, _, _ = _pdf_like_to_svg_and_labels_with_pymupdf(path)
+    return svg_text
 
 
 def _pdf_to_svg_text_with_inkscape(path: Path) -> str:
@@ -296,9 +483,13 @@ def import_vector_document(path: str | Path) -> ImportedVectorDocument:
             )
         svg_text = _pdf_like_to_svg_text(resolved)
         document = import_svg_string(svg_text, source_path=str(resolved))
+        page_box = _extract_pdf_page_box(resolved)
+        art_box = _extract_pdf_art_box(resolved)
         document = replace(
             document,
             source_kind="ai" if suffix == ".ai" else "pdf",
+            page_box=list(page_box) if page_box is not None else None,
+            art_box=list(art_box) if art_box is not None else None,
         )
         try:
             text_items = _extract_pdf_text_labels(resolved)

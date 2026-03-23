@@ -30,7 +30,7 @@ For vector overlays:
 
 Annolid can now import PDF-compatible Illustrator `.ai` files directly by converting the embedded PDF page to SVG during import. Exporting `SVG` from Illustrator is still the cleanest path when you want the most predictable interchange.
 
-On import, Annolid ignores non-rendered SVG definition content such as clip paths in `<defs>`, converts PDF-compatible `.ai` files through an SVG import path, and can automatically fit a small atlas drawing to the currently open image when the document coordinates are clearly not already in image space. For PDF-compatible `.ai` and `.pdf` files, Annolid also extracts visible text from the source page and uses it as region labels when the text can be matched to nearby imported shapes.
+On import, Annolid ignores non-rendered SVG definition content such as clip paths in `<defs>`, converts PDF-compatible `.ai` files through an SVG import path, and can automatically fit a small atlas drawing to the currently open image when the document coordinates are clearly not already in image space. For PDF-compatible `.ai` and `.pdf` files, Annolid preserves the source art box when available, then the page box during import and the auto-fit path uses that box first, so imported geometry stays aligned to the underlying raster coordinate system instead of being re-centered in the view. Annolid also extracts visible text from the source page and uses it as region labels when the text can be matched to nearby imported shapes.
 
 Internally, Annolid now normalizes `SVG`, PDF-compatible `.ai`, and `.pdf` imports into the same overlay model. The imported source geometry is preserved as immutable provenance data, and the shapes you edit in the viewer are treated as the derived correction layer for that overlay.
 

@@ -214,6 +214,16 @@ class VectorOverlayMixin:
         metadata: dict | None,
     ) -> tuple[float, float, float, float] | None:
         data = dict(metadata or {})
+        art_box = list(data.get("art_box") or data.get("source_art_box") or [])
+        if len(art_box) == 4:
+            ax0, ay0, ax1, ay1 = [float(value) for value in art_box]
+            if ax1 > ax0 and ay1 > ay0:
+                return (ax0, ay0, ax1, ay1)
+        page_box = list(data.get("page_box") or data.get("source_page_box") or [])
+        if len(page_box) == 4:
+            px0, py0, px1, py1 = [float(value) for value in page_box]
+            if px1 > px0 and py1 > py0:
+                return (px0, py0, px1, py1)
         view_box = list(data.get("view_box") or [])
         if len(view_box) == 4:
             vx, vy, vw, vh = [float(value) for value in view_box]
@@ -231,6 +241,7 @@ class VectorOverlayMixin:
         image_size: tuple[float, float],
         *,
         margin_ratio: float,
+        anchor_to_origin: bool = False,
     ) -> OverlayTransform | None:
         image_width, image_height = image_size
         min_x, min_y, max_x, max_y = source_bounds
@@ -243,11 +254,19 @@ class VectorOverlayMixin:
         target_scale = min(target_width / source_width, target_height / source_height)
         if target_scale <= 0.0:
             return None
-        source_center = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
-        target_center = (image_width / 2.0, image_height / 2.0)
+        if anchor_to_origin:
+            target_anchor_x = max(0.0, (image_width - target_width) / 2.0)
+            target_anchor_y = max(0.0, (image_height - target_height) / 2.0)
+            tx = float(target_anchor_x - (min_x * target_scale))
+            ty = float(target_anchor_y - (min_y * target_scale))
+        else:
+            source_center = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+            target_center = (image_width / 2.0, image_height / 2.0)
+            tx = float(target_center[0] - (source_center[0] * target_scale))
+            ty = float(target_center[1] - (source_center[1] * target_scale))
         return OverlayTransform(
-            tx=float(target_center[0] - (source_center[0] * target_scale)),
-            ty=float(target_center[1] - (source_center[1] * target_scale)),
+            tx=tx,
+            ty=ty,
             sx=float(target_scale),
             sy=float(target_scale),
             rotation_deg=0.0,
@@ -409,6 +428,7 @@ class VectorOverlayMixin:
                 fit_bounds = shape_bounds
                 mismatch_threshold = 1.0
         explicit_mode = selected_fit_mode in {"document", "shape"}
+        anchor_to_origin = source_kind in {"ai", "pdf"}
         if (
             not explicit_mode
             and not is_far_outside
@@ -421,6 +441,7 @@ class VectorOverlayMixin:
             fit_bounds,
             image_size,
             margin_ratio=fit_margin_value,
+            anchor_to_origin=anchor_to_origin,
         )
         if target_transform is None:
             return
@@ -448,6 +469,9 @@ class VectorOverlayMixin:
             )
             result.metadata["initial_fit_mode"] = selected_fit_mode
             result.metadata["initial_fit_margin"] = fit_margin_value
+            result.metadata["initial_fit_origin"] = (
+                "image_origin" if anchor_to_origin else "center"
+            )
 
     def setupVectorOverlayDock(self) -> None:
         if not hasattr(self, "_selected_overlay_landmark_pair_id"):

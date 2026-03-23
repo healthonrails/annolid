@@ -1771,6 +1771,9 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             "caption_dock",
             "embedding_search_dock",
             "florence_dock",
+            # Keep the keypoint sequencer out of the default large-image/overlay
+            # workflow. Users can still open it manually when needed.
+            "keypoint_sequence_dock",
         ):
             dock = getattr(self, name, None)
             if isinstance(dock, QtWidgets.QDockWidget):
@@ -1786,7 +1789,6 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             "shape_dock",
             "viewer_layer_dock",
             "vector_overlay_dock",
-            "keypoint_sequence_dock",
         ):
             dock = getattr(self, name, None)
             if isinstance(dock, QtWidgets.QDockWidget):

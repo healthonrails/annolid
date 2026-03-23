@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
 import types
+from pathlib import Path
 
 from annolid.gui.svg_overlay import flatten_svg_path, import_svg_shapes
 from annolid.gui.svg_overlay import import_vector_shapes
 from annolid.io.vector import import_vector_document
+import annolid.io.vector.document_import as document_import
 from annolid.io.vector.svg_import import (
     ImportedPath,
     ImportedVectorDocument,
@@ -185,6 +186,87 @@ def test_import_vector_document_uses_extracted_pdf_text_as_shape_labels(
     assert labels["path1"] == "path1"
     assert labels["path2"] == "Hp"
     assert texts["path2"] == "Hp"
+
+
+def test_extract_pdf_text_labels_uses_cached_pdf_like_import(
+    monkeypatch, tmp_path: Path
+) -> None:
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_bytes(b"%PDF-1.5\n%fake\n")
+    signature = document_import._path_signature(ai_path)
+    assert signature is not None
+    monkeypatch.setitem(
+        document_import._PDF_LIKE_CACHE,
+        str(ai_path.expanduser()),
+        (
+            signature,
+            "<svg xmlns='http://www.w3.org/2000/svg' />",
+            [
+                {
+                    "text": "Hp",
+                    "center": (20.0, 20.0),
+                    "bbox": (18.0, 18.0, 22.0, 22.0),
+                }
+            ],
+            (0.0, 0.0, 100.0, 100.0),
+        ),
+    )
+    dummy_fitz = types.ModuleType("fitz")
+
+    def _open(*_args, **_kwargs):
+        raise AssertionError("fitz.open should not be called when cache is warm")
+
+    dummy_fitz.open = _open  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fitz", dummy_fitz)
+
+    items = document_import._extract_pdf_text_labels(ai_path)
+    assert items == [
+        {"text": "Hp", "center": (20.0, 20.0), "bbox": (18.0, 18.0, 22.0, 22.0)}
+    ]
+
+
+def test_import_vector_document_preserves_pdf_page_box(
+    monkeypatch, tmp_path: Path
+) -> None:
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_bytes(b"%PDF-1.5\n%fake\n")
+
+    monkeypatch.setattr(
+        "annolid.io.vector.document_import._pdf_like_to_svg_text",
+        lambda path: "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><path id='region' d='M 0 0 L 10 0 L 10 10 Z'/></svg>",
+    )
+    monkeypatch.setattr(
+        "annolid.io.vector.document_import._extract_pdf_page_box",
+        lambda path: (0.0, 0.0, 200.0, 100.0),
+    )
+
+    document = import_vector_document(ai_path)
+
+    assert document.page_box == [0.0, 0.0, 200.0, 100.0]
+
+
+def test_import_vector_document_preserves_pdf_art_box(
+    monkeypatch, tmp_path: Path
+) -> None:
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_bytes(b"%PDF-1.5\n%fake\n")
+
+    monkeypatch.setattr(
+        "annolid.io.vector.document_import._pdf_like_to_svg_text",
+        lambda path: "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><path id='region' d='M 0 0 L 10 0 L 10 10 Z'/></svg>",
+    )
+    monkeypatch.setattr(
+        "annolid.io.vector.document_import._extract_pdf_page_box",
+        lambda path: (0.0, 0.0, 400.0, 400.0),
+    )
+    monkeypatch.setattr(
+        "annolid.io.vector.document_import._extract_pdf_art_box",
+        lambda path: (0.0, 65.0, 400.0, 360.0),
+    )
+
+    document = import_vector_document(ai_path)
+
+    assert document.art_box == [0.0, 65.0, 400.0, 360.0]
 
 
 def test_import_vector_shapes_preserves_assigned_overlay_text(

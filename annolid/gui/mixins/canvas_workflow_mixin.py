@@ -214,6 +214,15 @@ class CanvasWorkflowMixin:
 
     def adjustScale(self, initial=False):
         """Safely adjust zoom while handling cases with no active pixmap."""
+        if getattr(self, "_active_image_view", "canvas") == "tiled":
+            if getattr(self, "large_image_view", None) is None:
+                logger.debug("adjustScale skipped: tiled view is not available.")
+                return False
+            if getattr(self, "large_image_backend", None) is None:
+                logger.debug("adjustScale skipped: tiled backend is not ready.")
+                return False
+            super().adjustScale(initial=initial)
+            return True
         canvas_pixmap = getattr(self.canvas, "pixmap", None)
         if canvas_pixmap is None or canvas_pixmap.isNull():
             logger.debug("adjustScale skipped: canvas pixmap not ready.")

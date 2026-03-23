@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 import numpy as np
+import pytest
 from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.gui.mixins.vector_overlay_mixin import VectorOverlayMixin
@@ -491,6 +492,219 @@ def test_import_ai_overlay_uses_document_bounds_for_initial_fit(
         assert abs(transform["sx"] - 2.5) < 1e-6
         assert abs(transform["sy"] - 2.5) < 1e-6
         assert metadata["initial_fit_to_image"] is True
+        assert metadata["initial_fit_bounds"] == "document"
+    finally:
+        window.close()
+
+
+def test_import_ai_overlay_aligns_to_image_origin_when_aspect_ratios_differ(
+    tmp_path, monkeypatch
+) -> None:
+    _ensure_qapp()
+
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_text("", encoding="utf-8")
+
+    from annolid.gui.svg_overlay import SvgImportResult
+
+    window = _OverlayHost()
+    try:
+        window.imagePath = str(ai_path.with_suffix(".png"))
+        window.image = QtGui.QImage(2000, 1000, QtGui.QImage.Format_RGB32)
+        window.image.fill(QtGui.QColor(10, 20, 30))
+        page_shape = _make_overlay_shape()
+        page_shape.points = [
+            QtCore.QPointF(0.0, 0.0),
+            QtCore.QPointF(800.0, 0.0),
+            QtCore.QPointF(800.0, 600.0),
+        ]
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog,
+            "getOpenFileName",
+            lambda *args, **kwargs: (str(ai_path), "Vector files (*.svg *.ai *.pdf)"),
+        )
+        monkeypatch.setattr(
+            "annolid.gui.mixins.vector_overlay_mixin.import_vector_shapes",
+            lambda filename: SvgImportResult(
+                shapes=[page_shape],
+                metadata={
+                    "id": "overlay_a",
+                    "source_kind": "ai",
+                    "document_width": 800.0,
+                    "document_height": 600.0,
+                    "view_box": [0.0, 0.0, 800.0, 600.0],
+                    "transform": {
+                        "tx": 0.0,
+                        "ty": 0.0,
+                        "sx": 1.0,
+                        "sy": 1.0,
+                        "rotation_deg": 0.0,
+                        "opacity": 0.5,
+                        "visible": True,
+                        "z_order": 0,
+                    },
+                },
+            ),
+        )
+
+        window.importSvgOverlay()
+
+        imported = window.canvas.shapes[-1]
+        xs = [point.x() for point in imported.points]
+        ys = [point.y() for point in imported.points]
+        metadata = window.otherData["svg_overlays"][0]["metadata"]
+        transform = window.otherData["svg_overlays"][0]["transform"]
+
+        assert min(xs) == pytest.approx(0.0)
+        assert min(ys) == pytest.approx(0.0)
+        assert max(xs) == pytest.approx(1333.3333333333333, rel=1e-6)
+        assert max(ys) == pytest.approx(1000.0, rel=1e-6)
+        assert abs(transform["sx"] - (1000.0 / 600.0)) < 1e-6
+        assert abs(transform["sy"] - (1000.0 / 600.0)) < 1e-6
+        assert metadata["initial_fit_origin"] == "image_origin"
+    finally:
+        window.close()
+
+
+def test_import_ai_overlay_prefers_page_box_over_view_box(
+    tmp_path, monkeypatch
+) -> None:
+    _ensure_qapp()
+
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_text("", encoding="utf-8")
+
+    from annolid.gui.svg_overlay import SvgImportResult
+
+    window = _OverlayHost()
+    try:
+        window.imagePath = str(ai_path.with_suffix(".png"))
+        window.image = QtGui.QImage(2000, 1000, QtGui.QImage.Format_RGB32)
+        window.image.fill(QtGui.QColor(10, 20, 30))
+        page_shape = _make_overlay_shape()
+        page_shape.points = [
+            QtCore.QPointF(0.0, 0.0),
+            QtCore.QPointF(1000.0, 0.0),
+            QtCore.QPointF(1000.0, 500.0),
+        ]
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog,
+            "getOpenFileName",
+            lambda *args, **kwargs: (str(ai_path), "Vector files (*.svg *.ai *.pdf)"),
+        )
+        monkeypatch.setattr(
+            "annolid.gui.mixins.vector_overlay_mixin.import_vector_shapes",
+            lambda filename: SvgImportResult(
+                shapes=[page_shape],
+                metadata={
+                    "id": "overlay_a",
+                    "source_kind": "ai",
+                    "document_width": 800.0,
+                    "document_height": 600.0,
+                    "view_box": [0.0, 0.0, 800.0, 600.0],
+                    "page_box": [0.0, 0.0, 1000.0, 500.0],
+                    "transform": {
+                        "tx": 0.0,
+                        "ty": 0.0,
+                        "sx": 1.0,
+                        "sy": 1.0,
+                        "rotation_deg": 0.0,
+                        "opacity": 0.5,
+                        "visible": True,
+                        "z_order": 0,
+                    },
+                },
+            ),
+        )
+
+        window.importSvgOverlay()
+
+        imported = window.canvas.shapes[-1]
+        xs = [point.x() for point in imported.points]
+        ys = [point.y() for point in imported.points]
+        metadata = window.otherData["svg_overlays"][0]["metadata"]
+        transform = window.otherData["svg_overlays"][0]["transform"]
+
+        assert min(xs) == pytest.approx(0.0)
+        assert min(ys) == pytest.approx(0.0)
+        assert max(xs) == pytest.approx(2000.0, rel=1e-6)
+        assert max(ys) == pytest.approx(1000.0, rel=1e-6)
+        assert abs(transform["sx"] - 2.0) < 1e-6
+        assert abs(transform["sy"] - 2.0) < 1e-6
+        assert metadata["page_box"] == [0.0, 0.0, 1000.0, 500.0]
+        assert metadata["initial_fit_origin"] == "image_origin"
+    finally:
+        window.close()
+
+
+def test_import_ai_overlay_prefers_art_box_over_page_box(tmp_path, monkeypatch) -> None:
+    _ensure_qapp()
+
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_text("", encoding="utf-8")
+
+    from annolid.gui.svg_overlay import SvgImportResult
+
+    window = _OverlayHost()
+    try:
+        window.imagePath = str(ai_path.with_suffix(".png"))
+        window.image = QtGui.QImage(24253, 16892, QtGui.QImage.Format_RGB32)
+        window.image.fill(QtGui.QColor(10, 20, 30))
+        page_shape = _make_overlay_shape()
+        page_shape.points = [
+            QtCore.QPointF(0.0, 65.92001342773438),
+            QtCore.QPointF(400.0, 65.92001342773438),
+            QtCore.QPointF(400.0, 359.3554992675781),
+        ]
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog,
+            "getOpenFileName",
+            lambda *args, **kwargs: (str(ai_path), "Vector files (*.svg *.ai *.pdf)"),
+        )
+        monkeypatch.setattr(
+            "annolid.gui.mixins.vector_overlay_mixin.import_vector_shapes",
+            lambda filename: SvgImportResult(
+                shapes=[page_shape],
+                metadata={
+                    "id": "overlay_a",
+                    "source_kind": "ai",
+                    "document_width": 400.0,
+                    "document_height": 400.0,
+                    "page_box": [0.0, 0.0, 400.0, 400.0],
+                    "art_box": [0.0, 65.92001342773438, 400.0, 359.3554992675781],
+                    "transform": {
+                        "tx": 0.0,
+                        "ty": 0.0,
+                        "sx": 1.0,
+                        "sy": 1.0,
+                        "rotation_deg": 0.0,
+                        "opacity": 0.5,
+                        "visible": True,
+                        "z_order": 0,
+                    },
+                },
+            ),
+        )
+
+        window.importSvgOverlay()
+
+        imported = window.canvas.shapes[-1]
+        xs = [point.x() for point in imported.points]
+        ys = [point.y() for point in imported.points]
+        metadata = window.otherData["svg_overlays"][0]["metadata"]
+        transform = window.otherData["svg_overlays"][0]["transform"]
+
+        assert min(xs) == pytest.approx(0.0)
+        assert min(ys) == pytest.approx(0.0, abs=1e-3)
+        assert transform["sx"] == pytest.approx(
+            min(
+                24253.0 / 400.0,
+                16892.0 / (359.3554992675781 - 65.92001342773438),
+            ),
+            rel=1e-6,
+        )
+        assert transform["sy"] == pytest.approx(transform["sx"], rel=1e-6)
+        assert metadata["art_box"] == [0.0, 65.92001342773438, 400.0, 359.3554992675781]
         assert metadata["initial_fit_bounds"] == "document"
     finally:
         window.close()
