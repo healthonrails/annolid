@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -13,6 +15,8 @@ from .base import (
     LargeImageMetadata,
 )
 from .common import array_to_qimage, is_large_tiff_path
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_physical_pixel_metadata(
@@ -70,8 +74,11 @@ class TiffFileBackend(LargeImageBackend):
         self._metadata_cache: Optional[LargeImageMetadata] = None
         self._level_shapes_cache: dict[int, tuple[int, int]] = {}
         self._level_memmap_cache: dict[int, np.ndarray] = {}
+        self._level_array_cache: dict[int, np.ndarray] = {}
         self._active_page_index: int = 0
         self._page_array_cache: dict[int, np.ndarray] = {}
+        self._cache_lock = threading.RLock()
+        self._memmap_failure_logged_levels: set[int] = set()
 
     def can_handle(self, path: Path) -> bool:
         if not is_large_tiff_path(path):
@@ -169,8 +176,10 @@ class TiffFileBackend(LargeImageBackend):
 
     def _page_array(self, page_index: int) -> np.ndarray:
         normalized_page = max(0, int(page_index))
-        if normalized_page in self._page_array_cache:
-            return self._page_array_cache[normalized_page]
+        with self._cache_lock:
+            cached = self._page_array_cache.get(normalized_page)
+        if cached is not None:
+            return cached
         import tifffile
 
         path = self._require_path()
@@ -198,7 +207,8 @@ class TiffFileBackend(LargeImageBackend):
             arr,
             self._series_axes(series, level=0) if series is not None else "",
         )
-        self._page_array_cache[normalized_page] = arr
+        with self._cache_lock:
+            self._page_array_cache[normalized_page] = arr
         return arr
 
     def _series_page_array_from_stack(
@@ -224,19 +234,60 @@ class TiffFileBackend(LargeImageBackend):
         return _normalize_tiff_array_axes(np.asarray(frame))
 
     def _memmap_level_array(self, level: int = 0) -> np.ndarray | None:
-        if level in self._level_memmap_cache:
-            return self._level_memmap_cache[level]
+        with self._cache_lock:
+            cached = self._level_memmap_cache.get(level)
+            if cached is not None:
+                return cached
         path = self._require_path()
         try:
             arr = np.asarray(__import__("tifffile").memmap(path, series=0, level=level))
-        except Exception:
+        except Exception as exc:
+            with self._cache_lock:
+                first_failure = level not in self._memmap_failure_logged_levels
+                if first_failure:
+                    self._memmap_failure_logged_levels.add(level)
+            if first_failure:
+                logger.info(
+                    "Large TIFF tifffile memmap unavailable path=%s level=%d reason=%s",
+                    str(path),
+                    int(level),
+                    str(exc),
+                )
             return None
         with __import__("tifffile").TiffFile(path) as tif:
             series = tif.series[0] if tif.series else None
             axes = self._series_axes(series, level=level) if series is not None else ""
         arr = _normalize_tiff_array_axes(arr, axes)
-        self._level_memmap_cache[level] = arr
+        with self._cache_lock:
+            self._level_memmap_cache[level] = arr
+            self._level_array_cache[level] = arr
         return arr
+
+    def _decoded_level_array(self, level: int = 0) -> np.ndarray:
+        with self._cache_lock:
+            cached = self._level_array_cache.get(level)
+        if cached is not None:
+            return cached
+        import tifffile
+
+        path = self._require_path()
+        with tifffile.TiffFile(path) as tif:
+            series = tif.series[0]
+            image = self._select_series_array(series, level=level)
+        logger.info(
+            "Large TIFF tifffile using decoded level cache path=%s level=%d shape=%s",
+            str(path),
+            int(level),
+            "x".join(str(int(v)) for v in image.shape[:2][::-1])
+            if getattr(image, "shape", None) is not None and len(image.shape) >= 2
+            else "unknown",
+        )
+        with self._cache_lock:
+            existing = self._level_array_cache.get(level)
+            if existing is not None:
+                return existing
+            self._level_array_cache[level] = image
+            return image
 
     def probe(self, path: str | Path | None = None) -> Optional[LargeImageMetadata]:
         import tifffile
@@ -321,25 +372,24 @@ class TiffFileBackend(LargeImageBackend):
             return int(image.shape[1]), int(image.shape[0])
         import tifffile
 
-        if level in self._level_shapes_cache:
-            return self._level_shapes_cache[level]
+        with self._cache_lock:
+            cached = self._level_shapes_cache.get(level)
+        if cached is not None:
+            return cached
         path = self._require_path()
         with tifffile.TiffFile(path) as tif:
             size = self._normalized_level_shape(tif.series[0], level=level)
-        self._level_shapes_cache[level] = size
+        with self._cache_lock:
+            self._level_shapes_cache[level] = size
         return size
 
     def read_region(self, x: int, y: int, w: int, h: int, level: int = 0):
-        import tifffile
-
         if self._page_stack_enabled():
             image = self._page_array(self.get_current_page())
         else:
             image = self._memmap_level_array(level=level)
             if image is None:
-                path = self._require_path()
-                with tifffile.TiffFile(path) as tif:
-                    image = self._select_series_array(tif.series[0], level=level)
+                image = self._decoded_level_array(level=level)
         x0 = max(0, int(x))
         y0 = max(0, int(y))
         x1 = min(int(x + w), image.shape[1])
@@ -347,9 +397,7 @@ class TiffFileBackend(LargeImageBackend):
         return image[y0:y1, x0:x1]
 
     def get_thumbnail(self, max_size: int = 2048):
-        import tifffile
-
-        path = self._require_path()
+        self._require_path()
         if self._page_stack_enabled():
             image = self._page_array(self.get_current_page())
         else:
@@ -357,8 +405,7 @@ class TiffFileBackend(LargeImageBackend):
             level = max(0, level_count - 1)
             image = self._memmap_level_array(level=level)
             if image is None:
-                with tifffile.TiffFile(path) as tif:
-                    image = self._select_series_array(tif.series[0], level=level)
+                image = self._decoded_level_array(level=level)
         height, width = image.shape[:2]
         if max(height, width) > max_size:
             step = max(1, int(np.ceil(max(height, width) / float(max_size))))
