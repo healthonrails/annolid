@@ -22,6 +22,14 @@ _PDF_LIKE_CACHE: dict[
 ] = {}
 
 
+def _load_fitz():
+    try:
+        import fitz  # type: ignore[import-not-found]
+    except ModuleNotFoundError:
+        return None
+    return fitz
+
+
 def _looks_like_generic_label(value: str | None) -> bool:
     text = str(value or "").strip()
     if not text:
@@ -79,9 +87,14 @@ def _extract_pdf_text_labels(path: Path) -> list[dict[str, object]]:
         if cached is not None and cached[0] == signature:
             return list(cached[2])
 
-    import fitz
+    fitz = _load_fitz()
+    if fitz is None:
+        return []
 
-    document = fitz.open(path)
+    try:
+        document = fitz.open(path)
+    except Exception:
+        return []
     try:
         if document.page_count < 1:
             return []
@@ -160,7 +173,9 @@ def _extract_pdf_page_box(path: Path) -> tuple[float, float, float, float] | Non
         if cached is not None and cached[0] == signature:
             return cached[3]
 
-    import fitz
+    fitz = _load_fitz()
+    if fitz is None:
+        return None
 
     try:
         document = fitz.open(path)
@@ -191,7 +206,9 @@ def _extract_pdf_art_box(path: Path) -> tuple[float, float, float, float] | None
         if cached is not None and cached[0] == signature:
             return cached[4]
 
-    import fitz
+    fitz = _load_fitz()
+    if fitz is None:
+        return None
 
     try:
         document = fitz.open(path)
@@ -296,7 +313,9 @@ def _pdf_like_to_svg_and_labels_with_pymupdf(
     list[dict[str, object]],
     tuple[float, float, float, float] | None,
 ]:
-    import fitz
+    fitz = _load_fitz()
+    if fitz is None:
+        raise ModuleNotFoundError("No module named 'fitz'")
 
     document = fitz.open(path)
     try:

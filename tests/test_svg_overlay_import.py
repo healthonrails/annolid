@@ -126,6 +126,30 @@ def test_import_vector_document_dispatches_pdf_compatible_ai(
     assert document.shapes[0].id == "region"
 
 
+def test_import_vector_document_falls_back_without_pymupdf(
+    monkeypatch, tmp_path: Path
+) -> None:
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_bytes(b"%PDF-1.5\n%fake\n")
+
+    monkeypatch.setattr(
+        "annolid.io.vector.document_import._load_fitz",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "annolid.io.vector.document_import._pdf_like_to_svg_text",
+        lambda path: "<svg xmlns='http://www.w3.org/2000/svg'><path id='region' d='M 0 0 L 10 0 L 10 10 Z'/></svg>",
+    )
+
+    document = import_vector_document(ai_path)
+
+    assert document.source_path == str(ai_path)
+    assert document.page_box is None
+    assert document.art_box is None
+    assert len(document.shapes) == 1
+    assert document.shapes[0].id == "region"
+
+
 def test_assign_text_labels_to_shapes_prefers_containing_polygon() -> None:
     document = ImportedVectorDocument(
         source_path="atlas.ai",
