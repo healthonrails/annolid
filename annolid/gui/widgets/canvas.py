@@ -642,9 +642,9 @@ class Canvas(QtWidgets.QWidget):
             logger.debug("Failed to sync AI model image.", exc_info=True)
             return False
 
-    def _ensure_ai_model_initialized(self) -> bool:
+    def _ensure_ai_model_initialized(self, *, force_sync: bool = False) -> bool:
         if self._ai_model is not None:
-            return self._sync_ai_model_image()
+            return self._sync_ai_model_image(force=force_sync)
         default_name = None
         try:
             for m in AI_MODELS:
@@ -657,7 +657,9 @@ class Canvas(QtWidgets.QWidget):
             default_name = None
         if default_name:
             self.initializeAiModel(default_name)
-        return self._ai_model is not None and self._sync_ai_model_image()
+        return self._ai_model is not None and self._sync_ai_model_image(
+            force=force_sync
+        )
 
     def auto_mask_generator(
         self, image_data, label, points_per_side=32, is_polygon_output=True
@@ -1793,7 +1795,7 @@ class Canvas(QtWidgets.QWidget):
             label=self.line.point_labels[1],
         )
         try:
-            if not self._ensure_ai_model_initialized():
+            if not self._ensure_ai_model_initialized(force_sync=True):
                 logger.error(
                     "AI polygon model is not initialized; skipping prediction."
                 )
@@ -1802,11 +1804,12 @@ class Canvas(QtWidgets.QWidget):
                 points=[[point.x(), point.y()] for point in drawing_shape.points],
                 point_labels=drawing_shape.point_labels,
             )
-            if len(points) > 2:
+            normalized_points = self._normalize_ai_polygon_points(points)
+            if len(normalized_points) > 2:
                 drawing_shape.setShapeRefined(
                     shape_type="polygon",
-                    points=[QtCore.QPointF(point[0], point[1]) for point in points],
-                    point_labels=[1] * len(points),
+                    points=normalized_points,
+                    point_labels=[1] * len(normalized_points),
                 )
                 drawing_shape.fill = self.fillDrawing()
                 drawing_shape.paint(painter)
@@ -1826,7 +1829,7 @@ class Canvas(QtWidgets.QWidget):
             label=self.line.point_labels[1],
         )
         try:
-            if not self._ensure_ai_model_initialized():
+            if not self._ensure_ai_model_initialized(force_sync=True):
                 logger.error("AI mask model is not initialized; skipping prediction.")
                 return
             mask = self._ai_model.predict_mask_from_points(
@@ -1861,6 +1864,43 @@ class Canvas(QtWidgets.QWidget):
         x1 = int(cols[0])
         x2 = int(cols[-1]) + 1
         return y1, x1, y2, x2
+
+    def _normalize_ai_polygon_points(self, points) -> list[QtCore.QPointF]:
+        try:
+            arr = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+        except Exception:
+            return []
+        if arr.shape[0] < 3:
+            return []
+        arr = arr[np.isfinite(arr).all(axis=1)]
+        if arr.shape[0] < 3:
+            return []
+
+        if self.pixmap is not None and not self.pixmap.isNull():
+            max_x = max(0.0, float(self.pixmap.width() - 1))
+            max_y = max(0.0, float(self.pixmap.height() - 1))
+            arr[:, 0] = np.clip(arr[:, 0], 0.0, max_x)
+            arr[:, 1] = np.clip(arr[:, 1], 0.0, max_y)
+
+        dedup: list[np.ndarray] = []
+        for point in arr:
+            if dedup:
+                delta = point - dedup[-1]
+                if float(np.hypot(float(delta[0]), float(delta[1]))) < 0.5:
+                    continue
+            dedup.append(point)
+        if len(dedup) >= 2:
+            closing = dedup[0] - dedup[-1]
+            if float(np.hypot(float(closing[0]), float(closing[1]))) < 0.5:
+                dedup = dedup[:-1]
+        if len(dedup) < 3:
+            return []
+
+        poly = np.asarray(dedup, dtype=np.float32)
+        area = abs(float(cv2.contourArea(poly.reshape(-1, 1, 2))))
+        if area < 1.0:
+            return []
+        return [QtCore.QPointF(float(x), float(y)) for x, y in poly]
 
     def _build_polygon_preview_line(self):
         if self.current is None or len(self.current.points) == 0:
@@ -2307,7 +2347,7 @@ class Canvas(QtWidgets.QWidget):
             # convert points to polygon by an AI model
             if self.current.shape_type != "points":
                 return
-            if not self._ensure_ai_model_initialized():
+            if not self._ensure_ai_model_initialized(force_sync=True):
                 logger.error(
                     "AI polygon model is not initialized; skipping finalisation."
                 )
@@ -2316,15 +2356,21 @@ class Canvas(QtWidgets.QWidget):
                 points=[[point.x(), point.y()] for point in self.current.points],
                 point_labels=self.current.point_labels,
             )
+            normalized_points = self._normalize_ai_polygon_points(points)
+            if len(normalized_points) < 3:
+                logger.warning(
+                    "AI polygon prediction returned an invalid polygon; keep editing prompts."
+                )
+                return
             self.current.setShapeRefined(
-                points=[QtCore.QPointF(point[0], point[1]) for point in points],
-                point_labels=[1] * len(points),
+                points=normalized_points,
+                point_labels=[1] * len(normalized_points),
                 shape_type="polygon",
             )
         elif self.createMode == "ai_mask":
             # convert points to mask by an AI model
             assert self.current.shape_type == "points"
-            if not self._ensure_ai_model_initialized():
+            if not self._ensure_ai_model_initialized(force_sync=True):
                 logger.error("AI mask model is not initialized; skipping finalisation.")
                 return
             mask = self._ai_model.predict_mask_from_points(

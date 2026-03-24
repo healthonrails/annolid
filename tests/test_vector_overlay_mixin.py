@@ -768,6 +768,206 @@ def test_import_ai_overlay_auto_falls_back_to_shape_bounds_when_document_unrelia
         window.close()
 
 
+def test_import_ai_overlay_auto_prefers_shape_bounds_when_aspect_matches_image_better(
+    tmp_path, monkeypatch
+) -> None:
+    _ensure_qapp()
+
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_text("", encoding="utf-8")
+
+    from annolid.gui.svg_overlay import SvgImportResult
+
+    window = _OverlayHost()
+    try:
+        window.imagePath = str(ai_path.with_suffix(".png"))
+        window.image = QtGui.QImage(24253, 16892, QtGui.QImage.Format_RGB32)
+        window.image.fill(QtGui.QColor(10, 20, 30))
+        irregular_shape = _make_overlay_shape()
+        irregular_shape.points = [
+            QtCore.QPointF(-5.588409866898161, 66.49935774074075),
+            QtCore.QPointF(406.4457952546296, 66.49935774074075),
+            QtCore.QPointF(406.4457952546296, 358.954617),
+        ]
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog,
+            "getOpenFileName",
+            lambda *args, **kwargs: (str(ai_path), "Vector files (*.svg *.ai *.pdf)"),
+        )
+        monkeypatch.setattr(
+            "annolid.gui.mixins.vector_overlay_mixin.import_vector_shapes",
+            lambda filename: SvgImportResult(
+                shapes=[irregular_shape],
+                metadata={
+                    "id": "overlay_a",
+                    "source_kind": "ai",
+                    "document_width": 400.0,
+                    "document_height": 400.0,
+                    "page_box": [0.0, 0.0, 400.0, 400.0],
+                    "art_box": [0.0, 65.92001342773438, 400.0, 359.3554992675781],
+                    "transform": {
+                        "tx": 0.0,
+                        "ty": 0.0,
+                        "sx": 1.0,
+                        "sy": 1.0,
+                        "rotation_deg": 0.0,
+                        "opacity": 0.5,
+                        "visible": True,
+                        "z_order": 0,
+                    },
+                },
+            ),
+        )
+
+        window.importSvgOverlay()
+
+        metadata = window.otherData["svg_overlays"][0]["metadata"]
+        assert metadata["initial_fit_bounds"] == "shape"
+    finally:
+        window.close()
+
+
+def test_import_ai_overlay_clamps_initial_fit_inside_image_when_shape_extends_past_document(
+    tmp_path, monkeypatch
+) -> None:
+    _ensure_qapp()
+
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_text("", encoding="utf-8")
+
+    from annolid.gui.svg_overlay import SvgImportResult
+
+    window = _OverlayHost()
+    try:
+        window.imagePath = str(ai_path.with_suffix(".png"))
+        window.image = QtGui.QImage(2000, 1200, QtGui.QImage.Format_RGB32)
+        window.image.fill(QtGui.QColor(10, 20, 30))
+        shape = _make_overlay_shape()
+        shape.points = [
+            QtCore.QPointF(-10.0, 20.0),
+            QtCore.QPointF(410.0, 20.0),
+            QtCore.QPointF(410.0, 320.0),
+            QtCore.QPointF(-10.0, 320.0),
+        ]
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog,
+            "getOpenFileName",
+            lambda *args, **kwargs: (str(ai_path), "Vector files (*.svg *.ai *.pdf)"),
+        )
+        monkeypatch.setattr(
+            "annolid.gui.mixins.vector_overlay_mixin.import_vector_shapes",
+            lambda filename: SvgImportResult(
+                shapes=[shape],
+                metadata={
+                    "id": "overlay_a",
+                    "source_kind": "ai",
+                    "document_width": 400.0,
+                    "document_height": 300.0,
+                    "page_box": [0.0, 0.0, 400.0, 300.0],
+                    "art_box": [0.0, 0.0, 400.0, 300.0],
+                    "transform": {
+                        "tx": 0.0,
+                        "ty": 0.0,
+                        "sx": 1.0,
+                        "sy": 1.0,
+                        "rotation_deg": 0.0,
+                        "opacity": 0.5,
+                        "visible": True,
+                        "z_order": 0,
+                    },
+                },
+            ),
+        )
+
+        window.importSvgOverlay()
+
+        imported = window.canvas.shapes[-1]
+        xs = [point.x() for point in imported.points]
+        ys = [point.y() for point in imported.points]
+        assert min(xs) >= -1e-3
+        assert max(xs) <= 2000.0 + 1e-3
+        assert min(ys) >= -1e-3
+        assert max(ys) <= 1200.0 + 1e-3
+    finally:
+        window.close()
+
+
+def test_import_ai_overlay_auto_targets_foreground_region_when_background_is_large(
+    tmp_path, monkeypatch
+) -> None:
+    _ensure_qapp()
+
+    ai_path = tmp_path / "atlas.ai"
+    ai_path.write_text("", encoding="utf-8")
+
+    from annolid.gui.svg_overlay import SvgImportResult
+
+    window = _OverlayHost()
+    try:
+        window.imagePath = str(ai_path.with_suffix(".png"))
+        img = QtGui.QImage(2000, 1400, QtGui.QImage.Format_RGB32)
+        img.fill(QtGui.QColor(255, 255, 255))
+        painter = QtGui.QPainter(img)
+        try:
+            painter.fillRect(
+                QtCore.QRect(300, 200, 1200, 900), QtGui.QColor(120, 60, 160)
+            )
+        finally:
+            painter.end()
+        window.image = img
+
+        shape = _make_overlay_shape()
+        shape.points = [
+            QtCore.QPointF(0.0, 0.0),
+            QtCore.QPointF(100.0, 0.0),
+            QtCore.QPointF(100.0, 100.0),
+            QtCore.QPointF(0.0, 100.0),
+        ]
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog,
+            "getOpenFileName",
+            lambda *args, **kwargs: (str(ai_path), "Vector files (*.svg *.ai *.pdf)"),
+        )
+        monkeypatch.setattr(
+            "annolid.gui.mixins.vector_overlay_mixin.import_vector_shapes",
+            lambda filename: SvgImportResult(
+                shapes=[shape],
+                metadata={
+                    "id": "overlay_a",
+                    "source_kind": "ai",
+                    "document_width": 100.0,
+                    "document_height": 100.0,
+                    "page_box": [0.0, 0.0, 100.0, 100.0],
+                    "art_box": [0.0, 0.0, 100.0, 100.0],
+                    "transform": {
+                        "tx": 0.0,
+                        "ty": 0.0,
+                        "sx": 1.0,
+                        "sy": 1.0,
+                        "rotation_deg": 0.0,
+                        "opacity": 0.5,
+                        "visible": True,
+                        "z_order": 0,
+                    },
+                },
+            ),
+        )
+
+        window.importSvgOverlay()
+
+        imported = window.canvas.shapes[-1]
+        xs = [point.x() for point in imported.points]
+        ys = [point.y() for point in imported.points]
+        assert 250.0 <= min(xs) <= 350.0
+        assert 1100.0 <= max(xs) <= 1300.0
+        assert 180.0 <= min(ys) <= 260.0
+        assert 1020.0 <= max(ys) <= 1160.0
+        assert (max(xs) - min(xs)) < 1400.0
+        assert (max(ys) - min(ys)) < 1200.0
+    finally:
+        window.close()
+
+
 def test_import_ai_overlay_shape_mode_uses_shape_bounds_for_fit(
     tmp_path, monkeypatch
 ) -> None:

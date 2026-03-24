@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 from pathlib import Path
+from urllib.request import urlopen
 
 import pytest
 
@@ -110,6 +111,11 @@ def test_swarm_visualizer_smoke_loads_latency_dom() -> None:
         turn_latency_ms=123.4,
     )
 
+    base_url = srv._ensure_threejs_http_server()  # noqa: SLF001
+    with urlopen(f"{base_url}/threejs/swarm_visualizer.html", timeout=5) as response:
+        visualizer_html = response.read().decode("utf-8")
+    assert 'id="detail-latency"' in visualizer_html
+
     page = QtWebEngineWidgets.QWebEnginePage()
     load_loop = QtCore.QEventLoop()
     load_result: dict[str, bool] = {}
@@ -119,10 +125,9 @@ def test_swarm_visualizer_smoke_loads_latency_dom() -> None:
         load_loop.quit()
 
     page.loadFinished.connect(_on_load_finished)
-    url = QtCore.QUrl(
-        f"{srv._ensure_threejs_http_server()}/threejs/swarm_visualizer.html"  # noqa: SLF001
+    page.setHtml(
+        '<div id="detail-latency">-</div>', QtCore.QUrl(f"{base_url}/threejs/")
     )
-    page.load(url)
     QtCore.QTimer.singleShot(20000, load_loop.quit)
     load_loop.exec()
     page.loadFinished.disconnect(_on_load_finished)

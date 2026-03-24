@@ -184,9 +184,36 @@ class FileBrowserMixin:
         return label_file
 
     def removeSelectedPoint(self):
-        self.canvas.removeSelectedPoint()
-        self.canvas.update()
-        if self.canvas.hShape and not self.canvas.hShape.points:
+        editor = (
+            self._active_shape_editor()
+            if hasattr(self, "_active_shape_editor")
+            else self.canvas
+        )
+        remove_fn = getattr(editor, "removeSelectedPoint", None)
+        removed = bool(remove_fn()) if callable(remove_fn) else False
+        if removed:
+            store_fn = getattr(editor, "storeShapes", None)
+            if callable(store_fn):
+                try:
+                    store_fn()
+                except Exception:
+                    pass
+            moved_signal = getattr(editor, "shapeMoved", None)
+            if moved_signal is not None and hasattr(moved_signal, "emit"):
+                try:
+                    moved_signal.emit()
+                except Exception:
+                    pass
+            self.setDirty()
+        update_fn = getattr(editor, "update", None)
+        if callable(update_fn):
+            update_fn()
+        # Canvas-only fallback: delete point shapes that became empty.
+        if (
+            editor is self.canvas
+            and self.canvas.hShape
+            and not self.canvas.hShape.points
+        ):
             self.canvas.deleteShape(self.canvas.hShape)
             self.remLabels([self.canvas.hShape])
             self.setDirty()

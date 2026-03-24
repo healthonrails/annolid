@@ -124,6 +124,12 @@ class _ShapeGraphicsItem(QtWidgets.QGraphicsItem):
         self.current_scale = normalized
         self.update()
 
+    def sync_shape_geometry(self) -> None:
+        # Shape points are mutated externally while editing. Notify QGraphicsView
+        # about geometry changes before repainting to avoid stale cached bounds.
+        self.prepareGeometryChange()
+        self.update()
+
     def _visual_metrics(self) -> float:
         width, height = self.content_size
         diagonal = math.hypot(float(width or 0), float(height or 0))
@@ -286,6 +292,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
 
     overlayLandmarkPairSelected = QtCore.Signal(str)
     selectionChanged = QtCore.Signal(list)
+    vertexSelected = QtCore.Signal(bool)
     shapeMoved = QtCore.Signal()
     newShape = QtCore.Signal()
     drawingPolygon = QtCore.Signal(bool)
@@ -328,6 +335,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self.selectedShapes = []
         self._active_shape = None
         self._active_vertex_index: int | None = None
+        self._selected_vertex_shape = None
+        self._selected_vertex_index: int | None = None
         self._dragging_shape = False
         self._shape_moved_during_drag = False
         self._last_scene_pos: QtCore.QPointF | None = None
@@ -610,6 +619,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self.selectedShapes = []
         self._active_shape = None
         self._active_vertex_index = None
+        self._selected_vertex_shape = None
+        self._selected_vertex_index = None
         self._dragging_shape = False
         self._shape_moved_during_drag = False
         self._last_scene_pos = None
@@ -666,8 +677,11 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._label_value_tile_cache.clear()
 
     def set_shapes(self, shapes) -> None:
-        for item in self._overlay_items:
-            self._scene.removeItem(item)
+        previous_overlay_items = list(self._overlay_items or [])
+        previous_by_shape_id: dict[int, _ShapeGraphicsItem] = {}
+        for item in previous_overlay_items:
+            if isinstance(item, _ShapeGraphicsItem):
+                previous_by_shape_id[id(item._ann_shape)] = item
         self._overlay_items = []
         for item in self._pair_items:
             self._scene.removeItem(item)
@@ -687,11 +701,36 @@ class TiledImageView(QtWidgets.QGraphicsView):
         for item in self._make_pair_endpoint_items(shapes_list):
             self._scene.addItem(item)
             self._pair_endpoint_items.append(item)
+        used_shape_ids: set[int] = set()
         for shape in shapes_list:
+            shape_id = id(shape)
+            used_shape_ids.add(shape_id)
+            reused = previous_by_shape_id.get(shape_id)
+            if reused is not None:
+                other = dict(getattr(shape, "other_data", {}) or {})
+                visible = bool(getattr(shape, "visible", True)) and bool(
+                    other.get("overlay_visible", True)
+                )
+                if visible and bool(getattr(shape, "points", []) or []):
+                    reused.setOpacity(
+                        max(0.0, min(1.0, float(other.get("overlay_opacity", 1.0))))
+                    )
+                    reused.setZValue(100.0 + float(other.get("overlay_z_order", 0)))
+                    reused.sync_shape_geometry()
+                    self._overlay_items.append(reused)
+                else:
+                    self._scene.removeItem(reused)
+                continue
             item = self._make_overlay_item(shape)
             if item is not None:
                 self._scene.addItem(item)
                 self._overlay_items.append(item)
+        for item in previous_overlay_items:
+            if not isinstance(item, _ShapeGraphicsItem):
+                continue
+            if id(item._ann_shape) in used_shape_ids:
+                continue
+            self._scene.removeItem(item)
         self._refresh_overlay_render_metrics()
         self._notify_host_large_image_document_changed()
 
@@ -720,6 +759,11 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self.selectedShapes = [
             shape for shape in self._shapes if id(shape) in selected_ids
         ]
+        if (
+            self._selected_vertex_shape is not None
+            and id(self._selected_vertex_shape) not in selected_ids
+        ):
+            self._set_selected_vertex(None, None)
         for shape in self._shapes:
             try:
                 shape.selected = id(shape) in selected_ids
@@ -734,6 +778,91 @@ class TiledImageView(QtWidgets.QGraphicsView):
         if emit_signal:
             self.selectionChanged.emit(list(self.selectedShapes))
         self._notify_host_large_image_document_changed()
+
+    def _set_selected_vertex(
+        self, shape, index: int | None, *, apply_highlight: bool = True
+    ) -> None:
+        previous_shape = self._selected_vertex_shape
+        if shape is None or index is None:
+            self._selected_vertex_shape = None
+            self._selected_vertex_index = None
+            if previous_shape is not None and previous_shape is not shape:
+                try:
+                    previous_shape.highlightClear()
+                except Exception:
+                    pass
+            self.vertexSelected.emit(False)
+            return
+        points = list(getattr(shape, "points", []) or [])
+        normalized = int(index)
+        if normalized < 0 or normalized >= len(points):
+            self._selected_vertex_shape = None
+            self._selected_vertex_index = None
+            if previous_shape is not None and previous_shape is not shape:
+                try:
+                    previous_shape.highlightClear()
+                except Exception:
+                    pass
+            self.vertexSelected.emit(False)
+            return
+        if previous_shape is not None and previous_shape is not shape:
+            try:
+                previous_shape.highlightClear()
+            except Exception:
+                pass
+        self._selected_vertex_shape = shape
+        self._selected_vertex_index = normalized
+        if apply_highlight:
+            try:
+                shape.highlightVertex(normalized, shape.MOVE_VERTEX)
+            except Exception:
+                pass
+        self.vertexSelected.emit(True)
+
+    def selectedVertex(self) -> bool:
+        shape = self._selected_vertex_shape
+        index = self._selected_vertex_index
+        if shape is None or index is None:
+            return False
+        if not any(item is shape for item in self._shapes):
+            return False
+        points = list(getattr(shape, "points", []) or [])
+        return 0 <= int(index) < len(points)
+
+    def removeSelectedPoint(self) -> bool:
+        shape = self._selected_vertex_shape
+        index = self._selected_vertex_index
+        if shape is None or index is None:
+            return False
+        points = list(getattr(shape, "points", []) or [])
+        normalized = int(index)
+        if normalized < 0 or normalized >= len(points):
+            return False
+        before = len(points)
+        shape.removePoint(normalized)
+        updated_points = list(getattr(shape, "points", []) or [])
+        if len(updated_points) == before:
+            return False
+        try:
+            shape.highlightClear()
+        except Exception:
+            pass
+        if not updated_points:
+            self._shapes = [item for item in self._shapes if item is not shape]
+            self._set_selected_vertex(None, None)
+            selected = [item for item in self.selectedShapes if item is not shape]
+            self._apply_selection(selected, emit_signal=True)
+            self.set_shapes(self._shapes)
+            self.shapeMoved.emit()
+            return True
+        next_index = min(normalized, len(updated_points) - 1)
+        self._set_selected_vertex(shape, next_index)
+        if not any(item is shape for item in self.selectedShapes):
+            self._apply_selection([shape], emit_signal=True)
+        else:
+            self.set_shapes(self._shapes)
+        self.shapeMoved.emit()
+        return True
 
     def _scene_pos_from_event(self, event) -> QtCore.QPointF:
         pos = event.pos() if hasattr(event, "pos") else event.position().toPoint()
@@ -1936,6 +2065,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
                         pass
                     self._active_shape = shape
                     self._active_vertex_index = insert_index
+                    self._set_selected_vertex(shape, insert_index)
                     self._dragging_shape = True
                     self._shape_moved_during_drag = True
                     self._last_scene_pos = QtCore.QPointF(target_point)
@@ -1957,6 +2087,10 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 self._active_vertex_index = (
                     vertex_index if hit_kind == "vertex" else None
                 )
+                if hit_kind == "vertex":
+                    self._set_selected_vertex(shape, int(vertex_index))
+                else:
+                    self._set_selected_vertex(None, None)
                 self._dragging_shape = True
                 self._shape_moved_during_drag = False
                 self._last_scene_pos = QtCore.QPointF(scene_pos)
@@ -1976,6 +2110,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
             if label_value is not None and int(label_value) > 0:
                 self.set_selected_label_value(label_value)
                 self._update_label_hover_status(scene_pos)
+            self._set_selected_vertex(None, None)
             self._apply_selection([], emit_signal=True)
         item = self._pair_item_at_view_pos(pos)
         if isinstance(item, _LandmarkPairItem):
@@ -2041,6 +2176,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 return
         if event.button() == QtCore.Qt.LeftButton and self._dragging_shape:
             moved = bool(self._shape_moved_during_drag)
+            released_shape = self._active_shape
+            released_vertex = self._active_vertex_index
             if self._active_shape is not None:
                 try:
                     self._active_shape.highlightClear()
@@ -2051,6 +2188,10 @@ class TiledImageView(QtWidgets.QGraphicsView):
             self._active_vertex_index = None
             self._last_scene_pos = None
             self._shape_moved_during_drag = False
+            if released_shape is not None and released_vertex is not None:
+                self._set_selected_vertex(
+                    released_shape, int(released_vertex), apply_highlight=False
+                )
             self.set_shapes(self._shapes)
             if moved:
                 self.shapeMoved.emit()
@@ -2082,4 +2223,9 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 self.undoLastPoint()
                 event.accept()
                 return
+        elif self.editing():
+            if event.key() in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
+                if self.selectedVertex() and self.removeSelectedPoint():
+                    event.accept()
+                    return
         super().keyPressEvent(event)

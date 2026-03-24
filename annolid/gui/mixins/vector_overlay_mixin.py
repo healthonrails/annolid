@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import numpy as np
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.gui.affine import (
     apply_affine_to_shape_points,
@@ -242,26 +242,46 @@ class VectorOverlayMixin:
         *,
         margin_ratio: float,
         anchor_to_origin: bool = False,
+        target_bounds: tuple[float, float, float, float] | None = None,
     ) -> OverlayTransform | None:
         image_width, image_height = image_size
         min_x, min_y, max_x, max_y = source_bounds
         source_width = max(1e-6, max_x - min_x)
         source_height = max(1e-6, max_y - min_y)
-        target_width = image_width * max(0.0, min(1.0, float(margin_ratio)))
-        target_height = image_height * max(0.0, min(1.0, float(margin_ratio)))
+        if target_bounds is None:
+            target_min_x, target_min_y = 0.0, 0.0
+            target_max_x, target_max_y = float(image_width), float(image_height)
+        else:
+            target_min_x, target_min_y, target_max_x, target_max_y = (
+                float(target_bounds[0]),
+                float(target_bounds[1]),
+                float(target_bounds[2]),
+                float(target_bounds[3]),
+            )
+        base_target_width = max(1e-6, target_max_x - target_min_x)
+        base_target_height = max(1e-6, target_max_y - target_min_y)
+        target_width = base_target_width * max(0.0, min(1.0, float(margin_ratio)))
+        target_height = base_target_height * max(0.0, min(1.0, float(margin_ratio)))
         if target_width <= 0.0 or target_height <= 0.0:
             return None
         target_scale = min(target_width / source_width, target_height / source_height)
         if target_scale <= 0.0:
             return None
         if anchor_to_origin:
-            target_anchor_x = max(0.0, (image_width - target_width) / 2.0)
-            target_anchor_y = max(0.0, (image_height - target_height) / 2.0)
+            target_anchor_x = target_min_x + max(
+                0.0, (base_target_width - target_width) / 2.0
+            )
+            target_anchor_y = target_min_y + max(
+                0.0, (base_target_height - target_height) / 2.0
+            )
             tx = float(target_anchor_x - (min_x * target_scale))
             ty = float(target_anchor_y - (min_y * target_scale))
         else:
             source_center = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
-            target_center = (image_width / 2.0, image_height / 2.0)
+            target_center = (
+                (target_min_x + target_max_x) / 2.0,
+                (target_min_y + target_max_y) / 2.0,
+            )
             tx = float(target_center[0] - (source_center[0] * target_scale))
             ty = float(target_center[1] - (source_center[1] * target_scale))
         return OverlayTransform(
@@ -273,6 +293,168 @@ class VectorOverlayMixin:
             opacity=0.5,
             visible=True,
             z_order=0,
+        )
+
+    @staticmethod
+    def _qimage_rgb_array(image: QtGui.QImage) -> np.ndarray | None:
+        if image is None or image.isNull():
+            return None
+        converted = image.convertToFormat(QtGui.QImage.Format_RGB888)
+        width = int(converted.width())
+        height = int(converted.height())
+        if width <= 0 or height <= 0:
+            return None
+        raw_bytes = None
+        buffer = converted.constBits()
+        size_bytes = int(converted.sizeInBytes())
+        try:
+            if hasattr(buffer, "setsize"):
+                buffer.setsize(size_bytes)
+                raw_bytes = bytes(buffer)
+            elif hasattr(buffer, "asstring"):
+                raw_bytes = buffer.asstring(size_bytes)
+            else:
+                raw_bytes = bytes(buffer)
+        except Exception:
+            return None
+        arr = np.frombuffer(raw_bytes, dtype=np.uint8)
+        stride = int(converted.bytesPerLine())
+        if stride <= 0:
+            return None
+        try:
+            arr = arr.reshape((height, stride))
+        except Exception:
+            return None
+        rgb = arr[:, : width * 3].reshape((height, width, 3))
+        return np.asarray(rgb).copy()
+
+    def _overlay_foreground_bounds_from_image(
+        self,
+        image_size: tuple[float, float],
+    ) -> tuple[float, float, float, float] | None:
+        image = getattr(self, "image", None)
+        if image is None or not hasattr(image, "isNull") or image.isNull():
+            return None
+        image_qt = image
+        max_dim = max(int(image_qt.width()), int(image_qt.height()))
+        if max_dim > 2048:
+            image_qt = image_qt.scaled(
+                int(round(image_qt.width() * (2048.0 / max_dim))),
+                int(round(image_qt.height() * (2048.0 / max_dim))),
+                QtCore.Qt.KeepAspectRatio,
+                QtCore.Qt.FastTransformation,
+            )
+        rgb = self._qimage_rgb_array(image_qt)
+        if rgb is None or rgb.size == 0:
+            return None
+        gray = rgb.mean(axis=2)
+        height, width = gray.shape[:2]
+        if width < 8 or height < 8:
+            return None
+        band = max(2, int(round(min(width, height) * 0.02)))
+        edge_pixels = np.concatenate(
+            (
+                gray[:band, :].reshape(-1),
+                gray[-band:, :].reshape(-1),
+                gray[:, :band].reshape(-1),
+                gray[:, -band:].reshape(-1),
+            )
+        )
+        if edge_pixels.size == 0:
+            return None
+        bg_level = float(np.percentile(edge_pixels, 90))
+        edge_std = float(np.std(edge_pixels))
+        delta = max(8.0, min(30.0, edge_std * 1.5))
+        threshold = bg_level - delta
+        foreground = gray < threshold
+        coverage = float(np.mean(foreground))
+        if coverage < 0.01 or coverage > 0.95:
+            return None
+        ys, xs = np.where(foreground)
+        if xs.size < 16 or ys.size < 16:
+            return None
+        min_x, max_x = int(xs.min()), int(xs.max())
+        min_y, max_y = int(ys.min()), int(ys.max())
+        box_w = max(1, max_x - min_x)
+        box_h = max(1, max_y - min_y)
+        pad_x = int(round(box_w * 0.01))
+        pad_y = int(round(box_h * 0.01))
+        min_x = max(0, min_x - pad_x)
+        min_y = max(0, min_y - pad_y)
+        max_x = min(width - 1, max_x + pad_x)
+        max_y = min(height - 1, max_y + pad_y)
+        sx = float(image_size[0]) / max(1.0, float(width))
+        sy = float(image_size[1]) / max(1.0, float(height))
+        return (
+            float(min_x) * sx,
+            float(min_y) * sy,
+            float(max_x + 1) * sx,
+            float(max_y + 1) * sy,
+        )
+
+    @staticmethod
+    def _clamp_transform_inside_image(
+        transform: OverlayTransform,
+        *,
+        shape_bounds: tuple[float, float, float, float] | None,
+        image_size: tuple[float, float],
+    ) -> OverlayTransform:
+        if shape_bounds is None:
+            return transform
+        min_x, min_y, max_x, max_y = shape_bounds
+        sx = float(transform.sx)
+        sy = float(transform.sy)
+        tx = float(transform.tx)
+        ty = float(transform.ty)
+        image_w, image_h = image_size
+        if image_w <= 0.0 or image_h <= 0.0:
+            return transform
+
+        def _axis_adjust(
+            *,
+            source_min: float,
+            source_max: float,
+            scale: float,
+            translate: float,
+            image_extent: float,
+        ) -> float:
+            mapped_min = (source_min * scale) + translate
+            mapped_max = (source_max * scale) + translate
+            mapped_extent = max(0.0, mapped_max - mapped_min)
+            if mapped_extent <= image_extent:
+                if mapped_min < 0.0:
+                    translate += -mapped_min
+                mapped_min = (source_min * scale) + translate
+                mapped_max = (source_max * scale) + translate
+                if mapped_max > image_extent:
+                    translate += image_extent - mapped_max
+                return float(translate)
+            centered_min = (image_extent - mapped_extent) / 2.0
+            return float(centered_min - (source_min * scale))
+
+        tx = _axis_adjust(
+            source_min=min_x,
+            source_max=max_x,
+            scale=sx,
+            translate=tx,
+            image_extent=float(image_w),
+        )
+        ty = _axis_adjust(
+            source_min=min_y,
+            source_max=max_y,
+            scale=sy,
+            translate=ty,
+            image_extent=float(image_h),
+        )
+        return OverlayTransform(
+            tx=tx,
+            ty=ty,
+            sx=sx,
+            sy=sy,
+            rotation_deg=float(transform.rotation_deg),
+            opacity=float(transform.opacity),
+            visible=bool(transform.visible),
+            z_order=int(transform.z_order),
         )
 
     def _vectorOverlayImportFitMode(self) -> str:
@@ -406,18 +588,22 @@ class VectorOverlayMixin:
             image_aspect = image_width / max(1e-6, image_height)
             doc_aspect = doc_width / max(1e-6, doc_height)
             shape_aspect = shape_width / max(1e-6, shape_height)
-            doc_aspect_error = abs(math.log(max(1e-6, doc_aspect / image_aspect)))
-            shape_aspect_error = abs(math.log(max(1e-6, shape_aspect / image_aspect)))
             shape_outside_doc = (
                 min_x < (doc_min_x - (0.1 * doc_width))
                 or min_y < (doc_min_y - (0.1 * doc_height))
                 or max_x > (doc_max_x + (0.1 * doc_width))
                 or max_y > (doc_max_y + (0.1 * doc_height))
             )
-            # Prefer document/page bounds only when they look geometrically
-            # consistent with both image aspect and imported vector extents.
+            doc_aspect_error = abs(math.log(max(1e-6, doc_aspect / image_aspect)))
+            shape_aspect_error = abs(math.log(max(1e-6, shape_aspect / image_aspect)))
+            # Atlas-like behavior: pick the coordinate frame whose aspect best
+            # matches the target image while penalizing clearly inconsistent
+            # document bounds.
+            doc_score = doc_aspect_error + (0.75 if shape_outside_doc else 0.0)
+            shape_score = shape_aspect_error
+            prefer_document_on_tie = abs(doc_score - shape_score) <= 0.02
             use_document_bounds = (not shape_outside_doc) and (
-                doc_aspect_error <= (shape_aspect_error + 0.08)
+                doc_score < shape_score or prefer_document_on_tie
             )
             if use_document_bounds:
                 fit_bounds = document_bounds
@@ -426,9 +612,14 @@ class VectorOverlayMixin:
                 )
             else:
                 fit_bounds = shape_bounds
-                mismatch_threshold = 1.0
+                mismatch_threshold = abs(
+                    min(image_width / shape_width, image_height / shape_height) - 1.0
+                )
         explicit_mode = selected_fit_mode in {"document", "shape"}
         anchor_to_origin = source_kind in {"ai", "pdf"}
+        target_bounds = None
+        if source_kind in {"ai", "pdf"}:
+            target_bounds = self._overlay_foreground_bounds_from_image(image_size)
         if (
             not explicit_mode
             and not is_far_outside
@@ -442,9 +633,15 @@ class VectorOverlayMixin:
             image_size,
             margin_ratio=fit_margin_value,
             anchor_to_origin=anchor_to_origin,
+            target_bounds=target_bounds,
         )
         if target_transform is None:
             return
+        target_transform = self._clamp_transform_inside_image(
+            target_transform,
+            shape_bounds=shape_bounds,
+            image_size=image_size,
+        )
         current_transform = dict(metadata.get("transform") or {})
         target_transform.opacity = float(current_transform.get("opacity", 0.5))
         target_transform.visible = bool(current_transform.get("visible", True))

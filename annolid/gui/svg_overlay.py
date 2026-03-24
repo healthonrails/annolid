@@ -146,11 +146,22 @@ def import_svg_shapes(path: str | Path) -> SvgImportResult:
     source_path = Path(document.source_path)
     overlay_id = f"svg_{uuid4().hex}"
     initial_transform = OverlayTransform()
+    source_kind = str(getattr(document, "source_kind", "svg") or "svg").lower()
+
+    def _should_render_imported_shape(imported_path) -> bool:
+        # For PDF-compatible AI imports, only render region polygons by default.
+        # These files often include dense guide lines and text outlines that
+        # clutter the overlay and interfere with annotation workflows.
+        if source_kind in {"ai", "pdf"}:
+            return str(getattr(imported_path, "kind", "") or "").lower() == "polygon"
+        return True
+
     shapes = [
         shape
         for shape in (
             _imported_path_to_shape(imported, source_path, overlay_id)
             for imported in document.shapes
+            if _should_render_imported_shape(imported)
         )
         if shape is not None
     ]
@@ -158,7 +169,7 @@ def import_svg_shapes(path: str | Path) -> SvgImportResult:
     metadata = {
         "id": overlay_id,
         "source": document.source_path,
-        "source_kind": str(getattr(document, "source_kind", "svg") or "svg"),
+        "source_kind": source_kind,
         "document_width": document.width,
         "document_height": document.height,
         "view_box": document.view_box,

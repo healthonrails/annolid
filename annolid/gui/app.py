@@ -275,6 +275,9 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.large_image_view.shapeMoved.connect(self.setDirty)
         self.large_image_view.newShape.connect(self.newShape)
         self.large_image_view.drawingPolygon.connect(self.toggleDrawingSensitive)
+        self.large_image_view.vertexSelected.connect(
+            self.actions.removePoint.setEnabled
+        )
         self.canvas.drawingPolygon.connect(self.toggleDrawingSensitive)
         self.canvas.vertexSelected.connect(self.actions.removePoint.setEnabled)
         self._setup_label_list_connections()

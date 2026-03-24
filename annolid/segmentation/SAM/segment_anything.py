@@ -196,6 +196,7 @@ def _compute_mask_from_points(
     onnx_has_mask_input = np.array([-1], dtype=np.float32)
 
     input_names = [input.name for input in decoder_session.get_inputs()]
+    score_candidates = None
     if len(input_names) <= 3:
         outputs = decoder_session.run(
             None,
@@ -206,6 +207,7 @@ def _compute_mask_from_points(
             },
         )
         scores, masks = outputs
+        score_candidates = scores
         masks = postprocess_masks(
             masks, image_size, (new_height, new_width), np.array(image.shape[:2])
         )
@@ -220,8 +222,17 @@ def _compute_mask_from_points(
             "orig_im_size": np.array(image.shape[:2], dtype=np.float32),
         }
 
-        masks, _, _ = decoder_session.run(None, decoder_inputs)
-    mask = masks[0, 0]  # (1, 1, H, W) -> (H, W)
+        outputs = decoder_session.run(None, decoder_inputs)
+        masks = outputs[0]
+        if len(outputs) > 1:
+            score_candidates = outputs[1]
+    mask_index = _select_best_mask_index(
+        masks=masks,
+        scores=score_candidates,
+        points=input_point,
+        point_labels=input_label,
+    )
+    mask = masks[0, mask_index]  # (1, N, H, W) -> (H, W)
     mask = mask > 0.0
 
     MIN_SIZE_RATIO = 0.05
@@ -243,6 +254,67 @@ def _compute_mask_from_points(
     return mask
 
 
+def _select_best_mask_index(
+    *,
+    masks: np.ndarray,
+    scores: np.ndarray | None,
+    points: np.ndarray,
+    point_labels: np.ndarray,
+) -> int:
+    arr = np.asarray(masks)
+    if arr.ndim != 4 or arr.shape[0] < 1 or arr.shape[1] < 1:
+        return 0
+
+    num_candidates = int(arr.shape[1])
+    candidate_scores = None
+    if scores is not None:
+        s = np.asarray(scores)
+        if s.ndim >= 2:
+            s = s[0]
+        s = s.reshape(-1)
+        if s.size >= num_candidates:
+            candidate_scores = s[:num_candidates]
+
+    h = int(arr.shape[2])
+    w = int(arr.shape[3])
+    pts = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+    labels = np.asarray(point_labels, dtype=np.int32).reshape(-1)
+    if labels.size != pts.shape[0]:
+        labels = np.ones((pts.shape[0],), dtype=np.int32)
+
+    pos_idx = np.where(labels > 0)[0].tolist()
+    neg_idx = np.where(labels <= 0)[0].tolist()
+
+    best_index = 0
+    best_score = None
+    total_pixels = max(1.0, float(h * w))
+    for idx in range(num_candidates):
+        mask_bool = arr[0, idx] > 0.0
+        positive_hits = 0
+        negative_hits = 0
+        for pidx in pos_idx:
+            x = int(round(float(pts[pidx, 0])))
+            y = int(round(float(pts[pidx, 1])))
+            if 0 <= x < w and 0 <= y < h and bool(mask_bool[y, x]):
+                positive_hits += 1
+        for nidx in neg_idx:
+            x = int(round(float(pts[nidx, 0])))
+            y = int(round(float(pts[nidx, 1])))
+            if 0 <= x < w and 0 <= y < h and bool(mask_bool[y, x]):
+                negative_hits += 1
+        coverage = float(mask_bool.sum()) / total_pixels
+        model_score = (
+            float(candidate_scores[idx]) if candidate_scores is not None else 0.0
+        )
+        # Prefer masks that satisfy positive clicks, avoid negative clicks,
+        # avoid frame-wide masks, then use model quality as final tie-breaker.
+        rank = (positive_hits, -negative_hits, -coverage, model_score)
+        if best_score is None or rank > best_score:
+            best_index = idx
+            best_score = rank
+    return int(best_index)
+
+
 def _compute_polygon_from_points(
     image_size, decoder_session, image, image_embedding, points, point_labels
 ):
@@ -260,6 +332,59 @@ def _compute_polygon_from_points(
     if len(polygons) == 0:
         logger.warning("No polygon found, returning empty polygon.")
         return np.empty((0, 2), dtype=np.float32)
-    polys = polygons[0]
-    all_points = np.array(list(zip(polys[0::2], polys[1::2])))
+    polys = _select_best_polygon(polygons, points=points, point_labels=point_labels)
+    if polys is None:
+        logger.warning("No valid polygon contour found, returning empty polygon.")
+        return np.empty((0, 2), dtype=np.float32)
+    all_points = np.array(list(zip(polys[0::2], polys[1::2])), dtype=np.float32)
     return all_points
+
+
+def _polygon_area_from_flat(flat_polygon) -> float:
+    arr = np.asarray(flat_polygon, dtype=np.float32).reshape(-1, 2)
+    if arr.shape[0] < 3:
+        return 0.0
+    contour = arr.reshape(-1, 1, 2)
+    return float(abs(cv2.contourArea(contour)))
+
+
+def _polygon_hit_counts(flat_polygon, points, point_labels) -> tuple[int, int]:
+    arr = np.asarray(flat_polygon, dtype=np.float32).reshape(-1, 2)
+    if arr.shape[0] < 3:
+        return 0, 0
+    contour = arr.reshape(-1, 1, 2)
+    positive_hits = 0
+    negative_hits = 0
+    for point, label in zip(points or [], point_labels or []):
+        if point is None or len(point) < 2:
+            continue
+        px = float(point[0])
+        py = float(point[1])
+        inside_or_edge = cv2.pointPolygonTest(contour, (px, py), False) >= 0
+        if not inside_or_edge:
+            continue
+        if int(label) > 0:
+            positive_hits += 1
+        else:
+            negative_hits += 1
+    return positive_hits, negative_hits
+
+
+def _select_best_polygon(polygons, *, points, point_labels):
+    best_polygon = None
+    best_score = None
+    for candidate in list(polygons or []):
+        flat = np.asarray(candidate, dtype=np.float32).flatten()
+        if flat.size < 6:
+            continue
+        area = _polygon_area_from_flat(flat)
+        if area <= 0.0:
+            continue
+        positive_hits, negative_hits = _polygon_hit_counts(flat, points, point_labels)
+        # Prefer polygons that satisfy positive prompts, avoid negative prompts,
+        # then prefer larger valid areas as a tie-breaker.
+        score = (positive_hits, -negative_hits, area)
+        if best_score is None or score > best_score:
+            best_polygon = flat
+            best_score = score
+    return best_polygon

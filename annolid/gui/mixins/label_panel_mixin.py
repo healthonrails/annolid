@@ -150,15 +150,19 @@ class LabelPanelMixin:
                 self.canvas.selectShapes([shape])
                 # Keep the label list selection aligned so subsequent actions
                 # (e.g. Delete key) behave predictably.
-                for idx in range(self.labelList.count()):
-                    it = self.labelList.item(idx)
-                    try:
-                        if isinstance(it, AnnolidLabelListItem) and it.shape() is shape:
-                            it.setSelected(True)
-                        elif it is not None:
-                            it.setSelected(False)
-                    except Exception:
-                        continue
+                with QtCore.QSignalBlocker(self.labelList):
+                    for idx in range(self.labelList.count()):
+                        it = self.labelList.item(idx)
+                        try:
+                            if (
+                                isinstance(it, AnnolidLabelListItem)
+                                and it.shape() is shape
+                            ):
+                                it.setSelected(True)
+                            elif it is not None:
+                                it.setSelected(False)
+                        except Exception:
+                            continue
             finally:
                 self._noSelectionSlot = False
             try:
@@ -174,15 +178,20 @@ class LabelPanelMixin:
                 self._noSelectionSlot = True
                 self.canvas.selectShapes(shape_list)
                 selected_ids = {id(s) for s in shape_list}
-                for idx in range(self.labelList.count()):
-                    it = self.labelList.item(idx)
-                    try:
-                        shape = (
-                            it.shape() if isinstance(it, AnnolidLabelListItem) else None
-                        )
-                        it.setSelected(shape is not None and id(shape) in selected_ids)
-                    except Exception:
-                        continue
+                with QtCore.QSignalBlocker(self.labelList):
+                    for idx in range(self.labelList.count()):
+                        it = self.labelList.item(idx)
+                        try:
+                            shape = (
+                                it.shape()
+                                if isinstance(it, AnnolidLabelListItem)
+                                else None
+                            )
+                            it.setSelected(
+                                shape is not None and id(shape) in selected_ids
+                            )
+                        except Exception:
+                            continue
             finally:
                 self._noSelectionSlot = False
             try:

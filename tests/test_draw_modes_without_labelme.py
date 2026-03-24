@@ -284,7 +284,9 @@ def test_ai_polygon_preview_paints_with_active_painter(monkeypatch):
             points=[QtCore.QPointF(10, 10), QtCore.QPointF(40, 40)],
             point_labels=[1, 1],
         )
-        monkeypatch.setattr(canvas, "_ensure_ai_model_initialized", lambda: True)
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
 
         class _FakeAiModel:
             def predict_polygon_from_points(self, points, point_labels):
@@ -327,7 +329,9 @@ def test_ai_mask_preview_paints_with_active_painter(monkeypatch):
             points=[QtCore.QPointF(20, 20), QtCore.QPointF(50, 45)],
             point_labels=[1, 1],
         )
-        monkeypatch.setattr(canvas, "_ensure_ai_model_initialized", lambda: True)
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
 
         class _FakeAiModel:
             def predict_mask_from_points(self, points, point_labels):
@@ -386,6 +390,42 @@ def test_canvas_key_release_accepts_qt_no_modifier() -> None:
         event = SimpleNamespace(modifiers=lambda: QtCore.Qt.NoModifier)
         canvas.keyReleaseEvent(event)
         assert canvas.snapping is True
+    finally:
+        canvas.close()
+
+
+def test_ai_polygon_finalise_clamps_points_to_image_bounds(monkeypatch):
+    _ensure_qapp()
+
+    from annolid.gui.shape import Shape
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(100, 80, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.createMode = "ai_polygon"
+        shape = Shape(shape_type="points")
+        shape.addPoint(QtCore.QPointF(20, 20), label=1)
+        shape.addPoint(QtCore.QPointF(30, 25), label=1)
+        canvas.current = shape
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
+
+        class _FakeAiModel:
+            def predict_polygon_from_points(self, points, point_labels):
+                _ = points, point_labels
+                return [[-15, -10], [130, 0], [120, 120], [0, 95]]
+
+        canvas._ai_model = _FakeAiModel()
+        canvas.finalise()
+        assert len(canvas.shapes) == 1
+        polygon = canvas.shapes[0]
+        assert len(polygon.points) >= 3
+        assert all(0.0 <= point.x() <= 99.0 for point in polygon.points)
+        assert all(0.0 <= point.y() <= 79.0 for point in polygon.points)
     finally:
         canvas.close()
 

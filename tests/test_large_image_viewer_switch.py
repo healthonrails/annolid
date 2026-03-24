@@ -1502,6 +1502,42 @@ def test_tiled_image_view_clicking_polygon_edge_inserts_point(
         view.close()
 
 
+def test_tiled_image_view_reuses_overlay_graphics_items_across_geometry_updates(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "sample_reuse_overlay_items.ome.tiff"
+    data = np.arange(300 * 520, dtype=np.uint16).reshape(300, 520)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    from annolid.io.large_image import open_large_image
+
+    backend = open_large_image(image_path)
+    view = TiledImageView(tile_size=128)
+    try:
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.set_backend(backend)
+        view.set_zoom_percent(100)
+
+        shape = _make_visible_shape()
+        view.set_shapes([shape])
+
+        assert len(view._overlay_items) == 1
+        first_item = view._overlay_items[0]
+
+        # Mutate geometry as a drag operation would do, then resync.
+        shape.moveBy(QtCore.QPointF(7.0, 5.0))
+        view.set_shapes([shape])
+
+        assert len(view._overlay_items) == 1
+        assert view._overlay_items[0] is first_item
+    finally:
+        view.close()
+
+
 def test_tiled_image_view_supports_native_overlay_selection_and_drag(
     tmp_path: Path,
 ) -> None:
@@ -1589,6 +1625,44 @@ def test_tiled_image_view_supports_native_overlay_vertex_drag(tmp_path: Path) ->
             16.0,
         )
         assert shape._highlightIndex is None
+    finally:
+        view.close()
+
+
+def test_tiled_image_view_remove_selected_vertex_updates_polygon(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "sample_remove_vertex.ome.tiff"
+    data = np.arange(300 * 520, dtype=np.uint16).reshape(300, 520)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    from annolid.io.large_image import open_large_image
+
+    backend = open_large_image(image_path)
+    view = TiledImageView(tile_size=128)
+    try:
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.set_backend(backend)
+        view.set_zoom_percent(100)
+
+        shape = _make_visible_shape()
+        shape.other_data["overlay_id"] = "overlay_a"
+        view.set_shapes([shape])
+        view.set_selected_shapes([shape])
+        view._set_selected_vertex(shape, 1)
+
+        moved = []
+        view.shapeMoved.connect(lambda: moved.append(True))
+
+        removed = view.removeSelectedPoint()
+
+        assert removed is True
+        assert len(shape.points) == 3
+        assert moved
     finally:
         view.close()
 
