@@ -7,7 +7,14 @@ from annolid.gui.mixins.persistence_lifecycle_mixin import PersistenceLifecycleM
 
 
 class _DummyStore:
+    def __init__(self) -> None:
+        self.last_after_call = None
+
     def remove_frames_in_range(self, *_args, **_kwargs) -> int:
+        return 0
+
+    def remove_frames_after(self, frame_threshold, protected_frames=None) -> int:
+        self.last_after_call = (frame_threshold, set(protected_frames or []))
         return 0
 
 
@@ -31,32 +38,20 @@ class _DummyWindow(PersistenceLifecycleMixin):
 class _DummyDeleteFlowWindow(_DummyWindow):
     def __init__(self, results_dir: Path, frame_number: int) -> None:
         super().__init__(results_dir, frame_number)
-        self._delete_seed_called = 0
         self._delete_all_called = 0
-
-    def deletePredictionsFromSeedToNext(self):
-        self._delete_seed_called += 1
-        return True, 10, 20
 
     def deleteAllFuturePredictions(self):
         self._delete_all_called += 1
 
 
-def test_collect_seed_frames_prefers_manual_label_discovery(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_collect_seed_frames_prefers_manual_label_discovery(tmp_path: Path) -> None:
     folder = tmp_path / "video_results"
     folder.mkdir(parents=True, exist_ok=True)
     window = _DummyWindow(folder, frame_number=10)
-
-    monkeypatch.setattr(
-        persistence_mod,
-        "find_manual_labeled_json_files",
-        lambda _p: [
-            "video_results_000000010.json",
-            "video_results_000000020.json",
-        ],
-    )
+    for frame in (10, 20):
+        (folder / f"video_results_{frame:09d}.json").write_text("{}", encoding="utf-8")
+        (folder / f"video_results_{frame:09d}.png").write_text("seed", encoding="utf-8")
+    (folder / "video_results_000000030.json").write_text("{}", encoding="utf-8")
     seeds = window._collect_seed_frames(folder)
     assert seeds == {10, 20}
 
@@ -69,16 +64,9 @@ def test_delete_predictions_from_seed_sets_forced_restart_hint(
     # Seed frames 10 and 20. Predictions in-between should be removed.
     for frame in (10, 11, 12, 20):
         (folder / f"video_results_{frame:09d}.json").write_text("{}", encoding="utf-8")
+    (folder / "video_results_000000010.png").write_text("seed", encoding="utf-8")
+    (folder / "video_results_000000020.png").write_text("seed", encoding="utf-8")
     window = _DummyWindow(folder, frame_number=10)
-
-    monkeypatch.setattr(
-        persistence_mod,
-        "find_manual_labeled_json_files",
-        lambda _p: [
-            "video_results_000000010.json",
-            "video_results_000000020.json",
-        ],
-    )
     monkeypatch.setattr(
         persistence_mod.AnnotationStore,
         "for_frame_path",
@@ -96,7 +84,7 @@ def test_delete_predictions_from_seed_sets_forced_restart_hint(
     assert (folder / "video_results_000000020.json").exists() is True
 
 
-def test_delete_file_yes_to_all_triggers_seed_and_followup_cleanup(
+def test_delete_file_yes_to_all_triggers_single_future_cleanup(
     tmp_path: Path, monkeypatch
 ) -> None:
     folder = tmp_path / "video_results"
@@ -132,10 +120,61 @@ def test_delete_file_yes_to_all_triggers_seed_and_followup_cleanup(
 
         @staticmethod
         def question(*_args, **_kwargs):
-            return _FakeMessageBox.Yes
+            raise AssertionError("Follow-up confirmation should not be shown.")
 
     monkeypatch.setattr(persistence_mod.QtWidgets, "QMessageBox", _FakeMessageBox)
     window.deleteFile()
 
-    assert window._delete_seed_called == 1
     assert window._delete_all_called == 1
+
+
+def test_delete_all_future_predictions_preserves_manual_seed_pairs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = tmp_path / "video_results"
+    folder.mkdir(parents=True, exist_ok=True)
+    window = _DummyWindow(folder, frame_number=10)
+
+    # Current frame and mixed future predictions.
+    for frame in (10, 11, 12, 13):
+        (folder / f"video_results_{frame:09d}.json").write_text("{}", encoding="utf-8")
+
+    # Manual seed pair for frame 12 should be preserved.
+    (folder / "video_results_000000012.png").write_text("seed", encoding="utf-8")
+
+    store = _DummyStore()
+    monkeypatch.setattr(
+        persistence_mod.AnnotationStore,
+        "for_frame_path",
+        lambda _p: store,
+    )
+
+    window.deleteAllFuturePredictions()
+
+    assert (folder / "video_results_000000010.json").exists() is True
+    assert (folder / "video_results_000000011.json").exists() is False
+    assert (folder / "video_results_000000012.json").exists() is True
+    assert (folder / "video_results_000000012.png").exists() is True
+    assert (folder / "video_results_000000013.json").exists() is False
+    assert store.last_after_call == (10, {12})
+    assert window._prediction_forced_start_frame == 11
+
+
+def test_delete_all_future_predictions_sets_restart_hint_even_without_removals(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = tmp_path / "video_results"
+    folder.mkdir(parents=True, exist_ok=True)
+    # Current frame only; no future predictions to remove.
+    (folder / "video_results_000000027.json").write_text("{}", encoding="utf-8")
+    (folder / "video_results_000000027.png").write_text("seed", encoding="utf-8")
+    window = _DummyWindow(folder, frame_number=27)
+    monkeypatch.setattr(
+        persistence_mod.AnnotationStore,
+        "for_frame_path",
+        lambda _p: _DummyStore(),
+    )
+
+    window.deleteAllFuturePredictions()
+
+    assert window._prediction_forced_start_frame == 28

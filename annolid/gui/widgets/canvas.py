@@ -1898,10 +1898,11 @@ class Canvas(QtWidgets.QWidget):
         self, mask, *, prompt_points: list[list[float]], point_labels: list[int]
     ) -> list[QtCore.QPointF]:
         """Convert the current refined mask into a stable polygon."""
-        _ = prompt_points, point_labels
         return _ai_polygon_from_mask(
             mask,
             pixmap=self.pixmap,
+            prompt_points=prompt_points,
+            point_labels=point_labels,
         )
 
     def _normalize_ai_polygon_points(self, points) -> list[QtCore.QPointF]:

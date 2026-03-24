@@ -14,8 +14,6 @@ from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
 from annolid.gui.workers import FlexibleWorker
 from annolid.infrastructure import AnnotationStore
 from annolid.infrastructure.filesystem import (
-    find_manual_labeled_json_files,
-    get_frame_number_from_json,
     should_start_predictions_from_frame0,
 )
 from annolid.utils.logger import logger
@@ -649,9 +647,14 @@ class PredictionExecutionMixin:
                     self._scan_prediction_folder(str(results_folder))
                     manual_seed_max = -1
                     try:
-                        for name in find_manual_labeled_json_files(str(results_folder)):
-                            frame_idx = int(get_frame_number_from_json(name))
-                            manual_seed_max = max(manual_seed_max, frame_idx)
+                        discover = getattr(self, "_discover_manual_seed_frames", None)
+                        seed_frames = (
+                            set(discover(results_folder))
+                            if callable(discover)
+                            else set()
+                        )
+                        if seed_frames:
+                            manual_seed_max = max(int(frame) for frame in seed_frames)
                     except Exception:
                         manual_seed_max = -1
 

@@ -831,6 +831,47 @@ def test_ai_polygon_refines_polygon_as_more_prompts_are_added(monkeypatch) -> No
         canvas.close()
 
 
+def test_ai_polygon_ignores_full_width_strip_mask_artifacts(monkeypatch) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(420, 220, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
+
+        class _StripArtifactMaskModel:
+            def predict_mask_from_points(self, points, point_labels):
+                _ = points, point_labels
+                mask = np.zeros((220, 420), dtype=np.uint8)
+                # Artifact component: nearly full-width thin strip.
+                mask[150:163, 0:420] = 1
+                # Real object near the prompt point.
+                mask[120:175, 270:330] = 1
+                return mask
+
+        canvas._ai_model = _StripArtifactMaskModel()
+        polygon = canvas._predict_ai_polygon_points(
+            prompt_points=[[300.0, 145.0]],
+            point_labels=[1],
+        )
+
+        assert len(polygon) >= 3
+        xs = [point.x() for point in polygon]
+        ys = [point.y() for point in polygon]
+        assert min(xs) >= 260
+        assert max(xs) <= 340
+        assert min(ys) >= 110
+        assert max(ys) <= 185
+    finally:
+        canvas.close()
+
+
 def test_ai_polygon_finalise_materializes_stable_polygon_shape(monkeypatch) -> None:
     _ensure_qapp()
 

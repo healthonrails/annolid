@@ -199,7 +199,29 @@ def test_select_seed_frames_prefers_nearest_prior_seed_without_frame_zero_anchor
     assert [seed.frame_index for seed in selected] == [100, 200]
 
 
-def test_json_has_manual_seed_content_rejects_auto_motion_index(tmp_path) -> None:
+def test_resolve_start_frame_for_seed_backfill_restarts_from_zero_when_gap_exists() -> (
+    None
+):
+    intervals = CutieCoreVideoProcessor._build_frame_intervals({0, 99})
+    resolved = CutieCoreVideoProcessor._resolve_start_frame_for_seed_backfill(
+        requested_start_frame=99,
+        seed_frame_indices=[0, 99],
+        labeled_intervals=intervals,
+    )
+    assert resolved == 0
+
+
+def test_resolve_start_frame_for_seed_backfill_keeps_requested_when_covered() -> None:
+    intervals = CutieCoreVideoProcessor._build_frame_intervals(set(range(0, 100)))
+    resolved = CutieCoreVideoProcessor._resolve_start_frame_for_seed_backfill(
+        requested_start_frame=99,
+        seed_frame_indices=[0, 99],
+        labeled_intervals=intervals,
+    )
+    assert resolved == 99
+
+
+def test_json_has_manual_seed_content_accepts_parseable_json(tmp_path) -> None:
     json_path = tmp_path / "seed.json"
     payload = {
         "shapes": [
@@ -213,7 +235,7 @@ def test_json_has_manual_seed_content_rejects_auto_motion_index(tmp_path) -> Non
     }
     json_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    assert CutieCoreVideoProcessor._json_has_manual_seed_content(json_path) is False
+    assert CutieCoreVideoProcessor._json_has_manual_seed_content(json_path) is True
 
 
 def test_json_has_manual_seed_content_accepts_user_polygon(tmp_path) -> None:
@@ -231,6 +253,12 @@ def test_json_has_manual_seed_content_accepts_user_polygon(tmp_path) -> None:
     json_path.write_text(json.dumps(payload), encoding="utf-8")
 
     assert CutieCoreVideoProcessor._json_has_manual_seed_content(json_path) is True
+
+
+def test_json_has_manual_seed_content_rejects_invalid_json(tmp_path) -> None:
+    json_path = tmp_path / "seed.json"
+    json_path.write_text("{invalid_json", encoding="utf-8")
+    assert CutieCoreVideoProcessor._json_has_manual_seed_content(json_path) is False
 
 
 def test_discover_seed_frames_uses_cache_for_whole_video(tmp_path) -> None:
@@ -317,6 +345,42 @@ def test_discover_seed_frames_force_refresh_bypasses_cache(tmp_path) -> None:
             str(video_path), results_dir, force_refresh=True
         )
         assert [seed.frame_index for seed in refreshed] == [100, 200]
+    finally:
+        CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE.clear()
+        CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE.update(old_cache)
+
+
+def test_discover_seed_frames_includes_motion_index_only_pair(tmp_path) -> None:
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"")
+    results_dir = video_path.with_suffix("")
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = f"{results_dir.name}_000000020"
+    (results_dir / f"{stem}.png").write_bytes(b"")
+    (results_dir / f"{stem}.json").write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    {
+                        "label": "mouse",
+                        "shape_type": "polygon",
+                        "points": [[1, 1], [4, 1], [4, 4], [1, 4]],
+                        "description": "motion_index: 0.11",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    old_cache = dict(CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE)
+    try:
+        CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE.clear()
+        seeds = CutieCoreVideoProcessor.discover_seed_frames(
+            str(video_path), results_dir, force_refresh=True
+        )
+        assert [seed.frame_index for seed in seeds] == [20]
     finally:
         CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE.clear()
         CutieCoreVideoProcessor._DISCOVERED_SEEDS_CACHE.update(old_cache)

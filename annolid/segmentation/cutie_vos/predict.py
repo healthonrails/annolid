@@ -417,37 +417,17 @@ class CutieCoreVideoProcessor:
 
     @staticmethod
     def _json_has_manual_seed_content(json_path: Path) -> bool:
-        """Return True when a JSON likely represents a user-authored seed.
+        """Return True when a seed-pair JSON is parseable.
 
-        Model-produced CUTIE polygons typically carry `motion_index:` descriptions.
-        Treat those as non-seed candidates unless there is at least one polygon-like
-        shape without this synthetic description.
+        Seed/manual ownership is determined by PNG+JSON sidecar pairing in the
+        results folder; prediction outputs are tracked in the NDJSON store.
         """
         try:
             with open(json_path, "r", encoding="utf-8") as fp:
-                payload = json.load(fp) or {}
+                json.load(fp)
         except Exception:
             return False
-
-        shapes = payload.get("shapes") or []
-        has_polygon_like = False
-        for shape in shapes:
-            if not isinstance(shape, dict):
-                continue
-            shape_type = str(shape.get("shape_type") or "").strip().lower()
-            if shape_type not in {"polygon", "rectangle", "circle"}:
-                continue
-            points = shape.get("points") or []
-            if len(points) < 3 and shape_type == "polygon":
-                continue
-            has_polygon_like = True
-            description = str(shape.get("description") or "").strip().lower()
-            if not description.startswith("motion_index:"):
-                return True
-
-        # If there are no polygon-like shapes this is not a valid seed;
-        # if all polygon-like shapes are auto motion-index outputs, skip it.
-        return False if has_polygon_like else False
+        return True
 
     @staticmethod
     def discover_seed_frames(
@@ -507,9 +487,7 @@ class CutieCoreVideoProcessor:
                     )
                     continue
                 if not CutieCoreVideoProcessor._json_has_manual_seed_content(json_path):
-                    logger.debug(
-                        f"Skipping {png_path.name}: JSON does not look like a manual seed."
-                    )
+                    logger.debug(f"Skipping {png_path.name}: JSON is not parseable.")
                     continue
 
                 existing = collected.get(frame_index)
@@ -779,6 +757,54 @@ class CutieCoreVideoProcessor:
         return CutieCoreVideoProcessor._range_fully_covered(
             intervals, int(segment.start_frame), int(resolved_end)
         )
+
+    @staticmethod
+    def _resolve_start_frame_for_seed_backfill(
+        requested_start_frame: int,
+        seed_frame_indices: Iterable[int],
+        labeled_intervals: List[Tuple[int, int]],
+    ) -> int:
+        """Adjust CUTIE start frame when there are unlabeled gaps between seeds.
+
+        If a user requests prediction from a later seed but earlier ranges between
+        seeds are not covered by existing annotations, restart from the earliest
+        seed so missing frames are backfilled.
+        """
+        try:
+            requested = max(0, int(requested_start_frame))
+        except Exception:
+            requested = 0
+
+        normalized_seeds = sorted(
+            {
+                int(frame)
+                for frame in (seed_frame_indices or [])
+                if frame is not None and int(frame) >= 0
+            }
+        )
+        if len(normalized_seeds) < 2:
+            return requested
+
+        earliest_seed = int(normalized_seeds[0])
+        if requested <= earliest_seed:
+            return requested
+
+        target_end = int(requested) - 1
+        if target_end < earliest_seed:
+            return requested
+
+        if CutieCoreVideoProcessor._range_fully_covered(
+            labeled_intervals, earliest_seed, target_end
+        ):
+            return requested
+
+        logger.info(
+            "Detected missing predictions between seed frame %s and requested "
+            "start frame %s; restarting from earliest seed.",
+            earliest_seed,
+            requested,
+        )
+        return earliest_seed
 
     def initialize_video_writer(
         self, output_video_path, frame_width, frame_height, fps=30
@@ -2228,6 +2254,13 @@ class CutieCoreVideoProcessor:
             normalized_start_frame = max(0, int(start_frame))
         except (TypeError, ValueError):
             normalized_start_frame = 0
+        labeled_frames = self._collect_labeled_frame_indices()
+        labeled_intervals = self._build_frame_intervals(labeled_frames)
+        normalized_start_frame = self._resolve_start_frame_for_seed_backfill(
+            requested_start_frame=normalized_start_frame,
+            seed_frame_indices=[seed.frame_index for seed in self._seed_frames],
+            labeled_intervals=labeled_intervals,
+        )
         self._seed_frames = self._select_seed_frames_for_start(
             start_frame=normalized_start_frame
         )

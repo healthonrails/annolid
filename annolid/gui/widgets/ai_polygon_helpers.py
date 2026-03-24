@@ -154,6 +154,8 @@ def polygon_from_refined_mask(
     mask,
     *,
     pixmap: QtGui.QPixmap | None = None,
+    prompt_points: list[list[float]] | None = None,
+    point_labels: list[int] | None = None,
 ) -> list[QtCore.QPointF]:
     """Convert the current refined mask into a stable polygon."""
     try:
@@ -175,7 +177,137 @@ def polygon_from_refined_mask(
     if not np.any(mask_u8):
         return []
 
-    polygons, _ = mask_to_polygons(mask_u8, simplify=False)
+    def _remove_thin_full_span_bands(mask_binary: np.ndarray) -> np.ndarray:
+        cleaned = mask_binary.copy()
+        height, width = cleaned.shape
+        max_row_band = max(3, int(height * 0.08))
+        max_col_band = max(3, int(width * 0.08))
+
+        def _zero_bands(indices: np.ndarray, axis: int, max_band: int) -> None:
+            if indices.size == 0:
+                return
+            start = int(indices[0])
+            prev = int(indices[0])
+            for idx in indices[1:]:
+                cur = int(idx)
+                if cur == prev + 1:
+                    prev = cur
+                    continue
+                if (prev - start + 1) <= max_band:
+                    if axis == 0:
+                        cleaned[start : prev + 1, :] = 0
+                    else:
+                        cleaned[:, start : prev + 1] = 0
+                start = cur
+                prev = cur
+            if (prev - start + 1) <= max_band:
+                if axis == 0:
+                    cleaned[start : prev + 1, :] = 0
+                else:
+                    cleaned[:, start : prev + 1] = 0
+
+        row_full = np.where(np.sum(cleaned > 0, axis=1) >= int(width * 0.9))[0]
+        col_full = np.where(np.sum(cleaned > 0, axis=0) >= int(height * 0.9))[0]
+        _zero_bands(row_full, axis=0, max_band=max_row_band)
+        _zero_bands(col_full, axis=1, max_band=max_col_band)
+        return cleaned
+
+    mask_u8 = _remove_thin_full_span_bands(mask_u8)
+    if not np.any(mask_u8):
+        return []
+
+    def _is_strip_like_component(
+        x: int, y: int, width: int, height: int, full_width: int, full_height: int
+    ) -> bool:
+        if width <= 0 or height <= 0:
+            return True
+        near_full_width = width >= int(max(1, full_width * 0.9))
+        near_full_height = height >= int(max(1, full_height * 0.9))
+        very_thin_h = height <= max(3, int(full_height * 0.08))
+        very_thin_w = width <= max(3, int(full_width * 0.08))
+        touches_left = x <= 1
+        touches_right = (x + width) >= (full_width - 2)
+        touches_top = y <= 1
+        touches_bottom = (y + height) >= (full_height - 2)
+        if near_full_width and very_thin_h and (touches_left or touches_right):
+            return True
+        if near_full_height and very_thin_w and (touches_top or touches_bottom):
+            return True
+        return False
+
+    # Prefer the component supported by positive prompts and avoid large strip-like
+    # artifacts that can span the whole frame due to transient mask glitches.
+    selected_mask = mask_u8
+    try:
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask_u8, 8)
+        if num_labels > 2:
+            points_arr = np.asarray(prompt_points or [], dtype=np.float32).reshape(
+                -1, 2
+            )
+            labels_arr = np.asarray(point_labels or [], dtype=np.int32).reshape(-1)
+            has_prompts = points_arr.size > 0 and labels_arr.size == points_arr.shape[0]
+            full_h, full_w = mask_u8.shape
+            best_label = None
+            best_score = None
+            for comp_idx in range(1, int(num_labels)):
+                x = int(stats[comp_idx, cv2.CC_STAT_LEFT])
+                y = int(stats[comp_idx, cv2.CC_STAT_TOP])
+                width = int(stats[comp_idx, cv2.CC_STAT_WIDTH])
+                height = int(stats[comp_idx, cv2.CC_STAT_HEIGHT])
+                area = int(stats[comp_idx, cv2.CC_STAT_AREA])
+                if area <= 1:
+                    continue
+                strip_like = _is_strip_like_component(
+                    x, y, width, height, full_w, full_h
+                )
+
+                positive_hits = 0
+                negative_hits = 0
+                if has_prompts:
+                    for idx in range(points_arr.shape[0]):
+                        px, py = points_arr[idx]
+                        qx = int(np.clip(round(float(px)), 0, full_w - 1))
+                        qy = int(np.clip(round(float(py)), 0, full_h - 1))
+                        if int(labels[qy, qx]) != comp_idx:
+                            continue
+                        if int(labels_arr[idx]) > 0:
+                            positive_hits += 1
+                        else:
+                            negative_hits += 1
+                    if positive_hits == 0:
+                        continue
+
+                score = (positive_hits, -negative_hits, -int(strip_like), area)
+                if best_score is None or score > best_score:
+                    best_score = score
+                    best_label = comp_idx
+
+            if best_label is None:
+                # Fallback: choose the largest non-strip component.
+                for comp_idx in range(1, int(num_labels)):
+                    x = int(stats[comp_idx, cv2.CC_STAT_LEFT])
+                    y = int(stats[comp_idx, cv2.CC_STAT_TOP])
+                    width = int(stats[comp_idx, cv2.CC_STAT_WIDTH])
+                    height = int(stats[comp_idx, cv2.CC_STAT_HEIGHT])
+                    area = int(stats[comp_idx, cv2.CC_STAT_AREA])
+                    if area <= 1:
+                        continue
+                    strip_like = _is_strip_like_component(
+                        x, y, width, height, full_w, full_h
+                    )
+                    if strip_like:
+                        continue
+                    score = area
+                    if best_score is None or score > best_score:
+                        best_score = score
+                        best_label = comp_idx
+
+            if best_label is not None:
+                selected_mask = (labels == int(best_label)).astype(np.uint8)
+    except Exception:
+        selected_mask = mask_u8
+
+    polygons, _ = mask_to_polygons(selected_mask, simplify=False)
     if not polygons:
         return []
 
@@ -245,6 +377,8 @@ def predict_ai_polygon_points(
         mask_points = polygon_from_refined_mask(
             mask,
             pixmap=pixmap,
+            prompt_points=prompt_points,
+            point_labels=point_labels,
         )
         if len(mask_points) >= 3:
             simplified_points = simplify_ai_polygon_points(mask_points, pixmap)

@@ -18,7 +18,6 @@ from annolid.gui.label_file import LabelFile, LabelFileError
 from annolid.gui.window_base import PY2, utils
 from annolid.infrastructure import AnnotationStore
 from annolid.infrastructure.filesystem import (
-    find_manual_labeled_json_files,
     get_frame_number_from_json,
 )
 from annolid.utils.logger import logger
@@ -497,7 +496,16 @@ class PersistenceLifecycleMixin:
         if not prediction_folder.exists():
             return
 
+        try:
+            # Deleting future predictions is an explicit "resume from here" action.
+            # Keep a one-shot hint so the next prediction run starts at N+1 and
+            # treats frame N as the latest seed context.
+            self._prediction_forced_start_frame = max(0, int(self.frame_number) + 1)
+        except Exception:
+            self._prediction_forced_start_frame = None
+
         deleted_files = 0
+        seed_frames = self._collect_seed_frames(prediction_folder)
         protected_frames: Set[int] = set()
 
         logger.info(f"Scanning for future predictions in: {prediction_folder}")
@@ -525,9 +533,7 @@ class PersistenceLifecycleMixin:
                 )
                 continue
 
-            image_file_png = prediction_path.with_suffix(".png")
-            image_file_jpg = prediction_path.with_suffix(".jpg")
-            is_manually_saved = image_file_png.exists() or image_file_jpg.exists()
+            is_manually_saved = frame_number in seed_frames
             if is_manually_saved:
                 protected_frames.add(frame_number)
 
@@ -580,32 +586,17 @@ class PersistenceLifecycleMixin:
 
     def _collect_seed_frames(self, prediction_folder: Path) -> Set[int]:
         seed_frames: Set[int] = set()
-        # Reuse manual-label discovery so seed ranges match tracking restart logic.
-        try:
-            for name in find_manual_labeled_json_files(str(prediction_folder)):
-                try:
-                    seed_frames.add(int(get_frame_number_from_json(name)))
-                except Exception:
-                    continue
-        except Exception:
-            seed_frames = set()
-        if seed_frames:
-            return seed_frames
-
-        # Fallback for legacy layouts where manual labels may only be represented
-        # by sidecar images in the results folder.
-        pattern = re.compile(r"(\d+)(?=\.(png|jpg|jpeg)$)", re.IGNORECASE)
-        for path in prediction_folder.iterdir():
+        for path in prediction_folder.glob("*.json"):
             if not path.is_file():
                 continue
-            if path.suffix.lower() not in (".png", ".jpg", ".jpeg"):
-                continue
-            match = pattern.search(path.name)
-            if not match:
+            has_sidecar = any(
+                path.with_suffix(ext).exists() for ext in (".png", ".jpg", ".jpeg")
+            )
+            if not has_sidecar:
                 continue
             try:
-                seed_frames.add(int(match.group(1)))
-            except (TypeError, ValueError):
+                seed_frames.add(int(get_frame_number_from_json(path.name)))
+            except Exception:
                 continue
         return seed_frames
 
@@ -728,8 +719,7 @@ class PersistenceLifecycleMixin:
         mb = QtWidgets.QMessageBox
         msg = self.tr(
             "You are about to permanently delete this label file, "
-            "Or delete predicted label files from the current seed frame "
-            "to the next seed frame. "
+            "or delete predicted labels after the current frame. "
             "What would you like to do?"
         )
         msg_box = mb(self)
@@ -738,7 +728,7 @@ class PersistenceLifecycleMixin:
         msg_box.setInformativeText(
             self.tr(
                 "Yes: delete the current label file. "
-                "Yes to All: delete predicted frames for the current seed range."
+                "Yes to All: delete predicted frames from the next frame onward."
             )
         )
         msg_box.setStandardButtons(mb.No | mb.Yes | mb.YesToAll)
@@ -748,20 +738,7 @@ class PersistenceLifecycleMixin:
         if answer == mb.No:
             return
         elif answer == mb.YesToAll:
-            removed, start_seed, next_seed = self.deletePredictionsFromSeedToNext()
-            if removed:
-                msg = self.tr(
-                    "Delete all remaining predicted frames after this seed range?"
-                )
-                follow_up = mb.question(
-                    self,
-                    self.tr("Delete All Predictions"),
-                    msg,
-                    mb.Yes | mb.No,
-                    mb.No,
-                )
-                if follow_up == mb.Yes:
-                    self.deleteAllFuturePredictions()
+            self.deleteAllFuturePredictions()
         else:
             label_file = self.getLabelFile()
             if osp.exists(label_file):
