@@ -357,6 +357,10 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.populateModeActions()
         QtCore.QTimer.singleShot(0, self._restore_last_worked_file_if_available)
         QtCore.QTimer.singleShot(0, self._startup_annolid_bot)
+        QtCore.QTimer.singleShot(
+            0,
+            lambda dock=self.shape_dock: (dock.show(), dock.raise_()),
+        )
 
     @QtCore.Slot(str, int)
     def _show_status_message(self, message: str, timeout: int = 4000) -> None:

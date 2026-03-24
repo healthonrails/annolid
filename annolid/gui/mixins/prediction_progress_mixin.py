@@ -17,6 +17,24 @@ from annolid.utils.logger import logger
 class PredictionProgressMixin:
     """Prediction stop/progress/watcher helpers."""
 
+    def _is_gui_thread(self) -> bool:
+        app = QtCore.QCoreApplication.instance()
+        if app is None:
+            return True
+        return QtCore.QThread.currentThread() is app.thread()
+
+    def _dispatch_to_gui_thread(self, callback) -> bool:
+        """Schedule callback on the window's GUI thread, returning True when queued."""
+        if self._is_gui_thread():
+            return False
+        try:
+            # Use QObject-context overload so the callback executes in self.thread().
+            QtCore.QTimer.singleShot(0, self, callback)
+        except TypeError:
+            # Fallback for Qt bindings lacking the context overload.
+            QtCore.QTimer.singleShot(0, callback)
+        return True
+
     def _set_prediction_session_active(self, active: bool) -> None:
         self._prediction_session_active = bool(active)
 
@@ -297,6 +315,11 @@ class PredictionProgressMixin:
                 logger.debug("Failed to move seekbar from prediction progress.")
 
     def _finalize_prediction_progress(self, message=""):
+        if self._dispatch_to_gui_thread(
+            lambda msg=str(message or ""): self._finalize_prediction_progress(msg)
+        ):
+            logger.debug("Queued prediction finalization to GUI thread.")
+            return
         logger.info(f"Prediction finalization: {message}")
         prediction_folder = None
         try:
@@ -335,6 +358,15 @@ class PredictionProgressMixin:
     def _setup_prediction_folder_watcher(
         self, folder_path_to_watch, *, start_frame: int | None = None
     ):
+        if self._dispatch_to_gui_thread(
+            lambda path=str(folder_path_to_watch),
+            frame=start_frame: self._setup_prediction_folder_watcher(  # noqa: E501
+                path,
+                start_frame=frame,
+            )
+        ):
+            logger.debug("Queued prediction watcher setup to GUI thread.")
+            return
         if self.prediction_progress_watcher is None:
             self.prediction_progress_watcher = QtCore.QTimer(self)
             self.prediction_progress_watcher.timeout.connect(
@@ -647,6 +679,9 @@ class PredictionProgressMixin:
             self._scan_prediction_folder(str(path))
 
     def _stop_prediction_folder_watcher(self):
+        if self._dispatch_to_gui_thread(self._stop_prediction_folder_watcher):
+            logger.debug("Queued prediction watcher stop to GUI thread.")
+            return
         self._set_prediction_session_active(False)
         if self.prediction_progress_watcher:
             self.prediction_progress_watcher.stop()

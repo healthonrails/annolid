@@ -120,15 +120,20 @@ def get_ai_models() -> list[Any]:
 
         def predict_polygon_from_points(self, points, point_labels):
             mask = self.predict_mask_from_points(points, point_labels)
-            ys, xs = np.where(mask)
-            if ys.size == 0:
-                return np.empty((0, 2), dtype=np.float32)
-            x1, x2 = int(xs.min()), int(xs.max())
-            y1, y2 = int(ys.min()), int(ys.max())
-            return np.array(
-                [[x1, y1], [x2, y1], [x2, y2], [x1, y2]],
-                dtype=np.float32,
+            mask_u8 = mask.astype(np.uint8)
+            import cv2
+
+            contours, _ = cv2.findContours(
+                mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
+            if not contours:
+                return np.empty((0, 2), dtype=np.float32)
+
+            best_contour = max(contours, key=cv2.contourArea)
+            if best_contour.shape[0] < 3:
+                return np.empty((0, 2), dtype=np.float32)
+
+            return best_contour.reshape(-1, 2).astype(np.float32)
 
     def _make_model_class(display_name: str):
         class _Model(_AnnolidSegmentAnythingONNX):

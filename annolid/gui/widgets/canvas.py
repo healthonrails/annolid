@@ -1,3 +1,4 @@
+import copy
 import gc
 import os
 import time
@@ -26,6 +27,13 @@ from annolid.utils.logger import logger
 from annolid.utils.prompts import extract_number_and_remove_digits
 from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
 from annolid.gui.qt_compat import painter_render_hint
+from annolid.gui.widgets.ai_polygon_helpers import (
+    mask_bbox as _ai_mask_bbox,
+    normalize_ai_polygon_points as _ai_normalize,
+    polygon_from_refined_mask as _ai_polygon_from_mask,
+    predict_ai_polygon_points as _ai_predict,
+    simplify_ai_polygon_points as _ai_simplify,
+)
 # TODO(unknown):
 # - [maybe] Find optimal epsilon value.
 
@@ -1615,25 +1623,43 @@ class Canvas(QtWidgets.QWidget):
         self._hideBackround = self.hideBackround if enable else False
 
     def canCloseShape(self):
+        if not self.drawing() or self.current is None:
+            return False
         if self.createMode == "polygonSAM":
-            return self.drawing() and self.current and len(self.current) > 0
-        return self.drawing() and self.current and len(self.current) > 2
+            return len(self.current) > 0
+        if self.createMode in [
+            "polygon",
+            "linestrip",
+            "ai_polygon",
+            "ai_mask",
+            "grounding_sam",
+        ]:
+            return len(self.current) > 2
+        return False
+
+    def _trim_double_click_tail_point(self) -> None:
+        """Remove redundant trailing point introduced by double-click press flow."""
+        if self.current is None or len(self.current) <= 1:
+            return
+        # Historical polygon behavior removes the tail click point on close.
+        if self.createMode == "polygon" and len(self.current) > 3:
+            self.current.popPoint()
+            return
+        # For AI prompt modes and linestrip, only trim when the point is effectively
+        # duplicated (same physical click landing nearly at the same spot).
+        if self.createMode in ["linestrip", "ai_polygon", "ai_mask", "grounding_sam"]:
+            last_point = self.current[-1]
+            prev_point = self.current[-2]
+            if self.closeEnough(last_point, prev_point):
+                self.current.popPoint()
 
     def mouseDoubleClickEvent(self, ev):
-        # We need at least 4 points here, since the mousePress handler
-        # adds an extra one before this handler is called.
         if self.double_click != "close":
             return
-        if (
-            self.createMode == "polygon" and self.canCloseShape()
-        ) or self.createMode in ["ai_polygon", "ai_mask", "grounding_sam"]:
-            self.finalise()
-        if (
-            self.double_click == "close"
-            and self.canCloseShape()
-            and len(self.current) > 3
-        ):
-            self.current.popPoint()
+        if not self.drawing() or self.current is None:
+            return
+        self._trim_double_click_tail_point()
+        if self.canCloseShape():
             self.finalise()
 
     def selectShapes(self, shapes):
@@ -1795,16 +1821,17 @@ class Canvas(QtWidgets.QWidget):
             label=self.line.point_labels[1],
         )
         try:
-            if not self._ensure_ai_model_initialized(force_sync=True):
+            if not self._ensure_ai_model_initialized():
                 logger.error(
                     "AI polygon model is not initialized; skipping prediction."
                 )
                 return
-            points = self._ai_model.predict_polygon_from_points(
-                points=[[point.x(), point.y()] for point in drawing_shape.points],
-                point_labels=drawing_shape.point_labels,
+            prompt_points = [[point.x(), point.y()] for point in drawing_shape.points]
+            point_labels = list(drawing_shape.point_labels or [])
+            normalized_points = self._predict_ai_polygon_points(
+                prompt_points=prompt_points,
+                point_labels=point_labels,
             )
-            normalized_points = self._normalize_ai_polygon_points(points)
             if len(normalized_points) > 2:
                 drawing_shape.setShapeRefined(
                     shape_type="polygon",
@@ -1829,7 +1856,7 @@ class Canvas(QtWidgets.QWidget):
             label=self.line.point_labels[1],
         )
         try:
-            if not self._ensure_ai_model_initialized(force_sync=True):
+            if not self._ensure_ai_model_initialized():
                 logger.error("AI mask model is not initialized; skipping prediction.")
                 return
             mask = self._ai_model.predict_mask_from_points(
@@ -1852,55 +1879,38 @@ class Canvas(QtWidgets.QWidget):
             # Downgrade to warning as this is often a recoverable model/input error.
             logger.warning(f"AI mask prediction failed: {e}")
 
+    def _predict_ai_polygon_points(
+        self, *, prompt_points: list[list[float]], point_labels: list[int]
+    ) -> list[QtCore.QPointF]:
+        """Predict AI polygon points from the SAM mask, with polygon fallback only if needed."""
+        return _ai_predict(
+            ai_model=getattr(self, "_ai_model", None),
+            pixmap=self.pixmap,
+            prompt_points=prompt_points,
+            point_labels=point_labels,
+        )
+
     @staticmethod
     def _mask_bbox(mask):
-        mask_array = np.asarray(mask)
-        if mask_array.ndim != 2 or not np.any(mask_array):
-            return None
-        rows = np.where(mask_array.any(axis=1))[0]
-        cols = np.where(mask_array.any(axis=0))[0]
-        y1 = int(rows[0])
-        y2 = int(rows[-1]) + 1
-        x1 = int(cols[0])
-        x2 = int(cols[-1]) + 1
-        return y1, x1, y2, x2
+        return _ai_mask_bbox(mask)
+
+    def _polygon_from_prompt_mask(
+        self, mask, *, prompt_points: list[list[float]], point_labels: list[int]
+    ) -> list[QtCore.QPointF]:
+        """Convert the current refined mask into a stable polygon."""
+        _ = prompt_points, point_labels
+        return _ai_polygon_from_mask(
+            mask,
+            pixmap=self.pixmap,
+        )
 
     def _normalize_ai_polygon_points(self, points) -> list[QtCore.QPointF]:
-        try:
-            arr = np.asarray(points, dtype=np.float32).reshape(-1, 2)
-        except Exception:
-            return []
-        if arr.shape[0] < 3:
-            return []
-        arr = arr[np.isfinite(arr).all(axis=1)]
-        if arr.shape[0] < 3:
-            return []
+        return _ai_normalize(points, self.pixmap)
 
-        if self.pixmap is not None and not self.pixmap.isNull():
-            max_x = max(0.0, float(self.pixmap.width() - 1))
-            max_y = max(0.0, float(self.pixmap.height() - 1))
-            arr[:, 0] = np.clip(arr[:, 0], 0.0, max_x)
-            arr[:, 1] = np.clip(arr[:, 1], 0.0, max_y)
-
-        dedup: list[np.ndarray] = []
-        for point in arr:
-            if dedup:
-                delta = point - dedup[-1]
-                if float(np.hypot(float(delta[0]), float(delta[1]))) < 0.5:
-                    continue
-            dedup.append(point)
-        if len(dedup) >= 2:
-            closing = dedup[0] - dedup[-1]
-            if float(np.hypot(float(closing[0]), float(closing[1]))) < 0.5:
-                dedup = dedup[:-1]
-        if len(dedup) < 3:
-            return []
-
-        poly = np.asarray(dedup, dtype=np.float32)
-        area = abs(float(cv2.contourArea(poly.reshape(-1, 1, 2))))
-        if area < 1.0:
-            return []
-        return [QtCore.QPointF(float(x), float(y)) for x, y in poly]
+    def _simplify_ai_polygon_points(
+        self, points: list[QtCore.QPointF] | np.ndarray
+    ) -> list[QtCore.QPointF]:
+        return _ai_simplify(points, self.pixmap)
 
     def _build_polygon_preview_line(self):
         if self.current is None or len(self.current.points) == 0:
@@ -1916,6 +1926,28 @@ class Canvas(QtWidgets.QWidget):
         ]
         preview.point_labels = [1, 1]
         return preview
+
+    @staticmethod
+    def _materialize_polygon_shape(source_shape, points):
+        """Create a stable polygon shape detached from transient AI prompt state."""
+        polygon = Shape(
+            label=getattr(source_shape, "label", None),
+            line_color=getattr(source_shape, "line_color", None),
+            shape_type="polygon",
+            flags=copy.deepcopy(getattr(source_shape, "flags", None)),
+            group_id=getattr(source_shape, "group_id", None),
+            description=getattr(source_shape, "description", None),
+            visible=bool(getattr(source_shape, "visible", True)),
+        )
+        polygon.other_data = copy.deepcopy(
+            dict(getattr(source_shape, "other_data", {}) or {})
+        )
+        polygon.fill = bool(getattr(source_shape, "fill", False))
+        polygon.selected = bool(getattr(source_shape, "selected", False))
+        polygon.points = [QtCore.QPointF(point) for point in points]
+        polygon.point_labels = [1] * len(polygon.points)
+        polygon.close()
+        return polygon
 
     def _clear_preview_line(self):
         self.line = Shape()
@@ -2347,36 +2379,52 @@ class Canvas(QtWidgets.QWidget):
             # convert points to polygon by an AI model
             if self.current.shape_type != "points":
                 return
-            if not self._ensure_ai_model_initialized(force_sync=True):
+            if not self._ensure_ai_model_initialized():
                 logger.error(
                     "AI polygon model is not initialized; skipping finalisation."
                 )
                 return
-            points = self._ai_model.predict_polygon_from_points(
-                points=[[point.x(), point.y()] for point in self.current.points],
-                point_labels=self.current.point_labels,
+            try:
+                prompt_points = [
+                    [point.x(), point.y()] for point in self.current.points
+                ]
+                point_labels = list(self.current.point_labels or [])
+            except Exception as exc:
+                logger.warning(
+                    "AI polygon finalisation failed; keep editing prompts. Error: %s",
+                    exc,
+                )
+                return
+            normalized_points = self._predict_ai_polygon_points(
+                prompt_points=prompt_points,
+                point_labels=point_labels,
             )
-            normalized_points = self._normalize_ai_polygon_points(points)
             if len(normalized_points) < 3:
                 logger.warning(
                     "AI polygon prediction returned an invalid polygon; keep editing prompts."
                 )
                 return
-            self.current.setShapeRefined(
-                points=normalized_points,
-                point_labels=[1] * len(normalized_points),
-                shape_type="polygon",
+            self.current = self._materialize_polygon_shape(
+                self.current,
+                normalized_points,
             )
         elif self.createMode == "ai_mask":
             # convert points to mask by an AI model
             assert self.current.shape_type == "points"
-            if not self._ensure_ai_model_initialized(force_sync=True):
+            if not self._ensure_ai_model_initialized():
                 logger.error("AI mask model is not initialized; skipping finalisation.")
                 return
-            mask = self._ai_model.predict_mask_from_points(
-                points=[[point.x(), point.y()] for point in self.current.points],
-                point_labels=self.current.point_labels,
-            )
+            try:
+                mask = self._ai_model.predict_mask_from_points(
+                    points=[[point.x(), point.y()] for point in self.current.points],
+                    point_labels=self.current.point_labels,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "AI mask finalisation failed; keep editing prompts. Error: %s",
+                    exc,
+                )
+                return
             bbox = self._mask_bbox(mask)
             if bbox is None:
                 logger.error("AI mask prediction returned an empty mask.")

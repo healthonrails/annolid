@@ -382,8 +382,8 @@ def _select_best_polygon(polygons, *, points, point_labels):
             continue
         positive_hits, negative_hits = _polygon_hit_counts(flat, points, point_labels)
         # Prefer polygons that satisfy positive prompts, avoid negative prompts,
-        # then prefer larger valid areas as a tie-breaker.
-        score = (positive_hits, -negative_hits, area)
+        # then prefer smaller valid areas as a tie-breaker to avoid capturing bounding boxes.
+        score = (positive_hits, -negative_hits, -area)
         if best_score is None or score > best_score:
             best_polygon = flat
             best_score = score

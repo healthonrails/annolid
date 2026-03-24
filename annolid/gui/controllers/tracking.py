@@ -125,14 +125,25 @@ class TrackingController(QtCore.QObject):
             self._disconnect_track_all_worker(self._track_all_worker)
 
         self._track_all_worker = worker_instance
-        worker_instance.progress.connect(self._update_main_status_progress)
-        worker_instance.finished.connect(self._on_track_all_finished)
-        worker_instance.error.connect(self._on_track_all_error)
+        worker_instance.progress.connect(
+            self._update_main_status_progress,
+            QtCore.Qt.QueuedConnection,
+        )
+        worker_instance.finished.connect(
+            self._on_track_all_finished,
+            QtCore.Qt.QueuedConnection,
+        )
+        worker_instance.error.connect(
+            self._on_track_all_error,
+            QtCore.Qt.QueuedConnection,
+        )
         worker_instance.video_processing_started.connect(
-            self._handle_track_all_video_started
+            self._handle_track_all_video_started,
+            QtCore.Qt.QueuedConnection,
         )
         worker_instance.video_processing_finished.connect(
-            self._handle_track_all_video_finished
+            self._handle_track_all_video_finished,
+            QtCore.Qt.QueuedConnection,
         )
         self._window.set_tracking_ui_state(is_tracking=True)
         logger.info("Registered TrackAllWorker with tracking controller.")
@@ -317,17 +328,28 @@ class TrackingController(QtCore.QObject):
 
         self._previous_connected_worker = worker_instance
 
-        worker_instance.progress.connect(self._update_main_status_progress)
-        worker_instance.finished.connect(self._on_tracking_job_finished)
-        worker_instance.error.connect(self._on_tracking_job_error)
+        worker_instance.progress.connect(
+            self._update_main_status_progress,
+            QtCore.Qt.QueuedConnection,
+        )
+        worker_instance.finished.connect(
+            self._on_tracking_job_finished,
+            QtCore.Qt.QueuedConnection,
+        )
+        worker_instance.error.connect(
+            self._on_tracking_job_error,
+            QtCore.Qt.QueuedConnection,
+        )
 
         if hasattr(worker_instance, "video_job_started"):
             worker_instance.video_job_started.connect(
-                self._handle_tracking_video_started_ui_update
+                self._handle_tracking_video_started_ui_update,
+                QtCore.Qt.QueuedConnection,
             )
         if hasattr(worker_instance, "video_job_finished"):
             worker_instance.video_job_finished.connect(
-                self._handle_tracking_video_finished_ui_update
+                self._handle_tracking_video_finished_ui_update,
+                QtCore.Qt.QueuedConnection,
             )
 
         logger.info(

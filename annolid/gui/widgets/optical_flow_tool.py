@@ -48,6 +48,7 @@ class OpticalFlowTool(QtCore.QObject):
         self._window = window
         self._worker: Optional[FlexibleWorker] = None
         self._worker_thread: Optional[QtCore.QThread] = None
+        self._active_ndjson_path: Optional[Path] = None
         self._live_running: bool = False
         self._records: Dict[int, Dict[str, object]] = {}
         self._global_mag_max: Optional[float] = None
@@ -322,6 +323,7 @@ class OpticalFlowTool(QtCore.QObject):
     def _start_worker(self, settings: FlowRunSettings) -> None:
         w = self._window
         self._live_running = True
+        self._active_ndjson_path = Path(settings.ndjson_path)
         backend_val = str(settings.backend).lower()
         use_torch_farneback = ("torch" in backend_val) and ("raft" not in backend_val)
         worker = FlexibleWorker(
@@ -354,18 +356,18 @@ class OpticalFlowTool(QtCore.QObject):
             payload
         )
 
-        worker.progress_signal.connect(self._on_progress)
-        worker.preview_signal.connect(self._on_preview)
-
-        def _finished(result: object) -> None:
-            self._on_finished(result, Path(settings.ndjson_path))
-
-        worker.finished_signal.connect(_finished)
+        worker.progress_signal.connect(self._on_progress, QtCore.Qt.QueuedConnection)
+        worker.preview_signal.connect(self._on_preview, QtCore.Qt.QueuedConnection)
+        worker.finished_signal.connect(
+            self._on_worker_finished,
+            QtCore.Qt.QueuedConnection,
+        )
 
         worker_thread = QtCore.QThread(w)
         worker.moveToThread(worker_thread)
-        worker.finished_signal.connect(worker_thread.quit)
-        worker_thread.started.connect(worker.run)
+        worker.finished_signal.connect(worker_thread.quit, QtCore.Qt.QueuedConnection)
+        worker_thread.finished.connect(worker.deleteLater)
+        worker_thread.started.connect(worker.run, QtCore.Qt.QueuedConnection)
         worker_thread.start()
 
         self._worker = worker
@@ -521,19 +523,32 @@ class OpticalFlowTool(QtCore.QObject):
         except Exception:
             pass
 
-    def _on_finished(self, result: object, ndjson_path: Path) -> None:
+    @QtCore.Slot(object)
+    def _on_worker_finished(self, result: object) -> None:
         w = self._window
         self._live_running = False
-        if self._worker_thread:
-            self._worker_thread.quit()
-            self._worker_thread.wait()
+        ndjson_path = self._active_ndjson_path
+        worker_thread = self._worker_thread
+
+        if worker_thread is not None:
+            # Avoid waiting on the current thread; this can happen if callbacks run
+            # off-thread and would trigger "QThread::wait: Thread tried to wait on itself".
+            if worker_thread.isRunning():
+                worker_thread.quit()
+            if QtCore.QThread.currentThread() is not worker_thread:
+                worker_thread.wait(3000)
+            worker_thread.deleteLater()
+
         self._worker = None
         self._worker_thread = None
+        self._active_ndjson_path = None
 
         if isinstance(result, Exception):
             QtWidgets.QMessageBox.critical(w, w.tr("Optical flow error"), str(result))
             return
 
+        if ndjson_path is None:
+            return
         self._load_records_from_path(ndjson_path)
         try:
             w.statusBar().showMessage(w.tr("Optical flow complete."), 3000)

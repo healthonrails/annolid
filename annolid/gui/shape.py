@@ -174,7 +174,15 @@ class Shape(object):
 
     def popPoint(self):
         if self.points:
-            return self.points.pop()
+            point = self.points.pop()
+            # Keep point labels aligned with points for prompt-driven shapes
+            # (e.g. ai_polygon / ai_mask) so downstream model calls remain stable.
+            if self.point_labels:
+                try:
+                    self.point_labels.pop()
+                except Exception:
+                    logger.debug("Failed to pop point label.", exc_info=True)
+            return point
         return None
 
     def insertPoint(self, i, point, label=1):

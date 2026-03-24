@@ -415,9 +415,11 @@ def test_ai_polygon_finalise_clamps_points_to_image_bounds(monkeypatch):
         )
 
         class _FakeAiModel:
-            def predict_polygon_from_points(self, points, point_labels):
+            def predict_mask_from_points(self, points, point_labels):
                 _ = points, point_labels
-                return [[-15, -10], [130, 0], [120, 120], [0, 95]]
+                mask = np.zeros((80, 100), dtype=np.uint8)
+                mask[3:76, 2:98] = 1
+                return mask
 
         canvas._ai_model = _FakeAiModel()
         canvas.finalise()
@@ -426,6 +428,548 @@ def test_ai_polygon_finalise_clamps_points_to_image_bounds(monkeypatch):
         assert len(polygon.points) >= 3
         assert all(0.0 <= point.x() <= 99.0 for point in polygon.points)
         assert all(0.0 <= point.y() <= 79.0 for point in polygon.points)
+    finally:
+        canvas.close()
+
+
+def test_polygon_double_click_finalise_trims_tail_point() -> None:
+    _ensure_qapp()
+
+    from annolid.gui.shape import Shape
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(120, 90, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.mode = canvas.CREATE
+        canvas.createMode = "polygon"
+        shape = Shape(shape_type="polygon")
+        shape.addPoint(QtCore.QPointF(10, 10))
+        shape.addPoint(QtCore.QPointF(40, 10))
+        shape.addPoint(QtCore.QPointF(40, 35))
+        # Simulate the redundant trailing click point added just before double-click.
+        shape.addPoint(QtCore.QPointF(30, 25))
+        canvas.current = shape
+
+        canvas.mouseDoubleClickEvent(None)
+
+        assert canvas.current is None
+        assert len(canvas.shapes) == 1
+        assert len(canvas.shapes[0].points) == 3
+    finally:
+        canvas.close()
+
+
+def test_ai_polygon_double_click_does_not_finalise_when_not_closeable(monkeypatch):
+    _ensure_qapp()
+
+    from annolid.gui.shape import Shape
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(100, 80, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.mode = canvas.CREATE
+        canvas.createMode = "ai_polygon"
+        shape = Shape(shape_type="points")
+        shape.addPoint(QtCore.QPointF(20, 20), label=1)
+        shape.addPoint(QtCore.QPointF(30, 25), label=1)
+        canvas.current = shape
+        called = {"count": 0}
+        monkeypatch.setattr(
+            canvas,
+            "finalise",
+            lambda: called.__setitem__("count", called["count"] + 1),
+        )
+
+        canvas.mouseDoubleClickEvent(None)
+
+        assert called["count"] == 0
+    finally:
+        canvas.close()
+
+
+def test_ai_polygon_finalise_inference_error_keeps_editing(monkeypatch):
+    _ensure_qapp()
+
+    from annolid.gui.shape import Shape
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(100, 80, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.mode = canvas.CREATE
+        canvas.createMode = "ai_polygon"
+        shape = Shape(shape_type="points")
+        shape.addPoint(QtCore.QPointF(10, 10), label=1)
+        shape.addPoint(QtCore.QPointF(25, 20), label=1)
+        shape.addPoint(QtCore.QPointF(35, 40), label=1)
+        canvas.current = shape
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
+
+        class _FailingModel:
+            def predict_polygon_from_points(self, points, point_labels):
+                _ = points, point_labels
+                raise RuntimeError("model failed")
+
+        canvas._ai_model = _FailingModel()
+
+        canvas.finalise()
+
+        assert canvas.current is shape
+        assert canvas.current.shape_type == "points"
+        assert canvas.shapes == []
+    finally:
+        canvas.close()
+
+
+def test_shape_pop_point_keeps_point_labels_aligned() -> None:
+    from annolid.gui.shape import Shape
+
+    shape = Shape(shape_type="points")
+    shape.addPoint(QtCore.QPointF(10, 10), label=1)
+    shape.addPoint(QtCore.QPointF(20, 20), label=0)
+    shape.addPoint(QtCore.QPointF(30, 30), label=1)
+
+    popped = shape.popPoint()
+
+    assert popped == QtCore.QPointF(30, 30)
+    assert len(shape.points) == 2
+    assert len(shape.point_labels) == 2
+    assert shape.point_labels == [1, 0]
+
+
+def test_ai_polygon_double_click_trim_keeps_prompt_labels_aligned() -> None:
+    _ensure_qapp()
+
+    from annolid.gui.shape import Shape
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas(epsilon=5.0)
+    try:
+        image = QtGui.QImage(100, 80, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.mode = canvas.CREATE
+        canvas.createMode = "ai_polygon"
+        shape = Shape(shape_type="points")
+        shape.addPoint(QtCore.QPointF(10, 10), label=1)
+        shape.addPoint(QtCore.QPointF(20, 20), label=1)
+        # Near-duplicate tail point (trim target).
+        shape.addPoint(QtCore.QPointF(20.2, 20.1), label=1)
+        canvas.current = shape
+
+        canvas._trim_double_click_tail_point()
+
+        assert len(canvas.current.points) == 2
+        assert len(canvas.current.point_labels) == 2
+    finally:
+        canvas.close()
+
+
+def test_polygon_from_prompt_mask_uses_largest_refined_mask_component() -> None:
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        mask = np.zeros((120, 120), dtype=np.uint8)
+        mask[10:35, 10:35] = 1
+        mask[55:110, 60:115] = 1
+
+        points = canvas._polygon_from_prompt_mask(
+            mask,
+            prompt_points=[[90, 90], [30, 30]],
+            point_labels=[1, 0],
+        )
+
+        assert len(points) >= 3
+        xs = [p.x() for p in points]
+        ys = [p.y() for p in points]
+        assert min(xs) >= 55
+        assert min(ys) >= 55
+    finally:
+        canvas.close()
+
+
+def test_ai_polygon_finalise_uses_largest_refined_mask_component(monkeypatch) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.shape import Shape
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(140, 120, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.mode = canvas.CREATE
+        canvas.createMode = "ai_polygon"
+        shape = Shape(shape_type="points")
+        shape.addPoint(QtCore.QPointF(100, 95), label=1)
+        shape.addPoint(QtCore.QPointF(20, 20), label=0)
+        canvas.current = shape
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
+
+        class _FakeAiModel:
+            def predict_mask_from_points(self, points, point_labels):
+                _ = points, point_labels
+                mask = np.zeros((120, 140), dtype=np.uint8)
+                mask[5:40, 5:35] = 1
+                mask[55:115, 70:135] = 1
+                return mask
+
+        canvas._ai_model = _FakeAiModel()
+        canvas.finalise()
+
+        assert len(canvas.shapes) == 1
+        polygon = canvas.shapes[0]
+        xs = [p.x() for p in polygon.points]
+        ys = [p.y() for p in polygon.points]
+        assert min(xs) >= 65
+        assert min(ys) >= 50
+    finally:
+        canvas.close()
+
+
+def test_ai_polygon_finalise_prefers_sam_mask_over_polygon_output(monkeypatch) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.shape import Shape
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(140, 120, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.mode = canvas.CREATE
+        canvas.createMode = "ai_polygon"
+        shape = Shape(shape_type="points")
+        shape.addPoint(QtCore.QPointF(15, 15), label=1)
+        shape.addPoint(QtCore.QPointF(110, 20), label=1)
+        shape.addPoint(QtCore.QPointF(115, 90), label=1)
+        shape.addPoint(QtCore.QPointF(20, 100), label=1)
+        canvas.current = shape
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
+
+        calls = []
+
+        class _FakeAiModel:
+            def predict_polygon_from_points(self, points, point_labels):
+                calls.append("polygon")
+                _ = points, point_labels
+                return np.array(
+                    [
+                        [5.0, 5.0],
+                        [135.0, 5.0],
+                        [135.0, 115.0],
+                        [5.0, 115.0],
+                    ],
+                    dtype=np.float32,
+                )
+
+            def predict_mask_from_points(self, points, point_labels):
+                calls.append("mask")
+                _ = points, point_labels
+                mask = np.zeros((120, 140), dtype=np.uint8)
+                mask[20:100, 25:120] = 1
+                return mask
+
+        canvas._ai_model = _FakeAiModel()
+        canvas.finalise()
+
+        assert calls == ["mask"]
+        assert len(canvas.shapes) == 1
+        polygon = canvas.shapes[0]
+        assert polygon.shape_type == "polygon"
+        xs = [point.x() for point in polygon.points]
+        ys = [point.y() for point in polygon.points]
+        assert min(xs) >= 20
+        assert max(xs) <= 121
+        assert min(ys) >= 15
+        assert max(ys) <= 101
+
+    finally:
+        canvas.close()
+
+
+def test_ai_polygon_does_not_fallback_to_polygon_when_mask_predictor_errors(
+    monkeypatch,
+) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(140, 120, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
+
+        calls = []
+
+        class _FailingMaskModel:
+            def predict_mask_from_points(self, points, point_labels):
+                calls.append("mask")
+                _ = points, point_labels
+                raise RuntimeError("temporary predictor failure")
+
+            def predict_polygon_from_points(self, points, point_labels):
+                calls.append("polygon")
+                _ = points, point_labels
+                return np.array(
+                    [
+                        [-100.0, -100.0],
+                        [280.0, -100.0],
+                        [280.0, 220.0],
+                        [-100.0, 220.0],
+                    ],
+                    dtype=np.float32,
+                )
+
+        canvas._ai_model = _FailingMaskModel()
+        points = canvas._predict_ai_polygon_points(
+            prompt_points=[[75.0, 65.0], [85.0, 78.0]],
+            point_labels=[1, 1],
+        )
+
+        assert calls == ["mask"]
+        assert points == []
+    finally:
+        canvas.close()
+
+
+def test_ai_polygon_refines_polygon_as_more_prompts_are_added(monkeypatch) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.shape import Shape
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(140, 120, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
+
+        class _RefiningMaskModel:
+            def predict_polygon_from_points(self, points, point_labels):
+                raise AssertionError("mask path should drive AI polygon generation")
+
+            def predict_mask_from_points(self, points, point_labels):
+                _ = point_labels
+                mask = np.zeros((120, 140), dtype=np.uint8)
+                if len(points) == 1:
+                    mask[50:80, 60:90] = 1
+                elif len(points) == 2:
+                    mask[45:90, 50:105] = 1
+                else:
+                    mask[40:95, 45:110] = 1
+                return mask
+
+        canvas._ai_model = _RefiningMaskModel()
+
+        shape = Shape(shape_type="points")
+        shape.addPoint(QtCore.QPointF(75, 65), label=1)
+        canvas.current = shape
+
+        polygon1 = canvas._predict_ai_polygon_points(
+            prompt_points=[[75.0, 65.0]],
+            point_labels=[1],
+        )
+        shape.addPoint(QtCore.QPointF(85, 78), label=1)
+        polygon2 = canvas._predict_ai_polygon_points(
+            prompt_points=[[75.0, 65.0], [85.0, 78.0]],
+            point_labels=[1, 1],
+        )
+        shape.addPoint(QtCore.QPointF(55, 55), label=1)
+        polygon3 = canvas._predict_ai_polygon_points(
+            prompt_points=[[75.0, 65.0], [85.0, 78.0], [55.0, 55.0]],
+            point_labels=[1, 1, 1],
+        )
+
+        def _bbox(points):
+            xs = [point.x() for point in points]
+            ys = [point.y() for point in points]
+            return min(xs), min(ys), max(xs), max(ys)
+
+        bbox1 = _bbox(polygon1)
+        bbox2 = _bbox(polygon2)
+        bbox3 = _bbox(polygon3)
+
+        assert len(polygon1) >= 3
+        assert len(polygon2) >= 3
+        assert len(polygon3) >= 3
+        assert bbox2[0] <= bbox1[0]
+        assert bbox2[1] <= bbox1[1]
+        assert bbox2[2] >= bbox1[2]
+        assert bbox2[3] >= bbox1[3]
+        assert bbox3[0] <= bbox2[0]
+        assert bbox3[1] <= bbox2[1]
+        assert bbox3[2] >= bbox2[2]
+        assert bbox3[3] >= bbox2[3]
+    finally:
+        canvas.close()
+
+
+def test_ai_polygon_finalise_materializes_stable_polygon_shape(monkeypatch) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.shape import Shape
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(140, 120, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.mode = canvas.CREATE
+        canvas.createMode = "ai_polygon"
+        shape = Shape(shape_type="points")
+        shape.addPoint(QtCore.QPointF(75, 65), label=1)
+        shape.addPoint(QtCore.QPointF(85, 78), label=1)
+        shape.other_data["source"] = "ai"
+        canvas.current = shape
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
+
+        class _StableMaskModel:
+            def predict_mask_from_points(self, points, point_labels):
+                _ = points, point_labels
+                mask = np.zeros((120, 140), dtype=np.uint8)
+                mask[45:90, 50:105] = 1
+                return mask
+
+        canvas._ai_model = _StableMaskModel()
+        canvas.finalise()
+
+        assert len(canvas.shapes) == 1
+        polygon = canvas.shapes[0]
+        assert polygon.shape_type == "polygon"
+        assert polygon.isClosed() is True
+        assert polygon._shape_raw is None
+        assert len(polygon.points) == len(polygon.point_labels)
+        assert set(polygon.point_labels) == {1}
+        assert polygon.other_data["source"] == "ai"
+    finally:
+        canvas.close()
+
+
+def test_ai_polygon_modifier_key_after_finalise_does_not_mutate_shape(
+    monkeypatch,
+) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.shape import Shape
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(140, 120, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.mode = canvas.CREATE
+        canvas.createMode = "ai_polygon"
+        shape = Shape(shape_type="points")
+        shape.addPoint(QtCore.QPointF(75, 65), label=1)
+        shape.addPoint(QtCore.QPointF(85, 78), label=1)
+        canvas.current = shape
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
+
+        class _StableMaskModel:
+            def predict_mask_from_points(self, points, point_labels):
+                _ = points, point_labels
+                mask = np.zeros((120, 140), dtype=np.uint8)
+                mask[45:90, 50:105] = 1
+                return mask
+
+        canvas._ai_model = _StableMaskModel()
+        canvas.finalise()
+        polygon = canvas.shapes[0]
+        before = [(point.x(), point.y()) for point in polygon.points]
+
+        press = QtGui.QKeyEvent(
+            QtCore.QEvent.KeyPress,
+            QtCore.Qt.Key_Meta,
+            QtCore.Qt.MetaModifier,
+        )
+        release = QtGui.QKeyEvent(
+            QtCore.QEvent.KeyRelease,
+            QtCore.Qt.Key_Meta,
+            QtCore.Qt.NoModifier,
+        )
+        canvas.keyPressEvent(press)
+        canvas.keyReleaseEvent(release)
+
+        after = [(point.x(), point.y()) for point in polygon.points]
+        assert after == before
+    finally:
+        canvas.close()
+
+
+def test_ai_polygon_finalise_does_not_force_resync_when_pixmap_unchanged(
+    monkeypatch,
+) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.shape import Shape
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(140, 120, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.mode = canvas.CREATE
+        canvas.createMode = "ai_polygon"
+        shape = Shape(shape_type="points")
+        shape.addPoint(QtCore.QPointF(75, 65), label=1)
+        shape.addPoint(QtCore.QPointF(85, 78), label=1)
+        canvas.current = shape
+
+        class _StableMaskModel:
+            def predict_mask_from_points(self, points, point_labels):
+                _ = points, point_labels
+                mask = np.zeros((120, 140), dtype=np.uint8)
+                mask[45:90, 50:105] = 1
+                return mask
+
+        canvas._ai_model = _StableMaskModel()
+        canvas._ai_model_pixmap_key = int(canvas.pixmap.cacheKey())
+        sync_forces = []
+
+        def _fake_sync(*, force=False):
+            sync_forces.append(bool(force))
+            return True
+
+        monkeypatch.setattr(canvas, "_sync_ai_model_image", _fake_sync)
+
+        canvas.finalise()
+
+        assert sync_forces
+        assert all(force is False for force in sync_forces)
     finally:
         canvas.close()
 

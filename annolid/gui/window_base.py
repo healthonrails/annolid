@@ -455,7 +455,6 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         # Tabify Labels + Label Instances, with Label Instances active by default.
         self.tabifyDockWidget(self.shape_dock, self.label_dock)
         self.shape_dock.raise_()
-
         self.zoomWidget = QtWidgets.QSpinBox(self)
         self.zoomWidget.setRange(1, 1000)
         self.zoomWidget.setValue(100)
