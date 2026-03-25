@@ -23,6 +23,7 @@ from .filesystem import (
 )
 from .function_registry import FunctionToolRegistry
 from .research import DraftPaperSwarmTool, LiteratureSearchTool
+from .function_ffmpeg import VideoFFmpegProcessTool
 from .function_video import (
     VideoInfoTool,
     VideoListInferenceModelsTool,
@@ -209,6 +210,12 @@ async def register_nanobot_style_tools(
     )
     registry.register(
         VideoRunModelInferenceTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        VideoFFmpegProcessTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )

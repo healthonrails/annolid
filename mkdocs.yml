@@ -94,6 +94,7 @@ nav:
       - Simulation and FlyBody: simulation_flybody.md
       - COCO Data Flow: coco_data_flow.md
       - Tutorials Overview: tutorials.md
+      - Video Processing with FFmpeg: tutorials/video_ffmpeg_processing.md
       - Segment-based Batch Tracking: tutorials/segment-based-batch-tracking.md
       - LabelMe to YOLO Class Map: tutorials/Labelme_to_YOLO_class_map.md
       - Sandboxed Shell: tutorials/sandboxed_shell.md
