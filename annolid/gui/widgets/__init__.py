@@ -37,6 +37,10 @@ from annolid.gui.widgets.labeling_progress_dashboard import (
     LabelingProgressDashboardDialog,
     LabelingProgressDashboardWidget,
 )
+from annolid.gui.widgets.tracking_stats_dashboard_dialog import (
+    TrackingStatsDashboardDialog,
+    TrackingStatsDashboardWidget,
+)
 from annolid.gui.widgets.agent_run_dialog import AgentRunDialog
 from annolid.gui.widgets.embedding_search_widget import EmbeddingSearchWidget
 from annolid.gui.widgets.batch_relabel_dialog import BatchRelabelDialog
@@ -72,6 +76,8 @@ __all__ = [
     "TrainingDashboardWidget",
     "LabelingProgressDashboardDialog",
     "LabelingProgressDashboardWidget",
+    "TrackingStatsDashboardDialog",
+    "TrackingStatsDashboardWidget",
     "AgentRunDialog",
     "EmbeddingSearchWidget",
     "BatchRelabelDialog",

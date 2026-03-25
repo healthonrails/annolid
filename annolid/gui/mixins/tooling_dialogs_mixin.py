@@ -22,6 +22,9 @@ from annolid.gui.widgets import (
     LogManagerDialog,
     SystemInfoDialog,
 )
+from annolid.gui.widgets.tracking_stats_dashboard_dialog import (
+    TrackingStatsDashboardDialog,
+)
 from annolid.gui.widgets.convert_deeplabcut_dialog import ConvertDLCDialog
 from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
 from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
@@ -266,6 +269,40 @@ class ToolingDialogsMixin:
             self.statusBar().showMessage(self.tr("Gap analysis failed."), 5000)
         finally:
             set_widget_busy_cursor(self, False)
+
+    def open_tracking_stats_dashboard(self) -> None:
+        """Open cross-video tracking stats analysis/visualization dashboard."""
+        try:
+            dialog = getattr(self, "_tracking_stats_dashboard_dialog", None)
+            if dialog is None:
+                initial_root = None
+                if getattr(self, "video_results_folder", None):
+                    initial_root = Path(self.video_results_folder).resolve()
+                elif getattr(self, "annotation_dir", None):
+                    initial_root = Path(self.annotation_dir).resolve()
+                elif getattr(self, "lastOpenDir", None):
+                    initial_root = Path(str(self.lastOpenDir)).resolve()
+                else:
+                    initial_root = Path.cwd()
+                dialog = TrackingStatsDashboardDialog(
+                    initial_root_dir=initial_root,
+                    parent=self,
+                )
+                dialog.finished.connect(
+                    lambda *_: setattr(self, "_tracking_stats_dashboard_dialog", None)
+                )
+                dialog.destroyed.connect(
+                    lambda *_: setattr(self, "_tracking_stats_dashboard_dialog", None)
+                )
+                self._tracking_stats_dashboard_dialog = dialog
+
+            dialog.show()
+            dialog.setWindowState(dialog.windowState() & ~QtCore.Qt.WindowMinimized)
+            dialog.raise_()
+            dialog.activateWindow()
+            QtWidgets.QApplication.processEvents()
+        except Exception as exc:
+            logger.debug("Could not open tracking stats dashboard: %s", exc)
 
     def _add_real_time_stamps(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(

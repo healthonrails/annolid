@@ -457,6 +457,14 @@ class MenuController:
                 "tip": w.tr("Generate tracking reports for the selected video"),
             },
             {
+                "name": "tracking_stats_dashboard",
+                "text": w.tr("Tracking Stats &Dashboard…"),
+                "slot": w.open_tracking_stats_dashboard,
+                "tip": w.tr(
+                    "Analyze and visualize manual/abnormal tracking stats across videos"
+                ),
+            },
+            {
                 "name": "behavior_time_budget",
                 "text": w.tr("&Behavior Time Budget"),
                 "slot": w.show_behavior_time_budget_dialog,
@@ -1267,6 +1275,7 @@ class MenuController:
         analysis_sections = [
             (
                 actions["labeling_progress_dashboard"],
+                actions["tracking_stats_dashboard"],
                 actions["tracking_reports"],
                 actions["behavior_time_budget"],
                 actions["run_agent"],
