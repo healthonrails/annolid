@@ -212,6 +212,45 @@ def test_keypoint_sequence_toolbar_action_syncs_with_checkbox():
         w.close()
 
 
+def test_initialize_ai_model_reuses_embedding_for_same_model_and_frame(
+    monkeypatch,
+) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.app import AnnolidWindow
+    import annolid.gui.widgets.canvas as canvas_mod
+
+    class ReusableAiModel:
+        name = "ReusableAiModel"
+
+        def set_image(self, image):
+            _ = image
+
+    monkeypatch.setattr(canvas_mod, "AI_MODELS", [ReusableAiModel])
+
+    w = AnnolidWindow(config={})
+    try:
+        img = QtGui.QImage(96, 64, QtGui.QImage.Format_RGB32)
+        img.fill(QtGui.QColor(80, 90, 100))
+        w.image_to_canvas(img, "reuse_test.png", 0)
+
+        w.canvas.initializeAiModel("ReusableAiModel")
+        assert isinstance(w.canvas._ai_model, ReusableAiModel)
+
+        sync_forces = []
+
+        def _capture_sync(*, force=False):
+            sync_forces.append(bool(force))
+            return True
+
+        monkeypatch.setattr(w.canvas, "_sync_ai_model_image", _capture_sync)
+        w.canvas.initializeAiModel("ReusableAiModel")
+
+        assert sync_forces == [False]
+    finally:
+        w.close()
+
+
 def test_draw_mode_actions_expose_mode_switch_shortcuts():
     _ensure_qapp()
 

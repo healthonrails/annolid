@@ -563,7 +563,10 @@ class Canvas(QtWidgets.QWidget):
             logger.info("AI model init skipped for '%s' (%.1fms).", name, elapsed_ms)
             return
 
-        if self._ai_model is not None and self._ai_model.name == model_class.name:
+        reused_model = (
+            self._ai_model is not None and self._ai_model.name == model_class.name
+        )
+        if reused_model:
             logger.debug("AI model is already initialized: %r" % model_class.name)
         else:
             logger.debug("Initializing AI model: %r" % model_class.name)
@@ -588,7 +591,8 @@ class Canvas(QtWidgets.QWidget):
             logger.warning("Pixmap is not set yet")
             return
 
-        self._sync_ai_model_image(force=True)
+        # Avoid rebuilding embeddings for the same frame/model pair.
+        self._sync_ai_model_image(force=not reused_model)
         elapsed_ms = (time.perf_counter() - init_start) * 1000.0
         logger.info(
             "AI model '%s' initialized and synced in %.1fms.",
