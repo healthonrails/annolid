@@ -1,6 +1,6 @@
 import asyncio
 import pytest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 from annolid.core.agent.loop import AgentLoop
 
 
@@ -57,44 +57,45 @@ async def test_agent_loop_streaming_visualizer_updates(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_litellm_provider_streaming_mock():
-    """Verify LiteLLMProvider correctly handles on_token callback."""
-    from annolid.core.agent.providers.litellm_provider import LiteLLMProvider
+async def test_unified_provider_streaming_mock():
+    """Verify UnifiedLLMProvider correctly handles on_token callback."""
+    from annolid.core.agent.providers.unified_provider import UnifiedLLMProvider
 
-    provider = LiteLLMProvider(default_model="test")
+    provider = UnifiedLLMProvider(default_model="test")
 
-    # Mock litellm.acompletion
-    with MagicMock() as mock_litellm:
-        import sys
+    class _FakeCompletions:
+        async def create(self, **kwargs):  # noqa: ANN003
+            assert kwargs["stream"] is True
 
-        sys.modules["litellm"] = mock_litellm
+            async def _stream():
+                class _Chunk:
+                    def __init__(self, content, reasoning=None, finish_reason=None):
+                        self.choices = [MagicMock()]
+                        self.choices[0].delta = MagicMock()
+                        self.choices[0].delta.content = content
+                        self.choices[0].delta.reasoning_content = reasoning
+                        self.choices[0].finish_reason = finish_reason
 
-        async def mock_stream(*args, **kwargs):
-            class Chunk:
-                def __init__(self, content, reasoning=None):
-                    self.choices = [MagicMock()]
-                    self.choices[0].delta = MagicMock()
-                    self.choices[0].delta.content = content
-                    self.choices[0].delta.reasoning_content = reasoning
-                    self.choices[0].finish_reason = None
+                yield _Chunk(None, "Thinking")
+                yield _Chunk("Hello")
+                yield _Chunk(" World")
+                yield _Chunk(None, finish_reason="stop")
 
-            yield Chunk(None, "Thinking")
-            yield Chunk("Hello")
-            yield Chunk(" World")
+            return _stream()
 
-            final_chunk = Chunk(None)
-            final_chunk.choices[0].finish_reason = "stop"
-            yield final_chunk
+    class _FakeClient:
+        def __init__(self):
+            self.chat = MagicMock(completions=_FakeCompletions())
 
-        mock_litellm.acompletion = AsyncMock(return_value=mock_stream())
+    provider._ensure_openai_client = lambda: _FakeClient()  # type: ignore[method-assign]
 
-        tokens = []
+    tokens = []
 
-        def on_token(t):
-            tokens.append(t)
+    def on_token(t):
+        tokens.append(t)
 
-        await provider.chat(messages=[], on_token=on_token)
+    await provider.chat(messages=[], on_token=on_token)
 
-        assert "<think>Thinking</think>" in tokens
-        assert "Hello" in tokens
-        assert " World" in tokens
+    assert "<think>Thinking</think>" in tokens
+    assert "Hello" in tokens
+    assert " World" in tokens

@@ -121,7 +121,10 @@ class VideoRescaleWidget(QDialog):
         self.init_ui()
 
     def init_ui(self):
+        section_style = "font-weight: 600; color: #3a6ea5;"
         # Input Folder
+        self.input_section_label = QLabel("1) Input / Output")
+        self.input_section_label.setStyleSheet(section_style)
         self.input_folder_label = QLabel("Input Folder:")
         self.input_folder_button = QPushButton("Select Folder")
         self.input_folder_button.clicked.connect(self.select_input_folder)
@@ -132,6 +135,8 @@ class VideoRescaleWidget(QDialog):
         self.output_folder_button.clicked.connect(self.select_output_folder)
 
         # Scale Factor
+        self.processing_section_label = QLabel("2) Processing")
+        self.processing_section_label.setStyleSheet(section_style)
         self.scale_factor_label = QLabel("Scale Factor:")
         self.scale_factor_slider = QSlider(Qt.Horizontal)
         self.scale_factor_slider.setMinimum(0)
@@ -158,8 +163,26 @@ class VideoRescaleWidget(QDialog):
 
         # Denoise Option
         self.denoise_checkbox = QCheckBox("Apply Denoise")
+        self.auto_contrast_checkbox = QCheckBox("Auto Contrast Enhancement")
+        self.auto_contrast_strength_label = QLabel("Auto Contrast Strength:")
+        self.auto_contrast_strength_slider = QSlider(Qt.Horizontal)
+        self.auto_contrast_strength_slider.setMinimum(0)
+        self.auto_contrast_strength_slider.setMaximum(200)
+        self.auto_contrast_strength_slider.setValue(100)
+        self.auto_contrast_strength_slider.setTickInterval(25)
+        self.auto_contrast_strength_slider.setTickPosition(QSlider.TicksBelow)
+        self.auto_contrast_strength_slider.valueChanged.connect(
+            self.update_auto_contrast_strength_from_slider
+        )
+        self.auto_contrast_strength_text = QLineEdit("1.0")
+        self.auto_contrast_strength_text.editingFinished.connect(
+            self.update_auto_contrast_strength_from_text
+        )
+        self.auto_contrast_checkbox.toggled.connect(self._toggle_auto_contrast_controls)
 
         # Crop Region Options
+        self.crop_section_label = QLabel("3) Region Selection")
+        self.crop_section_label.setStyleSheet(section_style)
         self.crop_checkbox = QCheckBox("Enable Crop Region")
         self.crop_label = QLabel("Crop Region (x, y, width, height):")
         self.crop_x_text = QLineEdit()
@@ -181,6 +204,8 @@ class VideoRescaleWidget(QDialog):
         self.crop_preview_button.clicked.connect(self.preview_and_crop)
 
         # Other Options
+        self.run_section_label = QLabel("4) Run")
+        self.run_section_label.setStyleSheet(section_style)
         self.rescale_checkbox = QCheckBox("Rescale Video")
         self.collect_only_checkbox = QCheckBox("Collect Metadata Only")
 
@@ -190,10 +215,12 @@ class VideoRescaleWidget(QDialog):
 
         # Layout
         layout = QVBoxLayout()
+        layout.addWidget(self.input_section_label)
         layout.addWidget(self.input_folder_label)
         layout.addWidget(self.input_folder_button)
         layout.addWidget(self.output_folder_label)
         layout.addWidget(self.output_folder_button)
+        layout.addWidget(self.processing_section_label)
         layout.addWidget(self.scale_factor_label)
         layout.addWidget(self.scale_factor_slider)
         layout.addWidget(self.scale_factor_text)
@@ -203,14 +230,21 @@ class VideoRescaleWidget(QDialog):
         layout.addWidget(self.codec_label)
         layout.addWidget(self.codec_text)
         layout.addWidget(self.denoise_checkbox)
+        layout.addWidget(self.auto_contrast_checkbox)
+        layout.addWidget(self.auto_contrast_strength_label)
+        layout.addWidget(self.auto_contrast_strength_slider)
+        layout.addWidget(self.auto_contrast_strength_text)
+        layout.addWidget(self.crop_section_label)
         layout.addWidget(self.crop_checkbox)
         layout.addWidget(self.crop_label)
         layout.addLayout(crop_layout)
         layout.addWidget(self.crop_preview_button)
+        layout.addWidget(self.run_section_label)
         layout.addWidget(self.rescale_checkbox)
         layout.addWidget(self.collect_only_checkbox)
         layout.addWidget(self.run_button)
         self.setLayout(layout)
+        self._toggle_auto_contrast_controls(False)
 
     def select_input_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Input Folder")
@@ -247,6 +281,28 @@ class VideoRescaleWidget(QDialog):
                 self.scale_factor_text.setText("Invalid Value")
         except ValueError:
             self.scale_factor_text.setText("Invalid Value")
+
+    def update_auto_contrast_strength_from_slider(self):
+        strength = self.auto_contrast_strength_slider.value() / 100
+        self.auto_contrast_strength_text.setText(f"{strength:.2f}")
+
+    def update_auto_contrast_strength_from_text(self):
+        try:
+            strength = float(self.auto_contrast_strength_text.text())
+            if 0.0 <= strength <= 2.0:
+                self.auto_contrast_strength_slider.setValue(int(strength * 100))
+                self.auto_contrast_strength_text.setText(f"{strength:.2f}")
+            else:
+                self.auto_contrast_strength_text.setText("1.00")
+                self.auto_contrast_strength_slider.setValue(100)
+        except ValueError:
+            self.auto_contrast_strength_text.setText("1.00")
+            self.auto_contrast_strength_slider.setValue(100)
+
+    def _toggle_auto_contrast_controls(self, enabled):
+        self.auto_contrast_strength_label.setEnabled(bool(enabled))
+        self.auto_contrast_strength_slider.setEnabled(bool(enabled))
+        self.auto_contrast_strength_text.setEnabled(bool(enabled))
 
     def preview_and_crop(self):
         """Extract the first frame from the first video in the input folder and open the crop dialog."""
@@ -320,6 +376,8 @@ class VideoRescaleWidget(QDialog):
         scale_factor=None,
         fps=None,
         apply_denoise=None,
+        auto_contrast=None,
+        auto_contrast_strength=None,
         crop_params=None,
         command_log=None,
     ):
@@ -354,6 +412,11 @@ class VideoRescaleWidget(QDialog):
                             f"- FPS: {fps if fps is not None else 'original per-video FPS'}\n"
                         )
                         f.write(f"- Apply Denoise: {apply_denoise}\n")
+                        f.write(f"- Auto Contrast: {auto_contrast}\n")
+                        if auto_contrast:
+                            f.write(
+                                f"- Auto Contrast Strength: {auto_contrast_strength}\n"
+                            )
                         if crop_params is not None:
                             crop_x, crop_y, crop_width, crop_height = crop_params
                             f.write(
@@ -370,7 +433,7 @@ class VideoRescaleWidget(QDialog):
                     video_metadata = [
                         m
                         for m in metadata_list
-                        if m.get("filename", "").lower() == video_file.lower()
+                        if m.get("video_name", "").lower() == video_file.lower()
                     ]
                     for entry in video_metadata:
                         for key, value in entry.items():
@@ -413,6 +476,17 @@ class VideoRescaleWidget(QDialog):
         rescale = self.rescale_checkbox.isChecked()
         collect_only = self.collect_only_checkbox.isChecked()
         apply_denoise = self.denoise_checkbox.isChecked()
+        auto_contrast = self.auto_contrast_checkbox.isChecked()
+        if auto_contrast:
+            try:
+                auto_contrast_strength = float(self.auto_contrast_strength_text.text())
+            except ValueError:
+                QMessageBox.warning(self, "Error", "Invalid auto contrast strength.")
+                self.run_button.setEnabled(True)
+                self.run_button.setText("Run Rescaling")
+                return
+        else:
+            auto_contrast_strength = 1.0
 
         crop_params = None
         if self.crop_checkbox.isChecked():
@@ -449,6 +523,8 @@ class VideoRescaleWidget(QDialog):
                 scale_factor,
                 fps=fps,
                 apply_denoise=apply_denoise,
+                auto_contrast=auto_contrast,
+                auto_contrast_strength=auto_contrast_strength,
                 crop_x=crop_params[0] if crop_params else None,
                 crop_y=crop_params[1] if crop_params else None,
                 crop_width=crop_params[2] if crop_params else None,
@@ -459,10 +535,44 @@ class VideoRescaleWidget(QDialog):
                 scale_factor=scale_factor,
                 fps=fps,
                 apply_denoise=apply_denoise,
+                auto_contrast=auto_contrast,
+                auto_contrast_strength=auto_contrast_strength,
                 crop_params=crop_params,
                 command_log=command_log,
             )
-            QMessageBox.information(self, "Done", "Rescaling is done.")
+            input_video_count = len(
+                [
+                    f
+                    for f in os.listdir(input_folder)
+                    if f.lower().endswith(
+                        (
+                            ".mp4",
+                            ".avi",
+                            ".mkv",
+                            ".mov",
+                            ".wmv",
+                            ".flv",
+                            ".mpeg",
+                            ".mpg",
+                            ".m4v",
+                            ".mts",
+                        )
+                    )
+                ]
+            )
+            success_count = len(command_log)
+            failed_count = max(0, input_video_count - success_count)
+            summary = (
+                "Video processing complete.\n\n"
+                f"Successful: {success_count}\n"
+                f"Failed: {failed_count}\n"
+                f"Output folder: {output_folder}\n\n"
+                "Tip: If failures remain, disable denoise and keep Auto Contrast on."
+            )
+            if failed_count > 0:
+                QMessageBox.warning(self, "Completed with Warnings", summary)
+            else:
+                QMessageBox.information(self, "Done", summary)
 
         self.run_button.setEnabled(True)
         self.run_button.setText("Run Rescaling")

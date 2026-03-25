@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 import types
 from types import SimpleNamespace
@@ -21,7 +20,7 @@ from annolid.core.agent.providers.openai_codex_provider import (
     resolve_openai_codex,
 )
 from annolid.core.agent.providers.base import ToolCallRequest
-from annolid.core.agent.providers.litellm_provider import LiteLLMProvider
+from annolid.core.agent.providers.unified_provider import UnifiedLLMProvider
 from annolid.core.agent.providers.registry import find_by_model
 from annolid.utils.llm_settings import LLMConfig
 
@@ -182,8 +181,8 @@ def test_openai_compat_provider_parses_dict_response_and_reuses_client_until_clo
     assert closed["value"] is True
 
 
-def test_litellm_provider_resolves_gateway_prefix() -> None:
-    provider = LiteLLMProvider(
+def test_unified_provider_resolves_gateway_prefix() -> None:
+    provider = UnifiedLLMProvider(
         provider_name="openrouter",
         api_key="sk-or-test",
         default_model="gpt-4o-mini",
@@ -191,8 +190,8 @@ def test_litellm_provider_resolves_gateway_prefix() -> None:
     assert provider._resolve_model("gpt-4o-mini") == "openrouter/gpt-4o-mini"
 
 
-def test_litellm_provider_applies_model_overrides() -> None:
-    provider = LiteLLMProvider(
+def test_unified_provider_applies_model_overrides() -> None:
+    provider = UnifiedLLMProvider(
         provider_name="moonshot",
         api_key="x",
         default_model="kimi-k2.5",
@@ -202,7 +201,7 @@ def test_litellm_provider_applies_model_overrides() -> None:
     assert payload["temperature"] == 1.0
 
 
-def test_litellm_provider_sanitizes_assistant_tool_call_messages() -> None:
+def test_unified_provider_sanitizes_assistant_tool_call_messages() -> None:
     messages = [
         {
             "role": "assistant",
@@ -210,21 +209,21 @@ def test_litellm_provider_sanitizes_assistant_tool_call_messages() -> None:
             "untrusted": "drop",
         }
     ]
-    sanitized = LiteLLMProvider._sanitize_messages(messages)
+    sanitized = UnifiedLLMProvider._sanitize_messages(messages)
     assert len(sanitized) == 1
     assert "untrusted" not in sanitized[0]
     assert sanitized[0]["content"] is None
 
 
-def test_litellm_provider_parses_repairable_tool_call_arguments(monkeypatch) -> None:
+def test_unified_provider_parses_repairable_tool_call_arguments(monkeypatch) -> None:
     fake_repair = types.SimpleNamespace(loads=lambda _text: {"text": "hi"})
     monkeypatch.setitem(sys.modules, "json_repair", fake_repair)
-    parsed = LiteLLMProvider._parse_tool_call_arguments('{"text":"hi",}')
+    parsed = UnifiedLLMProvider._parse_tool_call_arguments('{"text":"hi",}')
     assert parsed["text"] == "hi"
 
 
-def test_litellm_provider_parse_response_defaults_missing_tool_call_id() -> None:
-    provider = LiteLLMProvider(
+def test_unified_provider_parse_response_defaults_missing_tool_call_id() -> None:
+    provider = UnifiedLLMProvider(
         provider_name="openrouter",
         api_key="sk-or-test",
         default_model="gpt-4o-mini",
@@ -241,19 +240,17 @@ def test_litellm_provider_parse_response_defaults_missing_tool_call_id() -> None
     assert resp.tool_calls[0].id == "call_0"
 
 
-def test_litellm_provider_configures_runtime_logging(monkeypatch) -> None:
-    class _FakeLiteLLM:
+def test_unified_provider_configures_runtime_logging() -> None:
+    class _FakeRuntime:
         suppress_debug_info = False
         drop_params = False
         set_verbose = True
 
-    monkeypatch.delenv("LITELLM_LOG", raising=False)
-    LiteLLMProvider._litellm_logging_configured = False
-    LiteLLMProvider._configure_litellm_runtime_logging(_FakeLiteLLM)
-    assert _FakeLiteLLM.suppress_debug_info is True
-    assert _FakeLiteLLM.drop_params is True
-    assert _FakeLiteLLM.set_verbose is False
-    assert os.environ.get("LITELLM_LOG") == "ERROR"
+    UnifiedLLMProvider._runtime_logging_configured = False
+    UnifiedLLMProvider._configure_runtime_logging(_FakeRuntime)
+    assert _FakeRuntime.suppress_debug_info is True
+    assert _FakeRuntime.drop_params is True
+    assert _FakeRuntime.set_verbose is False
 
 
 def test_provider_registry_matches_openai_codex_explicit_prefix() -> None:

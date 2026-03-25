@@ -15,7 +15,7 @@ from .background_chat import (
     run_ollama_streaming_chat,
     run_openai_compat_chat,
 )
-from .litellm_provider import LiteLLMProvider
+from .unified_provider import UnifiedLLMProvider
 from .codex_cli_provider import CodexCLIProvider, CodexCLIResolved, resolve_codex_cli
 from .openai_codex_provider import OpenAICodexProvider, resolve_openai_codex
 from .openai_compat import (
@@ -41,7 +41,7 @@ __all__ = [
     "run_openai_compat_chat",
     "run_openai_codex_chat",
     "run_gemini_chat",
-    "LiteLLMProvider",
+    "UnifiedLLMProvider",
     "CodexCLIProvider",
     "CodexCLIResolved",
     "resolve_codex_cli",

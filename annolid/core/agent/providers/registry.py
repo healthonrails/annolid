@@ -14,7 +14,7 @@ class ProviderSpec:
     detect_by_base_keyword: str = ""
     is_gateway: bool = False
     is_local: bool = False
-    litellm_prefix: str = ""
+    model_prefix: str = ""
     skip_prefixes: Tuple[str, ...] = ()
     env_extras: Tuple[Tuple[str, str], ...] = ()
     strip_model_prefix: bool = False
@@ -31,7 +31,7 @@ PROVIDERS: Tuple[ProviderSpec, ...] = (
         detect_by_key_prefix="sk-or-",
         detect_by_base_keyword="openrouter",
         is_gateway=True,
-        litellm_prefix="openrouter",
+        model_prefix="openrouter",
     ),
     ProviderSpec(
         name="aihubmix",
@@ -40,7 +40,7 @@ PROVIDERS: Tuple[ProviderSpec, ...] = (
         default_api_base="https://aihubmix.com/v1",
         detect_by_base_keyword="aihubmix",
         is_gateway=True,
-        litellm_prefix="openai",
+        model_prefix="openai",
         strip_model_prefix=True,
     ),
     ProviderSpec(
@@ -48,7 +48,7 @@ PROVIDERS: Tuple[ProviderSpec, ...] = (
         keywords=("vllm",),
         env_key="HOSTED_VLLM_API_KEY",
         is_local=True,
-        litellm_prefix="hosted_vllm",
+        model_prefix="hosted_vllm",
     ),
     ProviderSpec(
         name="ollama",
@@ -87,28 +87,28 @@ PROVIDERS: Tuple[ProviderSpec, ...] = (
         name="deepseek",
         keywords=("deepseek",),
         env_key="DEEPSEEK_API_KEY",
-        litellm_prefix="deepseek",
+        model_prefix="deepseek",
         skip_prefixes=("deepseek/",),
     ),
     ProviderSpec(
         name="gemini",
         keywords=("gemini",),
         env_key="GEMINI_API_KEY",
-        litellm_prefix="gemini",
+        model_prefix="gemini",
         skip_prefixes=("gemini/",),
     ),
     ProviderSpec(
         name="dashscope",
         keywords=("qwen", "dashscope"),
         env_key="DASHSCOPE_API_KEY",
-        litellm_prefix="dashscope",
+        model_prefix="dashscope",
         skip_prefixes=("dashscope/", "openrouter/"),
     ),
     ProviderSpec(
         name="zhipu",
         keywords=("zhipu", "glm", "zai"),
         env_key="ZAI_API_KEY",
-        litellm_prefix="zai",
+        model_prefix="zai",
         skip_prefixes=("zhipu/", "zai/", "openrouter/", "hosted_vllm/"),
         env_extras=(("ZHIPUAI_API_KEY", "{api_key}"),),
     ),
@@ -119,7 +119,7 @@ PROVIDERS: Tuple[ProviderSpec, ...] = (
         default_api_base="https://integrate.api.nvidia.com/v1",
         detect_by_key_prefix="nvapi-",
         detect_by_base_keyword="nvidia",
-        litellm_prefix="nvidia_nim",
+        model_prefix="nvidia_nim",
         strip_model_prefix=True,
         skip_prefixes=("nvidia_nim/", "nvidia/"),
     ),
@@ -127,7 +127,7 @@ PROVIDERS: Tuple[ProviderSpec, ...] = (
         name="moonshot",
         keywords=("moonshot", "kimi"),
         env_key="MOONSHOT_API_KEY",
-        litellm_prefix="moonshot",
+        model_prefix="moonshot",
         strip_model_prefix=True,
         skip_prefixes=("moonshot/", "openrouter/"),
         model_overrides=(("kimi-k2.5", {"temperature": 1.0}),),
@@ -137,14 +137,14 @@ PROVIDERS: Tuple[ProviderSpec, ...] = (
         keywords=("minimax",),
         env_key="MINIMAX_API_KEY",
         default_api_base="https://api.minimax.io/v1",
-        litellm_prefix="minimax",
+        model_prefix="minimax",
         skip_prefixes=("minimax/", "openrouter/"),
     ),
     ProviderSpec(
         name="groq",
         keywords=("groq",),
         env_key="GROQ_API_KEY",
-        litellm_prefix="groq",
+        model_prefix="groq",
         skip_prefixes=("groq/",),
     ),
 )
@@ -170,7 +170,7 @@ def find_by_model(model: str) -> Optional[ProviderSpec]:
             alias_tokens = {_normalize_provider_token(alias) for alias in spec.aliases}
             if (
                 spec.name == prefix
-                or spec.litellm_prefix == prefix
+                or spec.model_prefix == prefix
                 or prefix in alias_tokens
             ):
                 return spec

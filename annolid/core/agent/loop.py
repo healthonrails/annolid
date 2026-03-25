@@ -35,7 +35,7 @@ from .memory import AgentMemoryStore
 from .memory_store.flush import append_pre_compaction_flush
 from .providers import (
     CodexCLIProvider,
-    LiteLLMProvider,
+    UnifiedLLMProvider,
     OpenAICodexProvider,
     OpenAICompatProvider,
     resolve_codex_cli,
@@ -3088,7 +3088,6 @@ class AgentLoop:
                 persist=False,
             )
             provider_name = str(cfg.provider or "").strip().lower()
-            openai_compat_names = {"openai", "ollama", "openrouter", "aihubmix", "vllm"}
             model_name = str(cfg.model)
             if provider_name == "openai_codex":
                 resolved = resolve_openai_codex(cfg)
@@ -3098,18 +3097,27 @@ class AgentLoop:
                 resolved = resolve_codex_cli(cfg)
                 model_name = resolved.model
                 provider_impl = CodexCLIProvider(resolved=resolved)
-            elif provider_name in openai_compat_names:
-                resolved = resolve_openai_compat(cfg)
-                model_name = resolved.model
-                provider_impl = OpenAICompatProvider(resolved=resolved)
-            else:
-                provider_impl = LiteLLMProvider(
+            elif provider_name == "anthropic":
+                provider_impl = UnifiedLLMProvider(
                     provider_name=provider_name or None,
                     api_key=cfg.params.get("api_key"),
                     api_base=cfg.params.get("base_url") or cfg.params.get("host"),
                     default_model=model_name,
                     extra_headers=cfg.params.get("extra_headers"),
                 )
+            else:
+                try:
+                    resolved = resolve_openai_compat(cfg)
+                    model_name = resolved.model
+                    provider_impl = OpenAICompatProvider(resolved=resolved)
+                except ValueError:
+                    provider_impl = UnifiedLLMProvider(
+                        provider_name=provider_name or None,
+                        api_key=cfg.params.get("api_key"),
+                        api_base=cfg.params.get("base_url") or cfg.params.get("host"),
+                        default_model=model_name,
+                        extra_headers=cfg.params.get("extra_headers"),
+                    )
         except (ValueError, KeyError, ImportError) as exc:
             error_text = str(exc)
             self._logger.warning(
@@ -3120,7 +3128,7 @@ class AgentLoop:
             )
             model_name = model or "unconfigured"
             # Return a placeholder provider_impl that doesn't crash on chat()
-            provider_impl = LiteLLMProvider(
+            provider_impl = UnifiedLLMProvider(
                 provider_name="placeholder",
                 default_model=model_name,
             )
