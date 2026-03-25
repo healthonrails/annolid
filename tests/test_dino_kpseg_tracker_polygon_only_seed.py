@@ -376,3 +376,113 @@ def test_kpseg_multi_instance_points_remain_in_their_own_polygons(
     for x, y in points_by_gid[1]:
         assert 25.0 <= x <= 38.0
         assert 15.0 <= y <= 28.0
+
+
+def test_kpseg_skips_finished_frames_between_seeded_frames(tmp_path, monkeypatch):
+    class _SevenFrameVideo:
+        def __init__(self, _path: str) -> None:
+            self._frames = [
+                np.full((32, 48, 3), fill_value=i, dtype=np.uint8) for i in range(7)
+            ]
+
+        def get_first_frame(self):
+            return self._frames[0].copy()
+
+        def total_frames(self) -> int:
+            return len(self._frames)
+
+        def load_frame(self, frame_number: int):
+            if 0 <= frame_number < len(self._frames):
+                return self._frames[frame_number].copy()
+            return None
+
+        def get_fps(self) -> float:
+            return 30.0
+
+    class _RecordingMaskManager(_DummyCutieMaskManager):
+        instance = None
+
+        def __init__(self, _video_path: Path, adapter, config) -> None:
+            super().__init__(_video_path, adapter, config)
+            self.update_calls: List[int] = []
+            _RecordingMaskManager.instance = self
+
+        def update_masks(
+            self, frame_number: int, frame: np.ndarray, registry
+        ) -> Dict[str, MaskResult]:
+            self.update_calls.append(int(frame_number))
+            return super().update_masks(frame_number, frame, registry)
+
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.CV2Video", _SevenFrameVideo
+    )
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.CutieMaskManager",
+        _RecordingMaskManager,
+    )
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.DinoKPSEGPredictor", _DummyKpsegPredictor
+    )
+
+    def _build_instance_crops(_frame_bgr, instance_masks, pad_px, use_mask_gate):
+        return list(instance_masks)
+
+    def _predict_on_instance_crops(_predictor, crops, stabilize_lr):
+        for gid, _mask in crops:
+            yield (
+                int(gid),
+                _DummyPred(
+                    keypoints_xy=[(10.0, 10.0), (20.0, 20.0)],
+                    keypoint_scores=[0.9, 0.9],
+                ),
+            )
+
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.build_instance_crops",
+        _build_instance_crops,
+    )
+    monkeypatch.setattr(
+        "annolid.tracking.dino_kpseg_tracker.predict_on_instance_crops",
+        _predict_on_instance_crops,
+    )
+
+    out_dir = tmp_path / "video"
+    out_dir.mkdir()
+
+    seed_shapes = {
+        "shapes": [
+            {
+                "label": "0",
+                "shape_type": "polygon",
+                "group_id": 0,
+                "points": [[5.0, 5.0], [30.0, 5.0], [30.0, 25.0], [5.0, 25.0]],
+            }
+        ]
+    }
+    for frame_number in (3, 5):
+        (out_dir / f"video_{frame_number:09d}.json").write_text(
+            json.dumps(seed_shapes), encoding="utf-8"
+        )
+        (out_dir / f"video_{frame_number:09d}.png").write_bytes(b"")
+
+    # Existing completed frame between adjacent seeds should be skipped.
+    (out_dir / "video_000000004.json").write_text(
+        json.dumps(seed_shapes), encoding="utf-8"
+    )
+
+    processor = DinoKPSEGVideoProcessor(
+        video_path=str(tmp_path / "dummy.mp4"),
+        result_folder=out_dir,
+        kpseg_weights="dummy.pt",
+        runtime_config=CutieDinoTrackerConfig(
+            kpseg_apply_mode="always",
+            use_cutie_tracking=True,
+            persist_labelme_json=True,
+        ),
+    )
+    processor.process_video(start_frame=3, end_frame=6, step=1)
+
+    manager = _RecordingMaskManager.instance
+    assert manager is not None
+    assert 4 not in manager.update_calls
+    assert 6 in manager.update_calls

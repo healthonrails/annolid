@@ -29,6 +29,7 @@ from annolid.segmentation.cutie_vos.predict import (  # noqa: E402
     SeedFrame,
     SeedSegment,
 )
+from annolid.utils.annotation_store import AnnotationStore  # noqa: E402
 
 
 def _seed(frame_index: int) -> SeedFrame:
@@ -586,6 +587,323 @@ def test_process_segment_suppresses_repetitive_missing_instance_logs(
     assert len(repetitive_missing_logs) == 1
 
 
+def test_process_segment_skips_persist_for_already_labeled_frames(
+    monkeypatch,
+) -> None:
+    class _DummyInferenceCore:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def step(self, frame_torch, mask_tensor=None, objects=None, **_kwargs):
+            _ = frame_torch, mask_tensor, objects
+            return np.array([[1, 2], [0, 0]], dtype=np.int32)
+
+    class _DummyCap:
+        def __init__(self, frames=3):
+            self._frames = [np.zeros((2, 2, 3), dtype=np.uint8) for _ in range(frames)]
+            self._idx = 0
+
+        def isOpened(self):
+            return self._idx < len(self._frames)
+
+        def set(self, _prop, value):
+            self._idx = int(value)
+            return True
+
+        def get(self, _prop):
+            return self._idx
+
+        def read(self):
+            if self._idx >= len(self._frames):
+                return False, None
+            frame = self._frames[self._idx]
+            self._idx += 1
+            return True, frame
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.cutie = object()
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor.video_folder = Path("clip")
+    processor.label_registry = {"_background_": 0, "mouse": 1, "teaball": 2}
+    processor._global_label_names = {}
+    processor.compute_optical_flow = False
+    processor.auto_missing_instance_recovery = False
+    processor.auto_fill_missing_instances = False
+    processor.continue_on_missing_instances = True
+    processor.debug = False
+    processor._optical_flow_kwargs = {}
+    processor.optical_flow_backend = "farneback"
+    processor._recent_instance_masks = {}
+    processor._recent_instance_mask_frames = {}
+    processor._last_saved_instance_masks = {}
+    processor._should_stop = lambda _worker=None: False
+    processor._flow_hsv = None
+    processor.commit_masks_into_permanent_memory = lambda *_args, **_kwargs: {
+        "_background_": 0,
+        "mouse": 1,
+        "teaball": 2,
+    }
+    processor._build_object_mask_tensor = lambda _mask: (
+        torch.zeros((2, 2, 2), dtype=torch.float32),
+        [1, 2],
+    )
+    processor._register_active_objects = lambda _ids: None
+    processor._update_recent_instance_masks = lambda *_args, **_kwargs: None
+
+    saved_frames = []
+
+    def _capture_save(*_args, **_kwargs):
+        saved_frames.append(int(processor._frame_number))
+
+    processor._save_annotation_with_notes = _capture_save
+
+    monkeypatch.setattr(cutie_predict, "InferenceCore", _DummyInferenceCore)
+    monkeypatch.setattr(
+        cutie_predict, "image_to_torch", lambda frame, device=None: frame
+    )
+    monkeypatch.setattr(cutie_predict, "torch_prob_to_numpy_mask", lambda pred: pred)
+
+    segment = SeedSegment(
+        seed=_seed(0),
+        start_frame=0,
+        end_frame=2,
+        mask=np.array([[1, 0], [0, 2]], dtype=np.int32),
+        labels_map={"_background_": 0, "mouse": 1, "teaball": 2},
+        active_labels=["mouse", "teaball"],
+    )
+
+    message, should_halt = processor._process_segment(
+        cap=_DummyCap(frames=3),
+        segment=segment,
+        end_frame=2,
+        fps=30.0,
+        existing_labeled_frames={1},
+    )
+
+    assert should_halt is False
+    assert message == "Stop at frame:\n#2"
+    assert saved_frames == [0, 2]
+
+
+def test_process_segment_fast_skips_completed_spans_without_postprocess(
+    monkeypatch,
+) -> None:
+    class _DummyInferenceCore:
+        def __init__(self, *_args, **_kwargs):
+            self.calls = 0
+
+        def step(self, frame_torch, mask_tensor=None, objects=None, **_kwargs):
+            _ = frame_torch, mask_tensor, objects
+            self.calls += 1
+            return np.array([[1, 2], [0, 0]], dtype=np.int32)
+
+    class _DummyCap:
+        def __init__(self, frames=4):
+            self._frames = [np.zeros((2, 2, 3), dtype=np.uint8) for _ in range(frames)]
+            self._idx = 0
+
+        def isOpened(self):
+            return self._idx < len(self._frames)
+
+        def set(self, _prop, value):
+            self._idx = int(value)
+            return True
+
+        def get(self, _prop):
+            return self._idx
+
+        def read(self):
+            if self._idx >= len(self._frames):
+                return False, None
+            frame = self._frames[self._idx]
+            self._idx += 1
+            return True, frame
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.cutie = object()
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor.video_folder = Path("clip")
+    processor.label_registry = {"_background_": 0, "mouse": 1, "teaball": 2}
+    processor._global_label_names = {}
+    processor.compute_optical_flow = False
+    processor.auto_missing_instance_recovery = False
+    processor.auto_fill_missing_instances = False
+    processor.continue_on_missing_instances = True
+    processor.debug = False
+    processor._optical_flow_kwargs = {}
+    processor.optical_flow_backend = "farneback"
+    processor._recent_instance_masks = {}
+    processor._recent_instance_mask_frames = {}
+    processor._last_saved_instance_masks = {}
+    processor._should_stop = lambda _worker=None: False
+    processor._flow_hsv = None
+    processor.commit_masks_into_permanent_memory = lambda *_args, **_kwargs: {
+        "_background_": 0,
+        "mouse": 1,
+        "teaball": 2,
+    }
+    processor._build_object_mask_tensor = lambda _mask: (
+        torch.zeros((2, 2, 2), dtype=torch.float32),
+        [1, 2],
+    )
+    processor._register_active_objects = lambda _ids: None
+    processor._update_recent_instance_masks = lambda *_args, **_kwargs: None
+
+    saved_frames = []
+
+    def _capture_save(*_args, **_kwargs):
+        saved_frames.append(int(processor._frame_number))
+
+    processor._save_annotation_with_notes = _capture_save
+
+    convert_calls = {"count": 0}
+
+    def _capture_convert(pred):
+        convert_calls["count"] += 1
+        return pred
+
+    monkeypatch.setattr(cutie_predict, "InferenceCore", _DummyInferenceCore)
+    monkeypatch.setattr(
+        cutie_predict, "image_to_torch", lambda frame, device=None: frame
+    )
+    monkeypatch.setattr(cutie_predict, "torch_prob_to_numpy_mask", _capture_convert)
+
+    segment = SeedSegment(
+        seed=_seed(0),
+        start_frame=0,
+        end_frame=3,
+        mask=np.array([[1, 0], [0, 2]], dtype=np.int32),
+        labels_map={"_background_": 0, "mouse": 1, "teaball": 2},
+        active_labels=["mouse", "teaball"],
+    )
+
+    message, should_halt = processor._process_segment(
+        cap=_DummyCap(frames=4),
+        segment=segment,
+        end_frame=3,
+        fps=30.0,
+        existing_labeled_frames={1, 2},
+    )
+
+    assert should_halt is False
+    assert message == "Stop at frame:\n#3"
+    assert saved_frames == [0, 3]
+    # Frames 1 and 2 take the fast-skip path, so conversion runs only for 0 and 3.
+    assert convert_calls["count"] == 2
+
+
+def test_process_segment_skips_inference_for_completed_tail_segment(
+    monkeypatch,
+) -> None:
+    class _DummyInferenceCore:
+        def __init__(self, *_args, **_kwargs):
+            self.calls = 0
+
+        def step(self, frame_torch, mask_tensor=None, objects=None, **_kwargs):
+            _ = frame_torch, mask_tensor, objects
+            self.calls += 1
+            return np.array([[1, 2], [0, 0]], dtype=np.int32)
+
+    class _DummyCap:
+        def __init__(self, frames=4):
+            self._frames = [np.zeros((2, 2, 3), dtype=np.uint8) for _ in range(frames)]
+            self._idx = 0
+
+        def isOpened(self):
+            return self._idx < len(self._frames)
+
+        def set(self, _prop, value):
+            self._idx = int(value)
+            return True
+
+        def get(self, _prop):
+            return self._idx
+
+        def read(self):
+            if self._idx >= len(self._frames):
+                return False, None
+            frame = self._frames[self._idx]
+            self._idx += 1
+            return True, frame
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.cutie = object()
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor.video_folder = Path("clip")
+    processor.label_registry = {"_background_": 0, "mouse": 1, "teaball": 2}
+    processor._global_label_names = {}
+    processor.compute_optical_flow = False
+    processor.auto_missing_instance_recovery = False
+    processor.auto_fill_missing_instances = False
+    processor.continue_on_missing_instances = True
+    processor.debug = False
+    processor._optical_flow_kwargs = {}
+    processor.optical_flow_backend = "farneback"
+    processor._recent_instance_masks = {}
+    processor._recent_instance_mask_frames = {}
+    processor._last_saved_instance_masks = {}
+    processor._should_stop = lambda _worker=None: False
+    processor._flow_hsv = None
+    processor.commit_masks_into_permanent_memory = lambda *_args, **_kwargs: {
+        "_background_": 0,
+        "mouse": 1,
+        "teaball": 2,
+    }
+    processor._build_object_mask_tensor = lambda _mask: (
+        torch.zeros((2, 2, 2), dtype=torch.float32),
+        [1, 2],
+    )
+    processor._register_active_objects = lambda _ids: None
+    processor._save_annotation_with_notes = lambda *_args, **_kwargs: None
+    processor._update_recent_instance_masks = lambda *_args, **_kwargs: None
+
+    created_cores = []
+
+    def _core_factory(*_args, **_kwargs):
+        core = _DummyInferenceCore(*_args, **_kwargs)
+        created_cores.append(core)
+        return core
+
+    convert_calls = {"count": 0}
+
+    def _capture_convert(pred):
+        convert_calls["count"] += 1
+        return pred
+
+    monkeypatch.setattr(cutie_predict, "InferenceCore", _core_factory)
+    monkeypatch.setattr(
+        cutie_predict, "image_to_torch", lambda frame, device=None: frame
+    )
+    monkeypatch.setattr(cutie_predict, "torch_prob_to_numpy_mask", _capture_convert)
+
+    segment = SeedSegment(
+        seed=_seed(0),
+        start_frame=0,
+        end_frame=3,
+        mask=np.array([[1, 0], [0, 2]], dtype=np.int32),
+        labels_map={"_background_": 0, "mouse": 1, "teaball": 2},
+        active_labels=["mouse", "teaball"],
+    )
+
+    message, should_halt = processor._process_segment(
+        cap=_DummyCap(frames=4),
+        segment=segment,
+        end_frame=3,
+        fps=30.0,
+        existing_labeled_frames={2, 3},
+    )
+
+    assert should_halt is False
+    assert message == "Stop at frame:\n#3"
+    assert len(created_cores) == 1
+    # Tail [2,3] is fully completed, so inference runs only for frames 0 and 1.
+    assert created_cores[0].calls == 2
+    assert convert_calls["count"] == 2
+
+
 def test_save_annotation_falls_back_to_previous_mask_on_frame_sized_artifact(
     monkeypatch, tmp_path
 ) -> None:
@@ -725,4 +1043,428 @@ def test_repetitive_warning_logger_logs_first_and_periodic(monkeypatch) -> None:
     assert any(
         "CUTIE frame-sized artifact rejected for 'mouse' at frame 3." in msg
         for msg in logged
+    )
+
+
+def test_collect_labeled_frame_indices_persists_manual_seed_stats(tmp_path) -> None:
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"")
+    results_dir = video_path.with_suffix("")
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    frame_idx = 10
+    stem = f"{results_dir.name}_{frame_idx:09d}"
+    (results_dir / f"{stem}.png").write_bytes(b"png")
+    (results_dir / f"{stem}.json").write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    {
+                        "label": "mouse",
+                        "shape_type": "polygon",
+                        "points": [[1, 1], [3, 1], [3, 3], [1, 3]],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.video_name = str(video_path)
+    processor.video_folder = results_dir
+    processor._cached_labeled_frames = None
+    processor._tracking_stats_cache = None
+    processor._tracking_stats_dirty = False
+    processor._tracking_stats_pending_updates = 0
+
+    labeled = processor._collect_labeled_frame_indices()
+    assert labeled == {frame_idx}
+
+    stats_path = results_dir / f"{results_dir.name}_tracking_stats.json"
+    assert stats_path.exists()
+    payload = json.loads(stats_path.read_text(encoding="utf-8"))
+    frame_stats = payload["frame_stats"][str(frame_idx)]
+    assert "manual_seed" in frame_stats["sources"]
+    assert frame_stats["json_exists"] is True
+    assert frame_stats["png_exists"] is True
+    assert payload["summary"]["manual_frames"] >= 1
+    assert [frame_idx, frame_idx] in payload["summary"]["manual_segments"]
+
+
+def test_save_annotation_updates_prediction_tracking_stats(
+    monkeypatch, tmp_path
+) -> None:
+    class _Cache:
+        def add_bbox(self, _key, _bbox):
+            return None
+
+        def get_most_recent_bbox(self, _key):
+            return None
+
+    class _Point:
+        def __init__(self, x, y):
+            self._x = float(x)
+            self._y = float(y)
+
+        def x(self):
+            return self._x
+
+        def y(self):
+            return self._y
+
+    class _PolyShape:
+        def __init__(self, points):
+            self.points = points
+
+    class _FakeMaskShape:
+        def __init__(self, label, flags=None, description=""):
+            self.label = label
+            self.flags = flags or {}
+            self.description = description
+            self.other_data = {}
+            self.mask = None
+
+        def toPolygons(self, epsilon=2.0):
+            _ = epsilon
+            mask = np.asarray(self.mask).astype(bool)
+            ys, xs = np.where(mask)
+            if xs.size == 0 or ys.size == 0:
+                return []
+            minx, maxx = int(xs.min()), int(xs.max())
+            miny, maxy = int(ys.min()), int(ys.max())
+            return [
+                _PolyShape(
+                    [
+                        _Point(minx, miny),
+                        _Point(maxx, miny),
+                        _Point(maxx, maxy),
+                        _Point(minx, maxy),
+                    ]
+                )
+            ]
+
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"")
+    results_dir = video_path.with_suffix("")
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.video_name = str(video_path)
+    processor.video_folder = results_dir
+    processor._frame_number = 3
+    processor.epsilon_for_polygon = 2.0
+    processor.reject_suspicious_mask_jumps = False
+    processor._last_mask_area_ratio = {}
+    processor._recent_instance_masks = {}
+    processor._recent_instance_mask_frames = {}
+    processor._last_saved_instance_masks = {}
+    processor.cache = _Cache()
+    processor._flow_hsv = None
+    processor.showing_KMedoids_in_mask = False
+    processor._tracking_stats_cache = None
+    processor._tracking_stats_dirty = False
+    processor._tracking_stats_pending_updates = 0
+
+    processor._sanitize_full_frame_artifact = lambda label, mask, frame_area: (
+        np.asarray(mask).astype(bool),
+        False,
+    )
+    processor._is_suspicious_mask_jump = lambda label, mask, frame_area: False
+    processor._save_results = lambda label, mask: (1.0, 2.0, -1.0)
+    processor.save_KMedoids_in_mask = lambda label_list, mask: None
+    processor._should_reject_frame_sized_prediction = (
+        lambda label, mask, points, frame_area: False
+    )
+
+    monkeypatch.setattr(cutie_predict, "MaskShape", _FakeMaskShape)
+    monkeypatch.setattr(cutie_predict, "save_labels", lambda **_kwargs: None)
+
+    mask = np.zeros((4, 4), dtype=bool)
+    mask[1:3, 1:3] = True
+    frame_json = results_dir / f"{results_dir.name}_000000003.json"
+    processor._save_annotation_with_notes(
+        filename=str(frame_json),
+        mask_dict={"mouse": mask},
+        frame_shape=(4, 4, 3),
+        shape_notes={},
+    )
+    processor._flush_tracking_stats(force=True)
+
+    stats_path = results_dir / f"{results_dir.name}_tracking_stats.json"
+    payload = json.loads(stats_path.read_text(encoding="utf-8"))
+    # Normal prediction-only frames are not persisted in stats JSON.
+    assert "3" not in payload["frame_stats"]
+    assert payload["summary"]["manual_frames"] == 0
+
+
+def test_record_prediction_segment_updates_tracking_stats(tmp_path) -> None:
+    results_dir = tmp_path / "clip"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"")
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.video_name = str(video_path)
+    processor.video_folder = results_dir
+    processor._tracking_stats_cache = None
+    processor._tracking_stats_dirty = False
+    processor._tracking_stats_pending_updates = 0
+
+    processor._record_prediction_segment(0, 99, "halted")
+    processor._flush_tracking_stats(force=True)
+
+    stats_path = results_dir / f"{results_dir.name}_tracking_stats.json"
+    payload = json.loads(stats_path.read_text(encoding="utf-8"))
+    segments = payload.get("prediction_segments", [])
+    assert len(segments) == 1
+    assert segments[0]["start_frame"] == 0
+    assert segments[0]["end_frame"] == 99
+    assert segments[0]["status"] == "halted"
+
+
+def test_collect_labeled_frame_indices_treats_empty_store_records_as_completed(
+    tmp_path,
+) -> None:
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"")
+    results_dir = video_path.with_suffix("")
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    store_path = results_dir / f"{results_dir.name}{AnnotationStore.STORE_SUFFIX}"
+    store = AnnotationStore(store_path)
+    store.append_frame({"frame": 50, "shapes": []})
+    store.append_frame(
+        {
+            "frame": 51,
+            "shapes": [{"shape_type": "polygon", "points": [[0, 0], [1, 0], [1, 1]]}],
+        }
+    )
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.video_name = str(video_path)
+    processor.video_folder = results_dir
+    processor._cached_labeled_frames = None
+    processor._tracking_stats_cache = None
+    processor._tracking_stats_dirty = False
+    processor._tracking_stats_pending_updates = 0
+
+    labeled = processor._collect_labeled_frame_indices()
+    assert 50 in labeled
+    assert 51 in labeled
+
+
+def test_collect_labeled_frame_indices_treats_empty_json_as_completed(tmp_path) -> None:
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"")
+    results_dir = video_path.with_suffix("")
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    frame_idx = 42
+    stem = f"{results_dir.name}_{frame_idx:09d}"
+    (results_dir / f"{stem}.json").write_text(
+        json.dumps({"shapes": []}), encoding="utf-8"
+    )
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.video_name = str(video_path)
+    processor.video_folder = results_dir
+    processor._cached_labeled_frames = None
+    processor._tracking_stats_cache = None
+    processor._tracking_stats_dirty = False
+    processor._tracking_stats_pending_updates = 0
+
+    labeled = processor._collect_labeled_frame_indices()
+    assert frame_idx in labeled
+
+
+def test_save_annotation_records_unresolved_bad_shape_stats(
+    monkeypatch, tmp_path
+) -> None:
+    class _NoPolygonMaskShape:
+        def __init__(self, label, flags=None, description=""):
+            self.label = label
+            self.flags = flags or {}
+            self.description = description
+            self.other_data = {}
+            self.mask = None
+
+        def toPolygons(self, epsilon=2.0):
+            _ = epsilon
+            return []
+
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"")
+    results_dir = video_path.with_suffix("")
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.video_name = str(video_path)
+    processor.video_folder = results_dir
+    processor._frame_number = 7
+    processor.epsilon_for_polygon = 2.0
+    processor.reject_suspicious_mask_jumps = False
+    processor._last_mask_area_ratio = {}
+    processor._recent_instance_masks = {}
+    processor._recent_instance_mask_frames = {}
+    processor._last_saved_instance_masks = {}
+    processor.cache = types.SimpleNamespace(
+        add_bbox=lambda *_args, **_kwargs: None,
+        get_most_recent_bbox=lambda *_args, **_kwargs: None,
+    )
+    processor._flow_hsv = None
+    processor.showing_KMedoids_in_mask = False
+    processor._tracking_stats_cache = None
+    processor._tracking_stats_dirty = False
+    processor._tracking_stats_pending_updates = 0
+
+    processor._sanitize_full_frame_artifact = lambda label, mask, frame_area: (
+        np.asarray(mask).astype(bool),
+        False,
+    )
+    processor._is_suspicious_mask_jump = lambda label, mask, frame_area: False
+    processor._save_results = lambda label, mask: (1.0, 2.0, -1.0)
+    processor.save_KMedoids_in_mask = lambda label_list, mask: None
+    processor._should_reject_frame_sized_prediction = (
+        lambda label, mask, points, frame_area: False
+    )
+    processor._repair_bad_shape_mask = lambda label, mask: (None, None)
+
+    monkeypatch.setattr(cutie_predict, "MaskShape", _NoPolygonMaskShape)
+    monkeypatch.setattr(cutie_predict, "save_labels", lambda **_kwargs: None)
+
+    mask = np.zeros((4, 4), dtype=bool)
+    mask[1:3, 1:3] = True
+    frame_json = results_dir / f"{results_dir.name}_000000007.json"
+    processor._save_annotation_with_notes(
+        filename=str(frame_json),
+        mask_dict={"mouse": mask},
+        frame_shape=(4, 4, 3),
+        shape_notes={},
+    )
+    processor._flush_tracking_stats(force=True)
+
+    stats_path = results_dir / f"{results_dir.name}_tracking_stats.json"
+    payload = json.loads(stats_path.read_text(encoding="utf-8"))
+    assert payload["summary"]["bad_shape_failed_frames"] >= 1
+    events = payload.get("bad_shape_events", [])
+    assert any(
+        event.get("frame") == 7
+        and event.get("label") == "mouse"
+        and event.get("resolved") is False
+        for event in events
+    )
+
+
+def test_save_annotation_repairs_bad_shape_and_records_resolved_stats(
+    monkeypatch, tmp_path
+) -> None:
+    class _Point:
+        def __init__(self, x, y):
+            self._x = float(x)
+            self._y = float(y)
+
+        def x(self):
+            return self._x
+
+        def y(self):
+            return self._y
+
+    class _PolyShape:
+        def __init__(self, points):
+            self.points = points
+
+    class _AreaThresholdMaskShape:
+        def __init__(self, label, flags=None, description=""):
+            self.label = label
+            self.flags = flags or {}
+            self.description = description
+            self.other_data = {}
+            self.mask = None
+
+        def toPolygons(self, epsilon=2.0):
+            _ = epsilon
+            mask = np.asarray(self.mask).astype(bool)
+            if int(np.count_nonzero(mask)) < 4:
+                return []
+            ys, xs = np.where(mask)
+            minx, maxx = int(xs.min()), int(xs.max())
+            miny, maxy = int(ys.min()), int(ys.max())
+            return [
+                _PolyShape(
+                    [
+                        _Point(minx, miny),
+                        _Point(maxx, miny),
+                        _Point(maxx, maxy),
+                        _Point(minx, maxy),
+                    ]
+                )
+            ]
+
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"")
+    results_dir = video_path.with_suffix("")
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.video_name = str(video_path)
+    processor.video_folder = results_dir
+    processor._frame_number = 11
+    processor.epsilon_for_polygon = 2.0
+    processor.reject_suspicious_mask_jumps = False
+    processor._last_mask_area_ratio = {}
+    processor._recent_instance_masks = {}
+    processor._recent_instance_mask_frames = {}
+    processor._last_saved_instance_masks = {}
+    processor.cache = types.SimpleNamespace(
+        add_bbox=lambda *_args, **_kwargs: None,
+        get_most_recent_bbox=lambda *_args, **_kwargs: None,
+    )
+    processor._flow_hsv = None
+    processor.showing_KMedoids_in_mask = False
+    processor._tracking_stats_cache = None
+    processor._tracking_stats_dirty = False
+    processor._tracking_stats_pending_updates = 0
+
+    processor._sanitize_full_frame_artifact = lambda label, mask, frame_area: (
+        np.asarray(mask).astype(bool),
+        False,
+    )
+    processor._is_suspicious_mask_jump = lambda label, mask, frame_area: False
+    processor._save_results = lambda label, mask: (1.0, 2.0, -1.0)
+    processor.save_KMedoids_in_mask = lambda label_list, mask: None
+    processor._should_reject_frame_sized_prediction = (
+        lambda label, mask, points, frame_area: False
+    )
+
+    saved = {"count": 0}
+    monkeypatch.setattr(cutie_predict, "MaskShape", _AreaThresholdMaskShape)
+    monkeypatch.setattr(
+        cutie_predict,
+        "save_labels",
+        lambda **kwargs: saved.__setitem__(
+            "count", len(kwargs.get("label_list") or [])
+        ),
+    )
+
+    tiny_mask = np.zeros((4, 4), dtype=bool)
+    tiny_mask[2, 2] = True
+    frame_json = results_dir / f"{results_dir.name}_000000011.json"
+    processor._save_annotation_with_notes(
+        filename=str(frame_json),
+        mask_dict={"mouse": tiny_mask},
+        frame_shape=(4, 4, 3),
+        shape_notes={},
+    )
+    processor._flush_tracking_stats(force=True)
+
+    assert saved["count"] == 1
+    stats_path = results_dir / f"{results_dir.name}_tracking_stats.json"
+    payload = json.loads(stats_path.read_text(encoding="utf-8"))
+    events = payload.get("bad_shape_events", [])
+    assert any(
+        event.get("frame") == 11
+        and event.get("label") == "mouse"
+        and event.get("resolved") is True
+        for event in events
     )

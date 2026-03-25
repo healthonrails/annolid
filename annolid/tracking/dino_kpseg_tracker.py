@@ -21,6 +21,11 @@ from annolid.segmentation.dino_kpseg.inference_utils import (
 from annolid.tracking.annotation_adapter import AnnotationAdapter
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.cutie_mask_manager import CutieMaskManager, MaskResult
+from annolid.tracking.frame_skip import (
+    build_seeded_frame_index,
+    remove_seeded_frame,
+    should_skip_finished_frame_between_adjacent_seeded_frames,
+)
 from annolid.tracking.dino_kpseg_annotations import (
     DinoKPSEGAnnotationParser,
     ManualAnnotation,
@@ -259,6 +264,12 @@ class DinoKPSEGVideoProcessor:
             end_frame=end_frame,
         )
         manual_frames.pop(manual_seed.frame_number, None)
+        manual_frames = self._filter_valid_manual_frames(manual_frames)
+        seeded_frames = build_seeded_frame_index(
+            manual_seed.frame_number,
+            manual_frames.keys(),
+        )
+        finished_frame_cache: Dict[int, bool] = {}
         self._reset_instance_id_state()
 
         self.mask_manager.reset_state()
@@ -337,6 +348,19 @@ class DinoKPSEGVideoProcessor:
                     self._seed_predictor_from_manual(
                         frame_rgb, registry, resume.keypoints_by_instance
                     )
+                    processed += 1
+                    self._report_progress(processed, total_steps)
+                    continue
+                # Invalid manual seed file: process this frame normally and
+                # remove it from seeded boundaries for skip decisions.
+                remove_seeded_frame(seeded_frames, frame_number)
+
+            if should_skip_finished_frame_between_adjacent_seeded_frames(
+                frame_number=frame_number,
+                seeded_frames=seeded_frames,
+                video_result_folder=self.video_result_folder,
+                finished_frame_cache=finished_frame_cache,
+            ):
                 processed += 1
                 self._report_progress(processed, total_steps)
                 continue
@@ -402,6 +426,24 @@ class DinoKPSEGVideoProcessor:
                 continue
             mapping[int(frame)] = path
         return mapping
+
+    def _filter_valid_manual_frames(
+        self, manual_frames: Dict[int, Path]
+    ) -> Dict[int, Path]:
+        valid: Dict[int, Path] = {}
+        for frame_number, manual_path in manual_frames.items():
+            try:
+                self.annotation_parser.read_manual_annotation(frame_number, manual_path)
+            except Exception as exc:
+                logger.warning(
+                    "Ignoring invalid manual seed frame %s (%s): %s",
+                    frame_number,
+                    manual_path,
+                    exc,
+                )
+                continue
+            valid[int(frame_number)] = manual_path
+        return valid
 
     def _resolve_initial_seed(self, *, start_frame: Optional[int]) -> ManualAnnotation:
         manual_seed = self._load_initial_state(self.video_result_folder)

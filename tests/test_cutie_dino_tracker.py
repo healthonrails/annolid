@@ -589,6 +589,153 @@ def test_video_processor_resets_on_manual_resume(tmp_path, monkeypatch):
     assert tracker.start_masks[1]["animal"].any()
 
 
+def test_video_processor_skips_finished_frames_between_seeded_frames(
+    tmp_path, monkeypatch
+):
+    class StubVideo:
+        def __init__(self, _path):
+            self.frames = [
+                np.full((4, 4, 3), fill_value=i, dtype=np.uint8) for i in range(7)
+            ]
+
+        def get_first_frame(self):
+            return self.frames[0]
+
+        def total_frames(self):
+            return len(self.frames)
+
+        def load_frame(self, index):
+            if 0 <= index < len(self.frames):
+                return self.frames[index]
+            return None
+
+    class StubMaskManager:
+        instance = None
+
+        def __init__(self, *args, **kwargs):
+            self.enabled = True
+            self.update_calls: List[int] = []
+            self._initialized = False
+            self._last_results: Dict[str, MaskResult] = {}
+            StubMaskManager.instance = self
+
+        def ready(self) -> bool:
+            return self.enabled and self._initialized
+
+        def reset_state(self) -> None:
+            self._initialized = False
+            self._last_results = {}
+
+        def prime(self, frame_number: int, _frame, _registry) -> None:
+            self._initialized = True
+
+        def update_masks(self, frame_number: int, _frame, _registry):
+            if self.ready():
+                self.update_calls.append(frame_number)
+            return {}
+
+    class StubTracker:
+        instance = None
+
+        def __init__(self, *args, runtime_config=None, **_kwargs):
+            self.runtime_config = runtime_config or CutieDinoTrackerConfig()
+            self.update_frames: List[int] = []
+            self._active = False
+            StubTracker.instance = self
+
+        def reset_state(self) -> None:
+            self._active = False
+
+        def start(self, _image, _registry, _mask_lookup) -> None:
+            self._active = True
+
+        def update(self, image, _mask_lookup):
+            if not self._active:
+                return []
+            frame_array = np.array(image)
+            frame_id = int(frame_array[0, 0, 0])
+            self.update_frames.append(frame_id)
+            return []
+
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.CV2Video",
+        StubVideo,
+    )
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.CutieMaskManager",
+        StubMaskManager,
+    )
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.DinoKeypointTracker",
+        StubTracker,
+    )
+
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_text("video")
+    result_dir = tmp_path / "clip"
+    result_dir.mkdir()
+
+    adapter = AnnotationAdapter(image_height=4, image_width=4)
+
+    def write_seed(frame_number: int, x: float, y: float) -> Path:
+        registry = InstanceRegistry()
+        registry.register_keypoint(
+            KeypointState(
+                key="animalnose",
+                instance_label="animal",
+                label="nose",
+                x=x,
+                y=y,
+            )
+        )
+        json_path = adapter.write_annotation(
+            frame_number=frame_number,
+            registry=registry,
+            output_dir=result_dir,
+        )
+        (result_dir / f"clip_{frame_number:09d}.png").write_bytes(b"")
+        return Path(json_path)
+
+    frame_three = write_seed(3, 1.0, 1.0)
+    write_seed(5, 2.0, 2.0)
+
+    # Existing completed output between adjacent seeds (3, 5) should be skipped.
+    existing_registry = InstanceRegistry()
+    existing_registry.register_keypoint(
+        KeypointState(
+            key="animalnose",
+            instance_label="animal",
+            label="nose",
+            x=1.5,
+            y=1.5,
+        )
+    )
+    adapter.write_annotation(
+        frame_number=4,
+        registry=existing_registry,
+        output_dir=result_dir,
+    )
+
+    now = time.time()
+    os.utime(frame_three, (now, now))
+
+    processor = DinoKeypointVideoProcessor(
+        video_path=str(video_path),
+        result_folder=result_dir,
+        model_name="dummy",
+        runtime_config=CutieDinoTrackerConfig(),
+    )
+    processor.process_video()
+
+    mask_manager = StubMaskManager.instance
+    tracker = StubTracker.instance
+    assert mask_manager is not None
+    assert tracker is not None
+    assert 4 not in mask_manager.update_calls
+    assert 4 not in tracker.update_frames
+    assert 6 in tracker.update_frames
+
+
 def test_mask_fallback_bonus_guides_assignment(monkeypatch):
     monkeypatch.setattr(
         "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",

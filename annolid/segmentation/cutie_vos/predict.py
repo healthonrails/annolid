@@ -87,6 +87,8 @@ class CutieCoreVideoProcessor:
     )
     _MD5 = "a6071de6136982e396851903ab4c083a"
     _DISCOVERED_SEEDS_CACHE: Dict[str, List[SeedFrame]] = {}
+    _TRACKING_STATS_VERSION = 4
+    _TRACKING_STATS_FLUSH_INTERVAL = 25
 
     def __init__(self, video_name, *args, **kwargs):
         self.video_name = video_name
@@ -165,6 +167,9 @@ class CutieCoreVideoProcessor:
         self._recent_instance_mask_frames: Dict[str, int] = {}
         self._last_saved_instance_masks: Dict[str, np.ndarray] = {}
         self._repetitive_warning_state: Dict[Tuple[str, str], Dict[str, int]] = {}
+        self._tracking_stats_cache: Optional[Dict[str, Any]] = None
+        self._tracking_stats_dirty: bool = False
+        self._tracking_stats_pending_updates: int = 0
 
     def set_same_hq(self, sam_hq):
         self.sam_hq = sam_hq
@@ -415,6 +420,500 @@ class CutieCoreVideoProcessor:
         except Exception as exc:
             logger.error("Failed to annotate tracking CSV: %s", exc)
 
+    def _tracking_stats_path(self) -> Path:
+        results_dir = getattr(self, "video_folder", None)
+        if results_dir is None:
+            video_name = str(getattr(self, "video_name", "video"))
+            results_dir = Path(video_name).with_suffix("")
+        results_dir = Path(results_dir)
+        return results_dir / f"{results_dir.name}_tracking_stats.json"
+
+    def _new_tracking_stats_payload(self) -> Dict[str, Any]:
+        video_name = str(getattr(self, "video_name", ""))
+        results_dir = getattr(self, "video_folder", None)
+        if results_dir is None:
+            results_dir = Path(video_name).with_suffix("") if video_name else Path(".")
+        results_dir = Path(results_dir)
+        return {
+            "version": self._TRACKING_STATS_VERSION,
+            "video_name": video_name,
+            "results_dir": str(results_dir),
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+            "frame_stats": {},
+            "store_signature": "",
+            "store_labeled_frames": [],
+            "prediction_segments": [],
+            "bad_shape_events": [],
+            "summary": {
+                "manual_frames": 0,
+                "manual_segments": [],
+                "bad_shape_frames": 0,
+                "bad_shape_failed_frames": 0,
+                "abnormal_segment_events": 0,
+            },
+        }
+
+    def _load_tracking_stats(self, force_reload: bool = False) -> Dict[str, Any]:
+        cached = getattr(self, "_tracking_stats_cache", None)
+        if cached is not None and not force_reload:
+            return cached
+
+        payload = self._new_tracking_stats_payload()
+        path = self._tracking_stats_path()
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as fp:
+                    loaded = json.load(fp)
+                if isinstance(loaded, dict):
+                    loaded_version = int(
+                        loaded.get("version", self._TRACKING_STATS_VERSION)
+                    )
+                    if loaded_version != int(self._TRACKING_STATS_VERSION):
+                        logger.info(
+                            "Rebuilding CUTIE tracking stats for %s due to version upgrade (%s -> %s).",
+                            path,
+                            loaded_version,
+                            self._TRACKING_STATS_VERSION,
+                        )
+                        loaded = {}
+                    payload.update(
+                        {
+                            "version": int(self._TRACKING_STATS_VERSION),
+                            "video_name": str(
+                                loaded.get("video_name", payload["video_name"])
+                            ),
+                            "results_dir": str(
+                                loaded.get("results_dir", payload["results_dir"])
+                            ),
+                            "updated_at": str(
+                                loaded.get("updated_at", payload["updated_at"])
+                            ),
+                        }
+                    )
+                    frame_stats = loaded.get("frame_stats", {})
+                    payload["frame_stats"] = (
+                        frame_stats if isinstance(frame_stats, dict) else {}
+                    )
+                    store_labeled = loaded.get("store_labeled_frames", [])
+                    payload["store_labeled_frames"] = (
+                        store_labeled if isinstance(store_labeled, list) else []
+                    )
+                    payload["store_signature"] = str(
+                        loaded.get("store_signature", "")
+                    )
+                    prediction_segments = loaded.get("prediction_segments", [])
+                    payload["prediction_segments"] = (
+                        prediction_segments
+                        if isinstance(prediction_segments, list)
+                        else []
+                    )
+                    bad_shape_events = loaded.get("bad_shape_events", [])
+                    payload["bad_shape_events"] = (
+                        bad_shape_events if isinstance(bad_shape_events, list) else []
+                    )
+                    summary = loaded.get("summary", {})
+                    payload["summary"] = summary if isinstance(summary, dict) else {}
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load CUTIE tracking stats %s: %s. Rebuilding.",
+                    path,
+                    exc,
+                )
+
+        payload.setdefault("frame_stats", {})
+        payload.setdefault("store_signature", "")
+        payload.setdefault("store_labeled_frames", [])
+        payload.setdefault("prediction_segments", [])
+        payload.setdefault("bad_shape_events", [])
+        payload.setdefault("summary", {})
+        self._tracking_stats_cache = payload
+        self._tracking_stats_dirty = False
+        self._tracking_stats_pending_updates = 0
+        return payload
+
+    def _flush_tracking_stats(self, force: bool = False) -> None:
+        if not getattr(self, "_tracking_stats_dirty", False):
+            return
+        if (
+            not force
+            and int(getattr(self, "_tracking_stats_pending_updates", 0))
+            < int(self._TRACKING_STATS_FLUSH_INTERVAL)
+        ):
+            return
+        payload = self._load_tracking_stats()
+        payload["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        persist_payload = self._build_tracking_stats_persist_payload(payload)
+        path = self._tracking_stats_path()
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp_path, "w", encoding="utf-8") as fp:
+                json.dump(persist_payload, fp, indent=2, sort_keys=True)
+            tmp_path.replace(path)
+            self._tracking_stats_dirty = False
+            self._tracking_stats_pending_updates = 0
+        except Exception as exc:
+            logger.warning("Failed to persist CUTIE tracking stats to %s: %s", path, exc)
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _is_manual_or_abnormal_frame_stat(entry: Dict[str, Any]) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        sources = entry.get("sources", [])
+        source_set = {str(source) for source in sources} if isinstance(sources, list) else set()
+        if "manual_seed" in source_set or "json" in source_set:
+            return True
+        if int(entry.get("bad_shape_count", 0)) > 0:
+            return True
+        if int(entry.get("bad_shape_failed_count", 0)) > 0:
+            return True
+        return False
+
+    def _build_tracking_stats_persist_payload(
+        self, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        frame_stats = payload.get("frame_stats", {})
+        filtered_frame_stats: Dict[str, Dict[str, Any]] = {}
+        if isinstance(frame_stats, dict):
+            for frame_key, entry in frame_stats.items():
+                if not isinstance(entry, dict):
+                    continue
+                if self._is_manual_or_abnormal_frame_stat(entry):
+                    filtered_frame_stats[str(frame_key)] = dict(entry)
+
+        prediction_segments = payload.get("prediction_segments", [])
+        filtered_segments: List[Dict[str, Any]] = []
+        if isinstance(prediction_segments, list):
+            for segment in prediction_segments:
+                if not isinstance(segment, dict):
+                    continue
+                status = str(segment.get("status", ""))
+                if status != "processed":
+                    filtered_segments.append(dict(segment))
+
+        bad_shape_events = payload.get("bad_shape_events", [])
+        filtered_bad_shape_events: List[Dict[str, Any]] = []
+        if isinstance(bad_shape_events, list):
+            for event in bad_shape_events:
+                if isinstance(event, dict):
+                    filtered_bad_shape_events.append(dict(event))
+
+        manual_frames: Set[int] = set()
+        bad_shape_frames: Set[int] = set()
+        bad_shape_failed_frames: Set[int] = set()
+        for frame_key, entry in filtered_frame_stats.items():
+            try:
+                frame_idx = int(frame_key)
+            except (TypeError, ValueError):
+                continue
+            sources = entry.get("sources", [])
+            source_set = {str(source) for source in sources} if isinstance(sources, list) else set()
+            if "manual_seed" in source_set or "json" in source_set:
+                manual_frames.add(frame_idx)
+            if int(entry.get("bad_shape_count", 0)) > 0:
+                bad_shape_frames.add(frame_idx)
+            if int(entry.get("bad_shape_failed_count", 0)) > 0:
+                bad_shape_failed_frames.add(frame_idx)
+
+        summary = {
+            "manual_frames": int(len(manual_frames)),
+            "manual_segments": [
+                [int(start), int(end)]
+                for start, end in self._build_frame_intervals(manual_frames)
+            ],
+            "bad_shape_frames": int(len(bad_shape_frames)),
+            "bad_shape_failed_frames": int(len(bad_shape_failed_frames)),
+            "abnormal_segment_events": int(len(filtered_segments)),
+        }
+
+        return {
+            "version": int(payload.get("version", self._TRACKING_STATS_VERSION)),
+            "video_name": str(payload.get("video_name", "")),
+            "results_dir": str(payload.get("results_dir", "")),
+            "updated_at": str(payload.get("updated_at", "")),
+            "frame_stats": filtered_frame_stats,
+            # Keep these keys for backward compatibility, but avoid logging normal coverage details.
+            "store_signature": "",
+            "store_labeled_frames": [],
+            "prediction_segments": filtered_segments,
+            "bad_shape_events": filtered_bad_shape_events,
+            "summary": summary,
+        }
+
+    @staticmethod
+    def _shape_metrics(shapes: Iterable[Dict[str, Any]]) -> Tuple[int, int, bool]:
+        shape_count = 0
+        polygon_count = 0
+        has_valid_shapes = False
+        for shape in shapes or []:
+            if not isinstance(shape, dict):
+                continue
+            shape_count += 1
+            if shape.get("shape_type") == "polygon" and len(shape.get("points", [])) >= 3:
+                polygon_count += 1
+                has_valid_shapes = True
+                continue
+            if shape.get("mask"):
+                has_valid_shapes = True
+        return shape_count, polygon_count, has_valid_shapes
+
+    def _recompute_tracking_stats_summary(self, stats: Dict[str, Any]) -> None:
+        frame_stats = stats.get("frame_stats", {})
+        manual_frames: Set[int] = set()
+        bad_shape_frames: Set[int] = set()
+        bad_shape_failed_frames: Set[int] = set()
+        for frame_key, record in frame_stats.items():
+            if not isinstance(record, dict):
+                continue
+            try:
+                frame_idx = int(frame_key)
+            except (TypeError, ValueError):
+                continue
+            sources = record.get("sources", [])
+            if isinstance(sources, list):
+                source_set = {str(source) for source in sources}
+            else:
+                source_set = set()
+            if "manual_seed" in source_set or "json" in source_set:
+                manual_frames.add(frame_idx)
+            if int(record.get("bad_shape_count", 0)) > 0:
+                bad_shape_frames.add(frame_idx)
+            if int(record.get("bad_shape_failed_count", 0)) > 0:
+                bad_shape_failed_frames.add(frame_idx)
+
+        stats["summary"] = {
+            "manual_frames": int(len(manual_frames)),
+            "manual_segments": [
+                [int(start), int(end)]
+                for start, end in self._build_frame_intervals(manual_frames)
+            ],
+            "bad_shape_frames": int(len(bad_shape_frames)),
+            "bad_shape_failed_frames": int(len(bad_shape_failed_frames)),
+            "abnormal_segment_events": int(
+                len(
+                    [
+                        segment
+                        for segment in stats.get("prediction_segments", [])
+                        if isinstance(segment, dict)
+                        and str(segment.get("status", "")) != "processed"
+                    ]
+                )
+            ),
+        }
+
+    def _update_tracking_frame_stat(
+        self,
+        frame_idx: int,
+        *,
+        source: Optional[str] = None,
+        shape_count: Optional[int] = None,
+        polygon_count: Optional[int] = None,
+        has_valid_shapes: Optional[bool] = None,
+        json_exists: Optional[bool] = None,
+        json_mtime_ns: Optional[int] = None,
+        png_exists: Optional[bool] = None,
+        store_record_exists: Optional[bool] = None,
+    ) -> None:
+        try:
+            normalized_frame = int(frame_idx)
+        except (TypeError, ValueError):
+            return
+        if normalized_frame < 0:
+            return
+        stats = self._load_tracking_stats()
+        frame_stats = stats.setdefault("frame_stats", {})
+        key = str(normalized_frame)
+        entry = frame_stats.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+        before = dict(entry)
+
+        if source:
+            sources = entry.get("sources", [])
+            if not isinstance(sources, list):
+                sources = []
+            normalized_sources = {str(item) for item in sources}
+            normalized_sources.add(str(source))
+            entry["sources"] = sorted(normalized_sources)
+            entry["primary_source"] = str(source)
+        if shape_count is not None:
+            entry["shape_count"] = max(0, int(shape_count))
+        if polygon_count is not None:
+            entry["polygon_count"] = max(0, int(polygon_count))
+        if has_valid_shapes is not None:
+            entry["has_valid_shapes"] = bool(has_valid_shapes)
+        if json_exists is not None:
+            entry["json_exists"] = bool(json_exists)
+        if json_mtime_ns is not None:
+            entry["json_mtime_ns"] = int(json_mtime_ns)
+        if png_exists is not None:
+            entry["png_exists"] = bool(png_exists)
+        if store_record_exists is not None:
+            entry["store_record_exists"] = bool(store_record_exists)
+        entry["last_updated"] = datetime.utcnow().isoformat() + "Z"
+        entry["frame"] = normalized_frame
+
+        if before != entry:
+            frame_stats[key] = entry
+            self._tracking_stats_dirty = True
+            self._tracking_stats_pending_updates = int(
+                getattr(self, "_tracking_stats_pending_updates", 0)
+            ) + 1
+
+    def _record_prediction_segment(
+        self, start_frame: int, end_frame: int, status: str
+    ) -> None:
+        stats = self._load_tracking_stats()
+        segments = stats.setdefault("prediction_segments", [])
+        if not isinstance(segments, list):
+            segments = []
+            stats["prediction_segments"] = segments
+        segments.append(
+            {
+                "start_frame": int(start_frame),
+                "end_frame": int(end_frame),
+                "status": str(status),
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            }
+        )
+        # Keep this bounded for long-running sessions.
+        if len(segments) > 2000:
+            stats["prediction_segments"] = segments[-2000:]
+        self._tracking_stats_dirty = True
+        self._tracking_stats_pending_updates = int(
+            getattr(self, "_tracking_stats_pending_updates", 0)
+        ) + 1
+
+    @staticmethod
+    def _largest_connected_component(mask: np.ndarray) -> np.ndarray:
+        mask_bool = np.asarray(mask).astype(bool)
+        if mask_bool.ndim != 2 or not mask_bool.any():
+            return mask_bool
+        mask_u8 = mask_bool.astype(np.uint8)
+        num_labels, components, stats, _ = cv2.connectedComponentsWithStats(
+            mask_u8, connectivity=8
+        )
+        if num_labels <= 1:
+            return mask_bool
+        best_id = 1
+        best_area = int(stats[1, cv2.CC_STAT_AREA])
+        for comp_id in range(2, num_labels):
+            area = int(stats[comp_id, cv2.CC_STAT_AREA])
+            if area > best_area:
+                best_area = area
+                best_id = comp_id
+        return components == best_id
+
+    def _repair_bad_shape_mask(
+        self,
+        label: str,
+        mask: np.ndarray,
+    ) -> Tuple[Optional[np.ndarray], Optional[str]]:
+        """Try deterministic recovery strategies for problematic masks."""
+        mask_bool = np.asarray(mask).astype(bool)
+        if mask_bool.ndim != 2 or not mask_bool.any():
+            recent = self._recent_instance_masks.get(str(label))
+            if recent is not None:
+                recent_mask = np.asarray(recent).astype(bool)
+                if recent_mask.ndim == 2 and recent_mask.any():
+                    return recent_mask, "recent_mask"
+            return None, None
+
+        candidates: List[Tuple[np.ndarray, str]] = []
+        largest = self._largest_connected_component(mask_bool)
+        if largest.any() and not np.array_equal(largest, mask_bool):
+            candidates.append((largest, "largest_component"))
+
+        # Tiny masks can fail polygon conversion; one-step dilation often fixes this.
+        if int(np.count_nonzero(mask_bool)) < 4:
+            kernel = np.ones((3, 3), dtype=np.uint8)
+            dilated = cv2.dilate(mask_bool.astype(np.uint8), kernel, iterations=1) > 0
+            if dilated.any():
+                candidates.append((dilated, "dilated_mask"))
+
+        recent = self._recent_instance_masks.get(str(label))
+        if recent is not None:
+            recent_mask = np.asarray(recent).astype(bool)
+            if recent_mask.ndim == 2 and recent_mask.any():
+                candidates.append((recent_mask, "recent_mask"))
+
+        # As a final fallback, retry with the original mask.
+        candidates.append((mask_bool, "original_mask"))
+
+        for candidate_mask, source in candidates:
+            if candidate_mask.ndim != 2 or not candidate_mask.any():
+                continue
+            return candidate_mask, source
+        return None, None
+
+    def _record_bad_shape_event(
+        self,
+        frame_idx: int,
+        label: str,
+        reason: str,
+        *,
+        resolved: bool,
+        repair_source: Optional[str] = None,
+    ) -> None:
+        try:
+            normalized_frame = int(frame_idx)
+        except (TypeError, ValueError):
+            return
+        stats = self._load_tracking_stats()
+        events = stats.setdefault("bad_shape_events", [])
+        if not isinstance(events, list):
+            events = []
+            stats["bad_shape_events"] = events
+        events.append(
+            {
+                "frame": normalized_frame,
+                "label": str(label),
+                "reason": str(reason),
+                "resolved": bool(resolved),
+                "repair_source": str(repair_source) if repair_source else "",
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            }
+        )
+        if len(events) > 5000:
+            stats["bad_shape_events"] = events[-5000:]
+
+        frame_stats = stats.setdefault("frame_stats", {})
+        frame_key = str(normalized_frame)
+        entry = frame_stats.get(frame_key)
+        if not isinstance(entry, dict):
+            entry = {"frame": normalized_frame}
+        entry["bad_shape_count"] = int(entry.get("bad_shape_count", 0)) + 1
+        reasons = entry.get("bad_shape_reasons", [])
+        if not isinstance(reasons, list):
+            reasons = []
+        reasons.append(str(reason))
+        entry["bad_shape_reasons"] = reasons[-50:]
+        labels = entry.get("bad_shape_labels", [])
+        if not isinstance(labels, list):
+            labels = []
+        labels.append(str(label))
+        entry["bad_shape_labels"] = sorted(set(labels))
+        if not resolved:
+            entry["bad_shape_failed_count"] = int(
+                entry.get("bad_shape_failed_count", 0)
+            ) + 1
+            failed_labels = entry.get("bad_shape_failed_labels", [])
+            if not isinstance(failed_labels, list):
+                failed_labels = []
+            failed_labels.append(str(label))
+            entry["bad_shape_failed_labels"] = sorted(set(failed_labels))
+        entry["last_updated"] = datetime.utcnow().isoformat() + "Z"
+        frame_stats[frame_key] = entry
+        self._tracking_stats_dirty = True
+        self._tracking_stats_pending_updates = int(
+            getattr(self, "_tracking_stats_pending_updates", 0)
+        ) + 1
+
     @staticmethod
     def _json_has_manual_seed_content(json_path: Path) -> bool:
         """Return True when a seed-pair JSON is parseable.
@@ -527,7 +1026,7 @@ class CutieCoreVideoProcessor:
         return discovered
 
     def _collect_labeled_frame_indices(self) -> Set[int]:
-        """Return cached frame indices that already have polygon annotations saved."""
+        """Return cached frame indices that already have saved annotation records."""
         if self._cached_labeled_frames is not None:
             return self._cached_labeled_frames
 
@@ -541,33 +1040,68 @@ class CutieCoreVideoProcessor:
         stem_prefix = f"{stem}_"
         stem_prefix_lower = stem_prefix.lower()
 
-        def has_valid_shapes(shapes: Iterable[Dict[str, Any]]) -> bool:
-            for shape in shapes or []:
-                if (
-                    shape.get("shape_type") == "polygon"
-                    and len(shape.get("points", [])) >= 3
-                ) or shape.get("mask"):
-                    return True
-            return False
+        stats = self._load_tracking_stats()
+        stats_updated = False
 
         # Prefer the annotation store (written during prediction) because per-frame
         # JSON files are not persisted for auto-labeled frames.
         store_path = results_dir / f"{results_dir.name}{AnnotationStore.STORE_SUFFIX}"
         if store_path.exists():
             try:
-                store = AnnotationStore(store_path)
-                records = store._load_records()
-                for frame_idx, record in records.items():
-                    try:
-                        normalized_idx = int(frame_idx)
-                    except (TypeError, ValueError):
-                        continue
-                    if has_valid_shapes(record.get("shapes")):
-                        labeled_frames.add(normalized_idx)
+                store_sig = f"{store_path.stat().st_mtime_ns}:{store_path.stat().st_size}"
+                cached_store_sig = str(stats.get("store_signature", ""))
+                cached_store_frames = stats.get("store_labeled_frames", [])
+                if (
+                    store_sig == cached_store_sig
+                    and isinstance(cached_store_frames, list)
+                ):
+                    for frame_idx in cached_store_frames:
+                        try:
+                            labeled_frames.add(int(frame_idx))
+                        except (TypeError, ValueError):
+                            continue
+                else:
+                    store = AnnotationStore(store_path)
+                    records = store._load_records()
+                    store_labeled: List[int] = []
+                    for frame_idx, record in records.items():
+                        try:
+                            normalized_idx = int(frame_idx)
+                        except (TypeError, ValueError):
+                            continue
+                        shape_count, polygon_count, has_valid_shapes = self._shape_metrics(
+                            record.get("shapes") or []
+                        )
+                        # Treat any persisted record as "completed" for segment skip.
+                        # This preserves explicit empty-shape frames (e.g., occlusion/out-of-view)
+                        # as already-processed results.
+                        has_persisted_record = isinstance(record, dict) and (
+                            "shapes" in record
+                        )
+                        if has_valid_shapes or has_persisted_record:
+                            labeled_frames.add(normalized_idx)
+                            store_labeled.append(normalized_idx)
+                        self._update_tracking_frame_stat(
+                            normalized_idx,
+                            source="prediction",
+                            shape_count=shape_count,
+                            polygon_count=polygon_count,
+                            has_valid_shapes=has_valid_shapes,
+                            store_record_exists=True,
+                        )
+                    stats["store_signature"] = store_sig
+                    stats["store_labeled_frames"] = sorted(set(store_labeled))
+                    stats_updated = True
             except Exception as exc:
                 logger.debug("Failed to read annotation store %s: %s", store_path, exc)
+        else:
+            if stats.get("store_signature"):
+                stats["store_signature"] = ""
+                stats["store_labeled_frames"] = []
+                stats_updated = True
+        json_candidates: Dict[int, Path] = {}
 
-        def scan_directory(directory: Path):
+        def collect_json_candidates(directory: Path) -> None:
             if not directory.exists() or not directory.is_dir():
                 return
             for json_path in directory.glob("*.json"):
@@ -578,9 +1112,37 @@ class CutieCoreVideoProcessor:
                 if len(suffix) != 9 or not suffix.isdigit():
                     continue
                 frame_idx = int(suffix)
-                # Skip JSON files for frames already accounted for via the store.
-                if frame_idx in labeled_frames:
+                existing = json_candidates.get(frame_idx)
+                if existing is None:
+                    json_candidates[frame_idx] = json_path
                     continue
+                try:
+                    if json_path.stat().st_mtime_ns >= existing.stat().st_mtime_ns:
+                        json_candidates[frame_idx] = json_path
+                except OSError:
+                    pass
+
+        collect_json_candidates(results_dir)
+        nested_dir = results_dir / stem
+        if nested_dir.exists():
+            collect_json_candidates(nested_dir)
+
+        for frame_idx, json_path in sorted(json_candidates.items()):
+            try:
+                json_mtime_ns = int(json_path.stat().st_mtime_ns)
+            except OSError:
+                json_mtime_ns = -1
+            frame_stat = stats.get("frame_stats", {}).get(str(frame_idx), {})
+            cached_has_valid = (
+                isinstance(frame_stat, dict)
+                and int(frame_stat.get("json_mtime_ns", -2)) == json_mtime_ns
+                and "has_valid_shapes" in frame_stat
+            )
+            if cached_has_valid:
+                has_valid_shapes = bool(frame_stat.get("has_valid_shapes", False))
+                shape_count = int(frame_stat.get("shape_count", 0))
+                polygon_count = int(frame_stat.get("polygon_count", 0))
+            else:
                 try:
                     with open(json_path, "r", encoding="utf-8") as fp:
                         data = json.load(fp) or {}
@@ -589,17 +1151,31 @@ class CutieCoreVideoProcessor:
                         f"Failed to parse JSON annotation {json_path.name}: {exc}"
                     )
                     continue
-
-                shapes = data.get("shapes") or []
-                if not has_valid_shapes(shapes):
-                    continue
-
+                shape_count, polygon_count, has_valid_shapes = self._shape_metrics(
+                    data.get("shapes") or []
+                )
+            png_exists = json_path.with_suffix(".png").exists()
+            source = "manual_seed" if png_exists else "json"
+            self._update_tracking_frame_stat(
+                frame_idx,
+                source=source,
+                shape_count=shape_count,
+                polygon_count=polygon_count,
+                has_valid_shapes=bool(has_valid_shapes),
+                json_exists=True,
+                json_mtime_ns=json_mtime_ns if json_mtime_ns >= 0 else None,
+                png_exists=png_exists,
+            )
+            # JSON presence means results exist; allow skip even when shapes are empty.
+            has_persisted_record = True
+            if has_valid_shapes or has_persisted_record:
                 labeled_frames.add(frame_idx)
+            if not cached_has_valid:
+                stats_updated = True
 
-        scan_directory(results_dir)
-        nested_dir = results_dir / stem
-        if nested_dir.exists():
-            scan_directory(nested_dir)
+        self._recompute_tracking_stats_summary(stats)
+        if stats_updated or self._tracking_stats_dirty:
+            self._flush_tracking_stats(force=True)
 
         self._cached_labeled_frames = labeled_frames
         return labeled_frames
@@ -902,6 +1478,7 @@ class CutieCoreVideoProcessor:
         frame_area = height * width
         label_list = []
         persisted_masks: Dict[str, np.ndarray] = {}
+        failed_shapes: Dict[str, Dict[str, Any]] = {}
         shape_notes = shape_notes or {}
         for label_id, mask in mask_dict.items():
             label = str(label_id)
@@ -922,10 +1499,20 @@ class CutieCoreVideoProcessor:
                     "CUTIE mask jump rejected for '%s' at frame %s (possible full-frame artifact)."
                     % (label, self._frame_number),
                 )
+                failed_shapes[label] = {
+                    "mask": np.asarray(mask).astype(bool),
+                    "reason": "suspicious_mask_jump_rejected",
+                    "motion_index": None,
+                }
                 continue
 
             metrics = self._save_results(label, mask)
             if metrics is None:
+                failed_shapes[label] = {
+                    "mask": np.asarray(mask).astype(bool),
+                    "reason": "metrics_failed",
+                    "motion_index": None,
+                }
                 continue
             cx, cy, motion_index = metrics
             self.save_KMedoids_in_mask(label_list, mask)
@@ -949,6 +1536,11 @@ class CutieCoreVideoProcessor:
             current_shape.mask = mask
             _shapes = current_shape.toPolygons(epsilon=self.epsilon_for_polygon)
             if len(_shapes) <= 0:
+                failed_shapes[label] = {
+                    "mask": np.asarray(mask).astype(bool),
+                    "reason": "polygon_conversion_failed",
+                    "motion_index": motion_index,
+                }
                 continue
             current_shape = _shapes[0]
             points = [[point.x(), point.y()] for point in current_shape.points]
@@ -967,6 +1559,11 @@ class CutieCoreVideoProcessor:
                         "CUTIE frame-sized artifact rejected for '%s' at frame %s."
                         % (label, self._frame_number),
                     )
+                    failed_shapes[label] = {
+                        "mask": np.asarray(mask).astype(bool),
+                        "reason": "frame_sized_artifact_rejected_no_fallback",
+                        "motion_index": motion_index,
+                    }
                     continue
 
                 self._log_repetitive_warning(
@@ -1006,6 +1603,11 @@ class CutieCoreVideoProcessor:
                     points=points,
                     frame_area=float(frame_area),
                 ):
+                    failed_shapes[label] = {
+                        "mask": np.asarray(mask).astype(bool),
+                        "reason": "frame_sized_artifact_rejected_after_fallback",
+                        "motion_index": motion_index,
+                    }
                     continue
             self._save_bbox(points, frame_area, label)
             current_shape.points = points
@@ -1013,6 +1615,73 @@ class CutieCoreVideoProcessor:
             persisted_masks[label] = np.asarray(mask).astype(bool)
             self._last_mask_area_ratio[label] = float(np.count_nonzero(mask)) / max(
                 float(frame_area), 1.0
+            )
+        for label, failed in failed_shapes.items():
+            failed_mask = np.asarray(failed.get("mask")).astype(bool)
+            repaired_mask, repair_source = self._repair_bad_shape_mask(label, failed_mask)
+            if repaired_mask is None:
+                self._record_bad_shape_event(
+                    int(getattr(self, "_frame_number", -1)),
+                    label,
+                    str(failed.get("reason", "bad_shape")),
+                    resolved=False,
+                    repair_source=None,
+                )
+                continue
+            metrics = self._save_results(label, repaired_mask)
+            if metrics is None:
+                self._record_bad_shape_event(
+                    int(getattr(self, "_frame_number", -1)),
+                    label,
+                    str(failed.get("reason", "bad_shape")),
+                    resolved=False,
+                    repair_source=repair_source,
+                )
+                continue
+            cx, cy, motion_index = metrics
+            note_text = str(shape_notes.get(label, "") or "").strip()
+            repair_note = f"repaired_bad_shape({repair_source or 'unknown'})"
+            if note_text:
+                note_text = f"{note_text}; {repair_note}"
+            else:
+                note_text = repair_note
+            recovered_shape = MaskShape(
+                label=label,
+                flags={},
+                description=f"motion_index: {motion_index}; note: {note_text}",
+            )
+            recovered_shape.other_data = {
+                "cx": cx,
+                "cy": cy,
+                "motion_index": motion_index,
+                "note": note_text,
+            }
+            recovered_shape.mask = repaired_mask
+            repaired_polys = recovered_shape.toPolygons(epsilon=self.epsilon_for_polygon)
+            if len(repaired_polys) <= 0:
+                self._record_bad_shape_event(
+                    int(getattr(self, "_frame_number", -1)),
+                    label,
+                    str(failed.get("reason", "bad_shape")),
+                    resolved=False,
+                    repair_source=repair_source,
+                )
+                continue
+            recovered_shape = repaired_polys[0]
+            recovered_points = [[point.x(), point.y()] for point in recovered_shape.points]
+            self._save_bbox(recovered_points, frame_area, label)
+            recovered_shape.points = recovered_points
+            label_list.append(recovered_shape)
+            persisted_masks[label] = np.asarray(repaired_mask).astype(bool)
+            self._last_mask_area_ratio[label] = float(np.count_nonzero(repaired_mask)) / max(
+                float(frame_area), 1.0
+            )
+            self._record_bad_shape_event(
+                int(getattr(self, "_frame_number", -1)),
+                label,
+                str(failed.get("reason", "bad_shape")),
+                resolved=True,
+                repair_source=repair_source,
             )
         self._last_saved_instance_masks = persisted_masks
         save_labels(
@@ -1024,6 +1693,25 @@ class CutieCoreVideoProcessor:
             save_image_to_json=False,
             persist_json=False,
         )
+        frame_idx = AnnotationStore.frame_number_from_path(Path(filename))
+        if frame_idx is None:
+            try:
+                frame_idx = int(self._frame_number)
+            except Exception:
+                frame_idx = None
+        if frame_idx is not None:
+            self._update_tracking_frame_stat(
+                frame_idx,
+                source="prediction",
+                shape_count=len(label_list),
+                polygon_count=len(label_list),
+                has_valid_shapes=bool(len(label_list)),
+                json_exists=Path(filename).exists(),
+                png_exists=Path(filename).with_suffix(".png").exists(),
+                store_record_exists=True,
+            )
+            self._recompute_tracking_stats_summary(self._load_tracking_stats())
+            self._flush_tracking_stats(force=False)
         return label_list
 
     def _sanitize_full_frame_artifact(
@@ -1715,6 +2403,9 @@ class CutieCoreVideoProcessor:
                     segment, resolved_end, labeled_frames, labeled_intervals
                 ):
                     skipped_segments += 1
+                    self._record_prediction_segment(
+                        segment.start_frame, resolved_end, "skipped_completed"
+                    )
                     logger.info(
                         f"Skipping Cutie segment [{segment.start_frame}, {resolved_end}] - annotations already exist."
                     )
@@ -1731,6 +2422,7 @@ class CutieCoreVideoProcessor:
                     seed_frames=seed_frames,
                     seed_segment_lookup=seed_segment_lookup,
                     visualize_every=visualize_every,
+                    existing_labeled_frames=labeled_frames,
                 )
 
                 processed_any_segment = True
@@ -1739,6 +2431,9 @@ class CutieCoreVideoProcessor:
                     final_message = message
 
                 if should_halt:
+                    self._record_prediction_segment(
+                        segment.start_frame, resolved_end, "halted"
+                    )
                     halt_requested = True
                     break
 
@@ -1746,6 +2441,9 @@ class CutieCoreVideoProcessor:
                 # when subsequent seed segments share frame ranges.
                 labeled_frames.update(range(segment.start_frame, resolved_end + 1))
                 labeled_intervals = self._build_frame_intervals(labeled_frames)
+                self._record_prediction_segment(
+                    segment.start_frame, resolved_end, "processed"
+                )
 
             if (
                 not processed_any_segment
@@ -1770,6 +2468,8 @@ class CutieCoreVideoProcessor:
             cap.release()
             if recording and hasattr(self, "video_writer"):
                 self.video_writer.release()
+            self._recompute_tracking_stats_summary(self._load_tracking_stats())
+            self._flush_tracking_stats(force=True)
 
         reached_video_end = max_resolved_end >= last_frame_index
         if (
@@ -1803,6 +2503,7 @@ class CutieCoreVideoProcessor:
         seed_frames: Optional[List[SeedFrame]] = None,
         seed_segment_lookup: Optional[Dict[int, SeedSegment]] = None,
         visualize_every: int = 30,
+        existing_labeled_frames: Optional[Set[int]] = None,
     ) -> (Optional[str], bool):
         """Run CUTIE on a single contiguous segment."""
 
@@ -1853,6 +2554,11 @@ class CutieCoreVideoProcessor:
         last_missing_key: Optional[Tuple[str, ...]] = None
         missing_streak = 0
         suppressed_missing_logs = 0
+        skipped_persist_count = 0
+        completed_intervals: List[Tuple[int, int]] = []
+        if existing_labeled_frames:
+            completed_intervals = self._build_frame_intervals(existing_labeled_frames)
+        interval_idx = 0
 
         logger.info(
             "Processing Cutie segment [%s, %s] (%s frames, %s tracked instance(s)).",
@@ -1878,6 +2584,33 @@ class CutieCoreVideoProcessor:
 
                     if current_frame_index > end_frame:
                         break
+                    while (
+                        interval_idx < len(completed_intervals)
+                        and completed_intervals[interval_idx][1] < int(current_frame_index)
+                    ):
+                        interval_idx += 1
+
+                    current_completed_interval: Optional[Tuple[int, int]] = None
+                    if interval_idx < len(completed_intervals):
+                        interval_start, interval_end = completed_intervals[interval_idx]
+                        if int(interval_start) <= int(current_frame_index) <= int(interval_end):
+                            current_completed_interval = (
+                                int(interval_start),
+                                int(interval_end),
+                            )
+
+                    if (
+                        current_completed_interval is not None
+                        and current_completed_interval[1] >= int(end_frame)
+                    ):
+                        logger.info(
+                            "Skipping inference for completed tail segment [%s, %s] from frame %s.",
+                            segment.start_frame,
+                            end_frame,
+                            current_frame_index,
+                        )
+                        current_frame_index = int(end_frame) + 1
+                        break
 
                     ret, frame = cap.read()
                     if not ret or frame is None:
@@ -1886,6 +2619,7 @@ class CutieCoreVideoProcessor:
                         return (None, True)
 
                     self._frame_number = current_frame_index
+                    frame_already_labeled = current_completed_interval is not None
                     processed_in_segment = (
                         current_frame_index - int(segment.start_frame) + 1
                     )
@@ -1920,6 +2654,42 @@ class CutieCoreVideoProcessor:
                     filename = self.video_folder / (
                         self.video_folder.name + f"_{current_frame_index:0>{9}}.json"
                     )
+                    visualize_requested = bool(
+                        recording
+                        or (
+                            self.debug
+                            and current_frame_index % max(1, visualize_every) == 0
+                        )
+                    )
+                    fast_skip_postprocess = bool(
+                        frame_already_labeled
+                        and not visualize_requested
+                        and not self.compute_optical_flow
+                    )
+
+                    if fast_skip_postprocess:
+                        if current_frame_index == segment.start_frame:
+                            self.processor.step(
+                                frame_torch,
+                                mask_tensor,
+                                objects=active_ids,
+                                idx_mask=False,
+                                force_permanent=True,
+                            )
+                        else:
+                            self.processor.step(frame_torch)
+                        skipped_persist_count += 1
+                        if skipped_persist_count == 1 or skipped_persist_count % max(
+                            25, progress_log_every
+                        ) == 0:
+                            logger.info(
+                                "Fast-skipped completed frame %s in segment [%s, %s].",
+                                current_frame_index,
+                                segment.start_frame,
+                                end_frame,
+                            )
+                        current_frame_index += 1
+                        continue
 
                     if current_frame_index == segment.start_frame:
                         try:
@@ -1983,9 +2753,24 @@ class CutieCoreVideoProcessor:
                         )
 
                     shape_notes_for_frame: Dict[str, str] = {}
+                    if frame_already_labeled:
+                        skipped_persist_count += 1
+                        if skipped_persist_count == 1 or skipped_persist_count % max(
+                            25, progress_log_every
+                        ) == 0:
+                            logger.info(
+                                "Skipping persistence for already labeled frame %s in segment [%s, %s].",
+                                current_frame_index,
+                                segment.start_frame,
+                                end_frame,
+                            )
                     # Optional compatibility path: historically we backfilled
                     # missing instances from the seed on the first step.
-                    if bool(getattr(self, "auto_fill_missing_instances", False)) and current_frame_index == segment.start_frame:
+                    if (
+                        not frame_already_labeled
+                        and bool(getattr(self, "auto_fill_missing_instances", False))
+                        and current_frame_index == segment.start_frame
+                    ):
                         seed_mask_dict = self._build_seed_mask_dict(
                             segment, instance_names
                         )
@@ -2000,7 +2785,7 @@ class CutieCoreVideoProcessor:
                                     "filled_from_seed_mask(start_frame)"
                                 )
 
-                    if len(mask_dict) < expected_instance_count:
+                    if (not frame_already_labeled) and len(mask_dict) < expected_instance_count:
                         missing_instances = instance_names - set(mask_dict.keys())
                         if missing_instances:
                             missing_count = int(expected_instance_count - len(mask_dict))
@@ -2101,18 +2886,19 @@ class CutieCoreVideoProcessor:
                                     pred_worker.stop_signal.emit()
                                 return (message_with_index, True)
 
-                    self._save_annotation_with_notes(
-                        filename,
-                        mask_dict,
-                        frame.shape,
-                        shape_notes=shape_notes_for_frame,
-                    )
-                    saved_mask_dict = getattr(self, "_last_saved_instance_masks", {})
-                    if not isinstance(saved_mask_dict, dict):
-                        saved_mask_dict = {}
-                    self._update_recent_instance_masks(
-                        current_frame_index, saved_mask_dict
-                    )
+                    if not frame_already_labeled:
+                        self._save_annotation_with_notes(
+                            filename,
+                            mask_dict,
+                            frame.shape,
+                            shape_notes=shape_notes_for_frame,
+                        )
+                        saved_mask_dict = getattr(self, "_last_saved_instance_masks", {})
+                        if not isinstance(saved_mask_dict, dict):
+                            saved_mask_dict = {}
+                        self._update_recent_instance_masks(
+                            current_frame_index, saved_mask_dict
+                        )
 
                     if recording:
                         if global_prediction is None:
