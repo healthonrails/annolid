@@ -27,6 +27,10 @@ from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCor
 from annolid.utils.annotation_compat import shapes_to_label
 from annolid.utils.shapes import extract_flow_points_in_mask
 from annolid.utils.devices import get_device
+from annolid.utils.image_adjustments import (
+    apply_linear_intensity_transform_uint8,
+    compute_brightness_contrast_linear_transform,
+)
 from annolid.utils.logger import logger
 from annolid.motion.optical_flow import (
     compute_optical_flow,
@@ -89,6 +93,21 @@ class CutieCoreVideoProcessor:
     _DISCOVERED_SEEDS_CACHE: Dict[str, List[SeedFrame]] = {}
     _TRACKING_STATS_VERSION = 4
     _TRACKING_STATS_FLUSH_INTERVAL = 25
+
+    def _configure_frame_preprocessing(self, *, brightness: Any, contrast: Any) -> None:
+        (
+            self._frame_brightness,
+            self._frame_contrast,
+            self._frame_preprocess_alpha,
+            self._frame_preprocess_beta,
+            self._frame_preprocess_enabled,
+        ) = compute_brightness_contrast_linear_transform(brightness, contrast)
+        if self._frame_preprocess_enabled:
+            logger.info(
+                "Applying per-video CUTIE preprocessing (brightness=%s, contrast=%s).",
+                self._frame_brightness,
+                self._frame_contrast,
+            )
 
     def __init__(self, video_name, *args, **kwargs):
         self.video_name = video_name
@@ -170,6 +189,13 @@ class CutieCoreVideoProcessor:
         self._tracking_stats_cache: Optional[Dict[str, Any]] = None
         self._tracking_stats_dirty: bool = False
         self._tracking_stats_pending_updates: int = 0
+        self._frame_preprocess_alpha = 1.0
+        self._frame_preprocess_beta = 0.0
+        self._frame_preprocess_enabled = False
+        self._configure_frame_preprocessing(
+            brightness=kwargs.get("brightness", 0),
+            contrast=kwargs.get("contrast", 0),
+        )
 
     def set_same_hq(self, sam_hq):
         self.sam_hq = sam_hq
@@ -283,6 +309,29 @@ class CutieCoreVideoProcessor:
         except Exception as exc:
             logger.error("Failed to read tracking CSV %s: %s", path, exc)
         return rows
+
+    def _apply_inference_brightness_contrast(
+        self, frame: Optional[np.ndarray]
+    ) -> Optional[np.ndarray]:
+        if frame is None:
+            return None
+
+        if not bool(getattr(self, "_frame_preprocess_enabled", False)):
+            return frame
+
+        try:
+            return apply_linear_intensity_transform_uint8(
+                frame,
+                alpha=float(getattr(self, "_frame_preprocess_alpha", 1.0)),
+                beta=float(getattr(self, "_frame_preprocess_beta", 0.0)),
+                enabled=True,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to apply CUTIE brightness/contrast preprocessing.",
+                exc_info=True,
+            )
+            return frame
 
     def _read_tracking_rows_from_annotations_store(self) -> Dict[tuple, tuple]:
         rows: Dict[tuple, tuple] = {}
@@ -2301,6 +2350,7 @@ class CutieCoreVideoProcessor:
                             f"Failed to read seed frame for committing permanent memory: {segment.seed}"
                         )
                         continue
+                    frame = self._apply_inference_brightness_contrast(frame)
 
                     for label in segment.active_labels:
                         labels_dict.setdefault(label, segment.labels_map[label])
@@ -2617,6 +2667,7 @@ class CutieCoreVideoProcessor:
                         break
                     if self._should_stop(pred_worker):
                         return (None, True)
+                    frame = self._apply_inference_brightness_contrast(frame)
 
                     self._frame_number = current_frame_index
                     frame_already_labeled = current_completed_interval is not None

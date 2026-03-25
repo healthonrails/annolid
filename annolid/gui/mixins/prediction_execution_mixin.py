@@ -16,6 +16,7 @@ from annolid.infrastructure import AnnotationStore
 from annolid.infrastructure.filesystem import (
     should_start_predictions_from_frame0,
 )
+from annolid.utils.image_adjustments import normalize_brightness_contrast_value
 from annolid.utils.logger import logger
 
 PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
@@ -274,6 +275,19 @@ class PredictionExecutionMixin:
             "tta_merge": str(tta_merge),
             "min_keypoint_score": max(0.0, float(min_score)),
             "stabilize_lr": True,
+        }
+
+    def _cutie_brightness_contrast_kwargs(self) -> dict:
+        getter = getattr(self, "get_video_brightness_contrast_values", None)
+        if not callable(getter):
+            return {"brightness": 0, "contrast": 0}
+        try:
+            brightness, contrast = getter(getattr(self, "video_file", None))
+        except Exception:
+            brightness, contrast = (0, 0)
+        return {
+            "brightness": normalize_brightness_contrast_value(brightness),
+            "contrast": normalize_brightness_contrast_value(contrast),
         }
 
     def predict_from_next_frame(self, to_frame=60):
@@ -575,6 +589,8 @@ class PredictionExecutionMixin:
                     if self.video_results_folder
                     else None,
                 )
+                if self._is_cutie_tracking_model(model_name):
+                    processor_kwargs.update(self._cutie_brightness_contrast_kwargs())
                 try:
                     self.video_processor = build_tracking_video_processor(
                         video_path=self.video_file,

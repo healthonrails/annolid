@@ -262,6 +262,31 @@ def test_json_has_manual_seed_content_rejects_invalid_json(tmp_path) -> None:
     assert CutieCoreVideoProcessor._json_has_manual_seed_content(json_path) is False
 
 
+def test_apply_inference_brightness_contrast_is_noop_when_disabled() -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor._frame_preprocess_enabled = False
+    processor._frame_preprocess_alpha = 1.0
+    processor._frame_preprocess_beta = 0.0
+    frame = np.full((3, 3, 3), 100, dtype=np.uint8)
+
+    output = processor._apply_inference_brightness_contrast(frame)
+    assert output is frame
+
+
+def test_apply_inference_brightness_contrast_adjusts_frame() -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor._frame_preprocess_enabled = True
+    processor._frame_preprocess_alpha = 1.5
+    processor._frame_preprocess_beta = 8.0
+    frame = np.full((4, 4, 3), 80, dtype=np.uint8)
+
+    output = processor._apply_inference_brightness_contrast(frame)
+    assert output is not None
+    assert output.shape == frame.shape
+    assert output.dtype == np.uint8
+    assert float(output.mean()) > float(frame.mean())
+
+
 def test_discover_seed_frames_uses_cache_for_whole_video(tmp_path) -> None:
     video_path = tmp_path / "clip.mp4"
     video_path.write_bytes(b"")

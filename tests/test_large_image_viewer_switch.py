@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 
 import numpy as np
@@ -95,6 +96,32 @@ def _send_mouse_click(view, pos: QtCore.QPoint) -> None:
     )
     view.mousePressEvent(press)
     view.mouseReleaseEvent(release)
+
+
+def test_video_brightness_contrast_settings_roundtrip(tmp_path) -> None:
+    _ensure_qapp()
+    host = _CanvasFitWindowStub()
+    host.settings = _SettingsStub()
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_text("video", encoding="utf-8")
+    host.video_file = str(video_path)
+
+    host.set_video_brightness_contrast_values(12, -7, video_path=str(video_path))
+    assert host.get_video_brightness_contrast_values(str(video_path)) == (12, -7)
+
+    key = host._video_brightness_contrast_settings_key(
+        host._video_brightness_contrast_key(str(video_path))
+    )
+    payload = host.settings.value(key, "", type=str)
+    assert payload
+    data = json.loads(payload)
+    assert data["brightness"] == 12
+    assert data["contrast"] == -7
+
+    reloaded = _CanvasFitWindowStub()
+    reloaded.settings = host.settings
+    reloaded.video_file = str(video_path)
+    assert reloaded.get_video_brightness_contrast_values() == (12, -7)
 
 
 class _CanvasStub(QtWidgets.QWidget):

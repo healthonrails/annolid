@@ -407,6 +407,9 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.brightnessContrast_values: dict[
             str, tuple[Optional[int], Optional[int]]
         ] = {}
+        self.video_brightness_contrast_values: dict[
+            str, tuple[Optional[int], Optional[int]]
+        ] = {}
         self._icons_dir = Path(__file__).resolve().parent / "icons"
 
         self._selectAiModelComboBox = QtWidgets.QComboBox()

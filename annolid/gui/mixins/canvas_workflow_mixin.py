@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-import io
+import json
+import hashlib
 from pathlib import Path
 
-from PIL import Image, ImageEnhance
 from qtpy import QtCore, QtGui, QtWidgets
 
+from annolid.utils.image_adjustments import (
+    apply_brightness_contrast_uint8,
+    normalize_brightness_contrast_value,
+)
 from annolid.utils.logger import logger
-from annolid.utils.qt2cv import convert_qt_image_to_rgb_cv_image
+from annolid.utils.qt2cv import (
+    convert_cv_image_to_qt_image,
+    convert_qt_image_to_rgb_cv_image,
+)
 
 
 class CanvasWorkflowMixin:
@@ -103,6 +110,104 @@ class CanvasWorkflowMixin:
 
         return bytes(buffer.data())
 
+    @staticmethod
+    def _sanitize_brightness_contrast_value(value: int | float | None) -> int:
+        return normalize_brightness_contrast_value(value)
+
+    def _video_brightness_contrast_key(
+        self, video_path: str | None = None
+    ) -> str | None:
+        candidate = str(video_path or getattr(self, "video_file", "") or "").strip()
+        if not candidate:
+            return None
+        try:
+            return str(Path(candidate).expanduser().resolve())
+        except Exception:
+            return candidate
+
+    @staticmethod
+    def _video_brightness_contrast_settings_key(video_key: str) -> str:
+        digest = hashlib.sha1(video_key.encode("utf-8")).hexdigest()
+        return f"video/brightness_contrast/{digest}"
+
+    def get_video_brightness_contrast_values(
+        self, video_path: str | None = None
+    ) -> tuple[int, int]:
+        video_key = self._video_brightness_contrast_key(video_path)
+        if not video_key:
+            return (0, 0)
+
+        cache = getattr(self, "video_brightness_contrast_values", None)
+        if isinstance(cache, dict) and video_key in cache:
+            cached_b, cached_c = cache.get(video_key, (0, 0))
+            return (
+                self._sanitize_brightness_contrast_value(cached_b),
+                self._sanitize_brightness_contrast_value(cached_c),
+            )
+
+        settings = getattr(self, "settings", None)
+        payload = None
+        if settings is not None and hasattr(settings, "value"):
+            try:
+                payload = settings.value(
+                    self._video_brightness_contrast_settings_key(video_key),
+                    "",
+                    type=str,
+                )
+            except Exception:
+                payload = None
+
+        brightness = 0
+        contrast = 0
+        if payload:
+            try:
+                data = json.loads(str(payload))
+                if isinstance(data, dict):
+                    brightness = data.get("brightness", 0)
+                    contrast = data.get("contrast", 0)
+                elif isinstance(data, (list, tuple)) and len(data) >= 2:
+                    brightness = data[0]
+                    contrast = data[1]
+            except Exception:
+                brightness = 0
+                contrast = 0
+
+        brightness = self._sanitize_brightness_contrast_value(brightness)
+        contrast = self._sanitize_brightness_contrast_value(contrast)
+        if isinstance(cache, dict):
+            cache[video_key] = (brightness, contrast)
+        return (brightness, contrast)
+
+    def set_video_brightness_contrast_values(
+        self, brightness: int, contrast: int, video_path: str | None = None
+    ) -> None:
+        video_key = self._video_brightness_contrast_key(video_path)
+        if not video_key:
+            return
+
+        brightness = self._sanitize_brightness_contrast_value(brightness)
+        contrast = self._sanitize_brightness_contrast_value(contrast)
+        cache = getattr(self, "video_brightness_contrast_values", None)
+        if isinstance(cache, dict):
+            cache[video_key] = (brightness, contrast)
+
+        settings = getattr(self, "settings", None)
+        if settings is not None and hasattr(settings, "setValue"):
+            try:
+                settings.setValue(
+                    self._video_brightness_contrast_settings_key(video_key),
+                    json.dumps(
+                        {"brightness": int(brightness), "contrast": int(contrast)},
+                        separators=(",", ":"),
+                    ),
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to persist video brightness/contrast for %s",
+                    video_key,
+                    exc_info=True,
+                )
+
     def brightnessContrast(self, value):
         """Interactive brightness/contrast adjustment with live preview."""
         _ = value
@@ -116,8 +221,15 @@ class CanvasWorkflowMixin:
 
         original_image = QtGui.QImage(self.image)
         original_data = self.imageData
-        key = self.filename or self.imagePath or "__current__"
-        init_brightness, init_contrast = self.brightnessContrast_values.get(key, (0, 0))
+        frame_key = self.filename or self.imagePath or "__current__"
+        video_key = self._video_brightness_contrast_key()
+        video_brightness, video_contrast = self.get_video_brightness_contrast_values(
+            video_key
+        )
+        init_brightness, init_contrast = self.brightnessContrast_values.get(
+            frame_key,
+            (video_brightness, video_contrast),
+        )
         init_brightness = int(init_brightness or 0)
         init_contrast = int(init_contrast or 0)
 
@@ -182,7 +294,13 @@ class CanvasWorkflowMixin:
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             b = int(brightness_slider.value())
             c = int(contrast_slider.value())
-            self.brightnessContrast_values[key] = (b, c)
+            self.brightnessContrast_values[frame_key] = (b, c)
+            if video_key:
+                self.set_video_brightness_contrast_values(
+                    brightness=b,
+                    contrast=c,
+                    video_path=video_key,
+                )
         else:
             self.image = original_image
             self.imageData = original_data
@@ -193,21 +311,18 @@ class CanvasWorkflowMixin:
         self, image: QtGui.QImage, brightness: int, contrast: int
     ) -> QtGui.QImage:
         """Apply brightness/contrast and return a new QImage."""
-        image_bytes = self._qimage_to_bytes(image)
-        if image_bytes is None:
+        if image is None or image.isNull():
             return QtGui.QImage()
         try:
-            pil_img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-            b_factor = max(0.0, 1.0 + (float(brightness) / 100.0))
-            c_factor = max(0.0, 1.0 + (float(contrast) / 100.0))
-            if b_factor != 1.0:
-                pil_img = ImageEnhance.Brightness(pil_img).enhance(b_factor)
-            if c_factor != 1.0:
-                pil_img = ImageEnhance.Contrast(pil_img).enhance(c_factor)
-            out_buf = io.BytesIO()
-            pil_img.save(out_buf, format="PNG")
-            qimg = QtGui.QImage.fromData(out_buf.getvalue(), "PNG")
-            return qimg
+            rgb_image = convert_qt_image_to_rgb_cv_image(image)
+            adjusted = apply_brightness_contrast_uint8(
+                rgb_image,
+                brightness=brightness,
+                contrast=contrast,
+            )
+            if adjusted is None:
+                return QtGui.QImage()
+            return convert_cv_image_to_qt_image(adjusted)
         except Exception:
             logger.debug("Failed to apply brightness/contrast.", exc_info=True)
             return QtGui.QImage()

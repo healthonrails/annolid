@@ -26,3 +26,33 @@ def test_cutie_start_keeps_frame_zero_bootstrap_for_single_seed() -> None:
         manual_seed_max=0,
     )
     assert start == 0
+
+
+def test_cutie_brightness_contrast_kwargs_reads_video_settings() -> None:
+    class _Host(PredictionExecutionMixin):
+        video_file = "/tmp/demo.mp4"
+
+        @staticmethod
+        def get_video_brightness_contrast_values(_video_path):
+            return (11, -9)
+
+    host = _Host()
+    assert host._cutie_brightness_contrast_kwargs() == {
+        "brightness": 11,
+        "contrast": -9,
+    }
+
+
+def test_cutie_brightness_contrast_kwargs_clamps_out_of_range_values() -> None:
+    class _Host(PredictionExecutionMixin):
+        video_file = "/tmp/demo.mp4"
+
+        @staticmethod
+        def get_video_brightness_contrast_values(_video_path):
+            return (999, -999)
+
+    host = _Host()
+    assert host._cutie_brightness_contrast_kwargs() == {
+        "brightness": 100,
+        "contrast": -100,
+    }
