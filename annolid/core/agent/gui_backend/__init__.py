@@ -28,6 +28,7 @@ from .heuristics import (
     prompt_may_need_mcp,
     should_attach_live_pdf_context,
     should_attach_live_web_context,
+    should_attach_tracking_stats_context,
     topic_tokens,
 )
 from .fallbacks import (
@@ -191,6 +192,7 @@ __all__ = [
     "looks_like_url_request",
     "should_attach_live_web_context",
     "should_attach_live_pdf_context",
+    "should_attach_tracking_stats_context",
     "looks_like_web_access_refusal",
     "looks_like_knowledge_gap_response",
     "looks_like_open_url_suggestion",

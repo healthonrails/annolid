@@ -281,6 +281,7 @@ def _render_plots(
 def analyze_and_visualize_tracking_stats(
     root_dir: Path,
     output_dir: Optional[Path] = None,
+    include_plots: bool = True,
 ) -> TrackingStatsArtifacts:
     root = Path(root_dir).expanduser().resolve()
     stats_files = discover_tracking_stats_files(root)
@@ -330,8 +331,12 @@ def analyze_and_visualize_tracking_stats(
     abnormal_df.to_csv(abnormal_csv, index=False)
     bad_shape_df.to_csv(bad_shape_csv, index=False)
 
-    plots = _render_plots(overview_df, resolved_output_dir)
-    manual_badshape_plot, abnormal_segments_plot, unresolved_bad_shapes_plot = plots
+    manual_badshape_plot: Optional[Path] = None
+    abnormal_segments_plot: Optional[Path] = None
+    unresolved_bad_shapes_plot: Optional[Path] = None
+    if include_plots:
+        plots = _render_plots(overview_df, resolved_output_dir)
+        manual_badshape_plot, abnormal_segments_plot, unresolved_bad_shapes_plot = plots
 
     logger.info(
         "Tracking stats dashboard generated for %d video(s) at %s.",
@@ -366,6 +371,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Directory to write CSV/plot artifacts. Defaults to <root_dir>/tracking_stats_dashboard.",
     )
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip plot generation and only write CSV artifacts.",
+    )
     return parser
 
 
@@ -375,6 +385,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     artifacts = analyze_and_visualize_tracking_stats(
         root_dir=Path(args.root_dir),
         output_dir=Path(args.output_dir) if args.output_dir else None,
+        include_plots=not bool(args.no_plots),
     )
     logger.info("Overview CSV: %s", artifacts.overview_csv)
     logger.info("Abnormal segments CSV: %s", artifacts.abnormal_segments_csv)

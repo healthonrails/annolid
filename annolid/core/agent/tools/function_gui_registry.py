@@ -35,6 +35,7 @@ from .function_gui_threejs import (
     GuiOpenThreeJsTool,
 )
 from .function_gui_video import (
+    GuiAnalyzeTrackingStatsTool,
     GuiCheckStreamSourceTool,
     GuiGetRealtimeStatusTool,
     GuiListLogsTool,
@@ -115,6 +116,7 @@ def register_annolid_gui_tools(
     run_ai_text_segmentation_callback: Optional[ActionCallback] = None,
     segment_track_video_callback: Optional[ActionCallback] = None,
     label_behavior_segments_callback: Optional[ActionCallback] = None,
+    analyze_tracking_stats_callback: Optional[ActionCallback] = None,
     start_realtime_stream_callback: Optional[ActionCallback] = None,
     stop_realtime_stream_callback: Optional[ActionCallback] = None,
     get_realtime_status_callback: Optional[ActionCallback] = None,
@@ -221,6 +223,11 @@ def register_annolid_gui_tools(
     registry.register(
         GuiLabelBehaviorSegmentsTool(
             label_behavior_segments_callback=label_behavior_segments_callback
+        )
+    )
+    registry.register(
+        GuiAnalyzeTrackingStatsTool(
+            analyze_tracking_stats_callback=analyze_tracking_stats_callback
         )
     )
     registry.register(

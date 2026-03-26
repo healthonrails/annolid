@@ -114,6 +114,7 @@ from annolid.services.chat_backend_support import (
     select_annolid_reference_paths,
     should_attach_live_pdf_context,
     should_attach_live_web_context,
+    should_attach_tracking_stats_context,
     topic_tokens,
     try_browser_search_fallback,
     try_open_page_content_fallback,
@@ -175,6 +176,9 @@ from annolid.services.chat_shape_files import (
     delete_shapes_in_annotation_tool as gui_delete_shapes_in_annotation_tool,
     list_shapes_in_annotation_tool as gui_list_shapes_in_annotation_tool,
     relabel_shapes_in_annotation_tool as gui_relabel_shapes_in_annotation_tool,
+)
+from annolid.services.chat_tracking_stats import (
+    analyze_chat_tracking_stats_tool as gui_analyze_chat_tracking_stats_tool,
 )
 from annolid.gui.realtime_launch import build_realtime_launch_payload
 from annolid.services.chat_runtime import (
@@ -1228,6 +1232,7 @@ class StreamingChatTask(QRunnable):
                 "run_ai_text_segmentation": self._tool_gui_run_ai_text_segmentation,
                 "segment_track_video": self._tool_gui_segment_track_video,
                 "label_behavior_segments": self._tool_gui_label_behavior_segments,
+                "analyze_tracking_stats": self._tool_gui_analyze_tracking_stats,
                 "start_realtime_stream": self._tool_gui_start_realtime_stream,
                 "stop_realtime_stream": self._tool_gui_stop_realtime_stream,
                 "get_realtime_status": self._tool_gui_get_realtime_status,
@@ -2493,6 +2498,35 @@ class StreamingChatTask(QRunnable):
             get_action_result=self._get_widget_action_result,
         )
 
+    def _tool_gui_analyze_tracking_stats(
+        self,
+        *,
+        root_dir: str = "",
+        output_dir: str = "",
+        video_id: str = "",
+        top_k: int = 10,
+        include_plots: bool = True,
+    ) -> Dict[str, Any]:
+        initial_root = None
+        host = getattr(self.widget, "host_window_widget", None) if self.widget else None
+        if host is not None:
+            for attr in ("video_results_folder", "annotation_dir", "lastOpenDir"):
+                raw = getattr(host, attr, None)
+                text = str(raw or "").strip()
+                if text:
+                    initial_root = Path(text).expanduser()
+                    break
+        if initial_root is None:
+            initial_root = Path(self.workspace).expanduser()
+        return gui_analyze_chat_tracking_stats_tool(
+            root_dir=root_dir,
+            output_dir=output_dir,
+            video_id=video_id,
+            top_k=top_k,
+            include_plots=include_plots,
+            default_root_dir=initial_root,
+        )
+
     def _get_widget_action_result(self, action_name: str) -> Dict[str, Any]:
         return get_chat_widget_action_result(
             widget=self.widget, action_name=action_name
@@ -3735,6 +3769,7 @@ class StreamingChatTask(QRunnable):
             list_skill_names=_list_workspace_skill_names_cached,
             should_attach_live_web_context=self._should_attach_live_web_context,
             should_attach_live_pdf_context=self._should_attach_live_pdf_context,
+            should_attach_tracking_stats_context=self._should_attach_tracking_stats_context,
             build_live_web_context_prompt_block=self._build_live_web_context_prompt_block,
             build_live_pdf_context_prompt_block=self._build_live_pdf_context_prompt_block,
         )
@@ -3752,6 +3787,9 @@ class StreamingChatTask(QRunnable):
 
     def _should_attach_live_pdf_context(self, prompt: str) -> bool:
         return should_attach_live_pdf_context(prompt)
+
+    def _should_attach_tracking_stats_context(self, prompt: str) -> bool:
+        return should_attach_tracking_stats_context(prompt)
 
     def _should_use_open_page_fallback(self, prompt: str) -> bool:
         return self._should_attach_live_web_context(prompt)

@@ -132,6 +132,20 @@ PDF_SUMMARY_ACTION_HINTS: Tuple[str, ...] = (
     "main findings",
 )
 
+TRACKING_STATS_CONTEXT_HINTS: Tuple[str, ...] = (
+    "tracking stats",
+    "tracking statistics",
+    "tracking dashboard",
+    "abnormal segments",
+    "manual frames",
+    "bad shape",
+    "bad-shape",
+    "unresolved bad shapes",
+    "seed counts",
+    "manual seed",
+    "prediction segments",
+)
+
 EMBEDDED_SEARCH_URL_TEMPLATE = "https://html.duckduckgo.com/html/?q={query}"
 EMBEDDED_SEARCH_SOURCE = "DuckDuckGo search results page (embedded web viewer)."
 
@@ -161,6 +175,10 @@ def should_attach_live_web_context(prompt: str) -> bool:
 
 def should_attach_live_pdf_context(prompt: str) -> bool:
     return contains_hint(prompt, PDF_CONTEXT_HINTS)
+
+
+def should_attach_tracking_stats_context(prompt: str) -> bool:
+    return contains_hint(prompt, TRACKING_STATS_CONTEXT_HINTS)
 
 
 def looks_like_web_access_refusal(text: str) -> bool:

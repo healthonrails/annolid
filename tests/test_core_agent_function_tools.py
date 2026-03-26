@@ -3951,6 +3951,9 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         label_behavior_segments_callback=lambda **kwargs: _mark(
             "label_behavior_segments", kwargs
         ),
+        analyze_tracking_stats_callback=lambda **kwargs: _mark(
+            "analyze_tracking_stats", kwargs
+        ),
         start_realtime_stream_callback=lambda **kwargs: _mark(
             "start_realtime_stream", kwargs
         ),
@@ -4037,6 +4040,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_run_ai_text_segmentation")
     assert registry.has("gui_segment_track_video")
     assert registry.has("gui_label_behavior_segments")
+    assert registry.has("gui_analyze_tracking_stats")
     assert registry.has("gui_start_realtime_stream")
     assert registry.has("gui_stop_realtime_stream")
     assert registry.has("gui_get_realtime_status")
@@ -4206,6 +4210,12 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
                 "segment_mode": "uniform",
                 "segment_frames": 30,
             },
+        )
+    )
+    asyncio.run(
+        registry.execute(
+            "gui_analyze_tracking_stats",
+            {"root_dir": "/tmp/results", "video_id": "mouse", "top_k": 5},
         )
     )
     asyncio.run(
@@ -4384,6 +4394,10 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
                 "segment_mode": "uniform",
                 "segment_frames": 30,
             },
+        ),
+        (
+            "analyze_tracking_stats",
+            {"root_dir": "/tmp/results", "video_id": "mouse", "top_k": 5},
         ),
         (
             "start_realtime_stream",

@@ -20,6 +20,7 @@ from annolid.services import (
     audit_agent_secrets,
     add_agent_feedback,
     add_agent_cron_job,
+    analyze_chat_tracking_stats_tool,
     build_agent_regression_eval,
     build_chat_pdf_search_roots,
     build_chat_gui_context_payload,
@@ -89,6 +90,7 @@ from annolid.services import (
     run_chat_web_steps,
     scroll_chat_web,
     segment_track_chat_video_tool,
+    should_attach_tracking_stats_context,
     set_agent_secret,
     set_agent_cron_job_enabled,
     shadow_agent_skills,
@@ -110,6 +112,11 @@ def test_services_layer_exports() -> None:
     assert services.run_agent_pipeline is run_agent_pipeline
     assert services.run_embedding_search is run_embedding_search
     assert services.predict_behavior is predict_behavior
+    assert services.analyze_chat_tracking_stats_tool is analyze_chat_tracking_stats_tool
+    assert (
+        services.should_attach_tracking_stats_context
+        is should_attach_tracking_stats_context
+    )
     assert services.run_behavior_training_cli is run_behavior_training_cli
     assert services.build_yolo_dataset_from_index is build_yolo_dataset_from_index
     assert services.run_agent_security_check is run_agent_security_check

@@ -121,6 +121,18 @@ def _build_direct_command_alias_line(tool_names: List[str]) -> str:
     )
 
 
+def _build_tracking_stats_guidance(tool_names: List[str]) -> str:
+    tool_set = {name.lower() for name in tool_names}
+    if "gui_analyze_tracking_stats" not in tool_set:
+        return ""
+    return (
+        "For tracking-stats questions, use `gui_analyze_tracking_stats` first. "
+        "Report the actual counts, the top ranked videos, and the CSV/plot artifact paths. "
+        "If the user asks for trends, comparisons, outliers, unresolved bad shapes, or abnormal segments, "
+        "base the answer on that tool output rather than guessing."
+    )
+
+
 def build_compact_system_prompt(
     *,
     inputs: PromptBuildInputs,
@@ -128,6 +140,7 @@ def build_compact_system_prompt(
     list_skill_names: Callable[[Path], List[str]],
     should_attach_live_web_context: Callable[[str], bool],
     should_attach_live_pdf_context: Callable[[str], bool],
+    should_attach_tracking_stats_context: Callable[[str], bool],
     build_live_web_context_prompt_block: Callable[..., str],
     build_live_pdf_context_prompt_block: Callable[..., str],
 ) -> str:
@@ -219,6 +232,9 @@ def build_compact_system_prompt(
     alias_line = _build_direct_command_alias_line(tool_names)
     if alias_line:
         parts.append(alias_line)
+    tracking_stats_line = _build_tracking_stats_guidance(tool_names)
+    if tracking_stats_line:
+        parts.append(tracking_stats_line)
     parts.append(
         "Slash aliases are also supported for quick actions, for example: "
         "`/cron status`, `/cron list`, `/cron check <job_id>`, "
@@ -253,6 +269,12 @@ def build_compact_system_prompt(
     )
     if live_pdf_context:
         parts.append(live_pdf_context)
+
+    if should_attach_tracking_stats_context(prompt_text):
+        parts.append(
+            "This request appears to involve tracking stats. Use `gui_analyze_tracking_stats` "
+            "to gather the actual counts, ranking, and artifact paths before answering."
+        )
 
     parts.append(
         "Tools starting with `mcp_` are dynamically injected through an external MCP Server. "

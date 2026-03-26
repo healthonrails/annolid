@@ -209,6 +209,44 @@ class GuiLabelBehaviorSegmentsTool(FunctionTool):
         return await _run_callback(self._label_behavior_segments_callback, **kwargs)
 
 
+class GuiAnalyzeTrackingStatsTool(FunctionTool):
+    def __init__(
+        self, analyze_tracking_stats_callback: Optional[ActionCallback] = None
+    ) -> None:
+        self._analyze_tracking_stats_callback = analyze_tracking_stats_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_analyze_tracking_stats"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Analyze Annolid *_tracking_stats.json files and return numeric summaries, "
+            "per-video rankings, CSV artifact paths, and optional plot paths."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "root_dir": {"type": "string"},
+                "output_dir": {"type": "string"},
+                "video_id": {
+                    "type": "string",
+                    "description": "Optional case-insensitive substring filter.",
+                },
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 100},
+                "include_plots": {"type": "boolean"},
+            },
+            "required": [],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._analyze_tracking_stats_callback, **kwargs)
+
+
 class GuiStartRealtimeStreamTool(FunctionTool):
     def __init__(self, start_realtime_stream_callback: Optional[ActionCallback] = None):
         self._start_realtime_stream_callback = start_realtime_stream_callback

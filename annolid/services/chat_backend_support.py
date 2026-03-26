@@ -35,6 +35,7 @@ from annolid.core.agent.gui_backend.heuristics import (
     prompt_may_need_mcp,
     should_attach_live_pdf_context,
     should_attach_live_web_context,
+    should_attach_tracking_stats_context,
     topic_tokens,
 )
 from annolid.core.agent.gui_backend.ollama_adapter import (
@@ -157,6 +158,7 @@ __all__ = [
     "select_annolid_reference_paths",
     "should_attach_live_pdf_context",
     "should_attach_live_web_context",
+    "should_attach_tracking_stats_context",
     "topic_tokens",
     "try_browser_search_fallback",
     "try_open_page_content_fallback",

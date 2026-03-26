@@ -552,6 +552,14 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
     assert workflow_payload["mode"] == "track"
     assert workflow_payload["text_prompt"] == "mouse"
 
+    tracking_stats_payload = task._tool_gui_analyze_tracking_stats(
+        root_dir=str(tmp_path),
+        top_k=3,
+        include_plots=False,
+    )
+    assert tracking_stats_payload["ok"] is True
+    assert int(tracking_stats_payload["video_count"]) >= 0
+
     assert calls == [
         "bot_open_video",
         "bot_open_url",
@@ -1557,6 +1565,12 @@ def test_prompt_may_need_tools_heuristic() -> None:
     assert (
         StreamingChatTask._prompt_may_need_tools(
             "Create a Google Calendar event tomorrow at 10 AM"
+        )
+        is True
+    )
+    assert (
+        StreamingChatTask._prompt_may_need_tools(
+            "show tracking stats for unresolved bad shapes"
         )
         is True
     )
