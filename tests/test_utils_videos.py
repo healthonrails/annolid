@@ -433,3 +433,101 @@ def test_compress_and_rescale_video_emits_streaming_progress(
 
     assert any(0 < current < 100 for current, _, _ in events)
     assert any("processing" in message.lower() for _, _, message in events)
+
+
+def test_windows_ffmpeg_progress_path_does_not_use_select(
+    tmp_path: Path, monkeypatch
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (input_dir / "clip.mp4").write_bytes(b"fake")
+
+    monkeypatch.setattr(videos_mod, "get_video_fps", lambda _p: 10.0)
+    monkeypatch.setattr(videos_mod, "_is_windows_platform", lambda: True)
+
+    class _FakeCapture:
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            mapping = {
+                videos_mod.cv2.CAP_PROP_FRAME_COUNT: 100,
+                videos_mod.cv2.CAP_PROP_FPS: 10.0,
+            }
+            return mapping.get(prop, 0)
+
+        def release(self):
+            return None
+
+    monkeypatch.setattr(videos_mod.cv2, "VideoCapture", lambda _p: _FakeCapture())
+
+    class _FakePipe:
+        def __init__(self, lines: list[str]) -> None:
+            self.lines = lines
+
+        def readline(self):
+            if self.lines:
+                return self.lines.pop(0)
+            return ""
+
+    class _FakeProc:
+        def __init__(self) -> None:
+            self.stdout = _FakePipe(
+                [
+                    "out_time_ms=0\n",
+                    "progress=continue\n",
+                    "out_time_ms=10000\n",
+                    "progress=end\n",
+                ]
+            )
+            self.stderr = _FakePipe([])
+            self._done = False
+
+        def poll(self):
+            if self.stdout.lines:
+                return None
+            self._done = True
+            return 0
+
+        def communicate(self):
+            return ("", "")
+
+        def wait(self, timeout=None):
+            _ = timeout
+            return 0
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(
+        videos_mod.subprocess,
+        "Popen",
+        lambda cmd, stdout=None, stderr=None, text=None, bufsize=None: _FakeProc(),
+    )
+    monkeypatch.setattr(
+        videos_mod.select,
+        "select",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("select.select should not be used on Windows")
+        ),
+    )
+
+    events: list[tuple[int, int, str]] = []
+    command_log = videos_mod.compress_and_rescale_video(
+        str(input_dir),
+        str(output_dir),
+        scale_factor=0.5,
+        fps=10.0,
+        cancel_callback=lambda: False,
+        progress_callback=lambda current, total, message: events.append(
+            (current, total, message)
+        ),
+    )
+
+    assert "clip.mp4" in command_log
+    assert any(0 < current < 100 for current, _, _ in events)

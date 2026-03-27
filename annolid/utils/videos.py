@@ -1,9 +1,11 @@
 import cv2
 import os
+import queue
 import select
 import subprocess
 import csv
 import argparse
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from annolid.core.media.video import get_video_fps
@@ -32,6 +34,10 @@ def _ffmpeg_cancel_poll_interval() -> float:
     if interval <= 0:
         return 0.2
     return max(0.05, min(interval, 2.0))
+
+
+def _is_windows_platform() -> bool:
+    return os.name == "nt"
 
 
 def _probe_video_duration_ms(video_path: str) -> int | None:
@@ -459,12 +465,117 @@ def compress_and_rescale_video(
             try:
                 stdout_stream = proc.stdout
                 stderr_stream = proc.stderr
-                streams = [
-                    stream for stream in (stdout_stream, stderr_stream) if stream
-                ]
                 stdout_lines: list[str] = []
                 stderr_lines: list[str] = []
                 last_reported_ms = -1
+
+                if _is_windows_platform():
+                    event_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+                    finished_streams: set[str] = set()
+
+                    def _reader(stream, stream_name: str) -> None:
+                        try:
+                            while True:
+                                line = stream.readline()
+                                if not line:
+                                    break
+                                event_queue.put((stream_name, line))
+                        finally:
+                            event_queue.put((stream_name, None))
+
+                    threads: list[threading.Thread] = []
+                    for stream_name, stream in (
+                        ("stdout", stdout_stream),
+                        ("stderr", stderr_stream),
+                    ):
+                        if stream is None:
+                            continue
+                        thread = threading.Thread(
+                            target=_reader,
+                            args=(stream, stream_name),
+                            daemon=True,
+                        )
+                        thread.start()
+                        threads.append(thread)
+
+                    try:
+                        while True:
+                            if _is_cancelled():
+                                proc.terminate()
+                                try:
+                                    proc.wait(timeout=2)
+                                except subprocess.TimeoutExpired:
+                                    proc.kill()
+                                    proc.wait(timeout=2)
+                                raise RuntimeError("Processing cancelled by user.")
+                            try:
+                                stream_name, line = event_queue.get(
+                                    timeout=_ffmpeg_cancel_poll_interval()
+                                )
+                            except queue.Empty:
+                                returncode = proc.poll()
+                                if returncode is not None and len(
+                                    finished_streams
+                                ) >= len(threads):
+                                    break
+                                continue
+                            if line is None:
+                                finished_streams.add(stream_name)
+                                returncode = proc.poll()
+                                if returncode is not None and len(
+                                    finished_streams
+                                ) >= len(threads):
+                                    break
+                                continue
+                            if stream_name == "stdout":
+                                stdout_lines.append(line)
+                                parsed = _parse_ffmpeg_progress_line(line)
+                                if (
+                                    progress_callback is not None
+                                    and parsed is not None
+                                    and parsed[0] in {"out_time_ms", "out_time_us"}
+                                ):
+                                    current_ms = int(parsed[1])
+                                    if total_ms > 0 and current_ms != last_reported_ms:
+                                        last_reported_ms = current_ms
+                                        _emit_percent_progress(
+                                            completed_ms,
+                                            current_ms,
+                                            f"Encoding {streaming_label}"
+                                            if streaming_label
+                                            else progress_prefix,
+                                        )
+                            else:
+                                stderr_lines.append(line)
+                            returncode = proc.poll()
+                            if returncode is not None and len(finished_streams) >= len(
+                                threads
+                            ):
+                                break
+                    finally:
+                        for thread in threads:
+                            thread.join(timeout=2)
+                    returncode = proc.poll()
+                    stdout = "".join(stdout_lines)
+                    stderr = "".join(stderr_lines)
+                    if returncode is None:
+                        returncode = proc.wait()
+                    if returncode != 0:
+                        raise subprocess.CalledProcessError(
+                            returncode=returncode,
+                            cmd=cmd,
+                            output=stdout,
+                            stderr=stderr,
+                        )
+                    return subprocess.CompletedProcess(
+                        cmd, returncode=returncode, stdout=stdout, stderr=stderr
+                    )
+
+                stdout_stream = stdout_stream
+                stderr_stream = stderr_stream
+                streams = [
+                    stream for stream in (stdout_stream, stderr_stream) if stream
+                ]
                 while True:
                     if _is_cancelled():
                         proc.terminate()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QApplication,
@@ -36,6 +38,12 @@ class VideoRescaleWidget(QDialog):
         self.input_section_label = QLabel("1) Input / Output")
         self.input_section_label.setStyleSheet(section_style)
         self.input_source_label = QLabel("Input Source: Select one video or one folder")
+        self.platform_note_label = QLabel(
+            "Windows note: progress is streamed during ffmpeg encoding."
+        )
+        self.platform_note_label.setWordWrap(True)
+        self.platform_note_label.setStyleSheet("color: #6b7280; font-style: italic;")
+        self.platform_note_label.setVisible(sys.platform.startswith("win"))
         self.input_video_button = QPushButton("Select Video")
         self.input_video_button.clicked.connect(self.workflow.select_input_video)
         self.input_folder_button = QPushButton("Select Folder")
@@ -133,6 +141,7 @@ class VideoRescaleWidget(QDialog):
         layout = QVBoxLayout()
         layout.addWidget(self.input_section_label)
         layout.addWidget(self.input_source_label)
+        layout.addWidget(self.platform_note_label)
         input_select_layout = QHBoxLayout()
         input_select_layout.addWidget(self.input_video_button)
         input_select_layout.addWidget(self.input_folder_button)
