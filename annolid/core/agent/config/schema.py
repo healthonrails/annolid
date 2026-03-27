@@ -370,6 +370,84 @@ class CalendarToolConfig:
 
 
 @dataclass
+class BoxToolConfig:
+    enabled: bool = False
+    access_token: str = ""
+    client_id: str = ""
+    client_secret: str = ""
+    refresh_token: str = ""
+    authorize_base_url: str = "https://account.box.com"
+    redirect_uri: str = ""
+    token_url: str = "https://api.box.com/oauth2/token"
+    api_base: str = "https://api.box.com/2.0"
+    upload_api_base: str = "https://upload.box.com/api/2.0"
+    enterprise_id: str = ""
+    auto_refresh: bool = True
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "BoxToolConfig":
+        payload = data or {}
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            access_token=str(
+                payload.get("access_token") or payload.get("accessToken") or ""
+            ),
+            client_id=str(payload.get("client_id") or payload.get("clientId") or ""),
+            client_secret=str(
+                payload.get("client_secret") or payload.get("clientSecret") or ""
+            ),
+            refresh_token=str(
+                payload.get("refresh_token") or payload.get("refreshToken") or ""
+            ),
+            authorize_base_url=str(
+                payload.get("authorize_base_url")
+                or payload.get("authorizeBaseUrl")
+                or "https://account.box.com"
+            ),
+            redirect_uri=str(
+                payload.get("redirect_uri") or payload.get("redirectUri") or ""
+            ),
+            token_url=str(
+                payload.get("token_url")
+                or payload.get("tokenUrl")
+                or "https://api.box.com/oauth2/token"
+            ),
+            api_base=str(
+                payload.get("api_base")
+                or payload.get("apiBase")
+                or "https://api.box.com/2.0"
+            ),
+            upload_api_base=str(
+                payload.get("upload_api_base")
+                or payload.get("uploadApiBase")
+                or "https://upload.box.com/api/2.0"
+            ),
+            enterprise_id=str(
+                payload.get("enterprise_id") or payload.get("enterpriseId") or ""
+            ),
+            auto_refresh=bool(
+                payload.get("auto_refresh", payload.get("autoRefresh", True))
+            ),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "access_token": self.access_token,
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "refresh_token": self.refresh_token,
+            "authorize_base_url": self.authorize_base_url,
+            "redirect_uri": self.redirect_uri,
+            "token_url": self.token_url,
+            "api_base": self.api_base,
+            "upload_api_base": self.upload_api_base,
+            "enterprise_id": self.enterprise_id,
+            "auto_refresh": self.auto_refresh,
+        }
+
+
+@dataclass
 class ProviderConfig:
     api_key: str = ""
     api_base: str = ""
@@ -657,6 +735,7 @@ class ToolsConfig:
     whatsapp: WhatsAppChannelConfig = field(default_factory=WhatsAppChannelConfig)
     zulip: ZulipChannelConfig = field(default_factory=ZulipChannelConfig)
     calendar: CalendarToolConfig = field(default_factory=CalendarToolConfig)
+    box: BoxToolConfig = field(default_factory=BoxToolConfig)
     gws: GWSToolConfig = field(default_factory=GWSToolConfig)
     by_provider: Dict[str, ToolPolicyConfig] = field(default_factory=dict)
 
@@ -706,6 +785,7 @@ class ToolsConfig:
         whatsapp_cfg = WhatsAppChannelConfig.from_dict(payload.get("whatsapp"))
         zulip_cfg = ZulipChannelConfig.from_dict(payload.get("zulip"))
         calendar_cfg = CalendarToolConfig.from_dict(payload.get("calendar"))
+        box_cfg = BoxToolConfig.from_dict(payload.get("box"))
         gws_cfg = GWSToolConfig.from_dict(payload.get("gws"))
         exec_cfg = ExecToolConfig.from_dict(payload.get("exec"))
         return cls(
@@ -720,6 +800,7 @@ class ToolsConfig:
             whatsapp=whatsapp_cfg,
             zulip=zulip_cfg,
             calendar=calendar_cfg,
+            box=box_cfg,
             gws=gws_cfg,
             by_provider=by_provider,
         )
@@ -736,6 +817,7 @@ class ToolsConfig:
             "whatsapp": self.whatsapp.to_dict(),
             "zulip": self.zulip.to_dict(),
             "calendar": self.calendar.to_dict(),
+            "box": self.box.to_dict(),
             "gws": self.gws.to_dict(),
             "mcp_servers": {
                 name: cfg.to_dict() for name, cfg in self.mcp_servers.items()

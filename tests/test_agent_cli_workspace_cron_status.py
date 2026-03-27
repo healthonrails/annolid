@@ -1257,3 +1257,227 @@ def test_update_check_run_rollback_operator_commands(monkeypatch, capsys) -> Non
     payload_rb = json.loads(capsys.readouterr().out)
     assert payload_rb["action"] == "rollback"
     assert payload_rb["previous_version"] == "1.0.0"
+
+
+def test_agent_box_auth_url_cli(monkeypatch, capsys) -> None:
+    import annolid.services.agent_box as box_mod
+
+    def _fake_get_box_oauth_authorize_url(**kwargs):
+        assert kwargs["authorize_base_url"] == "https://my_org_xxx.account.box.com"
+        return {
+            "ok": True,
+            "authorize_url": (
+                "https://my_org_xxx.account.box.com/api/oauth2/authorize?client_id=cid"
+            ),
+        }
+
+    monkeypatch.setattr(
+        box_mod, "get_box_oauth_authorize_url", _fake_get_box_oauth_authorize_url
+    )
+    rc = annolid_run(
+        [
+            "agent-box-auth-url",
+            "--authorize-base-url",
+            "https://my_org_xxx.account.box.com",
+            "--redirect-uri",
+            "https://example.com/callback",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert "authorize_url" in payload
+
+
+def test_agent_box_auth_url_cli_open_browser(monkeypatch, capsys) -> None:
+    import annolid.services.agent_box as box_mod
+    import webbrowser
+
+    opened: list[str] = []
+
+    def _fake_get_box_oauth_authorize_url(**kwargs):
+        return {
+            "ok": True,
+            "authorize_url": "https://my_org_xxx.account.box.com/api/oauth2/authorize?client_id=cid",
+        }
+
+    def _fake_open_new_tab(url: str) -> bool:
+        opened.append(url)
+        return True
+
+    monkeypatch.setattr(
+        box_mod, "get_box_oauth_authorize_url", _fake_get_box_oauth_authorize_url
+    )
+    monkeypatch.setattr(webbrowser, "open_new_tab", _fake_open_new_tab)
+    rc = annolid_run(
+        [
+            "agent-box-auth-url",
+            "--open-browser",
+            "--redirect-uri",
+            "https://example.com/callback",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["opened_in_browser"] is True
+    assert opened
+
+
+def test_agent_box_auth_url_cli_uses_config_redirect_uri(
+    tmp_path: Path, capsys
+) -> None:
+    from annolid.core.agent.config import AgentConfig, save_config
+
+    cfg = AgentConfig()
+    cfg.tools.box.client_id = "cid"
+    cfg.tools.box.redirect_uri = "https://localhost:8765/oauth/callback"
+    cfg.tools.box.authorize_base_url = "https://my_org_xxx.account.box.com"
+    cfg_path = tmp_path / "config.json"
+    save_config(cfg, cfg_path)
+
+    rc = annolid_run(["agent-box-auth-url", "--config", str(cfg_path)])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["redirect_uri"] == "https://localhost:8765/oauth/callback"
+    assert payload["authorize_url"].startswith(
+        "https://my_org_xxx.account.box.com/api/oauth2/authorize?"
+    )
+
+
+def test_agent_box_auth_exchange_cli(monkeypatch, capsys) -> None:
+    import annolid.services.agent_box as box_mod
+
+    def _fake_exchange_box_oauth_code(**kwargs):
+        assert kwargs["authorize_base_url"] == "https://my_org_xxx.account.box.com"
+        return ({"ok": True, "persisted": False, "access_token": "a1"}, 0)
+
+    monkeypatch.setattr(
+        box_mod, "exchange_box_oauth_code", _fake_exchange_box_oauth_code
+    )
+    rc = annolid_run(
+        [
+            "agent-box-auth-exchange",
+            "--authorize-base-url",
+            "https://my_org_xxx.account.box.com",
+            "--redirect-uri",
+            "https://example.com/callback",
+            "--code",
+            "abc123",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["access_token"] == "a1"
+
+
+def test_agent_box_token_refresh_cli(monkeypatch, capsys) -> None:
+    import annolid.services.agent_box as box_mod
+
+    def _fake_refresh_box_oauth_token(**kwargs):
+        return ({"ok": True, "persisted": True, "access_token": "new-a1"}, 0)
+
+    monkeypatch.setattr(
+        box_mod, "refresh_box_oauth_token", _fake_refresh_box_oauth_token
+    )
+    rc = annolid_run(["agent-box-token-refresh", "--persist"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["persisted"] is True
+
+
+def test_llm_settings_dialog_box_auth_uses_browser_flow(monkeypatch) -> None:
+    import annolid.gui.widgets.llm_settings_dialog as dialog_mod
+
+    calls: dict[str, object] = {}
+
+    def _fake_complete_box_oauth_browser_flow(**kwargs):
+        calls.update(kwargs)
+        return ({"ok": True, "persisted": True, "access_token": "token-a"}, 0)
+
+    class _FakeThread:
+        def __init__(self, target=None, name=None, daemon=None):  # noqa: D401
+            self._target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self) -> None:
+            if self._target is not None:
+                self._target()
+
+    class _FakeEdit:
+        def __init__(self, value: str) -> None:
+            self._value = value
+
+        def text(self) -> str:
+            return self._value
+
+        def setText(self, value: str) -> None:
+            self._value = value
+
+    class _FakeButton:
+        def __init__(self) -> None:
+            self.enabled = True
+            self.text_value = "Grant Box Access"
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = bool(value)
+
+        def setText(self, value: str) -> None:
+            self.text_value = value
+
+    monkeypatch.setattr(
+        "annolid.services.agent_box.complete_box_oauth_browser_flow",
+        _fake_complete_box_oauth_browser_flow,
+    )
+    monkeypatch.setattr(dialog_mod.threading, "Thread", _FakeThread)
+    monkeypatch.setattr(
+        dialog_mod.QtWidgets.QMessageBox,
+        "information",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        dialog_mod.QtWidgets.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(dialog_mod, "load_config", lambda: None)
+
+    fake_dialog = type(
+        "FakeDialog",
+        (),
+        {
+            "box_authorize_base_url_edit": _FakeEdit(
+                "https://my_org_xxx.account.box.com"
+            ),
+            "box_client_id_edit": _FakeEdit("cid"),
+            "box_client_secret_edit": _FakeEdit("sec"),
+            "box_redirect_uri_edit": _FakeEdit("http://localhost:8765/oauth/callback"),
+            "box_auth_button": _FakeButton(),
+            "_agent_config": None,
+            "_on_box_auth_completed": dialog_mod.LLMSettingsDialog._on_box_auth_completed,
+            "boxAuthCompleted": type(
+                "_FakeSignal",
+                (),
+                {
+                    "emit": lambda self,
+                    payload: dialog_mod.LLMSettingsDialog._on_box_auth_completed(
+                        fake_dialog, payload
+                    )
+                },
+            )(),
+        },
+    )()
+
+    dialog_mod.LLMSettingsDialog._open_box_auth_url(fake_dialog)
+
+    assert calls["client_id"] == "cid"
+    assert calls["client_secret"] == "sec"
+    assert calls["redirect_uri"] == "http://localhost:8765/oauth/callback"
+    assert calls["authorize_base_url"] == "https://my_org_xxx.account.box.com"
+    assert calls["persist"] is True
+    assert calls["open_browser"] is True
+    assert fake_dialog.box_auth_button.enabled is True
+    assert fake_dialog.box_auth_button.text_value == "Grant Box Access"

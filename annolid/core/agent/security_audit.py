@@ -36,6 +36,7 @@ _WEB_TOOLS = frozenset(
         "mcp_browser_wait",
         "download_url",
         "download_pdf",
+        "box",
         "gui_open_in_browser",
     }
 )

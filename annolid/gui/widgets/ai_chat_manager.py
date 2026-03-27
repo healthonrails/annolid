@@ -299,6 +299,7 @@ class AIChatManager(QtCore.QObject):
                     # Setup Agent Loop for background replies
                     tools = FunctionToolRegistry()
                     calendar_cfg = getattr(config.tools, "calendar", None)
+                    box_cfg = getattr(config.tools, "box", None)
                     self._task_scheduler = TaskScheduler(
                         on_run=self._on_automation_task_run,
                         tick_seconds=0.25,
@@ -312,6 +313,7 @@ class AIChatManager(QtCore.QObject):
                         cron_store_path=cron_store_path,
                         email_cfg=config.tools.email,
                         calendar_cfg=calendar_cfg,
+                        box_cfg=box_cfg,
                         task_scheduler=self._task_scheduler,
                     )
 

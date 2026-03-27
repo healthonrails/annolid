@@ -119,6 +119,7 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
         "extract_pdf_images",
         "download_url",
         "download_pdf",
+        "box",
         "clawhub_search_skills",
         "clawhub_install_skill",
         *_CAPABILITY_GUI,
@@ -167,6 +168,7 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "web_fetch",
         "download_url",
         "download_pdf",
+        "box",
         "clawhub_search_skills",
         "clawhub_install_skill",
         # MCP browser tools (require Playwright MCP server configured)
@@ -234,6 +236,7 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "automation_schedule",
         "spawn",
         "google_calendar",
+        "box",
         "email",
         "list_emails",
         "read_email",

@@ -10,6 +10,7 @@ This is intended for:
 - Zulip API keys,
 - email passwords,
 - WhatsApp access and verify tokens,
+- Box access tokens,
 - other agent channel credentials.
 
 ## Files
@@ -112,6 +113,9 @@ Examples:
 ```bash
 annolid-run agent-secrets-set --path providers.gemini.api_key --env GEMINI_API_KEY
 annolid-run agent-secrets-set --path tools.email.password --local tools.email.password --value "app-password"
+annolid-run agent-secrets-set --path tools.box.access_token --env BOX_ACCESS_TOKEN
+annolid-run agent-secrets-set --path tools.box.client_secret --env BOX_CLIENT_SECRET
+annolid-run agent-secrets-set --path tools.box.refresh_token --env BOX_REFRESH_TOKEN
 ```
 
 ### `annolid-run agent-secrets-remove`

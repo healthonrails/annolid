@@ -25,6 +25,25 @@ This workspace is intended for the Annolid agent tool stack.
 - `exec_process(action, session_id?, wait_ms?, tail_lines?, text?, submit?)`
 - `annolid_run(command?, argv?, working_dir?, allow_mutation?)`
 
+## Box
+
+Use the `box` tool for Cornell Box and Box cloud storage tasks. Do not fall back to `list_dir`
+or common mount-point guessing when the user asks about Box folders.
+
+- `box(action, folder_id?, file_id?, query?, destination_path?, file_path?, file_name?, limit?, offset?, item_type?, fields?, overwrite?)`
+- Common actions:
+  - `list_folder_items`
+  - `search`
+  - `get_file_info`
+  - `download_file`
+  - `upload_file`
+
+Examples:
+
+- "List the folders in Cornell Box for this project."
+- "Search Cornell Box for `session_042_annotations.json`."
+- "Show the latest files in the Box project folder."
+
 Safety notes:
 
 - Prefer non-destructive commands.

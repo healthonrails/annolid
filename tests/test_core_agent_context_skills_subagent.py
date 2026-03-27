@@ -243,6 +243,7 @@ def test_skills_loader_accepts_valid_signature_in_production(
 
 def test_context_builder_builds_user_media_payload(tmp_path: Path) -> None:
     (tmp_path / "AGENTS.md").write_text("workspace instructions", encoding="utf-8")
+    (tmp_path / "TOOLS.md").write_text("Box tool instructions", encoding="utf-8")
     image_path = tmp_path / "image.png"
     image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
     ctx = AgentContextBuilder(tmp_path)
@@ -253,11 +254,21 @@ def test_context_builder_builds_user_media_payload(tmp_path: Path) -> None:
     )
     assert messages[0]["role"] == "system"
     assert "workspace instructions" in str(messages[0]["content"])
+    assert "Box tool instructions" in str(messages[0]["content"])
     assert "## Current Time" in str(messages[0]["content"])
     assert "(" in str(messages[0]["content"])
     assert ")" in str(messages[0]["content"])
     assert isinstance(messages[-1]["content"], list)
     assert messages[-1]["content"][-1]["text"] == "describe"
+
+
+def test_context_builder_includes_box_tool_guidance(tmp_path: Path) -> None:
+    (tmp_path / "TOOLS.md").write_text(
+        "Use the box tool for Cornell Box requests.", encoding="utf-8"
+    )
+    ctx = AgentContextBuilder(tmp_path)
+    prompt = ctx.build_system_prompt()
+    assert "Cornell Box requests" in prompt
 
 
 def test_context_builder_redacts_session_identifiers(tmp_path: Path) -> None:

@@ -149,7 +149,13 @@ def test_policy_group_pdf_includes_open_and_extract_tools() -> None:
 
 def test_policy_group_web_includes_unified_mcp_browser_tool() -> None:
     cfg = ToolsConfig(profile="minimal", allow=["group:web"])
-    all_tools = ["web_search", "mcp_browser", "mcp_browser_navigate", "read_file"]
+    all_tools = [
+        "web_search",
+        "mcp_browser",
+        "mcp_browser_navigate",
+        "box",
+        "read_file",
+    ]
     resolved = resolve_allowed_tools(
         all_tool_names=all_tools,
         tools_cfg=cfg,
@@ -159,6 +165,7 @@ def test_policy_group_web_includes_unified_mcp_browser_tool() -> None:
     assert "web_search" in resolved.allowed_tools
     assert "mcp_browser" in resolved.allowed_tools
     assert "mcp_browser_navigate" in resolved.allowed_tools
+    assert "box" in resolved.allowed_tools
 
 
 def test_policy_group_fs_includes_rename_file() -> None:
@@ -207,6 +214,7 @@ def test_policy_coding_profile_includes_google_calendar() -> None:
         "read_file",
         "exec",
         "google_calendar",
+        "box",
         "email",
         "list_emails",
         "read_email",
@@ -219,6 +227,7 @@ def test_policy_coding_profile_includes_google_calendar() -> None:
         model="gpt-5-mini",
     )
     assert "google_calendar" in resolved.allowed_tools
+    assert "box" in resolved.allowed_tools
     assert "email" in resolved.allowed_tools
     assert "list_emails" in resolved.allowed_tools
     assert "read_email" in resolved.allowed_tools
@@ -234,6 +243,7 @@ def test_policy_group_automation_includes_google_calendar() -> None:
         "automation_schedule",
         "spawn",
         "google_calendar",
+        "box",
         "email",
         "list_emails",
         "read_email",
@@ -250,6 +260,7 @@ def test_policy_group_automation_includes_google_calendar() -> None:
         "automation_schedule",
         "spawn",
         "google_calendar",
+        "box",
         "email",
         "list_emails",
         "read_email",

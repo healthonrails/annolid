@@ -40,7 +40,15 @@ annolid-run agent-security-check
 annolid-run agent-security-audit
 annolid-run agent-security-audit --fix
 annolid-run agent-secrets-audit
+annolid-run agent-box-auth-url --redirect-uri https://your-app.example.com/oauth/callback
+annolid-run agent-box-auth-url --authorize-base-url https://my_org_xxx.account.box.com --redirect-uri https://your-app.example.com/oauth/callback
+annolid-run agent-box-auth-url --open-browser --redirect-uri https://your-app.example.com/oauth/callback
+annolid-run agent-box-auth-exchange --redirect-uri https://your-app.example.com/oauth/callback --code <auth_code>
+annolid-run agent-box-auth-exchange --authorize-base-url https://my_org_xxx.account.box.com --redirect-uri https://your-app.example.com/oauth/callback --code <auth_code>
+annolid-run agent-box-token-refresh
 ```
+
+The Agent Runtime settings dialog includes Box auth host, client ID, client secret, and redirect URI fields so the GUI auth button can reuse the same values after Annolid restarts. The redirect URI defaults to `http://localhost:8765/oauth/callback` and includes a copy button for pasting into the Box app registration page. When that redirect points to localhost, Annolid starts a temporary local callback listener so Box can complete the OAuth round trip instead of showing a connection error page. Use `http://` for localhost callbacks; `https://localhost/...` is not supported by the local listener.
 
 ACP bridge command:
 
@@ -78,6 +86,7 @@ annolid-run agent acp bridge --workspace /path/to/repo
 - [Model Plugin Help](model_plugin_help.md)
 - [Codex and ACP](codex_and_acp.md)
 - [Agent Calendar](agent_calendar.md)
+- [Agent Box](agent_box.md)
 - [Agent Secrets](agent_secrets.md)
 - [Agent Security](agent_security.md)
 - [SAM 3D](sam3d.md)

@@ -28,6 +28,9 @@ _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "agent-secrets-set",
             "agent-secrets-remove",
             "agent-secrets-migrate",
+            "agent-box-auth-url",
+            "agent-box-auth-exchange",
+            "agent-box-token-refresh",
             "agent-update",
             "agent-eval",
             "agent-meta-learning-status",
@@ -894,7 +897,16 @@ def _is_private_file_mode(path: Path) -> bool:
 
 
 def _find_persisted_secret_keys(data: object, prefix: str = "") -> list[str]:
-    secret_names = {"api_key", "apikey", "access_token", "token", "secret", "password"}
+    secret_names = {
+        "api_key",
+        "apikey",
+        "access_token",
+        "client_secret",
+        "refresh_token",
+        "token",
+        "secret",
+        "password",
+    }
     if isinstance(data, dict):
         hits: list[str] = []
         for key, value in data.items():
@@ -921,9 +933,13 @@ def _find_agent_config_plaintext_secret_paths(
         "accesstoken",
         "api_key",
         "apikey",
+        "client_secret",
+        "clientsecret",
         "bridge_token",
         "bridgetoken",
         "password",
+        "refresh_token",
+        "refreshtoken",
         "secret",
         "token",
         "verify_token",
@@ -1008,6 +1024,63 @@ def _cmd_agent_secrets_migrate(args: argparse.Namespace) -> int:
     payload, exit_code = migrate_agent_secrets(
         config_path=getattr(args, "config", None),
         apply=bool(args.apply),
+    )
+    print(json.dumps(payload, indent=2))
+    return exit_code
+
+
+def _cmd_agent_box_auth_url(args: argparse.Namespace) -> int:
+    from annolid.services.agent_box import get_box_oauth_authorize_url
+    import webbrowser
+
+    payload = get_box_oauth_authorize_url(
+        config_path=getattr(args, "config", None),
+        client_id=getattr(args, "client_id", None),
+        redirect_uri=getattr(args, "redirect_uri", None),
+        state=getattr(args, "state", None),
+        authorize_base_url=getattr(args, "authorize_base_url", None),
+    )
+    if bool(getattr(args, "open_browser", False)):
+        authorize_url = str(payload.get("authorize_url") or "").strip()
+        opened = False
+        if authorize_url:
+            try:
+                opened = bool(webbrowser.open_new_tab(authorize_url))
+            except Exception:
+                opened = False
+        payload["opened_in_browser"] = opened
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def _cmd_agent_box_auth_exchange(args: argparse.Namespace) -> int:
+    from annolid.services.agent_box import exchange_box_oauth_code
+
+    payload, exit_code = exchange_box_oauth_code(
+        code=str(getattr(args, "code", "") or ""),
+        redirect_uri=getattr(args, "redirect_uri", None),
+        config_path=getattr(args, "config", None),
+        client_id=getattr(args, "client_id", None),
+        client_secret=getattr(args, "client_secret", None),
+        token_url=getattr(args, "token_url", None),
+        authorize_base_url=getattr(args, "authorize_base_url", None),
+        persist=bool(getattr(args, "persist", False)),
+        enable_box=bool(getattr(args, "enable_box", True)),
+    )
+    print(json.dumps(payload, indent=2))
+    return exit_code
+
+
+def _cmd_agent_box_token_refresh(args: argparse.Namespace) -> int:
+    from annolid.services.agent_box import refresh_box_oauth_token
+
+    payload, exit_code = refresh_box_oauth_token(
+        config_path=getattr(args, "config", None),
+        client_id=getattr(args, "client_id", None),
+        client_secret=getattr(args, "client_secret", None),
+        refresh_token=getattr(args, "refresh_token", None),
+        token_url=getattr(args, "token_url", None),
+        persist=bool(getattr(args, "persist", False)),
     )
     print(json.dumps(payload, indent=2))
     return exit_code
@@ -2332,6 +2405,83 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Write local secret refs and scrub plaintext values.",
     )
     secrets_migrate_p.set_defaults(_handler=_cmd_agent_secrets_migrate)
+
+    box_auth_url_p = sub.add_parser(
+        "agent-box-auth-url",
+        help="Build a Box OAuth authorization URL for first-run consent.",
+    )
+    box_auth_url_p.add_argument("--config", default=None)
+    box_auth_url_p.add_argument("--client-id", default=None)
+    box_auth_url_p.add_argument(
+        "--authorize-base-url",
+        default=None,
+        help=(
+            "Box org host for auth, for example "
+            "https://my_org_xxx.account.box.com or https://ent.box.com."
+        ),
+    )
+    box_auth_url_p.add_argument(
+        "--open-browser",
+        action="store_true",
+        help="Open the generated Box auth URL in your default browser.",
+    )
+    box_auth_url_p.add_argument(
+        "--redirect-uri",
+        default=None,
+        help="OAuth redirect URI configured in your Box app.",
+    )
+    box_auth_url_p.add_argument("--state", default=None)
+    box_auth_url_p.set_defaults(_handler=_cmd_agent_box_auth_url)
+
+    box_auth_exchange_p = sub.add_parser(
+        "agent-box-auth-exchange",
+        help="Exchange a Box OAuth authorization code for access and refresh tokens.",
+    )
+    box_auth_exchange_p.add_argument("--config", default=None)
+    box_auth_exchange_p.add_argument("--client-id", default=None)
+    box_auth_exchange_p.add_argument("--client-secret", default=None)
+    box_auth_exchange_p.add_argument(
+        "--authorize-base-url",
+        default=None,
+        help="Persist the Box org auth host alongside the exchanged tokens.",
+    )
+    box_auth_exchange_p.add_argument(
+        "--redirect-uri",
+        default=None,
+        help="OAuth redirect URI used when requesting the authorization code.",
+    )
+    box_auth_exchange_p.add_argument("--code", required=True)
+    box_auth_exchange_p.add_argument("--token-url", default=None)
+    box_auth_exchange_p.add_argument(
+        "--persist",
+        action="store_true",
+        help="Persist received tokens to tools.box.* in agent config.",
+    )
+    box_auth_exchange_p.add_argument(
+        "--disable-box",
+        dest="enable_box",
+        action="store_false",
+        help="Do not enable tools.box when persisting.",
+    )
+    box_auth_exchange_p.set_defaults(
+        enable_box=True, _handler=_cmd_agent_box_auth_exchange
+    )
+
+    box_refresh_p = sub.add_parser(
+        "agent-box-token-refresh",
+        help="Refresh Box access token using OAuth refresh_token grant.",
+    )
+    box_refresh_p.add_argument("--config", default=None)
+    box_refresh_p.add_argument("--client-id", default=None)
+    box_refresh_p.add_argument("--client-secret", default=None)
+    box_refresh_p.add_argument("--refresh-token", default=None)
+    box_refresh_p.add_argument("--token-url", default=None)
+    box_refresh_p.add_argument(
+        "--persist",
+        action="store_true",
+        help="Persist refreshed access/refresh tokens to tools.box.* in agent config.",
+    )
+    box_refresh_p.set_defaults(_handler=_cmd_agent_box_token_refresh)
 
     update_p = sub.add_parser(
         "agent-update",

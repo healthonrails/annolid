@@ -25,12 +25,14 @@ def test_agent_config_load_creates_default_template(tmp_path: Path) -> None:
     memory = payload.get("memory") or {}
     update = payload.get("update") or {}
     calendar = tools.get("calendar") or {}
+    box = tools.get("box") or {}
     email = tools.get("email") or {}
     zulip = tools.get("zulip") or {}
     skill_load = skills.get("load") or {}
     update_auto = update.get("auto") or {}
     assert "enabled" in calendar
     assert "provider" in calendar
+    assert box.get("enabled") is False
     assert email.get("polling_interval", email.get("pollingInterval")) == 300
     assert zulip.get("polling_interval", zulip.get("pollingInterval")) == 30
     assert "watch" in skill_load
@@ -101,6 +103,18 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     cfg.tools.calendar.calendar_id = "primary"
     cfg.tools.calendar.timezone = "America/Los_Angeles"
     cfg.tools.calendar.default_event_duration_minutes = 45
+    cfg.tools.box.enabled = True
+    cfg.tools.box.access_token = "box-token"
+    cfg.tools.box.client_id = "box-client-id"
+    cfg.tools.box.client_secret = "box-client-secret"
+    cfg.tools.box.refresh_token = "box-refresh-token"
+    cfg.tools.box.authorize_base_url = "https://my_org_xxx.account.box.com"
+    cfg.tools.box.redirect_uri = "https://localhost:8765/oauth/callback"
+    cfg.tools.box.token_url = "https://api.box.com/oauth2/token"
+    cfg.tools.box.api_base = "https://api.box.com/2.0"
+    cfg.tools.box.upload_api_base = "https://upload.box.com/api/2.0"
+    cfg.tools.box.enterprise_id = "ent_123"
+    cfg.tools.box.auto_refresh = False
     cfg.skills.load.watch = True
     cfg.skills.load.extra_dirs = [str(tmp_path / "extra-skills")]
     cfg.memory.mode = "lexical"
@@ -169,6 +183,18 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     assert loaded.tools.calendar.calendar_id == "primary"
     assert loaded.tools.calendar.timezone == "America/Los_Angeles"
     assert loaded.tools.calendar.default_event_duration_minutes == 45
+    assert loaded.tools.box.enabled is True
+    assert loaded.tools.box.access_token == "box-token"
+    assert loaded.tools.box.client_id == "box-client-id"
+    assert loaded.tools.box.client_secret == "box-client-secret"
+    assert loaded.tools.box.refresh_token == "box-refresh-token"
+    assert loaded.tools.box.authorize_base_url == "https://my_org_xxx.account.box.com"
+    assert loaded.tools.box.redirect_uri == "https://localhost:8765/oauth/callback"
+    assert loaded.tools.box.token_url == "https://api.box.com/oauth2/token"
+    assert loaded.tools.box.api_base == "https://api.box.com/2.0"
+    assert loaded.tools.box.upload_api_base == "https://upload.box.com/api/2.0"
+    assert loaded.tools.box.enterprise_id == "ent_123"
+    assert loaded.tools.box.auto_refresh is False
     assert loaded.skills.load.watch is True
     assert loaded.skills.load.extra_dirs == [str(tmp_path / "extra-skills")]
     assert loaded.memory.mode == "lexical"

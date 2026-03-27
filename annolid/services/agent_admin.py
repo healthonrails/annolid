@@ -31,7 +31,16 @@ def _is_private_file_mode(path: Path) -> bool:
 
 
 def _find_persisted_secret_keys(data: object, prefix: str = "") -> list[str]:
-    secret_names = {"api_key", "apikey", "access_token", "token", "secret", "password"}
+    secret_names = {
+        "api_key",
+        "apikey",
+        "access_token",
+        "client_secret",
+        "refresh_token",
+        "token",
+        "secret",
+        "password",
+    }
     if isinstance(data, dict):
         hits: list[str] = []
         for key, value in data.items():
@@ -58,9 +67,13 @@ def _find_agent_config_plaintext_secret_paths(
         "accesstoken",
         "api_key",
         "apikey",
+        "client_secret",
+        "clientsecret",
         "bridge_token",
         "bridgetoken",
         "password",
+        "refresh_token",
+        "refreshtoken",
         "secret",
         "token",
         "verify_token",

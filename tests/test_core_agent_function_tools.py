@@ -17,7 +17,7 @@ import re
 from PIL import Image
 import yaml
 
-from annolid.core.agent.config import CalendarToolConfig
+from annolid.core.agent.config import BoxToolConfig, CalendarToolConfig
 from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_builtin import (
     AnnolidDatasetInspectTool,
@@ -3205,6 +3205,7 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("bibtex_remove_entry")
     assert registry.has("clawhub_search_skills")
     assert registry.has("clawhub_install_skill")
+    assert registry.has("box") is False
 
 
 def test_register_nanobot_style_tools_accepts_custom_cron_store_path(
@@ -3312,6 +3313,23 @@ def test_register_nanobot_style_tools_registers_calendar_when_interactive_auth_a
         )
     )
     assert registry.has("google_calendar") is True
+
+
+def test_register_nanobot_style_tools_registers_box_when_enabled(
+    tmp_path: Path,
+) -> None:
+    registry = FunctionToolRegistry()
+    asyncio.run(
+        register_nanobot_style_tools(
+            registry,
+            allowed_dir=tmp_path,
+            box_cfg=BoxToolConfig(
+                enabled=True,
+                access_token="box-token",
+            ),
+        )
+    )
+    assert registry.has("box") is True
 
 
 def test_mcp_tool_wrapper_sanitizes_name_and_schema() -> None:

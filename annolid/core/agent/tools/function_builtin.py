@@ -34,6 +34,7 @@ from .training import (
     AnnolidTrainStartTool,
 )
 from .camera import CameraSnapshotTool
+from .box import BoxTool
 from .coding_harness import (
     CodingSessionCloseTool,
     CodingSessionListTool,
@@ -142,6 +143,7 @@ __all__ = [
     "AnnolidTrainHelpTool",
     "AnnolidTrainStartTool",
     "CameraSnapshotTool",
+    "BoxTool",
     "CodingSessionStartTool",
     "CodingSessionSendTool",
     "CodingSessionPollTool",

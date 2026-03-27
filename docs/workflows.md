@@ -31,11 +31,14 @@ Current bot workflow highlights:
 - speech input and reply read-aloud controls,
 - optional web/MCP/browser tools depending on configuration,
 - model/plugin execution against videos through bot tools,
+- Box file operations through natural-language requests such as listing, searching, downloading, or uploading project files,
 - draft-and-send support for configured Zulip targets from the bot UI.
 
-When you use background integrations such as Zulip, WhatsApp, or calendar services, the agent config is loaded from the Annolid agent config path, not the LLM settings file.
+When you use background integrations such as Zulip, WhatsApp, calendar services, or Box, the agent config is loaded from the Annolid agent config path, not the LLM settings file.
 
 For Google Calendar, Annolid now prefers an existing cached token by default. If you want the agent to perform first-run OAuth authorization, set `tools.calendar.allow_interactive_auth=true` explicitly in the agent config and run that flow from an interactive session.
+
+For Box, you can bootstrap OAuth with `agent-box-auth-url` and `agent-box-auth-exchange`; when Box uses an org-specific auth host, pass `--authorize-base-url` such as `https://ent.box.com` or `https://my_org_xxx.account.box.com`. The GUI also exposes editable Box auth fields for the same settings, including client secret, suggests `http://localhost:8765/oauth/callback` as the local redirect URI, persists the callback URL across sessions, and starts a temporary local callback listener so Box does not bounce the browser to a dead `localhost` page. Use `http://` for local redirects; `https://localhost/...` will not work with the local listener. When `tools.box.auto_refresh=true`, the Box tool will refresh expired access tokens using `tools.box.refresh_token`.
 
 See:
 

@@ -48,6 +48,7 @@ from .sandboxed_shell import SandboxedExecTool
 from .shell_sessions import ExecProcessTool, ExecStartTool
 from .email import EmailTool, ListEmailsTool, ReadEmailTool
 from .calendar import GoogleCalendarTool
+from .box import BoxTool
 from .workspace import GoogleWorkspaceTool
 from .gws_setup import GWSSetupTool
 from .camera import CameraSnapshotTool
@@ -82,6 +83,7 @@ from .swarm_tool import SwarmTool
 if TYPE_CHECKING:
     from annolid.core.agent.config.schema import (
         CalendarToolConfig,
+        BoxToolConfig,
         EmailChannelConfig,
         GWSToolConfig,
     )
@@ -100,6 +102,7 @@ async def register_nanobot_style_tools(
     stack: Any | None = None,
     email_cfg: EmailChannelConfig | None = None,
     calendar_cfg: CalendarToolConfig | None = None,
+    box_cfg: BoxToolConfig | None = None,
     gws_cfg: "GWSToolConfig | None" = None,
     task_scheduler: "TaskScheduler | None" = None,
     ignored_tools: Sequence[str] = (),
@@ -395,6 +398,23 @@ async def register_nanobot_style_tools(
                 "Calendar tool provider %r is not supported. Supported providers: google, gws",
                 provider_name,
             )
+
+    if box_cfg and box_cfg.enabled:
+        registry.register(
+            BoxTool(
+                access_token=box_cfg.access_token,
+                client_id=box_cfg.client_id,
+                client_secret=box_cfg.client_secret,
+                refresh_token=box_cfg.refresh_token,
+                token_url=box_cfg.token_url,
+                api_base=box_cfg.api_base,
+                upload_api_base=box_cfg.upload_api_base,
+                enterprise_id=box_cfg.enterprise_id,
+                auto_refresh=bool(box_cfg.auto_refresh),
+                allowed_dir=allowed_dir,
+                allowed_read_roots=allowed_read_roots,
+            )
+        )
 
     # -- Google Workspace CLI tools --
     if gws_cfg and gws_cfg.enabled:

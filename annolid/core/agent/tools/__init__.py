@@ -49,6 +49,7 @@ from .training import (
     AnnolidTrainStartTool,
 )
 from .camera import CameraSnapshotTool
+from .box import BoxTool
 from .coding_harness import (
     CodingSessionCloseTool,
     CodingSessionListTool,
@@ -290,6 +291,7 @@ __all__ = [
     "CodingSessionPollTool",
     "CodingSessionListTool",
     "CodingSessionCloseTool",
+    "BoxTool",
     "GoogleCalendarTool",
     "register_nanobot_style_tools",
     "register_annolid_gui_tools",

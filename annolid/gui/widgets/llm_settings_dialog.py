@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import threading
+from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional
 
 from qtpy import QtCore, QtWidgets
@@ -64,6 +66,8 @@ def _extract_ollama_model_names(response: Any) -> List[str]:
 
 
 class LLMSettingsDialog(QtWidgets.QDialog):
+    boxAuthCompleted = QtCore.Signal(object)
+
     """
     Dialog for configuring Large Language Model providers.
 
@@ -145,6 +149,9 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         self._provider_widgets: Dict[str, Dict[str, Any]] = {}
         self._api_key_inputs: Dict[str, QtWidgets.QLineEdit] = {}
         self._api_key_status_labels: Dict[str, QtWidgets.QLabel] = {}
+        self._box_redirect_default = "http://localhost:8765/oauth/callback"
+        self._box_auth_thread: Optional[threading.Thread] = None
+        self.boxAuthCompleted.connect(self._on_box_auth_completed)
 
         main_layout = QtWidgets.QVBoxLayout(self)
         info_label = QtWidgets.QLabel(
@@ -594,6 +601,73 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         bot_note.setStyleSheet("color: #6b7280;")
         layout.addRow(bot_note)
 
+        box_host = "https://account.box.com"
+        box_redirect_uri = self._box_redirect_default
+        box_client_id = ""
+        box_client_secret = ""
+        if self._agent_config is not None:
+            box_cfg = getattr(getattr(self._agent_config, "tools", None), "box", None)
+            if box_cfg is not None:
+                box_host = str(
+                    getattr(box_cfg, "authorize_base_url", box_host) or box_host
+                )
+                box_redirect_uri = str(
+                    getattr(box_cfg, "redirect_uri", "") or self._box_redirect_default
+                )
+                box_client_id = str(getattr(box_cfg, "client_id", "") or "").strip()
+                box_client_secret = str(
+                    getattr(box_cfg, "client_secret", "") or ""
+                ).strip()
+
+        box_note = QtWidgets.QLabel(
+            "Box OAuth can use your tenant host when Box routes users through org "
+            "login or 2FA pages."
+        )
+        box_note.setWordWrap(True)
+        box_note.setStyleSheet("color: #6b7280;")
+        layout.addRow(box_note)
+
+        self.box_authorize_base_url_edit = QtWidgets.QLineEdit(content_widget)
+        self.box_authorize_base_url_edit.setPlaceholderText(
+            "https://my_org_xxx.account.box.com"
+        )
+        self.box_authorize_base_url_edit.setText(box_host)
+        layout.addRow("Box auth host:", self.box_authorize_base_url_edit)
+
+        self.box_client_id_edit = QtWidgets.QLineEdit(content_widget)
+        self.box_client_id_edit.setPlaceholderText("Box OAuth client id")
+        self.box_client_id_edit.setText(box_client_id)
+        layout.addRow("Box client ID:", self.box_client_id_edit)
+
+        self.box_client_secret_edit = QtWidgets.QLineEdit(content_widget)
+        self.box_client_secret_edit.setPlaceholderText("Box OAuth client secret")
+        self.box_client_secret_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.box_client_secret_edit.setText(box_client_secret)
+        layout.addRow("Box client secret:", self.box_client_secret_edit)
+
+        self.box_redirect_uri_edit = QtWidgets.QLineEdit(content_widget)
+        self.box_redirect_uri_edit.setPlaceholderText(self._box_redirect_default)
+        self.box_redirect_uri_edit.setText(box_redirect_uri)
+        box_redirect_row = QtWidgets.QWidget(content_widget)
+        box_redirect_row_layout = QtWidgets.QHBoxLayout(box_redirect_row)
+        box_redirect_row_layout.setContentsMargins(0, 0, 0, 0)
+        box_redirect_row_layout.setSpacing(6)
+        box_redirect_row_layout.addWidget(self.box_redirect_uri_edit, 1)
+        self.box_copy_redirect_button = QtWidgets.QPushButton("Copy", box_redirect_row)
+        self.box_copy_redirect_button.clicked.connect(self._copy_box_redirect_uri)
+        box_redirect_row_layout.addWidget(self.box_copy_redirect_button)
+        layout.addRow("Box redirect URI:", box_redirect_row)
+
+        box_actions = QtWidgets.QWidget(content_widget)
+        box_actions_layout = QtWidgets.QHBoxLayout(box_actions)
+        box_actions_layout.setContentsMargins(0, 0, 0, 0)
+        box_actions_layout.setSpacing(6)
+        self.box_auth_button = QtWidgets.QPushButton("Grant Box Access", box_actions)
+        self.box_auth_button.clicked.connect(self._open_box_auth_url)
+        box_actions_layout.addWidget(self.box_auth_button)
+        box_actions_layout.addStretch(1)
+        layout.addRow("Box auth action:", box_actions)
+
         skills_watch_default = False
         memory_mode_default = "semantic_keyword"
         skills_extra_dirs_default: list[str] = []
@@ -1010,6 +1084,116 @@ class LLMSettingsDialog(QtWidgets.QDialog):
 
     def _clear_pocket_prompt(self) -> None:
         self.tts_pocket_prompt_edit.setText("")
+
+    def _copy_box_redirect_uri(self) -> None:
+        text = str(self.box_redirect_uri_edit.text() or "").strip()
+        if not text:
+            text = self._box_redirect_default
+            self.box_redirect_uri_edit.setText(text)
+        clipboard = QtWidgets.QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text)
+        QtWidgets.QMessageBox.information(
+            self,
+            "Box OAuth",
+            "Box redirect URI copied to the clipboard.",
+        )
+
+    def _open_box_auth_url(self) -> None:
+        from annolid.services.agent_box import complete_box_oauth_browser_flow
+
+        client_id = str(self.box_client_id_edit.text() or "").strip()
+        client_secret = str(self.box_client_secret_edit.text() or "").strip()
+        authorize_base_url = str(self.box_authorize_base_url_edit.text() or "").strip()
+        redirect_uri = str(self.box_redirect_uri_edit.text() or "").strip()
+
+        if not client_id:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Box OAuth",
+                "Box auth cancelled: client ID is empty. Fill in the Box fields first.",
+            )
+            return
+
+        if not redirect_uri:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Box OAuth",
+                "Box auth cancelled: redirect URI is empty. Fill in the Box fields first.",
+            )
+            return
+
+        parsed = urlparse(redirect_uri)
+        host = str(parsed.hostname or "").strip().lower()
+        if parsed.scheme not in {"http", "https"} or host not in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Box OAuth",
+                "Annolid can only capture Box auth automatically for a loopback "
+                "redirect URI such as http://localhost:8765/oauth/callback.",
+            )
+            return
+
+        if not client_secret:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Box OAuth",
+                "Box auth cancelled: client secret is empty. Fill in the Box fields first.",
+            )
+            return
+
+        self.box_auth_button.setEnabled(False)
+        self.box_auth_button.setText("Connecting Box…")
+
+        def _run_flow() -> None:
+            try:
+                payload, _exit_code = complete_box_oauth_browser_flow(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    redirect_uri=redirect_uri,
+                    authorize_base_url=authorize_base_url or None,
+                    persist=True,
+                    open_browser=True,
+                )
+            except Exception as exc:
+                payload = {"ok": False, "error": f"Failed Box OAuth flow: {exc}"}
+            if not isinstance(payload, dict):
+                payload = {"ok": False, "error": "Unexpected Box OAuth response."}
+            self.boxAuthCompleted.emit(payload)
+
+        self._box_auth_thread = threading.Thread(
+            target=_run_flow,
+            name="BoxOAuthFlow",
+            daemon=True,
+        )
+        self._box_auth_thread.start()
+
+    def _on_box_auth_completed(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        self.box_auth_button.setEnabled(True)
+        self.box_auth_button.setText("Grant Box Access")
+        ok = bool(data.get("ok", False))
+        if ok:
+            try:
+                self._agent_config = load_config()
+            except Exception:
+                pass
+            QtWidgets.QMessageBox.information(
+                self,
+                "Box OAuth",
+                "Box access granted and tokens saved.",
+            )
+            return
+
+        error = str(data.get("error") or "Box OAuth failed.")
+        details = str(data.get("error_description") or "").strip()
+        if details:
+            error = f"{error}\n\n{details}"
+        QtWidgets.QMessageBox.warning(self, "Box OAuth", error)
 
     def _add_provider_dialog(self) -> None:
         provider_id, ok = QtWidgets.QInputDialog.getText(
@@ -1649,6 +1833,19 @@ class LLMSettingsDialog(QtWidgets.QDialog):
             try:
                 poll_seconds = int(self.email_poll_interval_spin.value())
                 self._agent_config.tools.email.polling_interval = max(10, poll_seconds)
+                self._agent_config.tools.box.authorize_base_url = (
+                    self.box_authorize_base_url_edit.text().strip()
+                    or "https://account.box.com"
+                )
+                self._agent_config.tools.box.client_id = (
+                    self.box_client_id_edit.text().strip()
+                )
+                self._agent_config.tools.box.client_secret = (
+                    self.box_client_secret_edit.text().strip()
+                )
+                self._agent_config.tools.box.redirect_uri = (
+                    self.box_redirect_uri_edit.text().strip()
+                )
                 self._agent_config.skills.load.watch = bool(
                     self.skills_hot_reload_checkbox.isChecked()
                 )
