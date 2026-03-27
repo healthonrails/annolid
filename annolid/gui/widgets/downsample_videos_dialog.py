@@ -8,6 +8,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QSlider,
     QVBoxLayout,
@@ -119,6 +120,15 @@ class VideoRescaleWidget(QDialog):
 
         self.run_button = QPushButton("Run Processing")
         self.run_button.clicked.connect(self.workflow.run_rescaling)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.workflow.cancel_running_job)
+        self.cancel_button.setVisible(False)
+        self.progress_label = QLabel("")
+        self.progress_label.setWordWrap(True)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
 
         layout = QVBoxLayout()
         layout.addWidget(self.input_section_label)
@@ -153,8 +163,17 @@ class VideoRescaleWidget(QDialog):
         layout.addWidget(self.rescale_checkbox)
         layout.addWidget(self.collect_only_checkbox)
         layout.addWidget(self.run_button)
+        layout.addWidget(self.cancel_button)
+        layout.addWidget(self.progress_label)
+        layout.addWidget(self.progress_bar)
         self.setLayout(layout)
         self.workflow.toggle_auto_contrast_controls(False)
+
+    def closeEvent(self, event):  # noqa: N802
+        if getattr(self.workflow, "_thread", None) is not None:
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":

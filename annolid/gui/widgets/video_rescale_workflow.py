@@ -3,18 +3,22 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from qtpy import QtCore
 from qtpy.QtWidgets import QFileDialog, QMessageBox, QDialog
 
 from annolid.data.videos import get_video_fps
 from annolid.gui.widgets.crop_dialog import CropDialog
 from annolid.gui.widgets.video_frame_preview import temporary_first_frame_image
-from annolid.utils.video_processing_reports import save_processing_summary
-from annolid.utils.videos import VIDEO_EXTENSIONS, compress_and_rescale_video
+from annolid.gui.widgets.video_rescale_worker import VideoRescaleJob, VideoRescaleWorker
+from annolid.utils.videos import VIDEO_EXTENSIONS
 
 
-class VideoRescaleWorkflow:
+class VideoRescaleWorkflow(QtCore.QObject):
     def __init__(self, dialog):
+        super().__init__(dialog)
         self.dialog = dialog
+        self._thread: QtCore.QThread | None = None
+        self._worker: VideoRescaleWorker | None = None
 
     def apply_initial_video(self, initial_video_path: str | None) -> None:
         if initial_video_path and os.path.isfile(initial_video_path):
@@ -162,148 +166,204 @@ class VideoRescaleWorkflow:
     def _set_run_busy(self, busy: bool) -> None:
         self.dialog.run_button.setEnabled(not busy)
         self.dialog.run_button.setText("Processing..." if busy else "Run Processing")
+        if hasattr(self.dialog, "cancel_button"):
+            self.dialog.cancel_button.setVisible(bool(busy))
+            self.dialog.cancel_button.setEnabled(bool(busy))
+        if hasattr(self.dialog, "progress_bar"):
+            self.dialog.progress_bar.setVisible(bool(busy))
+            if not busy:
+                self.dialog.progress_bar.setValue(0)
+        if hasattr(self.dialog, "progress_label") and not busy:
+            self.dialog.progress_label.setText("")
+
+    @QtCore.Slot(int, str)
+    def _handle_progress(self, value: int, message: str) -> None:
+        if hasattr(self.dialog, "progress_bar"):
+            self.dialog.progress_bar.setValue(max(0, min(int(value), 100)))
+        if hasattr(self.dialog, "progress_label"):
+            text = str(message)
+            if text.startswith("Encoding "):
+                video_name = text.removeprefix("Encoding ").strip()
+                text = f"Encoding {int(value)}% - {video_name}"
+            self.dialog.progress_label.setText(text)
+
+    @QtCore.Slot()
+    def _cleanup_thread(self) -> None:
+        thread = self._thread
+        worker = self._worker
+        self._thread = None
+        self._worker = None
+        if worker is not None:
+            worker.deleteLater()
+        if thread is not None:
+            thread.deleteLater()
+
+    @QtCore.Slot(dict)
+    def _handle_finished(self, result: dict) -> None:
+        self._set_run_busy(False)
+        summary = str(result.get("summary", "Processing complete."))
+        if hasattr(self.dialog, "progress_label"):
+            self.dialog.progress_label.setText("Done")
+        QMessageBox.information(self.dialog, "Done", summary)
+
+    @QtCore.Slot(str)
+    def _handle_failed(self, error_text: str) -> None:
+        self._set_run_busy(False)
+        if hasattr(self.dialog, "progress_label"):
+            self.dialog.progress_label.setText("Failed")
+        QMessageBox.warning(self.dialog, "Error", str(error_text))
+
+    @QtCore.Slot()
+    def _handle_canceled(self) -> None:
+        self._set_run_busy(False)
+        if hasattr(self.dialog, "progress_label"):
+            self.dialog.progress_label.setText("Cancelled")
+        QMessageBox.information(
+            self.dialog, "Cancelled", "Video processing was cancelled."
+        )
+
+    def _start_worker(self, job: VideoRescaleJob) -> None:
+        if self._thread is not None:
+            QMessageBox.warning(
+                self.dialog,
+                "Busy",
+                "Video processing is already running.",
+            )
+            return
+
+        self._thread = QtCore.QThread(self.dialog)
+        self._worker = VideoRescaleWorker(job)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.progress.connect(self._handle_progress)
+        self._worker.finished.connect(self._handle_finished)
+        self._worker.failed.connect(self._handle_failed)
+        self._worker.canceled.connect(self._handle_canceled)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._worker.canceled.connect(self._thread.quit)
+        self._thread.finished.connect(self._cleanup_thread)
+        self._set_run_busy(True)
+        self._thread.start()
+
+    def cancel_running_job(self) -> None:
+        worker = self._worker
+        if worker is None:
+            return
+        if hasattr(self.dialog, "progress_label"):
+            self.dialog.progress_label.setText("Cancelling...")
+        worker.cancel()
 
     def run_rescaling(self):
-        self._set_run_busy(True)
+        if self._thread is not None:
+            QMessageBox.warning(
+                self.dialog,
+                "Busy",
+                "Video processing is already running.",
+            )
+            return
+
+        selected_videos = self.selected_video_paths()
+        if not selected_videos:
+            QMessageBox.warning(
+                self.dialog,
+                "Error",
+                "Please select a valid input video or a folder with videos.",
+            )
+            return
+
         try:
-            selected_videos = self.selected_video_paths()
-            output_folder = self.dialog.output_folder_path
+            scale_factor = float(self.dialog.scale_factor_text.text())
+        except ValueError:
+            QMessageBox.warning(self.dialog, "Error", "Invalid scale factor.")
+            return
 
-            if not selected_videos:
-                QMessageBox.warning(
-                    self.dialog,
-                    "Error",
-                    "Please select a valid input video or a folder with videos.",
-                )
-                return
-
+        if self.dialog.override_fps_checkbox.isChecked():
             try:
-                scale_factor = float(self.dialog.scale_factor_text.text())
+                fps = float(self.dialog.fps_text.text())
             except ValueError:
-                QMessageBox.warning(self.dialog, "Error", "Invalid scale factor.")
+                QMessageBox.warning(self.dialog, "Error", "Invalid FPS value.")
                 return
+        else:
+            fps = None
 
-            if self.dialog.override_fps_checkbox.isChecked():
-                try:
-                    fps = float(self.dialog.fps_text.text())
-                except ValueError:
-                    QMessageBox.warning(self.dialog, "Error", "Invalid FPS value.")
-                    return
-            else:
-                fps = None
+        rescale = self.dialog.rescale_checkbox.isChecked()
+        collect_only = self.dialog.collect_only_checkbox.isChecked()
+        if not rescale and not collect_only:
+            QMessageBox.warning(
+                self.dialog,
+                "Error",
+                "Select at least one action: Rescale or Collect Metadata.",
+            )
+            return
 
-            rescale = self.dialog.rescale_checkbox.isChecked()
-            collect_only = self.dialog.collect_only_checkbox.isChecked()
-            if not rescale and not collect_only:
+        apply_denoise = self.dialog.denoise_checkbox.isChecked()
+        auto_contrast = self.dialog.auto_contrast_checkbox.isChecked()
+        if auto_contrast:
+            try:
+                auto_contrast_strength = float(
+                    self.dialog.auto_contrast_strength_text.text()
+                )
+            except ValueError:
+                QMessageBox.warning(
+                    self.dialog, "Error", "Invalid auto contrast strength."
+                )
+                return
+        else:
+            auto_contrast_strength = 1.0
+
+        crop_params = None
+        if self.dialog.crop_checkbox.isChecked():
+            try:
+                crop_x = int(self.dialog.crop_x_text.text())
+                crop_y = int(self.dialog.crop_y_text.text())
+                crop_width = int(self.dialog.crop_width_text.text())
+                crop_height = int(self.dialog.crop_height_text.text())
+                crop_params = (crop_x, crop_y, crop_width, crop_height)
+            except ValueError:
                 QMessageBox.warning(
                     self.dialog,
                     "Error",
-                    "Select at least one action: Rescale or Collect Metadata.",
+                    "Invalid crop parameters. Please enter integer values.",
                 )
                 return
 
-            apply_denoise = self.dialog.denoise_checkbox.isChecked()
-            auto_contrast = self.dialog.auto_contrast_checkbox.isChecked()
-            if auto_contrast:
-                try:
-                    auto_contrast_strength = float(
-                        self.dialog.auto_contrast_strength_text.text()
-                    )
-                except ValueError:
-                    QMessageBox.warning(
-                        self.dialog, "Error", "Invalid auto contrast strength."
-                    )
-                    return
-            else:
-                auto_contrast_strength = 1.0
-
-            crop_params = None
-            if self.dialog.crop_checkbox.isChecked():
-                try:
-                    crop_x = int(self.dialog.crop_x_text.text())
-                    crop_y = int(self.dialog.crop_y_text.text())
-                    crop_width = int(self.dialog.crop_width_text.text())
-                    crop_height = int(self.dialog.crop_height_text.text())
-                    crop_params = (crop_x, crop_y, crop_width, crop_height)
-                except ValueError:
-                    QMessageBox.warning(
-                        self.dialog,
-                        "Error",
-                        "Invalid crop parameters. Please enter integer values.",
-                    )
-                    return
-
-            is_single_input = bool(self.dialog.input_video_path)
-            inferred_input_folder = (
-                str(Path(self.dialog.input_video_path).parent)
-                if is_single_input
-                else self.dialog.input_folder_path
+        is_single_input = bool(self.dialog.input_video_path)
+        input_mode = "single video" if is_single_input else "folder"
+        input_source = (
+            self.dialog.input_video_path
+            if is_single_input
+            else self.dialog.input_folder_path
+        )
+        inferred_input_folder = (
+            str(Path(self.dialog.input_video_path).parent)
+            if is_single_input
+            else self.dialog.input_folder_path
+        )
+        effective_output_folder = self.dialog.output_folder_path
+        if not effective_output_folder and is_single_input:
+            source_video = Path(self.dialog.input_video_path)
+            effective_output_folder = str(
+                source_video.with_name(f"{source_video.stem}_downsampled")
+            )
+            self.dialog.output_folder_path = effective_output_folder
+            self.dialog.output_folder_label.setText(
+                f"Output Folder: {effective_output_folder}"
             )
 
-            if collect_only:
-                save_processing_summary(
-                    inferred_input_folder,
-                    video_paths=selected_videos if is_single_input else None,
-                )
-                QMessageBox.information(
-                    self.dialog, "Done", "Metadata collection is done."
-                )
-
-            if rescale:
-                effective_output_folder = output_folder
-                if not effective_output_folder and is_single_input:
-                    source_video = Path(self.dialog.input_video_path)
-                    effective_output_folder = str(
-                        source_video.with_name(f"{source_video.stem}_downsampled")
-                    )
-                    self.dialog.output_folder_path = effective_output_folder
-                    self.dialog.output_folder_label.setText(
-                        f"Output Folder: {effective_output_folder}"
-                    )
-                if not effective_output_folder:
-                    QMessageBox.warning(
-                        self.dialog, "Error", "Please select a valid output folder."
-                    )
-                    return
-
-                command_log = compress_and_rescale_video(
-                    inferred_input_folder,
-                    effective_output_folder,
-                    scale_factor,
-                    input_video_path=self.dialog.input_video_path or None,
-                    fps=fps,
-                    apply_denoise=apply_denoise,
-                    auto_contrast=auto_contrast,
-                    auto_contrast_strength=auto_contrast_strength,
-                    crop_x=crop_params[0] if crop_params else None,
-                    crop_y=crop_params[1] if crop_params else None,
-                    crop_width=crop_params[2] if crop_params else None,
-                    crop_height=crop_params[3] if crop_params else None,
-                )
-                save_processing_summary(
-                    effective_output_folder,
-                    video_paths=selected_videos if is_single_input else None,
-                    scale_factor=scale_factor,
-                    fps=fps,
-                    apply_denoise=apply_denoise,
-                    auto_contrast=auto_contrast,
-                    auto_contrast_strength=auto_contrast_strength,
-                    crop_params=crop_params,
-                    command_log=command_log,
-                )
-                input_video_count = len(selected_videos)
-                success_count = len(command_log)
-                failed_count = max(0, input_video_count - success_count)
-                summary = (
-                    "Video processing complete.\n\n"
-                    f"Successful: {success_count}\n"
-                    f"Failed: {failed_count}\n"
-                    f"Output folder: {effective_output_folder}\n\n"
-                    "Tip: If failures remain, disable denoise and keep Auto Contrast on."
-                )
-                if failed_count > 0:
-                    QMessageBox.warning(self.dialog, "Completed with Warnings", summary)
-                else:
-                    QMessageBox.information(self.dialog, "Done", summary)
-        finally:
-            self._set_run_busy(False)
+        job = VideoRescaleJob(
+            selected_videos=selected_videos,
+            input_mode=input_mode,
+            input_source=input_source,
+            input_folder=inferred_input_folder,
+            output_folder=effective_output_folder,
+            scale_factor=scale_factor,
+            fps=fps,
+            collect_only=collect_only,
+            rescale=rescale,
+            apply_denoise=apply_denoise,
+            auto_contrast=auto_contrast,
+            auto_contrast_strength=auto_contrast_strength,
+            crop_params=crop_params,
+        )
+        self._start_worker(job)

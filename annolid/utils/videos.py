@@ -1,5 +1,6 @@
 import cv2
 import os
+import select
 import subprocess
 import csv
 import argparse
@@ -20,6 +21,31 @@ VIDEO_EXTENSIONS = (
     ".m4v",
     ".mts",
 )
+
+
+def _ffmpeg_cancel_poll_interval() -> float:
+    raw_value = os.environ.get("ANNOLID_FFMPEG_CANCEL_POLL_INTERVAL", "0.2")
+    try:
+        interval = float(raw_value)
+    except (TypeError, ValueError):
+        return 0.2
+    if interval <= 0:
+        return 0.2
+    return max(0.05, min(interval, 2.0))
+
+
+def _probe_video_duration_ms(video_path: str) -> int | None:
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return None
+    try:
+        frame_count = float(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        if frame_count <= 0 or fps <= 0:
+            return None
+        return int((frame_count / fps) * 1000)
+    finally:
+        cap.release()
 
 
 def extract_frames_with_opencv(video_path, output_dir=None, start_number=0, quality=95):
@@ -193,6 +219,8 @@ def compress_and_rescale_video(
     crop_y=None,
     crop_width=None,
     crop_height=None,
+    progress_callback=None,
+    cancel_callback=None,
 ):
     """
     Compresses and rescales video files in the input folder using ffmpeg.
@@ -240,6 +268,41 @@ def compress_and_rescale_video(
         return {}
 
     command_log = {}
+    total_videos = len(video_paths)
+    video_durations_ms = [_probe_video_duration_ms(str(path)) for path in video_paths]
+    total_duration_ms = sum(
+        duration for duration in video_durations_ms if duration is not None
+    )
+    use_duration_progress = total_duration_ms > 0 and all(
+        duration is not None and duration > 0 for duration in video_durations_ms
+    )
+
+    def _emit_progress(current_index: int, message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(
+                max(0, min(int(current_index), total_videos)),
+                total_videos,
+                str(message),
+            )
+
+    def _emit_percent_progress(
+        completed_ms: int, current_ms: int, message: str
+    ) -> None:
+        if progress_callback is None:
+            return
+        if use_duration_progress and total_duration_ms > 0:
+            overall_ms = max(0, min(completed_ms + current_ms, total_duration_ms))
+            percent = max(0, min(int((overall_ms / total_duration_ms) * 100), 100))
+            progress_callback(percent, 100, str(message))
+            return
+        _emit_progress(current_ms, message)
+
+    def _is_cancelled() -> bool:
+        return bool(cancel_callback and cancel_callback())
+
+    def _raise_if_cancelled() -> None:
+        if _is_cancelled():
+            raise RuntimeError("Processing cancelled by user.")
 
     @dataclass(frozen=True)
     class _EncoderProfile:
@@ -340,6 +403,22 @@ def compress_and_rescale_video(
             ("no_denoise_fallback", enhanced_base),
         ]
 
+    def _parse_ffmpeg_progress_line(line: str) -> tuple[str, int | str] | None:
+        if "=" not in line:
+            return None
+        key, value = line.strip().split("=", 1)
+        if key in {"out_time_ms", "out_time_us"}:
+            try:
+                numeric = int(value)
+            except ValueError:
+                return None
+            if key == "out_time_us":
+                numeric = numeric // 1000
+            return key, max(0, numeric)
+        if key == "progress":
+            return key, value.strip()
+        return None
+
     def _run_ffmpeg_with_fallback(
         *,
         ffmpeg_bin: str,
@@ -351,10 +430,96 @@ def compress_and_rescale_video(
         scale_factor_value: float,
         crop_width_value: int | None = None,
         crop_height_value: int | None = None,
+        completed_ms: int = 0,
+        total_ms: int = 0,
+        progress_prefix: str = "",
+        streaming_label: str | None = None,
     ) -> tuple[list[str] | None, str | None, str | None, str | None]:
         audio_args = ["-c:a", "copy"] if copy_audio else ["-c:a", "aac", "-b:a", "128k"]
         attempts: list[tuple[str, str, str]] = []
         saw_filtergraph_error = False
+
+        def _run_ffmpeg_command(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if cancel_callback is None:
+                return subprocess.run(
+                    cmd,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+            try:
+                stdout_stream = proc.stdout
+                stderr_stream = proc.stderr
+                streams = [
+                    stream for stream in (stdout_stream, stderr_stream) if stream
+                ]
+                stdout_lines: list[str] = []
+                stderr_lines: list[str] = []
+                last_reported_ms = -1
+                while True:
+                    if _is_cancelled():
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait(timeout=2)
+                        raise RuntimeError("Processing cancelled by user.")
+                    ready, _, _ = select.select(
+                        streams, [], [], _ffmpeg_cancel_poll_interval()
+                    )
+                    for stream in ready:
+                        line = stream.readline()
+                        if not line:
+                            continue
+                        if stream is stdout_stream:
+                            stdout_lines.append(line)
+                            parsed = _parse_ffmpeg_progress_line(line)
+                            if (
+                                progress_callback is not None
+                                and parsed is not None
+                                and parsed[0] in {"out_time_ms", "out_time_us"}
+                            ):
+                                current_ms = int(parsed[1])
+                                if total_ms > 0 and current_ms != last_reported_ms:
+                                    last_reported_ms = current_ms
+                                    _emit_percent_progress(
+                                        completed_ms,
+                                        current_ms,
+                                        f"Encoding {streaming_label}"
+                                        if streaming_label
+                                        else progress_prefix,
+                                    )
+                        else:
+                            stderr_lines.append(line)
+                    returncode = proc.poll()
+                    if returncode is not None:
+                        stdout_rest, stderr_rest = proc.communicate()
+                        stdout = "".join(stdout_lines) + (stdout_rest or "")
+                        stderr = "".join(stderr_lines) + (stderr_rest or "")
+                        if returncode != 0:
+                            raise subprocess.CalledProcessError(
+                                returncode=returncode,
+                                cmd=cmd,
+                                output=stdout,
+                                stderr=stderr,
+                            )
+                        return subprocess.CompletedProcess(
+                            cmd, returncode=returncode, stdout=stdout, stderr=stderr
+                        )
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=2)
 
         for filter_name, filter_chain in filter_chains:
             for profile in _candidate_profiles():
@@ -370,13 +535,7 @@ def compress_and_rescale_video(
                     output_path,
                 ]
                 try:
-                    subprocess.run(
-                        cmd,
-                        check=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                    )
+                    _run_ffmpeg_command(cmd)
                     return cmd, profile.name, filter_name, None
                 except subprocess.CalledProcessError as exc:
                     stderr = (exc.stderr or "").strip()
@@ -415,13 +574,7 @@ def compress_and_rescale_video(
                     cmd.extend(["-s", f"{dims[0]}x{dims[1]}"])
                 cmd.extend([*profile.args, *audio_args, output_path])
                 try:
-                    subprocess.run(
-                        cmd,
-                        check=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                    )
+                    _run_ffmpeg_command(cmd)
                     return cmd, profile.name, "simple_io_fallback", None
                 except subprocess.CalledProcessError as exc:
                     stderr = (exc.stderr or "").strip()
@@ -443,13 +596,22 @@ def compress_and_rescale_video(
             f"All ffmpeg profiles failed ({summary}). Last error: {last_error}",
         )
 
-    for input_path_obj in video_paths:
+    _emit_progress(0, "Starting")
+
+    completed_duration_ms = 0
+    for index, input_path_obj in enumerate(video_paths, start=1):
+        _raise_if_cancelled()
         input_path = str(input_path_obj)
         video_file = input_path_obj.name
+        _emit_progress(
+            index - 1,
+            f"Processing {index}/{total_videos} - {video_file}",
+        )
 
         video_fps = fps if fps is not None else get_video_fps(input_path)
         if video_fps is None:
             logger.info(f"Warning: Failed to detect FPS for {video_file}. Skipping.")
+            _emit_progress(index, f"Skipped {index}/{total_videos} - {video_file}")
             continue
 
         root, _ = os.path.splitext(video_file)
@@ -490,6 +652,7 @@ def compress_and_rescale_video(
         )
 
         ffmpeg_bin = _resolve_ffmpeg_binary()
+        current_video_duration_ms = video_durations_ms[index - 1] or 0
         cmd, profile_name, filter_name, error_text = _run_ffmpeg_with_fallback(
             ffmpeg_bin=ffmpeg_bin,
             input_path=input_path,
@@ -500,6 +663,10 @@ def compress_and_rescale_video(
             scale_factor_value=float(scale_factor),
             crop_width_value=crop_width,
             crop_height_value=crop_height,
+            completed_ms=completed_duration_ms,
+            total_ms=total_duration_ms if use_duration_progress else 0,
+            progress_prefix=f"Processing {index}/{total_videos} - {video_file}",
+            streaming_label=video_file,
         )
         if cmd is not None:
             command_str = " ".join(cmd)
@@ -523,7 +690,18 @@ def compress_and_rescale_video(
                 video_file,
                 error_text,
             )
+        if use_duration_progress:
+            completed_duration_ms += current_video_duration_ms
+            _emit_percent_progress(
+                completed_duration_ms,
+                0,
+                f"Processed {index}/{total_videos} - {video_file}",
+            )
+        _emit_progress(index, f"Processed {index}/{total_videos} - {video_file}")
 
+    if total_videos > 0:
+        _raise_if_cancelled()
+        _emit_progress(total_videos, "Complete")
     return command_log
 
 
