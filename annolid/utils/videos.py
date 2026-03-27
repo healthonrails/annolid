@@ -434,6 +434,8 @@ def compress_and_rescale_video(
         copy_audio: bool,
         fps_value: float,
         scale_factor_value: float,
+        crop_x_value: int | None = None,
+        crop_y_value: int | None = None,
         crop_width_value: int | None = None,
         crop_height_value: int | None = None,
         completed_ms: int = 0,
@@ -666,33 +668,46 @@ def compress_and_rescale_video(
 
         # Last-resort fallback: bypass filtergraph and use plain ffmpeg options.
         if saw_filtergraph_error:
+            simple_filter_parts = []
+            if (
+                crop_x_value is not None
+                and crop_y_value is not None
+                and crop_width_value is not None
+                and crop_height_value is not None
+            ):
+                simple_filter_parts.append(
+                    f"crop={crop_width_value}:{crop_height_value}:{crop_x_value}:{crop_y_value}"
+                )
+            simple_filter_parts.append(f"fps={fps_value}")
             dims = _compute_even_scaled_dimensions(
                 input_path,
                 scale_factor_value,
                 crop_w=crop_width_value,
                 crop_h=crop_height_value,
             )
+            if dims is not None:
+                simple_filter_parts.append(f"scale={dims[0]}:{dims[1]}")
             for profile in _candidate_profiles():
                 cmd = [
                     ffmpeg_bin,
                     "-y",
                     "-i",
                     input_path,
-                    "-r",
-                    str(fps_value),
                 ]
-                if dims is not None:
-                    cmd.extend(["-s", f"{dims[0]}x{dims[1]}"])
+                if simple_filter_parts:
+                    cmd.extend(["-vf", ",".join(simple_filter_parts)])
                 cmd.extend([*profile.args, *audio_args, output_path])
                 try:
                     _run_ffmpeg_command(cmd)
-                    return cmd, profile.name, "simple_io_fallback", None
+                    return cmd, profile.name, "simple_filter_fallback", None
                 except subprocess.CalledProcessError as exc:
                     stderr = (exc.stderr or "").strip()
                     summary_line = (
                         stderr.splitlines()[-1] if stderr else "unknown error"
                     )
-                    attempts.append(("simple_io_fallback", profile.name, summary_line))
+                    attempts.append(
+                        ("simple_filter_fallback", profile.name, summary_line)
+                    )
                     continue
 
         if not attempts:
@@ -774,6 +789,8 @@ def compress_and_rescale_video(
             scale_factor_value=float(scale_factor),
             crop_width_value=crop_width,
             crop_height_value=crop_height,
+            crop_x_value=crop_x,
+            crop_y_value=crop_y,
             completed_ms=completed_duration_ms,
             total_ms=total_duration_ms if use_duration_progress else 0,
             progress_prefix=f"Processing {index}/{total_videos} - {video_file}",

@@ -102,6 +102,7 @@ class VideoRescaleWidget(QDialog):
         self.crop_section_label = QLabel("3) Region Selection")
         self.crop_section_label.setStyleSheet(section_style)
         self.crop_checkbox = QCheckBox("Enable Crop Region")
+        self.crop_checkbox.toggled.connect(self.workflow._set_crop_section_active)
         self.crop_label = QLabel("Crop Region (x, y, width, height):")
         self.crop_x_text = QLineEdit()
         self.crop_x_text.setPlaceholderText("x")
@@ -177,6 +178,7 @@ class VideoRescaleWidget(QDialog):
         layout.addWidget(self.progress_bar)
         self.setLayout(layout)
         self.workflow.toggle_auto_contrast_controls(False)
+        self.workflow._set_crop_section_active(False)
 
     def closeEvent(self, event):  # noqa: N802
         if getattr(self.workflow, "_thread", None) is not None:

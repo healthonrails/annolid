@@ -8,6 +8,7 @@ from qtpy.QtWidgets import QFileDialog, QMessageBox, QDialog
 
 from annolid.data.videos import get_video_fps
 from annolid.gui.widgets.crop_dialog import CropDialog
+from annolid.gui.widgets.crop_region import CropRegion
 from annolid.gui.widgets.video_frame_preview import temporary_first_frame_image
 from annolid.gui.widgets.video_rescale_worker import VideoRescaleJob, VideoRescaleWorker
 from annolid.utils.videos import VIDEO_EXTENSIONS
@@ -19,6 +20,8 @@ class VideoRescaleWorkflow(QtCore.QObject):
         self.dialog = dialog
         self._thread: QtCore.QThread | None = None
         self._worker: VideoRescaleWorker | None = None
+        self._crop_section_default_style = "font-weight: 600; color: #3a6ea5;"
+        self._crop_section_active_style = "font-weight: 700; color: #2f855a;"
 
     def apply_initial_video(self, initial_video_path: str | None) -> None:
         if initial_video_path and os.path.isfile(initial_video_path):
@@ -144,13 +147,15 @@ class VideoRescaleWorkflow(QtCore.QObject):
             with temporary_first_frame_image(first_video) as temp_image_path:
                 crop_dialog = CropDialog(temp_image_path, parent=self.dialog)
                 if crop_dialog.exec_() == QDialog.Accepted:
-                    crop_coords = crop_dialog.getCropCoordinates()
-                    if crop_coords:
-                        crop_x, crop_y, crop_width, crop_height = crop_coords
+                    crop_region = self._extract_crop_region(crop_dialog)
+                    if crop_region is not None:
+                        crop_x, crop_y, crop_width, crop_height = crop_region.as_tuple()
                         self.dialog.crop_x_text.setText(str(crop_x))
                         self.dialog.crop_y_text.setText(str(crop_y))
                         self.dialog.crop_width_text.setText(str(crop_width))
                         self.dialog.crop_height_text.setText(str(crop_height))
+                        self.dialog.crop_checkbox.setChecked(True)
+                        self._set_crop_section_active(True)
                         QMessageBox.information(
                             self.dialog,
                             "Crop Selected",
@@ -162,6 +167,56 @@ class VideoRescaleWorkflow(QtCore.QObject):
                         )
         except RuntimeError as exc:
             QMessageBox.warning(self.dialog, "Error", str(exc))
+
+    def _extract_crop_region(self, crop_dialog) -> CropRegion | None:
+        if hasattr(crop_dialog, "getCropRegion"):
+            crop_region = crop_dialog.getCropRegion()
+            if crop_region is not None:
+                return crop_region
+        if hasattr(crop_dialog, "getCropCoordinates"):
+            crop_coords = crop_dialog.getCropCoordinates()
+            if crop_coords:
+                return CropRegion.from_values(*crop_coords)
+        return None
+
+    def _set_crop_section_active(self, active: bool) -> None:
+        if hasattr(self.dialog, "crop_section_label"):
+            self.dialog.crop_section_label.setStyleSheet(
+                self._crop_section_active_style
+                if active
+                else self._crop_section_default_style
+            )
+        if hasattr(self.dialog, "crop_preview_button"):
+            self.dialog.crop_preview_button.setStyleSheet(
+                "font-weight: 600; color: #2f855a;" if active else ""
+            )
+        if hasattr(self.dialog, "crop_checkbox"):
+            self.dialog.crop_checkbox.setStyleSheet(
+                "font-weight: 600; color: #2f855a;" if active else ""
+            )
+
+    def _read_crop_region_from_inputs(self) -> CropRegion | None:
+        try:
+            crop_x = int(self.dialog.crop_x_text.text())
+            crop_y = int(self.dialog.crop_y_text.text())
+            crop_width = int(self.dialog.crop_width_text.text())
+            crop_height = int(self.dialog.crop_height_text.text())
+        except ValueError:
+            QMessageBox.warning(
+                self.dialog,
+                "Error",
+                "Invalid crop parameters. Please enter integer values.",
+            )
+            return None
+
+        crop_region = CropRegion.from_values(crop_x, crop_y, crop_width, crop_height)
+        if crop_region is None:
+            QMessageBox.warning(
+                self.dialog,
+                "Error",
+                "Crop width and height must be positive integers.",
+            )
+        return crop_region
 
     def _set_run_busy(self, busy: bool) -> None:
         self.dialog.run_button.setEnabled(not busy)
@@ -314,19 +369,10 @@ class VideoRescaleWorkflow(QtCore.QObject):
 
         crop_params = None
         if self.dialog.crop_checkbox.isChecked():
-            try:
-                crop_x = int(self.dialog.crop_x_text.text())
-                crop_y = int(self.dialog.crop_y_text.text())
-                crop_width = int(self.dialog.crop_width_text.text())
-                crop_height = int(self.dialog.crop_height_text.text())
-                crop_params = (crop_x, crop_y, crop_width, crop_height)
-            except ValueError:
-                QMessageBox.warning(
-                    self.dialog,
-                    "Error",
-                    "Invalid crop parameters. Please enter integer values.",
-                )
+            crop_region = self._read_crop_region_from_inputs()
+            if crop_region is None:
                 return
+            crop_params = crop_region.as_tuple()
 
         is_single_input = bool(self.dialog.input_video_path)
         input_mode = "single video" if is_single_input else "folder"

@@ -162,7 +162,7 @@ def test_compress_and_rescale_video_supports_single_input_video_path(
     assert "clip.mp4" in command_log
 
 
-def test_simple_fallback_uses_even_dimensions_from_crop_region(
+def test_simple_fallback_preserves_crop_region_and_even_dimensions(
     tmp_path: Path, monkeypatch
 ) -> None:
     input_dir = tmp_path / "input"
@@ -190,15 +190,19 @@ def test_simple_fallback_uses_even_dimensions_from_crop_region(
     def _fake_run(cmd, check, stdout, stderr, text):
         _ = check, stdout, stderr, text
         if "-vf" in cmd:
-            raise subprocess.CalledProcessError(
-                returncode=8,
-                cmd=cmd,
-                stderr="Error parsing filterchain",
-            )
+            vf = cmd[cmd.index("-vf") + 1]
+            if "hqdn3d=" in vf or "eq=" in vf:
+                raise subprocess.CalledProcessError(
+                    returncode=8,
+                    cmd=cmd,
+                    stderr="Error parsing filterchain",
+                )
+            assert "crop=1242:1076:0:0" in vf
+            assert "fps=15.0" in vf
+            assert "scale=620:538" in vf
+            attempted["simple"] = True
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
         attempted["simple"] = True
-        assert "-s" in cmd
-        dims = cmd[cmd.index("-s") + 1]
-        assert dims == "620x538"
         return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(videos_mod.subprocess, "run", _fake_run)
@@ -208,6 +212,8 @@ def test_simple_fallback_uses_even_dimensions_from_crop_region(
         str(output_dir),
         scale_factor=0.5,
         fps=15.0,
+        apply_denoise=True,
+        auto_contrast=True,
         crop_x=0,
         crop_y=0,
         crop_width=1242,
@@ -215,7 +221,7 @@ def test_simple_fallback_uses_even_dimensions_from_crop_region(
     )
 
     assert attempted["simple"] is True
-    assert "clip.mp4" in command_log
+    assert "clip_fix.mp4" in command_log
 
 
 def test_compress_and_rescale_video_reports_progress(
