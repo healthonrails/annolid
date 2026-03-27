@@ -443,6 +443,14 @@ class MenuController:
                 "tip": w.tr("Downsample one video or a folder of videos"),
             },
             {
+                "name": "zones",
+                "text": w.tr("&Zones…"),
+                "slot": w.open_zone_manager,
+                "tip": w.tr(
+                    "Open the zone dock to draw, label, recolor, and export explicit zone shapes"
+                ),
+            },
+            {
                 "name": "run_optical_flow",
                 "text": w.tr("Run &Optical Flow..."),
                 "slot": w.run_optical_flow_tool,
@@ -565,9 +573,11 @@ class MenuController:
             },
             {
                 "name": "place_preference",
-                "text": w.tr("&Place Preference"),
+                "text": w.tr("&Zone Analysis"),
                 "slot": w.place_preference_analyze,
-                "tip": w.tr("Place Preference"),
+                "tip": w.tr(
+                    "Export legacy place-preference CSV or generic zone metrics from saved zones"
+                ),
             },
             {
                 "name": "about_annolid",
@@ -1229,6 +1239,7 @@ class MenuController:
                 w.open_segment_editor_action,
                 actions["frames"],
                 actions["downsample_video"],
+                actions["zones"],
             ),
             (
                 actions["run_optical_flow"],

@@ -48,6 +48,7 @@ from annolid.gui.features import (
     setup_annotation_feature,
     setup_search_feature,
     setup_timeline_feature,
+    setup_zone_feature,
     setup_video_feature,
     setup_viewers_feature,
 )
@@ -284,6 +285,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self._setup_file_list_connections()
 
         self.feature_states["annotation"] = setup_annotation_feature(feature_deps)
+        self.feature_states["zones"] = setup_zone_feature(feature_deps)
 
         # Ensure all drawing/edit mode actions work without relying on LabelMe.
         self._setup_drawing_mode_actions()

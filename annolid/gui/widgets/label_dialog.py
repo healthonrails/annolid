@@ -135,6 +135,8 @@ class AnnolidLabelDialog(QtWidgets.QDialog):
         flags: Optional[Dict[str, bool]] = None,
         group_id: Optional[int] = None,
         description: str = "",
+        *,
+        show_flags: bool = True,
     ) -> Tuple[Optional[str], Dict[str, bool], Optional[int], str]:
         """Show dialog and return edited values.
 
@@ -161,6 +163,7 @@ class AnnolidLabelDialog(QtWidgets.QDialog):
             self._group_spin.setValue(int(group_id))
 
         self._set_flags(flags_in)
+        self._flags_box.setVisible(bool(show_flags) and bool(flags_in))
 
         # Focus label input by default.
         self.edit.setFocus(QtCore.Qt.OtherFocusReason)

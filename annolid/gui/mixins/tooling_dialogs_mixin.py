@@ -199,6 +199,17 @@ class ToolingDialogsMixin:
         )
         video_downsample_widget.exec_()
 
+    def open_zone_manager(self):
+        dock = getattr(self, "zone_dock", None)
+        if dock is None:
+            return
+        refresh = getattr(dock, "refresh_from_current_canvas", None)
+        if callable(refresh):
+            refresh()
+        dock.show()
+        dock.raise_()
+        dock.activateWindow()
+
     def run_optical_flow_tool(self):
         if getattr(self, "optical_flow_manager", None) is not None:
             return self.optical_flow_manager.run_tool()

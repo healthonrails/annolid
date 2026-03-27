@@ -11,6 +11,7 @@ This page points to the practical tutorial material that exists in the repositor
 ## Focused Markdown Tutorials
 
 - [Segment-based batch tracking](tutorials/segment-based-batch-tracking.md)
+- [Zone analysis workflow](tutorials/zone_analysis_workflow.md)
 - [LabelMe to YOLO class mapping](tutorials/Labelme_to_YOLO_class_map.md)
 - [Sandboxed shell for Annolid Bot](tutorials/sandboxed_shell.md)
 - [MCP setup and usage](mcp.md)

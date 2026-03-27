@@ -96,6 +96,7 @@ nav:
       - Tutorials Overview: tutorials.md
       - Video Processing with FFmpeg: tutorials/video_ffmpeg_processing.md
       - Segment-based Batch Tracking: tutorials/segment-based-batch-tracking.md
+      - Zone Analysis Workflow: tutorials/zone_analysis_workflow.md
       - LabelMe to YOLO Class Map: tutorials/Labelme_to_YOLO_class_map.md
       - Sandboxed Shell: tutorials/sandboxed_shell.md
       - SAM 3D: sam3d.md
@@ -115,6 +116,8 @@ nav:
       - Migration Plan: migration.md
       - Architecture Layers: architecture_layers.md
       - Redirect Map: redirects.md
-  - Reference: reference.md
+  - Reference:
+      - Reference: reference.md
+      - Zone Analysis: zone_analysis.md
   - Developer Notes:
       - Model Plugin Help: model_plugin_help.md

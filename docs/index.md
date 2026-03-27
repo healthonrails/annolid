@@ -62,6 +62,11 @@
     <a href="workflows/">Open workflows</a>
   </article>
   <article class="ann-card">
+    <h3>Zone Analysis</h3>
+    <p>Draw chamber layouts, reuse zone files, and export phase-aware summaries.</p>
+    <a href="zone_analysis/">Open zone analysis reference</a>
+  </article>
+  <article class="ann-card">
     <h3>Agent CLI</h3>
     <p>Use the typed <code>annolid_run</code> tool for safe agent-driven CLI operations.</p>
     <a href="agent_annolid_run/">Open agent CLI guide</a>
