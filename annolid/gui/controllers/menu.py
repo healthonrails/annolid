@@ -438,9 +438,9 @@ class MenuController:
             },
             {
                 "name": "downsample_video",
-                "text": w.tr("&Downsample Videos"),
+                "text": w.tr("&Downsample Video(s)…"),
                 "slot": w.downsample_videos,
-                "tip": w.tr("Downsample Videos"),
+                "tip": w.tr("Downsample one video or a folder of videos"),
             },
             {
                 "name": "run_optical_flow",

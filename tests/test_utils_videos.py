@@ -117,3 +117,86 @@ def test_compress_and_rescale_video_falls_back_when_denoise_filter_parse_fails(
     assert "no_denoise_fallback" not in command_log["clip_fix.mp4"]
     assert "hqdn3d=" not in command_log["clip_fix.mp4"]
     assert "scale=trunc(iw*0.5/2)*2:trunc(ih*0.5/2)*2" in command_log["clip_fix.mp4"]
+
+
+def test_compress_and_rescale_video_supports_single_input_video_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    video_path = tmp_path / "clip.mp4"
+    output_dir = tmp_path / "output"
+    video_path.write_bytes(b"fake")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(videos_mod, "get_video_fps", lambda _p: 24.0)
+
+    def _fake_run(cmd, check, stdout, stderr, text):
+        _ = check, stdout, stderr, text
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(videos_mod.subprocess, "run", _fake_run)
+
+    command_log = videos_mod.compress_and_rescale_video(
+        input_folder=str(tmp_path),
+        output_folder=str(output_dir),
+        scale_factor=0.5,
+        input_video_path=str(video_path),
+        fps=24.0,
+    )
+
+    assert "clip.mp4" in command_log
+
+
+def test_simple_fallback_uses_even_dimensions_from_crop_region(
+    tmp_path: Path, monkeypatch
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (input_dir / "clip.mp4").write_bytes(b"fake")
+
+    monkeypatch.setattr(videos_mod, "get_video_fps", lambda _p: 15.0)
+
+    class _FakeCapture:
+        def isOpened(self):
+            return True
+
+        def get(self, _prop):
+            return 0
+
+        def release(self):
+            return None
+
+    monkeypatch.setattr(videos_mod.cv2, "VideoCapture", lambda _p: _FakeCapture())
+
+    attempted = {"simple": False}
+
+    def _fake_run(cmd, check, stdout, stderr, text):
+        _ = check, stdout, stderr, text
+        if "-vf" in cmd:
+            raise subprocess.CalledProcessError(
+                returncode=8,
+                cmd=cmd,
+                stderr="Error parsing filterchain",
+            )
+        attempted["simple"] = True
+        assert "-s" in cmd
+        dims = cmd[cmd.index("-s") + 1]
+        assert dims == "620x538"
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(videos_mod.subprocess, "run", _fake_run)
+
+    command_log = videos_mod.compress_and_rescale_video(
+        str(input_dir),
+        str(output_dir),
+        scale_factor=0.5,
+        fps=15.0,
+        crop_x=0,
+        crop_y=0,
+        crop_width=1242,
+        crop_height=1076,
+    )
+
+    assert attempted["simple"] is True
+    assert "clip.mp4" in command_log

@@ -4,8 +4,22 @@ import subprocess
 import csv
 import argparse
 from dataclasses import dataclass
+from pathlib import Path
 from annolid.core.media.video import get_video_fps
 from annolid.utils.logger import logger
+
+VIDEO_EXTENSIONS = (
+    ".mp4",
+    ".avi",
+    ".mkv",
+    ".mov",
+    ".wmv",
+    ".flv",
+    ".mpeg",
+    ".mpg",
+    ".m4v",
+    ".mts",
+)
 
 
 def extract_frames_with_opencv(video_path, output_dir=None, start_number=0, quality=95):
@@ -113,8 +127,9 @@ def collect_video_metadata(input_folder):
         logger.info("No video files found in the input folder.")
         return metadata
 
-    for video_file in video_files:
-        input_path = os.path.join(input_folder, video_file)
+    for input_path_obj in (Path(input_folder) / f for f in video_files):
+        input_path = str(input_path_obj)
+        video_file = input_path_obj.name
 
         cap = cv2.VideoCapture(input_path)
 
@@ -169,6 +184,7 @@ def compress_and_rescale_video(
     input_folder,
     output_folder,
     scale_factor,
+    input_video_path=None,
     fps=None,
     apply_denoise=False,
     auto_contrast=False,
@@ -187,6 +203,7 @@ def compress_and_rescale_video(
         input_folder (str): Path to the folder containing video files.
         output_folder (str): Path to the folder for processed videos.
         scale_factor (float): Scale factor for resizing videos (e.g., 0.25 for 25%).
+        input_video_path (str, optional): If provided, process only this video file.
         fps (int): Frames per second for the output video.
         apply_denoise (bool): If True, applies spacetempo smoothing using the hqdn3d filter.
         auto_contrast (bool): If True, apply light auto-contrast enhancement.
@@ -199,29 +216,26 @@ def compress_and_rescale_video(
     Returns:
         dict: A mapping from each output video filename to the executed FFmpeg command.
     """
-    if not os.path.exists(input_folder):
+    if input_video_path:
+        if not os.path.isfile(input_video_path):
+            logger.info("Input video does not exist: %s", input_video_path)
+            return {}
+    elif not os.path.exists(input_folder):
         logger.info("Input folder does not exist.")
         return {}
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
-    video_extensions = (
-        ".mp4",
-        ".avi",
-        ".mkv",
-        ".mov",
-        ".wmv",
-        ".flv",
-        ".mpeg",
-        ".mpg",
-        ".m4v",
-        ".mts",
-    )
-    video_files = [
-        f for f in os.listdir(input_folder) if f.lower().endswith(video_extensions)
-    ]
+    if input_video_path:
+        video_paths = [Path(input_video_path)]
+    else:
+        video_paths = [
+            Path(input_folder) / f
+            for f in os.listdir(input_folder)
+            if f.lower().endswith(VIDEO_EXTENSIONS)
+        ]
 
-    if not video_files:
+    if not video_paths:
         logger.info("No video files found in the input folder.")
         return {}
 
@@ -260,16 +274,23 @@ def compress_and_rescale_video(
         ]
 
     def _compute_even_scaled_dimensions(
-        video_path: str, scale: float
+        video_path: str,
+        scale: float,
+        crop_w: int | None = None,
+        crop_h: int | None = None,
     ) -> tuple[int, int] | None:
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            return None
-        try:
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        finally:
-            cap.release()
+        if crop_w is not None and crop_h is not None and crop_w > 0 and crop_h > 0:
+            width = int(crop_w)
+            height = int(crop_h)
+        else:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                return None
+            try:
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            finally:
+                cap.release()
         if width <= 0 or height <= 0:
             return None
         out_w = max(2, int(round(width * float(scale))))
@@ -328,6 +349,8 @@ def compress_and_rescale_video(
         copy_audio: bool,
         fps_value: float,
         scale_factor_value: float,
+        crop_width_value: int | None = None,
+        crop_height_value: int | None = None,
     ) -> tuple[list[str] | None, str | None, str | None, str | None]:
         audio_args = ["-c:a", "copy"] if copy_audio else ["-c:a", "aac", "-b:a", "128k"]
         attempts: list[tuple[str, str, str]] = []
@@ -373,7 +396,12 @@ def compress_and_rescale_video(
 
         # Last-resort fallback: bypass filtergraph and use plain ffmpeg options.
         if saw_filtergraph_error:
-            dims = _compute_even_scaled_dimensions(input_path, scale_factor_value)
+            dims = _compute_even_scaled_dimensions(
+                input_path,
+                scale_factor_value,
+                crop_w=crop_width_value,
+                crop_h=crop_height_value,
+            )
             for profile in _candidate_profiles():
                 cmd = [
                     ffmpeg_bin,
@@ -415,8 +443,9 @@ def compress_and_rescale_video(
             f"All ffmpeg profiles failed ({summary}). Last error: {last_error}",
         )
 
-    for video_file in video_files:
-        input_path = os.path.join(input_folder, video_file)
+    for input_path_obj in video_paths:
+        input_path = str(input_path_obj)
+        video_file = input_path_obj.name
 
         video_fps = fps if fps is not None else get_video_fps(input_path)
         if video_fps is None:
@@ -428,7 +457,7 @@ def compress_and_rescale_video(
         output_path = os.path.join(output_folder, output_filename)
 
         # Build filter chain.
-        filter_chain = ""
+        filter_parts = []
         # Optionally add crop filter if all crop parameters are provided.
         if (
             crop_x is not None
@@ -436,17 +465,23 @@ def compress_and_rescale_video(
             and crop_width is not None
             and crop_height is not None
         ):
-            filter_chain += f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y},"
+            filter_parts.append(f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y}")
         # Append the FPS and scaling filters.
+        filter_parts.append(f"fps={video_fps}")
         # Force even dimensions for broader encoder compatibility.
-        dims = _compute_even_scaled_dimensions(input_path, scale_factor)
+        dims = _compute_even_scaled_dimensions(
+            input_path,
+            scale_factor,
+            crop_w=crop_width,
+            crop_h=crop_height,
+        )
         if dims is not None:
-            filter_chain += f"fps={video_fps},scale={dims[0]}:{dims[1]}"
+            filter_parts.append(f"scale={dims[0]}:{dims[1]}")
         else:
-            filter_chain += (
-                f"fps={video_fps},"
+            filter_parts.append(
                 f"scale=trunc(iw*{scale_factor}/2)*2:trunc(ih*{scale_factor}/2)*2"
             )
+        filter_chain = ",".join(filter_parts)
         filter_chains = _candidate_filter_chains(
             base_filter=filter_chain,
             apply_denoise=bool(apply_denoise),
@@ -463,6 +498,8 @@ def compress_and_rescale_video(
             copy_audio=bool(apply_denoise),
             fps_value=float(video_fps),
             scale_factor_value=float(scale_factor),
+            crop_width_value=crop_width,
+            crop_height_value=crop_height,
         )
         if cmd is not None:
             command_str = " ".join(cmd)

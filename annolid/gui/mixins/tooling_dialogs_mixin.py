@@ -194,7 +194,9 @@ class ToolingDialogsMixin:
         self.canvas_screenshot_widget.save_canvas_screenshot(filename=self.filename)
 
     def downsample_videos(self):
-        video_downsample_widget = VideoRescaleWidget()
+        video_downsample_widget = VideoRescaleWidget(
+            initial_video_path=getattr(self, "video_file", None)
+        )
         video_downsample_widget.exec_()
 
     def run_optical_flow_tool(self):

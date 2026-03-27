@@ -1,140 +1,51 @@
-import os
-import cv2  # OpenCV to extract a video frame
+from __future__ import annotations
 
-from annolid.utils.videos import (
-    collect_video_metadata,
-    compress_and_rescale_video,
-    save_metadata_to_csv,
-)
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QApplication,
-    QDialog,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QFileDialog,
     QCheckBox,
-    QSlider,
-    QLineEdit,
-    QMessageBox,
+    QDialog,
     QHBoxLayout,
-    QGraphicsView,
-    QGraphicsScene,
-    QGraphicsPixmapItem,
-    QGraphicsRectItem,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
 )
-from qtpy.QtCore import Qt, QRectF, QPointF
-from qtpy.QtGui import QPixmap, QPen, QColor
-from annolid.data.videos import get_video_fps, get_video_files
 
-# --- Cropping dialog classes ---
-
-
-class CropFrameWidget(QGraphicsView):
-    def __init__(self, image_path, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Select Crop Region")
-        self.scene = QGraphicsScene(self)
-        self.setScene(self.scene)
-
-        # Load the image and add it to the scene.
-        self.pixmap = QPixmap(image_path)
-        self.pixmap_item = QGraphicsPixmapItem(self.pixmap)
-        self.scene.addItem(self.pixmap_item)
-
-        self.crop_rect = None
-        self.start_pos = QPointF()
-        self.end_pos = QPointF()
-
-        # Rectangle item to show user's selection.
-        self.rect_item = QGraphicsRectItem()
-        pen = QPen(QColor(255, 0, 0), 2, Qt.DashLine)
-        self.rect_item.setPen(pen)
-        self.scene.addItem(self.rect_item)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.start_pos = self.mapToScene(event.pos())
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() & Qt.LeftButton:
-            self.end_pos = self.mapToScene(event.pos())
-            rect = QRectF(self.start_pos, self.end_pos).normalized()
-            self.rect_item.setRect(rect)
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.end_pos = self.mapToScene(event.pos())
-            self.crop_rect = self.rect_item.rect()
-        super().mouseReleaseEvent(event)
-
-    def getCropRect(self):
-        return self.crop_rect
-
-
-class CropDialog(QDialog):
-    def __init__(self, image_path, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Crop Frame")
-        self.crop_widget = CropFrameWidget(image_path)
-        self.ok_button = QPushButton("OK")
-        self.ok_button.clicked.connect(self.accept)
-
-        layout = QVBoxLayout()
-        layout.addWidget(self.crop_widget)
-        layout.addWidget(self.ok_button)
-        self.setLayout(layout)
-
-    def getCropCoordinates(self):
-        rect = self.crop_widget.getCropRect()
-        if rect:
-            return int(rect.x()), int(rect.y()), int(rect.width()), int(rect.height())
-        return None
-
-
-# --- Main Widget ---
+from annolid.gui.widgets.video_rescale_workflow import VideoRescaleWorkflow
 
 
 class VideoRescaleWidget(QDialog):
-    """
-    Widget for rescaling video files.
+    """Layout-only dialog for video downsampling and metadata export."""
 
-    Allows users to select input and output folders, specify a scale factor,
-    adjust the FPS, optionally crop to an interesting region (using the first
-    frame of the first video), choose to apply denoise, and then either rescale
-    the videos or collect metadata.
-
-    After processing:
-      - A single CSV file (metadata.csv) is automatically saved in the output folder.
-      - A Markdown README file is generated for each output video including video info,
-        processing parameters (scale factor, FPS, crop parameters, denoise flag), and
-        the executed FFmpeg command.
-    """
-
-    def __init__(self):
+    def __init__(self, initial_video_path=None):
         super().__init__()
-        self.setWindowTitle("Video Rescaling")
+        self.setWindowTitle("Downsample / Rescale Video")
         self.input_folder_path = ""
+        self.input_video_path = ""
         self.output_folder_path = ""
+        self.workflow = VideoRescaleWorkflow(self)
         self.init_ui()
+        self.workflow.apply_initial_video(initial_video_path)
 
     def init_ui(self):
         section_style = "font-weight: 600; color: #3a6ea5;"
-        # Input Folder
+
         self.input_section_label = QLabel("1) Input / Output")
         self.input_section_label.setStyleSheet(section_style)
-        self.input_folder_label = QLabel("Input Folder:")
+        self.input_source_label = QLabel("Input Source: Select one video or one folder")
+        self.input_video_button = QPushButton("Select Video")
+        self.input_video_button.clicked.connect(self.workflow.select_input_video)
         self.input_folder_button = QPushButton("Select Folder")
-        self.input_folder_button.clicked.connect(self.select_input_folder)
+        self.input_folder_button.clicked.connect(self.workflow.select_input_folder)
+        self.input_selection_label = QLabel("No input selected")
+        self.input_selection_label.setWordWrap(True)
 
-        # Output Folder
         self.output_folder_label = QLabel("Output Folder:")
         self.output_folder_button = QPushButton("Select Folder")
-        self.output_folder_button.clicked.connect(self.select_output_folder)
+        self.output_folder_button.clicked.connect(self.workflow.select_output_folder)
 
-        # Scale Factor
         self.processing_section_label = QLabel("2) Processing")
         self.processing_section_label.setStyleSheet(section_style)
         self.scale_factor_label = QLabel("Scale Factor:")
@@ -145,23 +56,20 @@ class VideoRescaleWidget(QDialog):
         self.scale_factor_slider.setTickInterval(25)
         self.scale_factor_slider.setTickPosition(QSlider.TicksBelow)
         self.scale_factor_slider.valueChanged.connect(
-            self.update_scale_factor_from_slider
+            self.workflow.update_scale_factor_from_slider
         )
         self.scale_factor_text = QLineEdit("0.5")
         self.scale_factor_text.editingFinished.connect(
-            self.update_scale_factor_from_text
+            self.workflow.update_scale_factor_from_text
         )
 
-        # FPS Option
         self.fps_label = QLabel("Frames Per Second (FPS):")
         self.fps_text = QLineEdit("FPS e.g. 29.97")
         self.override_fps_checkbox = QCheckBox("Use specified FPS for all videos")
 
-        # Codec Option (kept for future extension)
         self.codec_label = QLabel("Codec:")
         self.codec_text = QLineEdit("libx264")
 
-        # Denoise Option
         self.denoise_checkbox = QCheckBox("Apply Denoise")
         self.auto_contrast_checkbox = QCheckBox("Auto Contrast Enhancement")
         self.auto_contrast_strength_label = QLabel("Auto Contrast Strength:")
@@ -172,15 +80,16 @@ class VideoRescaleWidget(QDialog):
         self.auto_contrast_strength_slider.setTickInterval(25)
         self.auto_contrast_strength_slider.setTickPosition(QSlider.TicksBelow)
         self.auto_contrast_strength_slider.valueChanged.connect(
-            self.update_auto_contrast_strength_from_slider
+            self.workflow.update_auto_contrast_strength_from_slider
         )
         self.auto_contrast_strength_text = QLineEdit("1.0")
         self.auto_contrast_strength_text.editingFinished.connect(
-            self.update_auto_contrast_strength_from_text
+            self.workflow.update_auto_contrast_strength_from_text
         )
-        self.auto_contrast_checkbox.toggled.connect(self._toggle_auto_contrast_controls)
+        self.auto_contrast_checkbox.toggled.connect(
+            self.workflow.toggle_auto_contrast_controls
+        )
 
-        # Crop Region Options
         self.crop_section_label = QLabel("3) Region Selection")
         self.crop_section_label.setStyleSheet(section_style)
         self.crop_checkbox = QCheckBox("Enable Crop Region")
@@ -199,25 +108,26 @@ class VideoRescaleWidget(QDialog):
         crop_layout.addWidget(self.crop_width_text)
         crop_layout.addWidget(self.crop_height_text)
 
-        # New button: Extract first frame and crop interactively.
         self.crop_preview_button = QPushButton("Preview & Crop First Frame")
-        self.crop_preview_button.clicked.connect(self.preview_and_crop)
+        self.crop_preview_button.clicked.connect(self.workflow.preview_and_crop)
 
-        # Other Options
         self.run_section_label = QLabel("4) Run")
         self.run_section_label.setStyleSheet(section_style)
         self.rescale_checkbox = QCheckBox("Rescale Video")
+        self.rescale_checkbox.setChecked(True)
         self.collect_only_checkbox = QCheckBox("Collect Metadata Only")
 
-        # Run Button
-        self.run_button = QPushButton("Run Rescaling")
-        self.run_button.clicked.connect(self.run_rescaling)
+        self.run_button = QPushButton("Run Processing")
+        self.run_button.clicked.connect(self.workflow.run_rescaling)
 
-        # Layout
         layout = QVBoxLayout()
         layout.addWidget(self.input_section_label)
-        layout.addWidget(self.input_folder_label)
-        layout.addWidget(self.input_folder_button)
+        layout.addWidget(self.input_source_label)
+        input_select_layout = QHBoxLayout()
+        input_select_layout.addWidget(self.input_video_button)
+        input_select_layout.addWidget(self.input_folder_button)
+        layout.addLayout(input_select_layout)
+        layout.addWidget(self.input_selection_label)
         layout.addWidget(self.output_folder_label)
         layout.addWidget(self.output_folder_button)
         layout.addWidget(self.processing_section_label)
@@ -244,338 +154,7 @@ class VideoRescaleWidget(QDialog):
         layout.addWidget(self.collect_only_checkbox)
         layout.addWidget(self.run_button)
         self.setLayout(layout)
-        self._toggle_auto_contrast_controls(False)
-
-    def select_input_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Input Folder")
-        if not folder:
-            return
-
-        self.input_folder_path = folder
-        self.input_folder_label.setText(f"Input Folder: {folder}")
-        video_files = get_video_files(folder)
-        if video_files:
-            first_video_path = os.path.join(folder, video_files[0])
-            fps = get_video_fps(first_video_path)
-            if fps:
-                self.fps_text.setText(str(fps))
-            else:
-                print("[select_input_folder] Failed to extract FPS")
-
-    def select_output_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Output Folder")
-        if folder:
-            self.output_folder_path = folder
-            self.output_folder_label.setText(f"Output Folder: {folder}")
-
-    def update_scale_factor_from_slider(self):
-        scale_factor = self.scale_factor_slider.value() / 100
-        self.scale_factor_text.setText(str(scale_factor))
-
-    def update_scale_factor_from_text(self):
-        try:
-            scale_factor = float(self.scale_factor_text.text())
-            if 0.0 <= scale_factor <= 1.0:
-                self.scale_factor_slider.setValue(int(scale_factor * 100))
-            else:
-                self.scale_factor_text.setText("Invalid Value")
-        except ValueError:
-            self.scale_factor_text.setText("Invalid Value")
-
-    def update_auto_contrast_strength_from_slider(self):
-        strength = self.auto_contrast_strength_slider.value() / 100
-        self.auto_contrast_strength_text.setText(f"{strength:.2f}")
-
-    def update_auto_contrast_strength_from_text(self):
-        try:
-            strength = float(self.auto_contrast_strength_text.text())
-            if 0.0 <= strength <= 2.0:
-                self.auto_contrast_strength_slider.setValue(int(strength * 100))
-                self.auto_contrast_strength_text.setText(f"{strength:.2f}")
-            else:
-                self.auto_contrast_strength_text.setText("1.00")
-                self.auto_contrast_strength_slider.setValue(100)
-        except ValueError:
-            self.auto_contrast_strength_text.setText("1.00")
-            self.auto_contrast_strength_slider.setValue(100)
-
-    def _toggle_auto_contrast_controls(self, enabled):
-        self.auto_contrast_strength_label.setEnabled(bool(enabled))
-        self.auto_contrast_strength_slider.setEnabled(bool(enabled))
-        self.auto_contrast_strength_text.setEnabled(bool(enabled))
-
-    def preview_and_crop(self):
-        """Extract the first frame from the first video in the input folder and open the crop dialog."""
-        input_folder = self.input_folder_path
-        if not os.path.isdir(input_folder):
-            QMessageBox.warning(self, "Error", "Please select a valid input folder.")
-            return
-
-        # Supported video extensions.
-        video_extensions = (
-            ".mp4",
-            ".avi",
-            ".mkv",
-            ".mov",
-            ".wmv",
-            ".flv",
-            ".mpeg",
-            ".mpg",
-            ".m4v",
-            ".mts",
-        )
-        video_files = [
-            f for f in os.listdir(input_folder) if f.lower().endswith(video_extensions)
-        ]
-        if not video_files:
-            QMessageBox.warning(
-                self, "Error", "No video files found in the input folder."
-            )
-            return
-
-        first_video = os.path.join(input_folder, video_files[0])
-
-        # Extract the first frame using OpenCV.
-        cap = cv2.VideoCapture(first_video)
-        ret, frame = cap.read()
-        cap.release()
-        if not ret:
-            QMessageBox.warning(
-                self, "Error", "Unable to extract a frame from the first video."
-            )
-            return
-
-        # Save the frame temporarily.
-        temp_image_path = os.path.join(input_folder, "temp_crop_frame.jpg")
-        cv2.imwrite(temp_image_path, frame)
-
-        # Open the cropping dialog.
-        crop_dialog = CropDialog(temp_image_path)
-        if crop_dialog.exec_() == QDialog.Accepted:
-            crop_coords = crop_dialog.getCropCoordinates()
-            if crop_coords:
-                crop_x, crop_y, crop_width, crop_height = crop_coords
-                self.crop_x_text.setText(str(crop_x))
-                self.crop_y_text.setText(str(crop_y))
-                self.crop_width_text.setText(str(crop_width))
-                self.crop_height_text.setText(str(crop_height))
-                QMessageBox.information(
-                    self,
-                    "Crop Selected",
-                    f"Crop Region set to:\nx: {crop_x}, y: {crop_y}, width: {crop_width}, height: {crop_height}",
-                )
-            else:
-                QMessageBox.information(self, "No Crop", "No crop region was selected.")
-        # Clean up temporary image file.
-        if os.path.exists(temp_image_path):
-            os.remove(temp_image_path)
-
-    def save_metadata_files(
-        self,
-        folder,
-        scale_factor=None,
-        fps=None,
-        apply_denoise=None,
-        auto_contrast=None,
-        auto_contrast_strength=None,
-        crop_params=None,
-        command_log=None,
-    ):
-        """Save a CSV file (metadata.csv) and individual Markdown files for each video."""
-        metadata_list = collect_video_metadata(folder)
-        csv_all_path = os.path.join(folder, "metadata.csv")
-        save_metadata_to_csv(metadata_list, csv_all_path)
-        print(f"Saved metadata CSV: {csv_all_path}")
-
-        video_extensions = (
-            ".mp4",
-            ".avi",
-            ".mkv",
-            ".mov",
-            ".wmv",
-            ".flv",
-            ".mpeg",
-            ".mpg",
-            ".m4v",
-            ".mts",
-        )
-        for video_file in os.listdir(folder):
-            if video_file.lower().endswith(video_extensions):
-                base, _ = os.path.splitext(video_file)
-                md_path = os.path.join(folder, base + ".md")
-                with open(md_path, "w") as f:
-                    f.write(f"# Metadata and Processing Info for {video_file}\n\n")
-                    if scale_factor is not None:
-                        f.write("**Processing Parameters:**\n")
-                        f.write(f"- Scale Factor: {scale_factor}\n")
-                        f.write(
-                            f"- FPS: {fps if fps is not None else 'original per-video FPS'}\n"
-                        )
-                        f.write(f"- Apply Denoise: {apply_denoise}\n")
-                        f.write(f"- Auto Contrast: {auto_contrast}\n")
-                        if auto_contrast:
-                            f.write(
-                                f"- Auto Contrast Strength: {auto_contrast_strength}\n"
-                            )
-                        if crop_params is not None:
-                            crop_x, crop_y, crop_width, crop_height = crop_params
-                            f.write(
-                                f"- Crop Region: x={crop_x}, y={crop_y}, width={crop_width}, height={crop_height}\n"
-                            )
-                        f.write("\n")
-                    if command_log is not None:
-                        command_used = command_log.get(video_file, "N/A")
-                        f.write("**FFmpeg Command:**\n")
-                        f.write("```\n")
-                        f.write(f"{command_used}\n")
-                        f.write("```\n\n")
-                    f.write("**Video Metadata:**\n")
-                    video_metadata = [
-                        m
-                        for m in metadata_list
-                        if m.get("video_name", "").lower() == video_file.lower()
-                    ]
-                    for entry in video_metadata:
-                        for key, value in entry.items():
-                            f.write(f"- **{key}**: {value}\n")
-                        f.write("\n")
-                print(f"Saved readme file: {md_path}")
-
-    def run_rescaling(self):
-        self.run_button.setEnabled(False)
-        self.run_button.setText("Processing...")
-
-        input_folder = self.input_folder_path
-        output_folder = self.output_folder_path
-
-        if not os.path.isdir(input_folder):
-            QMessageBox.warning(self, "Error", "Please select a valid input folder.")
-            self.run_button.setEnabled(True)
-            self.run_button.setText("Run Rescaling")
-            return
-
-        try:
-            scale_factor = float(self.scale_factor_text.text())
-        except ValueError:
-            QMessageBox.warning(self, "Error", "Invalid scale factor.")
-            self.run_button.setEnabled(True)
-            self.run_button.setText("Run Rescaling")
-            return
-
-        if self.override_fps_checkbox.isChecked():
-            try:
-                fps = float(self.fps_text.text())
-            except ValueError:
-                QMessageBox.warning(self, "Error", "Invalid FPS value.")
-                self.run_button.setEnabled(True)
-                self.run_button.setText("Run Rescaling")
-                return
-        else:
-            fps = None  # Let each video retain its native FPS
-
-        rescale = self.rescale_checkbox.isChecked()
-        collect_only = self.collect_only_checkbox.isChecked()
-        apply_denoise = self.denoise_checkbox.isChecked()
-        auto_contrast = self.auto_contrast_checkbox.isChecked()
-        if auto_contrast:
-            try:
-                auto_contrast_strength = float(self.auto_contrast_strength_text.text())
-            except ValueError:
-                QMessageBox.warning(self, "Error", "Invalid auto contrast strength.")
-                self.run_button.setEnabled(True)
-                self.run_button.setText("Run Rescaling")
-                return
-        else:
-            auto_contrast_strength = 1.0
-
-        crop_params = None
-        if self.crop_checkbox.isChecked():
-            try:
-                crop_x = int(self.crop_x_text.text())
-                crop_y = int(self.crop_y_text.text())
-                crop_width = int(self.crop_width_text.text())
-                crop_height = int(self.crop_height_text.text())
-                crop_params = (crop_x, crop_y, crop_width, crop_height)
-            except ValueError:
-                QMessageBox.warning(
-                    self,
-                    "Error",
-                    "Invalid crop parameters. Please enter integer values.",
-                )
-                self.run_button.setEnabled(True)
-                self.run_button.setText("Run Rescaling")
-                return
-
-        if collect_only:
-            self.save_metadata_files(input_folder)
-            QMessageBox.information(self, "Done", "Metadata collection is done.")
-        elif rescale:
-            if not output_folder:
-                QMessageBox.warning(
-                    self, "Error", "Please select a valid output folder."
-                )
-                self.run_button.setEnabled(True)
-                self.run_button.setText("Run Rescaling")
-                return
-            command_log = compress_and_rescale_video(
-                input_folder,
-                output_folder,
-                scale_factor,
-                fps=fps,
-                apply_denoise=apply_denoise,
-                auto_contrast=auto_contrast,
-                auto_contrast_strength=auto_contrast_strength,
-                crop_x=crop_params[0] if crop_params else None,
-                crop_y=crop_params[1] if crop_params else None,
-                crop_width=crop_params[2] if crop_params else None,
-                crop_height=crop_params[3] if crop_params else None,
-            )
-            self.save_metadata_files(
-                output_folder,
-                scale_factor=scale_factor,
-                fps=fps,
-                apply_denoise=apply_denoise,
-                auto_contrast=auto_contrast,
-                auto_contrast_strength=auto_contrast_strength,
-                crop_params=crop_params,
-                command_log=command_log,
-            )
-            input_video_count = len(
-                [
-                    f
-                    for f in os.listdir(input_folder)
-                    if f.lower().endswith(
-                        (
-                            ".mp4",
-                            ".avi",
-                            ".mkv",
-                            ".mov",
-                            ".wmv",
-                            ".flv",
-                            ".mpeg",
-                            ".mpg",
-                            ".m4v",
-                            ".mts",
-                        )
-                    )
-                ]
-            )
-            success_count = len(command_log)
-            failed_count = max(0, input_video_count - success_count)
-            summary = (
-                "Video processing complete.\n\n"
-                f"Successful: {success_count}\n"
-                f"Failed: {failed_count}\n"
-                f"Output folder: {output_folder}\n\n"
-                "Tip: If failures remain, disable denoise and keep Auto Contrast on."
-            )
-            if failed_count > 0:
-                QMessageBox.warning(self, "Completed with Warnings", summary)
-            else:
-                QMessageBox.information(self, "Done", summary)
-
-        self.run_button.setEnabled(True)
-        self.run_button.setText("Run Rescaling")
+        self.workflow.toggle_auto_contrast_controls(False)
 
 
 if __name__ == "__main__":
