@@ -88,18 +88,13 @@ class ShapeEditingMixin:
             group_id = None
             description = ""
             zone_defaults = getattr(self, "_zone_authoring_defaults", None)
-            zone_panel = getattr(self, "_zone_authoring_panel", None)
-            force_zone_popup = (
-                isinstance(zone_defaults, dict)
-                and zone_defaults.get("flags") is not None
-            )
             if isinstance(zone_defaults, dict):
                 text = zone_defaults.get("text") or text
                 flags = dict(zone_defaults.get("flags") or {})
                 group_id = zone_defaults.get("group_id", None)
                 description = str(zone_defaults.get("description") or "")
             show_popup = (
-                force_zone_popup or self._config["display_label_popup"] or not text
+                bool(zone_defaults) or self._config["display_label_popup"] or not text
             )
             if show_popup:
                 previous_text = self.labelDialog.edit.text()
@@ -112,15 +107,6 @@ class ShapeEditingMixin:
                 )
                 if not text:
                     self.labelDialog.edit.setText(previous_text)
-                elif zone_panel is not None and hasattr(
-                    zone_panel, "apply_popup_result"
-                ):
-                    try:
-                        zone_panel.apply_popup_result(
-                            text, flags, group_id, description
-                        )
-                    except Exception:
-                        pass
             if text and not self.validateLabel(text):
                 self.errorMessage(
                     self.tr("Invalid label"),

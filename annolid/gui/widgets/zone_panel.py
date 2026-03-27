@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -12,7 +12,6 @@ from annolid.gui.widgets.zone_manager_utils import (
     default_zone_label,
     generate_arena_layout_preset,
     is_zone_shape,
-    normalize_zone_flags,
     shape_to_zone_payload,
     zone_file_for_source,
     zone_kind_palette,
@@ -44,7 +43,6 @@ class ZonePanelWidget(QtWidgets.QWidget):
         )
         self._dirty = False
         self._syncing_selection = False
-        self._syncing_fields = False
         self._selected_shape = None
         self._preset_available = False
         self.canvas.newShape.connect(self._handle_new_shape)
@@ -129,104 +127,59 @@ class ZonePanelWidget(QtWidgets.QWidget):
         source_layout.addRow("Actions", source_buttons)
         root.addWidget(source_box)
 
-        self.mode_label = QtWidgets.QLabel("Drawing mode")
-        self.mode_label.setStyleSheet("font-weight: 600;")
-        self.select_button = QtWidgets.QPushButton("Select / Edit")
-        self.select_button.clicked.connect(lambda: self._set_create_mode(None))
-        self.polygon_button = QtWidgets.QPushButton("Draw Polygon")
-        self.polygon_button.clicked.connect(lambda: self._set_create_mode("polygon"))
-        self.rectangle_button = QtWidgets.QPushButton("Draw Rectangle")
-        self.rectangle_button.clicked.connect(
-            lambda: self._set_create_mode("rectangle")
-        )
-        self.line_button = QtWidgets.QPushButton("Draw Line")
-        self.line_button.clicked.connect(lambda: self._set_create_mode("line"))
-
-        mode_row = QtWidgets.QHBoxLayout()
-        mode_row.addWidget(self.select_button)
-        mode_row.addWidget(self.polygon_button)
-        mode_row.addWidget(self.rectangle_button)
-        mode_row.addWidget(self.line_button)
-
         self.shape_list = QtWidgets.QListWidget(self)
         self.shape_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.shape_list.currentRowChanged.connect(self._on_shape_row_changed)
         self.shape_list.itemSelectionChanged.connect(self._on_shape_selection_changed)
-
-        self.label_edit = QtWidgets.QLineEdit()
-        self.label_edit.editingFinished.connect(self.apply_editor_to_shape)
-        self.label_edit.setPlaceholderText("e.g. north_stim, chamber_1")
 
         self.zone_kind_combo = QtWidgets.QComboBox()
         self.zone_kind_combo.setEditable(True)
         self.zone_kind_combo.addItems(
             ["chamber", "doorway", "barrier_edge", "interaction_zone", "custom"]
         )
-        self.zone_kind_combo.currentTextChanged.connect(self.apply_editor_to_shape)
 
         self.phase_combo = QtWidgets.QComboBox()
         self.phase_combo.setEditable(True)
         self.phase_combo.addItems(["phase_1", "phase_2", "custom"])
-        self.phase_combo.currentTextChanged.connect(self.apply_editor_to_shape)
 
         self.occupant_combo = QtWidgets.QComboBox()
         self.occupant_combo.setEditable(True)
         self.occupant_combo.addItems(["rover", "stim", "neutral", "unknown"])
-        self.occupant_combo.currentTextChanged.connect(self.apply_editor_to_shape)
 
         self.access_combo = QtWidgets.QComboBox()
         self.access_combo.setEditable(True)
         self.access_combo.addItems(["open", "blocked", "tethered", "unknown"])
-        self.access_combo.currentTextChanged.connect(self.apply_editor_to_shape)
 
         self.tags_edit = QtWidgets.QLineEdit()
         self.tags_edit.setPlaceholderText("comma,separated,tags")
-        self.tags_edit.editingFinished.connect(self.apply_editor_to_shape)
-
-        self.description_edit = QtWidgets.QPlainTextEdit()
-        self.description_edit.setPlaceholderText("Optional notes or assay details")
-        self.description_edit.setMaximumHeight(80)
-        self.description_edit.textChanged.connect(self.apply_editor_to_shape)
-
-        self.visible_checkbox = QtWidgets.QCheckBox("Visible")
-        self.visible_checkbox.setChecked(True)
-        self.visible_checkbox.toggled.connect(self.apply_editor_to_shape)
 
         self.stroke_button = QtWidgets.QPushButton("Recolor")
         self.stroke_button.clicked.connect(self._recolor_selected_shape)
-        self.apply_button = QtWidgets.QPushButton("Apply To Selection")
-        self.apply_button.clicked.connect(self.apply_editor_to_shape)
         self.delete_button = QtWidgets.QPushButton("Delete Selected")
         self.delete_button.clicked.connect(self._delete_selected_shape)
 
         self.canvas_status = QtWidgets.QLabel(
-            "Draw on the main Annolid canvas. Use the buttons below to switch draw/edit mode."
+            "Use the main Annolid toolbar or canvas context menu to switch draw/edit mode."
         )
         self.canvas_status.setWordWrap(True)
         self.canvas_status.setStyleSheet("color: #5d6d7e;")
 
-        props_box = QtWidgets.QGroupBox("Selected Zone")
+        props_box = QtWidgets.QGroupBox("Zone Defaults")
         props_form = QtWidgets.QFormLayout(props_box)
-        props_form.addRow("Label", self.label_edit)
         props_form.addRow("Zone kind", self.zone_kind_combo)
         props_form.addRow("Phase", self.phase_combo)
         props_form.addRow("Occupant role", self.occupant_combo)
         props_form.addRow("Access state", self.access_combo)
         props_form.addRow("Tags", self.tags_edit)
-        props_form.addRow("Description", self.description_edit)
-        props_form.addRow("", self.visible_checkbox)
 
         editor_buttons = QtWidgets.QHBoxLayout()
         editor_buttons.addWidget(self.stroke_button)
-        editor_buttons.addWidget(self.apply_button)
         editor_buttons.addWidget(self.delete_button)
         props_form.addRow("Actions", editor_buttons)
 
         self.shape_list_label = QtWidgets.QLabel("Zones")
         self.shape_list_label.setStyleSheet("font-weight: 600;")
 
-        root.addWidget(self.mode_label)
-        root.addLayout(mode_row)
         root.addWidget(self.canvas_status)
         root.addWidget(self.shape_list_label)
         root.addWidget(self.shape_list, 1)
@@ -241,6 +194,19 @@ class ZonePanelWidget(QtWidgets.QWidget):
         bottom_row.addWidget(self.close_button)
         root.addLayout(bottom_row)
         self._update_preset_description_label()
+        self.zone_kind_combo.currentTextChanged.connect(
+            lambda *_: self._publish_zone_defaults()
+        )
+        self.phase_combo.currentTextChanged.connect(
+            lambda *_: self._publish_zone_defaults()
+        )
+        self.occupant_combo.currentTextChanged.connect(
+            lambda *_: self._publish_zone_defaults()
+        )
+        self.access_combo.currentTextChanged.connect(
+            lambda *_: self._publish_zone_defaults()
+        )
+        self.tags_edit.editingFinished.connect(self._publish_zone_defaults)
 
     # ------------------------------------------------------------------ #
     # Frame and zone loading
@@ -300,8 +266,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
         if parent is None:
             return
         defaults = build_zone_popup_defaults(
-            label=self.label_edit.text().strip()
-            or default_zone_label(
+            label=default_zone_label(
                 self.zone_kind_combo.currentText().strip(), self._existing_labels()
             ),
             zone_kind=self.zone_kind_combo.currentText().strip() or "custom",
@@ -309,52 +274,9 @@ class ZonePanelWidget(QtWidgets.QWidget):
             occupant_role=self.occupant_combo.currentText().strip() or "unknown",
             access_state=self.access_combo.currentText().strip() or "unknown",
             tags=self.tags_edit.text().strip(),
-            description=self.description_edit.toPlainText().strip(),
+            description="",
         )
         setattr(parent, "_zone_authoring_defaults", defaults)
-        setattr(parent, "_zone_authoring_panel", self)
-
-    def apply_popup_result(
-        self,
-        text: str | None,
-        flags: dict[str, Any] | None = None,
-        group_id: int | None = None,
-        description: str = "",
-    ) -> None:
-        if text is None:
-            return
-        self._syncing_fields = True
-        try:
-            resolved_text = str(text or "").strip()
-            resolved_description = str(description or "").strip()
-            resolved_flags = dict(flags or {})
-            self.label_edit.setText(resolved_text)
-            if resolved_description:
-                self.description_edit.setPlainText(resolved_description)
-            else:
-                self.description_edit.clear()
-            self.zone_kind_combo.setCurrentText(
-                str(resolved_flags.get("zone_kind") or "custom").strip()
-            )
-            self.phase_combo.setCurrentText(
-                str(resolved_flags.get("phase") or "custom").strip()
-            )
-            self.occupant_combo.setCurrentText(
-                str(resolved_flags.get("occupant_role") or "unknown").strip()
-            )
-            self.access_combo.setCurrentText(
-                str(resolved_flags.get("access_state") or "unknown").strip()
-            )
-            tags = resolved_flags.get("tags") or []
-            if isinstance(tags, list):
-                self.tags_edit.setText(", ".join(str(tag) for tag in tags if tag))
-            else:
-                self.tags_edit.setText(str(tags or ""))
-            if group_id is not None:
-                _ = group_id
-            self._publish_zone_defaults()
-        finally:
-            self._syncing_fields = False
 
     def _update_preset_description_label(self, *args) -> None:
         _ = args
@@ -388,7 +310,6 @@ class ZonePanelWidget(QtWidgets.QWidget):
             self._selected_shape = generated_shapes[0]
             self._refresh_shape_list(select_shape=generated_shapes[0])
             self.canvas.selectShapes([generated_shapes[0]])
-            self._populate_editor_from_shape(generated_shapes[0])
         self._dirty = True
         self._set_status(
             f"Generated {len(generated_shapes)} zone(s) on the current canvas."
@@ -448,7 +369,6 @@ class ZonePanelWidget(QtWidgets.QWidget):
             )
             return
 
-        self._set_create_mode(None)
         self._merge_generated_zones(generated_shapes)
         self._publish_zone_defaults()
         self.canvas.setFocus()
@@ -525,18 +445,6 @@ class ZonePanelWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------ #
     # Shape lifecycle
     # ------------------------------------------------------------------ #
-    def _current_editor_values(self) -> dict[str, Any]:
-        return {
-            "label": self.label_edit.text().strip(),
-            "zone_kind": self.zone_kind_combo.currentText().strip(),
-            "phase": self.phase_combo.currentText().strip(),
-            "occupant_role": self.occupant_combo.currentText().strip(),
-            "access_state": self.access_combo.currentText().strip(),
-            "tags": self.tags_edit.text().strip(),
-            "description": self.description_edit.toPlainText().strip(),
-            "visible": self.visible_checkbox.isChecked(),
-        }
-
     def _existing_labels(self) -> list[str]:
         return [str(getattr(shape, "label", "") or "") for shape in self.canvas.shapes]
 
@@ -551,32 +459,6 @@ class ZonePanelWidget(QtWidgets.QWidget):
             stroke.red(), stroke.green(), stroke.blue(), 160
         )
 
-    def _apply_editor_to_shape(self, shape, *, emit_refresh: bool = True) -> None:
-        if shape is None:
-            return
-        values = self._current_editor_values()
-        label = values["label"] or default_zone_label(
-            values["zone_kind"], self._existing_labels()
-        )
-        shape.label = label
-        shape.description = values["description"]
-        shape.visible = bool(values["visible"])
-        shape.flags = normalize_zone_flags(
-            shape,
-            label=label,
-            zone_kind=values["zone_kind"],
-            phase=values["phase"],
-            occupant_role=values["occupant_role"],
-            access_state=values["access_state"],
-            tags=values["tags"],
-            extra_flags=getattr(shape, "flags", None),
-        )
-        self._apply_shape_style(shape)
-        self._publish_zone_defaults()
-        if emit_refresh:
-            self._refresh_shape_list()
-            self._mark_dirty()
-
     def _handle_new_shape(self) -> None:
         if not self.canvas.shapes:
             return
@@ -585,7 +467,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
             shape.label = default_zone_label(
                 self.zone_kind_combo.currentText().strip(), self._existing_labels()
             )
-        self._apply_editor_to_shape(shape, emit_refresh=False)
+        self._apply_shape_style(shape)
         self.canvas.storeShapes()
         self._refresh_shape_list(select_shape=shape)
         self._mark_dirty()
@@ -627,45 +509,6 @@ class ZonePanelWidget(QtWidgets.QWidget):
         self.canvas.update()
         self._mark_dirty()
 
-    def apply_editor_to_shape(self) -> None:
-        if self._syncing_fields:
-            return
-        shape = self._selected_shape
-        if shape is None:
-            return
-        self._apply_editor_to_shape(shape)
-        self._set_status(f"Updated '{shape.label}'.")
-
-    def _populate_editor_from_shape(self, shape) -> None:
-        if shape is None:
-            return
-        self._syncing_fields = True
-        try:
-            self.label_edit.setText(str(getattr(shape, "label", "") or ""))
-            flags = dict(getattr(shape, "flags", None) or {})
-            self.zone_kind_combo.setCurrentText(
-                str(flags.get("zone_kind") or "custom").strip()
-            )
-            self.phase_combo.setCurrentText(str(flags.get("phase") or "custom").strip())
-            self.occupant_combo.setCurrentText(
-                str(flags.get("occupant_role") or "unknown").strip()
-            )
-            self.access_combo.setCurrentText(
-                str(flags.get("access_state") or "unknown").strip()
-            )
-            tags = flags.get("tags") or []
-            if isinstance(tags, list):
-                self.tags_edit.setText(", ".join(str(tag) for tag in tags if tag))
-            else:
-                self.tags_edit.setText(str(tags or ""))
-            self.description_edit.setPlainText(
-                str(getattr(shape, "description", "") or "")
-            )
-            self.visible_checkbox.setChecked(bool(getattr(shape, "visible", True)))
-        finally:
-            self._syncing_fields = False
-        self._publish_zone_defaults()
-
     def _handle_canvas_selection(self, shapes: list) -> None:
         if self._syncing_selection:
             return
@@ -681,7 +524,6 @@ class ZonePanelWidget(QtWidgets.QWidget):
                 row = self._row_for_shape(shape)
                 if row is not None:
                     self.shape_list.setCurrentRow(row)
-                self._populate_editor_from_shape(shape)
                 self._set_status(f"Selected '{shape.label}'.")
         finally:
             self._syncing_selection = False
@@ -698,7 +540,6 @@ class ZonePanelWidget(QtWidgets.QWidget):
         self._syncing_selection = True
         try:
             self.canvas.selectShapes([shape])
-            self._populate_editor_from_shape(shape)
             self._set_status(f"Selected '{shape.label}'.")
         finally:
             self._syncing_selection = False
@@ -716,7 +557,6 @@ class ZonePanelWidget(QtWidgets.QWidget):
         self._syncing_selection = True
         try:
             self.canvas.selectShapes([shape])
-            self._populate_editor_from_shape(shape)
         finally:
             self._syncing_selection = False
 
@@ -751,21 +591,6 @@ class ZonePanelWidget(QtWidgets.QWidget):
             self.shape_list.blockSignals(False)
 
     # ------------------------------------------------------------------ #
-    # Canvas controls
-    # ------------------------------------------------------------------ #
-    def _set_create_mode(self, mode: str | None) -> None:
-        if mode is None:
-            self.canvas.setEditing(True)
-            self._set_status("Edit mode enabled.")
-            return
-        self.canvas.createMode = mode
-        self.canvas.setEditing(False)
-        self.canvas.setFocus()
-        self._set_status(f"Draw mode: {mode}.")
-
-    def _update_canvas_mode(self) -> None:
-        self.canvas.setEditing(True)
-
     def _mark_dirty(self) -> None:
         self._dirty = True
 
