@@ -134,42 +134,11 @@ class CoreInteractionMixin:
             tracker_config=self.tracker_runtime_config,
             sam3_runtime=sam3_defaults,
         )
+        advanced_params_dialog.load_window_state(
+            self,
+            optical_flow_manager=getattr(self, "optical_flow_manager", None),
+        )
         of_manager = getattr(self, "optical_flow_manager", None)
-        advanced_params_dialog.compute_optical_flow_checkbox.setChecked(
-            bool(getattr(of_manager, "compute_optical_flow", True))
-        )
-        advanced_params_dialog.optical_flow_backend = getattr(
-            of_manager, "optical_flow_backend", "farneback"
-        )
-        backend_val = str(advanced_params_dialog.optical_flow_backend).lower()
-        if "raft" in backend_val:
-            backend_idx = 2
-        elif "torch" in backend_val:
-            backend_idx = 1
-        else:
-            backend_idx = 0
-        advanced_params_dialog.optical_flow_backend_combo.setCurrentIndex(backend_idx)
-        advanced_params_dialog.follow_prediction_progress_checkbox.setChecked(
-            bool(getattr(self, "_follow_prediction_progress", True))
-        )
-        advanced_params_dialog.videomt_mask_threshold_spinbox.setValue(
-            float(getattr(self, "videomt_mask_threshold", 0.5))
-        )
-        advanced_params_dialog.videomt_logit_threshold_spinbox.setValue(
-            float(getattr(self, "videomt_logit_threshold", -2.0))
-        )
-        advanced_params_dialog.videomt_seed_iou_threshold_spinbox.setValue(
-            float(getattr(self, "videomt_seed_iou_threshold", 0.01))
-        )
-        advanced_params_dialog.videomt_window_spinbox.setValue(
-            int(getattr(self, "videomt_window", 8))
-        )
-        advanced_params_dialog.videomt_input_height_spinbox.setValue(
-            int(getattr(self, "videomt_input_height", 0))
-        )
-        advanced_params_dialog.videomt_input_width_spinbox.setValue(
-            int(getattr(self, "videomt_input_width", 0))
-        )
         if advanced_params_dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
 

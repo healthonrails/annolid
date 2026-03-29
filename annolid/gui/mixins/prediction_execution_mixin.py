@@ -18,6 +18,7 @@ from annolid.infrastructure.filesystem import (
 )
 from annolid.utils.image_adjustments import normalize_brightness_contrast_value
 from annolid.utils.logger import logger
+from annolid.utils.qt2cv import convert_cv_image_to_qt_image
 
 PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
 
@@ -72,53 +73,80 @@ class PredictionExecutionMixin:
         ).lower()
         return ("cutie" in active) and ("cotracker" not in active)
 
-    def _queue_cutie_resume_from_frame(self, stalled_frame: int, message: str) -> None:
-        if self._prediction_stop_requested:
-            return
-        if not self.video_results_folder or not self.video_loader:
-            return
-        if not self._is_cutie_tracking_model():
-            return
+    @staticmethod
+    def _is_cutie_missing_instance_message(message: str | None) -> bool:
+        text = str(message or "").lower()
+        return "missing instance" in text or "missing or occluded" in text
 
+    def _show_frame_on_canvas(self, frame_index: int) -> None:
+        """Jump to a frame and keep the canvas view aligned to it."""
         try:
-            fallback = max(0, int(stalled_frame))
+            target = max(0, int(frame_index))
         except Exception:
-            fallback = max(0, int(self.frame_number or 0))
+            return
 
-        latest_available = fallback
         try:
-            latest_available = max(
-                fallback,
-                int(self._max_predicted_frame_index(Path(self.video_results_folder))),
+            self._set_active_view("canvas")
+        except Exception:
+            pass
+
+        rendered = False
+        video_loader = getattr(self, "video_loader", None)
+        if video_loader is not None:
+            try:
+                frame_rgb = video_loader.load_frame(target)
+                qimage = convert_cv_image_to_qt_image(frame_rgb)
+                frame_path = self._frame_image_path(target)
+                self.frame_number = target
+                if getattr(self, "timeline_panel", None) is not None:
+                    self.timeline_panel.set_current_frame(target)
+                self._update_audio_playhead(target)
+                self.image_to_canvas(qimage, frame_path, target)
+                rendered = True
+            except Exception:
+                logger.debug(
+                    "Failed to render frame %s synchronously; falling back to queued load.",
+                    target,
+                    exc_info=True,
+                )
+
+        if not rendered:
+            try:
+                self.set_frame_number(target)
+            except Exception:
+                logger.debug("Failed to move to frame %s.", target, exc_info=True)
+                return
+
+        try:
+            caption_widget = getattr(self, "caption_widget", None)
+            if caption_widget is not None and getattr(self, "filename", None):
+                caption_widget.set_image_path(self.filename)
+        except Exception:
+            logger.debug(
+                "Failed to sync caption widget for frame %s.", target, exc_info=True
             )
+        try:
+            self._update_embedding_query_frame()
         except Exception:
-            latest_available = fallback
+            logger.debug(
+                "Failed to refresh embedding query frame for frame %s.",
+                target,
+                exc_info=True,
+            )
 
-        question = self.tr(
-            "Tracking stalled near frame {stalled}.\n\n"
-            "{details}\n\n"
-            "Resume by saving frame {seed} as a new seed and continue from there?"
-        ).format(
-            stalled=int(stalled_frame),
-            details=str(message or "").strip(),
-            seed=int(latest_available),
-        )
-        answer = QtWidgets.QMessageBox.question(
-            self,
-            self.tr("Resume Tracking"),
-            question,
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.Yes,
-        )
-        if answer != QtWidgets.QMessageBox.Yes:
+        seekbar = getattr(self, "seekbar", None)
+        if seekbar is None:
             return
-
-        self._pending_prediction_resume_frame = int(latest_available)
-        logger.info(
-            "Queued CUTIE resume from frame %s after stall at frame %s.",
-            int(latest_available),
-            int(stalled_frame),
-        )
+        try:
+            seekbar.blockSignals(True)
+            seekbar.setValue(target)
+        except Exception:
+            logger.debug("Failed to sync seekbar to frame %s.", target, exc_info=True)
+        finally:
+            try:
+                seekbar.blockSignals(False)
+            except Exception:
+                pass
 
     def _materialize_prediction_seed(self, frame_index: int) -> bool:
         if not self.video_results_folder or not self.video_loader:
@@ -571,6 +599,7 @@ class PredictionExecutionMixin:
                     t_max_value=self.t_max_value,
                     use_cpu_only=self.use_cpu_only,
                     auto_recovery_missing_instances=self.auto_recovery_missing_instances,
+                    automatic_pause_enabled=self.automatic_pause_enabled,
                     save_video_with_color_mask=self.save_video_with_color_mask,
                     videomt_mask_threshold=float(
                         getattr(self, "videomt_mask_threshold", 0.5)
@@ -634,10 +663,7 @@ class PredictionExecutionMixin:
                     pass
 
             self.seg_pred_thread = QtCore.QThread(self)
-            stop_when_lost_tracking_instance = (
-                self.stepSizeWidget.occclusion_checkbox.isChecked()
-                or self.automatic_pause_enabled
-            )
+            has_occlusion = self.stepSizeWidget.occclusion_checkbox.isChecked()
             inference_step = 1
             inference_start_frame = max(0, int(self.frame_number or 0) + 1)
             inference_end_frame = None
@@ -658,7 +684,7 @@ class PredictionExecutionMixin:
             if self.video_results_folder and not has_forced_start:
                 try:
                     results_folder = Path(self.video_results_folder)
-                    # Refresh existing predicted marks before a resumed run so users
+                    # Refresh existing predicted marks before a restarted run so users
                     # can see completed sections immediately.
                     self._scan_prediction_folder(str(results_folder))
                     manual_seed_max = -1
@@ -679,7 +705,7 @@ class PredictionExecutionMixin:
                     )
                     if self._is_cutie_tracking_model(model_name):
                         # CUTIE should not scan/predict before the first manual seed.
-                        # Resume from existing predictions when available, otherwise
+                        # Restart from existing predictions when available, otherwise
                         # continue after the latest manual seed (multi-seed safe).
                         inference_start_frame = (
                             self._resolve_cutie_start_frame_from_seed_state(
@@ -722,37 +748,35 @@ class PredictionExecutionMixin:
                 )
                 return
 
-            # CUTIE resume robustness:
+            # CUTIE restart robustness:
             # if we plan to continue from frame N, ensure frame N-1 is a real
             # seed (PNG+JSON). Otherwise CUTIE may fall back to an older seed.
             if (
                 self._is_cutie_tracking_model(model_name)
                 and int(inference_start_frame) > 1
             ):
-                resume_seed_frame = int(inference_start_frame) - 1
-                if not self._has_cutie_seed_frame(resume_seed_frame):
+                restart_seed_frame = int(inference_start_frame) - 1
+                if not self._has_cutie_seed_frame(restart_seed_frame):
                     # Try to auto-materialize the seed from stored predictions.
-                    _ = self._materialize_prediction_seed(resume_seed_frame)
-                if not self._has_cutie_seed_frame(resume_seed_frame):
+                    _ = self._materialize_prediction_seed(restart_seed_frame)
+                if not self._has_cutie_seed_frame(restart_seed_frame):
                     answer = QtWidgets.QMessageBox.question(
                         self,
-                        self.tr("Missing Resume Seed"),
+                        self.tr("Missing Restart Seed"),
                         self.tr(
-                            "To resume from frame {start}, CUTIE needs a seed at frame {seed}, "
+                            "To restart from frame {start}, CUTIE needs a seed at frame {seed}, "
                             "but only older seeds are available.\n\n"
                             "Do you want to jump to frame {seed} now, review/edit, save, and continue?"
                         ).format(
                             start=int(inference_start_frame),
-                            seed=int(resume_seed_frame),
+                            seed=int(restart_seed_frame),
                         ),
                         QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
                         QtWidgets.QMessageBox.Yes,
                     )
                     if answer == QtWidgets.QMessageBox.Yes:
                         try:
-                            self.set_frame_number(int(resume_seed_frame))
-                            if self.seekbar is not None:
-                                self.seekbar.setValue(int(resume_seed_frame))
+                            self._show_frame_on_canvas(int(restart_seed_frame))
                         except Exception:
                             pass
                         return
@@ -881,7 +905,7 @@ class PredictionExecutionMixin:
                         self._is_cotracker_model(model_name, model_weight)
                         or self._is_cowtracker_model(model_name, model_weight)
                     ),
-                    has_occlusion=stop_when_lost_tracking_instance,
+                    has_occlusion=has_occlusion,
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)
                 watch_start_frame = int(inference_start_frame)
@@ -939,14 +963,27 @@ class PredictionExecutionMixin:
             stalled_frame = int(float(current_frame_index))
         except Exception:
             stalled_frame = int(self.frame_number or 0)
-        if "missing instance(s)" in message:
+        if PredictionExecutionMixin._is_cutie_missing_instance_message(message):
             if self._is_cutie_tracking_model():
-                try:
-                    self._queue_cutie_resume_from_frame(stalled_frame, str(message))
-                except Exception:
-                    logger.debug(
-                        "Failed to queue CUTIE resume workflow.",
-                        exc_info=True,
+                if bool(getattr(self, "automatic_pause_enabled", False)):
+                    try:
+                        self._pending_prediction_restart_frame = None
+                        self._pending_prediction_pause_frame = int(stalled_frame)
+                    except Exception:
+                        pass
+                    QtWidgets.QMessageBox.information(
+                        self,
+                        "Prediction paused",
+                        (
+                            f"{message}\n\n"
+                            f"Prediction paused at frame {stalled_frame} so you can "
+                            "correct the missing instance(s) before continuing."
+                        ),
+                    )
+                else:
+                    logger.info(
+                        "CUTIE missing-instance stop reported at frame %s while automatic pause is disabled; leaving occlusion handling unchanged.",
+                        stalled_frame,
                     )
             else:
                 QtWidgets.QMessageBox.information(self, "Stop early", message)
@@ -958,8 +995,9 @@ class PredictionExecutionMixin:
         self.stop_prediction_flag = False
 
     def predict_is_ready(self, message):
-        pending_resume_frame = getattr(self, "_pending_prediction_resume_frame", None)
-        queue_point_tracker_resume = False
+        pending_restart_frame = getattr(self, "_pending_prediction_restart_frame", None)
+        pending_pause_frame = getattr(self, "_pending_prediction_pause_frame", None)
+        queue_point_tracker_restart = False
         self.stepSizeWidget.predict_button.setText("Pred")
         self.stepSizeWidget.predict_button.setStyleSheet(
             "background-color: green; color: white;"
@@ -985,9 +1023,10 @@ class PredictionExecutionMixin:
             elif message is not None:
                 message_text = str(message)
 
-            if (
-                message_text.startswith("Stopped")
-                or "missing instance(s)" in message_text
+            if message_text.startswith(
+                "Stopped"
+            ) or PredictionExecutionMixin._is_cutie_missing_instance_message(
+                message_text
             ):
                 stop_from_message = True
 
@@ -1069,33 +1108,42 @@ class PredictionExecutionMixin:
                                     self.frame_number = int(max_predicted)
                                 except Exception:
                                     pass
-                                queue_point_tracker_resume = True
+                                queue_point_tracker_restart = True
                         logger.info("Prediction has not reached target end frame yet.")
         except RuntimeError as e:
             print(f"RuntimeError occurred: {e}")
         self.reset_predict_button()
         self._finalize_prediction_progress("Manual prediction worker finished.")
-        if queue_point_tracker_resume and not self._prediction_stop_requested:
+        if queue_point_tracker_restart and not self._prediction_stop_requested:
             chunk_to_frame = int(getattr(self, "_prediction_chunk_to_frame", 60))
             QtCore.QTimer.singleShot(
                 0, lambda: self.predict_from_next_frame(to_frame=chunk_to_frame)
             )
             self._prediction_stop_requested = False
             return
-        if pending_resume_frame is not None:
+        if pending_pause_frame is not None:
             try:
-                self._pending_prediction_resume_frame = None
+                self._pending_prediction_pause_frame = None
             except Exception:
                 pass
-            should_resume = (
+            if self._is_cutie_tracking_model() and bool(
+                getattr(self, "automatic_pause_enabled", False)
+            ):
+                self._show_frame_on_canvas(int(pending_pause_frame))
+        if pending_restart_frame is not None:
+            try:
+                self._pending_prediction_restart_frame = None
+            except Exception:
+                pass
+            should_restart = (
                 (not self._prediction_stop_requested)
                 and self.stop_prediction_flag is False
                 and self._is_cutie_tracking_model()
             )
-            if should_resume:
-                if self._materialize_prediction_seed(int(pending_resume_frame)):
+            if should_restart:
+                if self._materialize_prediction_seed(int(pending_restart_frame)):
                     try:
-                        self.frame_number = int(pending_resume_frame)
+                        self.frame_number = int(pending_restart_frame)
                     except Exception:
                         pass
                     QtCore.QTimer.singleShot(
@@ -1104,11 +1152,11 @@ class PredictionExecutionMixin:
                 else:
                     QtWidgets.QMessageBox.warning(
                         self,
-                        self.tr("Resume Failed"),
+                        self.tr("Restart Failed"),
                         self.tr(
                             "Could not save a seed at frame {frame}. "
                             "Please save that frame manually, then run prediction again."
-                        ).format(frame=int(pending_resume_frame)),
+                        ).format(frame=int(pending_restart_frame)),
                     )
         self._prediction_stop_requested = False
         self._skip_tracking_csv_overwrite_for_keypoint_round = False

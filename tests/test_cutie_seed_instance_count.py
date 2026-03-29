@@ -511,6 +511,209 @@ def test_process_segment_does_not_backfill_missing_seed_instance_by_default(
     assert saved_masks["notes"] == {}
 
 
+def test_process_segment_automatic_pause_stops_on_missing_instances(
+    monkeypatch,
+) -> None:
+    class _DummyInferenceCore:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def step(self, *_args, **_kwargs):
+            return np.array([[1, 0], [0, 0]], dtype=np.int32)
+
+    class _DummyCap:
+        def __init__(self):
+            self._done = False
+            self._pos = 0
+
+        def get(self, _prop):
+            return self._pos
+
+        def set(self, _prop, value):
+            self._pos = int(value)
+
+        def isOpened(self):
+            return not self._done
+
+        def read(self):
+            if self._done:
+                return False, None
+            self._done = True
+            frame = np.zeros((2, 2, 3), dtype=np.uint8)
+            return True, frame
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.cutie = object()
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor.video_folder = Path("clip")
+    processor.label_registry = {"_background_": 0, "mouse": 1, "teaball": 2}
+    processor._global_label_names = {}
+    processor.compute_optical_flow = False
+    processor.auto_missing_instance_recovery = False
+    processor.auto_fill_missing_instances = False
+    processor.automatic_pause_enabled = True
+    processor.continue_on_missing_instances = True
+    processor.debug = False
+    processor._optical_flow_kwargs = {}
+    processor.optical_flow_backend = "farneback"
+    processor._recent_instance_masks = {}
+    processor._recent_instance_mask_frames = {}
+
+    saved_masks = {}
+    processor._should_stop = lambda _worker=None: False
+    processor.commit_masks_into_permanent_memory = lambda *_args, **_kwargs: {
+        "_background_": 0,
+        "mouse": 1,
+        "teaball": 2,
+    }
+    processor._build_object_mask_tensor = lambda _mask: (
+        torch.zeros((2, 2, 2), dtype=torch.float32),
+        [1, 2],
+    )
+    processor._register_active_objects = lambda _ids: None
+    processor._save_annotation_with_notes = (
+        lambda _filename, mask_dict, _shape, shape_notes=None: saved_masks.update(
+            {
+                "labels": set(mask_dict.keys()),
+                "notes": dict(shape_notes or {}),
+            }
+        )
+    )
+    processor._update_recent_instance_masks = lambda *_args, **_kwargs: None
+
+    monkeypatch.setattr(cutie_predict, "InferenceCore", _DummyInferenceCore)
+    monkeypatch.setattr(
+        cutie_predict, "image_to_torch", lambda frame, device=None: frame
+    )
+    monkeypatch.setattr(cutie_predict, "torch_prob_to_numpy_mask", lambda pred: pred)
+
+    segment = SeedSegment(
+        seed=_seed(0),
+        start_frame=0,
+        end_frame=0,
+        mask=np.array([[1, 0], [0, 2]], dtype=np.int32),
+        labels_map={"_background_": 0, "mouse": 1, "teaball": 2},
+        active_labels=["mouse", "teaball"],
+    )
+
+    message, should_halt = processor._process_segment(
+        cap=_DummyCap(),
+        segment=segment,
+        end_frame=0,
+        fps=30.0,
+        has_occlusion=True,
+    )
+
+    assert should_halt is True
+    assert (
+        message
+        == "There is 1 missing instance in the current frame (0).\n\nMissing or occluded: teaball#0"
+    )
+    assert saved_masks["labels"] == {"mouse"}
+    assert saved_masks["notes"] == {}
+
+
+def test_process_segment_keeps_occlusion_mode_when_automatic_pause_disabled(
+    monkeypatch,
+) -> None:
+    class _DummyInferenceCore:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def step(self, *_args, **_kwargs):
+            return np.array([[1, 0], [0, 0]], dtype=np.int32)
+
+    class _DummyCap:
+        def __init__(self):
+            self._done = False
+            self._pos = 0
+
+        def get(self, _prop):
+            return self._pos
+
+        def set(self, _prop, value):
+            self._pos = int(value)
+
+        def isOpened(self):
+            return not self._done
+
+        def read(self):
+            if self._done:
+                return False, None
+            self._done = True
+            frame = np.zeros((2, 2, 3), dtype=np.uint8)
+            return True, frame
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.cutie = object()
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor.video_folder = Path("clip")
+    processor.label_registry = {"_background_": 0, "mouse": 1, "teaball": 2}
+    processor._global_label_names = {}
+    processor.compute_optical_flow = False
+    processor.auto_missing_instance_recovery = False
+    processor.auto_fill_missing_instances = False
+    processor.automatic_pause_enabled = False
+    processor.continue_on_missing_instances = False
+    processor.debug = False
+    processor._optical_flow_kwargs = {}
+    processor.optical_flow_backend = "farneback"
+    processor._recent_instance_masks = {}
+    processor._recent_instance_mask_frames = {}
+
+    saved_masks = {}
+    processor._should_stop = lambda _worker=None: False
+    processor.commit_masks_into_permanent_memory = lambda *_args, **_kwargs: {
+        "_background_": 0,
+        "mouse": 1,
+        "teaball": 2,
+    }
+    processor._build_object_mask_tensor = lambda _mask: (
+        torch.zeros((2, 2, 2), dtype=torch.float32),
+        [1, 2],
+    )
+    processor._register_active_objects = lambda _ids: None
+    processor._save_annotation_with_notes = (
+        lambda _filename, mask_dict, _shape, shape_notes=None: saved_masks.update(
+            {
+                "labels": set(mask_dict.keys()),
+                "notes": dict(shape_notes or {}),
+            }
+        )
+    )
+    processor._update_recent_instance_masks = lambda *_args, **_kwargs: None
+
+    monkeypatch.setattr(cutie_predict, "InferenceCore", _DummyInferenceCore)
+    monkeypatch.setattr(
+        cutie_predict, "image_to_torch", lambda frame, device=None: frame
+    )
+    monkeypatch.setattr(cutie_predict, "torch_prob_to_numpy_mask", lambda pred: pred)
+
+    segment = SeedSegment(
+        seed=_seed(0),
+        start_frame=0,
+        end_frame=0,
+        mask=np.array([[1, 0], [0, 2]], dtype=np.int32),
+        labels_map={"_background_": 0, "mouse": 1, "teaball": 2},
+        active_labels=["mouse", "teaball"],
+    )
+
+    message, should_halt = processor._process_segment(
+        cap=_DummyCap(),
+        segment=segment,
+        end_frame=0,
+        fps=30.0,
+        has_occlusion=True,
+    )
+
+    assert should_halt is False
+    assert message == "Stop at frame:\n#0"
+    assert saved_masks["labels"] == {"mouse"}
+    assert saved_masks["notes"] == {}
+
+
 def test_process_segment_suppresses_repetitive_missing_instance_logs(
     monkeypatch,
 ) -> None:

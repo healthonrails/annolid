@@ -1,6 +1,7 @@
 from typing import Dict, Optional
 
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QGuiApplication
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -10,6 +11,8 @@ from qtpy.QtWidgets import (
     QFormLayout,
     QLabel,
     QLineEdit,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTabWidget,
     QWidget,
@@ -108,9 +111,11 @@ class AdvancedParametersDialog(QDialog):
 
         tabs = QTabWidget()
         tabs.setTabBarAutoHide(False)
-        tabs.addTab(self._build_segmentation_tab(), "Segmentation")
-        tabs.addTab(self._build_tracker_tab(), "Tracker")
-        tabs.addTab(self._build_sam3_tab(), "SAM3 + Agent")
+        tabs.addTab(
+            self._wrap_scrollable(self._build_segmentation_tab()), "Segmentation"
+        )
+        tabs.addTab(self._wrap_scrollable(self._build_tracker_tab()), "Tracker")
+        tabs.addTab(self._wrap_scrollable(self._build_sam3_tab()), "SAM3 + Agent")
 
         layout.addWidget(intro_label)
         layout.addWidget(tabs)
@@ -121,6 +126,83 @@ class AdvancedParametersDialog(QDialog):
         layout.addWidget(button_box)
 
         self.setLayout(layout)
+        self._fit_initial_geometry()
+
+    def load_window_state(self, window, optical_flow_manager=None) -> None:
+        """Seed widgets from the current window state before showing the dialog."""
+        self.epsilon_value = float(getattr(window, "epsilon_for_polygon", 2.0))
+        self.t_max_value = int(getattr(window, "t_max_value", 5))
+        self.automatic_pause_enabled = bool(
+            getattr(window, "automatic_pause_enabled", False)
+        )
+        self.cpu_only_enabled = bool(getattr(window, "use_cpu_only", False))
+        self.save_video_with_color_mask = bool(
+            getattr(window, "save_video_with_color_mask", False)
+        )
+        self.auto_recovery_missing_instances = bool(
+            getattr(window, "auto_recovery_missing_instances", False)
+        )
+        self.compute_optical_flow = bool(
+            getattr(
+                optical_flow_manager
+                if optical_flow_manager is not None
+                else getattr(window, "optical_flow_manager", None),
+                "compute_optical_flow",
+                True,
+            )
+        )
+        self.follow_prediction_progress = bool(
+            getattr(window, "_follow_prediction_progress", True)
+        )
+        self.optical_flow_backend = str(
+            getattr(
+                optical_flow_manager
+                if optical_flow_manager is not None
+                else getattr(window, "optical_flow_manager", None),
+                "optical_flow_backend",
+                "farneback",
+            )
+        )
+
+        backend_val = str(self.optical_flow_backend).lower()
+        if "raft" in backend_val:
+            backend_idx = 2
+        elif "torch" in backend_val:
+            backend_idx = 1
+        else:
+            backend_idx = 0
+
+        self.epsilon_spinbox.setValue(self.epsilon_value)
+        self.t_max_spinbox.setValue(self.t_max_value)
+        self.automatic_pause_checkbox.setChecked(self.automatic_pause_enabled)
+        self.cpu_only_checkbox.setChecked(self.cpu_only_enabled)
+        self.save_video_with_color_mask_checkbox.setChecked(
+            self.save_video_with_color_mask
+        )
+        self.auto_recovery_missing_instances_checkbox.setChecked(
+            self.auto_recovery_missing_instances
+        )
+        self.compute_optical_flow_checkbox.setChecked(self.compute_optical_flow)
+        self.optical_flow_backend_combo.setCurrentIndex(backend_idx)
+        self.follow_prediction_progress_checkbox.setChecked(
+            self.follow_prediction_progress
+        )
+        self.videomt_mask_threshold_spinbox.setValue(
+            float(getattr(window, "videomt_mask_threshold", 0.5))
+        )
+        self.videomt_logit_threshold_spinbox.setValue(
+            float(getattr(window, "videomt_logit_threshold", -2.0))
+        )
+        self.videomt_seed_iou_threshold_spinbox.setValue(
+            float(getattr(window, "videomt_seed_iou_threshold", 0.01))
+        )
+        self.videomt_window_spinbox.setValue(int(getattr(window, "videomt_window", 8)))
+        self.videomt_input_height_spinbox.setValue(
+            int(getattr(window, "videomt_input_height", 0))
+        )
+        self.videomt_input_width_spinbox.setValue(
+            int(getattr(window, "videomt_input_width", 0))
+        )
 
     def _build_segmentation_tab(self) -> QWidget:
         tab = QWidget()
@@ -156,7 +238,7 @@ class AdvancedParametersDialog(QDialog):
         self.automatic_pause_checkbox = QCheckBox("Automatic Pause on Error Detection")
         self.automatic_pause_checkbox.setChecked(self.automatic_pause_enabled)
         self.automatic_pause_checkbox.setToolTip(
-            "Pause processing automatically if the app detects unexpected errors."
+            "Pause CUTIE tracking when missing instances are detected so you can review and correct the frame before continuing."
         )
 
         self.cpu_only_checkbox = QCheckBox("Use CPU Only")
@@ -672,6 +754,28 @@ class AdvancedParametersDialog(QDialog):
         self.motion_prior_flow_relief_spinbox.setValue(
             float(cfg.motion_prior_flow_relief)
         )
+
+    def _wrap_scrollable(self, widget: QWidget) -> QScrollArea:
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        scroll_area.setWidget(widget)
+        return scroll_area
+
+    def _fit_initial_geometry(self) -> None:
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(960, 720)
+            return
+
+        available = screen.availableGeometry()
+        max_width = max(1, available.width() - 80)
+        max_height = max(1, available.height() - 80)
+        width = min(max(720, int(available.width() * 0.72)), max_width)
+        height = min(max(560, int(available.height() * 0.82)), max_height)
+        self.resize(width, height)
 
     def _build_sam3_tab(self) -> QWidget:
         """Controls specific to SAM3 tracking and agent seeding."""

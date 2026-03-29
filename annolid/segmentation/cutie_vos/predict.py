@@ -160,6 +160,9 @@ class CutieCoreVideoProcessor:
         self.auto_fill_missing_instances = bool(
             kwargs.get("auto_fill_missing_instances", False)
         )
+        self.automatic_pause_enabled = bool(
+            kwargs.get("automatic_pause_enabled", False)
+        )
         self.continue_on_missing_instances = bool(
             kwargs.get("continue_on_missing_instances", True)
         )
@@ -2047,6 +2050,19 @@ class CutieCoreVideoProcessor:
                 notes[key] = f"filled_from_previous_available_instance_mask(frame={prev_frame})"
         return recovered, notes
 
+    def _should_pause_for_missing_instances(
+        self,
+        missing_instances: Set[str],
+        *,
+        has_occlusion: bool,
+    ) -> bool:
+        """Return True when a missing-instance frame should stop prediction."""
+        if not missing_instances:
+            return False
+        if bool(getattr(self, "automatic_pause_enabled", False)):
+            return True
+        return (not has_occlusion) and (not self.continue_on_missing_instances)
+
     def shapes_to_mask(self, label_json_file, image_size):
         """
         Convert label JSON file containing shapes to a binary mask.
@@ -2392,7 +2408,7 @@ class CutieCoreVideoProcessor:
             return "No valid segments found for CUTIE processing."
         self._last_mask_area_ratio = {}
 
-        # Refresh cached labeled frames so resume logic sees the latest edits
+        # Refresh cached labeled frames so restart logic sees the latest edits
         self._cached_labeled_frames = None
         labeled_frames = self._collect_labeled_frame_indices()
         labeled_intervals = self._build_frame_intervals(labeled_frames)
@@ -2914,11 +2930,13 @@ class CutieCoreVideoProcessor:
                                     ),
                                 )
 
-                            if (
-                                missing_instances
-                                and not has_occlusion
-                                and not self.continue_on_missing_instances
-                            ):
+                            should_pause_for_missing_instances = bool(
+                                self._should_pause_for_missing_instances(
+                                    missing_instances,
+                                    has_occlusion=has_occlusion,
+                                )
+                            )
+                            if should_pause_for_missing_instances:
                                 self._save_annotation_with_notes(
                                     filename,
                                     mask_dict,
