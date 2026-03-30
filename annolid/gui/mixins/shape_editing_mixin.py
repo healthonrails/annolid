@@ -93,6 +93,8 @@ class ShapeEditingMixin:
                 flags = dict(zone_defaults.get("flags") or {})
                 group_id = zone_defaults.get("group_id", None)
                 description = str(zone_defaults.get("description") or "")
+            if str(text or "").strip().lower() == "chamber_1":
+                text = ""
             show_popup = (
                 bool(zone_defaults) or self._config["display_label_popup"] or not text
             )

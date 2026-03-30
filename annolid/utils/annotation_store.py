@@ -22,6 +22,130 @@ class AnnotationStore:
     def __init__(self, store_path: Path):
         self.store_path = store_path
 
+    def _discover_manual_seed_frames(self) -> Set[int]:
+        seeds: Set[int] = set()
+        folder = self.store_path.parent
+        if not folder.exists() or not folder.is_dir():
+            return seeds
+
+        stem_prefix = f"{folder.name}_".lower()
+        for png_path in folder.glob("*.png"):
+            stem = png_path.stem.lower()
+            if not stem.startswith(stem_prefix):
+                continue
+            suffix = stem[len(stem_prefix) :]
+            if len(suffix) != 9 or not suffix.isdigit():
+                continue
+            if png_path.with_suffix(".json").exists():
+                seeds.add(int(suffix))
+        return seeds
+
+    def _legacy_frame_for_index(self, record_index: int) -> Optional[int]:
+        try:
+            target_index = int(record_index)
+        except (TypeError, ValueError):
+            return None
+        if target_index < 0:
+            return None
+
+        manual_seeds = self._discover_manual_seed_frames()
+        if not manual_seeds:
+            return target_index
+
+        # Legacy stores without explicit frame metadata only contain predicted
+        # frames. Map row N onto the Nth non-manual frame so manual seed frames
+        # are never mistaken for store-backed predictions.
+        seen = -1
+        frame = -1
+        while seen < target_index:
+            frame += 1
+            if frame in manual_seeds:
+                continue
+            seen += 1
+        return frame
+
+    @staticmethod
+    def _explicit_frame_for_record(record: Dict[str, Any]) -> Optional[int]:
+        frame_value = record.get("frame")
+        try:
+            return int(frame_value)
+        except (TypeError, ValueError):
+            return None
+
+    def _frame_key_for_record(
+        self, record: Dict[str, Any], fallback_index: Optional[int] = None
+    ) -> Optional[int]:
+        explicit_frame = self._explicit_frame_for_record(record)
+        if explicit_frame is not None:
+            return explicit_frame
+
+        image_path = record.get("imagePath")
+        if image_path:
+            inferred = AnnotationStore.frame_number_from_path(image_path)
+            if inferred is not None:
+                return inferred
+
+        if fallback_index is None:
+            return None
+        return self._legacy_frame_for_index(fallback_index)
+
+    def _ensure_explicit_frame_metadata(self) -> None:
+        if not self.store_path.exists():
+            return
+
+        try:
+            raw_lines = self.store_path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            raise AnnotationStoreError(
+                f"Failed to read annotation store {self.store_path}: {exc}"
+            ) from exc
+
+        rewritten_lines = []
+        needs_rewrite = False
+        record_index = 0
+        for raw_line in raw_lines:
+            stripped = raw_line.strip()
+            if not stripped:
+                rewritten_lines.append(raw_line)
+                continue
+            try:
+                record = json.loads(stripped)
+            except json.JSONDecodeError:
+                rewritten_lines.append(raw_line)
+                continue
+
+            explicit_frame = self._explicit_frame_for_record(record)
+            if explicit_frame is None:
+                inferred_frame = self._frame_key_for_record(record, record_index)
+                if inferred_frame is None:
+                    raise AnnotationStoreError(
+                        f"Legacy annotation store row {record_index} in {self.store_path} is missing frame metadata and cannot be inferred."
+                    )
+                record = dict(record)
+                record["frame"] = int(inferred_frame)
+                needs_rewrite = True
+            rewritten_lines.append(
+                json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+            )
+            record_index += 1
+
+        if not needs_rewrite:
+            return
+
+        temp_path = self.store_path.with_suffix(self.store_path.suffix + ".tmp")
+        try:
+            with temp_path.open("w", encoding="utf-8") as fh:
+                for line in rewritten_lines:
+                    fh.write(line)
+                    fh.write("\n")
+            temp_path.replace(self.store_path)
+        except OSError as exc:
+            raise AnnotationStoreError(
+                f"Failed to migrate annotation store {self.store_path}: {exc}"
+            ) from exc
+
+        AnnotationStore._CACHE.pop(self.store_path, None)
+
     @classmethod
     def for_frame_path(
         cls, frame_path: Union[str, Path], store_name: Optional[str] = None
@@ -82,10 +206,93 @@ class AnnotationStore:
                     "records": records,
                 }
 
+    def update_frame(
+        self,
+        frame: int,
+        record: Dict[str, Any],
+    ) -> None:
+        """Replace the stored record for a frame, preserving line order."""
+        if frame is None:
+            raise AnnotationStoreError("Frame is required to update a record.")
+        if not self.store_path.exists():
+            raise AnnotationStoreError(f"Annotation store not found: {self.store_path}")
+
+        try:
+            frame_key = int(frame)
+        except (TypeError, ValueError) as exc:
+            raise AnnotationStoreError(f"Invalid frame number: {frame!r}") from exc
+
+        lines_to_keep = []
+        replaced = False
+        try:
+            self._ensure_explicit_frame_metadata()
+            with self.store_path.open("r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    line = raw_line.rstrip("\n")
+                    stripped = line.strip()
+                    if not stripped:
+                        lines_to_keep.append(
+                            raw_line if raw_line.endswith("\n") else f"{raw_line}\n"
+                        )
+                        continue
+
+                    try:
+                        payload = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        lines_to_keep.append(
+                            raw_line if raw_line.endswith("\n") else f"{raw_line}\n"
+                        )
+                        continue
+
+                    payload_frame = self._explicit_frame_for_record(payload)
+                    if payload_frame is None:
+                        raise AnnotationStoreError(
+                            f"Frame metadata missing while updating {self.store_path}."
+                        )
+
+                    if payload_frame == frame_key:
+                        lines_to_keep.append(
+                            json.dumps(
+                                record, ensure_ascii=False, separators=(",", ":")
+                            )
+                            + "\n"
+                        )
+                        replaced = True
+                    else:
+                        lines_to_keep.append(
+                            raw_line if raw_line.endswith("\n") else f"{raw_line}\n"
+                        )
+        except OSError as exc:
+            raise AnnotationStoreError(
+                f"Failed to read annotation store {self.store_path}: {exc}"
+            ) from exc
+
+        if not replaced:
+            raise AnnotationStoreError(
+                f"Frame {frame_key} not present in store {self.store_path}"
+            )
+
+        temp_path = self.store_path.with_suffix(self.store_path.suffix + ".tmp")
+        try:
+            with temp_path.open("w", encoding="utf-8") as fh:
+                fh.writelines(lines_to_keep)
+            temp_path.replace(self.store_path)
+        except OSError as exc:
+            raise AnnotationStoreError(
+                f"Failed to rewrite annotation store {self.store_path}: {exc}"
+            ) from exc
+
+        AnnotationStore._CACHE.pop(self.store_path, None)
+        self._load_records(force_reload=True)
+
     def get_frame(self, frame: int) -> Optional[Dict[str, Any]]:
         """Return the latest record for a frame if present."""
         records = self._load_records()
-        return records.get(frame)
+        try:
+            frame_key = int(frame)
+        except (TypeError, ValueError):
+            frame_key = frame
+        return records.get(frame_key)
 
     def iter_frames(self) -> Iterable[int]:
         records = self._load_records()
@@ -95,6 +302,7 @@ class AnnotationStore:
         if not self.store_path.exists():
             return {}
 
+        self._ensure_explicit_frame_metadata()
         stat = self.store_path.stat()
         cached = AnnotationStore._CACHE.get(self.store_path)
         if (
@@ -118,10 +326,14 @@ class AnnotationStore:
                         "Skipping invalid annotation store line in %s", self.store_path
                     )
                     continue
-                frame = data.get("frame")
+                frame = self._explicit_frame_for_record(data)
                 if frame is None:
+                    logger.warning(
+                        "Skipping annotation store row without explicit frame in %s",
+                        self.store_path,
+                    )
                     continue
-                records[frame] = data
+                records[int(frame)] = data
 
         AnnotationStore._CACHE[self.store_path] = {
             "mtime": stat.st_mtime,
@@ -160,6 +372,7 @@ class AnnotationStore:
         removed = 0
 
         try:
+            self._ensure_explicit_frame_metadata()
             with self.store_path.open("r", encoding="utf-8") as fh:
                 for raw_line in fh:
                     line = raw_line.rstrip("\n")
@@ -257,6 +470,7 @@ class AnnotationStore:
         removed = 0
 
         try:
+            self._ensure_explicit_frame_metadata()
             with self.store_path.open("r", encoding="utf-8") as fh:
                 for raw_line in fh:
                     line = raw_line.rstrip("\n")

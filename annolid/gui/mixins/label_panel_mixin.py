@@ -46,6 +46,18 @@ class LabelPanelMixin:
             return manager
         return getattr(self, "_pdf_manager", None)
 
+    def _select_shape_row_in_propagation_dialog(self, dialog, selected_shape) -> bool:
+        """Select the exact canvas shape in the propagation dialog."""
+        shape_list = getattr(dialog, "shape_list", None)
+        if shape_list is None or selected_shape is None:
+            return False
+        for i in range(shape_list.count()):
+            item = shape_list.item(i)
+            if item.data(QtCore.Qt.UserRole) is selected_shape:
+                shape_list.setCurrentRow(i)
+                return True
+        return False
+
     def _rebuild_unique_label_list(self) -> None:
         selected = set()
         try:
@@ -481,11 +493,7 @@ class LabelPanelMixin:
             self.canvas, self, current_frame, max_frame, parent=self
         )
 
-        for i in range(dialog.shape_list.count()):
-            item = dialog.shape_list.item(i)
-            if item.data(QtCore.Qt.UserRole) == selected_shape:
-                dialog.shape_list.setCurrentRow(i)
-                break
+        self._select_shape_row_in_propagation_dialog(dialog, selected_shape)
 
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             self.statusBar().showMessage("Shape propagation completed.")

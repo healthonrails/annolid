@@ -1,3 +1,5 @@
+import json
+
 from annolid.utils.annotation_store import AnnotationStore
 
 
@@ -38,3 +40,92 @@ def test_remove_frames_after_respects_protected_frames(tmp_path):
     removed = store.remove_frames_after(3, protected_frames={5})
     assert removed == 2  # frames 4 and 6 removed, 5 preserved
     assert set(store.iter_frames()) == {0, 1, 2, 3, 5}
+
+
+def test_legacy_store_rows_skip_manual_seed_frames(tmp_path):
+    results_dir = tmp_path / "mouse"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    (results_dir / "mouse_000000000.png").write_bytes(b"")
+    (results_dir / "mouse_000000000.json").write_text(
+        json.dumps({"version": "annolid", "shapes": []}),
+        encoding="utf-8",
+    )
+    store = AnnotationStore(results_dir / "mouse_annotations.ndjson")
+    store.store_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {"shapes": [{"label": "box"}], "imageHeight": 1, "imageWidth": 1}
+                ),
+                json.dumps(
+                    {"shapes": [{"label": "box"}], "imageHeight": 1, "imageWidth": 1}
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert set(store.iter_frames()) == {1, 2}
+    assert store.get_frame(0) is None
+    assert store.get_frame(1)["shapes"][0]["label"] == "box"
+    assert store.get_frame(2)["shapes"][0]["label"] == "box"
+    migrated_rows = [
+        json.loads(line)
+        for line in store.store_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [row["frame"] for row in migrated_rows] == [1, 2]
+
+
+def test_update_frame_rewrites_legacy_store_using_inferred_frames(tmp_path):
+    results_dir = tmp_path / "mouse"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    (results_dir / "mouse_000000000.png").write_bytes(b"")
+    (results_dir / "mouse_000000000.json").write_text(
+        json.dumps({"version": "annolid", "shapes": []}),
+        encoding="utf-8",
+    )
+    store = AnnotationStore(results_dir / "mouse_annotations.ndjson")
+    store.store_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "shapes": [{"label": "teaball"}],
+                        "imageHeight": 1,
+                        "imageWidth": 1,
+                    }
+                ),
+                json.dumps(
+                    {"shapes": [{"label": "mouse"}], "imageHeight": 1, "imageWidth": 1}
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    store.update_frame(
+        2,
+        {
+            "version": "annolid",
+            "flags": {},
+            "shapes": [{"label": "box"}],
+            "imagePath": None,
+            "imageData": None,
+            "imageHeight": 1,
+            "imageWidth": 1,
+            "caption": None,
+            "otherData": {},
+        },
+    )
+
+    rows = [
+        json.loads(line)
+        for line in store.store_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [row["frame"] for row in rows] == [1, 2]
+    assert rows[0]["shapes"][0]["label"] == "teaball"
+    assert rows[1]["shapes"][0]["label"] == "box"
