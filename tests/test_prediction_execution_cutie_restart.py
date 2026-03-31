@@ -201,3 +201,31 @@ def test_lost_tracking_instance_leaves_occlusion_flow_alone_when_disabled(
     assert button.text == "Pred"
     assert button.enabled is True
     assert messages == []
+
+
+def test_lost_tracking_instance_records_missing_frame_mark() -> None:
+    class _Button:
+        def setText(self, _text: str) -> None:
+            return
+
+        def setStyleSheet(self, _style: str) -> None:
+            return
+
+        def setEnabled(self, _enabled: bool) -> None:
+            return
+
+    marked_frames = []
+    host = SimpleNamespace(
+        automatic_pause_enabled=False,
+        stepSizeWidget=SimpleNamespace(predict_button=_Button()),
+        frame_number=12,
+        _is_cutie_tracking_model=lambda: True,
+        _mark_missing_instance_frame=lambda frame: marked_frames.append(int(frame)),
+    )
+
+    PredictionExecutionMixin.lost_tracking_instance(
+        host,
+        "There is 1 missing instance in the current frame (12).\n\nMissing or occluded: mouse#12",
+    )
+
+    assert marked_frames == [12]

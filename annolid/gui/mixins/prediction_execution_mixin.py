@@ -987,6 +987,16 @@ class PredictionExecutionMixin:
         except Exception:
             stalled_frame = int(self.frame_number or 0)
         if PredictionExecutionMixin._is_cutie_missing_instance_message(message):
+            try:
+                mark_missing = getattr(self, "_mark_missing_instance_frame", None)
+                if callable(mark_missing):
+                    mark_missing(int(stalled_frame))
+            except Exception:
+                logger.debug(
+                    "Failed to add missing-instance slider mark at frame %s.",
+                    stalled_frame,
+                    exc_info=True,
+                )
             if self._is_cutie_tracking_model():
                 if bool(getattr(self, "automatic_pause_enabled", False)):
                     try:

@@ -158,6 +158,15 @@ class VideoWorkflowMixin:
                 logger.debug(
                     "Failed to refresh manual seed slider marks.", exc_info=True
                 )
+            try:
+                self._refresh_missing_instance_slider_marks_from_tracking_stats(
+                    self.video_results_folder
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to refresh missing-instance slider marks from tracking stats.",
+                    exc_info=True,
+                )
             self.playButton = QtWidgets.QPushButton("Play", self)
             self.playButton.setIcon(
                 QtWidgets.QApplication.style().standardIcon(

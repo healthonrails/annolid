@@ -200,6 +200,7 @@ class WindowLifecycleMixin:
         if self.seekbar:
             self.seekbar.removeMarksByType("predicted")
             self.seekbar.removeMarksByType("predicted_existing")
+            self.seekbar.removeMarksByType("missing_instance")
 
     def _closefile_handle_tracking_stop_prompt(
         self, *, suppress_tracking_prompt: bool

@@ -1451,6 +1451,32 @@ def test_record_prediction_segment_updates_tracking_stats(tmp_path) -> None:
     assert segments[0]["status"] == "halted"
 
 
+def test_tracking_stats_persist_missing_instance_frame_stats(tmp_path) -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.video_name = str(tmp_path / "clip.mp4")
+    processor.video_folder = tmp_path / "clip"
+    processor._tracking_stats_cache = None
+    processor._tracking_stats_dirty = False
+    processor._tracking_stats_pending_updates = 0
+
+    processor._update_tracking_frame_stat(
+        12,
+        source="prediction",
+        missing_instance_count=2,
+        missing_instance_labels=["mouse_a", "mouse_b"],
+        unresolved_missing_instance_count=1,
+        unresolved_missing_instance_labels=["mouse_b"],
+    )
+    payload = processor._build_tracking_stats_persist_payload(
+        processor._load_tracking_stats()
+    )
+
+    frame_stats = payload["frame_stats"]
+    assert "12" in frame_stats
+    assert int(frame_stats["12"]["missing_instance_count"]) == 2
+    assert int(frame_stats["12"]["unresolved_missing_instance_count"]) == 1
+
+
 def test_collect_labeled_frame_indices_treats_empty_store_records_as_completed(
     tmp_path,
 ) -> None:

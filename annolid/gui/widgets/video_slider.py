@@ -55,6 +55,7 @@ class VideoSliderMark:
             predicted=(1, 170, 247),  # light blue
             predicted_existing=(60, 160, 60),  # muted green
             prediction_progress=(255, 136, 0),
+            missing_instance=(220, 38, 38),  # red
             tick="lightGray",
             tick_column="gray",
             event_start="green",
@@ -119,6 +120,7 @@ class VideoSliderMark:
             "predicted",
             "predicted_existing",
             "prediction_progress",
+            "missing_instance",
             "manual_seed",
         ):
             return 1

@@ -624,6 +624,8 @@ class CutieCoreVideoProcessor:
             return True
         if int(entry.get("bad_shape_failed_count", 0)) > 0:
             return True
+        if int(entry.get("missing_instance_count", 0)) > 0:
+            return True
         return False
 
     def _build_tracking_stats_persist_payload(
@@ -658,6 +660,7 @@ class CutieCoreVideoProcessor:
         manual_frames: Set[int] = set()
         bad_shape_frames: Set[int] = set()
         bad_shape_failed_frames: Set[int] = set()
+        missing_instance_frames: Set[int] = set()
         for frame_key, entry in filtered_frame_stats.items():
             try:
                 frame_idx = int(frame_key)
@@ -671,6 +674,8 @@ class CutieCoreVideoProcessor:
                 bad_shape_frames.add(frame_idx)
             if int(entry.get("bad_shape_failed_count", 0)) > 0:
                 bad_shape_failed_frames.add(frame_idx)
+            if int(entry.get("missing_instance_count", 0)) > 0:
+                missing_instance_frames.add(frame_idx)
 
         summary = {
             "manual_frames": int(len(manual_frames)),
@@ -680,6 +685,7 @@ class CutieCoreVideoProcessor:
             ],
             "bad_shape_frames": int(len(bad_shape_frames)),
             "bad_shape_failed_frames": int(len(bad_shape_failed_frames)),
+            "missing_instance_frames": int(len(missing_instance_frames)),
             "abnormal_segment_events": int(len(filtered_segments)),
         }
 
@@ -719,6 +725,7 @@ class CutieCoreVideoProcessor:
         manual_frames: Set[int] = set()
         bad_shape_frames: Set[int] = set()
         bad_shape_failed_frames: Set[int] = set()
+        missing_instance_frames: Set[int] = set()
         for frame_key, record in frame_stats.items():
             if not isinstance(record, dict):
                 continue
@@ -737,6 +744,8 @@ class CutieCoreVideoProcessor:
                 bad_shape_frames.add(frame_idx)
             if int(record.get("bad_shape_failed_count", 0)) > 0:
                 bad_shape_failed_frames.add(frame_idx)
+            if int(record.get("missing_instance_count", 0)) > 0:
+                missing_instance_frames.add(frame_idx)
 
         stats["summary"] = {
             "manual_frames": int(len(manual_frames)),
@@ -746,6 +755,7 @@ class CutieCoreVideoProcessor:
             ],
             "bad_shape_frames": int(len(bad_shape_frames)),
             "bad_shape_failed_frames": int(len(bad_shape_failed_frames)),
+            "missing_instance_frames": int(len(missing_instance_frames)),
             "abnormal_segment_events": int(
                 len(
                     [
@@ -770,6 +780,10 @@ class CutieCoreVideoProcessor:
         json_mtime_ns: Optional[int] = None,
         png_exists: Optional[bool] = None,
         store_record_exists: Optional[bool] = None,
+        missing_instance_count: Optional[int] = None,
+        missing_instance_labels: Optional[Iterable[str]] = None,
+        unresolved_missing_instance_count: Optional[int] = None,
+        unresolved_missing_instance_labels: Optional[Iterable[str]] = None,
     ) -> None:
         try:
             normalized_frame = int(frame_idx)
@@ -807,6 +821,20 @@ class CutieCoreVideoProcessor:
             entry["png_exists"] = bool(png_exists)
         if store_record_exists is not None:
             entry["store_record_exists"] = bool(store_record_exists)
+        if missing_instance_count is not None:
+            entry["missing_instance_count"] = max(0, int(missing_instance_count))
+        if missing_instance_labels is not None:
+            labels = sorted({str(item) for item in missing_instance_labels if item})
+            entry["missing_instance_labels"] = labels
+        if unresolved_missing_instance_count is not None:
+            entry["unresolved_missing_instance_count"] = max(
+                0, int(unresolved_missing_instance_count)
+            )
+        if unresolved_missing_instance_labels is not None:
+            labels = sorted(
+                {str(item) for item in unresolved_missing_instance_labels if item}
+            )
+            entry["unresolved_missing_instance_labels"] = labels
         entry["last_updated"] = datetime.utcnow().isoformat() + "Z"
         entry["frame"] = normalized_frame
 
@@ -2858,6 +2886,7 @@ class CutieCoreVideoProcessor:
                     if (not frame_already_labeled) and len(mask_dict) < expected_instance_count:
                         missing_instances = instance_names - set(mask_dict.keys())
                         if missing_instances:
+                            initial_missing_instances = set(missing_instances)
                             missing_count = int(expected_instance_count - len(mask_dict))
                             verb = "is" if missing_count == 1 else "are"
                             noun = "instance" if missing_count == 1 else "instances"
@@ -2922,6 +2951,21 @@ class CutieCoreVideoProcessor:
                                     missing_instances = (
                                         instance_names - set(mask_dict.keys())
                                     )
+                            self._update_tracking_frame_stat(
+                                current_frame_index,
+                                source="prediction",
+                                missing_instance_count=len(initial_missing_instances),
+                                missing_instance_labels=sorted(
+                                    str(instance)
+                                    for instance in initial_missing_instances
+                                ),
+                                unresolved_missing_instance_count=len(
+                                    missing_instances
+                                ),
+                                unresolved_missing_instance_labels=sorted(
+                                    str(instance) for instance in missing_instances
+                                ),
+                            )
 
                             if missing_instances:
                                 logger.info(

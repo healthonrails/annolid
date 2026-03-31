@@ -46,6 +46,113 @@ class PredictionProgressMixin:
             self.seekbar.removeMarksByType("prediction_progress")
         self._prediction_progress_mark = None
 
+    def _mark_missing_instance_frame(self, frame_number: int) -> None:
+        """Add a slider mark for a frame where tracking reported missing instances."""
+        if not self.seekbar or self.num_frames is None:
+            return
+        try:
+            frame = int(frame_number)
+        except Exception:
+            return
+        if frame < 0 or frame >= int(self.num_frames):
+            return
+
+        existing = self.seekbar.getMarks(mark_type="missing_instance")
+        if any(int(mark.val) == frame for mark in existing):
+            return
+
+        self.seekbar.blockSignals(True)
+        self.seekbar.addMark(
+            VideoSliderMark(mark_type="missing_instance", val=int(frame)),
+            update=False,
+        )
+        self.seekbar.blockSignals(False)
+        self.seekbar.update()
+
+    def _clear_missing_instance_marks(self) -> None:
+        if not self.seekbar:
+            return
+        self.seekbar.removeMarksByType("missing_instance")
+
+    def _discover_missing_instance_frames_from_tracking_stats(
+        self, folder_path: Path
+    ) -> set[int]:
+        frames: set[int] = set()
+        if not folder_path.exists() or not folder_path.is_dir():
+            return frames
+
+        stats_path = folder_path / f"{folder_path.name}_tracking_stats.json"
+        if not stats_path.exists():
+            return frames
+
+        try:
+            with stats_path.open("r", encoding="utf-8") as fh:
+                payload = json.load(fh) or {}
+        except Exception:
+            logger.debug(
+                "Failed to parse tracking stats: %s", stats_path, exc_info=True
+            )
+            return frames
+
+        frame_stats = payload.get("frame_stats", {})
+        if not isinstance(frame_stats, dict):
+            return frames
+
+        for frame_key, entry in frame_stats.items():
+            if not isinstance(entry, dict):
+                continue
+            try:
+                frame_idx = int(frame_key)
+            except (TypeError, ValueError):
+                continue
+            missing_count = int(entry.get("missing_instance_count", 0) or 0)
+            unresolved_count = int(
+                entry.get("unresolved_missing_instance_count", 0) or 0
+            )
+            missing_labels = entry.get("missing_instance_labels", [])
+            unresolved_labels = entry.get("unresolved_missing_instance_labels", [])
+            if (
+                missing_count > 0
+                or unresolved_count > 0
+                or bool(missing_labels)
+                or bool(unresolved_labels)
+            ):
+                frames.add(frame_idx)
+        return frames
+
+    def _refresh_missing_instance_slider_marks_from_tracking_stats(
+        self, folder_path: str | Path
+    ) -> None:
+        if not self.seekbar:
+            return
+        if self.num_frames is None:
+            return
+
+        folder = Path(folder_path)
+        tracked_frames = self._discover_missing_instance_frames_from_tracking_stats(
+            folder
+        )
+        valid_frames = {
+            int(frame)
+            for frame in tracked_frames
+            if 0 <= int(frame) < int(self.num_frames)
+        }
+        existing_frames = {
+            int(mark.val)
+            for mark in self.seekbar.getMarks(mark_type="missing_instance")
+        }
+        if existing_frames == valid_frames:
+            return
+
+        self.seekbar.blockSignals(True)
+        self.seekbar.removeMarksByType("missing_instance")
+        for frame in sorted(valid_frames):
+            self.seekbar.addMark(
+                VideoSliderMark(mark_type="missing_instance", val=frame), update=False
+            )
+        self.seekbar.blockSignals(False)
+        self.seekbar.update()
+
     @staticmethod
     def _frames_to_intervals(frame_nums: list[int] | set[int]) -> list[tuple[int, int]]:
         if not frame_nums:
