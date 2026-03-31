@@ -355,7 +355,9 @@ def _polygon_hit_counts(flat_polygon, points, point_labels) -> tuple[int, int]:
     contour = arr.reshape(-1, 1, 2)
     positive_hits = 0
     negative_hits = 0
-    for point, label in zip(points or [], point_labels or []):
+    iter_points = [] if points is None else points
+    iter_labels = [] if point_labels is None else point_labels
+    for point, label in zip(iter_points, iter_labels):
         if point is None or len(point) < 2:
             continue
         px = float(point[0])

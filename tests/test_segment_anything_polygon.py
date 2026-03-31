@@ -80,6 +80,41 @@ def test_compute_polygon_avoids_polygon_covering_negative_prompt(monkeypatch):
     assert np.all(polygon[:, 1] >= 59.5)
 
 
+def test_compute_polygon_accepts_numpy_points_and_labels(monkeypatch):
+    def _fake_mask(*args, **kwargs):
+        _ = args, kwargs
+        return np.ones((32, 32), dtype=bool)
+
+    def _fake_polys(mask):
+        _ = mask
+        # First polygon misses positive click, second contains it.
+        return [
+            _square_flat(0, 0, 10, 10),
+            _square_flat(60, 60, 95, 95),
+        ], False
+
+    monkeypatch.setattr(
+        "annolid.segmentation.SAM.segment_anything._compute_mask_from_points",
+        _fake_mask,
+    )
+    monkeypatch.setattr("annolid.annotation.masks.mask_to_polygons", _fake_polys)
+
+    points = np.array([[80.0, 80.0]], dtype=np.float32)
+    labels = np.array([1], dtype=np.int32)
+    polygon = _compute_polygon_from_points(
+        image_size=1024,
+        decoder_session=None,
+        image=np.zeros((100, 100, 3), dtype=np.uint8),
+        image_embedding=np.zeros((1,), dtype=np.float32),
+        points=points,
+        point_labels=labels,
+    )
+
+    assert polygon.shape[0] >= 4
+    assert np.all(polygon[:, 0] >= 59.5)
+    assert np.all(polygon[:, 1] >= 59.5)
+
+
 def test_select_best_mask_index_prefers_prompt_consistent_local_mask():
     masks = np.zeros((1, 2, 10, 10), dtype=np.float32)
     # Candidate 0: very large region, includes positive click.
