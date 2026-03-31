@@ -98,6 +98,8 @@ sam3:
   device: null  # e.g. "cuda", "mps", or null for auto
   score_threshold_detection: 0.2
   new_det_thresh: 0.30
+  max_num_objects: 16
+  multiplex_count: 16
   # Performance knobs (CUDA-only compile).
   compile_model: false
   offload_video_to_cpu: true

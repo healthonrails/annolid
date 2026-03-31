@@ -29,6 +29,8 @@ class Sam3Manager:
         self.sliding_window_stride: Optional[int] = None
         self.compile_model: Optional[bool] = None
         self.offload_video_to_cpu: Optional[bool] = None
+        self.max_num_objects: Optional[int] = None
+        self.multiplex_count: Optional[int] = None
         self.agent_det_thresh: Optional[float] = None
         self.agent_window_size: Optional[int] = None
         self.agent_stride: Optional[int] = None
@@ -111,6 +113,14 @@ class Sam3Manager:
             self.offload_video_to_cpu,
             sam3_cfg.get("offload_video_to_cpu"),
         )
+        max_num_objects = _pick(
+            self.max_num_objects,
+            sam3_cfg.get("max_num_objects"),
+        )
+        multiplex_count = _pick(
+            self.multiplex_count,
+            sam3_cfg.get("multiplex_count"),
+        )
         agent_det_thresh = _pick(
             self.agent_det_thresh,
             agent_cfg.get("det_thresh"),
@@ -138,6 +148,8 @@ class Sam3Manager:
             "sliding_window_stride": sliding_window_stride,
             "compile_model": compile_model,
             "offload_video_to_cpu": offload_video_to_cpu,
+            "max_num_objects": max_num_objects,
+            "multiplex_count": multiplex_count,
             "agent_det_thresh": agent_det_thresh,
             "agent_window_size": agent_window_size
             if agent_window_size is not None
@@ -163,6 +175,8 @@ class Sam3Manager:
         self.sliding_window_stride = sam3_runtime.get("sliding_window_stride")
         self.compile_model = sam3_runtime.get("compile_model")
         self.offload_video_to_cpu = sam3_runtime.get("offload_video_to_cpu")
+        self.max_num_objects = sam3_runtime.get("max_num_objects", self.max_num_objects)
+        self.multiplex_count = sam3_runtime.get("multiplex_count", self.multiplex_count)
         self.agent_det_thresh = sam3_runtime.get("agent_det_thresh")
         self.agent_window_size = sam3_runtime.get("agent_window_size")
         self.agent_stride = sam3_runtime.get("agent_stride")
@@ -182,6 +196,8 @@ class Sam3Manager:
             "sliding_window_stride": self.sliding_window_stride,
             "compile_model": self.compile_model,
             "offload_video_to_cpu": self.offload_video_to_cpu,
+            "max_num_objects": self.max_num_objects,
+            "multiplex_count": self.multiplex_count,
         }
         agent_updates = {
             "det_thresh": self.agent_det_thresh,
@@ -298,7 +314,7 @@ class Sam3Manager:
     ):
         """
         Construct the SAM3 video processor or agent runner callable.
-        Returns a callable or None if setup fails (and shows a user warning).
+        Returns a callable or None if setup fails before worker start.
         """
         try:
             from annolid.segmentation.SAM.sam3 import adapter as sam3_adapter
@@ -354,6 +370,8 @@ class Sam3Manager:
         sliding_window_stride = sam3_cfg.get("sliding_window_stride")
         compile_model_cfg = sam3_cfg.get("compile_model", False)
         offload_video_to_cpu_cfg = sam3_cfg.get("offload_video_to_cpu", True)
+        max_num_objects_cfg = sam3_cfg.get("max_num_objects", 16)
+        multiplex_count_cfg = sam3_cfg.get("multiplex_count", 16)
         agent_cfg = sam3_cfg.get("agent", {}) or {}
         agent_det_thresh_cfg = agent_cfg.get("det_thresh")
         agent_window_size_cfg = agent_cfg.get("window_size")
@@ -448,6 +466,20 @@ class Sam3Manager:
                 agent_stride_cfg = int(agent_stride_cfg)
         except Exception:
             agent_stride_cfg = None
+        try:
+            if isinstance(max_num_objects_cfg, str):
+                max_num_objects_cfg = int(max_num_objects_cfg)
+            else:
+                max_num_objects_cfg = int(max_num_objects_cfg)
+        except Exception:
+            max_num_objects_cfg = 16
+        try:
+            if isinstance(multiplex_count_cfg, str):
+                multiplex_count_cfg = int(multiplex_count_cfg)
+            else:
+                multiplex_count_cfg = int(multiplex_count_cfg)
+        except Exception:
+            multiplex_count_cfg = 16
         if self.propagation_direction:
             propagation_direction = self.propagation_direction
         if self.max_frame_num_to_track is not None:
@@ -458,6 +490,16 @@ class Sam3Manager:
             sliding_window_size = self.sliding_window_size
         if self.sliding_window_stride is not None:
             sliding_window_stride = self.sliding_window_stride
+        max_num_objects = (
+            self.max_num_objects
+            if self.max_num_objects is not None
+            else max_num_objects_cfg
+        )
+        multiplex_count = (
+            self.multiplex_count
+            if self.multiplex_count is not None
+            else multiplex_count_cfg
+        )
         agent_det_thresh = (
             self.agent_det_thresh
             if self.agent_det_thresh is not None
@@ -507,6 +549,8 @@ class Sam3Manager:
                     device=device_override,
                     score_threshold_detection=score_threshold_detection,
                     new_det_thresh=new_det_thresh,
+                    max_num_objects=max_num_objects,
+                    multiplex_count=multiplex_count,
                     compile_model=compile_model,
                     offload_video_to_cpu=offload_video_to_cpu,
                     sliding_window_size=sliding_window_size,
@@ -514,12 +558,13 @@ class Sam3Manager:
                 )
                 self._last_prompt_frame = None
             except Exception as exc:
-                QtWidgets.QMessageBox.warning(
-                    self.window,
-                    "SAM3 init error",
-                    f"Failed to initialise SAM3 session.\n{exc}",
+                logger.error(
+                    "Failed to initialise SAM3 session for '%s': %s",
+                    self.window.video_file,
+                    exc,
+                    exc_info=True,
                 )
-                return None
+                return RuntimeError(f"Failed to initialise SAM3 session.\n{exc}")
 
             def _run_sam3_with_canvas_prompts():
                 if self._initial_prompts:
@@ -567,6 +612,8 @@ class Sam3Manager:
                         device=device_override,
                         score_threshold_detection=score_threshold_detection,
                         new_det_thresh=new_det_thresh,
+                        max_num_objects=max_num_objects,
+                        multiplex_count=multiplex_count,
                         compile_model=compile_model,
                         offload_video_to_cpu=offload_video_to_cpu,
                     )
@@ -583,8 +630,10 @@ class Sam3Manager:
                     )
 
             standard_runner = _build_standard_sam3_runner()
+            if isinstance(standard_runner, Exception):
+                return standard_runner
             if standard_runner is None:
-                return "SAM3 init failed"
+                return RuntimeError("SAM3 init failed.")
             return standard_runner()
 
         return _run_sam3_agent_first

@@ -1,13 +1,15 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 import logging
 from collections import OrderedDict
 
 import torch
-
 from sam3.model.sam3_tracker_base import concat_points, NO_OBJ_SCORE, Sam3TrackerBase
 from sam3.model.sam3_tracker_utils import fill_holes_in_mask_scores
 from sam3.model.utils.sam2_utils import load_video_frames
+from sam3.utils.device import safe_autocast, to_device
 from tqdm.auto import tqdm
 
 
@@ -46,7 +48,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         self.max_point_num_in_prompt_enc = max_point_num_in_prompt_enc
         self.non_overlap_masks_for_output = non_overlap_masks_for_output
 
-        self.bf16_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        self.bf16_context = safe_autocast(dtype=torch.bfloat16)
         self.bf16_context.__enter__()  # keep using for the entire model process
 
         self.iter_use_prev_mask_pred = True
@@ -78,7 +80,9 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         if offload_state_to_cpu:
             inference_state["storage_device"] = torch.device("cpu")
         else:
-            inference_state["storage_device"] = self.device
+            inference_state["storage_device"] = (
+                self.device if str(self.device).startswith("cuda") else torch.device("cpu")
+            )
 
         if video_path is not None:
             images, video_height, video_width = load_video_frames(
@@ -300,8 +304,8 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
                     prev_out = obj_output_dict["non_cond_frame_outputs"].get(frame_idx)
 
             if prev_out is not None and prev_out["pred_masks"] is not None:
-                prev_sam_mask_logits = prev_out["pred_masks"].to(
-                    self.device, non_blocking=True
+                prev_sam_mask_logits = to_device(
+                    prev_out["pred_masks"], inference_state["device"], non_blocking=True
                 )
                 # Clamp the scale of prev_sam_mask_logits to avoid rare numerical issues.
                 prev_sam_mask_logits = torch.clamp(prev_sam_mask_logits, -32.0, 32.0)
@@ -659,8 +663,6 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             image=image,
             point_inputs=None,
             mask_inputs=mask_inputs,
-            gt_masks=None,
-            frames_to_add_correction_pt=[],
             output_dict={
                 "cond_frame_outputs": {},
                 "non_cond_frame_outputs": {},
@@ -1026,8 +1028,11 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
             else:
                 # Cache miss -- we will run inference on a single image
                 image = (
-                    inference_state["images"][frame_idx]
-                    .to(self.device, non_blocking=True)
+                    to_device(
+                        inference_state["images"][frame_idx],
+                        inference_state["device"],
+                        non_blocking=True,
+                    )
                     .float()
                     .unsqueeze(0)
                 )
@@ -1102,8 +1107,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         storage_device = inference_state["storage_device"]
         maskmem_features = current_out["maskmem_features"]
         if maskmem_features is not None:
-            if storage_device.type == "cuda":
-                maskmem_features = maskmem_features.to(torch.bfloat16)
+            maskmem_features = maskmem_features.to(torch.bfloat16)
             maskmem_features = maskmem_features.to(storage_device, non_blocking=True)
         pred_masks_gpu = current_out["pred_masks"]
         pred_masks = pred_masks_gpu.to(storage_device, non_blocking=True)
@@ -1154,8 +1158,7 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
 
         # optionally offload the output to CPU memory to save GPU space
         storage_device = inference_state["storage_device"]
-        if storage_device.type == "cuda":
-            maskmem_features = maskmem_features.to(torch.bfloat16)
+        maskmem_features = maskmem_features.to(torch.bfloat16)
         maskmem_features = maskmem_features.to(storage_device, non_blocking=True)
         # "maskmem_pos_enc" is the same across frames, so we only need to store one copy of it
         maskmem_pos_enc = self._get_maskmem_pos_enc(

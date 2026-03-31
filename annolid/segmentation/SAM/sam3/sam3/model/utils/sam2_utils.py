@@ -1,6 +1,8 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 # All rights reserved.
 
+# pyre-unsafe
+
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
@@ -11,8 +13,7 @@ import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
-
-from sam3.utils import select_device
+from sam3.utils.device import select_device
 
 
 def _load_img_as_tensor(img_path, image_size):
@@ -99,8 +100,8 @@ def load_video_frames(
     video_path,
     image_size,
     offload_video_to_cpu,
-    img_mean=(0.485, 0.456, 0.406),
-    img_std=(0.229, 0.224, 0.225),
+    img_mean=(0.5, 0.5, 0.5),
+    img_std=(0.5, 0.5, 0.5),
     async_loading_frames=False,
     compute_device=None,
 ):
@@ -141,11 +142,12 @@ def load_video_frames_from_jpg_images(
     video_path,
     image_size,
     offload_video_to_cpu,
-    img_mean=(0.485, 0.456, 0.406),
-    img_std=(0.229, 0.224, 0.225),
+    img_mean=(0.5, 0.5, 0.5),
+    img_std=(0.5, 0.5, 0.5),
     async_loading_frames=False,
     compute_device=None,
 ):
+    compute_device = select_device(compute_device)
     """
     Load the video frames from a directory of JPEG files ("<frame_index>.jpg" format).
 
@@ -167,7 +169,6 @@ def load_video_frames_from_jpg_images(
             "ffmpeg to start the JPEG file from 00000.jpg."
         )
 
-    compute_device = select_device(compute_device)
     frame_names = [
         p
         for p in os.listdir(jpg_folder)
@@ -209,13 +210,15 @@ def load_video_frames_from_video_file(
     video_path,
     image_size,
     offload_video_to_cpu,
-    img_mean=(0.485, 0.456, 0.406),
-    img_std=(0.229, 0.224, 0.225),
+    img_mean=(0.5, 0.5, 0.5),
+    img_std=(0.5, 0.5, 0.5),
     compute_device=None,
 ):
     """Load the video frames from a video file."""
     import decord
+
     compute_device = select_device(compute_device)
+
     img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
     img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
     # Get the original video height and width

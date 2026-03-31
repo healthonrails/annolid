@@ -1,14 +1,14 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
+
+# pyre-unsafe
 from typing import Dict, List
 
 import numpy as np
 import PIL
 import torch
-
 from sam3.model import box_ops
-from sam3.utils import select_device
-
 from sam3.model.data_misc import FindStage, interpolate
+from sam3.utils.device import select_device, tensor_to_module
 from torchvision.transforms import v2
 
 
@@ -30,8 +30,8 @@ class Sam3Processor:
         self.confidence_threshold = confidence_threshold
 
         self.find_stage = FindStage(
-            img_ids=torch.tensor([0], device=self.device, dtype=torch.long),
-            text_ids=torch.tensor([0], device=self.device, dtype=torch.long),
+            img_ids=torch.tensor([0], device=device, dtype=torch.long),
+            text_ids=torch.tensor([0], device=device, dtype=torch.long),
             input_boxes=None,
             input_boxes_mask=None,
             input_boxes_label=None,
@@ -63,12 +63,18 @@ class Sam3Processor:
             sam2_backbone_out = state["backbone_out"]["sam2_backbone_out"]
             sam2_backbone_out["backbone_fpn"][0] = (
                 self.model.inst_interactive_predictor.model.sam_mask_decoder.conv_s0(
-                    sam2_backbone_out["backbone_fpn"][0]
+                    tensor_to_module(
+                        sam2_backbone_out["backbone_fpn"][0],
+                        self.model.inst_interactive_predictor.model.sam_mask_decoder.conv_s0,
+                    )
                 )
             )
             sam2_backbone_out["backbone_fpn"][1] = (
                 self.model.inst_interactive_predictor.model.sam_mask_decoder.conv_s1(
-                    sam2_backbone_out["backbone_fpn"][1]
+                    tensor_to_module(
+                        sam2_backbone_out["backbone_fpn"][1],
+                        self.model.inst_interactive_predictor.model.sam_mask_decoder.conv_s1,
+                    )
                 )
             )
         return state
@@ -82,9 +88,9 @@ class Sam3Processor:
         if not isinstance(images, list):
             raise ValueError("Images must be a list of PIL images or tensors")
         assert len(images) > 0, "Images list must not be empty"
-        assert isinstance(
-            images[0], PIL.Image.Image
-        ), "Images must be a list of PIL images"
+        assert isinstance(images[0], PIL.Image.Image), (
+            "Images must be a list of PIL images"
+        )
 
         state["original_heights"] = [image.height for image in images]
         state["original_widths"] = [image.width for image in images]
@@ -100,12 +106,18 @@ class Sam3Processor:
             sam2_backbone_out = state["backbone_out"]["sam2_backbone_out"]
             sam2_backbone_out["backbone_fpn"][0] = (
                 self.model.inst_interactive_predictor.model.sam_mask_decoder.conv_s0(
-                    sam2_backbone_out["backbone_fpn"][0]
+                    tensor_to_module(
+                        sam2_backbone_out["backbone_fpn"][0],
+                        self.model.inst_interactive_predictor.model.sam_mask_decoder.conv_s0,
+                    )
                 )
             )
             sam2_backbone_out["backbone_fpn"][1] = (
                 self.model.inst_interactive_predictor.model.sam_mask_decoder.conv_s1(
-                    sam2_backbone_out["backbone_fpn"][1]
+                    tensor_to_module(
+                        sam2_backbone_out["backbone_fpn"][1],
+                        self.model.inst_interactive_predictor.model.sam_mask_decoder.conv_s1,
+                    )
                 )
             )
         return state

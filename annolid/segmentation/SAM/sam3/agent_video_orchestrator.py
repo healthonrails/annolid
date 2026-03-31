@@ -42,6 +42,8 @@ class TrackingConfig:
     device: Optional[str] = None
     score_threshold_detection: Optional[float] = None
     new_det_thresh: Optional[float] = None
+    max_num_objects: int = 16
+    multiplex_count: int = 16
     compile_model: bool = False
     offload_video_to_cpu: bool = True
     epsilon_for_polygon: float = 2.0
@@ -134,6 +136,8 @@ def run_agent_seeded_sam3_video(
         device=tracking_cfg.device,
         score_threshold_detection=tracking_cfg.score_threshold_detection,
         new_det_thresh=tracking_cfg.new_det_thresh,
+        max_num_objects=tracking_cfg.max_num_objects,
+        multiplex_count=tracking_cfg.multiplex_count,
         compile_model=tracking_cfg.compile_model,
         offload_video_to_cpu=tracking_cfg.offload_video_to_cpu,
         async_loading_frames=False,

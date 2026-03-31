@@ -1,22 +1,24 @@
 from __future__ import annotations
 
 import importlib
+import json
+import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
+import cv2
 import numpy as np
 import torch
 
 from annolid.segmentation.SAM.sam_v2 import BaseSAMVideoProcessor
 from annolid.utils.logger import logger
-from .aliases import ensure_sam3_aliases
 from .sam3.utils import set_default_device
-from .video_window_inference import run_video_sliding_window
 
 SAM3_IMPORT_ERROR: Optional[Exception] = None
 _SAM3_REQUIRED_MODULES = ("iopath", "ftfy")
+_BUILD_SAM3_PREDICTOR: Optional[Callable[..., Any]] = None
 
 for _mod in _SAM3_REQUIRED_MODULES:
     try:
@@ -30,13 +32,129 @@ for _mod in _SAM3_REQUIRED_MODULES:
 
 if SAM3_IMPORT_ERROR is None:
     try:
-        ensure_sam3_aliases()
-        importlib.import_module("annolid.segmentation.SAM.sam3.sam3")
-        from annolid.segmentation.SAM.sam3.sam3.model.sam3_video_predictor import (
-            Sam3VideoPredictor,
-        )
+        external_builder = importlib.import_module("sam3.model_builder")
+        candidate = getattr(external_builder, "build_sam3_predictor", None)
+        if not callable(candidate):
+            raise RuntimeError(
+                "Bundled SAM3 runtime is missing `build_sam3_predictor`."
+            )
+        _BUILD_SAM3_PREDICTOR = candidate
     except Exception as exc:  # pragma: no cover - import guard
-        SAM3_IMPORT_ERROR = exc
+        SAM3_IMPORT_ERROR = RuntimeError(
+            "Bundled SAM3.1 runtime is unavailable or outdated. Ensure "
+            "`annolid/segmentation/SAM/sam3/sam3` contains a build that exposes "
+            "`sam3.model_builder.build_sam3_predictor`."
+        )
+
+
+class _PredictorAPIAdapter:
+    """
+    Normalize predictor APIs across:
+    - legacy direct-method predictors (start_session/add_prompt/propagate_in_video)
+    - request-based predictors (handle_request/handle_stream_request)
+    """
+
+    def __init__(self, predictor: Any):
+        self._predictor = predictor
+
+    def start_session(self, *, resource_path: str, offload_video_to_cpu: bool) -> Dict[str, Any]:
+        if hasattr(self._predictor, "start_session"):
+            try:
+                return self._predictor.start_session(
+                    resource_path=resource_path,
+                    offload_video_to_cpu=offload_video_to_cpu,
+                )
+            except TypeError:
+                return self._predictor.start_session(resource_path=resource_path)
+        return self._predictor.handle_request(
+            {
+                "type": "start_session",
+                "resource_path": resource_path,
+                "offload_video_to_cpu": bool(offload_video_to_cpu),
+            }
+        )
+
+    def add_prompt(
+        self,
+        *,
+        session_id: str,
+        frame_idx: int,
+        text: Optional[str],
+        points: Optional[List[List[float]]],
+        point_labels: Optional[List[int]],
+        bounding_boxes: Optional[List[List[float]]],
+        bounding_box_labels: Optional[List[int]],
+        obj_id: Optional[int],
+    ) -> Dict[str, Any]:
+        if not bounding_boxes:
+            bounding_boxes = None
+            bounding_box_labels = None
+        elif not bounding_box_labels:
+            bounding_box_labels = [1] * len(bounding_boxes)
+
+        if hasattr(self._predictor, "add_prompt"):
+            return self._predictor.add_prompt(
+                session_id=session_id,
+                frame_idx=frame_idx,
+                text=text,
+                points=points,
+                point_labels=point_labels,
+                bounding_boxes=bounding_boxes,
+                bounding_box_labels=bounding_box_labels,
+                obj_id=obj_id,
+            )
+        return self._predictor.handle_request(
+            {
+                "type": "add_prompt",
+                "session_id": session_id,
+                "frame_index": frame_idx,
+                "text": text,
+                "points": points,
+                "point_labels": point_labels,
+                "bounding_boxes": bounding_boxes,
+                "bounding_box_labels": bounding_box_labels,
+                "obj_id": obj_id,
+            }
+        )
+
+    def propagate_in_video(
+        self,
+        *,
+        session_id: str,
+        propagation_direction: str,
+        start_frame_idx: Optional[int],
+        max_frame_num_to_track: Optional[int],
+    ) -> Iterator[Dict[str, Any]]:
+        if hasattr(self._predictor, "propagate_in_video"):
+            return self._predictor.propagate_in_video(
+                session_id=session_id,
+                propagation_direction=propagation_direction,
+                start_frame_idx=start_frame_idx,
+                max_frame_num_to_track=max_frame_num_to_track,
+            )
+        return self._predictor.handle_stream_request(
+            {
+                "type": "propagate_in_video",
+                "session_id": session_id,
+                "propagation_direction": propagation_direction,
+                "start_frame_index": start_frame_idx,
+                "max_frame_num_to_track": max_frame_num_to_track,
+            }
+        )
+
+    def reset_session(self, session_id: str) -> Dict[str, Any]:
+        if hasattr(self._predictor, "reset_session"):
+            return self._predictor.reset_session(session_id)
+        return self._predictor.handle_request({"type": "reset_session", "session_id": session_id})
+
+    def close_session(self, session_id: str) -> Dict[str, Any]:
+        if hasattr(self._predictor, "close_session"):
+            return self._predictor.close_session(session_id)
+        return self._predictor.handle_request({"type": "close_session", "session_id": session_id})
+
+    @property
+    def raw(self) -> Any:
+        return self._predictor
 
 
 def _default_bpe_path() -> Path:
@@ -49,7 +167,6 @@ def _is_mps_oom(exc: BaseException) -> bool:
 
 
 def _clear_mps_cache() -> None:
-    """Best-effort cache clearing after MPS OOM to allow CPU fallback."""
     try:
         import gc
 
@@ -77,13 +194,16 @@ class Sam3SessionConfig:
     device: Optional[str] = None
     score_threshold_detection: Optional[float] = None
     new_det_thresh: Optional[float] = None
-    # Performance knobs (safe defaults).
+    # Multiplex tuning knobs (SAM3.1).
+    max_num_objects: int = 16
+    multiplex_count: int = 16
+    # Performance knobs.
     compile_model: bool = False
     offload_video_to_cpu: bool = True
     async_loading_frames: bool = False  # keep memory usage low; no preloading
-    sliding_window_size: int = 5  # frames per window for text-only runs
+    sliding_window_size: int = 5
     sliding_window_stride: Optional[int] = None
-    use_sliding_window_for_text_prompt: bool = True
+    use_sliding_window_for_text_prompt: bool = False
 
 
 def _resolve_session_config(
@@ -98,6 +218,8 @@ def _resolve_session_config(
     device: Optional[str],
     score_threshold_detection: Optional[float],
     new_det_thresh: Optional[float],
+    max_num_objects: int,
+    multiplex_count: int,
     compile_model: bool,
     offload_video_to_cpu: bool,
     async_loading_frames: bool,
@@ -118,6 +240,8 @@ def _resolve_session_config(
         device=device,
         score_threshold_detection=score_threshold_detection,
         new_det_thresh=new_det_thresh,
+        max_num_objects=max_num_objects,
+        multiplex_count=multiplex_count,
         compile_model=compile_model,
         offload_video_to_cpu=offload_video_to_cpu,
         async_loading_frames=async_loading_frames,
@@ -147,6 +271,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         device: Optional[str] = None,
         score_threshold_detection: Optional[float] = None,
         new_det_thresh: Optional[float] = None,
+        max_num_objects: int = 16,
+        multiplex_count: int = 16,
         compile_model: bool = False,
         offload_video_to_cpu: bool = True,
         async_loading_frames: bool = False,
@@ -172,6 +298,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             device=device,
             score_threshold_detection=score_threshold_detection,
             new_det_thresh=new_det_thresh,
+            max_num_objects=max_num_objects,
+            multiplex_count=multiplex_count,
             compile_model=compile_model,
             offload_video_to_cpu=offload_video_to_cpu,
             async_loading_frames=async_loading_frames,
@@ -194,7 +322,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         )
         self._init_ndjson_writer(ndjson_name)
 
-        self._predictor: Optional[Sam3VideoPredictor] = None
+        self._predictor: Optional[_PredictorAPIAdapter] = None
         self._session_id: Optional[str] = None
         self._predictor_device: Optional[torch.device] = None
         # Track label hints per SAM3 object id so predictions keep the expected label
@@ -212,15 +340,15 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self.default_device = cfg.device
         self.score_threshold_detection = cfg.score_threshold_detection
         self.new_det_thresh = cfg.new_det_thresh
+        self.max_num_objects = int(cfg.max_num_objects or 16)
+        self.multiplex_count = int(cfg.multiplex_count or 16)
         self.compile_model = bool(cfg.compile_model)
         self.offload_video_to_cpu = bool(cfg.offload_video_to_cpu)
         self.async_loading_frames = cfg.async_loading_frames
         self.sliding_window_size = cfg.sliding_window_size
         self.sliding_window_stride = cfg.sliding_window_stride
         self.use_sliding_window_for_text_prompt = cfg.use_sliding_window_for_text_prompt
-        # Sliding-window text-prompt mode: maintain a global track id mapping so
-        # ids remain consistent across windows.
-        self._sliding_window_mode_active: bool = False
+        # Cross-window tracking id state used by SAM3.1 windowed mode.
         self._global_track_next_id: int = 1
         self._global_track_last_box: Dict[int, np.ndarray] = {}
 
@@ -244,32 +372,65 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         return str(candidate)
 
     def _initialize_predictor(self, device: torch.device):
-        return Sam3VideoPredictor(
-            checkpoint_path=self.checkpoint_path,
-            bpe_path=str(self.bpe_path),
-            apply_temporal_disambiguation=True,
-            device=device,
-            compile_model=self.compile_model,
-            offload_video_to_cpu=self.offload_video_to_cpu,
-            async_loading_frames=self.async_loading_frames,
-            score_threshold_detection=self.score_threshold_detection,
-            new_det_thresh=self.new_det_thresh,
-        )
+        if _BUILD_SAM3_PREDICTOR is None:
+            raise RuntimeError(
+                "SAM3.1 predictor backend is unavailable from the bundled SAM3 runtime."
+            )
+        try:
+            predictor = _BUILD_SAM3_PREDICTOR(
+                checkpoint_path=self.checkpoint_path,
+                bpe_path=str(self.bpe_path),
+                version="sam3.1",
+                compile=bool(self.compile_model),
+                async_loading_frames=bool(self.async_loading_frames),
+                max_num_objects=self.max_num_objects,
+                multiplex_count=self.multiplex_count,
+                device=str(device),
+            )
+        except TypeError as exc:
+            raise RuntimeError(
+                "Installed `sam3` package is too old for SAM3.1-only mode. "
+                "Please upgrade `sam3`."
+            ) from exc
+        return _PredictorAPIAdapter(predictor)
+
+    def _resolve_runtime_device(
+        self, target_device: Optional[torch.device | str]
+    ) -> torch.device:
+        """
+        Resolve the runtime device for SAM3.1 inference.
+
+        Note: current SAM3.1 multiplex stack is unstable on MPS for some kernels/
+        dtype paths. Prefer CPU fallback over hard abort on macOS.
+        """
+        resolved = set_default_device(target_device or self.default_device)
+        if resolved.type == "mps":
+            logger.warning(
+                "SAM3.1 multiplex runtime on MPS is unstable in this environment; "
+                "falling back to CPU."
+            )
+            resolved = torch.device("cpu")
+            try:
+                torch.set_default_device(resolved)
+            except Exception:
+                pass
+        if resolved.type == "cpu":
+            torch.set_default_dtype(torch.float32)
+        return resolved
 
     def start_session(self, target_device: Optional[torch.device | str] = None) -> str:
-        resolved_device = set_default_device(
-            target_device or self.default_device)
-        if resolved_device.type == "cpu":
-            torch.set_default_dtype(torch.float32)
+        resolved_device = self._resolve_runtime_device(target_device)
 
         if self._predictor is None or self._predictor_device != resolved_device:
             self._predictor = self._initialize_predictor(resolved_device)
             self._predictor_device = resolved_device
         session = self._predictor.start_session(
-            resource_path=str(self.video_path))
+            resource_path=str(self.video_path),
+            offload_video_to_cpu=self.offload_video_to_cpu,
+        )
         self._session_id = session["session_id"]
         logger.info(
-            "SAM3 session %s started on device=%s (checkpoint=%s)",
+            "SAM3.1 session %s started on device=%s (checkpoint=%s)",
             self._session_id,
             resolved_device,
             self.checkpoint_path or "auto-download",
@@ -307,8 +468,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         so the next propagation performs a full pass.
         """
         try:
-            state_entry = self._predictor._ALL_INFERENCE_STATES.get(
-                self._session_id)  # type: ignore[attr-defined]
+            raw_predictor = self._predictor.raw if self._predictor is not None else None
+            states = getattr(raw_predictor, "_ALL_INFERENCE_STATES", None)
+            if states is None:
+                states = getattr(raw_predictor, "_all_inference_states", None)
+            state_entry = states.get(self._session_id) if isinstance(states, dict) else None
             if state_entry and isinstance(state_entry, dict):
                 inference_state = state_entry.get("state")
                 if isinstance(inference_state, dict) and "action_history" in inference_state:
@@ -359,6 +523,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                                  self.max_frame_num_to_track or 0) or None,
                 yielded_frames=1,
                 label_hints=label_hints,
+                apply_score_threshold=False,
             )
         return result
 
@@ -378,30 +543,27 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
     @staticmethod
     def _box_iou_xywh(box_a: np.ndarray, box_b: np.ndarray) -> float:
-        """Compute IoU between two [x, y, w, h] boxes in pixel space."""
         ax, ay, aw, ah = [float(v) for v in box_a]
         bx, by, bw, bh = [float(v) for v in box_b]
         ax2 = ax + aw
         ay2 = ay + ah
         bx2 = bx + bw
         by2 = by + bh
-
         inter_x1 = max(ax, bx)
         inter_y1 = max(ay, by)
         inter_x2 = min(ax2, bx2)
         inter_y2 = min(ay2, by2)
         inter_w = max(0.0, inter_x2 - inter_x1)
         inter_h = max(0.0, inter_y2 - inter_y1)
-        inter_area = inter_w * inter_h
-        if inter_area <= 0.0:
+        inter = inter_w * inter_h
+        if inter <= 0.0:
             return 0.0
-        union = aw * ah + bw * bh - inter_area
+        union = aw * ah + bw * bh - inter
         if union <= 0.0:
             return 0.0
-        return float(inter_area / union)
+        return float(inter / union)
 
     def _reset_global_tracks(self) -> None:
-        """Reset global track id mapping for sliding-window runs."""
         self._global_track_next_id = 1
         self._global_track_last_box.clear()
 
@@ -411,54 +573,110 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         used_ids: Optional[set[int]] = None,
         iou_threshold: float = 0.3,
     ) -> int:
-        """
-        Assign a stable global track id for the given box based on IoU with
-        previously seen tracks. Ensures each global id is used at most once
-        per frame via the optional `used_ids` set.
-        """
         if used_ids is None:
             used_ids = set()
 
         best_gid: Optional[int] = None
         best_iou = 0.0
-        best_center_shift = float("inf")
         for gid, prev_box in self._global_track_last_box.items():
             if gid in used_ids:
                 continue
             iou = self._box_iou_xywh(prev_box, box_xywh)
-            cx_prev = float(prev_box[0] + prev_box[2] * 0.5)
-            cy_prev = float(prev_box[1] + prev_box[3] * 0.5)
-            cx_curr = float(box_xywh[0] + box_xywh[2] * 0.5)
-            cy_curr = float(box_xywh[1] + box_xywh[3] * 0.5)
-            center_shift = float(
-                np.hypot(cx_prev - cx_curr, cy_prev - cy_curr))
-
-            if iou > best_iou or (np.isclose(iou, best_iou) and center_shift < best_center_shift):
+            if iou > best_iou:
                 best_iou = iou
                 best_gid = gid
-                best_center_shift = center_shift
 
         if best_gid is not None and best_iou >= iou_threshold:
             self._global_track_last_box[best_gid] = box_xywh
             return best_gid
 
-        # Fallback: if IoU is low but the box stayed near the previous center,
-        # keep the same id to avoid unnecessary id churn on small object counts.
-        if best_gid is not None:
-            prev_box = np.asarray(
-                self._global_track_last_box[best_gid], dtype=float)
-            prev_diag = float(np.hypot(prev_box[2], prev_box[3]))
-            curr_diag = float(np.hypot(box_xywh[2], box_xywh[3]))
-            max_diag = max(prev_diag, curr_diag, 1e-6)
-            relative_shift = best_center_shift / max_diag
-            if best_iou > 0.05 or relative_shift <= 0.75:
-                self._global_track_last_box[best_gid] = box_xywh
-                return best_gid
-
         gid = self._global_track_next_id
         self._global_track_next_id += 1
         self._global_track_last_box[gid] = box_xywh
         return gid
+
+    @staticmethod
+    def _empty_window_dir(window_dir: Path) -> None:
+        for child in window_dir.glob("*"):
+            if child.is_file():
+                child.unlink(missing_ok=True)
+
+    def _iter_video_windows(
+        self,
+        *,
+        window_size: int,
+        stride: int,
+    ) -> Iterator[Tuple[int, int, List[np.ndarray]]]:
+        # For file-backed videos, always read windows from the actual video.
+        # Sidecar images in the results folder may include stale prediction
+        # artifacts and must not redefine the source timeline.
+        if (not Path(self.video_path).is_file()) and self.frame_names:
+            total = len(self.frame_names)
+            for start in range(0, total, stride):
+                end = min(start + window_size, total)
+                if end <= start:
+                    break
+                frames: List[np.ndarray] = []
+                for idx in range(start, end):
+                    frame_path = Path(self.video_dir) / self.frame_names[idx]
+                    frame = cv2.imread(str(frame_path))
+                    if frame is None:
+                        continue
+                    frames.append(frame)
+                if frames:
+                    yield start, start + len(frames), frames
+            return
+
+        if not Path(self.video_path).is_file():
+            return
+        cap = cv2.VideoCapture(str(self.video_path))
+        if not cap.isOpened():
+            return
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        start = 0
+        try:
+            while True:
+                frames: List[np.ndarray] = []
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+                for _ in range(window_size):
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+                    frames.append(frame)
+                if not frames:
+                    break
+                end = start + len(frames)
+                yield start, end, frames
+                if total_frames and end >= total_frames:
+                    break
+                start += stride
+        finally:
+            cap.release()
+
+    def _map_outputs_to_global_ids(self, outputs: Dict[str, object]) -> Dict[str, object]:
+        obj_ids = outputs.get("out_obj_ids", [])
+        boxes = outputs.get("out_boxes_xywh", [])
+        if boxes is None:
+            return outputs
+        try:
+            boxes_arr = np.asarray(boxes, dtype=float)
+        except Exception:
+            return outputs
+        if len(boxes_arr) != len(obj_ids):
+            return outputs
+
+        used: set[int] = set()
+        mapped: List[int] = []
+        for idx, _ in enumerate(obj_ids):
+            gid = self._assign_global_track_id(
+                box_xywh=np.asarray(boxes_arr[idx], dtype=float),
+                used_ids=used,
+            )
+            used.add(gid)
+            mapped.append(int(gid))
+        outputs = dict(outputs)
+        outputs["out_obj_ids"] = np.asarray(mapped, dtype=np.int64)
+        return outputs
 
     @staticmethod
     def _label_hints_from_ids(labels: List[int], id_to_labels: Dict[int, str]) -> List[str]:
@@ -564,6 +782,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         total_frames: Optional[int] = None,
         yielded_frames: int = 0,
         label_hints: Optional[List[str]] = None,
+        apply_score_threshold: bool = True,
     ) -> Tuple[int, int]:
         obj_ids = outputs.get("out_obj_ids", [])
         masks = outputs.get("out_binary_masks", [])
@@ -580,32 +799,6 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 frame_meta = {"sam3_frame_stats": fs}
             except Exception:
                 frame_meta = None
-
-        # In sliding-window text-prompt mode, remap per-window SAM3 object ids to
-        # stable global track ids so ids stay consistent across windows.
-        if (
-            self._sliding_window_mode_active
-            and self.text_prompt
-            and boxes is not None
-            and len(boxes) == len(obj_ids)
-        ):
-            try:
-                used_global: set[int] = set()
-                new_ids: List[int] = []
-                boxes_arr = np.asarray(boxes, dtype=float)
-                for idx, _local_id in enumerate(obj_ids):
-                    box_xywh = np.asarray(boxes_arr[idx], dtype=float)
-                    gid = self._assign_global_track_id(
-                        box_xywh=box_xywh,
-                        used_ids=used_global,
-                    )
-                    used_global.add(gid)
-                    new_ids.append(int(gid))
-                obj_ids = new_ids
-                outputs["out_obj_ids"] = np.asarray(new_ids, dtype=np.int64)
-            except Exception:
-                # Best-effort remapping; fall back to raw ids on failure.
-                pass
 
         for idx, (obj_id, mask) in enumerate(zip(obj_ids, masks)):
             key = str(obj_id)
@@ -636,7 +829,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 except Exception:
                     pass
             score_thresh = self.score_threshold_detection
-            if score_thresh is not None and sam3_score is not None:
+            if (
+                apply_score_threshold
+                and score_thresh is not None
+                and sam3_score is not None
+            ):
                 if sam3_score < float(score_thresh):
                     # Drop low-confidence outputs instead of writing them to disk.
                     continue
@@ -660,6 +857,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             frame_idx=frame_idx,
             obj_meta=obj_meta,
             frame_meta=frame_meta,
+            persist_empty_frame=True,
         )
         # Track frames for possible later per-frame reacquisition.
         self._frames_processed.add(int(frame_idx))
@@ -683,6 +881,45 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     f"({progress}%), frame={frame_idx}, masks={len(mask_dict)}"
                 )
         return len(mask_dict), len(mask_dict)
+
+    def _ensure_prediction_json_coverage(
+        self,
+        *,
+        expected_frames: Iterable[int],
+    ) -> Tuple[int, int]:
+        """Ensure expected frames have valid per-frame JSON prediction files.
+
+        Repairs missing/corrupt files by materializing empty prediction JSON.
+        """
+        if self.frame_shape is None:
+            self.frame_shape = self.get_frame_shape()
+
+        repaired = 0
+        invalid = 0
+        for frame_idx in sorted({int(f) for f in expected_frames if f is not None}):
+            if frame_idx < 0:
+                continue
+            frame_path = Path(self.video_dir) / f"{int(frame_idx):09d}.json"
+            needs_repair = False
+            if not frame_path.exists():
+                needs_repair = True
+            else:
+                try:
+                    json.loads(frame_path.read_text(encoding="utf-8"))
+                except Exception:
+                    needs_repair = True
+                    invalid += 1
+            if not needs_repair:
+                continue
+            self._save_annotations(
+                str(frame_path),
+                {},
+                self.frame_shape,
+                frame_idx=int(frame_idx),
+                persist_empty_frame=True,
+            )
+            repaired += 1
+        return int(repaired), int(invalid)
 
     def propagate(
         self,
@@ -714,6 +951,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     outputs=outputs,
                     total_frames=total_frames,
                     yielded_frames=yielded_frames,
+                    apply_score_threshold=False,
                 )
                 total_masks += masks_in_frame
 
@@ -723,103 +961,135 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
         return _propagate()
 
-    def _propagate_text_prompt_with_sliding_window(
+    def _propagate_text_prompt_windowed(
         self,
         *,
         text_prompt: str,
         target_device: Optional[torch.device | str],
     ) -> Tuple[int, int]:
         """
-        Low-RAM propagation path for text-only runs: keep only a small window
-        of frames in memory while still writing masks/metadata through the
-        usual annotation pipeline.
+        SAM3.1 windowed inference for long videos:
+        - small frame windows to bound memory
+        - carry visual boxes from previous masks to stabilize continuity
+        - remap local object ids to stable global ids across windows
         """
-        resolved_device = set_default_device(
-            target_device or self.default_device)
-        device_str = str(
-            resolved_device) if resolved_device is not None else None
-        total_frames = self.total_frames_estimate()
-        yielded_frames = 0
-        total_masks = 0
-
-        window_size = int(self.sliding_window_size or 1)
+        resolved_device = self._resolve_runtime_device(target_device)
+        window_size = max(1, int(self.sliding_window_size or 5))
         stride = self.sliding_window_stride
-        if stride is not None:
-            try:
-                stride = int(stride)
-            except Exception:
-                stride = None
-
-        # Heuristic: MPS is prone to OOM on larger windows. Clamp to a safer
-        # default while still allowing CUDA users to run larger windows.
-        if resolved_device.type == "mps" and window_size > 5:
-            logger.warning(
-                "SAM3: clamping sliding-window size from %d to %d for MPS to reduce OOM risk.",
-                window_size,
-                5,
-            )
-            window_size = 5
-            if stride is None or stride > window_size:
-                stride = window_size
-
-        # Enable global-id remapping for the sliding-window run.
-        self._reset_global_tracks()
-        self._sliding_window_mode_active = True
         try:
-            try:
-                for frame_idx, outputs in run_video_sliding_window(
-                    video_path=str(self.video_path),
-                    mode="sam3",
-                    text_prompt=text_prompt,
-                    window_size=window_size,
-                    stride=stride,
-                    device=device_str,
-                ):
-                    yielded_frames += 1
-                    masks_in_frame, _ = self._handle_frame_outputs(
-                        frame_idx=frame_idx,
-                        outputs=outputs,
-                        total_frames=total_frames,
-                        yielded_frames=yielded_frames,
+            stride = int(stride) if stride is not None else window_size
+        except Exception:
+            stride = window_size
+        if stride <= 0:
+            stride = window_size
+
+        # On MPS, conservative windows are safer for long videos.
+        if resolved_device.type == "mps" and window_size > 5:
+            window_size = 5
+            stride = min(stride, window_size)
+
+        self._reset_global_tracks()
+        total_frames = self.total_frames_estimate()
+        frame_to_masks: Dict[int, int] = {}
+
+        if self._predictor is None or self._predictor_device != resolved_device:
+            self._predictor = self._initialize_predictor(resolved_device)
+            self._predictor_device = resolved_device
+
+        with tempfile.TemporaryDirectory(prefix="annolid_sam3p1_windows_") as tmp_root:
+            window_dir = Path(tmp_root) / "frames"
+            window_dir.mkdir(parents=True, exist_ok=True)
+
+            for start_idx, _, frames in self._iter_video_windows(
+                window_size=window_size,
+                stride=stride,
+            ):
+                self._empty_window_dir(window_dir)
+                for local_idx, frame in enumerate(frames):
+                    out_path = window_dir / f"{local_idx:06d}.jpg"
+                    cv2.imwrite(str(out_path), frame)
+
+                session_resp = self._predictor.start_session(
+                    resource_path=str(window_dir),
+                    offload_video_to_cpu=self.offload_video_to_cpu,
+                )
+                session_id = str(session_resp["session_id"])
+                try:
+                    # Use previous masks as a visual cue when available.
+                    carry_boxes_abs = self._derive_boxes_from_previous_masks(start_idx)
+                    if carry_boxes_abs:
+                        h, w = frames[0].shape[:2]
+                        carry_boxes = self._normalize_boxes(carry_boxes_abs, w, h)
+                    else:
+                        carry_boxes = None
+
+                    self._predictor.add_prompt(
+                        session_id=session_id,
+                        frame_idx=0,
+                        text=text_prompt,
+                        points=None,
+                        point_labels=None,
+                        bounding_boxes=carry_boxes,
+                        bounding_box_labels=[1] * len(carry_boxes)
+                        if carry_boxes
+                        else None,
+                        obj_id=None,
                     )
-                    total_masks += masks_in_frame
-            except RuntimeError as exc:
-                # CPU fallback for Apple MPS OOM to avoid crashing the GUI.
-                if resolved_device.type == "mps" and _is_mps_oom(exc) and yielded_frames == 0:
-                    logger.warning(
-                        "SAM3 sliding-window propagation hit MPS OOM; retrying on CPU. "
-                        "Tip: reduce 'Sliding window size' for MPS to lower memory usage. Error: %s",
-                        str(exc),
-                    )
-                    _clear_mps_cache()
-                    resolved_device = set_default_device("cpu")
-                    device_str = "cpu"
-                    for frame_idx, outputs in run_video_sliding_window(
-                        video_path=str(self.video_path),
-                        mode="sam3",
-                        text_prompt=text_prompt,
-                        window_size=window_size,
-                        stride=stride,
-                        device=device_str,
+                    for result in self._predictor.propagate_in_video(
+                        session_id=session_id,
+                        propagation_direction="forward",
+                        start_frame_idx=0,
+                        max_frame_num_to_track=len(frames),
                     ):
-                        yielded_frames += 1
+                        local_frame = int(result.get("frame_index", 0))
+                        global_frame = start_idx + local_frame
+                        outputs = result.get("outputs", {}) or {}
+                        outputs = self._map_outputs_to_global_ids(outputs)
                         masks_in_frame, _ = self._handle_frame_outputs(
-                            frame_idx=frame_idx,
+                            frame_idx=global_frame,
                             outputs=outputs,
                             total_frames=total_frames,
-                            yielded_frames=yielded_frames,
+                            yielded_frames=len(frame_to_masks) + 1,
+                            apply_score_threshold=False,
                         )
-                        total_masks += masks_in_frame
-                else:
-                    raise
-        finally:
-            self._sliding_window_mode_active = False
+                        frame_to_masks[global_frame] = masks_in_frame
+                finally:
+                    try:
+                        self._predictor.close_session(session_id)
+                    except Exception:
+                        pass
 
-        if yielded_frames == 0:
-            raise RuntimeError(
-                "SAM3 sliding-window propagation yielded no frames"
+        if not frame_to_masks:
+            raise RuntimeError("SAM3.1 windowed propagation yielded no frames")
+        if total_frames and self.text_prompt:
+            missing_frames = sorted(
+                set(range(int(total_frames))) - set(self._frames_with_masks)
             )
-        return yielded_frames, total_masks
+            if missing_frames:
+                logger.info(
+                    "SAM3.1: %d frame(s) with no masks after windowed propagation; "
+                    "running per-frame visual+text reacquisition.",
+                    len(missing_frames),
+                )
+                self._reacquire_frames_with_visual_and_text(
+                    missing_frames, target_device
+                )
+        expected_frames: Iterable[int]
+        if total_frames and total_frames > 0:
+            expected_frames = range(int(total_frames))
+        else:
+            expected_frames = frame_to_masks.keys()
+        repaired, invalid = self._ensure_prediction_json_coverage(
+            expected_frames=expected_frames
+        )
+        if repaired > 0:
+            logger.info(
+                "SAM3.1: repaired %d frame JSON file(s)%s during coverage finalization.",
+                int(repaired),
+                f" (invalid={int(invalid)})" if invalid > 0 else "",
+            )
+        total_masks = int(sum(frame_to_masks.values()))
+        return len(frame_to_masks), total_masks
 
     def _prepare_prompts(
         self, annotations: Iterable[dict], text_prompt: Optional[str]
@@ -921,6 +1191,16 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         """
         @torch.inference_mode()
         def _run():
+            total_frames = self.total_frames_estimate()
+            if total_frames:
+                removed = self.prune_out_of_range_prediction_frames(total_frames)
+                if removed > 0:
+                    logger.info(
+                        "SAM3: pruned %d out-of-range prediction frame record(s) "
+                        "above frame %d before run.",
+                        int(removed),
+                        int(total_frames) - 1,
+                    )
             prompt_frame_idx, boxes, labels, _ = self._prepare_prompts(
                 annotations, self.text_prompt
             )
@@ -934,30 +1214,35 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             # Reset tracking sets for this run.
             self._frames_processed.clear()
             self._frames_with_masks.clear()
+            self._frame_masks.clear()
 
             if (
                 self.use_sliding_window_for_text_prompt
                 and self.text_prompt
                 and not boxes
             ):
-                resolved_device = set_default_device(
-                    target_device or self.default_device
-                )
-                window_size = int(self.sliding_window_size or 1)
-                stride = self.sliding_window_stride or window_size
-                if resolved_device.type == "mps" and window_size > 5:
-                    window_size = 5
-                    stride = min(int(stride or window_size), window_size)
                 logger.info(
-                    "SAM3: running sliding-window text propagation "
-                    "(window_size=%d, stride=%s) to keep memory low.",
-                    window_size,
-                    stride,
+                    "SAM3.1: running windowed text propagation (window_size=%s, stride=%s).",
+                    self.sliding_window_size,
+                    self.sliding_window_stride or self.sliding_window_size,
                 )
-                return self._propagate_text_prompt_with_sliding_window(
-                    text_prompt=self.text_prompt,
-                    target_device=target_device,
-                )
+                try:
+                    return self._propagate_text_prompt_windowed(
+                        text_prompt=self.text_prompt,
+                        target_device=target_device,
+                    )
+                except RuntimeError as exc:
+                    if _is_mps_oom(exc):
+                        logger.warning(
+                            "SAM3.1 windowed mode hit MPS OOM; retrying on CPU: %s",
+                            exc,
+                        )
+                        _clear_mps_cache()
+                        return self._propagate_text_prompt_windowed(
+                            text_prompt=self.text_prompt,
+                            target_device="cpu",
+                        )
+                    raise
 
             with self._session_scope(target_device) as _:
                 # Clear SAM3 action history so the first propagation performs a full
@@ -990,6 +1275,26 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     )
                     self._reacquire_frames_with_visual_and_text(
                         missing_frames, target_device
+                    )
+                expected_frames: Iterable[int]
+                total_frames = self.total_frames_estimate()
+                effective_limit = max_frame_num_to_track or self.max_frame_num_to_track
+                if (
+                    total_frames
+                    and total_frames > 0
+                    and (effective_limit is None or int(effective_limit) >= int(total_frames))
+                ):
+                    expected_frames = range(int(total_frames))
+                else:
+                    expected_frames = self._frames_processed
+                repaired, invalid = self._ensure_prediction_json_coverage(
+                    expected_frames=expected_frames
+                )
+                if repaired > 0:
+                    logger.info(
+                        "SAM3: repaired %d frame JSON file(s)%s during coverage finalization.",
+                        int(repaired),
+                        f" (invalid={int(invalid)})" if invalid > 0 else "",
                     )
             return frames, masks
 

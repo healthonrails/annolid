@@ -1,14 +1,14 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 import math
 from functools import partial
 from typing import Tuple, Type
 
 import torch
 import torch.nn.functional as F
-
 from sam3.sam.rope import apply_rotary_enc, apply_rotary_enc_real, compute_axial_cis
-from sam3.utils import select_device
 from torch import nn, Tensor
 
 from .common import MLPBlock
@@ -204,9 +204,9 @@ class Attention(nn.Module):
         self.internal_dim = embedding_dim // downsample_rate
         self.num_heads = num_heads
         self.use_fa3 = use_fa3
-        assert (
-            self.internal_dim % num_heads == 0
-        ), "num_heads must divide embedding_dim."
+        assert self.internal_dim % num_heads == 0, (
+            "num_heads must divide embedding_dim."
+        )
 
         self.q_proj = nn.Linear(embedding_dim, self.internal_dim)
         self.k_proj = nn.Linear(self.kv_in_dim, self.internal_dim)
@@ -283,7 +283,7 @@ class RoPEAttention(Attention):
         self.compute_cis = partial(
             compute_axial_cis, dim=self.internal_dim // self.num_heads, theta=rope_theta
         )
-        device = select_device()
+        device = torch.device("cuda") if torch.cuda.is_available() else None
         self.freqs_cis = self.compute_cis(
             end_x=feat_sizes[0], end_y=feat_sizes[1], device=device
         )
@@ -307,7 +307,7 @@ class RoPEAttention(Attention):
 
         # Apply rotary position encoding
         w = h = math.sqrt(q.shape[-2])
-        if self.freqs_cis.shape[0] != q.shape[-2] or self.freqs_cis.device != q.device:
+        if self.freqs_cis.shape[0] != q.shape[-2]:
             self.freqs_cis = self.compute_cis(end_x=w, end_y=h, device=q.device)
             self.freqs_cis_real = self.freqs_cis.real
             self.freqs_cis_imag = self.freqs_cis.imag

@@ -1,18 +1,18 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 import logging
 
 import torch
 import torch.nn.functional as F
-
 from sam3.model.memory import SimpleMaskEncoder
-
 from sam3.model.sam3_tracker_utils import get_1d_sine_pe, select_closest_cond_frames
-
+from sam3.model.data_misc import BatchedDatapoint
 from sam3.sam.mask_decoder import MaskDecoder, MLP
 from sam3.sam.prompt_encoder import PromptEncoder
 from sam3.sam.transformer import TwoWayTransformer
-from sam3.model.data_misc import BatchedDatapoint
+from sam3.utils.device import host_to_device, tensor_to_module, to_device
 
 try:
     from timm.layers import trunc_normal_
@@ -164,16 +164,9 @@ class Sam3TrackerBase(torch.nn.Module):
             return torch.zeros(len(rel_pos_list), self.mem_dim, device=device)
 
         t_diff_max = max_abs_pos - 1 if max_abs_pos is not None else 1
-        # Build temporal position encodings on the correct device. For CUDA we can
-        # use pinned memory + non_blocking transfer; for CPU or other devices we
-        # avoid pin_memory to prevent cross-device storage errors.
-        if isinstance(device, torch.device) and device.type == "cuda":
-            # Always build on CPU first; pin + transfer to GPU non-blocking.
-            pos_cpu = torch.as_tensor(rel_pos_list, device="cpu")
-            pos = pos_cpu.pin_memory().to(device=device, non_blocking=True)
-        else:
-            pos = torch.as_tensor(rel_pos_list, device=device)
-        pos_enc = pos / t_diff_max
+        pos_enc = host_to_device(
+            torch.tensor(rel_pos_list), device, non_blocking=True
+        ) / t_diff_max
         tpos_dim = self.hidden_dim
         pos_enc = get_1d_sine_pe(pos_enc, dim=tpos_dim)
         pos_enc = self.obj_ptr_tpos_proj(pos_enc)
@@ -454,10 +447,14 @@ class Sam3TrackerBase(torch.nn.Module):
         # precompute projected level 0 and level 1 features in SAM decoder
         # to avoid running it again on every SAM click
         backbone_out["backbone_fpn"][0] = self.sam_mask_decoder.conv_s0(
-            backbone_out["backbone_fpn"][0]
+            tensor_to_module(
+                backbone_out["backbone_fpn"][0], self.sam_mask_decoder.conv_s0
+            )
         )
         backbone_out["backbone_fpn"][1] = self.sam_mask_decoder.conv_s1(
-            backbone_out["backbone_fpn"][1]
+            tensor_to_module(
+                backbone_out["backbone_fpn"][1], self.sam_mask_decoder.conv_s1
+            )
         )
         # Clone to help torch.compile
         for i in range(len(backbone_out["backbone_fpn"])):
@@ -660,14 +657,14 @@ class Sam3TrackerBase(torch.nn.Module):
                     continue  # skip padding frames
                 # "maskmem_features" might have been offloaded to CPU in demo use cases,
                 # so we load it back to GPU (it's a no-op if it's already on GPU).
-                feats = prev["maskmem_features"].to(device, non_blocking=True)
+                feats = to_device(prev["maskmem_features"], device, non_blocking=True)
                 seq_len = feats.shape[-2] * feats.shape[-1]
                 to_cat_prompt.append(feats.flatten(2).permute(2, 0, 1))
                 to_cat_prompt_mask.append(
                     torch.zeros(B, seq_len, device=device, dtype=bool)
                 )
                 # Spatial positional encoding (it might have been offloaded to CPU in eval)
-                maskmem_enc = prev["maskmem_pos_enc"][-1].to(device)
+                maskmem_enc = to_device(prev["maskmem_pos_enc"][-1], device)
                 maskmem_enc = maskmem_enc.flatten(2).permute(2, 0, 1)
 
                 if (
@@ -906,8 +903,6 @@ class Sam3TrackerBase(torch.nn.Module):
                 image=current_image,
                 point_inputs=backbone_out["point_inputs_per_frame"].get(stage_id, None),
                 mask_inputs=backbone_out["mask_inputs_per_frame"].get(stage_id, None),
-                gt_masks=backbone_out["gt_masks_per_frame"].get(stage_id, None),
-                frames_to_add_correction_pt=frames_to_add_correction_pt,
                 output_dict=output_dict,
                 num_frames=num_frames,
             )

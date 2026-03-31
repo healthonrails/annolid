@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 from tqdm import tqdm
 import argparse
+import cv2
 from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.shapes import masks_to_bboxes, polygon_center
 from annolid.annotation.masks import binary_mask_to_coco_rle
@@ -89,7 +90,9 @@ def _extract_frame_number_from_json_name(file_name: str) -> int | None:
         return None
 
 
-def _collect_annotation_files(json_folder_path: Path) -> list[str]:
+def _collect_annotation_files(
+    json_folder_path: Path, *, max_valid_frame: int | None = None
+) -> list[str]:
     json_files = sorted(f for f in os.listdir(json_folder_path) if f.endswith(".json"))
     store = AnnotationStore.for_frame_path(
         json_folder_path / f"{json_folder_path.name}_000000000.json"
@@ -100,7 +103,30 @@ def _collect_annotation_files(json_folder_path: Path) -> list[str]:
             for frame in sorted(store.iter_frames())
         ]
         json_files = sorted(set(json_files) | set(store_files))
+    if max_valid_frame is not None:
+        filtered: list[str] = []
+        for name in json_files:
+            frame = _extract_frame_number_from_json_name(name)
+            if frame is None:
+                continue
+            if int(frame) > int(max_valid_frame):
+                continue
+            filtered.append(name)
+        json_files = filtered
     return json_files
+
+
+def _video_frame_count(video_path: Path | None) -> int | None:
+    if video_path is None or not video_path.exists():
+        return None
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return None
+    try:
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    finally:
+        cap.release()
+    return frame_count if frame_count > 0 else None
 
 
 def _existing_csv_covers_all_frames(csv_path: Path, required_frames: set[int]) -> bool:
@@ -283,7 +309,16 @@ def convert_json_to_csv(
                 pass
 
     json_folder_path = Path(json_folder)
-    json_files = _collect_annotation_files(json_folder_path)
+    video_path_for_bounds = _find_video_for_json_folder(json_folder_path)
+    video_frame_count = _video_frame_count(video_path_for_bounds)
+    max_valid_frame = (
+        int(video_frame_count) - 1
+        if video_frame_count and int(video_frame_count) > 0
+        else None
+    )
+    json_files = _collect_annotation_files(
+        json_folder_path, max_valid_frame=max_valid_frame
+    )
     if not json_files:
         return f"No annotation files found in {json_folder}."
 
@@ -315,7 +350,7 @@ def convert_json_to_csv(
 
     video_path = None
     if should_collect_tracked_rows:
-        video_path = _find_video_for_json_folder(json_folder_path)
+        video_path = video_path_for_bounds
 
     csv_output = None
     csv_writer = None

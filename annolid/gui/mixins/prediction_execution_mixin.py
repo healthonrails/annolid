@@ -224,7 +224,11 @@ class PredictionExecutionMixin:
         return True
 
     def _max_predicted_frame_index(
-        self, folder: Path, *, include_store: bool = True
+        self,
+        folder: Path,
+        *,
+        include_store: bool = True,
+        max_valid_frame: int | None = None,
     ) -> int:
         """Return the maximum predicted frame index found for a results folder.
 
@@ -254,6 +258,8 @@ class PredictionExecutionMixin:
                     idx = int(float(match.group(1)))
                 except Exception:
                     continue
+                if max_valid_frame is not None and int(idx) > int(max_valid_frame):
+                    continue
                 if idx > max_frame:
                     max_frame = idx
         except Exception:
@@ -266,6 +272,10 @@ class PredictionExecutionMixin:
                 )
                 if store.store_path.exists():
                     for idx in store.iter_frames():
+                        if max_valid_frame is not None and int(idx) > int(
+                            max_valid_frame
+                        ):
+                            continue
                         if int(idx) > max_frame:
                             max_frame = int(idx)
             except Exception:
@@ -684,6 +694,11 @@ class PredictionExecutionMixin:
             if self.video_results_folder and not has_forced_start:
                 try:
                     results_folder = Path(self.video_results_folder)
+                    max_valid_frame = (
+                        int(self.num_frames) - 1
+                        if int(self.num_frames or 0) > 0
+                        else None
+                    )
                     # Refresh existing predicted marks before a restarted run so users
                     # can see completed sections immediately.
                     self._scan_prediction_folder(str(results_folder))
@@ -701,7 +716,9 @@ class PredictionExecutionMixin:
                         manual_seed_max = -1
 
                     max_existing = self._max_predicted_frame_index(
-                        results_folder, include_store=False
+                        results_folder,
+                        include_store=False,
+                        max_valid_frame=max_valid_frame,
                     )
                     if self._is_cutie_tracking_model(model_name):
                         # CUTIE should not scan/predict before the first manual seed.
@@ -858,8 +875,14 @@ class PredictionExecutionMixin:
                 # annotations instead of skipping already-labeled frames.
                 try:
                     if self.video_results_folder:
+                        max_valid_frame = (
+                            int(self.num_frames) - 1
+                            if int(self.num_frames or 0) > 0
+                            else None
+                        )
                         existing_max = self._max_predicted_frame_index(
-                            Path(self.video_results_folder)
+                            Path(self.video_results_folder),
+                            max_valid_frame=max_valid_frame,
                         )
                         if int(existing_max) >= 0:
                             inference_start_frame = 0
@@ -1042,8 +1065,14 @@ class PredictionExecutionMixin:
                     max_predicted = -1
                     try:
                         if self.video_results_folder:
+                            max_valid_frame = (
+                                int(self.num_frames) - 1
+                                if int(self.num_frames or 0) > 0
+                                else None
+                            )
                             max_predicted = self._max_predicted_frame_index(
-                                Path(self.video_results_folder)
+                                Path(self.video_results_folder),
+                                max_valid_frame=max_valid_frame,
                             )
                     except Exception:
                         max_predicted = -1

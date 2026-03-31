@@ -10,11 +10,14 @@ from typing import Mapping, Optional
 from pathlib import Path
 import torch
 import numpy as np
+import math
 import glob
 import cv2
 import copy
 import os
 import sys
+import re
+import json
 
 from huggingface_hub import hf_hub_download
 from hydra import initialize_config_module
@@ -98,6 +101,14 @@ class BaseSAMVideoProcessor:
         if self.frame_shape is not None:
             return self.frame_shape
 
+        # For file-backed videos, trust the video stream over any sidecar
+        # PNG/JPG artifacts that may exist in the results folder.
+        if os.path.isfile(self.video_path):
+            shape = self._video_first_frame_shape()
+            if shape is not None:
+                self.frame_shape = shape
+                return self.frame_shape
+
         # Prefer extracted frames if present.
         if self.frame_names:
             first_frame_path = os.path.join(self.video_dir, self.frame_names[0])
@@ -120,15 +131,67 @@ class BaseSAMVideoProcessor:
 
     def total_frames_estimate(self) -> Optional[int]:
         """Best-effort estimate of total frames for progress reporting."""
-        if self.frame_names:
-            return len(self.frame_names)
+        # For file-backed videos, prefer container metadata over sidecar image files.
         if os.path.isfile(self.video_path):
             cap = cv2.VideoCapture(self.video_path)
             if cap.isOpened():
                 count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
                 cap.release()
                 return count if count > 0 else None
+        if self.frame_names:
+            return len(self.frame_names)
         return None
+
+    def prune_out_of_range_prediction_frames(self, total_frames: Optional[int]) -> int:
+        """Drop prediction records that exceed the current video frame bounds.
+
+        This protects reruns in a reused results folder from stale frame indices
+        (for example after prior failed/partial runs), which can otherwise
+        contaminate progress/completion checks and CSV export.
+        """
+        try:
+            total = int(total_frames) if total_frames is not None else 0
+        except (TypeError, ValueError):
+            total = 0
+        if total <= 0:
+            return 0
+        max_valid = total - 1
+        removed = 0
+        frame_pattern = re.compile(r"(?:^|_)(\d{9,})\.json$")
+        try:
+            for path in Path(self.video_dir).glob("*.json"):
+                match = frame_pattern.search(path.name)
+                if match is None:
+                    continue
+                try:
+                    frame_idx = int(match.group(1))
+                except (TypeError, ValueError):
+                    continue
+                if frame_idx <= max_valid:
+                    continue
+                path.unlink(missing_ok=True)
+                removed += 1
+        except Exception as exc:
+            logger.debug(
+                "Failed pruning out-of-range JSON files under %s: %s",
+                self.video_dir,
+                exc,
+                exc_info=True,
+            )
+
+        try:
+            store = AnnotationStore.for_frame_path(
+                Path(self.video_dir) / f"{Path(self.video_dir).name}_000000000.json"
+            )
+            removed += int(store.remove_frames_after(max_valid))
+        except Exception as exc:
+            logger.debug(
+                "Failed pruning out-of-range annotation store frames under %s: %s",
+                self.video_dir,
+                exc,
+                exc_info=True,
+            )
+        return int(removed)
 
     def _save_annotations(
         self,
@@ -138,6 +201,7 @@ class BaseSAMVideoProcessor:
         frame_idx: Optional[int] = None,
         obj_meta: Optional[dict] = None,
         frame_meta: Optional[dict] = None,
+        persist_empty_frame: bool = False,
     ):
         """Saves annotations to a JSON file."""
         height, width = frame_shape[:2]
@@ -178,6 +242,51 @@ class BaseSAMVideoProcessor:
                 save_image_to_json=False,
                 persist_json=False,
             )
+        elif persist_empty_frame:
+            # Materialize an explicit empty per-frame prediction record so
+            # progress/completion logic can still observe coverage for frames
+            # where SAM produced no masks (e.g. final tail frames).
+            try:
+                frame_path = Path(filename)
+                should_write_empty = True
+                if frame_path.exists():
+                    try:
+                        json.loads(frame_path.read_text(encoding="utf-8"))
+                        should_write_empty = False
+                    except Exception:
+                        should_write_empty = True
+                if should_write_empty:
+                    payload = {
+                        "version": "5.2.1",
+                        "flags": {},
+                        "shapes": [],
+                        "imagePath": image_path,
+                        "imageHeight": int(height),
+                        "imageWidth": int(width),
+                        "annolid_empty_prediction": True,
+                    }
+                    if frame_meta:
+                        for key, value in frame_meta.items():
+                            payload[key] = value
+                    payload = _json_safe_strict(payload)
+                    text = json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                    frame_path.parent.mkdir(parents=True, exist_ok=True)
+                    tmp_path = frame_path.with_suffix(frame_path.suffix + ".tmp")
+                    with tmp_path.open("w", encoding="utf-8") as fh:
+                        fh.write(text)
+                    tmp_path.replace(frame_path)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to write empty prediction JSON %s: %s",
+                    filename,
+                    exc,
+                    exc_info=True,
+                )
         # Write an NDJSON record if configured.
         frame_number = (
             frame_idx
@@ -199,6 +308,25 @@ class BaseSAMVideoProcessor:
                     exc,
                 )
         return label_list
+
+
+def _json_safe_strict(value):
+    """Recursively convert values into strict-JSON-safe Python primitives."""
+    if isinstance(value, dict):
+        return {str(k): _json_safe_strict(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_strict(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return _json_safe_strict(value.tolist())
+    if isinstance(value, np.generic):
+        return _json_safe_strict(value.item())
+    if torch.is_tensor(value):
+        return _json_safe_strict(value.detach().cpu().tolist())
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    return value
 
 
 class SAM2VideoProcessor(BaseSAMVideoProcessor):

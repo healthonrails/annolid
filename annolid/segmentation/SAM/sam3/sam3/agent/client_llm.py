@@ -1,8 +1,12 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 import base64
 import os
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
+
+from openai import OpenAI
 
 
 def get_image_base64_and_mime(image_path):
@@ -29,72 +33,11 @@ def get_image_base64_and_mime(image_path):
         return None, None
 
 
-def _resolve_llm_defaults(
-    model: Optional[str],
-    server_url: Optional[str],
-    api_key: Optional[str],
-) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """
-    Best-effort resolution of model/server/api_key from Annolid LLM settings.
-    Falls back to provided arguments/env vars when settings are unavailable.
-    """
-    try:
-        from annolid.utils.llm_settings import (
-            resolve_llm_config,
-            ensure_provider_env,
-        )
-
-        cfg = resolve_llm_config(profile="sam3_agent", persist=False)
-        ensure_provider_env(cfg)
-
-        resolved_model = model or cfg.model
-        resolved_key = api_key or cfg.api_key
-
-        if cfg.provider == "ollama":
-            host = cfg.params.get("host") or os.getenv(
-                "OLLAMA_HOST", "http://localhost:11434"
-            )
-            resolved_server = server_url or f"{host.rstrip('/')}/v1"
-            # OpenAI client insists on api_key; use a harmless placeholder for local Ollama.
-            resolved_key = resolved_key or "ollama"
-        elif cfg.provider == "openai":
-            resolved_server = server_url or cfg.base_url
-        else:
-            # Gemini/other providers are not OpenAI-compatible here; fallback.
-            return model, server_url, api_key
-
-        # Prefer a vision/tool-capable model; fallback to qwen3-vl on Ollama.
-        model_name = (resolved_model or "").lower()
-        looks_vision = any(
-            token in model_name
-            for token in ("vl", "vision", "4o", "gpt-4.1", "image", "llava", "qwen")
-        )
-        if not looks_vision:
-            try:
-                ollama_cfg = resolve_llm_config(
-                    provider="ollama", model="qwen3-vl", persist=False
-                )
-                ensure_provider_env(ollama_cfg)
-                host = ollama_cfg.params.get("host") or os.getenv(
-                    "OLLAMA_HOST", "http://localhost:11434"
-                )
-                resolved_model = "qwen3-vl"
-                resolved_server = f"{host.rstrip('/')}/v1"
-                resolved_key = "ollama"
-            except Exception:
-                pass
-
-        return resolved_model, resolved_server, resolved_key
-    except Exception:
-        # Keep silent fallback to original args/env to avoid hard dependency.
-        return model, server_url, api_key
-
-
 def send_generate_request(
     messages,
-    server_url: Optional[str] = None,
-    model: Optional[str] = None,
-    api_key: Optional[str] = None,
+    server_url=None,
+    model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+    api_key=None,
     max_tokens=4096,
 ):
     """
@@ -109,25 +52,6 @@ def send_generate_request(
     Returns:
         str: The generated response text from the server.
     """
-    try:
-        from openai import OpenAI
-    except ImportError:
-        print(
-            "OpenAI client is required for agent mode. "
-            "Install it with `pip install openai`."
-        )
-        raise
-
-    # Resolve defaults from Annolid LLM settings (Ollama/OpenAI-compatible/Gemini).
-    model, server_url, api_key = _resolve_llm_defaults(model, server_url, api_key)
-    if server_url is None:
-        # Final safety net: assume local Ollama.
-        host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-        server_url = f"{host.rstrip('/')}/v1"
-        api_key = api_key or "ollama"
-    if api_key is None:
-        api_key = os.getenv("OPENAI_API_KEY") or "ollama"
-
     # Process messages to convert image paths to base64
     processed_messages = []
     for message in messages:
@@ -178,11 +102,11 @@ def send_generate_request(
             processed_message["content"] = processed_content
         processed_messages.append(processed_message)
 
-    # Create OpenAI-compatible client (works for Ollama/OpenAI/etc.)
-    client = OpenAI(api_key=api_key or "ollama", base_url=server_url)
+    # Create OpenAI client with custom base URL
+    client = OpenAI(api_key=api_key, base_url=server_url)
 
     try:
-        print(f"🔍 Calling model {model} at {server_url or 'default'} ...")
+        print(f"🔍 Calling model {model}...")
         response = client.chat.completions.create(
             model=model,
             messages=processed_messages,

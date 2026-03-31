@@ -1,24 +1,22 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 import os
 from copy import deepcopy
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-
 from sam3.model.model_misc import SAM3Output
-
 from sam3.model.sam1_task_predictor import SAM3InteractiveImagePredictor
 from sam3.model.vl_combiner import SAM3VLBackbone
 from sam3.perflib.nms import nms_masks
-
 from sam3.model.data_misc import BatchedDatapoint
 
 from .act_ckpt_utils import activation_ckpt_wrapper
-
 from .box_ops import box_cxcywh_to_xyxy
-
+from .data_misc import FindStage
 from .geometry_encoders import Prompt
 from .model_misc import inverse_sigmoid
 
@@ -445,6 +443,7 @@ class Sam3Image(torch.nn.Module):
         find_input,
         find_target,
         geometric_prompt: Prompt,
+        **kwargs,
     ):
         with torch.profiler.record_function("SAM3Image._encode_prompt"):
             prompt, prompt_mask, backbone_out = self._encode_prompt(
@@ -477,10 +476,14 @@ class Sam3Image(torch.nn.Module):
 
         # Run segmentation heads
         with torch.profiler.record_function("SAM3Image._run_segmentation_heads"):
+            # Apply id_mapping to img_ids if backbone features were recomputed
+            seg_img_ids = find_input.img_ids
+            if "id_mapping" in backbone_out and backbone_out["id_mapping"] is not None:
+                seg_img_ids = backbone_out["id_mapping"][seg_img_ids]
             self._run_segmentation_heads(
                 out=out,
                 backbone_out=backbone_out,
-                img_ids=find_input.img_ids,
+                img_ids=seg_img_ids,
                 vis_feat_sizes=encoder_out["vis_feat_sizes"],
                 encoder_hidden_states=out["encoder_hidden_states"],
                 prompt=prompt,
@@ -491,6 +494,100 @@ class Sam3Image(torch.nn.Module):
         if self.training or self.num_interactive_steps_val > 0:
             self._compute_matching(out, self.back_convert(find_target))
         return out
+
+    def forward_grounding_detect_only(
+        self,
+        backbone_out,
+        find_input,
+        geometric_prompt: Prompt,
+    ):
+        """Like forward_grounding but skips the segmentation head (no masks).
+
+        Returns (out, grounding_state) where:
+          - out contains pred_logits, pred_boxes, pred_boxes_xyxy (no pred_masks)
+          - grounding_state has intermediate tensors for forward_segmentation_from_state()
+        """
+        with torch.profiler.record_function("SAM3Image._encode_prompt"):
+            prompt, prompt_mask, backbone_out = self._encode_prompt(
+                backbone_out, find_input, geometric_prompt
+            )
+        with torch.profiler.record_function("SAM3Image._run_encoder"):
+            backbone_out, encoder_out, _ = self._run_encoder(
+                backbone_out, find_input, prompt, prompt_mask
+            )
+        out = {
+            "encoder_hidden_states": encoder_out["encoder_hidden_states"],
+            "prev_encoder_out": {
+                "encoder_out": encoder_out,
+                "backbone_out": backbone_out,
+            },
+        }
+        with torch.profiler.record_function("SAM3Image._run_decoder"):
+            out, hs = self._run_decoder(
+                memory=out["encoder_hidden_states"],
+                pos_embed=encoder_out["pos_embed"],
+                src_mask=encoder_out["padding_mask"],
+                out=out,
+                prompt=prompt,
+                prompt_mask=prompt_mask,
+                encoder_out=encoder_out,
+            )
+
+        grounding_state = {
+            "hs": hs,
+            "backbone_out": backbone_out,
+            "img_ids": find_input.img_ids,
+            "vis_feat_sizes": encoder_out["vis_feat_sizes"],
+            "prompt": prompt,
+            "prompt_mask": prompt_mask,
+        }
+        return out, grounding_state
+
+    def forward_segmentation_from_state(
+        self,
+        det_out,
+        grounding_state,
+        query_indices=None,
+    ):
+        """Run the segmentation (mask) head using state from detect-only pass.
+
+        Args:
+            det_out: Detection output dict from forward_grounding_detect_only.
+            grounding_state: Intermediate state from forward_grounding_detect_only.
+            query_indices: Optional tensor of batch indices to generate masks for.
+                If None, generates masks for all queries.
+
+        Returns:
+            seg_out dict with pred_masks for the selected queries.
+        """
+        hs = grounding_state["hs"]
+        backbone_out = grounding_state["backbone_out"]
+        img_ids = grounding_state["img_ids"]
+        vis_feat_sizes = grounding_state["vis_feat_sizes"]
+        encoder_hidden_states = det_out["encoder_hidden_states"]
+        prompt = grounding_state["prompt"]
+        prompt_mask = grounding_state["prompt_mask"]
+
+        if query_indices is not None:
+            hs = hs[:, query_indices]
+            img_ids = img_ids[query_indices]
+            encoder_hidden_states = encoder_hidden_states[:, query_indices]
+            prompt = prompt[:, query_indices]
+            prompt_mask = prompt_mask[query_indices]
+
+        seg_out: Dict = {"encoder_hidden_states": encoder_hidden_states}
+        with torch.profiler.record_function("SAM3Image._run_segmentation_heads"):
+            self._run_segmentation_heads(
+                out=seg_out,
+                backbone_out=backbone_out,
+                img_ids=img_ids,
+                vis_feat_sizes=vis_feat_sizes,
+                encoder_hidden_states=encoder_hidden_states,
+                prompt=prompt,
+                prompt_mask=prompt_mask,
+                hs=hs,
+            )
+        return seg_out
 
     def _postprocess_out(self, out: Dict, multimask_output: bool = False):
         # For multimask output, during eval we return the single best mask with the dict keys expected by the evaluators, but also return the multimasks output with new keys.
@@ -518,6 +615,28 @@ class Sam3Image(torch.nn.Module):
             ].unsqueeze(1)
 
         return out
+
+    def _get_geo_prompt_from_find_input(self, find_input: FindStage):
+        """Construct an initial geometric prompt from the find input."""
+        point_embeddings, point_mask, point_labels = None, None, None
+        if find_input.input_points_before_embed is not None:
+            # Point embeddings are batch first, switch to seq first
+            point_embeddings = find_input.input_points_before_embed.transpose(0, 1)
+
+            # they are stored as (x,y,label), so we unpack
+            point_labels = point_embeddings[..., -1]
+            point_embeddings = point_embeddings[..., :-1]
+            point_mask = find_input.input_points_mask
+
+        geometric_prompt = Prompt(
+            box_embeddings=find_input.input_boxes_before_embed,
+            box_mask=find_input.input_boxes_mask,
+            box_labels=find_input.input_boxes_label,
+            point_embeddings=point_embeddings,
+            point_mask=point_mask,
+            point_labels=point_labels,
+        )
+        return geometric_prompt
 
     def _get_dummy_prompt(self, num_prompts=1):
         device = self.device
@@ -659,9 +778,9 @@ class Sam3Image(torch.nn.Module):
             inference_state["original_heights"],
             inference_state["original_widths"],
         )
-        assert (
-            batch_size == len(orig_heights) == len(orig_widths)
-        ), f"Batch size mismatch in predict_inst_batch. Got {batch_size}, {len(orig_heights)}, {len(orig_widths)}"
+        assert batch_size == len(orig_heights) == len(orig_widths), (
+            f"Batch size mismatch in predict_inst_batch. Got {batch_size}, {len(orig_heights)}, {len(orig_widths)}"
+        )
         feats = [
             feat.permute(1, 2, 0).view(batch_size, -1, *feat_size)
             for feat, feat_size in zip(
@@ -834,17 +953,12 @@ class Sam3ImageOnVideoMultiGPU(Sam3Image):
             # gather the SAM 2 backbone features across GPUs
             feats = out_local["prev_encoder_out"]["backbone_out"]["sam2_backbone_out"]
             assert len(feats["backbone_fpn"]) == 3  # SAM2 backbone always have 3 levels
-            # For CUDA multi-GPU, cast backbone features to bfloat16 before all-gather
-            # (usually a no-op since AMP already uses bfloat16). On CPU or non-CUDA
-            # devices, keep the original dtype to avoid mismatches with downstream
-            # convolution weights.
-            if feats["backbone_fpn"][0].device.type == "cuda":
-                backbone_fpn = [x.to(torch.bfloat16) for x in feats["backbone_fpn"]]
-            else:
-                backbone_fpn = list(feats["backbone_fpn"])
-            fpn0, fpn_handle0 = self._gather_tensor(backbone_fpn[0])
-            fpn1, fpn_handle1 = self._gather_tensor(backbone_fpn[1])
-            fpn2, fpn_handle2 = self._gather_tensor(backbone_fpn[2])
+            # cast the SAM2 backbone features to bfloat16 for all-gather (this is usually
+            # a no-op, SAM2 backbone features are likely already in bfloat16 due to AMP)
+            backbone_fpn_bf16 = [x.to(torch.bfloat16) for x in feats["backbone_fpn"]]
+            fpn0, fpn_handle0 = self._gather_tensor(backbone_fpn_bf16[0])
+            fpn1, fpn_handle1 = self._gather_tensor(backbone_fpn_bf16[1])
+            fpn2, fpn_handle2 = self._gather_tensor(backbone_fpn_bf16[2])
             # vision_pos_enc is the same on all frames, so no need to all-gather them
             vision_pos_enc = feats["vision_pos_enc"]
 

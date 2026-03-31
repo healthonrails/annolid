@@ -1,11 +1,12 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 import math
 from typing import Optional
 
 import torch
 from torch import nn
-from sam3.utils import select_device
 
 
 class PositionEmbeddingSine(nn.Module):
@@ -21,7 +22,6 @@ class PositionEmbeddingSine(nn.Module):
         normalize: bool = True,
         scale: Optional[float] = None,
         precompute_resolution: Optional[int] = None,
-        device: Optional[torch.device] = None,
     ):
         super().__init__()
         assert num_pos_feats % 2 == 0, "Expecting even model width"
@@ -35,19 +35,24 @@ class PositionEmbeddingSine(nn.Module):
         self.scale = scale
 
         self.cache = {}
-        self.device = select_device(device)
         # Precompute positional encodings under `precompute_resolution` to fill the cache
         # and avoid symbolic shape tracing errors in torch.compile in PyTorch 2.4 nightly.
         if precompute_resolution is not None:
-            # We precompute pos enc for stride 4, 8, 16 and 32 to fill `self.cache`.
+            # We precompute pos enc for all strides used by both DualViTDetNeck and
+            # TriViTDetNeck (scale_factors 4.0, 2.0, 1.0, 0.5 applied to backbone
+            # output at stride 14 from 1008px input → 72x72).
             precompute_sizes = [
+                (int(precompute_resolution // 3.5), int(precompute_resolution // 3.5)),
                 (precompute_resolution // 4, precompute_resolution // 4),
+                (int(precompute_resolution // 7), int(precompute_resolution // 7)),
                 (precompute_resolution // 8, precompute_resolution // 8),
+                (int(precompute_resolution // 14), int(precompute_resolution // 14)),
                 (precompute_resolution // 16, precompute_resolution // 16),
+                (int(precompute_resolution // 28), int(precompute_resolution // 28)),
                 (precompute_resolution // 32, precompute_resolution // 32),
             ]
             for size in precompute_sizes:
-                tensors = torch.zeros((1, 1) + size, device=self.device)
+                tensors = torch.zeros((1, 1) + size)
                 self.forward(tensors)
                 # further clone and detach it in the cache (just to be safe)
                 self.cache[size] = self.cache[size].clone().detach()
@@ -93,7 +98,11 @@ class PositionEmbeddingSine(nn.Module):
         cache_key = None
         cache_key = (x.shape[-2], x.shape[-1])
         if cache_key in self.cache:
-            return self.cache[cache_key][None].repeat(x.shape[0], 1, 1, 1)
+            cached = self.cache[cache_key]
+            if cached.device != x.device:
+                cached = cached.to(device=x.device)
+                self.cache[cache_key] = cached
+            return cached[None].repeat(x.shape[0], 1, 1, 1)
         y_embed = (
             torch.arange(1, x.shape[-2] + 1, dtype=torch.float32, device=x.device)
             .view(1, -1, 1)

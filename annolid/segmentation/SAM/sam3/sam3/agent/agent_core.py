@@ -1,5 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 import copy
 import json
 import os
@@ -200,8 +202,9 @@ def agent_inference(
     print(f"\n>>> MLLM Response [start]\n{generated_text}\n<<< MLLM Response [end]\n")
     while generated_text is not None:
         save_debug_messages(messages, debug, debug_folder_path, debug_jsonl_path)
-        assert "<tool>" in generated_text, (
-            f"Generated text does not contain <tool> tag: {generated_text}"
+        assert (
+            "<tool>" in generated_text,
+            f"Generated text does not contain <tool> tag: {generated_text}",
         )
         generated_text = generated_text.split("</tool>", 1)[0] + "</tool>"
         tool_call_json_str = (
@@ -332,7 +335,7 @@ def agent_inference(
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": "The raw input image: "},
+                            {"type": "text", "text": f"The raw input image: "},
                             {"type": "image", "image": img_path},
                             {
                                 "type": "text",
@@ -340,12 +343,12 @@ def agent_inference(
                             },
                             {
                                 "type": "text",
-                                "text": "Image with the predicted segmentation mask rendered on it: ",
+                                "text": f"Image with the predicted segmentation mask rendered on it: ",
                             },
                             {"type": "image", "image": image_w_mask_i_path},
                             {
                                 "type": "text",
-                                "text": "Image with the zoomed-in mask: ",
+                                "text": f"Image with the zoomed-in mask: ",
                             },
                             {"type": "image", "image": image_w_zoomed_in_mask_i_path},
                         ],
@@ -367,11 +370,11 @@ def agent_inference(
                     .strip()
                 )
                 if "Accept" in verdict:
-                    assert "Reject" not in verdict
+                    assert not "Reject" in verdict
                     print(f"Mask {i + 1} accepted, keeping it in the outputs.")
                     masks_to_keep.append(i)
                 elif "Reject" in verdict:
-                    assert "Accept" not in verdict
+                    assert not "Accept" in verdict
                     print(f"Mask {i + 1} rejected, removing it from the outputs.")
                 else:
                     raise ValueError(

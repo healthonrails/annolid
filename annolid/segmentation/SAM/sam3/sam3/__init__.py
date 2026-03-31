@@ -1,11 +1,21 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 from ..aliases import ensure_sam3_aliases
 
 ensure_sam3_aliases()
 
-from .model_builder import build_sam3_image_model
+from .model_builder import (  # noqa: E402
+    build_sam3_image_model,
+    build_sam3_predictor,
+    build_sam3_video_predictor,
+)
 
 __version__ = "0.1.0"
 
-__all__ = ["build_sam3_image_model"]
+__all__ = [
+    "build_sam3_image_model",
+    "build_sam3_predictor",
+    "build_sam3_video_predictor",
+]
