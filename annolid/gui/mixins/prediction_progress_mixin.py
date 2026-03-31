@@ -204,6 +204,7 @@ class PredictionProgressMixin:
         except Exception:
             pass
 
+        self._force_stop_attempts = 0
         self._force_stop_thread_ref = thread
         QtCore.QTimer.singleShot(8000, self._force_stop_prediction_thread)
         logger.info("Prediction stop requested.")
@@ -217,6 +218,26 @@ class PredictionProgressMixin:
         if thread is None or not isinstance(thread, QtCore.QThread):
             return
         if not thread.isRunning():
+            return
+
+        attempts = int(getattr(self, "_force_stop_attempts", 0))
+        worker_stop_event = getattr(worker, "stop_event", None)
+        worker_requested_stop = (
+            bool(getattr(worker, "is_stopped", lambda: False)())
+            if worker is not None
+            else False
+        )
+        if attempts < 3 and (
+            getattr(self, "_prediction_stop_requested", False)
+            or worker_requested_stop
+            or (worker_stop_event is not None and worker_stop_event.is_set())
+        ):
+            self._force_stop_attempts = attempts + 1
+            logger.warning(
+                "Prediction thread is still stopping cooperatively; waiting longer before terminate (%s/3).",
+                self._force_stop_attempts,
+            )
+            QtCore.QTimer.singleShot(5000, self._force_stop_prediction_thread)
             return
 
         logger.warning(
@@ -239,6 +260,7 @@ class PredictionProgressMixin:
         self.pred_worker = None
         self.seg_pred_thread = None
         self._force_stop_thread_ref = None
+        self._force_stop_attempts = 0
         self._finalize_prediction_progress("Prediction force-stopped.")
 
     def _cleanup_prediction_worker(self):
@@ -252,6 +274,7 @@ class PredictionProgressMixin:
         self.pred_worker = None
         self.seg_pred_thread = None
         self._force_stop_thread_ref = None
+        self._force_stop_attempts = 0
 
     def _initialize_progress_bar(self, *, owner: str = "prediction") -> None:
         """Initialize progress state without rendering a status-bar widget."""

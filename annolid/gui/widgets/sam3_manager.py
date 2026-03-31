@@ -566,7 +566,7 @@ class Sam3Manager:
                 )
                 return RuntimeError(f"Failed to initialise SAM3 session.\n{exc}")
 
-            def _run_sam3_with_canvas_prompts():
+            def _run_sam3_with_canvas_prompts(pred_worker=None, stop_event=None):
                 if self._initial_prompts:
                     prompts = self._initial_prompts
                     try:
@@ -590,7 +590,9 @@ class Sam3Manager:
                             self._last_prompt_frame = prompts["frame_idx"]
                     except Exception as exc:
                         logger.warning("Failed to add SAM3 canvas prompts: %s", exc)
-                return self.sam3_session.run()
+                return self.sam3_session.run(stop_event=stop_event)
+
+            _run_sam3_with_canvas_prompts.request_stop = self.sam3_session.request_stop
 
             return _run_sam3_with_canvas_prompts
 

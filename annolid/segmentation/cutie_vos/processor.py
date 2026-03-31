@@ -303,6 +303,7 @@ class SegmentedCutieExecutor:
                 "cx": cx,
                 "cy": cy,
                 "motion_index": motion_idx_for_this_object,
+                "annotation_source": "cutie_vos",
             }
             mask_shape_obj.mask = single_obj_mask_bool
 
@@ -318,6 +319,7 @@ class SegmentedCutieExecutor:
                     description=main_polygon.description,
                 )
                 shape_to_save.other_data = dict(main_polygon.other_data)
+                shape_to_save.other_data.setdefault("annotation_source", "cutie_vos")
                 shape_to_save.points = [[p.x(), p.y()] for p in main_polygon.points]
                 label_list_for_save.append(shape_to_save)
             else:

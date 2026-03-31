@@ -19,7 +19,7 @@ from annolid.segmentation.SAM.sam_v2 import load_annotations_from_video
 from annolid.utils.logger import logger
 from annolid.gui.shape import Shape
 
-from .session import Sam3SessionConfig, Sam3SessionManager
+from .session import Sam3SessionConfig, Sam3SessionManager, Sam3StopRequested
 from .agent_video_orchestrator import (
     AgentConfig,
     TrackingConfig,
@@ -78,8 +78,9 @@ class SAM3VideoProcessor(Sam3SessionManager):
         )
         self.propagation_direction = propagation_direction
 
-    def _run_once(self, target_device: Optional[str]):
+    def _run_once(self, target_device: Optional[str], *, stop_event=None):
         # Run propagation with optional device override
+        self.bind_stop_event(stop_event)
         frames, masks = self.run_offline(
             self.annotations,
             target_device or self.target_device,
@@ -88,13 +89,16 @@ class SAM3VideoProcessor(Sam3SessionManager):
         )
         return frames, masks
 
-    def run(self):
+    def run(self, *, stop_event=None):
         """
         Execute a SAM3 run, aggregating masks after frame-by-frame propagation.
         Includes MPS->CPU retry behavior.
         """
         try:
-            frames, masks = self._run_once(None)
+            frames, masks = self._run_once(None, stop_event=stop_event)
+        except Sam3StopRequested:
+            logger.info("SAM3 prediction stopped by user.")
+            return "Stopped by user."
         except RuntimeError as exc:
             msg = str(exc)
             if "MPS backend out of memory" in msg or "MPS does not support" in msg:
@@ -109,7 +113,7 @@ class SAM3VideoProcessor(Sam3SessionManager):
                         empty_cache()
                 except Exception:
                     pass
-                frames, masks = self._run_once("cpu")
+                frames, masks = self._run_once("cpu", stop_event=stop_event)
             else:
                 raise
 

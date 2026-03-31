@@ -1582,6 +1582,7 @@ class CutieCoreVideoProcessor:
                 "cx": cx,
                 "cy": cy,
                 "motion_index": motion_index,
+                "annotation_source": "cutie_vos",
             }
             if note_text:
                 current_shape.other_data["note"] = note_text
@@ -1642,6 +1643,7 @@ class CutieCoreVideoProcessor:
                     "cy": cy,
                     "motion_index": motion_index,
                     "note": note_text,
+                    "annotation_source": "cutie_vos",
                 }
                 current_shape.mask = mask
                 _shapes = current_shape.toPolygons(epsilon=self.epsilon_for_polygon)
@@ -1707,6 +1709,7 @@ class CutieCoreVideoProcessor:
                 "cy": cy,
                 "motion_index": motion_index,
                 "note": note_text,
+                "annotation_source": "cutie_vos",
             }
             recovered_shape.mask = repaired_mask
             repaired_polys = recovered_shape.toPolygons(epsilon=self.epsilon_for_polygon)

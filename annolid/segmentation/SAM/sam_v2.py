@@ -215,6 +215,7 @@ class BaseSAMVideoProcessor:
             current_shape = MaskShape(
                 label=label, flags={}, description="grounding_sam"
             )
+            current_shape.other_data["annotation_source"] = "sam3"
             current_shape.mask = mask
             try:
                 current_shape.other_data.update(meta_lookup.get(str(label_id), {}))
@@ -225,6 +226,9 @@ class BaseSAMVideoProcessor:
             if not polygons:
                 continue
             current_shape = polygons[0]
+            if not isinstance(current_shape.other_data, dict):
+                current_shape.other_data = {}
+            current_shape.other_data.setdefault("annotation_source", "sam3")
             points = [[point.x(), point.y()] for point in current_shape.points]
             current_shape.points = points
             label_list.append(current_shape)

@@ -94,8 +94,8 @@ def load_existing_json(filename):
 def merge_shapes(new_shapes_list, existing_shapes_list):
     """
     Merges new shapes with existing shapes.
-    If a new shape has the same (label, group_id, shape_type) identity as an
-    existing shape, the existing shape is replaced by the new one.
+    If a new shape has the same (label, group_id, shape_type, source) identity
+    as an existing shape, the existing shape is replaced by the new one.
     Otherwise, the new shape is added.
 
     Args:
@@ -106,13 +106,29 @@ def merge_shapes(new_shapes_list, existing_shapes_list):
         list: A list of merged shape dictionaries.
     """
 
+    def _shape_source(shape_data) -> str:
+        if not isinstance(shape_data, dict):
+            return ""
+        source = shape_data.get("annotation_source")
+        if source is not None:
+            return str(source).strip().lower()
+        # Best-effort source extraction from description prefixes such as
+        # "grounding_sam" or "cutie_vos_segment; ...".
+        description = shape_data.get("description")
+        if isinstance(description, str) and description.strip():
+            token = description.split(";", 1)[0].split(":", 1)[0].strip().lower()
+            if token in {"grounding_sam", "cutie_vos_segment", "cutie_vos", "sam3"}:
+                return token
+        return ""
+
     def _shape_identity(shape_data):
         if not isinstance(shape_data, dict):
-            return ("", None, "")
+            return ("", None, "", "")
         return (
             str(shape_data.get("label", "")),
             shape_data.get("group_id"),
             str(shape_data.get("shape_type", "")),
+            _shape_source(shape_data),
         )
 
     merged_shapes_dict = {

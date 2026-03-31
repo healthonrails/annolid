@@ -21,6 +21,10 @@ SAM3_IMPORT_ERROR: Optional[Exception] = None
 _SAM3_REQUIRED_MODULES = ("iopath", "ftfy")
 _BUILD_SAM3_PREDICTOR: Optional[Callable[..., Any]] = None
 
+
+class Sam3StopRequested(RuntimeError):
+    """Raised when a SAM3 prediction is cancelled cooperatively."""
+
 for _mod in _SAM3_REQUIRED_MODULES:
     try:
         importlib.import_module(_mod)
@@ -152,6 +156,13 @@ class _PredictorAPIAdapter:
         if hasattr(self._predictor, "close_session"):
             return self._predictor.close_session(session_id)
         return self._predictor.handle_request({"type": "close_session", "session_id": session_id})
+
+    def cancel_propagation(self, session_id: str) -> Dict[str, Any]:
+        if hasattr(self._predictor, "cancel_propagation"):
+            return self._predictor.cancel_propagation(session_id=session_id)
+        return self._predictor.handle_request(
+            {"type": "cancel_propagation", "session_id": session_id}
+        )
 
     @property
     def raw(self) -> Any:
@@ -353,6 +364,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self.sliding_window_size = cfg.sliding_window_size
         self.sliding_window_stride = cfg.sliding_window_stride
         self.use_sliding_window_for_text_prompt = cfg.use_sliding_window_for_text_prompt
+        self._stop_event = None
+        self._stop_requested = False
         # Cross-window tracking id state used by SAM3.1 windowed mode.
         self._global_track_next_id: int = 1
         self._global_track_last_box: Dict[int, np.ndarray] = {}
@@ -450,6 +463,31 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 pass
         self._session_id = None
 
+    def bind_stop_event(self, stop_event) -> None:
+        self._stop_event = stop_event
+
+    def request_stop(self) -> None:
+        self._stop_requested = True
+        stop_event = getattr(self, "_stop_event", None)
+        try:
+            if stop_event is not None:
+                stop_event.set()
+        except Exception:
+            pass
+        session_id = getattr(self, "_session_id", None)
+        predictor = getattr(self, "_predictor", None)
+        if session_id and predictor is not None:
+            try:
+                predictor.cancel_propagation(session_id=session_id)
+            except Exception:
+                logger.debug("SAM3 cancel_propagation request failed.", exc_info=True)
+
+    def _check_stop_requested(self) -> None:
+        stop_event = getattr(self, "_stop_event", None)
+        if self._stop_requested or (stop_event is not None and stop_event.is_set()):
+            self.request_stop()
+            raise Sam3StopRequested("Stopped by user.")
+
     @contextmanager
     def _session_scope(
         self, target_device: Optional[torch.device | str] = None, *, auto_close: bool = True
@@ -507,14 +545,28 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             len(boxes or []),
             len(points or []),
         )
+        normalized_boxes = boxes if boxes else None
+        normalized_points = points if points else None
+        # SAM3 geometric prompt embeddings are binary (foreground/background).
+        # Normalize all external label ids (class ids, None, etc.) to {0,1}.
+        safe_box_labels = self._sanitize_prompt_labels(
+            box_labels,
+            expected_len=len(normalized_boxes) if normalized_boxes else 0,
+            default_value=1,
+        )
+        safe_point_labels = self._sanitize_prompt_labels(
+            point_labels,
+            expected_len=len(normalized_points) if normalized_points else 0,
+            default_value=1,
+        )
         result = self._predictor.add_prompt(
             session_id=self._session_id,
             frame_idx=frame_idx,
             text=text,
-            points=points if points else None,
-            point_labels=point_labels if point_labels else None,
-            bounding_boxes=boxes if boxes else None,
-            bounding_box_labels=box_labels if box_labels else None,
+            points=normalized_points,
+            point_labels=safe_point_labels,
+            bounding_boxes=normalized_boxes,
+            bounding_box_labels=safe_box_labels,
             obj_id=obj_id,
         )
         if record_outputs:
@@ -531,6 +583,25 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 apply_score_threshold=False,
             )
         return result
+
+    @staticmethod
+    def _sanitize_prompt_labels(
+        labels: Optional[List[int]],
+        *,
+        expected_len: int,
+        default_value: int = 1,
+    ) -> Optional[List[int]]:
+        if expected_len <= 0:
+            return None
+        src = list(labels) if labels is not None else []
+        out: List[int] = []
+        for idx in range(expected_len):
+            raw = src[idx] if idx < len(src) else default_value
+            try:
+                out.append(1 if int(raw) > 0 else 0)
+            except Exception:
+                out.append(1 if int(default_value) > 0 else 0)
+        return out
 
     @staticmethod
     def _normalize_points(
@@ -1162,6 +1233,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 max_frame_num_to_track=max_frame_num_to_track
                 or self.max_frame_num_to_track,
             ):
+                self._check_stop_requested()
                 frame_idx = result["frame_index"]
                 outputs = result.get("outputs", {}) or {}
                 yielded_frames += 1
@@ -1221,6 +1293,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 window_size=window_size,
                 stride=stride,
             ):
+                self._check_stop_requested()
                 previous_window_frame_count = self._write_window_frames(
                     window_dir,
                     frames,
@@ -1279,6 +1352,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         start_frame_idx=0,
                         max_frame_num_to_track=len(frames),
                     ):
+                        self._check_stop_requested()
                         local_frame = int(result.get("frame_index", 0))
                         global_frame = start_idx + local_frame
                         outputs = result.get("outputs", {}) or {}
@@ -1494,6 +1568,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         """
         @torch.inference_mode()
         def _run():
+            self._stop_requested = False
             total_frames = self.total_frames_estimate()
             if total_frames:
                 removed = self.prune_out_of_range_prediction_frames(total_frames)
@@ -1565,6 +1640,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     record_outputs=True,
                     label_hints=label_hints,
                 )
+                self._check_stop_requested()
                 frames, masks = self.propagate(
                     start_frame_idx=prompt_frame_idx,
                     propagation_direction=propagation_direction or self.propagation_direction,
