@@ -965,8 +965,13 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
             # Need to gather obj_ids for perflib
             all_obj_ids_list = [frame_data[i][0] for i in frames_with_objects]
             all_obj_ids_cat = torch.cat(all_obj_ids_list, dim=0)
+            keep_indices_for_obj_ids = (
+                keep_indices.to(all_obj_ids_cat.device, non_blocking=True)
+                if keep_indices.device != all_obj_ids_cat.device
+                else keep_indices
+            )
             kept_obj_ids_for_perf = torch.index_select(
-                all_obj_ids_cat, 0, keep_indices.cpu()
+                all_obj_ids_cat, 0, keep_indices_for_obj_ids
             )
             kept_boxes_xyxy = perf_masks_to_boxes(
                 kept_masks, kept_obj_ids_for_perf.tolist()
@@ -1022,8 +1027,18 @@ class Sam3MultiplexTracking(Sam3MultiplexBase):
 
             # Get the filtered data for this frame
             local_kept_t = torch.tensor(local_kept, dtype=torch.int64)
-            out_obj_ids = torch.index_select(data[0], 0, local_kept_t)
-            out_probs = torch.index_select(data[1], 0, local_kept_t)
+            local_kept_t_obj = (
+                local_kept_t.to(data[0].device, non_blocking=True)
+                if local_kept_t.device != data[0].device
+                else local_kept_t
+            )
+            local_kept_t_probs = (
+                local_kept_t.to(data[1].device, non_blocking=True)
+                if local_kept_t.device != data[1].device
+                else local_kept_t
+            )
+            out_obj_ids = torch.index_select(data[0], 0, local_kept_t_obj)
+            out_probs = torch.index_select(data[1], 0, local_kept_t_probs)
             out_sam2_probs = torch.index_select(
                 data[2], 0, local_kept_t.to(data[2].device)
             )

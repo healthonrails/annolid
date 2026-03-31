@@ -696,24 +696,32 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         except Exception as exc:
             logger.debug("Unable to reset SAM3 session state: %s", exc)
 
-    def _derive_boxes_from_previous_masks(
-        self, frame_idx: int
+    def _derive_boxes_from_neighbor_masks(
+        self, frame_idx: int, *, max_boxes: int = 4
     ) -> List[List[float]]:
         """
-        Derive a single bounding box from the most recent prior frame with masks.
-        Returns an empty list if no usable box is found.
+        Derive visual prompt boxes from the nearest frame that has masks.
+
+        This is boundary-safe for windowed inference: if the immediate previous
+        frame has no masks (common near window cuts), we can still seed from the
+        nearest valid frame on either side.
         """
-        prev_frames = sorted(
-            f for f in self._frame_masks.keys() if f < frame_idx)
-        if not prev_frames:
+        if not self._frame_masks:
             return []
-        prev_frame = prev_frames[-1]
-        prev_masks = self._frame_masks.get(prev_frame) or {}
-        if not prev_masks:
+        candidate_frames = [
+            f for f, masks in self._frame_masks.items() if masks and int(f) != int(frame_idx)
+        ]
+        if not candidate_frames:
             return []
+        # Prefer closest frame; break ties toward the previous frame.
+        nearest_frame = min(
+            candidate_frames,
+            key=lambda f: (abs(int(f) - int(frame_idx)), 0 if int(f) < int(frame_idx) else 1),
+        )
+        masks_for_frame = self._frame_masks.get(int(nearest_frame)) or {}
 
         boxes_abs: List[List[float]] = []
-        for mask in prev_masks.values():
+        for mask in masks_for_frame.values():
             arr = np.asarray(mask, dtype=np.uint8)
             ys, xs = np.nonzero(arr)
             if len(xs) == 0 or len(ys) == 0:
@@ -728,9 +736,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
         if not boxes_abs:
             return []
-        # The downstream SAM3 visual prompt path only supports a single box.
         boxes_abs.sort(key=lambda b: b[2] * b[3], reverse=True)
-        return [boxes_abs[0]]
+        limit = max(1, int(max_boxes))
+        return boxes_abs[:limit]
 
     def add_prompt_points_abs(
         self,
@@ -977,11 +985,20 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         window_size = max(1, int(self.sliding_window_size or 5))
         stride = self.sliding_window_stride
         try:
-            stride = int(stride) if stride is not None else window_size
+            # Prefer overlap by default to avoid hard boundary drops.
+            stride = int(stride) if stride is not None else max(1, window_size - 1)
         except Exception:
-            stride = window_size
+            stride = max(1, window_size - 1)
         if stride <= 0:
-            stride = window_size
+            stride = max(1, window_size - 1)
+        if window_size > 1 and stride >= window_size:
+            logger.info(
+                "SAM3.1 windowed mode: forcing 1-frame overlap for boundary robustness "
+                "(requested stride=%s, window_size=%s).",
+                stride,
+                window_size,
+            )
+            stride = window_size - 1
 
         # On MPS, conservative windows are safer for long videos.
         if resolved_device.type == "mps" and window_size > 5:
@@ -1016,7 +1033,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 session_id = str(session_resp["session_id"])
                 try:
                     # Use previous masks as a visual cue when available.
-                    carry_boxes_abs = self._derive_boxes_from_previous_masks(start_idx)
+                    carry_boxes_abs = self._derive_boxes_from_neighbor_masks(
+                        start_idx, max_boxes=min(4, self.max_num_objects)
+                    )
                     if carry_boxes_abs:
                         h, w = frames[0].shape[:2]
                         carry_boxes = self._normalize_boxes(carry_boxes_abs, w, h)
@@ -1314,7 +1333,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             if not self.text_prompt or not self._frame_masks:
                 return
 
-            boxes_abs = self._derive_boxes_from_previous_masks(frame_idx)
+            boxes_abs = self._derive_boxes_from_neighbor_masks(
+                frame_idx, max_boxes=min(4, self.max_num_objects)
+            )
             if not boxes_abs:
                 return
 
@@ -1358,8 +1379,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 h, w = self.frame_shape[:2]
 
                 for frame_idx in frame_indices:
-                    boxes_abs = self._derive_boxes_from_previous_masks(
-                        frame_idx)
+                    boxes_abs = self._derive_boxes_from_neighbor_masks(
+                        frame_idx, max_boxes=min(4, self.max_num_objects)
+                    )
                     if not boxes_abs:
                         continue
                     boxes = self._normalize_boxes(boxes_abs, w, h)
