@@ -8,6 +8,7 @@ import argparse
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 from annolid.core.media.video import get_video_fps
 from annolid.utils.logger import logger
 
@@ -225,6 +226,7 @@ def compress_and_rescale_video(
     crop_y=None,
     crop_width=None,
     crop_height=None,
+    per_video_overrides: Mapping[str, Mapping[str, object]] | None = None,
     progress_callback=None,
     cancel_callback=None,
 ):
@@ -246,6 +248,10 @@ def compress_and_rescale_video(
         crop_y (int, optional): Y coordinate of the top-left corner for cropping.
         crop_width (int, optional): Width of the crop area.
         crop_height (int, optional): Height of the crop area.
+        per_video_overrides (dict, optional): Map of input video path or filename
+            to per-video settings dict. Supported keys per video:
+            scale_factor, fps, apply_denoise, auto_contrast,
+            auto_contrast_strength, crop_params.
 
     Returns:
         dict: A mapping from each output video filename to the executed FFmpeg command.
@@ -282,6 +288,24 @@ def compress_and_rescale_video(
     use_duration_progress = total_duration_ms > 0 and all(
         duration is not None and duration > 0 for duration in video_durations_ms
     )
+
+    normalized_overrides: dict[str, dict[str, object]] = {}
+    for raw_key, raw_config in (per_video_overrides or {}).items():
+        if not isinstance(raw_config, Mapping):
+            continue
+        key_path = str(Path(raw_key))
+        config = dict(raw_config)
+        normalized_overrides[key_path] = config
+        normalized_overrides[str(Path(raw_key).resolve())] = config
+        normalized_overrides[Path(raw_key).name.lower()] = config
+
+    def _resolve_override(video_path_obj: Path) -> dict[str, object] | None:
+        resolved = str(video_path_obj.resolve())
+        return (
+            normalized_overrides.get(resolved)
+            or normalized_overrides.get(str(video_path_obj))
+            or normalized_overrides.get(video_path_obj.name.lower())
+        )
 
     def _emit_progress(current_index: int, message: str) -> None:
         if progress_callback is not None:
@@ -729,52 +753,99 @@ def compress_and_rescale_video(
         _raise_if_cancelled()
         input_path = str(input_path_obj)
         video_file = input_path_obj.name
+        override = _resolve_override(input_path_obj)
+        effective_scale_factor = (
+            float(override.get("scale_factor", scale_factor))
+            if override is not None
+            else float(scale_factor)
+        )
+        effective_fps_setting = (
+            override.get("fps", fps) if override is not None else fps
+        )
+        effective_apply_denoise = (
+            bool(override.get("apply_denoise", apply_denoise))
+            if override is not None
+            else bool(apply_denoise)
+        )
+        effective_auto_contrast = (
+            bool(override.get("auto_contrast", auto_contrast))
+            if override is not None
+            else bool(auto_contrast)
+        )
+        effective_auto_contrast_strength = (
+            float(override.get("auto_contrast_strength", auto_contrast_strength))
+            if override is not None
+            else float(auto_contrast_strength)
+        )
+        effective_crop_params = (
+            override.get("crop_params", None) if override is not None else None
+        )
+        if (
+            not isinstance(effective_crop_params, (tuple, list))
+            or len(effective_crop_params) != 4
+        ):
+            effective_crop_params = (crop_x, crop_y, crop_width, crop_height)
+        crop_x_value = effective_crop_params[0]
+        crop_y_value = effective_crop_params[1]
+        crop_width_value = effective_crop_params[2]
+        crop_height_value = effective_crop_params[3]
+
         _emit_progress(
             index - 1,
             f"Processing {index}/{total_videos} - {video_file}",
         )
 
-        video_fps = fps if fps is not None else get_video_fps(input_path)
+        video_fps = (
+            float(effective_fps_setting)
+            if effective_fps_setting is not None
+            else get_video_fps(input_path)
+        )
         if video_fps is None:
             logger.info(f"Warning: Failed to detect FPS for {video_file}. Skipping.")
             _emit_progress(index, f"Skipped {index}/{total_videos} - {video_file}")
             continue
 
         root, _ = os.path.splitext(video_file)
-        output_filename = f"{root}_fix.mp4" if apply_denoise else f"{root}.mp4"
+        output_filename = (
+            f"{root}_fix.mp4" if effective_apply_denoise else f"{root}.mp4"
+        )
         output_path = os.path.join(output_folder, output_filename)
 
         # Build filter chain.
         filter_parts = []
         # Optionally add crop filter if all crop parameters are provided.
         if (
-            crop_x is not None
-            and crop_y is not None
-            and crop_width is not None
-            and crop_height is not None
+            crop_x_value is not None
+            and crop_y_value is not None
+            and crop_width_value is not None
+            and crop_height_value is not None
         ):
-            filter_parts.append(f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y}")
+            filter_parts.append(
+                f"crop={crop_width_value}:{crop_height_value}:{crop_x_value}:{crop_y_value}"
+            )
         # Append the FPS and scaling filters.
         filter_parts.append(f"fps={video_fps}")
         # Force even dimensions for broader encoder compatibility.
         dims = _compute_even_scaled_dimensions(
             input_path,
-            scale_factor,
-            crop_w=crop_width,
-            crop_h=crop_height,
+            effective_scale_factor,
+            crop_w=crop_width_value,
+            crop_h=crop_height_value,
         )
         if dims is not None:
             filter_parts.append(f"scale={dims[0]}:{dims[1]}")
         else:
             filter_parts.append(
-                f"scale=trunc(iw*{scale_factor}/2)*2:trunc(ih*{scale_factor}/2)*2"
+                "scale="
+                f"trunc(iw*{effective_scale_factor}/2)*2:"
+                f"trunc(ih*{effective_scale_factor}/2)*2"
             )
         filter_chain = ",".join(filter_parts)
         filter_chains = _candidate_filter_chains(
             base_filter=filter_chain,
-            apply_denoise=bool(apply_denoise),
-            auto_contrast=bool(auto_contrast),
-            auto_contrast_strength=float(auto_contrast_strength),
+            apply_denoise=bool(effective_apply_denoise),
+            auto_contrast=bool(effective_auto_contrast),
+            auto_contrast_strength=float(effective_auto_contrast_strength),
         )
 
         ffmpeg_bin = _resolve_ffmpeg_binary()
@@ -784,13 +855,13 @@ def compress_and_rescale_video(
             input_path=input_path,
             output_path=output_path,
             filter_chains=filter_chains,
-            copy_audio=bool(apply_denoise),
+            copy_audio=bool(effective_apply_denoise),
             fps_value=float(video_fps),
-            scale_factor_value=float(scale_factor),
-            crop_width_value=crop_width,
-            crop_height_value=crop_height,
-            crop_x_value=crop_x,
-            crop_y_value=crop_y,
+            scale_factor_value=float(effective_scale_factor),
+            crop_width_value=crop_width_value,
+            crop_height_value=crop_height_value,
+            crop_x_value=crop_x_value,
+            crop_y_value=crop_y_value,
             completed_ms=completed_duration_ms,
             total_ms=total_duration_ms if use_duration_progress else 0,
             progress_prefix=f"Processing {index}/{total_videos} - {video_file}",
@@ -807,9 +878,9 @@ def compress_and_rescale_video(
                 output_path,
                 profile_name,
                 filter_name,
-                bool(apply_denoise),
-                bool(auto_contrast),
-                float(auto_contrast_strength),
+                bool(effective_apply_denoise),
+                bool(effective_auto_contrast),
+                float(effective_auto_contrast_strength),
             )
             command_log[output_filename] = command_str
         else:

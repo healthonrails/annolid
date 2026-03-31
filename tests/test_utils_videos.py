@@ -537,3 +537,56 @@ def test_windows_ffmpeg_progress_path_does_not_use_select(
 
     assert "clip.mp4" in command_log
     assert any(0 < current < 100 for current, _, _ in events)
+
+
+def test_compress_and_rescale_video_applies_per_video_overrides(
+    tmp_path: Path, monkeypatch
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    video_a = input_dir / "a.mp4"
+    video_b = input_dir / "b.mp4"
+    video_a.write_bytes(b"fake")
+    video_b.write_bytes(b"fake")
+
+    monkeypatch.setattr(videos_mod, "get_video_fps", lambda _p: 20.0)
+    monkeypatch.setattr(videos_mod, "_probe_video_duration_ms", lambda _p: None)
+
+    commands: list[list[str]] = []
+
+    def _fake_run(cmd, check, stdout, stderr, text):
+        _ = check, stdout, stderr, text
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(videos_mod.subprocess, "run", _fake_run)
+
+    command_log = videos_mod.compress_and_rescale_video(
+        str(input_dir),
+        str(output_dir),
+        scale_factor=0.5,
+        fps=15.0,
+        apply_denoise=False,
+        auto_contrast=False,
+        per_video_overrides={
+            str(video_b): {
+                "scale_factor": 0.25,
+                "fps": 12.0,
+                "apply_denoise": True,
+                "auto_contrast": False,
+                "auto_contrast_strength": 1.0,
+                "crop_params": (10, 20, 200, 100),
+            }
+        },
+    )
+
+    assert "a.mp4" in command_log
+    assert "b_fix.mp4" in command_log
+    assert any(
+        "scale=trunc(iw*0.5/2)*2:trunc(ih*0.5/2)*2" in " ".join(cmd) for cmd in commands
+    )
+    assert any(
+        "crop=200:100:10:20,fps=12.0,scale=50:24" in " ".join(cmd) for cmd in commands
+    )

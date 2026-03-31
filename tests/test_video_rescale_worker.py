@@ -100,3 +100,27 @@ def test_video_rescale_worker_cancel_request_emits_canceled(
 
     assert canceled == [True]
     assert failed == []
+
+
+def test_video_rescale_job_uses_input_folder_sibling_when_output_missing(
+    tmp_path: Path,
+) -> None:
+    input_folder = tmp_path / "videos"
+    input_folder.mkdir()
+    job = worker_mod.VideoRescaleJob(
+        selected_videos=[str(input_folder / "clip.mp4")],
+        input_mode="folder",
+        input_source=str(input_folder),
+        input_folder=str(input_folder),
+        output_folder="",
+        scale_factor=0.5,
+        fps=None,
+        collect_only=False,
+        rescale=True,
+        apply_denoise=False,
+        auto_contrast=False,
+        auto_contrast_strength=1.0,
+        crop_params=None,
+    )
+
+    assert job.effective_output_folder() == str(tmp_path / "videos_downsampled")

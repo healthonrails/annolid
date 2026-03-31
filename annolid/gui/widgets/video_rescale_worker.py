@@ -24,6 +24,7 @@ class VideoRescaleJob:
     auto_contrast: bool
     auto_contrast_strength: float
     crop_params: tuple[int, int, int, int] | None
+    per_video_overrides: dict[str, dict[str, object]] | None = None
 
     @property
     def is_single_input(self) -> bool:
@@ -32,7 +33,10 @@ class VideoRescaleJob:
     def effective_output_folder(self) -> str:
         if self.output_folder:
             return self.output_folder
-        if self.is_single_input and self.selected_videos:
+        if self.input_folder:
+            source_folder = Path(self.input_folder)
+            return str(source_folder.with_name(f"{source_folder.name}_downsampled"))
+        if self.selected_videos:
             source_video = Path(self.selected_videos[0])
             return str(source_video.with_name(f"{source_video.stem}_downsampled"))
         return ""
@@ -114,6 +118,7 @@ class VideoRescaleWorker(QtCore.QObject):
                 crop_y=job.crop_params[1] if job.crop_params else None,
                 crop_width=job.crop_params[2] if job.crop_params else None,
                 crop_height=job.crop_params[3] if job.crop_params else None,
+                per_video_overrides=job.per_video_overrides,
                 progress_callback=self._emit_progress,
                 cancel_callback=self._is_cancelled,
             )
@@ -133,6 +138,7 @@ class VideoRescaleWorker(QtCore.QObject):
                 auto_contrast=job.auto_contrast,
                 auto_contrast_strength=job.auto_contrast_strength,
                 crop_params=job.crop_params,
+                per_video_overrides=job.per_video_overrides,
                 command_log=command_log,
                 progress_callback=self._emit_progress,
                 cancel_callback=self._is_cancelled,
@@ -177,6 +183,9 @@ class VideoRescaleWorker(QtCore.QObject):
                 f"x={job.crop_params[0]}, y={job.crop_params[1]}, "
                 f"width={job.crop_params[2]}, height={job.crop_params[3]}"
             )
+        override_count = len(job.per_video_overrides or {})
+        if override_count > 0:
+            summary_lines.append(f"- Per-video review selections: {override_count}")
         summary_lines.extend(
             [
                 "",

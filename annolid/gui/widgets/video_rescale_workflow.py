@@ -9,6 +9,7 @@ from qtpy.QtWidgets import QFileDialog, QMessageBox, QDialog
 from annolid.data.videos import get_video_fps
 from annolid.gui.widgets.crop_dialog import CropDialog
 from annolid.gui.widgets.crop_region import CropRegion
+from annolid.gui.widgets.video_batch_overrides_dialog import VideoBatchReviewDialog
 from annolid.gui.widgets.video_frame_preview import temporary_first_frame_image
 from annolid.gui.widgets.video_rescale_worker import VideoRescaleJob, VideoRescaleWorker
 from annolid.utils.videos import VIDEO_EXTENSIONS
@@ -22,6 +23,7 @@ class VideoRescaleWorkflow(QtCore.QObject):
         self._worker: VideoRescaleWorker | None = None
         self._crop_section_default_style = "font-weight: 600; color: #3a6ea5;"
         self._crop_section_active_style = "font-weight: 700; color: #2f855a;"
+        self._per_video_overrides: dict[str, dict[str, object]] = {}
 
     def apply_initial_video(self, initial_video_path: str | None) -> None:
         if initial_video_path and os.path.isfile(initial_video_path):
@@ -45,23 +47,85 @@ class VideoRescaleWorkflow(QtCore.QObject):
         return []
 
     def update_input_selection_label(self):
+        self._update_crop_preview_availability()
         if self.dialog.input_video_path:
             self.dialog.input_selection_label.setText(
                 f"Video: {self.dialog.input_video_path}"
             )
+            self.update_per_video_review_label()
+            self.update_summary_tab()
             return
         if self.dialog.input_folder_path:
             count = len(self.selected_video_paths())
             self.dialog.input_selection_label.setText(
                 f"Folder: {self.dialog.input_folder_path} ({count} video files)"
             )
+            self.update_per_video_review_label()
+            self.update_summary_tab()
             return
         self.dialog.input_selection_label.setText("No input selected")
+        self.update_per_video_review_label()
+        self.update_summary_tab()
+
+    def _update_crop_preview_availability(self) -> None:
+        if hasattr(self.dialog, "settings_widget"):
+            self.dialog.settings_widget.set_crop_preview_available(
+                bool(self.selected_video_paths())
+            )
+
+    def _default_output_folder(self, input_folder: str | None) -> str:
+        if not input_folder:
+            return ""
+        source_folder = Path(input_folder)
+        return str(source_folder.with_name(f"{source_folder.name}_downsampled"))
+
+    def update_per_video_review_label(self) -> None:
+        label = getattr(
+            self.dialog,
+            "per_video_review_label",
+            getattr(self.dialog, "per_video_overrides_label", None),
+        )
+        button = getattr(
+            self.dialog,
+            "per_video_review_button",
+            getattr(self.dialog, "per_video_overrides_button", None),
+        )
+        if label is None:
+            return
+        if button is not None:
+            button.setEnabled(bool(self.dialog.input_folder_path))
+        if self.dialog.input_video_path:
+            label.setText("Per-video review: not used for single-video input.")
+            return
+        if not self.dialog.input_folder_path:
+            label.setText("Per-video review: select a folder with videos.")
+            return
+        video_count = len(self.selected_video_paths())
+        override_count = len(self._per_video_overrides)
+        if override_count <= 0:
+            label.setText(f"Per-video review: none (0/{video_count})")
+            return
+        label.setText(
+            f"Per-video review: {override_count}/{video_count} video(s) customized"
+        )
+        self.update_summary_tab()
+
+    def update_per_video_overrides_label(self) -> None:
+        self.update_per_video_review_label()
+
+    def _trim_per_video_overrides_to_selection(self) -> None:
+        selected = {str(Path(path)) for path in self.selected_video_paths()}
+        self._per_video_overrides = {
+            str(Path(path)): dict(config)
+            for path, config in self._per_video_overrides.items()
+            if str(Path(path)) in selected
+        }
 
     def update_fps_from_first_video(self, video_path):
         fps = get_video_fps(video_path)
         if fps:
             self.dialog.fps_text.setText(str(fps))
+        self.update_summary_tab()
 
     def select_input_video(self):
         video_path, _ = QFileDialog.getOpenFileName(
@@ -75,6 +139,7 @@ class VideoRescaleWorkflow(QtCore.QObject):
 
         self.dialog.input_video_path = video_path
         self.dialog.input_folder_path = ""
+        self._per_video_overrides = {}
         self.update_input_selection_label()
         self.update_fps_from_first_video(video_path)
 
@@ -87,6 +152,7 @@ class VideoRescaleWorkflow(QtCore.QObject):
         self.dialog.input_video_path = ""
         self.update_input_selection_label()
         video_files = self.selected_video_paths()
+        self._trim_per_video_overrides_to_selection()
         if video_files:
             self.update_fps_from_first_video(video_files[0])
 
@@ -95,10 +161,12 @@ class VideoRescaleWorkflow(QtCore.QObject):
         if folder:
             self.dialog.output_folder_path = folder
             self.dialog.output_folder_label.setText(f"Output Folder: {folder}")
+            self.update_summary_tab()
 
     def update_scale_factor_from_slider(self):
         scale_factor = self.dialog.scale_factor_slider.value() / 100
         self.dialog.scale_factor_text.setText(str(scale_factor))
+        self.update_summary_tab()
 
     def update_scale_factor_from_text(self):
         try:
@@ -109,10 +177,34 @@ class VideoRescaleWorkflow(QtCore.QObject):
                 self.dialog.scale_factor_text.setText("Invalid Value")
         except ValueError:
             self.dialog.scale_factor_text.setText("Invalid Value")
+        self.update_summary_tab()
+
+    def update_fps_from_text(self):
+        text = self.dialog.fps_text.text().strip()
+        if not text:
+            self.update_summary_tab()
+            return
+        try:
+            fps = float(text)
+        except ValueError:
+            self.dialog.fps_text.setText("Invalid Value")
+            self.update_summary_tab()
+            return
+        if fps <= 0:
+            self.dialog.fps_text.setText("Invalid Value")
+            self.update_summary_tab()
+            return
+        self.dialog.fps_text.setText(str(fps))
+        self.update_summary_tab()
+
+    def toggle_override_fps_controls(self, enabled: bool) -> None:
+        self.dialog.fps_text.setEnabled(bool(enabled))
+        self.update_summary_tab()
 
     def update_auto_contrast_strength_from_slider(self):
         strength = self.dialog.auto_contrast_strength_slider.value() / 100
         self.dialog.auto_contrast_strength_text.setText(f"{strength:.2f}")
+        self.update_summary_tab()
 
     def update_auto_contrast_strength_from_text(self):
         try:
@@ -126,11 +218,13 @@ class VideoRescaleWorkflow(QtCore.QObject):
         except ValueError:
             self.dialog.auto_contrast_strength_text.setText("1.00")
             self.dialog.auto_contrast_strength_slider.setValue(100)
+        self.update_summary_tab()
 
     def toggle_auto_contrast_controls(self, enabled):
         self.dialog.auto_contrast_strength_label.setEnabled(bool(enabled))
         self.dialog.auto_contrast_strength_slider.setEnabled(bool(enabled))
         self.dialog.auto_contrast_strength_text.setEnabled(bool(enabled))
+        self.update_summary_tab()
 
     def preview_and_crop(self):
         video_files = self.selected_video_paths()
@@ -194,6 +288,100 @@ class VideoRescaleWorkflow(QtCore.QObject):
             self.dialog.crop_checkbox.setStyleSheet(
                 "font-weight: 600; color: #2f855a;" if active else ""
             )
+        self.update_summary_tab()
+
+    def _read_folder_default_settings(self) -> dict[str, object] | None:
+        try:
+            scale_factor = float(self.dialog.scale_factor_text.text())
+        except ValueError:
+            return None
+
+        if not 0.0 <= scale_factor <= 1.0:
+            return None
+
+        if self.dialog.override_fps_checkbox.isChecked():
+            try:
+                fps = float(self.dialog.fps_text.text())
+            except ValueError:
+                QMessageBox.warning(self.dialog, "Error", "Invalid FPS value.")
+                return None
+            if fps <= 0:
+                QMessageBox.warning(self.dialog, "Error", "FPS must be > 0.")
+                return None
+        else:
+            fps = None
+
+        apply_denoise = self.dialog.denoise_checkbox.isChecked()
+        auto_contrast = self.dialog.auto_contrast_checkbox.isChecked()
+        if auto_contrast:
+            try:
+                auto_contrast_strength = float(
+                    self.dialog.auto_contrast_strength_text.text()
+                )
+            except ValueError:
+                QMessageBox.warning(
+                    self.dialog, "Error", "Invalid auto contrast strength."
+                )
+                return None
+        else:
+            auto_contrast_strength = 1.0
+
+        crop_params = None
+        if self.dialog.crop_checkbox.isChecked():
+            crop_region = self._read_crop_region_from_inputs()
+            if crop_region is None:
+                return None
+            crop_params = crop_region.as_tuple()
+
+        return {
+            "scale_factor": scale_factor,
+            "fps": fps,
+            "apply_denoise": apply_denoise,
+            "auto_contrast": auto_contrast,
+            "auto_contrast_strength": auto_contrast_strength,
+            "crop_params": crop_params,
+        }
+
+    def configure_per_video_review(self) -> None:
+        if self.dialog.input_video_path:
+            QMessageBox.information(
+                self.dialog,
+                "Per-Video Review",
+                "Per-video review is only available when the input is a folder.",
+            )
+            return
+        if not self.dialog.input_folder_path:
+            QMessageBox.warning(
+                self.dialog,
+                "Per-Video Review",
+                "Select an input folder first.",
+            )
+            return
+        selected_videos = self.selected_video_paths()
+        if not selected_videos:
+            QMessageBox.warning(
+                self.dialog,
+                "Per-Video Review",
+                "No supported video files were found in this folder.",
+            )
+            return
+        defaults = self._read_folder_default_settings()
+        if defaults is None:
+            return
+
+        self._trim_per_video_overrides_to_selection()
+        dialog = VideoBatchReviewDialog(
+            video_paths=selected_videos,
+            default_settings=defaults,
+            existing_overrides=self._per_video_overrides,
+            parent=self.dialog,
+        )
+        if dialog.exec_() == QDialog.Accepted:
+            self._per_video_overrides = dialog.overrides()
+            self.update_per_video_review_label()
+
+    def configure_per_video_overrides(self) -> None:
+        self.configure_per_video_review()
 
     def _read_crop_region_from_inputs(self) -> CropRegion | None:
         try:
@@ -301,6 +489,87 @@ class VideoRescaleWorkflow(QtCore.QObject):
         self._set_run_busy(True)
         self._thread.start()
 
+    def update_summary_tab(self) -> None:
+        if not hasattr(self.dialog, "summary_input_label"):
+            return
+
+        input_mode = (
+            "single video"
+            if self.dialog.input_video_path
+            else "folder"
+            if self.dialog.input_folder_path
+            else "none"
+        )
+        input_source = (
+            self.dialog.input_video_path or self.dialog.input_folder_path or "None"
+        )
+        inferred_input_folder = (
+            str(Path(self.dialog.input_video_path).parent)
+            if self.dialog.input_video_path
+            else self.dialog.input_folder_path
+        )
+        output_folder = (
+            self.dialog.output_folder_path
+            or self._default_output_folder(inferred_input_folder)
+            or "Not selected"
+        )
+        processing_lines = []
+        processing_lines.append(
+            f"Scale factor: {self.dialog.scale_factor_text.text().strip() or '0.5'}"
+        )
+        fps_text = self.dialog.fps_text.text().strip()
+        if self.dialog.override_fps_checkbox.isChecked() and fps_text:
+            processing_lines.append(f"FPS: {fps_text}")
+        else:
+            processing_lines.append("FPS: original per-video FPS")
+        processing_lines.append(
+            f"Denoise: {'on' if self.dialog.denoise_checkbox.isChecked() else 'off'}"
+        )
+        processing_lines.append(
+            "Auto contrast: "
+            f"{'on' if self.dialog.auto_contrast_checkbox.isChecked() else 'off'}"
+        )
+        if self.dialog.auto_contrast_checkbox.isChecked():
+            processing_lines.append(
+                "Auto contrast strength: "
+                f"{self.dialog.auto_contrast_strength_text.text().strip() or '1.0'}"
+            )
+        crop_active = self.dialog.crop_checkbox.isChecked()
+        if crop_active:
+            crop_fields = (
+                self.dialog.crop_x_text.text().strip(),
+                self.dialog.crop_y_text.text().strip(),
+                self.dialog.crop_width_text.text().strip(),
+                self.dialog.crop_height_text.text().strip(),
+            )
+            if all(crop_fields):
+                processing_lines.append(
+                    "Crop: x="
+                    f"{crop_fields[0]}, y={crop_fields[1]}, "
+                    f"w={crop_fields[2]}, h={crop_fields[3]}"
+                )
+            else:
+                processing_lines.append("Crop: incomplete")
+        else:
+            processing_lines.append("Crop: off")
+
+        summary_lines = {
+            "input": f"Input: {input_mode} | Source: {input_source}",
+            "output": f"Output: {output_folder}",
+            "processing": "Processing defaults:\n- " + "\n- ".join(processing_lines),
+            "overrides": (
+                "Per-video review: not available for single-video input"
+                if self.dialog.input_video_path
+                else f"Per-video review: {len(self._per_video_overrides)} custom video(s)"
+            ),
+            "run": (
+                "Run actions: "
+                f"{'Rescale' if self.dialog.rescale_checkbox.isChecked() else 'No rescale'}, "
+                f"{'Metadata only' if self.dialog.collect_only_checkbox.isChecked() else 'no metadata-only'}"
+            ),
+        }
+        self.dialog.update_summary_labels(summary_lines)
+
     def cancel_running_job(self) -> None:
         worker = self._worker
         if worker is None:
@@ -327,20 +596,11 @@ class VideoRescaleWorkflow(QtCore.QObject):
             )
             return
 
-        try:
-            scale_factor = float(self.dialog.scale_factor_text.text())
-        except ValueError:
-            QMessageBox.warning(self.dialog, "Error", "Invalid scale factor.")
+        settings = self._read_folder_default_settings()
+        if settings is None:
             return
-
-        if self.dialog.override_fps_checkbox.isChecked():
-            try:
-                fps = float(self.dialog.fps_text.text())
-            except ValueError:
-                QMessageBox.warning(self.dialog, "Error", "Invalid FPS value.")
-                return
-        else:
-            fps = None
+        scale_factor = float(settings["scale_factor"])
+        fps = settings["fps"]
 
         rescale = self.dialog.rescale_checkbox.isChecked()
         collect_only = self.dialog.collect_only_checkbox.isChecked()
@@ -352,27 +612,10 @@ class VideoRescaleWorkflow(QtCore.QObject):
             )
             return
 
-        apply_denoise = self.dialog.denoise_checkbox.isChecked()
-        auto_contrast = self.dialog.auto_contrast_checkbox.isChecked()
-        if auto_contrast:
-            try:
-                auto_contrast_strength = float(
-                    self.dialog.auto_contrast_strength_text.text()
-                )
-            except ValueError:
-                QMessageBox.warning(
-                    self.dialog, "Error", "Invalid auto contrast strength."
-                )
-                return
-        else:
-            auto_contrast_strength = 1.0
-
-        crop_params = None
-        if self.dialog.crop_checkbox.isChecked():
-            crop_region = self._read_crop_region_from_inputs()
-            if crop_region is None:
-                return
-            crop_params = crop_region.as_tuple()
+        apply_denoise = bool(settings["apply_denoise"])
+        auto_contrast = bool(settings["auto_contrast"])
+        auto_contrast_strength = float(settings["auto_contrast_strength"])
+        crop_params = settings["crop_params"]
 
         is_single_input = bool(self.dialog.input_video_path)
         input_mode = "single video" if is_single_input else "folder"
@@ -387,11 +630,8 @@ class VideoRescaleWorkflow(QtCore.QObject):
             else self.dialog.input_folder_path
         )
         effective_output_folder = self.dialog.output_folder_path
-        if not effective_output_folder and is_single_input:
-            source_video = Path(self.dialog.input_video_path)
-            effective_output_folder = str(
-                source_video.with_name(f"{source_video.stem}_downsampled")
-            )
+        if not effective_output_folder:
+            effective_output_folder = self._default_output_folder(inferred_input_folder)
             self.dialog.output_folder_path = effective_output_folder
             self.dialog.output_folder_label.setText(
                 f"Output Folder: {effective_output_folder}"
@@ -411,5 +651,8 @@ class VideoRescaleWorkflow(QtCore.QObject):
             auto_contrast=auto_contrast,
             auto_contrast_strength=auto_contrast_strength,
             crop_params=crop_params,
+            per_video_overrides=self._per_video_overrides
+            if input_mode == "folder"
+            else None,
         )
         self._start_worker(job)

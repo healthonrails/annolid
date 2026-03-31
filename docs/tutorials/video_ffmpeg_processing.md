@@ -2,6 +2,8 @@
 
 Annolid provides a built-in agent capability (the `video-ffmpeg` skill) that allows you to easily process, enhance, and convert videos using natural language commands. Under the hood, this uses FFmpeg and the `video_ffmpeg_process` tool, but you don't need to write complex command-line arguments.
 
+If you prefer a direct GUI workflow for folder-based processing, use **`File` > `Downsample Videos`** in the Annolid desktop app. The dialog keeps shared defaults in one place and offers a sequential per-video review button for exceptions.
+
 ## What it can do
 
 You can ask the Annolid bot to perform common video operations, such as:
@@ -54,3 +56,4 @@ You can guide the bot with more specific technical requirements:
 * **Overwriting:** By default, the bot will *not* overwrite existing processed files to protect your data. If you want it to replace an existing file, explicitly say, "overwrite the existing output file."
 * **Inspect First:** It is often helpful to ask the bot to "inspect" or "give me info" on a video first. This allows both you and the bot to confirm the source properties (resolution, original FPS) before deciding how to process it.
 * **FFmpeg Required:** This skill requires FFmpeg to be installed on your system. If the bot reports that FFmpeg is missing, you may need to install it (e.g. `brew install ffmpeg` on macOS or `sudo apt install ffmpeg` on Linux).
+* **GUI Batch Workflow:** For batches where most videos share the same settings and a few need exceptions, the GUI review workflow is usually easier than describing each exception to the bot.

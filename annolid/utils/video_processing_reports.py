@@ -64,6 +64,7 @@ def save_processing_summary(
     auto_contrast: bool | None = None,
     auto_contrast_strength: float | None = None,
     crop_params: tuple[int, int, int, int] | None = None,
+    per_video_overrides: Mapping[str, Mapping[str, object]] | None = None,
     command_log: Mapping[str, str] | None = None,
     progress_callback=None,
     cancel_callback=None,
@@ -89,6 +90,11 @@ def save_processing_summary(
         for video_file in sorted(os.listdir(folder))
         if video_file.lower() in selected_video_names
     ]
+    overrides_by_source_name: dict[str, Mapping[str, object]] = {}
+    if per_video_overrides:
+        for source_path, override_config in per_video_overrides.items():
+            source_name = Path(source_path).name.lower()
+            overrides_by_source_name[source_name] = override_config
     total_targets = len(target_files)
 
     def _is_cancelled() -> bool:
@@ -152,6 +158,43 @@ def save_processing_summary(
                     f.write(
                         f"- Crop Region: x={crop_x}, y={crop_y}, width={crop_width}, height={crop_height}\n"
                     )
+                source_name = video_file.lower()
+                if source_name.endswith("_fix.mp4"):
+                    source_name = source_name[: -len("_fix.mp4")] + ".mp4"
+                override_config = overrides_by_source_name.get(source_name)
+                f.write(
+                    f"- Per-video review selection: {'yes' if override_config else 'no'}\n"
+                )
+                if override_config:
+                    f.write(
+                        f"  - Effective Scale Factor: {override_config.get('scale_factor')}\n"
+                    )
+                    override_fps = override_config.get("fps")
+                    if override_fps is None:
+                        f.write("  - Effective FPS: source FPS\n")
+                    else:
+                        f.write(f"  - Effective FPS: {override_fps}\n")
+                    f.write(
+                        "  - Effective Apply Denoise: "
+                        f"{override_config.get('apply_denoise')}\n"
+                    )
+                    f.write(
+                        "  - Effective Auto Contrast: "
+                        f"{override_config.get('auto_contrast')}\n"
+                    )
+                    f.write(
+                        "  - Effective Auto Contrast Strength: "
+                        f"{override_config.get('auto_contrast_strength')}\n"
+                    )
+                    override_crop = override_config.get("crop_params")
+                    if override_crop is None:
+                        f.write("  - Effective Crop Region: disabled\n")
+                    else:
+                        f.write(
+                            "  - Effective Crop Region: "
+                            f"x={override_crop[0]}, y={override_crop[1]}, "
+                            f"width={override_crop[2]}, height={override_crop[3]}\n"
+                        )
                 f.write("\n")
             if command_log is not None:
                 command_used = command_log.get(video_file, "N/A")
