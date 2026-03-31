@@ -45,6 +45,48 @@ SAM3 runs in two main modes.
 - Uses a text prompt (for example, `mouse`) and runs SAM3.1 windowed propagation.
 - This is the fallback when no usable geometric prompts (box/point/polygon) exist.
 
+## Prompt transaction model
+
+Annolid enforces a **single prompt type per SAM3 request** at a common boundary in `Sam3SessionManager`.
+
+Transaction rules:
+
+1. One request contains exactly one prompt kind:
+- `text` **or** `boxes` **or** `points`
+2. Mixed inputs are split into an ordered transaction:
+- `text -> boxes -> points`
+3. Point prompts are always tracker prompts:
+- point transactions use `obj_id` (required by SAM3.1 point refinement)
+- point labels are normalized to binary foreground/background (`0/1`)
+4. Box labels are normalized to binary (`0/1`) for SAM3 geometric prompt compatibility.
+
+Why this exists:
+
+- SAM3.1 point prompting rejects mixed text/box payloads in the same request.
+- Explicit transaction sequencing removes mixed-prompt edge failures and makes behavior deterministic across normal and windowed runs.
+
+Where implemented:
+
+- `annolid/segmentation/SAM/sam3/session.py`
+  - `_build_prompt_transaction_steps(...)`
+  - `_execute_prompt_transaction(...)`
+  - `add_prompt(...)`
+
+## Multi-object prompt identity
+
+For canvas-driven prompting, Annolid maps prompts to stable per-instance object ids.
+
+Identity priority:
+
+1. `group_id` (if present and valid)
+2. existing label-to-id mapping from loaded annotations/session
+3. deterministic new id allocation
+
+Effects:
+
+- point/polygon/box prompts can refine/add-back the correct object instead of collapsing to a single default object id.
+- object identity remains stable across repeated prompt edits in the same run.
+
 ## Windowed inference behavior
 
 For text-only runs, Annolid uses a windowed strategy to improve long-video stability.
@@ -109,6 +151,25 @@ Common knobs:
 - `sliding_window_size`
 - `sliding_window_stride`
 - `use_sliding_window_for_text_prompt`
+
+## Interactive session controls (GUI)
+
+Annolid exposes notebook-like SAM3 session controls in the GUI:
+
+- `Reset SAM3 Session`
+- `Close SAM3 Session`
+- `Remove SAM3 Object…` (by object id)
+
+These actions are available from:
+
+- **AI & Models** menu
+- canvas right-click context menu
+
+Safety behavior:
+
+- controls are blocked while prediction is actively running (stop prediction first)
+- remove-object runs at the current frame and refreshes loaded prediction shapes
+- remove-object dialog prefills object id from selected shape when possible (`group_id` first, then label mapping)
 
 If `sliding_window_size` and `sliding_window_stride` are not set explicitly, Annolid now derives them from runtime context:
 

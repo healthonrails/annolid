@@ -17,7 +17,6 @@ class Sam3Manager:
         self.window = window
         self.sam3_session = None
         self._last_prompt_frame: Optional[int] = None
-        self._initial_prompts: Optional[dict] = None
 
         # Runtime overrides (populated via Advanced Parameters dialog).
         self.score_threshold_detection: Optional[float] = None
@@ -68,6 +67,43 @@ class Sam3Manager:
         except Exception as exc:  # pragma: no cover - shutdown best effort
             logger.warning("Error closing SAM3 session on exit: %s", exc)
         self.sam3_session = None
+
+    def reset_active_session(self) -> bool:
+        """
+        Best-effort reset for an active SAM3 session state.
+        """
+        session = self.sam3_session
+        if session is None:
+            return False
+        try:
+            session.reset_session_state()
+            return True
+        except Exception as exc:
+            logger.warning("Failed to reset active SAM3 session: %s", exc)
+            return False
+
+    def remove_object_from_active_session(
+        self, obj_id: int, frame_idx: Optional[int] = None
+    ) -> bool:
+        """
+        Remove one tracked object from active SAM3 session.
+        """
+        session = self.sam3_session
+        if session is None:
+            return False
+        try:
+            if frame_idx is None:
+                frame_idx = max(getattr(self.window, "frame_number", 0), 0)
+            session.remove_object(obj_id=int(obj_id), frame_idx=int(frame_idx))
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Failed to remove SAM3 object id=%s at frame=%s: %s",
+                obj_id,
+                frame_idx,
+                exc,
+            )
+            return False
 
     def dialog_defaults(self, base_config: Dict[str, Any]) -> Dict[str, Any]:
         """Return the SAM3 runtime defaults for the Advanced Parameters dialog."""
@@ -250,18 +286,22 @@ class Sam3Manager:
 
     def extract_prompts_from_canvas(self) -> dict:
         """
-        Extract SAM3-friendly prompts (boxes and points) from current canvas shapes.
+        Extract SAM3-friendly prompts from current canvas shapes.
 
         Returns a dict with:
           - frame_idx: current frame
-          - boxes_abs: list of [x, y, w, h] in pixel space
+          - boxes_abs: list of rectangle prompts as [x, y, w, h] in pixel space
           - box_labels: list of int labels (defaults to 1)
+          - polygons_abs: list of polygon prompts in pixel space
+          - polygon_labels: list of int labels for polygons
           - points_abs: list of [x, y]
           - point_labels: list of int labels (defaults to 1 for positive clicks)
         """
         frame_idx = max(getattr(self.window, "frame_number", 0), 0)
         boxes_abs = []
         box_labels = []
+        polygons_abs = []
+        polygon_labels = []
         points_abs = []
         point_labels = []
         canvas = getattr(self.window, "canvas", None)
@@ -270,6 +310,8 @@ class Sam3Manager:
                 "frame_idx": frame_idx,
                 "boxes_abs": boxes_abs,
                 "box_labels": box_labels,
+                "polygons_abs": polygons_abs,
+                "polygon_labels": polygon_labels,
                 "points_abs": points_abs,
                 "point_labels": point_labels,
             }
@@ -284,14 +326,9 @@ class Sam3Manager:
                 boxes_abs.append([x1, y1, w, h])
                 box_labels.append(1)
             elif shape.shape_type == "polygon" and shape.points:
-                xs = [pt.x() for pt in shape.points]
-                ys = [pt.y() for pt in shape.points]
-                x1, y1 = min(xs), min(ys)
-                x2, y2 = max(xs), max(ys)
-                w = x2 - x1
-                h = y2 - y1
-                boxes_abs.append([x1, y1, w, h])
-                box_labels.append(1)
+                polygon = [[pt.x(), pt.y()] for pt in shape.points]
+                polygons_abs.append(polygon)
+                polygon_labels.append(1)
             elif shape.shape_type in ["points", "point"]:
                 labels = (
                     shape.point_labels
@@ -305,9 +342,122 @@ class Sam3Manager:
             "frame_idx": frame_idx,
             "boxes_abs": boxes_abs,
             "box_labels": box_labels,
+            "polygons_abs": polygons_abs,
+            "polygon_labels": polygon_labels,
             "points_abs": points_abs,
             "point_labels": point_labels,
         }
+
+    @staticmethod
+    def _stable_obj_id_for_shape(
+        shape,
+        *,
+        reverse_label_map: Dict[str, int],
+        assigned_by_group: Dict[int, int],
+        next_id_ref: Dict[str, int],
+    ) -> int:
+        group_id = getattr(shape, "group_id", None)
+        if group_id is not None:
+            try:
+                gid = int(group_id)
+                if gid > 0:
+                    if gid not in assigned_by_group:
+                        assigned_by_group[gid] = gid
+                        next_id_ref["value"] = max(next_id_ref["value"], gid + 1)
+                    return assigned_by_group[gid]
+            except Exception:
+                pass
+        label = str(getattr(shape, "label", "") or "").strip()
+        if label and label in reverse_label_map:
+            try:
+                return max(1, int(reverse_label_map[label]))
+            except Exception:
+                pass
+        obj_id = int(next_id_ref["value"])
+        next_id_ref["value"] = obj_id + 1
+        if label:
+            reverse_label_map.setdefault(label, obj_id)
+        return obj_id
+
+    def _canvas_prompts_to_annotations(
+        self,
+        *,
+        frame_idx: int,
+        id_to_labels: Dict[int, str],
+    ) -> list:
+        """
+        Convert current canvas prompts into annotation records consumed by SAM3.
+        """
+        canvas = getattr(self.window, "canvas", None)
+        if canvas is None or not getattr(canvas, "shapes", None):
+            return []
+
+        reverse_label_map: Dict[str, int] = {}
+        for key, value in (id_to_labels or {}).items():
+            try:
+                reverse_label_map[str(value)] = int(key)
+            except Exception:
+                continue
+        assigned_by_group: Dict[int, int] = {}
+        next_start = 1
+        if reverse_label_map:
+            next_start = max(reverse_label_map.values()) + 1
+        next_id_ref: Dict[str, int] = {"value": max(1, int(next_start))}
+
+        ann_records: list = []
+        for shape in canvas.shapes:
+            label = str(getattr(shape, "label", "") or "").strip() or "object"
+            obj_id = self._stable_obj_id_for_shape(
+                shape,
+                reverse_label_map=reverse_label_map,
+                assigned_by_group=assigned_by_group,
+                next_id_ref=next_id_ref,
+            )
+            id_to_labels.setdefault(int(obj_id), label)
+
+            if shape.shape_type == "rectangle" and len(shape.points) == 2:
+                p1, p2 = shape.points
+                x1, y1 = float(p1.x()), float(p1.y())
+                x2, y2 = float(p2.x()), float(p2.y())
+                ann_records.append(
+                    {
+                        "type": "box",
+                        "ann_frame_idx": int(frame_idx),
+                        "box": [x1, y1, x2, y2],
+                        "labels": [int(obj_id)],
+                        "obj_id": int(obj_id),
+                    }
+                )
+            elif shape.shape_type == "polygon" and shape.points:
+                poly = [[float(pt.x()), float(pt.y())] for pt in shape.points]
+                ann_records.append(
+                    {
+                        "type": "polygon",
+                        "ann_frame_idx": int(frame_idx),
+                        "polygon": poly,
+                        "labels": [int(obj_id)],
+                        "obj_id": int(obj_id),
+                    }
+                )
+            elif shape.shape_type in {"point", "points"} and shape.points:
+                labels = list(shape.point_labels or [1] * len(shape.points))
+                points = [[float(pt.x()), float(pt.y())] for pt in shape.points]
+                prompt_labels: list[int] = []
+                for raw_label in labels:
+                    try:
+                        prompt_labels.append(1 if int(raw_label) > 0 else 0)
+                    except Exception:
+                        prompt_labels.append(1)
+                ann_records.append(
+                    {
+                        "type": "points",
+                        "ann_frame_idx": int(frame_idx),
+                        "points": points,
+                        "labels": prompt_labels,
+                        "obj_id": int(obj_id),
+                    }
+                )
+        return ann_records
 
     def build_video_processor(
         self, model_name: str, model_weight: str, text_prompt: Optional[str]
@@ -526,14 +676,13 @@ class Sam3Manager:
         )
 
         if not annotations:
-            prompts = self.extract_prompts_from_canvas()
-            if prompts["boxes_abs"] or prompts["points_abs"]:
-                annotations = []
-                self._initial_prompts = prompts
-            else:
-                self._initial_prompts = None
-        else:
-            self._initial_prompts = None
+            prompt_frame_idx = max(getattr(self.window, "frame_number", 0), 0)
+            canvas_ann = self._canvas_prompts_to_annotations(
+                frame_idx=prompt_frame_idx,
+                id_to_labels=id_to_labels,
+            )
+            if canvas_ann:
+                annotations = canvas_ann
 
         def _build_standard_sam3_runner():
             try:
@@ -567,29 +716,6 @@ class Sam3Manager:
                 return RuntimeError(f"Failed to initialise SAM3 session.\n{exc}")
 
             def _run_sam3_with_canvas_prompts(pred_worker=None, stop_event=None):
-                if self._initial_prompts:
-                    prompts = self._initial_prompts
-                    try:
-                        if prompts["boxes_abs"]:
-                            self.sam3_session.add_prompt_boxes_abs(
-                                prompts["frame_idx"],
-                                prompts["boxes_abs"],
-                                prompts["box_labels"]
-                                or [1] * len(prompts["boxes_abs"]),
-                                text=text_prompt,
-                            )
-                            self._last_prompt_frame = prompts["frame_idx"]
-                        if prompts["points_abs"]:
-                            self.sam3_session.add_prompt_points_abs(
-                                prompts["frame_idx"],
-                                prompts["points_abs"],
-                                prompts["point_labels"]
-                                or [1] * len(prompts["points_abs"]),
-                                text=text_prompt,
-                            )
-                            self._last_prompt_frame = prompts["frame_idx"]
-                    except Exception as exc:
-                        logger.warning("Failed to add SAM3 canvas prompts: %s", exc)
                 return self.sam3_session.run(stop_event=stop_event)
 
             _run_sam3_with_canvas_prompts.request_stop = self.sam3_session.request_stop

@@ -76,6 +76,22 @@ This breakthrough is driven by an innovative data engine that has automatically 
 - `Sam3SessionManager` (`annolid/segmentation/SAM/sam3/session.py`): manages sessions, prompts, propagation, and gap recovery.
 - `build_sam3_image_model` / `build_sam3_video_model` (`annolid/segmentation/SAM/sam3/sam3/model_builder.py`): now accept config dataclasses and honor `SAM3_CKPT_PATH`.
 
+### Annolid prompt transaction contract (developer note)
+
+Annolid enforces a strict prompt transaction boundary in `Sam3SessionManager`:
+
+- one underlying SAM3 request contains exactly one prompt kind:
+  - `text` or `boxes` or `points`
+- mixed prompt inputs are split into deterministic ordered steps:
+  - `text -> boxes -> points`
+- point steps are always tracker steps and use `obj_id` (required by SAM3.1 point refinement)
+- geometric labels are normalized to binary (`0/1`) for SAM3 compatibility
+
+This contract exists to prevent mixed-prompt edge failures in SAM3.1, especially
+when interactive point refinement is combined with text/box prompts. Keep new
+call sites routed through the session transaction boundary instead of issuing
+mixed prompt payloads directly.
+
 ## Installation
 
 ### Prerequisites

@@ -465,6 +465,28 @@ class MenuController:
                 "tip": w.tr("Generate tracking reports for the selected video"),
             },
             {
+                "name": "sam3_reset_session",
+                "text": w.tr("Reset SAM3 &Session"),
+                "slot": w.reset_sam3_session,
+                "tip": w.tr(
+                    "Reset active SAM3 session state without restarting the app"
+                ),
+            },
+            {
+                "name": "sam3_close_session",
+                "text": w.tr("Close SAM3 S&ession"),
+                "slot": w.close_sam3_session,
+                "tip": w.tr("Close active SAM3 session and release its resources"),
+            },
+            {
+                "name": "sam3_remove_object",
+                "text": w.tr("Remove SAM3 &Object…"),
+                "slot": w.remove_sam3_object,
+                "tip": w.tr(
+                    "Remove one tracked object by object ID from the active SAM3 session"
+                ),
+            },
+            {
                 "name": "tracking_stats_dashboard",
                 "text": w.tr("Tracking Stats &Dashboard…"),
                 "slot": w.open_tracking_stats_dashboard,
@@ -1276,6 +1298,11 @@ class MenuController:
                 actions["tracks"],
                 actions["quality_control"],
                 w.realtime_control_action,
+            ),
+            (
+                actions["sam3_reset_session"],
+                actions["sam3_close_session"],
+                actions["sam3_remove_object"],
             ),
         ]
         self._add_menu_sections(w.menus.ai_models, ai_sections)

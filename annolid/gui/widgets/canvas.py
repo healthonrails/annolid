@@ -1374,6 +1374,58 @@ class Canvas(QtWidgets.QWidget):
             )
 
         # ------------------------------------------------------------
+        # SAM3 session operations
+        # ------------------------------------------------------------
+        if (
+            hasattr(main_window, "reset_sam3_session")
+            or hasattr(main_window, "remove_sam3_object")
+            or hasattr(main_window, "close_sam3_session")
+        ):
+            menu.addSeparator()
+            if hasattr(main_window, "reset_sam3_session"):
+                sam3_reset_action = QtWidgets.QAction(
+                    self._icon("undo.svg"),
+                    "Reset SAM3 Session",
+                    menu,
+                )
+                if sam3_reset_action.icon().isNull():
+                    sam3_reset_action.setIcon(
+                        self.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload)
+                    )
+                sam3_reset_action.triggered.connect(
+                    lambda: main_window.reset_sam3_session()
+                )
+                menu.addAction(sam3_reset_action)
+            if hasattr(main_window, "close_sam3_session"):
+                sam3_close_action = QtWidgets.QAction(
+                    self._icon("close.svg"),
+                    "Close SAM3 Session",
+                    menu,
+                )
+                if sam3_close_action.icon().isNull():
+                    sam3_close_action.setIcon(
+                        self.style().standardIcon(QtWidgets.QStyle.SP_DialogCloseButton)
+                    )
+                sam3_close_action.triggered.connect(
+                    lambda: main_window.close_sam3_session()
+                )
+                menu.addAction(sam3_close_action)
+            if hasattr(main_window, "remove_sam3_object"):
+                sam3_remove_action = QtWidgets.QAction(
+                    self._icon("delete_polygons.svg"),
+                    "Remove SAM3 Object...",
+                    menu,
+                )
+                if sam3_remove_action.icon().isNull():
+                    sam3_remove_action.setIcon(
+                        self.style().standardIcon(QtWidgets.QStyle.SP_TrashIcon)
+                    )
+                sam3_remove_action.triggered.connect(
+                    lambda: main_window.remove_sam3_object()
+                )
+                menu.addAction(sam3_remove_action)
+
+        # ------------------------------------------------------------
         # Shape operations (only when selection exists)
         # ------------------------------------------------------------
         if self.selectedShapes:

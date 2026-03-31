@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import numpy as np
+
+from annolid.gui.widgets.sam3_manager import Sam3Manager
+from annolid.segmentation.SAM.sam3.session import Sam3SessionManager
+
+
+class _Point:
+    def __init__(self, x: float, y: float) -> None:
+        self._x = float(x)
+        self._y = float(y)
+
+    def x(self) -> float:
+        return self._x
+
+    def y(self) -> float:
+        return self._y
+
+
+class _Shape:
+    def __init__(
+        self,
+        *,
+        shape_type: str,
+        points: list[_Point],
+        label: str,
+        group_id: int | None = None,
+        point_labels: list[int] | None = None,
+    ) -> None:
+        self.shape_type = shape_type
+        self.points = points
+        self.label = label
+        self.group_id = group_id
+        self.point_labels = point_labels or []
+
+
+def test_prompt_transaction_merge_keeps_all_prompt_steps() -> None:
+    merged = Sam3SessionManager._merge_prompt_outputs(
+        [
+            {
+                "out_obj_ids": np.asarray([1], dtype=np.int64),
+                "out_probs": np.asarray([0.40], dtype=np.float32),
+                "out_boxes_xywh": np.asarray([[1.0, 2.0, 3.0, 4.0]], dtype=np.float32),
+                "out_binary_masks": np.asarray(
+                    [np.ones((2, 2), dtype=np.uint8)], dtype=object
+                ),
+            },
+            {
+                "out_obj_ids": np.asarray([1, 2], dtype=np.int64),
+                "out_probs": np.asarray([0.90, 0.70], dtype=np.float32),
+                "out_boxes_xywh": np.asarray(
+                    [[5.0, 6.0, 7.0, 8.0], [9.0, 10.0, 11.0, 12.0]],
+                    dtype=np.float32,
+                ),
+                "out_binary_masks": np.asarray(
+                    [
+                        np.zeros((2, 2), dtype=np.uint8),
+                        np.ones((2, 2), dtype=np.uint8),
+                    ],
+                    dtype=object,
+                ),
+            },
+        ]
+    )
+
+    assert merged["out_obj_ids"].tolist() == [1, 2]
+    assert np.isclose(float(merged["out_probs"][0]), 0.90)
+    assert np.isclose(float(merged["out_probs"][1]), 0.70)
+    assert merged["out_boxes_xywh"].shape == (2, 4)
+    assert merged["out_binary_masks"].dtype == object
+
+
+def test_canvas_prompt_extraction_preserves_polygons_and_group_ids() -> None:
+    manager = Sam3Manager.__new__(Sam3Manager)
+    manager.window = SimpleNamespace(
+        frame_number=7,
+        canvas=SimpleNamespace(
+            shapes=[
+                _Shape(
+                    shape_type="rectangle",
+                    points=[_Point(10, 20), _Point(30, 50)],
+                    label="mouse",
+                    group_id=5,
+                ),
+                _Shape(
+                    shape_type="polygon",
+                    points=[_Point(1, 1), _Point(4, 1), _Point(4, 4), _Point(1, 4)],
+                    label="mouse",
+                    group_id=8,
+                ),
+                _Shape(
+                    shape_type="points",
+                    points=[_Point(12, 14), _Point(16, 18)],
+                    label="mouse",
+                    group_id=8,
+                    point_labels=[1, 0],
+                ),
+            ]
+        ),
+    )
+
+    prompts = manager.extract_prompts_from_canvas()
+    assert prompts["frame_idx"] == 7
+    assert prompts["boxes_abs"] == [[10, 20, 20, 30]]
+    assert prompts["polygons_abs"] == [[[1, 1], [4, 1], [4, 4], [1, 4]]]
+    assert prompts["point_labels"] == [1, 0]
+
+    annotations = manager._canvas_prompts_to_annotations(
+        frame_idx=7,
+        id_to_labels={5: "mouse", 8: "mouse"},
+    )
+    assert len(annotations) == 3
+    assert any(a["type"] == "polygon" and a["obj_id"] == 8 for a in annotations)
+    assert any(a["type"] == "box" and a["obj_id"] == 5 for a in annotations)
+    point_ann = next(a for a in annotations if a["type"] == "points")
+    assert point_ann["obj_id"] == 8
+    assert point_ann["labels"] == [1, 0]
