@@ -445,9 +445,13 @@ class Sam3VideoInference(Sam3VideoBase):
             out_binary_masks = torch.zeros(0, H_video, W_video, dtype=torch.bool)
             out_boxes_xywh = torch.zeros(0, 4, dtype=torch.float32)
         else:
-            out_obj_ids = torch.tensor(curr_obj_ids, dtype=torch.int64)
+            source_device = obj_id_to_mask[curr_obj_ids[0]].device
+            out_obj_ids = torch.tensor(
+                curr_obj_ids, dtype=torch.int64, device=source_device
+            )
             out_probs = torch.tensor(
-                [out["obj_id_to_score"][obj_id] for obj_id in curr_obj_ids]
+                [out["obj_id_to_score"][obj_id] for obj_id in curr_obj_ids],
+                device=source_device,
             )
             out_tracker_probs = torch.tensor(
                 [
@@ -457,14 +461,15 @@ class Sam3VideoInference(Sam3VideoBase):
                         else 0.0
                     )
                     for obj_id in curr_obj_ids
-                ]
+                ],
+                device=source_device,
             )
             out_binary_masks = torch.cat(
                 [obj_id_to_mask[obj_id] for obj_id in curr_obj_ids], dim=0
             )
 
             assert out_binary_masks.dtype == torch.bool
-            keep = out_binary_masks.any(dim=(1, 2)).cpu()  # remove masks with 0 areas
+            keep = out_binary_masks.any(dim=(1, 2))  # remove masks with 0 areas
             # hide outputs for those object IDs in `obj_ids_to_hide`
             obj_ids_to_hide = []
             if suppressed_obj_ids is not None:
@@ -474,7 +479,11 @@ class Sam3VideoInference(Sam3VideoBase):
             if unconfirmed_obj_ids is not None:
                 obj_ids_to_hide.extend(unconfirmed_obj_ids)
             if len(obj_ids_to_hide) > 0:
-                obj_ids_to_hide_t = torch.tensor(obj_ids_to_hide, dtype=torch.int64)
+                obj_ids_to_hide_t = torch.tensor(
+                    obj_ids_to_hide,
+                    dtype=torch.int64,
+                    device=out_obj_ids.device,
+                )
                 keep &= ~torch.isin(out_obj_ids, obj_ids_to_hide_t)
 
             # slice those valid entries from the original outputs
@@ -483,9 +492,26 @@ class Sam3VideoInference(Sam3VideoBase):
                 keep_idx, out_binary_masks.device, non_blocking=True
             )
 
-            out_obj_ids = torch.index_select(out_obj_ids, 0, keep_idx)
-            out_probs = torch.index_select(out_probs, 0, keep_idx)
-            out_tracker_probs = torch.index_select(out_tracker_probs, 0, keep_idx)
+            keep_idx_for_obj = (
+                keep_idx.to(out_obj_ids.device, non_blocking=True)
+                if keep_idx.device != out_obj_ids.device
+                else keep_idx
+            )
+            keep_idx_for_probs = (
+                keep_idx.to(out_probs.device, non_blocking=True)
+                if keep_idx.device != out_probs.device
+                else keep_idx
+            )
+            keep_idx_for_tracker = (
+                keep_idx.to(out_tracker_probs.device, non_blocking=True)
+                if keep_idx.device != out_tracker_probs.device
+                else keep_idx
+            )
+            out_obj_ids = torch.index_select(out_obj_ids, 0, keep_idx_for_obj)
+            out_probs = torch.index_select(out_probs, 0, keep_idx_for_probs)
+            out_tracker_probs = torch.index_select(
+                out_tracker_probs, 0, keep_idx_for_tracker
+            )
             out_binary_masks = torch.index_select(out_binary_masks, 0, keep_idx_gpu)
 
             if perflib.is_enabled:

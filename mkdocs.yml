@@ -99,6 +99,7 @@ nav:
       - Zone Analysis Workflow: tutorials/zone_analysis_workflow.md
       - LabelMe to YOLO Class Map: tutorials/Labelme_to_YOLO_class_map.md
       - Sandboxed Shell: tutorials/sandboxed_shell.md
+      - SAM3: sam3.md
       - SAM 3D: sam3d.md
   - Agent and Automation:
       - Overview: agent_and_automation.md
