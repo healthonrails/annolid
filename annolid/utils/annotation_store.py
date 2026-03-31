@@ -1,4 +1,5 @@
 import json
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Set, Union
 
@@ -132,19 +133,57 @@ class AnnotationStore:
         if not needs_rewrite:
             return
 
-        temp_path = self.store_path.with_suffix(self.store_path.suffix + ".tmp")
         try:
-            with temp_path.open("w", encoding="utf-8") as fh:
-                for line in rewritten_lines:
-                    fh.write(line)
-                    fh.write("\n")
-            temp_path.replace(self.store_path)
+            lines_with_newline = [f"{line}\n" for line in rewritten_lines]
+            self._write_lines_atomically(lines_with_newline)
         except OSError as exc:
+            # In concurrent workflows another worker may have completed the same
+            # migration first. Re-check the store before failing hard.
+            try:
+                latest_lines = self.store_path.read_text(encoding="utf-8").splitlines()
+                still_needs_rewrite = False
+                for raw_line in latest_lines:
+                    stripped = raw_line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        record = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        continue
+                    if self._explicit_frame_for_record(record) is None:
+                        still_needs_rewrite = True
+                        break
+                if not still_needs_rewrite:
+                    AnnotationStore._CACHE.pop(self.store_path, None)
+                    return
+            except Exception:
+                pass
             raise AnnotationStoreError(
                 f"Failed to migrate annotation store {self.store_path}: {exc}"
             ) from exc
 
         AnnotationStore._CACHE.pop(self.store_path, None)
+
+    def _write_lines_atomically(self, lines: Iterable[str]) -> None:
+        temp_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=str(self.store_path.parent),
+                prefix=f"{self.store_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as fh:
+                temp_path = Path(fh.name)
+                fh.writelines(lines)
+            temp_path.replace(self.store_path)
+        finally:
+            if temp_path is not None and temp_path.exists():
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     @classmethod
     def for_frame_path(
@@ -272,11 +311,8 @@ class AnnotationStore:
                 f"Frame {frame_key} not present in store {self.store_path}"
             )
 
-        temp_path = self.store_path.with_suffix(self.store_path.suffix + ".tmp")
         try:
-            with temp_path.open("w", encoding="utf-8") as fh:
-                fh.writelines(lines_to_keep)
-            temp_path.replace(self.store_path)
+            self._write_lines_atomically(lines_to_keep)
         except OSError as exc:
             raise AnnotationStoreError(
                 f"Failed to rewrite annotation store {self.store_path}: {exc}"
@@ -415,21 +451,12 @@ class AnnotationStore:
         if removed == 0:
             return 0
 
-        temp_path = self.store_path.with_suffix(self.store_path.suffix + ".tmp")
-
         try:
-            with temp_path.open("w", encoding="utf-8") as fh:
-                fh.writelines(lines_to_keep)
-            temp_path.replace(self.store_path)
+            self._write_lines_atomically(lines_to_keep)
         except OSError as exc:
             logger.error(
                 "Failed to rewrite annotation store %s: %s", self.store_path, exc
             )
-            try:
-                if temp_path.exists():
-                    temp_path.unlink()
-            except OSError:
-                pass
             return 0
 
         AnnotationStore._CACHE.pop(self.store_path, None)
@@ -520,21 +547,12 @@ class AnnotationStore:
         if removed == 0:
             return 0
 
-        temp_path = self.store_path.with_suffix(self.store_path.suffix + ".tmp")
-
         try:
-            with temp_path.open("w", encoding="utf-8") as fh:
-                fh.writelines(lines_to_keep)
-            temp_path.replace(self.store_path)
+            self._write_lines_atomically(lines_to_keep)
         except OSError as exc:
             logger.error(
                 "Failed to rewrite annotation store %s: %s", self.store_path, exc
             )
-            try:
-                if temp_path.exists():
-                    temp_path.unlink()
-            except OSError:
-                pass
             return 0
 
         AnnotationStore._CACHE.pop(self.store_path, None)
