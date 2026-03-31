@@ -722,8 +722,12 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         """Estimate how many masks an output payload can materialize."""
         if not isinstance(outputs, dict):
             return 0
-        obj_ids = outputs.get("out_obj_ids", []) or []
-        masks = outputs.get("out_binary_masks", []) or []
+        obj_ids = outputs.get("out_obj_ids", [])
+        masks = outputs.get("out_binary_masks", [])
+        if obj_ids is None:
+            obj_ids = []
+        if masks is None:
+            masks = []
         try:
             return max(0, min(len(obj_ids), len(masks)))
         except Exception:
