@@ -334,49 +334,72 @@ class AnnotationStore:
         records = self._load_records()
         return records.keys()
 
-    def _load_records(self, force_reload: bool = False) -> Dict[int, Dict[str, Any]]:
-        if not self.store_path.exists():
-            return {}
-
-        self._ensure_explicit_frame_metadata()
-        stat = self.store_path.stat()
+    def _cached_records_or_empty(self) -> Dict[int, Dict[str, Any]]:
         cached = AnnotationStore._CACHE.get(self.store_path)
-        if (
-            not force_reload
-            and cached
-            and cached["mtime"] == stat.st_mtime
-            and cached["size"] == stat.st_size
-        ):
+        if cached and isinstance(cached.get("records"), dict):
             return cached["records"]
+        return {}
 
-        records: Dict[int, Dict[str, Any]] = {}
-        with self.store_path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    logger.warning(
-                        "Skipping invalid annotation store line in %s", self.store_path
-                    )
-                    continue
-                frame = self._explicit_frame_for_record(data)
-                if frame is None:
-                    logger.warning(
-                        "Skipping annotation store row without explicit frame in %s",
-                        self.store_path,
-                    )
-                    continue
-                records[int(frame)] = data
+    def _load_records(self, force_reload: bool = False) -> Dict[int, Dict[str, Any]]:
+        for attempt in range(2):
+            if not self.store_path.exists():
+                return self._cached_records_or_empty()
 
-        AnnotationStore._CACHE[self.store_path] = {
-            "mtime": stat.st_mtime,
-            "size": stat.st_size,
-            "records": records,
-        }
-        return records
+            try:
+                self._ensure_explicit_frame_metadata()
+                stat = self.store_path.stat()
+            except FileNotFoundError:
+                AnnotationStore._CACHE.pop(self.store_path, None)
+                if attempt == 0:
+                    continue
+                return self._cached_records_or_empty()
+
+            cached = AnnotationStore._CACHE.get(self.store_path)
+            if (
+                not force_reload
+                and cached
+                and cached["mtime"] == stat.st_mtime
+                and cached["size"] == stat.st_size
+            ):
+                return cached["records"]
+
+            records: Dict[int, Dict[str, Any]] = {}
+            try:
+                with self.store_path.open("r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            logger.warning(
+                                "Skipping invalid annotation store line in %s",
+                                self.store_path,
+                            )
+                            continue
+                        frame = self._explicit_frame_for_record(data)
+                        if frame is None:
+                            logger.warning(
+                                "Skipping annotation store row without explicit frame in %s",
+                                self.store_path,
+                            )
+                            continue
+                        records[int(frame)] = data
+            except FileNotFoundError:
+                AnnotationStore._CACHE.pop(self.store_path, None)
+                if attempt == 0:
+                    continue
+                return self._cached_records_or_empty()
+
+            AnnotationStore._CACHE[self.store_path] = {
+                "mtime": stat.st_mtime,
+                "size": stat.st_size,
+                "records": records,
+            }
+            return records
+
+        return self._cached_records_or_empty()
 
     def remove_frames_after(
         self,

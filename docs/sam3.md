@@ -37,11 +37,13 @@ If a dependency is missing, Annolid raises a startup error from the SAM3 manager
 SAM3 runs in two main modes.
 
 1. Seeded mode (annotation-guided):
-- Uses existing per-frame prompts (boxes/masks) when available.
+- Uses existing per-frame prompts when available.
+- Supported prompt shapes: boxes/rectangles, polygons/masks, and points.
+- Polygon prompts are converted to robust box/mask seeds for SAM3 propagation.
 
 2. Text-only mode:
 - Uses a text prompt (for example, `mouse`) and runs SAM3.1 windowed propagation.
-- This is the common fallback when no per-frame JSON prompts exist.
+- This is the fallback when no usable geometric prompts (box/point/polygon) exist.
 
 ## Windowed inference behavior
 
@@ -50,9 +52,13 @@ For text-only runs, Annolid uses a windowed strategy to improve long-video stabi
 Key properties:
 
 - Reads frames from the source video timeline when input is an `.mp4`.
+- Streams overlapping windows sequentially from the video instead of seeking back to each window start.
+- Reuses the temporary window frame directory and only trims stale tail files between windows.
+- Chooses larger default windows automatically for long CPU/CUDA runs when the user did not override `window_size` or `stride`.
 - Uses overlapping windows by default (`stride = window_size - 1`) for boundary robustness.
 - Carries visual prompt boxes from nearest neighbor mask frames across windows.
 - Reacquires missed frames with visual+text prompts after the primary pass.
+- Reacquires partially lost instances as well, and merges recovered masks back into the existing frame instead of replacing already tracked instances.
 - Finalizes frame coverage by ensuring expected frame JSON outputs exist and are valid.
 
 This is implemented in `Sam3SessionManager` in `session.py`.
@@ -103,6 +109,13 @@ Common knobs:
 - `sliding_window_size`
 - `sliding_window_stride`
 - `use_sliding_window_for_text_prompt`
+
+If `sliding_window_size` and `sliding_window_stride` are not set explicitly, Annolid now derives them from runtime context:
+
+- short CPU runs: smaller windows
+- long CPU runs: moderate windows to reduce session churn
+- CUDA runs: larger windows with moderate overlap
+- explicit user values still take priority and are normalized to keep at least 1-frame overlap
 
 ## Troubleshooting
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import tempfile
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -334,6 +335,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         # Store per-frame masks from the main propagation so we can re-use them
         # as visual prompts when re-acquiring lost tracks.
         self._frame_masks: Dict[int, Dict[str, np.ndarray]] = {}
+        # Track ids observed per frame and their most recent seen frame so we can
+        # detect partial track loss and recover only the missing instances.
+        self._frame_track_ids: Dict[int, set[int]] = {}
+        self._track_last_seen_frame: Dict[int, int] = {}
         self.max_frame_num_to_track = cfg.max_frame_num_to_track
         # Default propagation settings (can be overridden per-call).
         self.propagation_direction = cfg.propagation_direction or "both"
@@ -601,6 +606,27 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             if child.is_file():
                 child.unlink(missing_ok=True)
 
+    @staticmethod
+    def _write_window_frames(
+        window_dir: Path,
+        frames: List[np.ndarray],
+        *,
+        previous_count: int = 0,
+    ) -> int:
+        """
+        Materialize a window using stable local filenames.
+
+        Rewriting only the active positions and trimming stale tail files avoids
+        full directory churn across heavily overlapping windows.
+        """
+        for local_idx, frame in enumerate(frames):
+            out_path = window_dir / f"{local_idx:06d}.jpg"
+            cv2.imwrite(str(out_path), frame)
+        for stale_idx in range(len(frames), max(len(frames), int(previous_count))):
+            stale_path = window_dir / f"{stale_idx:06d}.jpg"
+            stale_path.unlink(missing_ok=True)
+        return len(frames)
+
     def _iter_video_windows(
         self,
         *,
@@ -633,23 +659,36 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         if not cap.isOpened():
             return
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        start = 0
         try:
-            while True:
-                frames: List[np.ndarray] = []
-                cap.set(cv2.CAP_PROP_POS_FRAMES, start)
-                for _ in range(window_size):
-                    ok, frame = cap.read()
-                    if not ok:
-                        break
-                    frames.append(frame)
-                if not frames:
+            frames_buf: deque[np.ndarray] = deque()
+
+            while len(frames_buf) < window_size:
+                ok, frame = cap.read()
+                if not ok:
                     break
+                frames_buf.append(frame)
+
+            start = 0
+            while frames_buf:
+                frames = list(frames_buf)
                 end = start + len(frames)
                 yield start, end, frames
                 if total_frames and end >= total_frames:
                     break
-                start += stride
+
+                advance = min(stride, len(frames_buf))
+                for _ in range(advance):
+                    frames_buf.popleft()
+                    start += 1
+
+                while len(frames_buf) < window_size:
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+                    frames_buf.append(frame)
+
+                if not frames_buf or (total_frames and start >= total_frames):
+                    break
         finally:
             cap.release()
 
@@ -677,6 +716,18 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         outputs = dict(outputs)
         outputs["out_obj_ids"] = np.asarray(mapped, dtype=np.int64)
         return outputs
+
+    @staticmethod
+    def _output_candidate_mask_count(outputs: Dict[str, object]) -> int:
+        """Estimate how many masks an output payload can materialize."""
+        if not isinstance(outputs, dict):
+            return 0
+        obj_ids = outputs.get("out_obj_ids", []) or []
+        masks = outputs.get("out_binary_masks", []) or []
+        try:
+            return max(0, min(len(obj_ids), len(masks)))
+        except Exception:
+            return 0
 
     @staticmethod
     def _label_hints_from_ids(labels: List[int], id_to_labels: Dict[int, str]) -> List[str]:
@@ -740,6 +791,147 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         limit = max(1, int(max_boxes))
         return boxes_abs[:limit]
 
+    def _derive_boxes_for_track_ids(
+        self,
+        frame_idx: int,
+        track_ids: Iterable[int],
+        *,
+        max_boxes: Optional[int] = None,
+    ) -> Tuple[List[List[float]], List[int]]:
+        """
+        Derive carry boxes for specific global track ids.
+
+        Prefer the nearest stored mask for that track. Fall back to the last
+        known global track box when a per-frame mask is unavailable.
+        """
+        requested = []
+        for track_id in track_ids:
+            try:
+                requested.append(int(track_id))
+            except Exception:
+                continue
+        if not requested:
+            return [], []
+
+        if max_boxes is None:
+            max_boxes = len(requested)
+        limit = max(1, int(max_boxes))
+
+        boxes_abs: List[List[float]] = []
+        box_track_ids: List[int] = []
+        for track_id in requested[:limit]:
+            track_key = str(int(track_id))
+            nearest_box: Optional[List[float]] = None
+            candidate_frames = [
+                int(f)
+                for f, masks in self._frame_masks.items()
+                if masks and track_key in masks and int(f) != int(frame_idx)
+            ]
+            if candidate_frames:
+                nearest_frame = min(
+                    candidate_frames,
+                    key=lambda f: (abs(int(f) - int(frame_idx)), 0 if int(f) < int(frame_idx) else 1),
+                )
+                arr = np.asarray(
+                    self._frame_masks.get(int(nearest_frame), {}).get(track_key),
+                    dtype=np.uint8,
+                )
+                ys, xs = np.nonzero(arr)
+                if len(xs) > 0 and len(ys) > 0:
+                    x1, x2 = float(xs.min()), float(xs.max())
+                    y1, y2 = float(ys.min()), float(ys.max())
+                    w = x2 - x1
+                    h = y2 - y1
+                    if w > 0 and h > 0:
+                        nearest_box = [x1, y1, w, h]
+            if nearest_box is None:
+                prev_box = self._global_track_last_box.get(int(track_id))
+                if prev_box is not None:
+                    try:
+                        nearest_box = [float(v) for v in np.asarray(prev_box, dtype=float).tolist()]
+                    except Exception:
+                        nearest_box = None
+            if nearest_box is None:
+                continue
+            boxes_abs.append(nearest_box)
+            box_track_ids.append(int(track_id))
+        return boxes_abs, box_track_ids
+
+    def _expected_track_ids_for_frame(
+        self,
+        frame_idx: int,
+        *,
+        max_gap: Optional[int] = None,
+    ) -> set[int]:
+        """Return recently active tracks that should still be considered live."""
+        if max_gap is None:
+            max_gap = max(3, min(int(self.sliding_window_size or 5), 10))
+        expected: set[int] = set()
+        start_frame = max(0, int(frame_idx) - int(max_gap))
+        for prev_frame in range(start_frame, int(frame_idx)):
+            expected.update(int(v) for v in self._frame_track_ids.get(int(prev_frame), set()))
+        return expected
+
+    def _missing_track_ids_for_frame(self, frame_idx: int) -> List[int]:
+        current = {int(v) for v in self._frame_track_ids.get(int(frame_idx), set())}
+        expected = self._expected_track_ids_for_frame(int(frame_idx))
+        missing = sorted(expected - current)
+        return missing
+
+    @staticmethod
+    def _normalize_window_schedule(
+        *,
+        window_size: int,
+        stride: Optional[int],
+    ) -> Tuple[int, int]:
+        window_size = max(1, int(window_size or 1))
+        try:
+            stride_val = int(stride) if stride is not None else max(1, window_size - 1)
+        except Exception:
+            stride_val = max(1, window_size - 1)
+        if stride_val <= 0:
+            stride_val = max(1, window_size - 1)
+        if window_size > 1 and stride_val >= window_size:
+            stride_val = window_size - 1
+        return window_size, stride_val
+
+    def _resolve_window_schedule(
+        self,
+        *,
+        resolved_device: torch.device,
+        total_frames: Optional[int],
+    ) -> Tuple[int, int]:
+        """
+        Choose a device-aware window schedule for long-video text prompting.
+
+        Explicit user settings win. Otherwise prefer larger windows on CUDA and
+        moderate overlap on long CPU runs to reduce session churn.
+        """
+        user_window_size = self.sliding_window_size
+        user_stride = self.sliding_window_stride
+        if user_window_size is not None or user_stride is not None:
+            window_size, stride = self._normalize_window_schedule(
+                window_size=user_window_size or 5,
+                stride=user_stride,
+            )
+            return window_size, stride
+
+        total = max(0, int(total_frames or 0))
+        if resolved_device.type == "cuda":
+            window_size = 48 if total >= 200 else 24
+            overlap = max(4, window_size // 6)
+        elif resolved_device.type == "cpu":
+            window_size = 32 if total >= 2000 else 24 if total >= 400 else 12
+            overlap = max(2, window_size // 5)
+        else:
+            window_size = 8
+            overlap = 1
+
+        if total > 0:
+            window_size = min(window_size, total)
+        stride = max(1, window_size - overlap)
+        return self._normalize_window_schedule(window_size=window_size, stride=stride)
+
     def add_prompt_points_abs(
         self,
         frame_idx: int,
@@ -791,6 +983,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         yielded_frames: int = 0,
         label_hints: Optional[List[str]] = None,
         apply_score_threshold: bool = True,
+        merge_existing: bool = False,
     ) -> Tuple[int, int]:
         obj_ids = outputs.get("out_obj_ids", [])
         masks = outputs.get("out_binary_masks", [])
@@ -854,6 +1047,17 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             mask_dict[key] = np.asarray(mask, dtype=np.uint8)
             obj_meta[key] = meta
 
+        current_track_ids = {int(k) for k in mask_dict.keys()}
+        if merge_existing:
+            existing_masks = self._frame_masks.get(int(frame_idx)) or {}
+            if existing_masks:
+                merged_masks = {
+                    str(k): np.asarray(v, dtype=np.uint8) for k, v in existing_masks.items()
+                }
+                merged_masks.update(mask_dict)
+                mask_dict = merged_masks
+                current_track_ids = {int(k) for k in mask_dict.keys()}
+
         if self.frame_shape is None:
             self.frame_shape = self.get_frame_shape()
 
@@ -869,6 +1073,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         )
         # Track frames for possible later per-frame reacquisition.
         self._frames_processed.add(int(frame_idx))
+        self._frame_track_ids[int(frame_idx)] = set(current_track_ids)
         if mask_dict:
             self._frames_with_masks.add(int(frame_idx))
             # Persist masks for this frame so they can be used as visual prompts
@@ -876,6 +1081,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             self._frame_masks[int(frame_idx)] = {
                 k: np.asarray(v, dtype=np.uint8) for k, v in mask_dict.items()
             }
+            for track_id in current_track_ids:
+                self._track_last_seen_frame[int(track_id)] = int(frame_idx)
 
         if not total_frames or total_frames <= 0:
             total_frames = self.total_frames_estimate()
@@ -982,31 +1189,19 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         - remap local object ids to stable global ids across windows
         """
         resolved_device = self._resolve_runtime_device(target_device)
-        window_size = max(1, int(self.sliding_window_size or 5))
-        stride = self.sliding_window_stride
-        try:
-            # Prefer overlap by default to avoid hard boundary drops.
-            stride = int(stride) if stride is not None else max(1, window_size - 1)
-        except Exception:
-            stride = max(1, window_size - 1)
-        if stride <= 0:
-            stride = max(1, window_size - 1)
-        if window_size > 1 and stride >= window_size:
-            logger.info(
-                "SAM3.1 windowed mode: forcing 1-frame overlap for boundary robustness "
-                "(requested stride=%s, window_size=%s).",
-                stride,
-                window_size,
-            )
-            stride = window_size - 1
-
-        # On MPS, conservative windows are safer for long videos.
-        if resolved_device.type == "mps" and window_size > 5:
-            window_size = 5
-            stride = min(stride, window_size)
-
         self._reset_global_tracks()
         total_frames = self.total_frames_estimate()
+        window_size, stride = self._resolve_window_schedule(
+            resolved_device=resolved_device,
+            total_frames=total_frames,
+        )
+        logger.info(
+            "SAM3.1 windowed mode: resolved schedule window_size=%s stride=%s device=%s total_frames=%s.",
+            window_size,
+            stride,
+            resolved_device,
+            total_frames if total_frames else "unknown",
+        )
         frame_to_masks: Dict[int, int] = {}
 
         if self._predictor is None or self._predictor_device != resolved_device:
@@ -1016,15 +1211,17 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         with tempfile.TemporaryDirectory(prefix="annolid_sam3p1_windows_") as tmp_root:
             window_dir = Path(tmp_root) / "frames"
             window_dir.mkdir(parents=True, exist_ok=True)
+            previous_window_frame_count = 0
 
             for start_idx, _, frames in self._iter_video_windows(
                 window_size=window_size,
                 stride=stride,
             ):
-                self._empty_window_dir(window_dir)
-                for local_idx, frame in enumerate(frames):
-                    out_path = window_dir / f"{local_idx:06d}.jpg"
-                    cv2.imwrite(str(out_path), frame)
+                previous_window_frame_count = self._write_window_frames(
+                    window_dir,
+                    frames,
+                    previous_count=previous_window_frame_count,
+                )
 
                 session_resp = self._predictor.start_session(
                     resource_path=str(window_dir),
@@ -1042,7 +1239,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     else:
                         carry_boxes = None
 
-                    self._predictor.add_prompt(
+                    prompt_result = self._predictor.add_prompt(
                         session_id=session_id,
                         frame_idx=0,
                         text=text_prompt,
@@ -1054,6 +1251,24 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         else None,
                         obj_id=None,
                     )
+                    prompt_outputs = (
+                        prompt_result.get("outputs", {})
+                        if isinstance(prompt_result, dict)
+                        else {}
+                    ) or {}
+                    prompt_outputs = self._map_outputs_to_global_ids(prompt_outputs)
+                    prompt_global_frame = int(start_idx)
+                    prompt_masks_in_frame, _ = self._handle_frame_outputs(
+                        frame_idx=prompt_global_frame,
+                        outputs=prompt_outputs,
+                        total_frames=total_frames,
+                        yielded_frames=len(frame_to_masks) + 1,
+                        apply_score_threshold=False,
+                    )
+                    frame_to_masks[prompt_global_frame] = max(
+                        int(frame_to_masks.get(prompt_global_frame, 0)),
+                        int(prompt_masks_in_frame),
+                    )
                     for result in self._predictor.propagate_in_video(
                         session_id=session_id,
                         propagation_direction="forward",
@@ -1063,6 +1278,13 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         local_frame = int(result.get("frame_index", 0))
                         global_frame = start_idx + local_frame
                         outputs = result.get("outputs", {}) or {}
+                        # Keep previously materialized non-empty frames stable:
+                        # SAM3 can emit duplicate boundary frames with empty outputs.
+                        if (
+                            int(frame_to_masks.get(global_frame, 0)) > 0
+                            and self._output_candidate_mask_count(outputs) == 0
+                        ):
+                            continue
                         outputs = self._map_outputs_to_global_ids(outputs)
                         masks_in_frame, _ = self._handle_frame_outputs(
                             frame_idx=global_frame,
@@ -1071,7 +1293,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             yielded_frames=len(frame_to_masks) + 1,
                             apply_score_threshold=False,
                         )
-                        frame_to_masks[global_frame] = masks_in_frame
+                        frame_to_masks[global_frame] = max(
+                            int(frame_to_masks.get(global_frame, 0)),
+                            int(masks_in_frame),
+                        )
                 finally:
                     try:
                         self._predictor.close_session(session_id)
@@ -1112,10 +1337,19 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
     def _prepare_prompts(
         self, annotations: Iterable[dict], text_prompt: Optional[str]
-    ) -> Tuple[Optional[int], List[List[float]], List[int], List[int]]:
+    ) -> Tuple[
+        Optional[int],
+        List[List[float]],
+        List[int],
+        List[List[float]],
+        List[int],
+        List[int],
+    ]:
         """
-        Build bounding-box prompts from cached annotations. Returns
-        (frame_idx, boxes, labels, obj_ids).
+        Build SAM3 prompts from cached annotations.
+
+        Returns:
+            (frame_idx, boxes, box_labels, points, point_labels, obj_ids)
         """
         if self.frame_shape is None:
             self.frame_shape = self.get_frame_shape()
@@ -1126,7 +1360,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 self.video_dir,
             )
             prompt_frame_idx = self._first_frame_index()
-            return prompt_frame_idx, [], [], []
+            return prompt_frame_idx, [], [], [], [], []
 
         if not annotations:
             raise FileNotFoundError(
@@ -1144,7 +1378,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
         for frame_idx in sorted(annotations_by_frame):
             boxes: List[List[float]] = []
-            labels: List[int] = []
+            box_labels: List[int] = []
+            points: List[List[float]] = []
+            point_labels: List[int] = []
             obj_ids: List[int] = []
             for ann in annotations_by_frame[frame_idx]:
                 label_val = int(ann["labels"][0]) if ann.get("labels") else 1
@@ -1161,6 +1397,50 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     y1, y2 = float(ys.min()), float(ys.max())
                     w = max(0.0, x2 - x1)
                     h = max(0.0, y2 - y1)
+                elif ann["type"] in {"polygon", "polyline"}:
+                    poly_pts = ann.get("polygon") or ann.get("polyline") or []
+                    if not poly_pts:
+                        continue
+                    try:
+                        arr = np.asarray(poly_pts, dtype=float)
+                        if arr.ndim != 2 or arr.shape[1] != 2:
+                            continue
+                        x1 = float(arr[:, 0].min())
+                        x2 = float(arr[:, 0].max())
+                        y1 = float(arr[:, 1].min())
+                        y2 = float(arr[:, 1].max())
+                    except Exception:
+                        continue
+                    w = max(0.0, x2 - x1)
+                    h = max(0.0, y2 - y1)
+                elif ann["type"] in {"points", "point"}:
+                    ann_points = ann.get("points") or []
+                    if not ann_points and ann.get("point"):
+                        ann_points = [ann.get("point")]
+                    if not ann_points:
+                        continue
+                    ann_point_labels = ann.get("labels") or []
+                    added_any = False
+                    for idx, pt in enumerate(ann_points):
+                        if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                            continue
+                        try:
+                            x = float(pt[0])
+                            y = float(pt[1])
+                        except Exception:
+                            continue
+                        if x < 0.0 or y < 0.0:
+                            continue
+                        points.append([x / width, y / height])
+                        raw_label = ann_point_labels[idx] if idx < len(ann_point_labels) else 1
+                        try:
+                            point_labels.append(1 if int(raw_label) > 0 else 0)
+                        except Exception:
+                            point_labels.append(1)
+                        added_any = True
+                    if added_any:
+                        obj_ids.append(int(ann.get("obj_id", label_val)))
+                    continue
                 else:
                     continue
 
@@ -1168,13 +1448,13 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     continue
 
                 boxes.append([x1 / width, y1 / height, w / width, h / height])
-                labels.append(label_val)
+                box_labels.append(label_val)
                 obj_ids.append(int(ann.get("obj_id", label_val)))
 
-            if boxes:
-                return frame_idx, boxes, labels, obj_ids
+            if boxes or points:
+                return frame_idx, boxes, box_labels, points, point_labels, obj_ids
 
-        return None, [], [], []
+        return None, [], [], [], [], []
 
     def _first_frame_index(self) -> int:
         """
@@ -1220,7 +1500,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         int(removed),
                         int(total_frames) - 1,
                     )
-            prompt_frame_idx, boxes, labels, _ = self._prepare_prompts(
+            prompt_frame_idx, boxes, labels, points, point_labels, _ = self._prepare_prompts(
                 annotations, self.text_prompt
             )
             if prompt_frame_idx is None:
@@ -1234,11 +1514,14 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             self._frames_processed.clear()
             self._frames_with_masks.clear()
             self._frame_masks.clear()
+            self._frame_track_ids.clear()
+            self._track_last_seen_frame.clear()
 
             if (
                 self.use_sliding_window_for_text_prompt
                 and self.text_prompt
                 and not boxes
+                and not points
             ):
                 logger.info(
                     "SAM3.1: running windowed text propagation (window_size=%s, stride=%s).",
@@ -1273,6 +1556,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     text=self.text_prompt,
                     boxes=boxes or None,
                     box_labels=labels or None,
+                    points=points or None,
+                    point_labels=point_labels or None,
                     record_outputs=True,
                     label_hints=label_hints,
                 )
@@ -1281,19 +1566,23 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     propagation_direction=propagation_direction or self.propagation_direction,
                     max_frame_num_to_track=max_frame_num_to_track or self.max_frame_num_to_track,
                 )
-                # If any frames were processed without masks, optionally re-run per-frame
-                # segmentation using both the text prompt and the last available masks
-                # as visual prompts to re-acquire tracking on those frames.
-                missing_frames = sorted(
-                    self._frames_processed - self._frames_with_masks)
-                if missing_frames and self.text_prompt:
+                # Use text-guided recovery for frames that lost all or some recent
+                # instances, and merge the recovered outputs into existing tracks.
+                recovery_frames = sorted(
+                    {
+                        int(frame_idx)
+                        for frame_idx in self._frames_processed
+                        if (int(frame_idx) not in self._frames_with_masks)
+                        or self._missing_track_ids_for_frame(int(frame_idx))
+                    }
+                )
+                if recovery_frames and self.text_prompt:
                     logger.info(
-                        "SAM3: %d frame(s) with no masks; running per-frame visual+text "
-                        "reacquisition on these frames.",
-                        len(missing_frames),
+                        "SAM3: %d frame(s) need text-guided recovery for missing/lost instances.",
+                        len(recovery_frames),
                     )
                     self._reacquire_frames_with_visual_and_text(
-                        missing_frames, target_device
+                        recovery_frames, target_device
                     )
                 expected_frames: Iterable[int]
                 total_frames = self.total_frames_estimate()
@@ -1330,12 +1619,21 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         when the main tracker path produced none.
         """
         with torch.inference_mode():
-            if not self.text_prompt or not self._frame_masks:
+            if not self.text_prompt:
                 return
 
-            boxes_abs = self._derive_boxes_from_neighbor_masks(
-                frame_idx, max_boxes=min(4, self.max_num_objects)
-            )
+            missing_track_ids = self._missing_track_ids_for_frame(int(frame_idx))
+            if missing_track_ids:
+                boxes_abs, target_track_ids = self._derive_boxes_for_track_ids(
+                    frame_idx,
+                    missing_track_ids,
+                    max_boxes=min(4, self.max_num_objects),
+                )
+            else:
+                boxes_abs = self._derive_boxes_from_neighbor_masks(
+                    frame_idx, max_boxes=min(4, self.max_num_objects)
+                )
+                target_track_ids = []
             if not boxes_abs:
                 return
 
@@ -1346,18 +1644,25 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 boxes = self._normalize_boxes(boxes_abs, w, h)
                 self._reset_session_state()
                 self._reset_action_history_if_supported()
-                self.add_prompt(
+                result = self.add_prompt(
                     frame_idx=frame_idx,
                     text=self.text_prompt,
                     boxes=boxes,
                     box_labels=[1] * len(boxes),
-                    record_outputs=True,
-                    label_hints=None,
+                    record_outputs=False,
+                    label_hints=self._label_hints_from_ids(target_track_ids, self.id_to_labels)
+                    if target_track_ids
+                    else None,
                 )
-                self.propagate(
-                    start_frame_idx=frame_idx,
-                    propagation_direction="forward",
-                    max_frame_num_to_track=1,
+                outputs = result.get("outputs", {}) if isinstance(result, dict) else {}
+                outputs = self._map_outputs_to_global_ids(outputs or {})
+                self._handle_frame_outputs(
+                    frame_idx=int(frame_idx),
+                    outputs=outputs,
+                    total_frames=self.total_frames_estimate(),
+                    yielded_frames=len(self._frames_processed) + 1,
+                    apply_score_threshold=False,
+                    merge_existing=True,
                 )
 
     def _reacquire_frames_with_visual_and_text(
@@ -1379,27 +1684,45 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 h, w = self.frame_shape[:2]
 
                 for frame_idx in frame_indices:
-                    boxes_abs = self._derive_boxes_from_neighbor_masks(
-                        frame_idx, max_boxes=min(4, self.max_num_objects)
-                    )
+                    missing_track_ids = self._missing_track_ids_for_frame(int(frame_idx))
+                    if missing_track_ids:
+                        boxes_abs, target_track_ids = self._derive_boxes_for_track_ids(
+                            frame_idx,
+                            missing_track_ids,
+                            max_boxes=min(4, self.max_num_objects),
+                        )
+                    else:
+                        boxes_abs = self._derive_boxes_from_neighbor_masks(
+                            frame_idx, max_boxes=min(4, self.max_num_objects)
+                        )
+                        target_track_ids = []
                     if not boxes_abs:
                         continue
                     boxes = self._normalize_boxes(boxes_abs, w, h)
                     self._reset_session_state()
                     self._reset_action_history_if_supported()
                     try:
-                        self.add_prompt(
+                        result = self.add_prompt(
                             frame_idx=frame_idx,
                             text=self.text_prompt,
                             boxes=boxes,
                             box_labels=[1] * len(boxes),
-                            record_outputs=True,
-                            label_hints=None,
+                            record_outputs=False,
+                            label_hints=self._label_hints_from_ids(
+                                target_track_ids, self.id_to_labels
+                            )
+                            if target_track_ids
+                            else None,
                         )
-                        self.propagate(
-                            start_frame_idx=frame_idx,
-                            propagation_direction="forward",
-                            max_frame_num_to_track=1,
+                        outputs = result.get("outputs", {}) if isinstance(result, dict) else {}
+                        outputs = self._map_outputs_to_global_ids(outputs or {})
+                        self._handle_frame_outputs(
+                            frame_idx=int(frame_idx),
+                            outputs=outputs,
+                            total_frames=self.total_frames_estimate(),
+                            yielded_frames=len(self._frames_processed) + 1,
+                            apply_score_threshold=False,
+                            merge_existing=True,
                         )
                     except Exception as exc:
                         logger.warning(
