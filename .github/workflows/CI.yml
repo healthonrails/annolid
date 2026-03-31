@@ -74,12 +74,26 @@ jobs:
         flake8 annolid tests --count --select=E9,F63,F7,F82 --exclude="$FLK_EXCLUDES" --show-source --statistics
         # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
         flake8 annolid tests --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics --exclude="$FLK_EXCLUDES"
-    - name: Test with pytest
+    - name: Test with pytest (base)
       run: |
         source .venv/bin/activate
         export QT_QPA_PLATFORM=offscreen
         export ANNOLID_DISABLE_BOT_AUTOSTART=1
-        pytest
+        pytest --ignore=tests/test_sam3_prompt_transaction_contract.py
+    - name: Install SAM3 optional dependencies
+      run: |
+        source .venv/bin/activate
+        uv pip install ".[sam3]"
+    - name: Test with pytest (SAM3 optional)
+      run: |
+        source .venv/bin/activate
+        export QT_QPA_PLATFORM=offscreen
+        export ANNOLID_DISABLE_BOT_AUTOSTART=1
+        if ls tests/test_sam3*.py >/dev/null 2>&1; then
+          pytest -q tests/test_sam3*.py
+        else
+          echo "No SAM3-specific tests found."
+        fi
     - name: Agent/update integration smoke tests
       run: |
         source .venv/bin/activate
