@@ -129,3 +129,32 @@ def test_update_frame_rewrites_legacy_store_using_inferred_frames(tmp_path):
     assert [row["frame"] for row in rows] == [1, 2]
     assert rows[0]["shapes"][0]["label"] == "teaball"
     assert rows[1]["shapes"][0]["label"] == "box"
+
+
+def test_get_frame_uses_cache_without_rerunning_migration(tmp_path, monkeypatch):
+    frame_path = tmp_path / "video" / "video_000000000.json"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    store = AnnotationStore.for_frame_path(frame_path)
+    store.store_path.write_text(
+        json.dumps(
+            {
+                "frame": 0,
+                "shapes": [{"label": "mouse"}],
+                "imageHeight": 1,
+                "imageWidth": 1,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    calls = {"count": 0}
+
+    def _count_migration():
+        calls["count"] += 1
+
+    monkeypatch.setattr(store, "_ensure_explicit_frame_metadata", _count_migration)
+
+    assert store.get_frame(0)["shapes"][0]["label"] == "mouse"
+    assert store.get_frame(0)["shapes"][0]["label"] == "mouse"
+    assert calls["count"] == 1

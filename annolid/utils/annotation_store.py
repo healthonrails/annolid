@@ -346,7 +346,6 @@ class AnnotationStore:
                 return self._cached_records_or_empty()
 
             try:
-                self._ensure_explicit_frame_metadata()
                 stat = self.store_path.stat()
             except FileNotFoundError:
                 AnnotationStore._CACHE.pop(self.store_path, None)
@@ -362,6 +361,17 @@ class AnnotationStore:
                 and cached["size"] == stat.st_size
             ):
                 return cached["records"]
+
+            # Only pay the migration cost when the cache is stale or missing.
+            # This avoids re-reading large NDJSON stores on every frame render.
+            self._ensure_explicit_frame_metadata()
+            try:
+                stat = self.store_path.stat()
+            except FileNotFoundError:
+                AnnotationStore._CACHE.pop(self.store_path, None)
+                if attempt == 0:
+                    continue
+                return self._cached_records_or_empty()
 
             records: Dict[int, Dict[str, Any]] = {}
             try:

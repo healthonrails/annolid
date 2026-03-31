@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import re
+from numbers import Number
 from pathlib import Path
 from typing import Optional
 
-import pandas as pd
 from qtpy import QtCore
 
 from annolid.gui.label_file import LabelFile, LabelFileError
@@ -238,6 +238,51 @@ class AnnotationLoadingMixin:
         except Exception:
             return 0
 
+    def _tracking_rows_for_frame(self, frame_number: int) -> list[dict]:
+        """Return tracking CSV rows for a frame without scanning the whole table."""
+        controller = getattr(self, "tracking_data_controller", None)
+        if controller is not None and hasattr(controller, "tracking_rows_for_frame"):
+            try:
+                return controller.tracking_rows_for_frame(frame_number)
+            except Exception:
+                logger.debug(
+                    "Tracking controller frame lookup failed for frame %s.",
+                    frame_number,
+                    exc_info=True,
+                )
+
+        df = getattr(self, "_df", None)
+        if df is None or getattr(df, "empty", True):
+            return []
+
+        frame_index = getattr(self, "_tracking_frame_indices", None)
+        try:
+            frame_key = int(frame_number)
+        except (TypeError, ValueError):
+            return []
+
+        if isinstance(frame_index, dict):
+            indices = frame_index.get(frame_key)
+            if indices:
+                try:
+                    return df.iloc[list(indices)].to_dict(orient="records")
+                except Exception:
+                    logger.debug(
+                        "Cached tracking frame lookup failed for frame %s.",
+                        frame_number,
+                        exc_info=True,
+                    )
+
+        try:
+            return df[df.frame_number == frame_key].to_dict(orient="records")
+        except Exception:
+            logger.debug(
+                "Fallback tracking lookup failed for frame %s.",
+                frame_number,
+                exc_info=True,
+            )
+            return []
+
     def _iter_frame_label_candidates(
         self, frame_number: int, frame_path: Optional[Path]
     ) -> list[Path]:
@@ -373,32 +418,37 @@ class AnnotationLoadingMixin:
             return
 
         if self._df is not None and (frame_path is None or not frame_path.exists()):
-            df_cur = self._df[self._df.frame_number == frame_number]
-            frame_label_list = []
-            pd.options.mode.chained_assignment = None
-            for row in df_cur.to_dict(orient="records"):
-                if "x1" not in row:
-                    row["x1"] = 2
-                    row["y1"] = 2
-                    row["x2"] = 4
-                    row["y2"] = 4
-                    row["class_score"] = 1
-                    df_cur.drop("frame_number", axis=1, inplace=True)
-                    try:
-                        instance_names = df_cur.apply(
-                            lambda row: df_cur.columns[
-                                [i for i in range(len(row)) if row[i] > 0][0]
-                            ],
-                            axis=1,
-                        ).tolist()
-                        row["instance_name"] = "_".join(instance_names)
-                    except IndexError:
-                        row["instance_name"] = "unknown"
-                    row["segmentation"] = None
-                pred_label_list = pred_dict_to_labelme(row)
-                frame_label_list += pred_label_list
+            frame_rows = self._tracking_rows_for_frame(frame_number)
+            if frame_rows:
+                frame_label_list = []
+                for row in frame_rows:
+                    row = dict(row)
+                    if "x1" not in row:
+                        row["x1"] = 2
+                        row["y1"] = 2
+                        row["x2"] = 4
+                        row["y2"] = 4
+                        row["class_score"] = 1
+                        try:
+                            instance_names = [
+                                col
+                                for col, value in row.items()
+                                if col != "frame_number"
+                                and isinstance(value, Number)
+                                and value > 0
+                            ]
+                            row["instance_name"] = (
+                                "_".join(instance_names)
+                                if instance_names
+                                else "unknown"
+                            )
+                        except Exception:
+                            row["instance_name"] = "unknown"
+                        row["segmentation"] = None
+                    pred_label_list = pred_dict_to_labelme(row)
+                    frame_label_list += pred_label_list
 
-            self.loadShapes(frame_label_list)
+                self.loadShapes(frame_label_list)
 
         if not label_loaded and self.caption_widget is not None:
             applied = self._apply_timeline_caption_if_available(

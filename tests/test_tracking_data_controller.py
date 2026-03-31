@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pandas as pd
+
+from annolid.gui.controllers.tracking_data import TrackingDataController
+
+
+class _DummyBehaviorController:
+    def __init__(self) -> None:
+        self.events_count = 0
+        self.behavior_names: list[str] = []
+
+    def clear(self) -> None:
+        return None
+
+    def load_events_from_store(self) -> None:
+        return None
+
+
+class _DummyBehaviorLogWidget:
+    def clear(self) -> None:
+        return None
+
+    def set_events(self, *args, **kwargs) -> None:
+        return None
+
+
+class _DummyWindow:
+    def __init__(self) -> None:
+        self.behavior_controller = _DummyBehaviorController()
+        self.behavior_log_widget = _DummyBehaviorLogWidget()
+        self.pinned_flags = {}
+        self._df = None
+        self.video_results_folder = None
+        self.seekbar = None
+        self.fps = 0
+
+    def _load_behavior(self, *_args, **_kwargs) -> None:
+        return None
+
+
+def test_tracking_rows_for_frame_uses_precomputed_frame_index(tmp_path: Path) -> None:
+    window = _DummyWindow()
+    controller = TrackingDataController(window)
+
+    df = pd.DataFrame(
+        [
+            {"frame_number": 0, "instance_name": "a", "score": 0.9},
+            {"frame_number": 0, "instance_name": "b", "score": 0.7},
+            {"frame_number": 2, "instance_name": "c", "score": 0.8},
+        ]
+    )
+
+    controller._tracking_df = df
+    controller._tracking_frame_indices = controller._build_tracking_frame_index(df)
+
+    assert controller.tracking_rows_for_frame(0) == [
+        {"frame_number": 0, "instance_name": "a", "score": 0.9},
+        {"frame_number": 0, "instance_name": "b", "score": 0.7},
+    ]
+    assert controller.tracking_rows_for_frame(2) == [
+        {"frame_number": 2, "instance_name": "c", "score": 0.8}
+    ]
+    assert controller.tracking_rows_for_frame(1) == []
+
+
+def test_load_tracking_results_builds_frame_index(tmp_path: Path) -> None:
+    window = _DummyWindow()
+    controller = TrackingDataController(window)
+
+    video_name = "sample"
+    csv_path = tmp_path / f"{video_name}_tracking.csv"
+    pd.DataFrame(
+        [
+            {"frame_number": 0, "instance_name": "a", "score": 0.9},
+            {"frame_number": 1, "instance_name": "b", "score": 0.7},
+            {"frame_number": 1, "instance_name": "c", "score": 0.6},
+        ]
+    ).to_csv(csv_path, index=False)
+
+    controller.load_tracking_results(tmp_path, f"{video_name}.mp4")
+
+    assert controller.tracking_rows_for_frame(0) == [
+        {"frame_number": 0, "instance_name": "a", "score": 0.9}
+    ]
+    assert controller.tracking_rows_for_frame(1) == [
+        {"frame_number": 1, "instance_name": "b", "score": 0.7},
+        {"frame_number": 1, "instance_name": "c", "score": 0.6},
+    ]
+    assert window._df is not None
