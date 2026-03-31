@@ -1,6 +1,6 @@
 import sys
 import os
-from qtpy import QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtWidgets import (
     QApplication,
     QVBoxLayout,
@@ -53,6 +53,8 @@ class TrackingAnalyzerDialog(QDialog):
         self.latency_reference_edit.setPlaceholderText(
             "(Optional)Enter latency reference frame; default is the first analyzed frame"
         )
+        self.latency_reference_edit.setValidator(QtGui.QIntValidator(0, 2_147_483_647))
+        self.latency_reference_edit.setInputMethodHints(QtCore.Qt.ImhDigitsOnly)
 
         self.profile_combo = QComboBox()
         self._assay_profiles = available_assay_profiles()
@@ -173,14 +175,24 @@ class TrackingAnalyzerDialog(QDialog):
             assay_profile=selected_profile,
         )
 
+    @staticmethod
+    def _parse_integer_frame_text(text: str) -> int | None:
+        value = str(text or "").strip()
+        if not value:
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
+
     def _latency_reference_frame(self):
         text = self.latency_reference_edit.text().strip()
         if not text:
             return None
-        try:
-            return int(float(text))
-        except Exception:
+        frame = self._parse_integer_frame_text(text)
+        if frame is None:
             raise ValueError("Latency reference frame must be an integer frame number.")
+        return frame
 
     def extract_fps_and_find_zone_file(self, video_path):
         fps = None

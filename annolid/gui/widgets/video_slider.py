@@ -252,26 +252,48 @@ class VideoSlider(QtWidgets.QGraphicsView):
         self.input_value = QtWidgets.QLineEdit(str(self.value()), self)
         self.input_value.setFixedWidth(60)
         self.input_value.setAlignment(QtCore.Qt.AlignCenter)
+        self._input_validator = QtGui.QIntValidator(self)
+        # `setNotation` is not available on all Qt bindings/builds.
+        # Keep integer-only validation portable by relying on range + parser.
+        if hasattr(self._input_validator, "setNotation"):
+            self._input_validator.setNotation(
+                QtGui.QIntValidator.Notation.StandardNotation
+            )
+        self.input_value.setValidator(self._input_validator)
+        self.input_value.setInputMethodHints(QtCore.Qt.ImhDigitsOnly)
         self.input_value.editingFinished.connect(self.updateValueFromInput)
         self.input_value.move(2, 2)
+        self._sync_input_validator_range()
 
     # Methods to match API for QSlider
 
+    def _sync_input_validator_range(self) -> None:
+        validator = getattr(self, "_input_validator", None)
+        if validator is None:
+            return
+        try:
+            validator.setRange(int(self._val_min), int(self._val_max))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _parse_frame_input(input_text: str) -> int | None:
+        text = str(input_text or "").strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return None
+
     def updateValueFromInput(self):
         # Get the input text
-        input_text = self.input_value.text()
-        try:
-            # Try converting the input to float
-            input_val = float(input_text)
-            # Check if the input value is within the range
-            if self._val_min <= input_val <= self._val_max:
-                self.setValue(input_val)
-            else:
-                # Reset the input text if it's out of range
-                self.input_value.setText(str(self._val_main))
-        except ValueError:
-            # Reset the input text if it's not a valid float
+        input_text = self.input_value.text().strip()
+        input_val = self._parse_frame_input(input_text)
+        if input_val is None or not (self._val_min <= input_val <= self._val_max):
             self.input_value.setText(str(self._val_main))
+            return
+        self.setValue(input_val)
 
     def value(self) -> float:
         """Returns value of slider."""
@@ -279,21 +301,25 @@ class VideoSlider(QtWidgets.QGraphicsView):
 
     def setValue(self, val: float) -> float:
         """Sets value of slider."""
-        self._val_main = val
-        x = self._toPos(val)
+        normalized_val = int(round(float(val)))
+        self._val_main = normalized_val
+        x = self._toPos(normalized_val)
         self.handle.setPos(x, 0)
         self.ensureVisible(x, 0, self._handle_width, 0, 3, 0)
         if hasattr(self, "input_value"):
             # Update input text value with slider's current value
-            self.input_value.setText(str(self._val_main))
+            self.input_value.setText(str(normalized_val))
+            self.input_value.setCursorPosition(len(str(normalized_val)))
 
     def setMinimum(self, min: float) -> float:
         """Sets minimum value for slider."""
-        self._val_min = min
+        self._val_min = int(round(float(min)))
+        self._sync_input_validator_range()
 
     def setMaximum(self, max: float) -> float:
         """Sets maximum value for slider."""
-        self._val_max = max
+        self._val_max = int(round(float(max)))
+        self._sync_input_validator_range()
 
     def setEnabled(self, val: float) -> float:
         """Set whether the slider is enabled."""

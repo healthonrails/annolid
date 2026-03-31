@@ -1,5 +1,6 @@
 from pathlib import Path
 from qtpy import QtCore
+from qtpy import QtGui
 from qtpy import QtWidgets
 
 
@@ -19,6 +20,8 @@ class QualityControlDialog(QtWidgets.QDialog):
 
         self.framesLineEdit = QtWidgets.QLineEdit(self)
         self.framesLineEdit.setText(str(self.skip_num_frames))
+        self.framesLineEdit.setValidator(QtGui.QIntValidator(1, 2_147_483_647, self))
+        self.framesLineEdit.setInputMethodHints(QtCore.Qt.ImhDigitsOnly)
 
         qbtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn)

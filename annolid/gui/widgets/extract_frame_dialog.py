@@ -1,6 +1,7 @@
 from pathlib import Path
 from qtpy import QtCore
 from qtpy import QtWidgets
+from qtpy import QtGui
 
 
 class ExtractFrameDialog(QtWidgets.QDialog):
@@ -30,6 +31,8 @@ class ExtractFrameDialog(QtWidgets.QDialog):
             self.inputFileLineEdit.setText(self.video_file)
         self.framesLineEdit = QtWidgets.QLineEdit(self)
         self.framesLineEdit.setText(str(self.num_frames))
+        self.framesLineEdit.setValidator(QtGui.QIntValidator(-1, 2_147_483_647, self))
+        self.framesLineEdit.setInputMethodHints(QtCore.Qt.ImhDigitsOnly)
         self.inputFileButton = QtWidgets.QPushButton("Open", self)
         self.inputFileButton.clicked.connect(self.onInputFileButtonClicked)
         self.framesLineEdit.textChanged.connect(self.onSliderChange)
