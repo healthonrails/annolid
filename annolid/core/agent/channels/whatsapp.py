@@ -461,6 +461,20 @@ class WhatsAppChannel(BaseChannel):
             logger.error("WhatsApp bridge mode requires `websockets` package: %s", exc)
             await self._stop_event.wait()
             return
+        version = str(getattr(websockets, "__version__", "") or "").strip()
+        major_text = version.split(".", 1)[0]
+        try:
+            major = int(major_text)
+        except (TypeError, ValueError):
+            major = 0
+        if major < 12:
+            logger.error(
+                "WhatsApp bridge requires websockets>=12 on Python 3.13+. "
+                'Detected websockets %s. Upgrade with: pip install "websockets>=12,<16"',
+                version or "unknown",
+            )
+            await self._stop_event.wait()
+            return
 
         while self._running:
             try:
@@ -479,6 +493,13 @@ class WhatsAppChannel(BaseChannel):
                 break
             except Exception as exc:
                 logger.warning("WhatsApp bridge connection error: %s", exc)
+                if "unexpected keyword argument 'loop'" in str(exc):
+                    logger.error(
+                        "Detected incompatible websockets runtime; bridge loop will pause until shutdown. "
+                        'Install a supported version: pip install "websockets>=12,<16"'
+                    )
+                    await self._stop_event.wait()
+                    break
                 if self._running:
                     try:
                         await asyncio.wait_for(self._stop_event.wait(), timeout=5.0)

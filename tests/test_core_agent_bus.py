@@ -553,6 +553,84 @@ def test_agent_bus_service_substitutes_empty_zulip_reply_with_fallback() -> None
     asyncio.run(_run())
 
 
+def test_agent_bus_service_email_prefers_final_answer_marker() -> None:
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        return {
+            "content": (
+                "Thinking: I should gather context first.\n"
+                "Reasoning: Drafting an explanation.\n\n"
+                "Final answer: Camera is online and healthy."
+            )
+        }
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="email",
+                    sender_id="alice@example.com",
+                    chat_id="alice@example.com",
+                    content="status?",
+                )
+            )
+            out = await bus.consume_outbound(timeout_s=1.0)
+            assert out.content == "Camera is online and healthy."
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
+def test_agent_bus_service_non_email_keeps_non_think_content() -> None:
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        return {"content": "Reasoning: keep this for chat\nFinal answer: hello"}
+
+    async def _run() -> None:
+        bus = MessageBus()
+        loop = AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+        )
+        svc = AgentBusService(bus=bus, loop=loop)
+        await svc.start()
+        try:
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="telegram",
+                    sender_id="alice",
+                    chat_id="alice",
+                    content="status?",
+                )
+            )
+            out = await bus.consume_outbound(timeout_s=1.0)
+            assert out.content == "Reasoning: keep this for chat\nFinal answer: hello"
+        finally:
+            await svc.stop()
+
+    asyncio.run(_run())
+
+
 def test_agent_bus_service_idempotency_replays_cached_result() -> None:
     state = {"calls": 0}
 

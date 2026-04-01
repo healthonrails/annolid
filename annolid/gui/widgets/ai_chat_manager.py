@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import importlib.util
 import threading
 from annolid.utils.logger import logger
@@ -35,6 +36,16 @@ def _missing_whatsapp_python_bridge_deps() -> list[str]:
     missing: list[str] = []
     if importlib.util.find_spec("websockets") is None:
         missing.append("websockets")
+        return missing
+    try:
+        websockets = importlib.import_module("websockets")
+        version = str(getattr(websockets, "__version__", "") or "").strip()
+        major_text = version.split(".", 1)[0]
+        major = int(major_text)
+        if major < 12:
+            missing.append(f"websockets>=12 (detected {version or 'unknown'})")
+    except Exception:
+        missing.append("websockets>=12")
     return missing
 
 
@@ -457,6 +468,11 @@ class AIChatManager(QtCore.QObject):
                     bridge.stop(), self._background_loop
                 )
                 fut.result(timeout=shutdown_wait_s)
+            except TimeoutError:
+                fut.cancel()
+                logger.exception(
+                    "Timed out stopping WhatsApp Python bridge; cancelled pending stop"
+                )
             except Exception:
                 logger.exception("Failed stopping WhatsApp Python bridge")
         if self._channel_manager is not None and self._background_loop is not None:

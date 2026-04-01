@@ -592,6 +592,21 @@ class WhatsAppPythonBridge:
             on_event=self._broadcast,
         )
 
+    @staticmethod
+    def _validate_websockets_compat(websockets_module: Any) -> None:
+        version = str(getattr(websockets_module, "__version__", "") or "").strip()
+        major_text = version.split(".", 1)[0]
+        try:
+            major = int(major_text)
+        except (TypeError, ValueError):
+            major = 0
+        if major < 12:
+            raise RuntimeError(
+                "Embedded WhatsApp bridge requires websockets>=12 on Python 3.13+. "
+                f"Detected websockets {version or 'unknown'}. "
+                'Upgrade with: pip install "websockets>=12,<16"'
+            )
+
     @property
     def bridge_url(self) -> str:
         return f"ws://{self.host}:{self.port}"
@@ -601,6 +616,7 @@ class WhatsAppPythonBridge:
             import websockets
         except Exception as exc:
             raise RuntimeError(f"websockets package is required for bridge mode: {exc}")
+        self._validate_websockets_compat(websockets)
         self._server = await websockets.serve(self._on_client, self.host, self.port)
         logger.info("Embedded WhatsApp Python bridge started on %s", self.bridge_url)
         return self.bridge_url

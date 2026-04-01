@@ -472,11 +472,41 @@ class AgentBusService:
         if not raw:
             return ""
         without_think = re.sub(r"<think>[\s\S]*?</think>", "", raw)
+        channel_key = str(channel or "").strip().lower()
+        if channel_key == "email":
+            without_think = cls._sanitize_email_final_only(without_think)
         preserve_private_hosts = str(channel or "").strip().lower() == "whatsapp"
         return cls._redact_sensitive_text(
             str(without_think or "").strip(),
             preserve_private_hosts=preserve_private_hosts,
         )
+
+    @staticmethod
+    def _sanitize_email_final_only(text: str) -> str:
+        value = str(text or "")
+        if not value:
+            return ""
+
+        # Remove common XML-like reasoning wrappers used by some providers.
+        value = re.sub(r"<analysis>[\s\S]*?</analysis>", "", value, flags=re.IGNORECASE)
+        value = re.sub(
+            r"<reasoning>[\s\S]*?</reasoning>", "", value, flags=re.IGNORECASE
+        )
+
+        # Prefer content after an explicit final-answer marker when present.
+        final_match = re.search(
+            r"(?is)\bfinal(?:\s+answer|\s+response)?\s*:\s*(.+)$", value
+        )
+        if final_match:
+            value = final_match.group(1).strip()
+
+        # Drop leading single-line reasoning prefixes if they leak into output.
+        value = re.sub(
+            r"(?im)^\s*(thinking|reasoning|analysis)\s*:\s*.*(?:\n|$)",
+            "",
+            value,
+        )
+        return value.strip()
 
     @staticmethod
     def _build_empty_zulip_fallback(inbound: InboundMessage) -> str:

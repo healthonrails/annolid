@@ -22,6 +22,7 @@ from annolid.core.agent.channels import (
 )
 from annolid.core.agent.channels.whatsapp_python_bridge import (
     _PlaywrightWhatsAppProvider,
+    WhatsAppPythonBridge,
 )
 
 
@@ -1325,6 +1326,33 @@ def test_whatsapp_channel_bridge_loop_without_websockets() -> None:
     asyncio.run(_run())
 
 
+def test_whatsapp_channel_bridge_loop_incompatible_websockets_version() -> None:
+    async def _run() -> None:
+        import types
+
+        bus = MessageBus()
+        channel = WhatsAppChannel({"bridge_url": "ws://127.0.0.1:3001"}, bus)
+        channel._running = True
+        channel._stop_event.set()
+        real_import = builtins.__import__
+
+        fake_ws = types.SimpleNamespace(__version__="8.1")
+
+        def _patched_import(name, *args, **kwargs):
+            if name == "websockets":
+                return fake_ws
+            return real_import(name, *args, **kwargs)
+
+        with (
+            patch("builtins.__import__", side_effect=_patched_import),
+            patch("annolid.core.agent.channels.whatsapp.logger.error") as mocked_error,
+        ):
+            await asyncio.wait_for(channel._run_bridge_loop(), timeout=1.0)
+            assert mocked_error.called
+
+    asyncio.run(_run())
+
+
 def test_whatsapp_channel_log_qr_without_qrcode() -> None:
     bus = MessageBus()
     channel = WhatsAppChannel({}, bus)
@@ -1367,6 +1395,28 @@ def test_whatsapp_python_provider_start_without_playwright() -> None:
         assert events
         assert events[0].get("type") == "error"
         assert "Playwright is required" in str(events[0].get("error", ""))
+
+    asyncio.run(_run())
+
+
+def test_whatsapp_python_bridge_start_rejects_incompatible_websockets() -> None:
+    async def _run() -> None:
+        import types
+
+        bridge = WhatsAppPythonBridge()
+        real_import = builtins.__import__
+
+        fake_ws = types.SimpleNamespace(__version__="8.1")
+
+        def _patched_import(name, *args, **kwargs):
+            if name == "websockets":
+                return fake_ws
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=_patched_import):
+            with pytest.raises(RuntimeError) as excinfo:
+                await bridge.start()
+        assert "websockets>=12" in str(excinfo.value)
 
     asyncio.run(_run())
 
