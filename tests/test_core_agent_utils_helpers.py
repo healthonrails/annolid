@@ -32,3 +32,13 @@ def test_safe_filename_truncate_and_parse_session_key() -> None:
     assert u.parse_session_key("telegram:123") == ("telegram", "123")
     with pytest.raises(ValueError):
         u.parse_session_key("badkey")
+
+
+def test_workspace_path_defaults_to_annolid_data_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(helpers.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(helpers, "get_agent_data_path", lambda: tmp_path / "data")
+    ws = u.get_agent_workspace_path()
+    assert ws == (tmp_path / "data" / "workspace")
+    assert ws.exists()

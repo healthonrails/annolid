@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import shutil
 from pathlib import Path
+from typing import Dict
 
 
 def _default_agent_cron_store_path() -> Path:
@@ -19,18 +21,74 @@ def _agent_cron_service():
     return CronService(store_path=_default_agent_cron_store_path())
 
 
+def _bootstrap_backup_root(workspace: Path) -> Path:
+    return workspace / ".annolid" / "bootstrap-backups"
+
+
+def _list_backup_dirs(backup_root: Path) -> list[Path]:
+    if not backup_root.exists():
+        return []
+    return sorted(
+        [p for p in backup_root.iterdir() if p.is_dir()],
+        key=lambda p: p.name,
+        reverse=True,
+    )
+
+
 def onboard_agent_workspace(
-    *, workspace: str | None = None, overwrite: bool = False
+    *,
+    workspace: str | None = None,
+    overwrite: bool = False,
+    dry_run: bool = False,
+    backup: bool = True,
+    backup_dir: str | None = None,
+    prune_bootstrap: bool = False,
 ) -> dict:
-    from annolid.core.agent import bootstrap_workspace
+    from annolid.core.agent import bootstrap_workspace, prune_bootstrap_workspace
     from annolid.core.agent.utils import get_agent_workspace_path
 
     resolved_workspace = get_agent_workspace_path(workspace)
-    outcomes = bootstrap_workspace(resolved_workspace, overwrite=bool(overwrite))
+    should_backup = bool(overwrite) and bool(backup)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    resolved_backup_dir = (
+        (Path(backup_dir).expanduser() if backup_dir else None)
+        if should_backup
+        else None
+    )
+    if should_backup and resolved_backup_dir is None:
+        resolved_backup_dir = (
+            resolved_workspace / ".annolid" / "bootstrap-backups" / timestamp
+        )
+
+    prune_outcomes = (
+        prune_bootstrap_workspace(
+            resolved_workspace,
+            dry_run=bool(dry_run),
+            backup_root=resolved_backup_dir,
+        )
+        if prune_bootstrap
+        else {}
+    )
+    outcomes = bootstrap_workspace(
+        resolved_workspace,
+        overwrite=bool(overwrite),
+        dry_run=bool(dry_run),
+        backup_root=resolved_backup_dir,
+    )
+
+    counts: Dict[str, int] = {}
+    for status in list(outcomes.values()) + list(prune_outcomes.values()):
+        counts[status] = counts.get(status, 0) + 1
     return {
         "workspace": str(resolved_workspace),
         "overwrite": bool(overwrite),
+        "dry_run": bool(dry_run),
+        "prune_bootstrap": bool(prune_bootstrap),
+        "backup_enabled": bool(should_backup),
+        "backup_dir": (str(resolved_backup_dir) if resolved_backup_dir else None),
+        "summary": counts,
         "files": outcomes,
+        "pruned_files": prune_outcomes,
     }
 
 
@@ -41,6 +99,8 @@ def get_agent_status() -> dict:
     workspace = get_agent_workspace_path()
     store_path = _default_agent_cron_store_path()
     cron_status = _agent_cron_service().status()
+    backup_root = _bootstrap_backup_root(workspace)
+    backups = _list_backup_dirs(backup_root)
     return {
         "data_dir": str(data_dir),
         "workspace": str(workspace),
@@ -48,13 +108,89 @@ def get_agent_status() -> dict:
             "AGENTS.md": (workspace / "AGENTS.md").exists(),
             "SOUL.md": (workspace / "SOUL.md").exists(),
             "USER.md": (workspace / "USER.md").exists(),
+            "IDENTITY.md": (workspace / "IDENTITY.md").exists(),
             "TOOLS.md": (workspace / "TOOLS.md").exists(),
             "HEARTBEAT.md": (workspace / "HEARTBEAT.md").exists(),
+            "BOOT.md": (workspace / "BOOT.md").exists(),
+            "BOOTSTRAP.md": (workspace / "BOOTSTRAP.md").exists(),
             "memory/MEMORY.md": (workspace / "memory" / "MEMORY.md").exists(),
             "memory/HISTORY.md": (workspace / "memory" / "HISTORY.md").exists(),
         },
         "cron_store_path": str(store_path),
+        "workspace_backup_root": str(backup_root),
+        "workspace_backup_count": len(backups),
+        "workspace_latest_backup": (str(backups[0]) if backups else None),
         "cron": cron_status,
+    }
+
+
+def restore_agent_workspace_backup(
+    *,
+    workspace: str | None = None,
+    backup_dir: str | None = None,
+    latest: bool = True,
+    dry_run: bool = False,
+    backup_before_restore: bool = True,
+) -> dict:
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    resolved_workspace = get_agent_workspace_path(workspace)
+    backup_root = _bootstrap_backup_root(resolved_workspace)
+    selected_backup: Path | None = None
+    if backup_dir:
+        candidate = Path(backup_dir).expanduser()
+        selected_backup = candidate if candidate.is_dir() else None
+    elif latest:
+        dirs = _list_backup_dirs(backup_root)
+        selected_backup = dirs[0] if dirs else None
+
+    if selected_backup is None:
+        return {
+            "workspace": str(resolved_workspace),
+            "restored": False,
+            "reason": "No backup directory found to restore from.",
+            "backup_dir": None,
+            "dry_run": bool(dry_run),
+        }
+
+    files = sorted([p for p in selected_backup.rglob("*") if p.is_file()])
+    restore_backup_dir = None
+    if backup_before_restore:
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        restore_backup_dir = backup_root / f"restore-pre-{stamp}"
+
+    outcomes: Dict[str, str] = {}
+    for src in files:
+        rel = src.relative_to(selected_backup).as_posix()
+        dst = resolved_workspace / rel
+        existed = dst.exists()
+        if dry_run:
+            outcomes[rel] = "would_overwrite" if existed else "would_restore"
+            continue
+        if existed and restore_backup_dir is not None:
+            backup_target = restore_backup_dir / rel
+            backup_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(dst, backup_target)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+        outcomes[rel] = "overwritten" if existed else "restored"
+
+    summary: Dict[str, int] = {}
+    for status in outcomes.values():
+        summary[status] = summary.get(status, 0) + 1
+
+    return {
+        "workspace": str(resolved_workspace),
+        "restored": True,
+        "dry_run": bool(dry_run),
+        "backup_dir": str(selected_backup),
+        "pre_restore_backup_dir": (
+            str(restore_backup_dir)
+            if (restore_backup_dir is not None and not dry_run)
+            else None
+        ),
+        "summary": summary,
+        "files": outcomes,
     }
 
 
@@ -188,6 +324,7 @@ __all__ = [
     "get_agent_status",
     "list_agent_cron_jobs",
     "onboard_agent_workspace",
+    "restore_agent_workspace_backup",
     "remove_agent_cron_job",
     "run_agent_cron_job",
     "set_agent_cron_job_enabled",

@@ -419,6 +419,14 @@ class MenuController:
                 ),
             },
             {
+                "name": "open_agent_workspace_onboarding",
+                "text": w.tr("Agent Workspace &Onboarding…"),
+                "slot": self._open_agent_workspace_onboarding,
+                "tip": w.tr(
+                    "Guide workspace template initialization, updates, and prune operations"
+                ),
+            },
+            {
                 "name": "open_florence2",
                 "text": w.tr("Florence-&2 Assistant"),
                 "slot": w.openFlorence2,
@@ -1394,6 +1402,7 @@ class MenuController:
                 actions["advance_params"],
                 actions["project_schema"],
                 actions["pose_schema"],
+                actions["open_agent_workspace_onboarding"],
                 actions["open_memory_manager"],
             ),
             (actions["toggle_pose_bbox_save"],),
@@ -1801,6 +1810,20 @@ class MenuController:
 
             dialog = MemoryManagerDialog(w)
             w._memory_manager_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _open_agent_workspace_onboarding(self) -> None:
+        w = self._window
+        dialog = getattr(w, "_agent_workspace_onboarding_dialog", None)
+        if dialog is None:
+            from annolid.gui.widgets.agent_workspace_onboarding_dialog import (
+                AgentWorkspaceOnboardingDialog,
+            )
+
+            dialog = AgentWorkspaceOnboardingDialog(w)
+            w._agent_workspace_onboarding_dialog = dialog
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()

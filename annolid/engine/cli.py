@@ -856,9 +856,16 @@ def _cmd_agent(args: argparse.Namespace) -> int:
 def _cmd_agent_onboard(args: argparse.Namespace) -> int:
     from annolid.services.agent_cron import onboard_agent_workspace
 
+    overwrite = bool(
+        getattr(args, "overwrite", False) or getattr(args, "update", False)
+    )
     summary = onboard_agent_workspace(
         workspace=getattr(args, "workspace", None),
-        overwrite=bool(args.overwrite),
+        overwrite=overwrite,
+        dry_run=bool(getattr(args, "dry_run", False)),
+        backup=not bool(getattr(args, "no_backup", False)),
+        backup_dir=getattr(args, "backup_dir", None),
+        prune_bootstrap=bool(getattr(args, "prune_bootstrap", False)),
     )
     print(json.dumps(summary, indent=2))
     return 0
@@ -2227,7 +2234,32 @@ def _build_root_parser() -> argparse.ArgumentParser:
     onboard_p.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite existing bootstrap files.",
+        help="Overwrite existing bootstrap files (legacy alias for --update).",
+    )
+    onboard_p.add_argument(
+        "--update",
+        action="store_true",
+        help="Update existing bootstrap files to current template versions.",
+    )
+    onboard_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview onboarding/update actions without writing files.",
+    )
+    onboard_p.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="When updating, skip backup copies before overwriting files.",
+    )
+    onboard_p.add_argument(
+        "--backup-dir",
+        default=None,
+        help="Optional backup directory for overwritten files during --update.",
+    )
+    onboard_p.add_argument(
+        "--prune-bootstrap",
+        action="store_true",
+        help="Remove stale bootstrap-managed files not present in current templates.",
     )
     onboard_p.set_defaults(_handler=_cmd_agent_onboard)
 

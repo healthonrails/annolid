@@ -21,7 +21,7 @@ def get_agent_workspace_path(workspace: Optional[str] = None) -> Path:
     """
     Resolve and ensure workspace path.
 
-    Defaults to ~/.annolid/workspace for agent-local assets.
+    Defaults to ~/.annolid/workspace for Annolid-local assets.
     """
     if workspace:
         return ensure_dir(Path(workspace).expanduser())

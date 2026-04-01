@@ -23,6 +23,10 @@ Examples:
 
 ```text
 annolid-run agent-status
+annolid-run agent-onboard
+annolid-run agent-onboard --dry-run
+annolid-run agent-onboard --update
+annolid-run agent-onboard --prune-bootstrap
 annolid-run list-models
 annolid-run help train
 annolid-run help train dino_kpseg
@@ -83,6 +87,37 @@ Typical typed invocation shape:
 - Use explicit workspaces for agent memory, secrets, eval, and skills commands.
 - Start with read-only inspection commands before any `train`, `predict`, `refresh`, or `apply` action.
 - Keep GUI-driven direct commands for discovery and status; reserve typed mutation for deliberate automation.
+
+## Workspace Onboarding and Template Updates
+
+Use `agent-onboard` to initialize or synchronize workspace bootstrap files under
+`~/.annolid/workspace` (or a custom `--workspace` path).
+
+Recommended flow:
+
+```text
+annolid-run agent-onboard --dry-run
+annolid-run agent-onboard
+annolid-run agent-onboard --update
+```
+
+- `--dry-run`: preview file actions without writing.
+- `--update`: overwrite changed template files with current versions.
+- `--overwrite`: legacy alias for `--update`.
+- `--no-backup`: when used with `--update`, skip backup copies.
+- `--backup-dir <path>`: write overwritten-file backups to a custom directory.
+- `--prune-bootstrap`: remove stale bootstrap-managed files no longer present in current template set.
+
+By default, update mode creates backup copies in:
+
+`<workspace>/.annolid/bootstrap-backups/<timestamp>/`
+
+This keeps user-modified files recoverable while allowing template updates.
+
+GUI workflow:
+
+- Open `Settings -> Agent Workspace Onboarding…`
+- Preview actions, apply onboarding/update, optionally prune stale bootstrap files, restore from the latest backup, and verify workspace template status.
 
 ## Help Patterns
 

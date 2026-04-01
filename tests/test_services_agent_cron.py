@@ -8,6 +8,7 @@ from annolid.services.agent_cron import (
     list_agent_cron_jobs,
     onboard_agent_workspace,
     remove_agent_cron_job,
+    restore_agent_workspace_backup,
     run_agent_cron_job,
     set_agent_cron_job_enabled,
 )
@@ -31,7 +32,14 @@ def test_onboard_agent_workspace_and_status(monkeypatch, tmp_path: Path) -> None
     monkeypatch.setattr(
         agent_mod,
         "bootstrap_workspace",
-        lambda root, overwrite=False: {"AGENTS.md": "created"},
+        lambda root, overwrite=False, dry_run=False, backup_root=None: {
+            "AGENTS.md": "created"
+        },
+    )
+    monkeypatch.setattr(
+        agent_mod,
+        "prune_bootstrap_workspace",
+        lambda root, dry_run=False, backup_root=None: {"legacy/OLD.md": "removed"},
     )
     monkeypatch.setattr(cron_mod, "_default_agent_cron_store_path", lambda: store_path)
 
@@ -41,10 +49,17 @@ def test_onboard_agent_workspace_and_status(monkeypatch, tmp_path: Path) -> None
 
     monkeypatch.setattr(cron_mod, "_agent_cron_service", lambda: _Service())
 
-    onboard = onboard_agent_workspace(workspace=str(workspace), overwrite=True)
+    onboard = onboard_agent_workspace(
+        workspace=str(workspace), overwrite=True, prune_bootstrap=True
+    )
     status = get_agent_status()
 
     assert onboard["files"]["AGENTS.md"] == "created"
+    assert onboard["dry_run"] is False
+    assert onboard["backup_enabled"] is True
+    assert onboard["prune_bootstrap"] is True
+    assert onboard["pruned_files"]["legacy/OLD.md"] == "removed"
+    assert isinstance(onboard["summary"], dict)
     assert status["data_dir"] == str(data_dir)
     assert status["cron_store_path"] == str(store_path)
     assert status["cron"] == {"jobs": 1}
@@ -128,3 +143,40 @@ def test_list_add_remove_enable_and_run_cron(monkeypatch) -> None:
     assert remove_code == 0 and removed["removed"] is True
     assert enable_code == 0 and enabled["enabled"] is False
     assert run_code == 0 and ran["ran"] is True
+
+
+def test_restore_agent_workspace_backup_latest(tmp_path: Path, monkeypatch) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    workspace = tmp_path / "workspace"
+    backup = workspace / ".annolid" / "bootstrap-backups" / "20260101-000000"
+    (backup / "AGENTS.md").parent.mkdir(parents=True, exist_ok=True)
+    (backup / "AGENTS.md").write_text("backup agents", encoding="utf-8")
+    (workspace / "AGENTS.md").parent.mkdir(parents=True, exist_ok=True)
+    (workspace / "AGENTS.md").write_text("current agents", encoding="utf-8")
+    monkeypatch.setattr(
+        utils_mod, "get_agent_workspace_path", lambda value=None: workspace
+    )
+
+    payload = restore_agent_workspace_backup(workspace=str(workspace), latest=True)
+    assert payload["restored"] is True
+    assert payload["files"]["AGENTS.md"] == "overwritten"
+    assert (workspace / "AGENTS.md").read_text(encoding="utf-8") == "backup agents"
+    pre_backup = Path(str(payload["pre_restore_backup_dir"]))
+    assert (pre_backup / "AGENTS.md").read_text(encoding="utf-8") == "current agents"
+
+
+def test_restore_agent_workspace_backup_when_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import annolid.core.agent.utils as utils_mod
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        utils_mod, "get_agent_workspace_path", lambda value=None: workspace
+    )
+
+    payload = restore_agent_workspace_backup(workspace=str(workspace), latest=True)
+    assert payload["restored"] is False
+    assert payload["backup_dir"] is None

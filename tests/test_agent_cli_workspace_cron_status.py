@@ -15,10 +15,74 @@ def test_agent_onboard_creates_workspace_templates(tmp_path: Path) -> None:
     assert (workspace / "AGENTS.md").exists()
     assert (workspace / "SOUL.md").exists()
     assert (workspace / "USER.md").exists()
+    assert (workspace / "IDENTITY.md").exists()
     assert (workspace / "TOOLS.md").exists()
     assert (workspace / "HEARTBEAT.md").exists()
+    assert (workspace / "BOOT.md").exists()
+    assert (workspace / "BOOTSTRAP.md").exists()
     assert (workspace / "memory" / "MEMORY.md").exists()
     assert (workspace / "memory" / "HISTORY.md").exists()
+
+
+def test_agent_onboard_dry_run_does_not_write(tmp_path: Path, capsys) -> None:
+    workspace = tmp_path / "workspace"
+    rc = annolid_run(["agent-onboard", "--workspace", str(workspace), "--dry-run"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dry_run"] is True
+    assert payload["files"]["AGENTS.md"] == "would_created"
+    assert not (workspace / "AGENTS.md").exists()
+
+
+def test_agent_onboard_update_creates_backup(tmp_path: Path, capsys) -> None:
+    workspace = tmp_path / "workspace"
+    rc = annolid_run(["agent-onboard", "--workspace", str(workspace)])
+    assert rc == 0
+    _ = capsys.readouterr()
+
+    agents = workspace / "AGENTS.md"
+    agents.write_text("custom", encoding="utf-8")
+    rc = annolid_run(["agent-onboard", "--workspace", str(workspace), "--update"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["overwrite"] is True
+    assert payload["backup_enabled"] is True
+    assert payload["files"]["AGENTS.md"] == "overwritten"
+    backup_dir = Path(payload["backup_dir"])
+    assert (backup_dir / "AGENTS.md").exists()
+
+
+def test_agent_onboard_prune_bootstrap_removes_stale_file(
+    tmp_path: Path, capsys
+) -> None:
+    workspace = tmp_path / "workspace"
+    rc = annolid_run(["agent-onboard", "--workspace", str(workspace)])
+    assert rc == 0
+    _ = capsys.readouterr()
+
+    stale_rel = "legacy/OLD.md"
+    stale_path = workspace / stale_rel
+    stale_path.parent.mkdir(parents=True, exist_ok=True)
+    stale_path.write_text("legacy", encoding="utf-8")
+
+    manifest_path = workspace / ".annolid" / "bootstrap-manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["managed_files"] = list(payload.get("managed_files") or []) + [stale_rel]
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    rc = annolid_run(
+        [
+            "agent-onboard",
+            "--workspace",
+            str(workspace),
+            "--prune-bootstrap",
+        ]
+    )
+    assert rc == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["prune_bootstrap"] is True
+    assert result["pruned_files"][stale_rel] == "removed"
+    assert not stale_path.exists()
 
 
 def test_agent_status_uses_patched_paths(tmp_path: Path, monkeypatch, capsys) -> None:

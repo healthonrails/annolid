@@ -20,7 +20,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from .context import AgentContextBuilder
     from .memory import AgentMemoryStore
     from .skills import AgentSkillsLoader
-    from .workspace_bootstrap import bootstrap_workspace
+    from .workspace_bootstrap import bootstrap_workspace, prune_bootstrap_workspace
     from .heartbeat import (
         DEFAULT_HEARTBEAT_INTERVAL_S,
         HEARTBEAT_OK_TOKEN,
@@ -116,6 +116,7 @@ __all__ = [
     "AgentMemoryStore",
     "AgentSkillsLoader",
     "bootstrap_workspace",
+    "prune_bootstrap_workspace",
     "DEFAULT_HEARTBEAT_INTERVAL_S",
     "HEARTBEAT_PROMPT",
     "HEARTBEAT_OK_TOKEN",
@@ -226,10 +227,13 @@ def __getattr__(name: str):  # noqa: ANN001
 
         return {"AgentSkillsLoader": AgentSkillsLoader}[name]
 
-    if name in {"bootstrap_workspace"}:
-        from .workspace_bootstrap import bootstrap_workspace
+    if name in {"bootstrap_workspace", "prune_bootstrap_workspace"}:
+        from .workspace_bootstrap import bootstrap_workspace, prune_bootstrap_workspace
 
-        return {"bootstrap_workspace": bootstrap_workspace}[name]
+        return {
+            "bootstrap_workspace": bootstrap_workspace,
+            "prune_bootstrap_workspace": prune_bootstrap_workspace,
+        }[name]
 
     if name in {
         "DEFAULT_HEARTBEAT_INTERVAL_S",
