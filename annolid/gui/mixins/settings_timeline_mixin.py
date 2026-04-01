@@ -15,6 +15,36 @@ class SettingsTimelineMixin:
         except Exception:
             return False
 
+    def _timeline_video_open(self) -> bool:
+        """Return True when a media file is loaded and the dock can be shown."""
+        return bool(
+            getattr(self, "video_loader", None) is not None
+            and getattr(self, "video_file", None)
+        )
+
+    def _timeline_dock_should_show(self, video_open: bool) -> bool:
+        """Return True when the dock should be visible for the current state."""
+        return bool(video_open and self._timeline_user_enabled())
+
+    def _timeline_toggle_action(self) -> Optional[QtWidgets.QAction]:
+        return getattr(self, "_toggle_timeline_action", None)
+
+    def _sync_timeline_toggle_action(
+        self, *, video_open: bool, user_enabled: Optional[bool] = None
+    ) -> None:
+        action = self._timeline_toggle_action()
+        if action is None:
+            return
+        if user_enabled is None:
+            user_enabled = self._timeline_user_enabled()
+
+        action.blockSignals(True)
+        try:
+            action.setChecked(bool(user_enabled))
+            action.setEnabled(bool(video_open))
+        finally:
+            action.blockSignals(False)
+
     def _setup_timeline_view_toggle(self) -> None:
         """Add a checkable View menu action for the timeline dock (off by default)."""
         if getattr(self, "timeline_dock", None) is None:
@@ -22,8 +52,7 @@ class SettingsTimelineMixin:
 
         self._toggle_timeline_action = QtWidgets.QAction("Timeline", self)
         self._toggle_timeline_action.setCheckable(True)
-        self._toggle_timeline_action.setChecked(self._timeline_user_enabled())
-        self._toggle_timeline_action.setEnabled(False)
+        self._sync_timeline_toggle_action(video_open=False)
         self._toggle_timeline_action.toggled.connect(self._on_toggle_timeline_requested)
 
         view_menu = None
@@ -49,26 +78,19 @@ class SettingsTimelineMixin:
             return
         was_normal = bool(self.windowState() == QtCore.Qt.WindowNoState)
         previous_size = self.size() if was_normal else None
-        action = getattr(self, "_toggle_timeline_action", None)
         user_enabled = self._timeline_user_enabled()
-        should_show = bool(video_open and user_enabled)
+        should_show = self._timeline_dock_should_show(video_open)
 
-        if action is not None:
-            action.blockSignals(True)
-            try:
-                action.setChecked(user_enabled)
-                action.setEnabled(bool(video_open))
-            finally:
-                action.blockSignals(False)
+        self._sync_timeline_toggle_action(
+            video_open=video_open, user_enabled=user_enabled
+        )
 
         blocker = QtCore.QSignalBlocker(self.timeline_dock)
         try:
             if should_show:
-                self.timeline_panel.setEnabled(True)
                 self.timeline_dock.show()
                 self.timeline_dock.raise_()
             else:
-                self.timeline_panel.setEnabled(False)
                 self.timeline_dock.hide()
         finally:
             del blocker
@@ -159,10 +181,7 @@ class SettingsTimelineMixin:
             self.settings.setValue("timeline/show_dock", bool(checked))
         except Exception:
             pass
-        video_open = bool(
-            getattr(self, "video_loader", None) is not None
-            and getattr(self, "video_file", None)
-        )
+        video_open = self._timeline_video_open()
         self._apply_timeline_dock_visibility(video_open=video_open)
         if checked and video_open and getattr(self, "timeline_panel", None) is not None:
             try:
@@ -172,7 +191,7 @@ class SettingsTimelineMixin:
 
     def _on_timeline_dock_visibility_changed(self, visible: bool) -> None:
         """Keep the View menu action in sync when the user closes/floats the dock."""
-        action = getattr(self, "_toggle_timeline_action", None)
+        action = self._timeline_toggle_action()
         if action is None or not action.isEnabled():
             return
         if action.isChecked() == bool(visible):

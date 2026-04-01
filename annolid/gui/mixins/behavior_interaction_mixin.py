@@ -98,7 +98,7 @@ class BehaviorInteractionMixin:
                 2500,
             )
 
-        self.pinned_flags.setdefault(behavior, False)
+        self._update_pinned_flag(behavior, self.pinned_flags.get(behavior, False))
         fps_for_log = self.fps if self.fps and self.fps > 0 else 29.97
         self.behavior_log_widget.append_event(event, fps=fps_for_log)
         return event
@@ -511,9 +511,7 @@ class BehaviorInteractionMixin:
             self.seekbar.setTickMarks()
         self.canvas.setBehaviorText(None)
         if self.pinned_flags:
-            for behavior in list(self.pinned_flags.keys()):
-                self.pinned_flags[behavior] = False
-            self.loadFlags(self.pinned_flags)
+            self.loadFlags({behavior: False for behavior in self.pinned_flags})
 
     def add_highlighted_mark(
         self, val=None, mark_type=None, color=None, init_load=False
@@ -544,14 +542,14 @@ class BehaviorInteractionMixin:
                 if removed[0] == "behavior":
                     removed_behavior_keys.append(removed[1])  # type: ignore[index]
                 if self.event_type in self.pinned_flags:
-                    self.pinned_flags[self.event_type] = False
+                    self._update_pinned_flag(self.event_type, False)
         elif self.seekbar.isMarkedVal(self.frame_number):
             removed = self.behavior_controller.remove_marks_at_value(self.frame_number)
             for kind, key in removed:
                 if kind == "behavior":
                     removed_behavior_keys.append(key)  # type: ignore[arg-type]
             if removed and self.event_type in self.pinned_flags:
-                self.pinned_flags[self.event_type] = False
+                self._update_pinned_flag(self.event_type, False)
         else:
             current_val = self.seekbar.value()
             removed_any = False
@@ -565,7 +563,7 @@ class BehaviorInteractionMixin:
             if removed_any:
                 self.seekbar.setTickMarks()
                 if self.event_type in self.pinned_flags:
-                    self.pinned_flags[self.event_type] = False
+                    self._update_pinned_flag(self.event_type, False)
                 removed_behavior_keys.extend(local_removed_keys)
 
         for key in removed_behavior_keys:

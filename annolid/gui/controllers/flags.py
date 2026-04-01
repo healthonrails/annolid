@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 class FlagsController(QtCore.QObject):
     """Manage pinned behavior flags, persistence, and widget synchronization."""
 
+    flagsChanged = QtCore.Signal(dict)
+
     def __init__(
         self,
         *,
@@ -60,6 +62,7 @@ class FlagsController(QtCore.QObject):
         else:
             self._widget.clear()
         self._update_canvas_text()
+        self._emit_flags_changed()
         if persist:
             self._persist_flags(self.pinned_flags.keys())
 
@@ -107,6 +110,7 @@ class FlagsController(QtCore.QObject):
             self._widget.loadFlags({flag_name: True})
         else:
             self._widget._update_row_value(flag_name, True)
+        self._emit_flags_changed()
 
     def end_flag(self, flag_name: str, record_event: bool = True) -> None:
         """Mark a flag as inactive and optionally record an end event."""
@@ -127,6 +131,7 @@ class FlagsController(QtCore.QObject):
         else:
             self._widget._update_row_value(flag_name, False)
         self._update_canvas_text()
+        self._emit_flags_changed()
 
     def apply_prompt_flags(self, flags: Dict[str, bool]) -> None:
         """Apply flags provided via prompt without persisting them."""
@@ -140,6 +145,7 @@ class FlagsController(QtCore.QObject):
         self.pinned_flags.clear()
         self._widget.clear()
         self._update_canvas_text()
+        self._emit_flags_changed()
 
     def get_active_flags(self, flags: Dict[str, bool]) -> Dict[str, bool]:
         """Return a subset containing only active flags."""
@@ -166,6 +172,9 @@ class FlagsController(QtCore.QObject):
     def _update_canvas_text(self) -> None:
         text = self.get_current_behavior_text(self.pinned_flags)
         self._window.canvas.setBehaviorText(text)
+
+    def _emit_flags_changed(self) -> None:
+        self.flagsChanged.emit(dict(self.pinned_flags))
 
     def _load_from_disk(self) -> Dict[str, bool]:
         try:

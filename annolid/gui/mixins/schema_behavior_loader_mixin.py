@@ -150,9 +150,10 @@ class SchemaBehaviorLoaderMixin:
             list(self.behavior_controller.iter_events()),
             fps=fps_for_log,
         )
-        self.pinned_flags.update(
-            {behavior: False for behavior in self.behavior_controller.behavior_names}
-        )
+        current = dict(self.pinned_flags or {})
+        for behavior in self.behavior_controller.behavior_names:
+            current[str(behavior)] = False
+        self.loadFlags(current)
 
     def _load_deeplabcut_table(self, behavior_csv_file: str) -> bool:
         """Load DeepLabCut tracking results stored as a multi-index CSV."""

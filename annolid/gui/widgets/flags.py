@@ -240,6 +240,7 @@ class FlagTable(QTableWidget):
 
 class FlagTableWidget(QtWidgets.QWidget):
     flagsSaved = QtCore.Signal(dict)
+    rowsChanged = QtCore.Signal()
     startButtonClicked = QtCore.Signal(str)
     endButtonClicked = QtCore.Signal(str)
     rowSelected = QtCore.Signal(str)
@@ -319,12 +320,15 @@ class FlagTableWidget(QtWidgets.QWidget):
         existing_flags = self._get_existing_flag_names()
         for flag_name, flag_value in flags.items():
             if flag_name not in existing_flags:
-                self.add_row(flag_name, flag_value)
+                self.add_row(flag_name, flag_value, emit_rows_changed=False)
             else:
                 self._update_row_value(flag_name, flag_value)
         self._table.resizeColumnsToContents()
+        self.rowsChanged.emit()
 
-    def add_row(self, name: str = "", value: bool = False):
+    def add_row(
+        self, name: str = "", value: bool = False, *, emit_rows_changed: bool = True
+    ):
         """Add a new row if the flag name doesn't already exist."""
         existing_flags = self._get_existing_flag_names()
         name = str(name) if name else ""
@@ -373,6 +377,8 @@ class FlagTableWidget(QtWidgets.QWidget):
         end_button.setAccessibleDescription(f"End behavior {name}")
         self._table._row_order = list(range(self._table.rowCount()))
         self._table._update_row_order()
+        if emit_rows_changed:
+            self.rowsChanged.emit()
 
     def _update_checkbox_icon(self, checkbox, state):
         if state:
@@ -430,6 +436,7 @@ class FlagTableWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Error", "No row selected to remove.")
         self._table._row_order = list(range(self._table.rowCount()))
         self._table._update_row_order()
+        self.rowsChanged.emit()
 
     def clear_all_rows(self):
         """Clear all rows with confirmation."""
@@ -443,6 +450,7 @@ class FlagTableWidget(QtWidgets.QWidget):
             self._table.setRowCount(0)
             self._table._row_order = []
             self._table._update_row_order()
+            self.rowsChanged.emit()
 
     def handle_start_button(self, row):
         """Handle the Start button click."""
@@ -490,6 +498,7 @@ class FlagTableWidget(QtWidgets.QWidget):
                     return
         self._flags = flags
         self.flagsSaved.emit(self._flags)
+        self.rowsChanged.emit()
         QtWidgets.QMessageBox.information(self, "Success", "All flags have been saved!")
 
     def show_error(self, message: str):
@@ -501,3 +510,8 @@ class FlagTableWidget(QtWidgets.QWidget):
         self._table.clear()
         self._table.setRowCount(0)
         self._table.setHorizontalHeaderLabels(["Behavior", "Active", "Start", "End"])
+        self.rowsChanged.emit()
+
+    def behavior_names(self) -> list[str]:
+        """Return the current behavior names shown in the table."""
+        return list(self._get_existing_flag_names().keys())

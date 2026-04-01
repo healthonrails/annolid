@@ -29,6 +29,15 @@ class FlagsOverlayMixin:
         else:
             self.__dict__["_pending_pinned_flags"] = value or {}
 
+    def _update_pinned_flag(self, behavior: str, active: bool) -> None:
+        """Update a single pinned flag through the controller-backed sync path."""
+        behavior = str(behavior).strip()
+        if not behavior:
+            return
+        current = dict(self.pinned_flags or {})
+        current[behavior] = bool(active)
+        self.loadFlags(current)
+
     def _refresh_behavior_overlay(self) -> None:
         """Synchronize canvas label and flag widget with timeline behaviors."""
         active_behaviors = self.behavior_controller.active_behaviors(self.frame_number)

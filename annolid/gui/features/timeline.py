@@ -88,6 +88,9 @@ def setup_timeline_feature(deps: GuiFeatureDeps) -> TimelineFeatureState:
         adder=window._timeline_add_behavior,
     )
     try:
+        window.flag_widget.rowsChanged.connect(
+            window.timeline_panel.refresh_behavior_catalog
+        )
         window.flag_widget.flagsSaved.connect(
             window.timeline_panel.refresh_behavior_catalog
         )
@@ -99,6 +102,9 @@ def setup_timeline_feature(deps: GuiFeatureDeps) -> TimelineFeatureState:
         )
         window.flag_widget.flagToggled.connect(
             lambda _name, _state: window.timeline_panel.refresh_behavior_catalog()
+        )
+        window.flags_controller.flagsChanged.connect(
+            lambda _flags: window.timeline_panel.refresh_behavior_catalog()
         )
     except Exception:
         pass

@@ -232,12 +232,10 @@ class TrackingDataController:
                         list(w.behavior_controller.iter_events()),
                         fps=fps_for_log,
                     )
-                    w.pinned_flags.update(
-                        {
-                            behavior: False
-                            for behavior in w.behavior_controller.behavior_names
-                        }
-                    )
+                    current_flags = dict(w.pinned_flags or {})
+                    for behavior in w.behavior_controller.behavior_names:
+                        current_flags[str(behavior)] = False
+                    w.loadFlags(current_flags)
                     loaded_behavior = True
 
         if labels_file_path.is_file():

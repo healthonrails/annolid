@@ -154,6 +154,7 @@ class TimelineEventItem(TimelineSegmentItem):
         min_frame: int,
         max_frame: int,
         edit_callback: Callable[[str, TimelineEventContext, int, int], None],
+        frame_select_callback: Optional[Callable[[int], None]] = None,
     ) -> None:
         super().__init__(rect)
         self._context = context
@@ -161,6 +162,7 @@ class TimelineEventItem(TimelineSegmentItem):
         self._min_frame = int(min_frame)
         self._max_frame = int(max_frame)
         self._edit_callback = edit_callback
+        self._frame_select_callback = frame_select_callback
         self._drag_mode: Optional[str] = None
         self._drag_start_pos: Optional[QtCore.QPointF] = None
         self._drag_start_rect: Optional[QtCore.QRectF] = None
@@ -193,6 +195,7 @@ class TimelineEventItem(TimelineSegmentItem):
         self._drag_start_pos = event.scenePos()
         self._drag_start_rect = QtCore.QRectF(rect)
         self.setCursor(QtCore.Qt.ClosedHandCursor)
+        self._emit_frame_selected(self._frame_from_scene_x(event.scenePos().x()))
         event.accept()
 
     def mouseMoveEvent(self, event: QtWidgets.QGraphicsSceneMouseEvent) -> None:
@@ -212,6 +215,7 @@ class TimelineEventItem(TimelineSegmentItem):
             rect.setRight(rect.right() + delta)
         rect = self._normalize_rect(rect)
         self.setRect(rect)
+        self._emit_frame_selected(self._frame_from_scene_x(event.scenePos().x()))
         event.accept()
 
     def mouseReleaseEvent(self, event: QtWidgets.QGraphicsSceneMouseEvent) -> None:
@@ -220,6 +224,7 @@ class TimelineEventItem(TimelineSegmentItem):
         rect = self._normalize_rect(self.rect())
         self.setRect(rect)
         start_frame, end_frame = self._frames_for_rect(rect)
+        self._emit_frame_selected(self._frame_from_scene_x(event.scenePos().x()))
         QtCore.QTimer.singleShot(
             0,
             lambda: self._edit_callback(
@@ -269,6 +274,15 @@ class TimelineEventItem(TimelineSegmentItem):
         start = max(self._min_frame, min(self._max_frame, start))
         end = max(start, min(self._max_frame, end))
         return start, end
+
+    def _frame_from_scene_x(self, x: float) -> int:
+        frame = int(round(x / self._pixels_per_frame)) + self._min_frame
+        return max(self._min_frame, min(self._max_frame, frame))
+
+    def _emit_frame_selected(self, frame: int) -> None:
+        if self._frame_select_callback is None:
+            return
+        self._frame_select_callback(int(frame))
 
 
 class TimelineGraphicsView(QtWidgets.QGraphicsView):
@@ -347,6 +361,7 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
     def set_current_frame(self, frame: int) -> None:
         self._current_frame = int(frame)
         self._update_playhead()
+        self._ensure_playhead_visible()
 
     def set_row_metrics(self, height: int, gap: int) -> None:
         self._row_height = max(8, int(height))
@@ -391,6 +406,7 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
                     QtGui.QPen(QtCore.Qt.NoPen),
                     QtGui.QBrush(QtGui.QColor(120, 180, 220, 120)),
                 )
+                self.frameSelected.emit(frame)
                 event.accept()
                 return
         if event.button() == QtCore.Qt.LeftButton:
@@ -425,6 +441,7 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
             rect.setLeft(x0)
             rect.setWidth(max(1.0, x1 - x0))
             self._new_item.setRect(rect)
+            self.frameSelected.emit(end_frame)
             event.accept()
             return
         if self._frame_to_time is not None:
@@ -483,6 +500,7 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
                         "create", ctx, s, e
                     ),
                 )
+                self.frameSelected.emit(end)
             else:
                 # No valid track or callback; remove the pending item.
                 try:
@@ -633,6 +651,7 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
                     self._min_frame,
                     self._max_frame,
                     self._edit_callback,
+                    self.frameSelected.emit,
                 )
                 segment_item.setBrush(brush)
                 self._scene.addItem(segment_item)
@@ -711,6 +730,27 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
             self.rebuild_scene()
             return
         self._create_or_update_playhead(playhead_frame=self._current_frame)
+
+    def _ensure_playhead_visible(self) -> None:
+        if not self.isVisible():
+            return
+        hbar = self.horizontalScrollBar()
+        if hbar is None or hbar.maximum() <= hbar.minimum():
+            return
+        playhead_x = self._frame_to_x(
+            int(self._current_frame), self._last_pixels_per_frame
+        )
+        playhead_view_x = self.mapFromScene(QtCore.QPointF(playhead_x, 0.0)).x()
+        viewport_width = max(1, self.viewport().width())
+        margin = max(24, viewport_width // 12)
+        left_bound = margin
+        right_bound = viewport_width - margin
+        if left_bound <= playhead_view_x <= right_bound:
+            return
+        target_view_x = viewport_width // 2
+        delta = int(round(playhead_view_x - target_view_x))
+        target_value = hbar.value() + delta
+        hbar.setValue(max(hbar.minimum(), min(hbar.maximum(), target_value)))
 
     def _create_or_update_playhead(self, *, playhead_frame: int) -> None:
         playhead_x = self._frame_to_x(int(playhead_frame), self._last_pixels_per_frame)
@@ -1084,7 +1124,11 @@ class TimelinePanel(QtWidgets.QWidget):
 
     def _on_edit_toggled(self, enabled: bool) -> None:
         if self._row_mode == "Event":
-            self._edit_toggle.setChecked(False)
+            blocker = QtCore.QSignalBlocker(self._edit_toggle)
+            try:
+                self._edit_toggle.setChecked(False)
+            finally:
+                del blocker
             self._view.set_edit_mode(False)
             return
         self._view.set_edit_mode(enabled)

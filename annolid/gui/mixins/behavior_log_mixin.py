@@ -8,6 +8,18 @@ from qtpy import QtWidgets
 class BehaviorLogMixin:
     """Behavior-event log display and editing helpers."""
 
+    def _behavior_interval_bounds(self, event) -> Optional[tuple[int, int]]:
+        interval = self._interval_for_behavior_event(event)
+        if interval is None:
+            return None
+        start_frame, end_frame = interval
+        if end_frame is None:
+            end_frame = start_frame
+        return int(start_frame), int(end_frame)
+
+    def _behavior_event_key(self, event) -> tuple[int, str, str]:
+        return (int(event.frame), str(event.behavior), str(event.event))
+
     def _show_behavior_event_details(self, event) -> None:
         try:
             behavior = str(event.behavior)
@@ -36,12 +48,10 @@ class BehaviorLogMixin:
         )
 
     def _edit_behavior_event_from_log(self, event) -> None:
-        interval = self._interval_for_behavior_event(event)
+        interval = self._behavior_interval_bounds(event)
         if interval is None:
             return
         start_frame, end_frame = interval
-        if end_frame is None:
-            end_frame = start_frame
 
         new_start, ok = QtWidgets.QInputDialog.getInt(
             self,
@@ -82,27 +92,22 @@ class BehaviorLogMixin:
         self._refresh_behavior_log()
 
     def _delete_behavior_event_from_log(self, event) -> None:
-        interval = self._interval_for_behavior_event(event)
+        interval = self._behavior_interval_bounds(event)
         if interval is not None:
             start_frame, end_frame = interval
-            if end_frame is None:
-                end_frame = start_frame
             self.behavior_controller.delete_interval(
                 behavior=str(event.behavior),
                 start_frame=int(start_frame),
                 end_frame=int(end_frame),
             )
         else:
-            key = (int(event.frame), str(event.behavior), str(event.event))
-            self.behavior_controller.delete_event(key)
+            self.behavior_controller.delete_event(self._behavior_event_key(event))
         self._refresh_behavior_log()
 
     def _confirm_behavior_event_from_log(self, event) -> None:
-        interval = self._interval_for_behavior_event(event)
+        interval = self._behavior_interval_bounds(event)
         if interval is not None:
             start_frame, end_frame = interval
-            if end_frame is None:
-                end_frame = start_frame
             self.behavior_controller.set_interval_confirmation(
                 behavior=str(event.behavior),
                 start_frame=int(start_frame),
@@ -110,16 +115,15 @@ class BehaviorLogMixin:
                 confirmed=True,
             )
         else:
-            key = (int(event.frame), str(event.behavior), str(event.event))
-            self.behavior_controller.set_event_confirmation(key, confirmed=True)
+            self.behavior_controller.set_event_confirmation(
+                self._behavior_event_key(event), confirmed=True
+            )
         self._refresh_behavior_log()
 
     def _reject_behavior_event_from_log(self, event) -> None:
-        interval = self._interval_for_behavior_event(event)
+        interval = self._behavior_interval_bounds(event)
         if interval is not None:
             start_frame, end_frame = interval
-            if end_frame is None:
-                end_frame = start_frame
             self.behavior_controller.set_interval_confirmation(
                 behavior=str(event.behavior),
                 start_frame=int(start_frame),
@@ -127,8 +131,9 @@ class BehaviorLogMixin:
                 confirmed=False,
             )
         else:
-            key = (int(event.frame), str(event.behavior), str(event.event))
-            self.behavior_controller.set_event_confirmation(key, confirmed=False)
+            self.behavior_controller.set_event_confirmation(
+                self._behavior_event_key(event), confirmed=False
+            )
         self._refresh_behavior_log()
 
     def _interval_for_behavior_event(self, event):

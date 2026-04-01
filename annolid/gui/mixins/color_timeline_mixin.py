@@ -86,7 +86,10 @@ class ColorTimelineMixin:
             pass
         try:
             if getattr(self, "flag_widget", None) is not None:
-                behaviors.update(self.flag_widget._get_existing_flag_names().keys())
+                if hasattr(self.flag_widget, "behavior_names"):
+                    behaviors.update(self.flag_widget.behavior_names())
+                else:
+                    behaviors.update(self.flag_widget._get_existing_flag_names().keys())
         except Exception:
             pass
         try:
@@ -101,11 +104,22 @@ class ColorTimelineMixin:
         name = str(name).strip()
         if not name:
             return
+        current_flags = dict(getattr(self, "pinned_flags", {}) or {})
+        if name not in current_flags:
+            current_flags[name] = False
         try:
-            if getattr(self, "flag_widget", None) is not None:
-                self.flag_widget.add_row(name, False)
+            self.loadFlags(current_flags)
         except Exception:
-            pass
+            try:
+                self.pinned_flags = current_flags
+            except Exception:
+                pass
+        timeline_panel = getattr(self, "timeline_panel", None)
+        if timeline_panel is not None:
+            try:
+                timeline_panel.refresh_behavior_catalog()
+            except Exception:
+                pass
 
     def _update_shape_color(self, shape):
         r, g, b = self._get_rgb_by_label(shape.label)
