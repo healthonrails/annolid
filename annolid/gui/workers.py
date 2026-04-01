@@ -9,6 +9,7 @@ import sys
 import threading
 import inspect
 from collections import deque
+from collections import OrderedDict
 from pathlib import Path
 from threading import Lock
 from typing import Dict, List, Optional, Tuple
@@ -657,15 +658,15 @@ class LoadFrameThread(QtCore.QObject):
         """Initialize the frame loader while maintaining original interface."""
         super().__init__(parent)
 
-        # Replace QMutex with threading.Lock for better performance
+        # Cross-thread synchronization for queue/cache state.
         self.working_lock = Lock()
 
-        # Maintain same queue structure but with optimized settings
-        # Limit queue size to prevent memory issues
-        self.frame_queue = deque(maxlen=30)
-        # Simple frame cache to avoid reloading recent frames
-        self._frame_cache = {}
-        self._cache_size = 5
+        # Keep only a tiny number of pending requests; scrub interactions
+        # should favor the newest frame, not backlog old requests.
+        self.frame_queue = deque(maxlen=3)
+        # Small LRU cache for recently displayed frames.
+        self._frame_cache: "OrderedDict[int, QtGui.QImage]" = OrderedDict()
+        self._cache_size = 3
         self._last_frame = None  # Keep last frame for error recovery
         self._shutting_down = False
 
@@ -688,7 +689,10 @@ class LoadFrameThread(QtCore.QObject):
             frame_number = self.frame_queue.pop()
 
         # Check cache first
-        cached_frame = self._frame_cache.get(frame_number)
+        with self.working_lock:
+            cached_frame = self._frame_cache.get(frame_number)
+            if cached_frame is not None:
+                self._frame_cache.move_to_end(frame_number)
         if cached_frame is not None:
             self.res_frame.emit(frame_number, cached_frame)
             return
@@ -725,11 +729,11 @@ class LoadFrameThread(QtCore.QObject):
 
     def _update_cache(self, frame_number: int, qimage: QtGui.QImage):
         """Update frame cache with size management."""
-        self._frame_cache[frame_number] = qimage
-        if len(self._frame_cache) > self._cache_size:
-            # Remove oldest frame
-            oldest = min(self._frame_cache.keys())
-            del self._frame_cache[oldest]
+        with self.working_lock:
+            self._frame_cache[frame_number] = qimage
+            self._frame_cache.move_to_end(frame_number)
+            while len(self._frame_cache) > self._cache_size:
+                self._frame_cache.popitem(last=False)
 
     def _handle_error(self, frame_number: int):
         """Handle frame loading errors with fallback."""
@@ -746,15 +750,23 @@ class LoadFrameThread(QtCore.QObject):
         if self._shutting_down:
             return
 
-        should_trigger = False
-
+        frame_number = int(frame_number)
         with self.working_lock:
-            # Clear queue if too many pending requests to prevent lag
-            if len(self.frame_queue) > 5:
+            # Serve immediately when already cached.
+            cached_frame = self._frame_cache.get(frame_number)
+            if cached_frame is not None:
+                self._frame_cache.move_to_end(frame_number)
+                should_trigger = False
+            else:
+                # Keep only the newest queued request.
+                was_empty = len(self.frame_queue) == 0
                 self.frame_queue.clear()
-            was_empty = len(self.frame_queue) == 0
-            self.frame_queue.appendleft(frame_number)
-            should_trigger = was_empty
+                self.frame_queue.append(frame_number)
+                should_trigger = was_empty
+
+        if cached_frame is not None:
+            self.res_frame.emit(frame_number, cached_frame)
+            return
 
         if should_trigger:
             self.process.emit()
@@ -765,7 +777,16 @@ class LoadFrameThread(QtCore.QObject):
         self._shutting_down = True
         with self.working_lock:
             self.frame_queue.clear()
-        self._frame_cache.clear()
+            self._frame_cache.clear()
+            video_loader = self.video_loader
+            self.video_loader = None
+        if video_loader is not None and hasattr(video_loader, "release"):
+            try:
+                video_loader.release()
+            except Exception:
+                logger.debug(
+                    "Failed to release video loader on shutdown.", exc_info=True
+                )
         self.deleteLater()
 
     # Maintain original interface name for compatibility

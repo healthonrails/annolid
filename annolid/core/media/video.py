@@ -137,7 +137,13 @@ def get_keyframe_timestamps(
 class CV2Video:
     """Lightweight OpenCV video reader that returns RGB frames."""
 
-    def __init__(self, video_file: str | Path, use_decord: bool = False):
+    def __init__(
+        self,
+        video_file: str | Path,
+        use_decord: bool = False,
+        *,
+        cache_first_frame: bool = False,
+    ):
         _ = use_decord  # kept for backward compatibility with older signature
         self.video_file = Path(video_file).expanduser().resolve()
         if not self.video_file.exists():
@@ -152,9 +158,12 @@ class CV2Video:
         self.current_frame_timestamp_msec: Optional[float] = None
         self.current_frame_timestamp: Optional[float] = None
         self._last_frame_index: Optional[int] = None
+        self._cache_first_frame = bool(cache_first_frame)
         self._first_frame = None
-        self._width: Optional[int] = None
-        self._height: Optional[int] = None
+        width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        self._width: Optional[int] = width if width > 0 else None
+        self._height: Optional[int] = height if height > 0 else None
 
     def total_frames(self) -> int:
         return int(self._frame_count)
@@ -208,9 +217,11 @@ class CV2Video:
     # ------------------------------------------------------------------
 
     def get_first_frame(self):
-        if self._first_frame is None:
-            self._first_frame = self.load_frame(0)
-        return self._first_frame
+        if self._cache_first_frame:
+            if self._first_frame is None:
+                self._first_frame = self.load_frame(0)
+            return self._first_frame
+        return self.load_frame(0)
 
     def get_width(self) -> int:
         if self._width is None:

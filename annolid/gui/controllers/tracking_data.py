@@ -19,6 +19,7 @@ class TrackingDataController:
         self._tracking_df: pd.DataFrame | None = None
         self._tracking_frame_slices: dict[int, tuple[int, int]] | None = None
         self._tracking_frame_indices: dict[int, tuple[int, ...]] | None = None
+        self._tracking_csv_path: Path | None = None
 
     @property
     def tracking_dataframe(self) -> pd.DataFrame | None:
@@ -26,6 +27,7 @@ class TrackingDataController:
 
     def tracking_rows_for_frame(self, frame_number: int) -> list[dict]:
         """Return tracking rows for a frame using the precomputed frame cache."""
+        self._ensure_tracking_loaded_for_lookup()
         df = self._tracking_df
         if df is None or df.empty:
             return []
@@ -62,6 +64,69 @@ class TrackingDataController:
                 return []
 
         return frame_df.to_dict(orient="records")
+
+    def _clear_tracking_cache(self) -> None:
+        self._tracking_df = None
+        self._tracking_frame_slices = None
+        self._tracking_frame_indices = None
+        self._tracking_csv_path = None
+
+    def _ensure_tracking_loaded_for_lookup(self) -> None:
+        """Lazy-load tracking CSV only if frame lookup explicitly needs it."""
+        csv_path = self._tracking_csv_path
+        if self._tracking_df is not None or csv_path is None:
+            return
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as exc:
+            logger.error("Error loading tracking file %s: %s", csv_path, exc)
+            self._tracking_csv_path = None
+            return
+        self._apply_tracking_dataframe(df)
+
+    def _apply_tracking_dataframe(self, df: pd.DataFrame) -> None:
+        if "frame_number" not in df.columns and "Unnamed: 0" in df.columns:
+            df.rename(columns={"Unnamed: 0": "frame_number"}, inplace=True)
+        if "frame_number" not in df.columns:
+            logger.warning("Tracking CSV is missing required 'frame_number' column.")
+            self._tracking_df = None
+            self._tracking_frame_slices = None
+            self._tracking_frame_indices = None
+            return
+        self._tracking_df = df
+        self._tracking_frame_slices = self._build_tracking_frame_slices(df)
+        self._tracking_frame_indices = self._build_tracking_frame_index(df)
+        self._window._df = df
+
+    @staticmethod
+    def _is_likely_behavior_csv(candidate: Path, video_name: str) -> bool:
+        name_lower = candidate.name.lower()
+        video_name_lower = str(video_name).lower()
+
+        excluded_suffixes = (
+            f"{video_name_lower}_tracking.csv",
+            f"{video_name_lower}_tracked.csv",
+            f"{video_name_lower}_labels.csv",
+            f"{video_name_lower}_gaps_report.csv",
+            f"{video_name_lower}_tracking_gaps_report.csv",
+        )
+        if any(name_lower == suffix for suffix in excluded_suffixes):
+            return False
+
+        if "tracking" in name_lower and "timestamp" not in name_lower:
+            return False
+        if "gaps_report" in name_lower:
+            return False
+
+        behavior_keywords = ("timestamp", "behavior", "event", "bout")
+        if any(keyword in name_lower for keyword in behavior_keywords):
+            return True
+
+        # Conservative fallback for small sidecar CSVs.
+        try:
+            return candidate.stat().st_size <= 2 * 1024 * 1024
+        except Exception:
+            return False
 
     def _build_tracking_frame_slices(
         self, df: pd.DataFrame
@@ -131,7 +196,7 @@ class TrackingDataController:
         w.behavior_log_widget.clear()
         w.pinned_flags = {}
         w._df = None
-        self._tracking_df = None
+        self._clear_tracking_cache()
 
         video_name = Path(video_filename).stem
         main_tracking_file = cur_video_folder / f"{video_name}_tracking.csv"
@@ -140,28 +205,15 @@ class TrackingDataController:
 
         if main_tracking_file.is_file():
             try:
-                logger.info("Loading main tracking data from: %s", main_tracking_file)
-                df = pd.read_csv(main_tracking_file)
-                if "frame_number" not in df.columns and "Unnamed: 0" in df.columns:
-                    df.rename(columns={"Unnamed: 0": "frame_number"}, inplace=True)
-                if "frame_number" in df.columns:
-                    self._tracking_df = df
-                    self._tracking_frame_slices = self._build_tracking_frame_slices(df)
-                    self._tracking_frame_indices = self._build_tracking_frame_index(df)
-                    w._df = df
-                else:
-                    logger.warning(
-                        "'%s' is missing the required 'frame_number' column.",
-                        main_tracking_file,
-                    )
-                    self._tracking_frame_slices = None
-                    self._tracking_frame_indices = None
+                self._tracking_csv_path = main_tracking_file
+                logger.info(
+                    "Deferring tracking CSV load until first frame lookup: %s",
+                    main_tracking_file,
+                )
             except Exception as exc:
                 logger.error(
                     "Error loading main tracking file %s: %s", main_tracking_file, exc
                 )
-                self._tracking_frame_slices = None
-                self._tracking_frame_indices = None
 
         def _discover_behavior_files(search_root: Path) -> list[Path]:
             candidates: list[Path] = []
@@ -171,6 +223,8 @@ class TrackingDataController:
                 if name_lower == f"{video_name_lower}_tracking.csv":
                     continue
                 if name_lower == f"{video_name_lower}_labels.csv":
+                    continue
+                if not self._is_likely_behavior_csv(candidate, video_name):
                     continue
                 candidates.append(candidate)
             return sorted(candidates)
@@ -198,6 +252,14 @@ class TrackingDataController:
 
         loaded_behavior = False
         for candidate in behavior_candidates:
+            try:
+                if candidate.stat().st_size > 8 * 1024 * 1024:
+                    logger.info(
+                        "Skipping large CSV during behavior discovery: %s", candidate
+                    )
+                    continue
+            except Exception:
+                pass
             try:
                 logger.info("Loading behavior data from: %s", candidate)
                 w._load_behavior(str(candidate))
