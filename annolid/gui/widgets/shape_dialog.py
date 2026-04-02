@@ -518,16 +518,12 @@ class ShapePropagationDialog(QtWidgets.QDialog):
     def _resolve_action_end_frame(
         self, action: str, label_file: str | None = None
     ) -> int:
-        target_frame = int(self.frame_spin.value())
-        if action == "rename & propagate":
-            if label_file:
-                resolved = self._resolve_last_available_prediction_frame_for_label_file(
-                    label_file
-                )
-                if resolved is not None:
-                    return min(target_frame, int(resolved))
-            return self._resolve_propagation_end_frame()
-        return target_frame
+        _ = action
+        _ = label_file
+        # Honor the user-selected range directly. The default value already
+        # resolves to "next manual seed - 1" or "video end" when no future
+        # manual seed exists.
+        return int(self.frame_spin.value())
 
     def _label_file_for_frame(self, frame: int) -> str:
         main_window = self.main_window

@@ -300,6 +300,41 @@ def test_shape_dialog_default_end_frame_falls_back_to_last_video_frame_when_no_f
     assert dialog.event_end_frame_spin.value() == 100
 
 
+def test_shape_dialog_rename_action_honors_default_end_frame_without_prediction_cap(
+    tmp_path,
+):
+    _ensure_qapp()
+
+    from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+
+    current_png = tmp_path / "video_000000010.png"
+    canvas = type("Canvas", (), {})()
+    canvas.shapes = [_square("stim_1")]
+
+    class Window(_DummyMainWindow):
+        def __init__(self):
+            super().__init__({10: current_png})
+            self.canvas = canvas
+            self.video_results_folder = tmp_path
+            self.manual_seed_frames = set()
+
+        def _discover_manual_seed_frames(self, folder):
+            return self.manual_seed_frames
+
+    window = Window()
+    dialog = ShapePropagationDialog(canvas, window, current_frame=10, max_frame=100)
+    dialog.action_combo.setCurrentText("Rename & Propagate")
+
+    # Even if prediction history ends early, the selected action range should
+    # still honor the default end frame (video end when no future seed exists).
+    dialog._resolve_last_available_prediction_frame_for_label_file = (
+        lambda *_args, **_kwargs: 42
+    )
+    resolved = dialog._resolve_action_end_frame("rename & propagate", "dummy.json")
+
+    assert resolved == 100
+
+
 def test_shape_dialog_rename_and_propagate_uses_identity_and_assigns_group_id(
     monkeypatch, tmp_path
 ):
