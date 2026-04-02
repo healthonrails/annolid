@@ -1009,7 +1009,120 @@ def test_gui_label_behavior_segments_with_widget_result(
     assert payload["mode"] == "timeline"
     assert payload["labeled_segments"] == 7
     assert payload["timestamps_rows"] == 7
-    assert calls == ["bot_label_behavior_segments"]
+    assert calls == ["bot_label_behavior_segments_json"]
+
+
+def test_gui_label_behavior_segments_falls_back_legacy_slot_signature(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    video_file = tmp_path / "mouse.mp4"
+    video_file.write_bytes(b"fake")
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    class _Widget:
+        host_window_widget = None
+
+        def get_bot_action_result(self, action_name: str):
+            assert action_name == "label_behavior_segments"
+            return {
+                "ok": True,
+                "mode": "uniform",
+                "labeled_segments": 2,
+                "evaluated_segments": 2,
+                "skipped_segments": 0,
+                "labels_used": ["walk"],
+                "timestamps_csv": str(tmp_path / "segments.csv"),
+                "timestamps_rows": 2,
+            }
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=_Widget())
+    slot_calls: list[tuple[str, int]] = []
+
+    def _invoke(slot_name: str, *args):
+        slot_calls.append((slot_name, len(args)))
+        if slot_name == "bot_label_behavior_segments_json":
+            return False
+        if slot_name == "bot_label_behavior_segments":
+            # New signature attempt fails; legacy call succeeds.
+            return len(args) == 12
+        return False
+
+    task._invoke_widget_slot = _invoke  # type: ignore[method-assign]
+
+    payload = task._tool_gui_label_behavior_segments(
+        path=str(video_file),
+        behavior_labels=["walk"],
+        segment_mode="uniform",
+        segment_frames=30,
+    )
+    assert payload["ok"] is True
+    assert payload["mode"] == "uniform"
+    assert slot_calls == [
+        ("bot_label_behavior_segments_json", 1),
+        ("bot_label_behavior_segments", 13),
+        ("bot_label_behavior_segments", 12),
+    ]
+
+
+def test_gui_label_behavior_segments_does_not_fallback_after_json_semantic_error(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    video_file = tmp_path / "mouse.mp4"
+    video_file.write_bytes(b"fake")
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    class _Widget:
+        host_window_widget = None
+
+        def get_bot_action_result(self, action_name: str):
+            assert action_name == "label_behavior_segments"
+            return {
+                "ok": False,
+                "error": "No behavior labels provided/found.",
+            }
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=_Widget())
+    slot_calls: list[tuple[str, int]] = []
+
+    task._invoke_widget_json_slot = (  # type: ignore[method-assign]
+        lambda slot_name, *args: (
+            slot_calls.append((slot_name, len(args)))
+            or {"ok": False, "error": "No behavior labels provided/found."}
+        )
+    )
+    task._invoke_widget_slot = (
+        lambda slot_name, *args: slot_calls.append((slot_name, len(args))) or False
+    )  # type: ignore[method-assign]
+
+    payload = task._tool_gui_label_behavior_segments(
+        path=str(video_file),
+        behavior_labels=[],
+        segment_mode="uniform",
+        segment_frames=30,
+    )
+    assert payload["ok"] is False
+    assert "No behavior labels provided/found" in str(payload.get("error") or "")
+    assert slot_calls == [("bot_label_behavior_segments_json", 1)]
 
 
 def test_check_stream_source_snapshot_opens_image_on_canvas(monkeypatch) -> None:
@@ -2816,6 +2929,57 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_label_in["name"] == "label_behavior_segments"
     assert parsed_label_in["args"]["path"] == "mouse.mp4"
     assert parsed_label_in["args"]["behavior_labels"] == ["rearing", "walking"]
+    assert parsed_label_in["args"]["segment_seconds"] is None
+
+    parsed_label_seconds = task._parse_direct_gui_command(
+        "label behaviors in mouse.mp4 with labels rearing, walking every 1s"
+    )
+    assert parsed_label_seconds["name"] == "label_behavior_segments"
+    assert parsed_label_seconds["args"]["path"] == "mouse.mp4"
+    assert parsed_label_seconds["args"]["segment_seconds"] == 1.0
+    assert parsed_label_seconds["args"]["use_defined_behavior_list"] is False
+
+    parsed_label_defined = task._parse_direct_gui_command(
+        "label behavior in mouse.mp4 from defined list every 1s"
+    )
+    assert parsed_label_defined["name"] == "label_behavior_segments"
+    assert parsed_label_defined["args"]["segment_seconds"] == 1.0
+    assert parsed_label_defined["args"]["use_defined_behavior_list"] is True
+
+    parsed_label_colon = task._parse_direct_gui_command(
+        "label behavior in mouse.mp4 behaviors: walking, rearing, grooming every 1s"
+    )
+    assert parsed_label_colon["name"] == "label_behavior_segments"
+    assert parsed_label_colon["args"]["path"] == "mouse.mp4"
+    assert parsed_label_colon["args"]["behavior_labels"] == [
+        "walking",
+        "rearing",
+        "grooming",
+    ]
+    assert parsed_label_colon["args"]["segment_seconds"] == 1.0
+
+    parsed_behavior_list = task._parse_direct_gui_command("list behaviors")
+    assert parsed_behavior_list["name"] == "behavior_catalog"
+    assert parsed_behavior_list["args"]["action"] == "list"
+
+    parsed_behavior_save = task._parse_direct_gui_command("save behavior catalog")
+    assert parsed_behavior_save["name"] == "behavior_catalog"
+    assert parsed_behavior_save["args"]["action"] == "save"
+
+    parsed_behavior_delete = task._parse_direct_gui_command("delete behavior grooming")
+    assert parsed_behavior_delete["name"] == "behavior_catalog"
+    assert parsed_behavior_delete["args"]["action"] == "delete"
+    assert parsed_behavior_delete["args"]["code"] == "grooming"
+
+    parsed_behavior_update = task._parse_direct_gui_command("update behavior walking")
+    assert parsed_behavior_update["name"] == "behavior_catalog"
+    assert parsed_behavior_update["args"]["action"] == "update"
+    assert parsed_behavior_update["args"]["code"] == "walking"
+
+    parsed_behavior_create = task._parse_direct_gui_command("create behavior rearing")
+    assert parsed_behavior_create["name"] == "behavior_catalog"
+    assert parsed_behavior_create["args"]["action"] == "create"
+    assert parsed_behavior_create["args"]["code"] == "rearing"
 
     parsed_non_open = task._parse_direct_gui_command(
         "segment mouse.mp4 with labels walking"

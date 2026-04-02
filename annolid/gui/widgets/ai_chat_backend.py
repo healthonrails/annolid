@@ -277,6 +277,7 @@ from annolid.services.chat_devtools import (
     chat_read_file,
 )
 from annolid.services.chat_video import (
+    behavior_catalog_tool as gui_behavior_catalog_tool,
     label_chat_behavior_segments_tool,
     open_chat_video_tool,
     resolve_chat_video_path_for_gui_tool,
@@ -1312,6 +1313,7 @@ class StreamingChatTask(QRunnable):
                 "run_ai_text_segmentation": self._tool_gui_run_ai_text_segmentation,
                 "segment_track_video": self._tool_gui_segment_track_video,
                 "label_behavior_segments": self._tool_gui_label_behavior_segments,
+                "behavior_catalog": self._tool_gui_behavior_catalog,
                 "analyze_tracking_stats": self._tool_gui_analyze_tracking_stats,
                 "start_realtime_stream": self._tool_gui_start_realtime_stream,
                 "stop_realtime_stream": self._tool_gui_stop_realtime_stream,
@@ -2090,6 +2092,7 @@ class StreamingChatTask(QRunnable):
             "track_next_frames": self._tool_gui_track_next_frames,
             "segment_track_video": self._tool_gui_segment_track_video,
             "label_behavior_segments": self._tool_gui_label_behavior_segments,
+            "behavior_catalog": self._tool_gui_behavior_catalog,
             "start_realtime_stream": self._tool_gui_start_realtime_stream,
             "stop_realtime_stream": self._tool_gui_stop_realtime_stream,
             "get_realtime_status": self._tool_gui_get_realtime_status,
@@ -2543,8 +2546,11 @@ class StreamingChatTask(QRunnable):
         *,
         path: str = "",
         behavior_labels: Any = None,
+        use_defined_behavior_list: bool = True,
         segment_mode: str = "timeline",
         segment_frames: int = 60,
+        segment_seconds: Optional[float] = None,
+        sample_frames_per_segment: int = 3,
         max_segments: int = 120,
         subject: str = "Agent",
         overwrite_existing: bool = False,
@@ -2552,11 +2558,95 @@ class StreamingChatTask(QRunnable):
         llm_provider: str = "",
         llm_model: str = "",
     ) -> Dict[str, Any]:
+        def _invoke_label_behavior_slot(
+            resolved_path: str,
+            labels: str,
+            use_defined: bool,
+            mode_norm: str,
+            frames: int,
+            seconds: float,
+            sample_frames: int,
+            max_seg: int,
+            subj: str,
+            overwrite: bool,
+            profile: str,
+            provider: str,
+            model: str,
+        ) -> bool:
+            json_payload = json.dumps(
+                {
+                    "video_path": str(resolved_path),
+                    "behavior_labels_csv": str(labels),
+                    "use_defined_behavior_list": bool(use_defined),
+                    "segment_mode": str(mode_norm),
+                    "segment_frames": int(frames),
+                    "segment_seconds": float(seconds),
+                    "sample_frames_per_segment": int(sample_frames),
+                    "max_segments": int(max_seg),
+                    "subject": str(subj),
+                    "overwrite_existing": bool(overwrite),
+                    "llm_profile": str(profile),
+                    "llm_provider": str(provider),
+                    "llm_model": str(model),
+                }
+            )
+            json_result = self._invoke_widget_json_slot(
+                "bot_label_behavior_segments_json",
+                QtCore.Q_ARG(str, json_payload),
+            )
+            if bool(json_result.get("ok", False)):
+                return True
+            if not bool(json_result.get("transport_error", False)):
+                # The JSON slot executed and returned a semantic failure payload.
+                # Do not fall back to positional signatures (which can emit noisy
+                # invoke warnings). Let downstream action-result handling report
+                # the real error to the user.
+                return True
+            # Prefer the current signature (includes use_defined_behavior_list).
+            ok = self._invoke_widget_slot(
+                "bot_label_behavior_segments",
+                QtCore.Q_ARG(str, resolved_path),
+                QtCore.Q_ARG(str, labels),
+                QtCore.Q_ARG(bool, bool(use_defined)),
+                QtCore.Q_ARG(str, mode_norm),
+                QtCore.Q_ARG(int, frames),
+                QtCore.Q_ARG(float, float(seconds)),
+                QtCore.Q_ARG(int, int(sample_frames)),
+                QtCore.Q_ARG(int, max_seg),
+                QtCore.Q_ARG(str, subj),
+                QtCore.Q_ARG(bool, overwrite),
+                QtCore.Q_ARG(str, profile),
+                QtCore.Q_ARG(str, provider),
+                QtCore.Q_ARG(str, model),
+            )
+            if ok:
+                return True
+            # Backward-compatibility: older widgets may not yet include
+            # the use_defined_behavior_list bool parameter.
+            return self._invoke_widget_slot(
+                "bot_label_behavior_segments",
+                QtCore.Q_ARG(str, resolved_path),
+                QtCore.Q_ARG(str, labels),
+                QtCore.Q_ARG(str, mode_norm),
+                QtCore.Q_ARG(int, frames),
+                QtCore.Q_ARG(float, float(seconds)),
+                QtCore.Q_ARG(int, int(sample_frames)),
+                QtCore.Q_ARG(int, max_seg),
+                QtCore.Q_ARG(str, subj),
+                QtCore.Q_ARG(bool, overwrite),
+                QtCore.Q_ARG(str, profile),
+                QtCore.Q_ARG(str, provider),
+                QtCore.Q_ARG(str, model),
+            )
+
         return label_chat_behavior_segments_tool(
             path=path,
             behavior_labels=behavior_labels,
+            use_defined_behavior_list=use_defined_behavior_list,
             segment_mode=segment_mode,
             segment_frames=segment_frames,
+            segment_seconds=segment_seconds,
+            sample_frames_per_segment=sample_frames_per_segment,
             max_segments=max_segments,
             subject=subject,
             overwrite_existing=overwrite_existing,
@@ -2566,26 +2656,66 @@ class StreamingChatTask(QRunnable):
             resolve_video_path=self._resolve_video_path_for_gui_tool,
             invoke_label_behavior=lambda resolved_path,
             labels,
+            use_defined,
             mode_norm,
             frames,
+            seconds,
+            sample_frames,
             max_seg,
             subj,
             overwrite,
             profile,
             provider,
-            model: self._invoke_widget_slot(
-                "bot_label_behavior_segments",
-                QtCore.Q_ARG(str, resolved_path),
-                QtCore.Q_ARG(str, labels),
-                QtCore.Q_ARG(str, mode_norm),
-                QtCore.Q_ARG(int, frames),
-                QtCore.Q_ARG(int, max_seg),
-                QtCore.Q_ARG(str, subj),
-                QtCore.Q_ARG(bool, overwrite),
-                QtCore.Q_ARG(str, profile),
-                QtCore.Q_ARG(str, provider),
-                QtCore.Q_ARG(str, model),
+            model: _invoke_label_behavior_slot(
+                resolved_path=resolved_path,
+                labels=labels,
+                use_defined=bool(use_defined),
+                mode_norm=mode_norm,
+                frames=int(frames),
+                seconds=float(seconds),
+                sample_frames=int(sample_frames),
+                max_seg=int(max_seg),
+                subj=str(subj),
+                overwrite=bool(overwrite),
+                profile=str(profile),
+                provider=str(provider),
+                model=str(model),
             ),
+            get_action_result=self._get_widget_action_result,
+        )
+
+    def _tool_gui_behavior_catalog(
+        self,
+        *,
+        action: str,
+        code: str = "",
+        name: str = "",
+        description: str = "",
+        category_id: str = "",
+        modifier_ids: Any = None,
+        key_binding: str = "",
+        is_state: Optional[bool] = None,
+        exclusive_with: Any = None,
+        save: bool = True,
+    ) -> Dict[str, Any]:
+        def _invoke_behavior_catalog_slot(payload_json: str) -> bool:
+            return self._invoke_widget_json_slot(
+                "bot_manage_behavior_catalog_json",
+                QtCore.Q_ARG(str, payload_json),
+            )
+
+        return gui_behavior_catalog_tool(
+            action=action,
+            code=code,
+            name=name,
+            description=description,
+            category_id=category_id,
+            modifier_ids=modifier_ids,
+            key_binding=key_binding,
+            is_state=is_state,
+            exclusive_with=exclusive_with,
+            save=save,
+            invoke_behavior_catalog=_invoke_behavior_catalog_slot,
             get_action_result=self._get_widget_action_result,
         )
 

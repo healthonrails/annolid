@@ -9,6 +9,7 @@ from annolid.core.agent.gui_backend.tool_handlers_video import (
     resolve_video_path_for_gui_tool as gui_resolve_video_path_for_gui_tool,
 )
 from annolid.core.agent.gui_backend.tool_handlers_video_workflow import (
+    behavior_catalog_tool as gui_behavior_catalog_tool,
     label_behavior_segments_tool as gui_label_behavior_segments_tool,
     segment_track_video_tool as gui_segment_track_video_tool,
 )
@@ -30,7 +31,12 @@ def label_chat_behavior_segments_tool(**kwargs: Any) -> dict[str, Any]:
     return gui_label_behavior_segments_tool(**kwargs)
 
 
+def behavior_catalog_tool(**kwargs: Any) -> dict[str, Any]:
+    return gui_behavior_catalog_tool(**kwargs)
+
+
 __all__ = [
+    "behavior_catalog_tool",
     "label_chat_behavior_segments_tool",
     "open_chat_video_tool",
     "resolve_chat_video_path_for_gui_tool",

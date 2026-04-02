@@ -72,6 +72,7 @@ from annolid.gui.widgets.provider_registry import ProviderRegistry
 from annolid.gui.widgets.provider_runtime_sync import (
     refresh_runtime_llm_settings as refresh_runtime_provider_settings,
 )
+from annolid.gui.workers import FlexibleWorker
 from annolid.utils.log_paths import (
     resolve_annolid_logs_root,
     resolve_annolid_realtime_logs_root,
@@ -818,6 +819,9 @@ class AIChatWidget(QtWidgets.QWidget):
         self._typing_timer.timeout.connect(self._on_typing_timer_tick)
         self._chat_message_bus = MessageBus()
         self._chat_inbound_bus_timer = QtCore.QTimer(self)
+        self._behavior_label_thread: Optional[QtCore.QThread] = None
+        self._behavior_label_worker: Optional[FlexibleWorker] = None
+        self._behavior_label_run_context: Dict[str, Any] = {}
         self._chat_inbound_bus_timer.setInterval(40)
         self._chat_inbound_bus_timer.timeout.connect(self._drain_inbound_bus_messages)
         self._chat_bus_timer = QtCore.QTimer(self)
@@ -1043,6 +1047,17 @@ class AIChatWidget(QtWidgets.QWidget):
         self.remove_quick_action_button.setToolTip("Remove selected quick prompt")
         self.remove_quick_action_button.clicked.connect(
             self._remove_selected_quick_action
+        )
+
+        self.behavior_label_preset_button = QtWidgets.QPushButton(
+            "Label 1s Behaviors", self
+        )
+        self.behavior_label_preset_button.setObjectName("quickActionButton")
+        self.behavior_label_preset_button.setToolTip(
+            "Auto-label the current video in 1-second segments using 3-frame VLM voting."
+        )
+        self.behavior_label_preset_button.clicked.connect(
+            self._run_behavior_label_preset_one_second
         )
 
         layout.addLayout(self.quick_actions_layout)
@@ -2314,6 +2329,7 @@ class AIChatWidget(QtWidgets.QWidget):
                 if widget in (
                     getattr(self, "add_quick_action_button", None),
                     getattr(self, "remove_quick_action_button", None),
+                    getattr(self, "behavior_label_preset_button", None),
                 ):
                     continue
                 widget.deleteLater()
@@ -2336,10 +2352,33 @@ class AIChatWidget(QtWidgets.QWidget):
             self.quick_actions_layout.addWidget(btn, 0)
 
         self.quick_actions_layout.addStretch(1)
+        self.quick_actions_layout.addWidget(self.behavior_label_preset_button)
         self.quick_actions_layout.addWidget(self.add_quick_action_button)
         self.quick_actions_layout.addWidget(self.remove_quick_action_button)
         self._set_remove_quick_action_enabled(
             self._selected_quick_action_index is not None
+        )
+
+    def _run_behavior_label_preset_one_second(self) -> None:
+        host = self.host_window_widget or self.window()
+        video_path = str(getattr(host, "video_file", "") or "").strip()
+        if not video_path:
+            self.status_label.setText(
+                "Load a video first, then run 'Label 1s Behaviors'."
+            )
+            return
+
+        labels = self._labels_from_schema_or_flags()
+        if labels:
+            draft = (
+                f"label behavior in {video_path} "
+                f"with labels {', '.join(labels)} from defined list every 1s"
+            )
+        else:
+            draft = f"label behavior in {video_path} from defined list every 1s"
+        self._apply_quick_action(draft)
+        self.status_label.setText(
+            "Drafted 1s behavior labeling command. Edit if needed, then press Send."
         )
 
     def _on_quick_action_clicked(self, index: int) -> None:
@@ -3649,6 +3688,15 @@ class AIChatWidget(QtWidgets.QWidget):
             normalized.append(value)
         return normalized
 
+    @staticmethod
+    def _is_placeholder_behavior_label(label: str) -> bool:
+        value = str(label or "").strip().lower()
+        if not value:
+            return True
+        if re.fullmatch(r"behavior[_\-\s]?\d+", value):
+            return True
+        return value in {"behavior", "behaviour", "label", "placeholder"}
+
     def _labels_from_schema_or_flags(self) -> List[str]:
         host = self.host_window_widget or self.window()
         labels: List[str] = []
@@ -3663,7 +3711,77 @@ class AIChatWidget(QtWidgets.QWidget):
             flags = getattr(host, "flags", None)
             if isinstance(flags, dict):
                 labels.extend([str(k).strip() for k in flags.keys() if str(k).strip()])
-        return self._normalize_behavior_labels(labels)
+        flag_widget = getattr(host, "flag_widget", None)
+        if flag_widget is not None:
+            try:
+                existing_flag_names = getattr(
+                    flag_widget, "_get_existing_flag_names", None
+                )
+                if callable(existing_flag_names):
+                    labels.extend(
+                        [
+                            str(name).strip()
+                            for name in dict(existing_flag_names() or {}).keys()
+                            if str(name).strip()
+                        ]
+                    )
+            except Exception:
+                pass
+        flags_controller = getattr(host, "flags_controller", None)
+        if flags_controller is not None:
+            try:
+                pinned = getattr(flags_controller, "pinned_flags", None)
+                if isinstance(pinned, dict):
+                    labels.extend(
+                        [
+                            str(name).strip()
+                            for name in pinned.keys()
+                            if str(name).strip()
+                        ]
+                    )
+            except Exception:
+                pass
+        behavior_controller = getattr(host, "behavior_controller", None)
+        if behavior_controller is not None:
+            try:
+                timeline_behaviors = list(
+                    getattr(behavior_controller, "behavior_names", lambda: set())()
+                    if callable(getattr(behavior_controller, "behavior_names", None))
+                    else getattr(behavior_controller, "behavior_names", set())
+                )
+            except Exception:
+                timeline_behaviors = []
+            labels.extend(
+                [str(name).strip() for name in timeline_behaviors if str(name).strip()]
+            )
+        normalized = self._normalize_behavior_labels(labels)
+        filtered = [
+            name for name in normalized if not self._is_placeholder_behavior_label(name)
+        ]
+        return filtered
+
+    def _resolve_segment_label_candidates(
+        self,
+        explicit_labels: List[str],
+        *,
+        use_defined_behavior_list: bool,
+    ) -> List[str]:
+        defined_labels = self._labels_from_schema_or_flags()
+        normalized_explicit = self._normalize_behavior_labels(explicit_labels)
+        if not use_defined_behavior_list:
+            return normalized_explicit or defined_labels
+        if not defined_labels:
+            return normalized_explicit
+        if not normalized_explicit:
+            return defined_labels
+
+        defined_lookup = {label.lower(): label for label in defined_labels}
+        intersection: List[str] = []
+        for label in normalized_explicit:
+            mapped = defined_lookup.get(label.lower())
+            if mapped:
+                intersection.append(mapped)
+        return self._normalize_behavior_labels(intersection or defined_labels)
 
     @staticmethod
     def _behavior_ranges_from_events(events: List[object]) -> List[Dict[str, Any]]:
@@ -3723,7 +3841,7 @@ class AIChatWidget(QtWidgets.QWidget):
     ) -> tuple[str, float]:
         raw = str(text or "").strip()
         if not labels:
-            return ("Agent", 0.0)
+            return ("", 0.0)
 
         # Prefer structured JSON responses if present, including fenced blocks.
         json_candidate = ""
@@ -3764,6 +3882,25 @@ class AIChatWidget(QtWidgets.QWidget):
                 return candidate, 0.6
         return labels[0], 0.2
 
+    @staticmethod
+    def _uniform_segment_frame_indices(
+        start_frame: int, end_frame: int, sample_count: int
+    ) -> List[int]:
+        start = int(start_frame)
+        end = int(end_frame)
+        if end < start:
+            start, end = end, start
+        if start == end:
+            return [start]
+        count = max(1, int(sample_count))
+        span = end - start + 1
+        count = min(count, span)
+        if count == span:
+            return list(range(start, end + 1))
+        step = (end - start) / float(max(1, count - 1))
+        frames = [int(round(start + (idx * step))) for idx in range(count)]
+        return sorted(set(max(start, min(end, frame)) for frame in frames))
+
     def _save_behavior_timestamps_csv(self, host: object) -> Dict[str, Any]:
         behavior_controller = getattr(host, "behavior_controller", None)
         if behavior_controller is None:
@@ -3786,6 +3923,649 @@ class AIChatWidget(QtWidgets.QWidget):
             for row in rows:
                 writer.writerow(row)
         return {"ok": True, "path": str(output_path), "rows": len(rows)}
+
+    def _save_behavior_segment_labeling_log(
+        self,
+        host: object,
+        *,
+        mode: str,
+        labels_used: List[str],
+        segment_frames: int,
+        segment_seconds: float,
+        sample_frames_per_segment: int,
+        evaluated_segments: int,
+        skipped_segments: int,
+        predictions: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        video_file = str(getattr(host, "video_file", "") or "").strip()
+        if not video_file:
+            return {"ok": False, "error": "No video file is loaded."}
+        try:
+            video_path = Path(video_file)
+            output_path = video_path.with_name(
+                f"{video_path.stem}_behavior_segment_labels.json"
+            )
+            payload: Dict[str, Any] = {
+                "video_path": str(video_path),
+                "mode": str(mode or "uniform"),
+                "labels_used": list(labels_used),
+                "segment_frames": int(segment_frames),
+                "segment_seconds": float(segment_seconds),
+                "sample_frames_per_segment": int(sample_frames_per_segment),
+                "evaluated_segments": int(evaluated_segments),
+                "labeled_segments": int(len(predictions)),
+                "skipped_segments": int(skipped_segments),
+                "predictions": list(predictions),
+                "generated_at": datetime.now().isoformat(),
+            }
+            output_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return {"ok": True, "path": str(output_path), "rows": len(predictions)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def _run_behavior_segment_vlm_worker(
+        self,
+        *,
+        video_path: str,
+        intervals: List[Dict[str, Any]],
+        labels: List[str],
+        sample_frames_per_segment: int,
+        llm_profile: str,
+        llm_provider: str,
+        llm_model: str,
+        stop_event=None,
+        pred_worker=None,
+    ) -> Dict[str, Any]:
+        from annolid.core.models.adapters.llm_chat import LLMChatAdapter
+        from annolid.core.models.base import ModelRequest
+
+        import cv2  # type: ignore
+
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise RuntimeError(
+                f"Unable to open video for segment labeling: {video_path}"
+            )
+        inference_cache: Dict[int, tuple[str, float]] = {}
+        predictions: List[Dict[str, Any]] = []
+        skipped_segments = 0
+        label_options = ", ".join(labels)
+
+        try:
+            adapter = LLMChatAdapter(
+                profile=str(llm_profile or "").strip() or None,
+                provider=str(llm_provider or "").strip() or None,
+                model=str(llm_model or "").strip() or None,
+                persist=False,
+            )
+            with (
+                adapter,
+                tempfile.TemporaryDirectory(
+                    prefix="annolid_behavior_segment_"
+                ) as tmp_dir,
+            ):
+                total = max(1, len(intervals))
+                for idx, item in enumerate(intervals, start=1):
+                    if stop_event is not None and bool(stop_event.is_set()):
+                        break
+                    start_frame = int(item["start_frame"])
+                    end_frame = int(item["end_frame"])
+                    probe_frames = self._uniform_segment_frame_indices(
+                        start_frame, end_frame, sample_frames_per_segment
+                    )
+                    frame_votes: Dict[str, int] = {}
+                    frame_confidences: Dict[str, float] = {}
+                    successful_samples = 0
+                    for probe_frame in probe_frames:
+                        cached = inference_cache.get(probe_frame)
+                        if cached is None:
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, int(probe_frame))
+                            ok, frame = cap.read()
+                            if not ok or frame is None:
+                                continue
+                            image_path = str(
+                                Path(tmp_dir) / f"frame_{int(probe_frame):09d}.png"
+                            )
+                            if not cv2.imwrite(image_path, frame):
+                                continue
+                            try:
+                                prompt = (
+                                    "Classify behavior in this video segment frame. "
+                                    f"Choose exactly one label from: {label_options}. "
+                                    "Return strict JSON only: "
+                                    '{"label":"<one label>","confidence":0.0}'
+                                )
+                                resp = adapter.predict(
+                                    ModelRequest(
+                                        task="caption",
+                                        image_path=image_path,
+                                        text=prompt,
+                                        params={"temperature": 0.0, "max_tokens": 90},
+                                    )
+                                )
+                                raw = str(
+                                    resp.text or (resp.output or {}).get("text") or ""
+                                ).strip()
+                                cached = self._extract_label_from_model_text(
+                                    raw, labels
+                                )
+                                inference_cache[probe_frame] = cached
+                            except Exception:
+                                continue
+                            finally:
+                                try:
+                                    if os.path.exists(image_path):
+                                        os.remove(image_path)
+                                except OSError:
+                                    pass
+                        label, confidence = cached
+                        if not str(label or "").strip():
+                            continue
+                        frame_votes[label] = int(frame_votes.get(label, 0)) + 1
+                        frame_confidences[label] = float(
+                            frame_confidences.get(label, 0.0)
+                        ) + float(confidence)
+                        successful_samples += 1
+
+                    if successful_samples <= 0 or not frame_votes:
+                        skipped_segments += 1
+                        progress_value = int((idx * 100) / total)
+                        if pred_worker is not None:
+                            pred_worker.report_preview(
+                                {
+                                    "index": int(idx),
+                                    "total": int(total),
+                                    "start_frame": int(start_frame),
+                                    "end_frame": int(end_frame),
+                                    "status": "skipped",
+                                    "progress": int(progress_value),
+                                }
+                            )
+                            pred_worker.report_progress(progress_value)
+                        continue
+
+                    sorted_labels = sorted(
+                        frame_votes.keys(),
+                        key=lambda key: (
+                            -int(frame_votes.get(key, 0)),
+                            -float(frame_confidences.get(key, 0.0)),
+                            key.lower(),
+                        ),
+                    )
+                    best_label = str(sorted_labels[0])
+                    best_conf = float(frame_confidences.get(best_label, 0.0)) / float(
+                        max(1, frame_votes.get(best_label, 1))
+                    )
+                    predictions.append(
+                        {
+                            "start_frame": start_frame,
+                            "end_frame": end_frame,
+                            "subject": item.get("subject"),
+                            "label": best_label,
+                            "confidence": best_conf,
+                        }
+                    )
+                    progress_value = int((idx * 100) / total)
+                    if pred_worker is not None:
+                        pred_worker.report_preview(
+                            {
+                                "index": int(idx),
+                                "total": int(total),
+                                "status": "labeled",
+                                "progress": int(progress_value),
+                                "prediction": dict(predictions[-1]),
+                            }
+                        )
+                        pred_worker.report_progress(progress_value)
+        finally:
+            cap.release()
+
+        return {
+            "predictions": predictions,
+            "skipped_segments": int(skipped_segments),
+            "processed_segments": int(len(intervals)),
+            "cancelled": bool(stop_event is not None and stop_event.is_set()),
+        }
+
+    def _clear_behavior_label_run_context(self) -> None:
+        self._behavior_label_run_context = {}
+        self._behavior_label_worker = None
+        self._behavior_label_thread = None
+
+    def _behavior_label_timestamp_provider(self, host: object):
+        def _timestamp_provider(frame: int) -> Optional[float]:
+            local_fps = getattr(host, "fps", None)
+            if local_fps is None or float(local_fps) <= 0:
+                return None
+            return float(frame) / float(local_fps)
+
+        return _timestamp_provider
+
+    def _refresh_behavior_panels(self, host: object) -> None:
+        refresh_log = getattr(host, "_refresh_behavior_log", None)
+        if callable(refresh_log):
+            refresh_log()
+        timeline_panel = getattr(host, "timeline_panel", None)
+        refresh_timeline = getattr(
+            timeline_panel, "refresh_from_behavior_controller", None
+        )
+        if callable(refresh_timeline):
+            refresh_timeline()
+
+    def _commit_behavior_label_prediction(
+        self,
+        context: Dict[str, Any],
+        prediction: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        host = context.get("host")
+        behavior_controller = context.get("behavior_controller")
+        if host is None or behavior_controller is None:
+            return None
+
+        label = str(prediction.get("label") or "").strip()
+        if not label:
+            return None
+
+        start_frame = int(prediction.get("start_frame") or 0)
+        end_frame = int(prediction.get("end_frame") or start_frame)
+        subject_value = prediction.get("subject")
+        default_subject = context.get("default_subject")
+        resolved_subject = subject_value or default_subject
+        timestamp_provider = context.get("timestamp_provider")
+        behavior_controller.create_interval(
+            behavior=label,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            subject=resolved_subject,
+            timestamp_provider=timestamp_provider,
+        )
+
+        normalized_prediction = {
+            "start_frame": int(start_frame),
+            "end_frame": int(end_frame),
+            "subject": resolved_subject,
+            "label": label,
+            "confidence": float(prediction.get("confidence") or 0.0),
+        }
+        context_predictions = list(context.get("predictions") or [])
+        context_predictions.append(normalized_prediction)
+        context["predictions"] = context_predictions
+
+        self._refresh_behavior_panels(host)
+        return normalized_prediction
+
+    def _save_behavior_segment_progress(
+        self, *, force_timestamps: bool = False
+    ) -> Dict[str, Any]:
+        context = dict(self._behavior_label_run_context or {})
+        if not context:
+            return {"ok": False, "error": "Behavior labeling run context is missing."}
+
+        host = context.get("host")
+        if host is None:
+            return {"ok": False, "error": "Behavior labeling host is unavailable."}
+
+        predictions = list(context.get("predictions") or [])
+        timestamp_result: Dict[str, Any] = {}
+        processed = int(context.get("processed_segments") or 0)
+        if force_timestamps or (processed > 0 and processed % 10 == 0):
+            timestamp_result = self._save_behavior_timestamps_csv(host)
+
+        behavior_log_result = self._save_behavior_segment_labeling_log(
+            host,
+            mode=str(context.get("mode") or "uniform"),
+            labels_used=list(context.get("labels") or []),
+            segment_frames=int(context.get("segment_frames") or 1),
+            segment_seconds=float(context.get("segment_seconds") or 0.0),
+            sample_frames_per_segment=int(
+                context.get("sample_frames_per_segment") or 1
+            ),
+            evaluated_segments=int(context.get("evaluated_segments") or 0),
+            skipped_segments=int(context.get("skipped_segments") or 0),
+            predictions=predictions,
+        )
+        return {
+            "ok": bool(behavior_log_result.get("ok", False)),
+            "timestamp_result": timestamp_result,
+            "behavior_log_result": behavior_log_result,
+        }
+
+    def _behavior_catalog_host(self) -> object:
+        return self.host_window_widget or self.window()
+
+    def _behavior_catalog_action(self, action: str, **kwargs: Any) -> Dict[str, Any]:
+        host = self._behavior_catalog_host()
+        action_name = str(action or "").strip().lower()
+        if not action_name:
+            return {"ok": False, "error": "Behavior catalog action is required."}
+        save = bool(kwargs.pop("save", True))
+
+        if action_name == "list":
+            getter = getattr(host, "list_behavior_catalog", None)
+            if callable(getter):
+                return dict(getter())
+            schema = getattr(host, "project_schema", None)
+            if schema is None:
+                return {"ok": False, "error": "No project schema is loaded."}
+            return {
+                "ok": True,
+                "count": len(schema.behaviors),
+                "behavior_catalog": [
+                    {
+                        "code": behavior.code,
+                        "name": behavior.name,
+                        "description": behavior.description or "",
+                        "category_id": behavior.category_id or "",
+                        "modifier_ids": list(behavior.modifier_ids or []),
+                        "key_binding": behavior.key_binding or "",
+                        "is_state": bool(behavior.is_state),
+                        "exclusive_with": list(behavior.exclusive_with or []),
+                    }
+                    for behavior in schema.behaviors
+                ],
+            }
+
+        if action_name == "save":
+            saver = getattr(host, "save_behavior_catalog", None)
+            if callable(saver):
+                return dict(saver())
+            return {"ok": False, "error": "Behavior catalog saver is unavailable."}
+
+        if action_name == "create":
+            creator = getattr(host, "create_behavior_catalog_item", None)
+            if callable(creator):
+                return dict(creator(save=save, **kwargs))
+            return {"ok": False, "error": "Behavior catalog creator is unavailable."}
+
+        if action_name == "update":
+            updater = getattr(host, "update_behavior_catalog_item", None)
+            if callable(updater):
+                code = str(kwargs.pop("code", "") or "").strip()
+                if not code:
+                    return {"ok": False, "error": "Behavior code is required."}
+                return dict(updater(code=code, updates=kwargs, save=save))
+            return {"ok": False, "error": "Behavior catalog updater is unavailable."}
+
+        if action_name == "delete":
+            deleter = getattr(host, "delete_behavior_catalog_item", None)
+            if callable(deleter):
+                code = str(kwargs.get("code", "") or "").strip()
+                if not code:
+                    return {"ok": False, "error": "Behavior code is required."}
+                return dict(deleter(code=code, save=save))
+            return {"ok": False, "error": "Behavior catalog deleter is unavailable."}
+
+        return {
+            "ok": False,
+            "error": f"Unsupported behavior catalog action: {action_name}",
+        }
+
+    @QtCore.Slot(int)
+    def _on_behavior_label_progress(self, progress_value: int) -> None:
+        context = dict(self._behavior_label_run_context or {})
+        if not context:
+            return
+        pct = max(0, min(100, int(progress_value)))
+        processed = int(context.get("processed_segments") or 0)
+        total = int(context.get("evaluated_segments") or 0)
+        self.status_label.setText(
+            f"Behavior labeling running in background… {pct}% ({processed}/{max(1, total)} segments)."
+        )
+
+    @QtCore.Slot(object)
+    def _on_behavior_label_preview(self, payload: object) -> None:
+        context = self._behavior_label_run_context
+        if not context:
+            return
+        if not isinstance(payload, dict):
+            return
+
+        host = context.get("host")
+        behavior_controller = context.get("behavior_controller")
+        if host is None or behavior_controller is None:
+            return
+
+        status = str(payload.get("status") or "").strip().lower()
+        context["processed_segments"] = int(payload.get("index") or 0)
+        context["skipped_segments"] = int(context.get("skipped_segments") or 0)
+        if status == "skipped":
+            context["skipped_segments"] = int(context["skipped_segments"]) + 1
+            progress_value = max(0, min(100, int(payload.get("progress") or 0)))
+            self.status_label.setText(
+                f"Skipped segment {context['processed_segments']}/{context.get('evaluated_segments')}; {progress_value}% complete."
+            )
+            self._save_behavior_segment_progress(force_timestamps=False)
+            return
+
+        prediction = payload.get("prediction")
+        if not isinstance(prediction, dict):
+            return
+        normalized_prediction = self._commit_behavior_label_prediction(
+            context, prediction
+        )
+        if normalized_prediction is None:
+            return
+
+        save_result = self._save_behavior_segment_progress(force_timestamps=False)
+        behavior_log_result = dict(save_result.get("behavior_log_result") or {})
+
+        progress_value = max(0, min(100, int(payload.get("progress") or 0)))
+        total = int(context.get("evaluated_segments") or 0)
+        self.status_label.setText(
+            f"Labeled segment {context['processed_segments']}/{max(1, total)} as '{normalized_prediction['label']}' ({progress_value}%)."
+        )
+        self._set_bot_action_result(
+            "label_behavior_segments",
+            {
+                "ok": True,
+                "queued": False,
+                "in_progress": True,
+                "mode": str(context.get("mode") or "uniform"),
+                "labeled_segments": len(context.get("predictions") or []),
+                "evaluated_segments": int(context.get("evaluated_segments") or 0),
+                "skipped_segments": int(context.get("skipped_segments") or 0),
+                "segment_frames": int(context.get("segment_frames") or 1),
+                "segment_seconds": float(context.get("segment_seconds") or 0.0),
+                "sample_frames_per_segment": int(
+                    context.get("sample_frames_per_segment") or 1
+                ),
+                "use_defined_behavior_list": bool(
+                    context.get("use_defined_behavior_list", True)
+                ),
+                "labels_used": list(context.get("labels") or []),
+                "behavior_log_json": str(behavior_log_result.get("path") or ""),
+                "behavior_log_rows": int(behavior_log_result.get("rows") or 0),
+            },
+        )
+
+    @QtCore.Slot(object)
+    def _on_behavior_label_finished(self, result: object) -> None:
+        context = dict(self._behavior_label_run_context or {})
+        self._clear_behavior_label_run_context()
+        if not context:
+            return
+
+        host = context.get("host")
+        behavior_controller = context.get("behavior_controller")
+        if host is None or behavior_controller is None:
+            self._set_bot_action_result(
+                "label_behavior_segments",
+                {"ok": False, "error": "Behavior labeling context was lost."},
+            )
+            self.status_label.setText(
+                "Bot action failed: behavior labeling context lost."
+            )
+            return
+
+        if isinstance(result, Exception):
+            self._set_bot_action_result(
+                "label_behavior_segments",
+                {"ok": False, "error": str(result)},
+            )
+            self.status_label.setText(f"Bot action failed: {result}")
+            return
+
+        payload = dict(result or {})
+        if bool(payload.get("cancelled")):
+            self._set_bot_action_result(
+                "label_behavior_segments",
+                {"ok": False, "error": "Behavior labeling was cancelled."},
+            )
+            self.status_label.setText("Behavior labeling cancelled.")
+            return
+
+        predictions = list(context.get("predictions") or [])
+        if not predictions:
+            fallback_predictions = list(payload.get("predictions") or [])
+            if fallback_predictions:
+                for pred in fallback_predictions:
+                    normalized_prediction = self._commit_behavior_label_prediction(
+                        context, pred
+                    )
+                    if normalized_prediction is not None:
+                        predictions.append(normalized_prediction)
+                context["predictions"] = predictions
+
+        if not predictions:
+            self._set_bot_action_result(
+                "label_behavior_segments",
+                {
+                    "ok": False,
+                    "error": "Model did not return usable labels for any segment.",
+                },
+            )
+            self.status_label.setText("Bot action failed: no usable segment labels.")
+            return
+
+        context["skipped_segments"] = max(
+            int(context.get("skipped_segments") or 0),
+            int(payload.get("skipped_segments") or 0),
+        )
+        self._behavior_label_run_context = context
+        save_result = self._save_behavior_segment_progress(force_timestamps=True)
+        self._behavior_label_run_context = {}
+        timestamp_result = dict(save_result.get("timestamp_result") or {})
+        if not bool(timestamp_result.get("ok", False)):
+            self._set_bot_action_result(
+                "label_behavior_segments",
+                {
+                    "ok": False,
+                    "error": str(
+                        timestamp_result.get("error")
+                        or "Failed to save behavior timestamps."
+                    ),
+                },
+            )
+            self.status_label.setText("Bot action failed: timestamp export.")
+            return
+
+        behavior_log_result = dict(save_result.get("behavior_log_result") or {})
+        self._set_bot_action_result(
+            "label_behavior_segments",
+            {
+                "ok": True,
+                "mode": str(context.get("mode") or "uniform"),
+                "queued": False,
+                "in_progress": False,
+                "labeled_segments": len(predictions),
+                "evaluated_segments": int(context.get("evaluated_segments") or 0),
+                "skipped_segments": int(context.get("skipped_segments") or 0),
+                "segment_frames": int(context.get("segment_frames") or 1),
+                "segment_seconds": float(context.get("segment_seconds") or 0.0),
+                "sample_frames_per_segment": int(
+                    context.get("sample_frames_per_segment") or 1
+                ),
+                "use_defined_behavior_list": bool(
+                    context.get("use_defined_behavior_list", True)
+                ),
+                "labels_used": list(context.get("labels") or []),
+                "timestamps_csv": str(timestamp_result.get("path") or ""),
+                "timestamps_rows": int(timestamp_result.get("rows") or 0),
+                "behavior_log_json": str(behavior_log_result.get("path") or ""),
+                "behavior_log_rows": int(behavior_log_result.get("rows") or 0),
+            },
+        )
+        timestamps_name = Path(str(timestamp_result.get("path") or "")).name
+        behavior_log_name = Path(str(behavior_log_result.get("path") or "")).name
+        if behavior_log_name:
+            self.status_label.setText(
+                f"Labeled {len(predictions)} segment(s); saved {timestamps_name} and {behavior_log_name}."
+            )
+        else:
+            self.status_label.setText(
+                f"Labeled {len(predictions)} segment(s); saved timestamps to {timestamps_name}."
+            )
+
+    @QtCore.Slot(str)
+    def bot_manage_behavior_catalog_json(self, payload_json: str = "") -> None:
+        try:
+            payload = json.loads(str(payload_json or "{}"))
+        except Exception as exc:
+            self._set_bot_action_result(
+                "behavior_catalog",
+                {"ok": False, "error": f"Invalid JSON payload: {exc}"},
+            )
+            self.status_label.setText(
+                "Behavior catalog action failed: invalid payload."
+            )
+            return
+
+        if not isinstance(payload, dict):
+            self._set_bot_action_result(
+                "behavior_catalog",
+                {"ok": False, "error": "Invalid JSON payload type."},
+            )
+            self.status_label.setText(
+                "Behavior catalog action failed: invalid payload."
+            )
+            return
+
+        action = str(payload.get("action") or "list").strip().lower()
+        kwargs = {
+            "code": str(payload.get("code") or "").strip(),
+            "name": str(payload.get("name") or "").strip() or None,
+            "description": str(payload.get("description") or "").strip() or None,
+            "category_id": str(payload.get("category_id") or "").strip() or None,
+            "modifier_ids": [
+                str(item).strip()
+                for item in (payload.get("modifier_ids") or [])
+                if str(item).strip()
+            ],
+            "key_binding": str(payload.get("key_binding") or "").strip() or None,
+            "is_state": payload.get("is_state"),
+            "exclusive_with": [
+                str(item).strip()
+                for item in (payload.get("exclusive_with") or [])
+                if str(item).strip()
+            ],
+            "save": bool(payload.get("save", True)),
+        }
+        result = self._behavior_catalog_action(action, **kwargs)
+        if action == "create" and result.get("ok", False):
+            message = str(result.get("message") or "Behavior created.")
+            self.status_label.setText(message)
+        elif action == "update" and result.get("ok", False):
+            message = str(result.get("message") or "Behavior updated.")
+            self.status_label.setText(message)
+        elif action == "delete" and result.get("ok", False):
+            message = str(result.get("message") or "Behavior deleted.")
+            self.status_label.setText(message)
+        elif action == "save" and result.get("ok", False):
+            path_text = str(result.get("path") or "").strip()
+            if path_text:
+                self.status_label.setText(
+                    f"Behavior catalog saved to {Path(path_text).name}."
+                )
+            else:
+                self.status_label.setText("Behavior catalog saved.")
+        elif action == "list" and result.get("ok", False):
+            self.status_label.setText(
+                f"Behavior catalog has {int(result.get('count') or 0)} item(s)."
+            )
+        self._set_bot_action_result("behavior_catalog", result)
 
     @QtCore.Slot(str)
     def bot_open_video(self, video_path: str) -> None:
@@ -4812,13 +5592,16 @@ class AIChatWidget(QtWidgets.QWidget):
             )
             self.status_label.setText(f"Bot action failed: {exc}")
 
-    @QtCore.Slot(str, str, str, int, int, str, bool, str, str, str)
+    @QtCore.Slot(str, str, bool, str, int, float, int, int, str, bool, str, str, str)
     def bot_label_behavior_segments(
         self,
         video_path: str = "",
         behavior_labels_csv: str = "",
+        use_defined_behavior_list: bool = True,
         segment_mode: str = "timeline",
         segment_frames: int = 60,
+        segment_seconds: float = 0.0,
+        sample_frames_per_segment: int = 3,
         max_segments: int = 120,
         subject: str = "Agent",
         overwrite_existing: bool = False,
@@ -4826,15 +5609,10 @@ class AIChatWidget(QtWidgets.QWidget):
         llm_provider: str = "",
         llm_model: str = "",
     ) -> None:
-        self._set_bot_action_result(
-            "label_behavior_segments",
-            {"ok": False, "error": "Labeling did not complete."},
-        )
         host = self.host_window_widget or self.window()
         open_video = getattr(host, "openVideo", None)
-        set_frame = getattr(host, "set_frame_number", None)
         behavior_controller = getattr(host, "behavior_controller", None)
-        if behavior_controller is None or not callable(set_frame):
+        if behavior_controller is None:
             self._set_bot_action_result(
                 "label_behavior_segments",
                 {"ok": False, "error": "Behavior timeline APIs are unavailable."},
@@ -4845,6 +5623,22 @@ class AIChatWidget(QtWidgets.QWidget):
             return
 
         try:
+            if (
+                self._behavior_label_thread is not None
+                and self._behavior_label_thread.isRunning()
+            ):
+                self._set_bot_action_result(
+                    "label_behavior_segments",
+                    {
+                        "ok": False,
+                        "error": "Behavior labeling is already running. Wait for completion or cancel the current run.",
+                    },
+                )
+                self.status_label.setText(
+                    "Behavior labeling already running. Please wait."
+                )
+                return
+
             video_text = str(video_path or "").strip()
             if video_text:
                 if not callable(open_video):
@@ -4854,29 +5648,50 @@ class AIChatWidget(QtWidgets.QWidget):
                     video_path=video_text,
                     programmatic_call=True,
                 )
-            if not self._wait_for_canvas_pixmap(timeout_ms=4000):
-                raise RuntimeError("Timed out waiting for video frame.")
+            resolved_video_path = str(getattr(host, "video_file", "") or "").strip()
+            if not resolved_video_path:
+                resolved_video_path = video_text
+            if not resolved_video_path:
+                raise RuntimeError("No video is loaded.")
 
-            labels = self._normalize_behavior_labels(
+            import cv2  # type: ignore
+
+            cap = cv2.VideoCapture(str(resolved_video_path))
+            try:
+                total_frames = int(getattr(host, "num_frames", 0) or 0)
+                fps = float(getattr(host, "fps", 0.0) or 0.0)
+                if total_frames <= 0 and cap.isOpened():
+                    total_frames = max(0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0))
+                if fps <= 0.0 and cap.isOpened():
+                    fps = max(0.0, float(cap.get(cv2.CAP_PROP_FPS) or 0.0))
+            finally:
+                cap.release()
+
+            explicit_labels = self._normalize_behavior_labels(
                 [
                     p.strip()
                     for p in str(behavior_labels_csv or "").split(",")
                     if p.strip()
                 ]
             )
-            if not labels:
-                labels = self._labels_from_schema_or_flags()
+            labels = self._resolve_segment_label_candidates(
+                explicit_labels,
+                use_defined_behavior_list=bool(use_defined_behavior_list),
+            )
             if not labels:
                 raise RuntimeError(
-                    "No behavior labels provided/found. Define behavior schema or pass labels."
+                    "No behavior labels provided/found. Define behaviors in schema/flags/timeline or pass labels."
                 )
 
             mode = str(segment_mode or "timeline").strip().lower()
-            total_frames = int(getattr(host, "num_frames", 0) or 0)
             if total_frames <= 0:
                 raise RuntimeError("No video is loaded.")
             max_segments = max(1, int(max_segments))
             segment_frames = max(1, int(segment_frames))
+            segment_seconds = max(0.0, float(segment_seconds or 0.0))
+            if mode == "uniform" and segment_seconds > 0.0 and fps > 0.0:
+                segment_frames = max(1, int(round(segment_seconds * fps)))
+            sample_frames_per_segment = max(1, int(sample_frames_per_segment))
 
             intervals: List[Dict[str, Any]] = []
             if mode == "timeline":
@@ -4901,139 +5716,122 @@ class AIChatWidget(QtWidgets.QWidget):
             if not intervals:
                 raise RuntimeError("No segments available for labeling.")
 
-            from annolid.core.models.adapters.llm_chat import LLMChatAdapter
-            from annolid.core.models.base import ModelRequest
-
-            adapter = LLMChatAdapter(
-                profile=str(llm_profile or "").strip() or None,
-                provider=str(llm_provider or "").strip() or None,
-                model=str(llm_model or "").strip() or None,
-                persist=False,
-            )
-            predictions: List[Dict[str, Any]] = []
-            inference_cache: Dict[int, tuple[str, float]] = {}
-            skipped_segments = 0
-            label_options = ", ".join(labels)
-            with adapter:
-                for item in intervals:
-                    start_frame = int(item["start_frame"])
-                    end_frame = int(item["end_frame"])
-                    mid = int((start_frame + end_frame) // 2)
-                    cached = inference_cache.get(mid)
-                    if cached is None:
-                        set_frame(mid)
-                        if not self._wait_for_canvas_pixmap(timeout_ms=1200):
-                            skipped_segments += 1
-                            continue
-                        image_path = self._snapshot_canvas_to_tempfile()
-                        if not image_path:
-                            skipped_segments += 1
-                            continue
-                        try:
-                            prompt = (
-                                "Classify behavior in this video segment. "
-                                f"Choose exactly one label from: {label_options}. "
-                                "Return strict JSON only: "
-                                '{"label":"<one label>","confidence":0.0}'
-                            )
-                            resp = adapter.predict(
-                                ModelRequest(
-                                    task="caption",
-                                    image_path=image_path,
-                                    text=prompt,
-                                    params={"temperature": 0.0, "max_tokens": 90},
-                                )
-                            )
-                            raw = str(
-                                resp.text or (resp.output or {}).get("text") or ""
-                            ).strip()
-                            cached = self._extract_label_from_model_text(raw, labels)
-                            inference_cache[mid] = cached
-                        except Exception:
-                            skipped_segments += 1
-                            continue
-                        finally:
-                            try:
-                                if image_path and os.path.exists(image_path):
-                                    os.remove(image_path)
-                            except OSError:
-                                pass
-                    label, confidence = cached
-                    predictions.append(
-                        {
-                            "start_frame": start_frame,
-                            "end_frame": end_frame,
-                            "subject": item.get("subject"),
-                            "label": label,
-                            "confidence": confidence,
-                        }
-                    )
-
-            if not predictions:
-                raise RuntimeError(
-                    "Model did not return usable labels for any segment."
-                )
-
             if bool(overwrite_existing):
                 behavior_controller.clear_behavior_data()
-
-            def _timestamp_provider(frame: int) -> Optional[float]:
-                fps = getattr(host, "fps", None)
-                if fps is None or float(fps) <= 0:
-                    return None
-                return float(frame) / float(fps)
-
-            default_subject = str(subject or "").strip() or None
-            for pred in predictions:
-                behavior_controller.create_interval(
-                    behavior=str(pred["label"]),
-                    start_frame=int(pred["start_frame"]),
-                    end_frame=int(pred["end_frame"]),
-                    subject=pred.get("subject") or default_subject,
-                    timestamp_provider=_timestamp_provider,
-                )
-
-            refresh_log = getattr(host, "_refresh_behavior_log", None)
-            if callable(refresh_log):
-                refresh_log()
-            timeline_panel = getattr(host, "timeline_panel", None)
-            refresh_timeline = getattr(
-                timeline_panel, "refresh_from_behavior_controller", None
-            )
-            if callable(refresh_timeline):
-                refresh_timeline()
-            timestamp_result = self._save_behavior_timestamps_csv(host)
-            if not bool(timestamp_result.get("ok", False)):
-                raise RuntimeError(
-                    str(
-                        timestamp_result.get("error")
-                        or "Failed to save behavior timestamps."
-                    )
-                )
 
             self._set_bot_action_result(
                 "label_behavior_segments",
                 {
                     "ok": True,
+                    "queued": True,
+                    "in_progress": True,
                     "mode": mode,
-                    "labeled_segments": len(predictions),
                     "evaluated_segments": len(intervals),
-                    "skipped_segments": int(skipped_segments),
+                    "segment_frames": int(segment_frames),
+                    "segment_seconds": float(segment_seconds),
+                    "sample_frames_per_segment": int(sample_frames_per_segment),
+                    "use_defined_behavior_list": bool(use_defined_behavior_list),
                     "labels_used": labels,
-                    "timestamps_csv": str(timestamp_result.get("path") or ""),
-                    "timestamps_rows": int(timestamp_result.get("rows") or 0),
                 },
             )
             self.status_label.setText(
-                f"Labeled {len(predictions)} segment(s); saved timestamps to "
-                f"{Path(str(timestamp_result.get('path') or '')).name}."
+                f"Queued behavior labeling for {len(intervals)} segment(s). Running in background..."
             )
+
+            self._behavior_label_run_context = {
+                "host": host,
+                "behavior_controller": behavior_controller,
+                "mode": mode,
+                "labels": list(labels),
+                "segment_frames": int(segment_frames),
+                "segment_seconds": float(segment_seconds),
+                "sample_frames_per_segment": int(sample_frames_per_segment),
+                "evaluated_segments": int(len(intervals)),
+                "processed_segments": 0,
+                "skipped_segments": 0,
+                "predictions": [],
+                "use_defined_behavior_list": bool(use_defined_behavior_list),
+                "default_subject": str(subject or "").strip() or None,
+                "timestamp_provider": self._behavior_label_timestamp_provider(host),
+            }
+
+            thread = QtCore.QThread(self)
+            worker = FlexibleWorker(
+                self._run_behavior_segment_vlm_worker,
+                video_path=str(resolved_video_path),
+                intervals=list(intervals),
+                labels=list(labels),
+                sample_frames_per_segment=int(sample_frames_per_segment),
+                llm_profile=str(llm_profile or ""),
+                llm_provider=str(llm_provider or ""),
+                llm_model=str(llm_model or ""),
+            )
+            worker.moveToThread(thread)
+            thread.started.connect(worker.run, QtCore.Qt.QueuedConnection)
+            worker.progress_signal.connect(
+                self._on_behavior_label_progress, QtCore.Qt.QueuedConnection
+            )
+            worker.preview_signal.connect(
+                self._on_behavior_label_preview, QtCore.Qt.QueuedConnection
+            )
+            worker.finished_signal.connect(
+                self._on_behavior_label_finished, QtCore.Qt.QueuedConnection
+            )
+            worker.finished_signal.connect(thread.quit, QtCore.Qt.QueuedConnection)
+            worker.finished_signal.connect(
+                worker.deleteLater, QtCore.Qt.QueuedConnection
+            )
+            thread.finished.connect(thread.deleteLater)
+
+            self._behavior_label_worker = worker
+            self._behavior_label_thread = thread
+            thread.start()
         except Exception as exc:
             self._set_bot_action_result(
                 "label_behavior_segments",
                 {"ok": False, "error": str(exc)},
             )
             self.status_label.setText(f"Bot action failed: {exc}")
+
+    @QtCore.Slot(str)
+    def bot_label_behavior_segments_json(self, payload_json: str = "") -> None:
+        try:
+            payload = json.loads(str(payload_json or "{}"))
+        except Exception as exc:
+            self._set_bot_action_result(
+                "label_behavior_segments",
+                {"ok": False, "error": f"Invalid JSON payload: {exc}"},
+            )
+            self.status_label.setText("Bot action failed: invalid labeling payload.")
+            return
+
+        if not isinstance(payload, dict):
+            self._set_bot_action_result(
+                "label_behavior_segments",
+                {"ok": False, "error": "Invalid JSON payload type."},
+            )
+            self.status_label.setText("Bot action failed: invalid labeling payload.")
+            return
+
+        self.bot_label_behavior_segments(
+            video_path=str(payload.get("video_path") or ""),
+            behavior_labels_csv=str(payload.get("behavior_labels_csv") or ""),
+            use_defined_behavior_list=bool(
+                payload.get("use_defined_behavior_list", True)
+            ),
+            segment_mode=str(payload.get("segment_mode") or "timeline"),
+            segment_frames=int(payload.get("segment_frames") or 60),
+            segment_seconds=float(payload.get("segment_seconds") or 0.0),
+            sample_frames_per_segment=int(
+                payload.get("sample_frames_per_segment") or 3
+            ),
+            max_segments=int(payload.get("max_segments") or 120),
+            subject=str(payload.get("subject") or "Agent"),
+            overwrite_existing=bool(payload.get("overwrite_existing", False)),
+            llm_profile=str(payload.get("llm_profile") or ""),
+            llm_provider=str(payload.get("llm_provider") or ""),
+            llm_model=str(payload.get("llm_model") or ""),
+        )
 
     @QtCore.Slot(
         str,

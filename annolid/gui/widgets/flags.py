@@ -347,6 +347,7 @@ class FlagTableWidget(QtWidgets.QWidget):
         # Flag Name
         name_editor = QtWidgets.QLineEdit(name)
         name_editor.setPlaceholderText("Enter behavior name...")
+        name_editor.editingFinished.connect(self.rowsChanged.emit)
         self._table.setCellWidget(row, self.COLUMN_NAME, name_editor)
         name_editor.setAccessibleName(f"Behavior name: {name}")
         # Flag Value with CheckBox and Icons

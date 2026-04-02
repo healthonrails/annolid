@@ -193,8 +193,11 @@ class GuiLabelBehaviorSegmentsTool(FunctionTool):
                     "type": "array",
                     "items": {"type": "string", "minLength": 1},
                 },
+                "use_defined_behavior_list": {"type": "boolean"},
                 "segment_mode": {"type": "string", "enum": ["timeline", "uniform"]},
                 "segment_frames": {"type": "integer", "minimum": 1},
+                "segment_seconds": {"type": "number", "minimum": 0.0},
+                "sample_frames_per_segment": {"type": "integer", "minimum": 1},
                 "max_segments": {"type": "integer", "minimum": 1},
                 "subject": {"type": "string"},
                 "overwrite_existing": {"type": "boolean"},
@@ -207,6 +210,53 @@ class GuiLabelBehaviorSegmentsTool(FunctionTool):
 
     async def execute(self, **kwargs: Any) -> str:
         return await _run_callback(self._label_behavior_segments_callback, **kwargs)
+
+
+class GuiBehaviorCatalogTool(FunctionTool):
+    def __init__(self, behavior_catalog_callback: Optional[ActionCallback] = None):
+        self._behavior_catalog_callback = behavior_catalog_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_behavior_catalog"
+
+    @property
+    def description(self) -> str:
+        return (
+            "List, create, update, delete, and save the canonical Annolid behavior "
+            "catalog shared by flags, timeline, and behavior labeling."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "save", "create", "update", "delete"],
+                },
+                "code": {"type": "string"},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "category_id": {"type": "string"},
+                "modifier_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "key_binding": {"type": "string"},
+                "is_state": {"type": "boolean"},
+                "exclusive_with": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "save": {"type": "boolean"},
+            },
+            "required": ["action"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._behavior_catalog_callback, **kwargs)
 
 
 class GuiAnalyzeTrackingStatsTool(FunctionTool):

@@ -107,6 +107,98 @@ def _extract_bibtex_payload(text: str) -> str:
     return raw.strip()
 
 
+def _extract_segment_seconds(text: str) -> float | None:
+    raw = str(text or "")
+    if not raw:
+        return None
+    match = re.search(
+        r"\b(?P<value>\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    try:
+        value = float(match.group("value"))
+    except Exception:
+        return None
+    if value <= 0.0:
+        return None
+    return value
+
+
+def _mentions_defined_behavior_list(text: str) -> bool:
+    lowered = str(text or "").lower()
+    hints = (
+        "defined list",
+        "behavior list",
+        "behaviour list",
+        "from flags",
+        "from the flags",
+        "from schema",
+        "from the schema",
+    )
+    return any(hint in lowered for hint in hints)
+
+
+def _split_behavior_labels(text: str) -> list[str]:
+    return [
+        p.strip().strip("\"'`").strip(" .")
+        for p in re.split(r",|;|\band\b", str(text or ""), flags=re.IGNORECASE)
+        if p.strip().strip("\"'`").strip(" .")
+    ]
+
+
+def _extract_behavior_labels_clause(text: str) -> list[str]:
+    raw = str(text or "")
+    if not raw:
+        return []
+    match = re.search(
+        r"\b(?:with\s+labels?|labels?|behaviors?(?:\s+list)?)\s*(?::|=)\s*(?P<labels>.+)$",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return []
+    labels_text = str(match.group("labels") or "").strip()
+    if not labels_text:
+        return []
+    labels_text = re.split(
+        r"\b(?:every|timeline|uniform|overwrite|replace|from\s+defined\s+list|from\s+schema|from\s+flags)\b",
+        labels_text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip()
+    return _split_behavior_labels(labels_text)
+
+
+def _strip_behavior_labels_clause(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    cleaned = re.sub(
+        r"\s+\b(?:with\s+labels?|labels?|behaviors?(?:\s+list)?)\s*(?::|=)\s*.+$",
+        "",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    return str(cleaned or "").strip()
+
+
+def _trim_video_path_to_extension(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    ext_match = re.search(
+        r"\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if ext_match is None:
+        return raw
+    return raw[: ext_match.end()].strip().rstrip(").,;!?")
+
+
 def _normalize_threejs_example_id(value: str) -> str:
     raw = str(value or "").strip().lower()
     if not raw:
@@ -450,17 +542,16 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             path_text,
             flags=re.IGNORECASE,
         ):
-            labels = [
-                p.strip().strip("\"'`").strip(" .")
-                for p in re.split(r",|;|\band\b", labels_text, flags=re.IGNORECASE)
-                if p.strip().strip("\"'`").strip(" .")
-            ]
+            labels = _split_behavior_labels(labels_text)
+            segment_seconds = _extract_segment_seconds(text)
             return {
                 "name": "label_behavior_segments",
                 "args": {
                     "path": path_text,
                     "behavior_labels": labels,
+                    "use_defined_behavior_list": _mentions_defined_behavior_list(text),
                     "segment_mode": "uniform",
+                    "segment_seconds": segment_seconds,
                     "overwrite_existing": False,
                 },
             }
@@ -481,11 +572,13 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         if with_labels_match:
             path_text = with_labels_match.group("path").strip()
             labels_text = with_labels_match.group("labels").strip()
-            labels = [
-                p.strip().strip("\"'`").strip(" .")
-                for p in re.split(r",|;|\band\b", labels_text, flags=re.IGNORECASE)
-                if p.strip().strip("\"'`").strip(" .")
-            ]
+            labels = _split_behavior_labels(labels_text)
+        if not labels:
+            labels = _extract_behavior_labels_clause(
+                path_text
+            ) or _extract_behavior_labels_clause(text)
+        path_text = _strip_behavior_labels_clause(path_text)
+        path_text = _trim_video_path_to_extension(path_text)
         if path_text.lower().startswith("video "):
             path_text = path_text[6:].strip()
         if re.search(
@@ -495,15 +588,76 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         ):
             mode = "timeline" if "timeline" in lower else "uniform"
             overwrite = "overwrite" in lower or "replace" in lower
+            segment_seconds = _extract_segment_seconds(text)
             return {
                 "name": "label_behavior_segments",
                 "args": {
                     "path": path_text,
                     "behavior_labels": labels if labels else None,
+                    "use_defined_behavior_list": _mentions_defined_behavior_list(text),
                     "segment_mode": mode,
+                    "segment_seconds": segment_seconds,
                     "overwrite_existing": overwrite,
                 },
             }
+
+    behavior_catalog_list_match = re.search(
+        r"\b(?:list|show|display)\b\s+(?:the\s+)?(?:behavior|behaviour)s?\b"
+        r"|\b(?:behavior|behaviour)s?\s+list\b",
+        lower,
+    )
+    if behavior_catalog_list_match:
+        return {"name": "behavior_catalog", "args": {"action": "list"}}
+
+    behavior_catalog_save_match = re.search(
+        r"\b(?:save|persist|store)\b\s+(?:the\s+)?(?:behavior|behaviour)\s+"
+        r"(?:catalog|list|schema)\b",
+        lower,
+    )
+    if behavior_catalog_save_match:
+        return {"name": "behavior_catalog", "args": {"action": "save"}}
+
+    behavior_catalog_delete_match = re.search(
+        r"\b(?:delete|remove)\b\s+(?:the\s+)?(?:behavior|behaviour)\s+"
+        r"(?P<code>[a-z0-9][a-z0-9._-]*)",
+        lower,
+    )
+    if behavior_catalog_delete_match:
+        return {
+            "name": "behavior_catalog",
+            "args": {
+                "action": "delete",
+                "code": behavior_catalog_delete_match.group("code").strip(),
+            },
+        }
+
+    behavior_catalog_update_match = re.search(
+        r"\bupdate\b\s+(?:the\s+)?(?:behavior|behaviour)\s+"
+        r"(?P<code>[a-z0-9][a-z0-9._-]*)",
+        lower,
+    )
+    if behavior_catalog_update_match:
+        return {
+            "name": "behavior_catalog",
+            "args": {
+                "action": "update",
+                "code": behavior_catalog_update_match.group("code").strip(),
+            },
+        }
+
+    behavior_catalog_create_match = re.search(
+        r"\b(?:create|add|new)\b\s+(?:a\s+)?(?:behavior|behaviour)\s+"
+        r"(?P<code>[a-z0-9][a-z0-9._-]*)",
+        lower,
+    )
+    if behavior_catalog_create_match:
+        return {
+            "name": "behavior_catalog",
+            "args": {
+                "action": "create",
+                "code": behavior_catalog_create_match.group("code").strip(),
+            },
+        }
 
     list_pdfs_match = re.search(
         r"\b(?:list|show|find|search)\b\s+(?:all\s+)?(?:the\s+)?(?:local\s+)?pdfs?\b",

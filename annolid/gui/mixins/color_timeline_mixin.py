@@ -6,6 +6,8 @@ from typing import List, Optional, Tuple
 import imgviz
 from qtpy import QtGui
 
+from annolid.core.behavior.catalog import behavior_catalog_entries
+
 try:
     LABEL_COLORMAP = imgviz.label_colormap(value=200)
 except TypeError:
@@ -77,7 +79,17 @@ class ColorTimelineMixin:
         schema = getattr(self, "project_schema", None)
         if schema is not None:
             try:
-                behaviors.update(schema.behavior_map().keys())
+                entries = behavior_catalog_entries(schema)
+                behaviors.update(
+                    item["code"]
+                    for item in entries
+                    if str(item.get("code") or "").strip()
+                )
+                behaviors.update(
+                    item["name"]
+                    for item in entries
+                    if str(item.get("name") or "").strip()
+                )
             except Exception:
                 pass
         try:
@@ -104,6 +116,12 @@ class ColorTimelineMixin:
         name = str(name).strip()
         if not name:
             return
+        creator = getattr(self, "create_behavior_catalog_item", None)
+        if callable(creator):
+            try:
+                creator(code=name, name=name, save=True)
+            except Exception:
+                pass
         current_flags = dict(getattr(self, "pinned_flags", {}) or {})
         if name not in current_flags:
             current_flags[name] = False

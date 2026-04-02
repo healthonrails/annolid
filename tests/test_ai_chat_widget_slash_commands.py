@@ -260,3 +260,290 @@ def test_capability_chips_and_shortcuts_route_actions(monkeypatch) -> None:
     finally:
         if widget is not None:
             widget.close()
+
+
+def test_behavior_label_preset_runs_one_second_vlm_flow(monkeypatch) -> None:
+    _ensure_qapp()
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.load_llm_settings",
+        lambda: {
+            "provider": "ollama",
+            "last_models": {"ollama": "test-model"},
+            "ollama": {"preferred_models": ["test-model"]},
+        },
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_providers",
+        lambda self: ["ollama"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.labels",
+        lambda self: {"ollama": "Ollama"},
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.current_provider",
+        lambda self: "ollama",
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_models",
+        lambda self, provider: ["test-model"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.resolve_initial_model",
+        lambda self, provider, available_models: "test-model",
+    )
+    monkeypatch.setattr(
+        AIChatWidget,
+        "_load_session_history_into_bubbles",
+        lambda self, session_id: None,
+    )
+    monkeypatch.setattr(AIChatWidget, "_update_model_selector", lambda self: None)
+    monkeypatch.setattr(AIChatWidget, "_refresh_header_chips", lambda self: None)
+    monkeypatch.setattr(
+        AIChatWidget, "_load_quick_actions_from_settings", lambda self: None
+    )
+
+    widget = None
+    widget = AIChatWidget()
+    try:
+
+        class _Host:
+            video_file = "/tmp/mouse.mp4"
+
+        widget.host_window_widget = _Host()
+        monkeypatch.setattr(
+            widget,
+            "_labels_from_schema_or_flags",
+            lambda: ["walking", "rearing"],
+        )
+
+        widget._run_behavior_label_preset_one_second()
+
+        drafted = widget.prompt_text_edit.toPlainText()
+        assert "label behavior in /tmp/mouse.mp4" in drafted
+        assert "with labels walking, rearing" in drafted
+        assert "from defined list every 1s" in drafted
+        assert "Drafted 1s behavior labeling command" in widget.status_label.text()
+    finally:
+        if widget is not None:
+            widget.close()
+
+
+def test_labels_from_schema_flags_includes_timeline_behaviors(monkeypatch) -> None:
+    _ensure_qapp()
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.load_llm_settings",
+        lambda: {
+            "provider": "ollama",
+            "last_models": {"ollama": "test-model"},
+            "ollama": {"preferred_models": ["test-model"]},
+        },
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_providers",
+        lambda self: ["ollama"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.labels",
+        lambda self: {"ollama": "Ollama"},
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.current_provider",
+        lambda self: "ollama",
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_models",
+        lambda self, provider: ["test-model"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.resolve_initial_model",
+        lambda self, provider, available_models: "test-model",
+    )
+    monkeypatch.setattr(
+        AIChatWidget,
+        "_load_session_history_into_bubbles",
+        lambda self, session_id: None,
+    )
+    monkeypatch.setattr(AIChatWidget, "_update_model_selector", lambda self: None)
+    monkeypatch.setattr(AIChatWidget, "_refresh_header_chips", lambda self: None)
+    monkeypatch.setattr(
+        AIChatWidget, "_load_quick_actions_from_settings", lambda self: None
+    )
+
+    widget = None
+    widget = AIChatWidget()
+    try:
+
+        class _FlagWidget:
+            @staticmethod
+            def _get_existing_flag_names():
+                return {"behavior_1": 0, "walk": 1}
+
+        class _FlagsController:
+            pinned_flags = {"behavior_2": False, "rear": True}
+
+        class _BehaviorController:
+            behavior_names = {"groom", "behavior_3"}
+
+        class _Host:
+            project_schema = None
+            flags = {}
+            flag_widget = _FlagWidget()
+            flags_controller = _FlagsController()
+            behavior_controller = _BehaviorController()
+
+        widget.host_window_widget = _Host()
+        labels = widget._labels_from_schema_or_flags()
+        assert "groom" in labels
+        assert "walk" in labels
+        assert "rear" in labels
+        assert "Agent" not in labels
+        assert "behavior_1" not in labels
+        assert "behavior_2" not in labels
+        assert "behavior_3" not in labels
+    finally:
+        if widget is not None:
+            widget.close()
+
+
+def test_behavior_label_preview_applies_incremental_updates(monkeypatch) -> None:
+    _ensure_qapp()
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.load_llm_settings",
+        lambda: {
+            "provider": "ollama",
+            "last_models": {"ollama": "test-model"},
+            "ollama": {"preferred_models": ["test-model"]},
+        },
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_providers",
+        lambda self: ["ollama"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.labels",
+        lambda self: {"ollama": "Ollama"},
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.current_provider",
+        lambda self: "ollama",
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_models",
+        lambda self, provider: ["test-model"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.resolve_initial_model",
+        lambda self, provider, available_models: "test-model",
+    )
+    monkeypatch.setattr(
+        AIChatWidget,
+        "_load_session_history_into_bubbles",
+        lambda self, session_id: None,
+    )
+    monkeypatch.setattr(AIChatWidget, "_update_model_selector", lambda self: None)
+    monkeypatch.setattr(AIChatWidget, "_refresh_header_chips", lambda self: None)
+    monkeypatch.setattr(
+        AIChatWidget, "_load_quick_actions_from_settings", lambda self: None
+    )
+
+    widget = AIChatWidget()
+    try:
+
+        class _BehaviorController:
+            def __init__(self) -> None:
+                self.intervals = []
+
+            def create_interval(self, **kwargs):
+                self.intervals.append(dict(kwargs))
+
+        class _Host:
+            fps = 30.0
+            video_file = "/tmp/mouse.mp4"
+            timeline_panel = None
+
+            @staticmethod
+            def _refresh_behavior_log() -> None:
+                return None
+
+        behavior_controller = _BehaviorController()
+        host = _Host()
+        widget._behavior_label_run_context = {
+            "host": host,
+            "behavior_controller": behavior_controller,
+            "mode": "uniform",
+            "labels": ["walking", "rearing"],
+            "segment_frames": 30,
+            "segment_seconds": 1.0,
+            "sample_frames_per_segment": 3,
+            "evaluated_segments": 3,
+            "processed_segments": 0,
+            "skipped_segments": 0,
+            "predictions": [],
+            "use_defined_behavior_list": True,
+            "default_subject": "mouse",
+            "timestamp_provider": widget._behavior_label_timestamp_provider(host),
+        }
+        calls = []
+
+        monkeypatch.setattr(
+            widget,
+            "_save_behavior_segment_progress",
+            lambda *, force_timestamps=False: {
+                "ok": True,
+                "timestamp_result": {
+                    "ok": True,
+                    "path": "/tmp/mouse_timestamps.csv",
+                    "rows": 2,
+                },
+                "behavior_log_result": {
+                    "ok": True,
+                    "path": "/tmp/mouse_behavior_segment_labels.json",
+                    "rows": 2,
+                },
+            },
+        )
+        monkeypatch.setattr(
+            widget,
+            "_set_bot_action_result",
+            lambda action, payload: calls.append((action, dict(payload))),
+        )
+
+        widget._on_behavior_label_preview(
+            {
+                "index": 1,
+                "total": 3,
+                "status": "labeled",
+                "progress": 33,
+                "prediction": {
+                    "start_frame": 0,
+                    "end_frame": 29,
+                    "subject": "mouse",
+                    "label": "walking",
+                    "confidence": 0.9,
+                },
+            }
+        )
+
+        assert len(behavior_controller.intervals) == 1
+        assert behavior_controller.intervals[0]["behavior"] == "walking"
+        assert behavior_controller.intervals[0]["start_frame"] == 0
+        assert len(widget._behavior_label_run_context["predictions"]) == 1
+        assert "Labeled segment 1/3 as 'walking'" in widget.status_label.text()
+        assert calls[-1][0] == "label_behavior_segments"
+        assert calls[-1][1]["in_progress"] is True
+
+        widget._on_behavior_label_finished(
+            {
+                "predictions": [],
+                "skipped_segments": 0,
+                "processed_segments": 3,
+                "cancelled": False,
+            }
+        )
+
+        assert calls[-1][1]["ok"] is True
+        assert calls[-1][1]["in_progress"] is False
+        assert calls[-1][1]["labeled_segments"] == 1
+    finally:
+        widget.close()

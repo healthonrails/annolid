@@ -88,12 +88,8 @@ def setup_timeline_feature(deps: GuiFeatureDeps) -> TimelineFeatureState:
         adder=window._timeline_add_behavior,
     )
     try:
-        window.flag_widget.rowsChanged.connect(
-            window.timeline_panel.refresh_behavior_catalog
-        )
-        window.flag_widget.flagsSaved.connect(
-            window.timeline_panel.refresh_behavior_catalog
-        )
+        window.flag_widget.rowsChanged.connect(window.sync_behavior_catalog_from_ui)
+        window.flag_widget.flagsSaved.connect(window.sync_behavior_catalog_from_ui)
         window.flag_widget.rowSelected.connect(
             window.timeline_panel.set_active_behavior
         )

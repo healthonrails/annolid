@@ -101,12 +101,16 @@ def invoke_widget_json_slot(
             pass
     ok = invoke_slot(slot_name, *qargs)
     if not ok:
-        return {"ok": False, "error": f"Failed to run GUI action: {slot_name}"}
+        return {
+            "ok": False,
+            "error": f"Failed to run GUI action: {slot_name}",
+            "transport_error": True,
+        }
     if widget is not None:
         payload = getattr(widget, "_bot_action_result", None)
         if isinstance(payload, dict) and payload:
             return dict(payload)
-    return {"ok": True}
+    return {"ok": True, "transport_error": False}
 
 
 def get_widget_action_result(*, widget: Any, action_name: str) -> Dict[str, Any]:

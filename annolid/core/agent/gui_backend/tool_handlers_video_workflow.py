@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -17,6 +18,21 @@ def _video_total_frames(path: Path) -> int:
             cap.release()
     except Exception:
         return 0
+
+
+def _video_fps(path: Path) -> float:
+    try:
+        import cv2  # type: ignore
+
+        cap = cv2.VideoCapture(str(path))
+        if not cap.isOpened():
+            return 0.0
+        try:
+            return max(0.0, float(cap.get(cv2.CAP_PROP_FPS) or 0.0))
+        finally:
+            cap.release()
+    except Exception:
+        return 0.0
 
 
 def segment_track_video_tool(
@@ -110,8 +126,11 @@ def label_behavior_segments_tool(
     *,
     path: str,
     behavior_labels: Any,
+    use_defined_behavior_list: bool,
     segment_mode: str,
     segment_frames: int,
+    segment_seconds: Optional[float],
+    sample_frames_per_segment: int,
     max_segments: int,
     subject: str,
     overwrite_existing: bool,
@@ -120,7 +139,7 @@ def label_behavior_segments_tool(
     llm_model: str,
     resolve_video_path: Callable[[str], Optional[Path]],
     invoke_label_behavior: Callable[
-        [str, str, str, int, int, str, bool, str, str, str], bool
+        [str, str, bool, str, int, float, int, int, str, bool, str, str, str], bool
     ],
     get_action_result: Callable[[str], Dict[str, Any]],
 ) -> Dict[str, Any]:
@@ -144,9 +163,17 @@ def label_behavior_segments_tool(
     if mode_norm not in {"timeline", "uniform"}:
         return {"ok": False, "error": "segment_mode must be 'timeline' or 'uniform'"}
     frames = max(1, int(segment_frames))
+    seconds = float(segment_seconds) if segment_seconds is not None else 0.0
+    if seconds < 0.0:
+        seconds = 0.0
+    sample_frames = max(1, int(sample_frames_per_segment))
     max_seg = max(1, int(max_segments))
     if mode_norm == "uniform" and resolved_path is not None:
-        total_frames = _video_total_frames(Path(resolved_path))
+        resolved_video = Path(resolved_path)
+        video_fps = _video_fps(resolved_video)
+        if seconds > 0.0 and video_fps > 0.0:
+            frames = max(1, int(round(seconds * video_fps)))
+        total_frames = _video_total_frames(resolved_video)
         if total_frames > 1:
             # For short clips, avoid collapsing to a single uniform segment
             # when defaults (segment_frames=60) exceed video length.
@@ -160,8 +187,11 @@ def label_behavior_segments_tool(
     ok = invoke_label_behavior(
         str(resolved_path) if resolved_path else "",
         ",".join(labels),
+        bool(use_defined_behavior_list),
         mode_norm,
         frames,
+        seconds,
+        sample_frames,
         max_seg,
         str(subject or "Agent"),
         bool(overwrite_existing),
@@ -188,9 +218,83 @@ def label_behavior_segments_tool(
             "labeled_segments": int(widget_result.get("labeled_segments") or 0),
             "evaluated_segments": int(widget_result.get("evaluated_segments") or 0),
             "skipped_segments": int(widget_result.get("skipped_segments") or 0),
+            "segment_frames": int(widget_result.get("segment_frames") or frames),
+            "segment_seconds": float(widget_result.get("segment_seconds") or seconds),
+            "sample_frames_per_segment": int(
+                widget_result.get("sample_frames_per_segment") or sample_frames
+            ),
+            "use_defined_behavior_list": bool(
+                widget_result.get(
+                    "use_defined_behavior_list", use_defined_behavior_list
+                )
+            ),
             "labels_used": list(widget_result.get("labels_used") or labels),
             "timestamps_csv": str(widget_result.get("timestamps_csv") or ""),
             "timestamps_rows": int(widget_result.get("timestamps_rows") or 0),
+            "behavior_log_json": str(widget_result.get("behavior_log_json") or ""),
+            "behavior_log_rows": int(widget_result.get("behavior_log_rows") or 0),
         }
 
-    return {"ok": True, "queued": True, "mode": mode_norm}
+    return {
+        "ok": True,
+        "queued": True,
+        "mode": mode_norm,
+        "segment_frames": int(frames),
+        "segment_seconds": float(seconds),
+        "sample_frames_per_segment": int(sample_frames),
+        "use_defined_behavior_list": bool(use_defined_behavior_list),
+    }
+
+
+def behavior_catalog_tool(
+    *,
+    action: str,
+    code: str = "",
+    name: str = "",
+    description: str = "",
+    category_id: str = "",
+    modifier_ids: Any = None,
+    key_binding: str = "",
+    is_state: Optional[bool] = None,
+    exclusive_with: Any = None,
+    save: bool = True,
+    invoke_behavior_catalog: Callable[[str], bool],
+    get_action_result: Callable[[str], Dict[str, Any]],
+) -> Dict[str, Any]:
+    action_norm = str(action or "").strip().lower()
+    if action_norm not in {"list", "save", "create", "update", "delete"}:
+        return {
+            "ok": False,
+            "error": f"Unsupported behavior catalog action: {action}",
+        }
+    payload = {
+        "action": action_norm,
+        "code": str(code or "").strip(),
+        "name": str(name or "").strip(),
+        "description": str(description or "").strip(),
+        "category_id": str(category_id or "").strip(),
+        "modifier_ids": [
+            str(item).strip() for item in (modifier_ids or []) if str(item).strip()
+        ],
+        "key_binding": str(key_binding or "").strip(),
+        "is_state": is_state,
+        "exclusive_with": [
+            str(item).strip() for item in (exclusive_with or []) if str(item).strip()
+        ],
+        "save": bool(save),
+    }
+    ok = invoke_behavior_catalog(json.dumps(payload))
+    if not ok:
+        return {"ok": False, "error": "Failed to queue behavior catalog action."}
+    widget_result = get_action_result("behavior_catalog")
+    if widget_result:
+        if not bool(widget_result.get("ok", False)):
+            return {
+                "ok": False,
+                "error": str(
+                    widget_result.get("error")
+                    or "Behavior catalog action failed in GUI."
+                ),
+            }
+        return dict(widget_result)
+    return {"ok": True, "queued": True, "action": action_norm}

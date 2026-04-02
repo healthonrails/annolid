@@ -57,6 +57,7 @@ async def execute_direct_gui_command(
     track_next_frames: Callable[[int], Any],
     segment_track_video: Callable[..., Any],
     label_behavior_segments: Callable[..., Any],
+    behavior_catalog: Callable[..., Any],
     start_realtime_stream: Callable[..., Any],
     stop_realtime_stream: Callable[[], Any],
     get_realtime_status: Callable[[], Any],
@@ -220,8 +221,15 @@ async def execute_direct_gui_command(
             label_behavior_segments,
             path=str(args.get("path") or ""),
             behavior_labels=args.get("behavior_labels"),
+            use_defined_behavior_list=bool(args.get("use_defined_behavior_list", True)),
             segment_mode=str(args.get("segment_mode") or "timeline"),
             segment_frames=int(args.get("segment_frames") or 60),
+            segment_seconds=(
+                float(args.get("segment_seconds"))
+                if args.get("segment_seconds") not in (None, "")
+                else None
+            ),
+            sample_frames_per_segment=int(args.get("sample_frames_per_segment") or 3),
             max_segments=int(args.get("max_segments") or 120),
             subject=str(args.get("subject") or "Agent"),
             overwrite_existing=bool(args.get("overwrite_existing", False)),
@@ -237,8 +245,40 @@ async def execute_direct_gui_command(
             csv_path = str(payload.get("timestamps_csv") or "").strip()
             if csv_path:
                 summary += f" Timestamps saved to {csv_path}."
+            log_path = str(payload.get("behavior_log_json") or "").strip()
+            if log_path:
+                summary += f" Segment log saved to {log_path}."
             return summary
         return str(payload.get("error") or "Failed to label behavior segments.")
+
+    if name == "behavior_catalog":
+        payload = await _run(
+            behavior_catalog,
+            action=str(args.get("action") or "list"),
+            code=str(args.get("code") or ""),
+            name=str(args.get("name") or ""),
+            description=str(args.get("description") or ""),
+            category_id=str(args.get("category_id") or ""),
+            modifier_ids=args.get("modifier_ids"),
+            key_binding=str(args.get("key_binding") or ""),
+            is_state=args.get("is_state"),
+            exclusive_with=args.get("exclusive_with"),
+            save=bool(args.get("save", True)),
+        )
+        if payload.get("ok"):
+            action = str(payload.get("action") or args.get("action") or "list")
+            if action == "list":
+                return f"Behavior catalog contains {payload.get('count', 0)} item(s)."
+            if action == "save":
+                saved_path = str(payload.get("path") or "").strip()
+                if saved_path:
+                    return f"Saved behavior catalog to {saved_path}."
+                return "Saved behavior catalog."
+            message = str(payload.get("message") or "").strip()
+            if message:
+                return message
+            return f"Behavior catalog {action} completed."
+        return str(payload.get("error") or "Failed to manage behavior catalog.")
 
     if name == "start_realtime_stream":
         payload = await _run(

@@ -53,6 +53,7 @@ from .function_gui_video import (
     GuiRunAiTextSegmentationTool,
     GuiSegmentTrackVideoTool,
     GuiLabelBehaviorSegmentsTool,
+    GuiBehaviorCatalogTool,
     GuiStartRealtimeStreamTool,
     GuiStopRealtimeStreamTool,
 )
@@ -116,6 +117,7 @@ def register_annolid_gui_tools(
     run_ai_text_segmentation_callback: Optional[ActionCallback] = None,
     segment_track_video_callback: Optional[ActionCallback] = None,
     label_behavior_segments_callback: Optional[ActionCallback] = None,
+    behavior_catalog_callback: Optional[ActionCallback] = None,
     analyze_tracking_stats_callback: Optional[ActionCallback] = None,
     start_realtime_stream_callback: Optional[ActionCallback] = None,
     stop_realtime_stream_callback: Optional[ActionCallback] = None,
@@ -224,6 +226,9 @@ def register_annolid_gui_tools(
         GuiLabelBehaviorSegmentsTool(
             label_behavior_segments_callback=label_behavior_segments_callback
         )
+    )
+    registry.register(
+        GuiBehaviorCatalogTool(behavior_catalog_callback=behavior_catalog_callback)
     )
     registry.register(
         GuiAnalyzeTrackingStatsTool(
