@@ -318,6 +318,7 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
         self._deferred_rebuild = False
         self._playhead_line: Optional[QtWidgets.QGraphicsLineItem] = None
         self._playhead_triangle: Optional[QtWidgets.QGraphicsPolygonItem] = None
+        self._is_dragging_playhead = False
         self._last_pixels_per_frame: float = 1.0
         self._last_scene_height: float = 0.0
 
@@ -381,6 +382,15 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
         super().wheelEvent(event)
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if event.button() == QtCore.Qt.LeftButton and self._hit_playhead(
+            self.mapToScene(event.pos())
+        ):
+            self._is_dragging_playhead = True
+            self.setCursor(QtCore.Qt.ClosedHandCursor)
+            frame = self._x_to_frame(self.mapToScene(event.pos()).x())
+            self.frameSelected.emit(frame)
+            event.accept()
+            return
         if (
             event.button() == QtCore.Qt.LeftButton
             and self._edit_mode
@@ -416,6 +426,11 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self._is_dragging_playhead:
+            frame = self._x_to_frame(self.mapToScene(event.pos()).x())
+            self.frameSelected.emit(frame)
+            event.accept()
+            return
         if self._new_item is not None and self._new_item_start_frame is not None:
             # The scene may rebuild due to external updates; if the draft item was deleted,
             # abort the interaction instead of crashing.
@@ -453,9 +468,21 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
                     QtWidgets.QToolTip.showText(
                         event.globalPos(), f"{time_s:.3f}s (frame {frame})"
                     )
+        if not (event.buttons() & QtCore.Qt.LeftButton):
+            if self._hit_playhead(self.mapToScene(event.pos())):
+                self.setCursor(QtCore.Qt.OpenHandCursor)
+            else:
+                self.unsetCursor()
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self._is_dragging_playhead:
+            self._is_dragging_playhead = False
+            self.unsetCursor()
+            frame = self._x_to_frame(self.mapToScene(event.pos()).x())
+            self.frameSelected.emit(frame)
+            event.accept()
+            return
         if (
             self._new_item is not None
             and self._new_item_start_frame is not None
@@ -787,6 +814,18 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
             )
         else:
             self._playhead_triangle.setPolygon(tri)
+
+    def _hit_playhead(self, scene_pos: QtCore.QPointF) -> bool:
+        if scene_pos.y() < 0:
+            return False
+        if scene_pos.y() > (self._header_height + 10):
+            return False
+        playhead_x = self._frame_to_x(
+            int(self._current_frame),
+            self._last_pixels_per_frame,
+        )
+        tolerance = max(8.0, self._last_pixels_per_frame * 0.5)
+        return abs(float(scene_pos.x()) - float(playhead_x)) <= tolerance
 
     @staticmethod
     def _apply_confidence(
