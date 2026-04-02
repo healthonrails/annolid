@@ -505,10 +505,28 @@ class PersistenceLifecycleMixin:
             self._prediction_forced_start_frame = None
 
         deleted_files = 0
-        seed_frames = self._collect_seed_frames(prediction_folder)
-        protected_frames: Set[int] = set()
+        seed_frames = sorted(self._collect_seed_frames(prediction_folder))
+        protected_frames: Set[int] = set(seed_frames)
+        next_seed = next(
+            (int(seed) for seed in seed_frames if int(seed) > int(self.frame_number)),
+            None,
+        )
+        delete_start = int(self.frame_number) + 1
+        delete_end = int(next_seed) - 1 if next_seed is not None else None
 
         logger.info(f"Scanning for future predictions in: {prediction_folder}")
+        if next_seed is not None:
+            logger.info(
+                "Future manual seed detected at frame %s; deleting predicted frames in [%s, %s].",
+                next_seed,
+                delete_start,
+                delete_end,
+            )
+        else:
+            logger.info(
+                "No future manual seed detected; deleting all predicted frames after frame %s.",
+                self.frame_number,
+            )
 
         for prediction_path in prediction_folder.iterdir():
             if not prediction_path.is_file():
@@ -533,27 +551,38 @@ class PersistenceLifecycleMixin:
                 )
                 continue
 
-            is_manually_saved = frame_number in seed_frames
-            if is_manually_saved:
-                protected_frames.add(frame_number)
+            if frame_number <= int(self.frame_number):
+                continue
+            if next_seed is not None and frame_number >= int(next_seed):
+                continue
+            if frame_number in protected_frames:
+                continue
+            if frame_number < int(delete_start):
+                continue
+            if delete_end is not None and frame_number > int(delete_end):
+                continue
 
-            is_future_frame = frame_number > self.frame_number
-
-            if is_future_frame and not is_manually_saved:
-                try:
-                    prediction_path.unlink()
-                    deleted_files += 1
-                except OSError as e:
-                    logger.error("Failed to delete file %s: %s", prediction_path, e)
+            try:
+                prediction_path.unlink()
+                deleted_files += 1
+            except OSError as e:
+                logger.error("Failed to delete file %s: %s", prediction_path, e)
 
         store_removed = 0
         try:
             store = AnnotationStore.for_frame_path(
                 prediction_folder / f"{prediction_folder.name}_000000000.json"
             )
-            store_removed = store.remove_frames_after(
-                self.frame_number, protected_frames=protected_frames
-            )
+            if delete_end is None:
+                store_removed = store.remove_frames_after(
+                    int(self.frame_number), protected_frames=protected_frames
+                )
+            else:
+                store_removed = store.remove_frames_in_range(
+                    int(delete_start),
+                    int(delete_end),
+                    protected_frames=protected_frames,
+                )
         except Exception as exc:
             logger.error(
                 "Failed to prune annotation store in %s: %s",

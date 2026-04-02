@@ -9,8 +9,12 @@ from annolid.gui.mixins.persistence_lifecycle_mixin import PersistenceLifecycleM
 class _DummyStore:
     def __init__(self) -> None:
         self.last_after_call = None
+        self.last_range_call = None
 
-    def remove_frames_in_range(self, *_args, **_kwargs) -> int:
+    def remove_frames_in_range(
+        self, start_frame, end_frame, protected_frames=None
+    ) -> int:
+        self.last_range_call = (start_frame, end_frame, set(protected_frames or []))
         return 0
 
     def remove_frames_after(self, frame_threshold, protected_frames=None) -> int:
@@ -155,8 +159,10 @@ def test_delete_all_future_predictions_preserves_manual_seed_pairs(
     assert (folder / "video_results_000000011.json").exists() is False
     assert (folder / "video_results_000000012.json").exists() is True
     assert (folder / "video_results_000000012.png").exists() is True
-    assert (folder / "video_results_000000013.json").exists() is False
-    assert store.last_after_call == (10, {12})
+    # Keep future predictions at/after nearest future seed frame (12).
+    assert (folder / "video_results_000000013.json").exists() is True
+    assert store.last_after_call is None
+    assert store.last_range_call == (11, 11, {12})
     assert window._prediction_forced_start_frame == 11
 
 
@@ -178,3 +184,33 @@ def test_delete_all_future_predictions_sets_restart_hint_even_without_removals(
     window.deleteAllFuturePredictions()
 
     assert window._prediction_forced_start_frame == 28
+
+
+def test_delete_all_future_predictions_without_future_seed_deletes_all_future(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = tmp_path / "video_results"
+    folder.mkdir(parents=True, exist_ok=True)
+    window = _DummyWindow(folder, frame_number=10)
+
+    for frame in (10, 11, 12, 13):
+        (folder / f"video_results_{frame:09d}.json").write_text("{}", encoding="utf-8")
+
+    # Only current seed exists; no future seed pair.
+    (folder / "video_results_000000010.png").write_text("seed", encoding="utf-8")
+
+    store = _DummyStore()
+    monkeypatch.setattr(
+        persistence_mod.AnnotationStore,
+        "for_frame_path",
+        lambda _p: store,
+    )
+
+    window.deleteAllFuturePredictions()
+
+    assert (folder / "video_results_000000010.json").exists() is True
+    assert (folder / "video_results_000000011.json").exists() is False
+    assert (folder / "video_results_000000012.json").exists() is False
+    assert (folder / "video_results_000000013.json").exists() is False
+    assert store.last_after_call == (10, {10})
+    assert store.last_range_call is None
