@@ -114,6 +114,7 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
 - Open **AI & Models → Annolid Bot…** to launch a dedicated right-side WhatsApp-style multimodal chat dock (streaming chat, local `openai/whisper-tiny` speech-to-text for Talk/Record, voice talk/read controls, and one-click canvas/window sharing).
 - Open **Video Tools → Zones** to draw chamber layouts, generate a 3x3 preset, and save explicit zone shapes on the current frame.
 - Open **Video Tools → Zone Analysis** to export legacy place-preference CSVs, generic zone metrics, or a profile-aware assay summary for Phase 1 / Phase 2 workflows. See [Zone Analysis](docs/zone_analysis.md) and [Zone Analysis Workflow](docs/tutorials/zone_analysis_workflow.md).
+- For behavior scoring with shared behavior names across Flags, Timeline, and Annolid Bot (including timeline needle dragging and 1s segment labeling prompts), see [Behavior labeling with Timeline, Flags, and Annolid Bot](docs/tutorials/behavior_timeline_flags_bot.md).
 - Open **AI & Models → Draft Research Paper with Swarm…** to seed Annolid Bot with the multi-agent paper-drafting workflow and an active PDF context when available.
 - In Annolid Bot, enable `Allow web` to let Annolid Bot use `web_search`/`web_fetch` tools for web browsing in that chat turn (requires `BRAVE_API_KEY` for search).
 - To show or hide intermediate tool/planning updates while Annolid Bot is thinking, open Annolid Bot settings and toggle `Agent Runtime → Enable intermediate progress stream`.
@@ -228,6 +229,7 @@ Large TIFF sessions also expose a unified `Layers` dock built from the shared la
 
 ## Tutorials & Examples
 - Featured demo: [Tracking Four Interacting Mice with One Labeled Frame | 10-Minute Experiment](https://youtu.be/PNbPA649r78)
+- Behavior workflow tutorial: [Behavior labeling with Timeline, Flags, and Annolid Bot](docs/tutorials/behavior_timeline_flags_bot.md)
 - DINOv3 Keypoint Tracking tutorial: book/tutorials/DINOv3_keypoint_tracking.md
 [![Effortless Multiple Instance Tracking using Annolid: Beginner's Tutorial](https://annolid.com/assets/images/annolid_gui.png)](https://www.youtube.com/embed/ry9bnaajKCs?si=o_rdLobKeKb4-LWX)
 

@@ -68,6 +68,7 @@ If you want Annolid Bot to drive those commands for you, use the typed
 - Memory subsystem for reusable context: [Memory Subsystem](memory.md)
 - Agent integrations and MCP tools: [MCP](mcp.md)
 - Security hardening for agents/secrets: [Agent Security](agent_security.md)
+- Behavior workflow tutorial (Timeline + Flags + Annolid Bot): [Behavior labeling with Timeline, Flags, and Annolid Bot](tutorials/behavior_timeline_flags_bot.md)
 - Practical tutorials and notebooks: [Tutorials](tutorials.md)
 
 ## Troubleshooting

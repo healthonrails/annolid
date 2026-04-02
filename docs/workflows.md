@@ -88,6 +88,10 @@ For behavior-centric projects, a typical path is:
 3. export event data,
 4. summarize or post-process results with the CLI utilities.
 
+For GUI-first behavior scoring with timeline playhead dragging, shared behavior catalog usage across Flags/Timeline, and Annolid Bot segment labeling prompts, see:
+
+- [Behavior labeling with Timeline, Flags, and Annolid Bot](tutorials/behavior_timeline_flags_bot.md)
+
 Example time-budget command:
 
 ```bash
