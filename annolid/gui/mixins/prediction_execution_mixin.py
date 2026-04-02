@@ -78,6 +78,42 @@ class PredictionExecutionMixin:
         text = str(message or "").lower()
         return "missing instance" in text or "missing or occluded" in text
 
+    @staticmethod
+    def _parse_tracking_message_with_frame(
+        message: object, *, fallback_frame: int = 0
+    ) -> tuple[str, int]:
+        """Parse worker tracking message text + frame index with graceful fallback."""
+        raw_text = str(message or "").strip()
+        frame = int(fallback_frame)
+        if not raw_text:
+            return "", frame
+
+        if "#" in raw_text:
+            base_text, suffix = raw_text.rsplit("#", 1)
+            if base_text.strip():
+                raw_text = base_text.strip()
+            suffix = suffix.strip()
+            if suffix:
+                match = re.match(r"^(\d+)", suffix)
+                if match:
+                    try:
+                        frame = int(match.group(1))
+                        return raw_text, frame
+                    except Exception:
+                        pass
+
+        frame_match = re.search(
+            r"\bframe\b(?:\s+index)?\s*(?:\(|:|#)?\s*(\d+)\)?",
+            raw_text,
+            flags=re.IGNORECASE,
+        )
+        if frame_match:
+            try:
+                frame = int(frame_match.group(1))
+            except Exception:
+                frame = int(fallback_frame)
+        return raw_text, frame
+
     def _show_frame_on_canvas(self, frame_index: int) -> None:
         """Jump to a frame and keep the canvas view aligned to it."""
         try:
@@ -958,6 +994,9 @@ class PredictionExecutionMixin:
             self.pred_worker.result_signal.connect(
                 self.lost_tracking_instance, QtCore.Qt.QueuedConnection
             )
+            self.pred_worker.preview_signal.connect(
+                self._handle_prediction_preview, QtCore.Qt.QueuedConnection
+            )
             self.pred_worker.progress_signal.connect(
                 self._update_progress_bar, QtCore.Qt.QueuedConnection
             )
@@ -979,13 +1018,14 @@ class PredictionExecutionMixin:
             self.seg_pred_thread.start()
 
     def lost_tracking_instance(self, message):
-        if message is None or "#" not in str(message):
+        if message is None:
             return
-        message, current_frame_index = message.split("#")
-        try:
-            stalled_frame = int(float(current_frame_index))
-        except Exception:
-            stalled_frame = int(self.frame_number or 0)
+        message, stalled_frame = (
+            PredictionExecutionMixin._parse_tracking_message_with_frame(
+                message,
+                fallback_frame=int(self.frame_number or 0),
+            )
+        )
         if PredictionExecutionMixin._is_cutie_missing_instance_message(message):
             try:
                 mark_missing = getattr(self, "_mark_missing_instance_frame", None)
@@ -1026,6 +1066,27 @@ class PredictionExecutionMixin:
         )
         self.stepSizeWidget.predict_button.setEnabled(True)
         self.stop_prediction_flag = False
+
+    def _handle_prediction_preview(self, payload) -> None:
+        """Handle non-terminal prediction updates from the worker thread."""
+        if not isinstance(payload, dict):
+            return
+        if str(payload.get("event") or "").strip().lower() != "missing_instance":
+            return
+        frame = payload.get("frame", self.frame_number)
+        try:
+            frame_idx = int(frame)
+        except Exception:
+            return
+        mark_missing = getattr(self, "_mark_missing_instance_frame", None)
+        if callable(mark_missing):
+            try:
+                mark_missing(frame_idx)
+            except Exception:
+                logger.debug(
+                    "Failed to add missing-instance slider mark from preview payload.",
+                    exc_info=True,
+                )
 
     def predict_is_ready(self, message):
         pending_restart_frame = getattr(self, "_pending_prediction_restart_frame", None)

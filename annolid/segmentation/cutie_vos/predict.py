@@ -2976,6 +2976,25 @@ class CutieCoreVideoProcessor:
                                         for instance in sorted(missing_instances)
                                     ),
                                 )
+                                if pred_worker is not None:
+                                    missing_payload = {
+                                        "event": "missing_instance",
+                                        "frame": int(current_frame_index),
+                                        "labels": sorted(
+                                            str(instance)
+                                            for instance in missing_instances
+                                        ),
+                                        "message": message,
+                                    }
+                                    try:
+                                        if hasattr(pred_worker, "report_preview"):
+                                            pred_worker.report_preview(missing_payload)
+                                        elif hasattr(pred_worker, "preview_signal"):
+                                            pred_worker.preview_signal.emit(
+                                                missing_payload
+                                            )
+                                    except Exception:
+                                        pass
 
                             should_pause_for_missing_instances = bool(
                                 self._should_pause_for_missing_instances(

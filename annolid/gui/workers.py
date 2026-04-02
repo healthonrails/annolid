@@ -911,6 +911,10 @@ class FlexibleWorker(QtCore.QObject):
         """
         self._emit_if_alive(self.progress_signal, progress)
 
+    def report_preview(self, payload):
+        """Emit an intermediate preview/update payload to the GUI thread."""
+        self._emit_if_alive(self.preview_signal, payload)
+
     def _emit_if_alive(self, signal, *args) -> bool:
         """Emit a signal if the QObject is still alive."""
         try:

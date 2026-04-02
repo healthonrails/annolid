@@ -229,3 +229,96 @@ def test_lost_tracking_instance_records_missing_frame_mark() -> None:
     )
 
     assert marked_frames == [12]
+
+
+def test_lost_tracking_instance_records_missing_frame_mark_without_hash() -> None:
+    class _Button:
+        def setText(self, _text: str) -> None:
+            return
+
+        def setStyleSheet(self, _style: str) -> None:
+            return
+
+        def setEnabled(self, _enabled: bool) -> None:
+            return
+
+    marked_frames = []
+    host = SimpleNamespace(
+        automatic_pause_enabled=False,
+        stepSizeWidget=SimpleNamespace(predict_button=_Button()),
+        frame_number=5,
+        _is_cutie_tracking_model=lambda: True,
+        _mark_missing_instance_frame=lambda frame: marked_frames.append(int(frame)),
+    )
+
+    PredictionExecutionMixin.lost_tracking_instance(
+        host,
+        "There is 1 missing instance in the current frame (27). "
+        "Missing or occluded: mouse",
+    )
+
+    assert marked_frames == [27]
+
+
+def test_lost_tracking_instance_records_missing_frame_mark_without_parseable_frame() -> (
+    None
+):
+    class _Button:
+        def setText(self, _text: str) -> None:
+            return
+
+        def setStyleSheet(self, _style: str) -> None:
+            return
+
+        def setEnabled(self, _enabled: bool) -> None:
+            return
+
+    marked_frames = []
+    host = SimpleNamespace(
+        automatic_pause_enabled=False,
+        stepSizeWidget=SimpleNamespace(predict_button=_Button()),
+        frame_number=33,
+        _is_cutie_tracking_model=lambda: True,
+        _mark_missing_instance_frame=lambda frame: marked_frames.append(int(frame)),
+    )
+
+    PredictionExecutionMixin.lost_tracking_instance(
+        host,
+        "Missing or occluded: mouse_a, mouse_b",
+    )
+
+    assert marked_frames == [33]
+
+
+def test_handle_prediction_preview_marks_missing_instance_frame() -> None:
+    marked_frames = []
+    host = SimpleNamespace(
+        frame_number=9,
+        _mark_missing_instance_frame=lambda frame: marked_frames.append(int(frame)),
+    )
+
+    PredictionExecutionMixin._handle_prediction_preview(
+        host,
+        {
+            "event": "missing_instance",
+            "frame": 44,
+            "labels": ["stim_2"],
+        },
+    )
+
+    assert marked_frames == [44]
+
+
+def test_handle_prediction_preview_ignores_non_missing_event() -> None:
+    marked_frames = []
+    host = SimpleNamespace(
+        frame_number=9,
+        _mark_missing_instance_frame=lambda frame: marked_frames.append(int(frame)),
+    )
+
+    PredictionExecutionMixin._handle_prediction_preview(
+        host,
+        {"event": "prediction_progress", "frame": 44},
+    )
+
+    assert marked_frames == []
