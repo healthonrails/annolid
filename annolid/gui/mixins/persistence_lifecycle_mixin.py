@@ -610,6 +610,39 @@ class PersistenceLifecycleMixin:
                 logger.debug(
                     "Failed to rescan prediction folder after deletion: %s", exc
                 )
+            try:
+                if delete_end is None:
+                    self._prune_tracking_stats_frames(
+                        prediction_folder,
+                        start_frame=int(delete_start),
+                        end_frame=None,
+                        protected_frames=protected_frames,
+                    )
+                else:
+                    self._prune_tracking_stats_frames(
+                        prediction_folder,
+                        start_frame=int(delete_start),
+                        end_frame=int(delete_end),
+                        protected_frames=protected_frames,
+                    )
+            except Exception:
+                logger.debug(
+                    "Failed to prune tracking stats after deleting future predictions.",
+                    exc_info=True,
+                )
+            try:
+                refresh_missing = getattr(
+                    self,
+                    "_refresh_missing_instance_slider_marks_from_tracking_stats",
+                    None,
+                )
+                if callable(refresh_missing):
+                    refresh_missing(prediction_folder)
+            except Exception:
+                logger.debug(
+                    "Failed to refresh missing-instance slider marks after deletion.",
+                    exc_info=True,
+                )
         else:
             logger.info("No future prediction files or store records required removal.")
 
@@ -731,6 +764,31 @@ class PersistenceLifecycleMixin:
                 logger.debug(
                     "Failed to rescan prediction folder after deletion: %s", exc
                 )
+            try:
+                self._prune_tracking_stats_frames(
+                    prediction_folder,
+                    start_frame=int(current_seed),
+                    end_frame=(int(next_seed) - 1) if next_seed is not None else None,
+                    protected_frames=protected_frames,
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to prune tracking stats after deleting prediction range.",
+                    exc_info=True,
+                )
+            try:
+                refresh_missing = getattr(
+                    self,
+                    "_refresh_missing_instance_slider_marks_from_tracking_stats",
+                    None,
+                )
+                if callable(refresh_missing):
+                    refresh_missing(prediction_folder)
+            except Exception:
+                logger.debug(
+                    "Failed to refresh missing-instance slider marks after range deletion.",
+                    exc_info=True,
+                )
             # Hint the next prediction run to restart from the frame after this
             # seed so tracking uses the updated seed as context.
             try:
@@ -743,6 +801,178 @@ class PersistenceLifecycleMixin:
             )
 
         return bool(deleted_files or store_removed), current_seed, next_seed
+
+    @staticmethod
+    def _frame_in_prune_window(
+        frame: int,
+        *,
+        start_frame: int,
+        end_frame: int | None,
+        protected_frames: Set[int],
+    ) -> bool:
+        if frame in protected_frames:
+            return False
+        if frame < int(start_frame):
+            return False
+        if end_frame is not None and frame > int(end_frame):
+            return False
+        return True
+
+    def _prune_tracking_stats_frames(
+        self,
+        prediction_folder: Path,
+        *,
+        start_frame: int,
+        end_frame: int | None,
+        protected_frames: Set[int],
+    ) -> None:
+        stats_path = prediction_folder / f"{prediction_folder.name}_tracking_stats.json"
+        if not stats_path.exists():
+            return
+        try:
+            with stats_path.open("r", encoding="utf-8") as fh:
+                payload = json.load(fh) or {}
+        except Exception:
+            logger.debug(
+                "Failed to load tracking stats for prune: %s",
+                stats_path,
+                exc_info=True,
+            )
+            return
+
+        changed = False
+        frame_stats = payload.get("frame_stats", {})
+        if isinstance(frame_stats, dict):
+            pruned: dict[str, dict] = {}
+            for frame_key, entry in frame_stats.items():
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    frame_idx = int(frame_key)
+                except (TypeError, ValueError):
+                    pruned[str(frame_key)] = entry
+                    continue
+                if self._frame_in_prune_window(
+                    frame_idx,
+                    start_frame=int(start_frame),
+                    end_frame=end_frame,
+                    protected_frames=protected_frames,
+                ):
+                    changed = True
+                    continue
+                pruned[str(frame_key)] = entry
+            payload["frame_stats"] = pruned
+
+        bad_shape_events = payload.get("bad_shape_events", [])
+        if isinstance(bad_shape_events, list):
+            kept_events = []
+            for event in bad_shape_events:
+                if not isinstance(event, dict):
+                    continue
+                frame = event.get("frame")
+                try:
+                    frame_idx = int(frame)
+                except (TypeError, ValueError):
+                    kept_events.append(event)
+                    continue
+                if self._frame_in_prune_window(
+                    frame_idx,
+                    start_frame=int(start_frame),
+                    end_frame=end_frame,
+                    protected_frames=protected_frames,
+                ):
+                    changed = True
+                    continue
+                kept_events.append(event)
+            payload["bad_shape_events"] = kept_events
+
+        prediction_segments = payload.get("prediction_segments", [])
+        if isinstance(prediction_segments, list):
+            kept_segments = []
+            range_end = int(end_frame) if end_frame is not None else None
+            for segment in prediction_segments:
+                if not isinstance(segment, dict):
+                    continue
+                try:
+                    seg_start = int(segment.get("start_frame"))
+                    seg_end = int(segment.get("end_frame"))
+                except (TypeError, ValueError):
+                    kept_segments.append(segment)
+                    continue
+                overlap = seg_end >= int(start_frame) and (
+                    range_end is None or seg_start <= range_end
+                )
+                if overlap:
+                    changed = True
+                    continue
+                kept_segments.append(segment)
+            payload["prediction_segments"] = kept_segments
+
+        if not changed:
+            return
+
+        self._recompute_pruned_tracking_stats_summary(payload)
+        payload["updated_at"] = QtCore.QDateTime.currentDateTimeUtc().toString(
+            QtCore.Qt.ISODate
+        )
+        try:
+            with stats_path.open("w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2, sort_keys=True)
+        except Exception:
+            logger.debug(
+                "Failed to persist pruned tracking stats: %s",
+                stats_path,
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _recompute_pruned_tracking_stats_summary(payload: dict) -> None:
+        frame_stats = payload.get("frame_stats", {})
+        manual_frames: Set[int] = set()
+        bad_shape_frames: Set[int] = set()
+        bad_shape_failed_frames: Set[int] = set()
+        missing_instance_frames: Set[int] = set()
+        if isinstance(frame_stats, dict):
+            for frame_key, entry in frame_stats.items():
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    frame_idx = int(frame_key)
+                except (TypeError, ValueError):
+                    continue
+                sources = entry.get("sources", [])
+                source_set = (
+                    {str(source) for source in sources}
+                    if isinstance(sources, list)
+                    else set()
+                )
+                if "manual_seed" in source_set or "json" in source_set:
+                    manual_frames.add(frame_idx)
+                if int(entry.get("bad_shape_count", 0) or 0) > 0:
+                    bad_shape_frames.add(frame_idx)
+                if int(entry.get("bad_shape_failed_count", 0) or 0) > 0:
+                    bad_shape_failed_frames.add(frame_idx)
+                if int(entry.get("missing_instance_count", 0) or 0) > 0:
+                    missing_instance_frames.add(frame_idx)
+        abnormal_segment_events = 0
+        prediction_segments = payload.get("prediction_segments", [])
+        if isinstance(prediction_segments, list):
+            abnormal_segment_events = len(
+                [
+                    seg
+                    for seg in prediction_segments
+                    if isinstance(seg, dict)
+                    and str(seg.get("status", "")) != "processed"
+                ]
+            )
+        payload["summary"] = {
+            "manual_frames": int(len(manual_frames)),
+            "manual_segments": [],
+            "bad_shape_frames": int(len(bad_shape_frames)),
+            "bad_shape_failed_frames": int(len(bad_shape_failed_frames)),
+            "missing_instance_frames": int(len(missing_instance_frames)),
+            "abnormal_segment_events": int(abnormal_segment_events),
+        }
 
     def deleteFile(self):
         mb = QtWidgets.QMessageBox

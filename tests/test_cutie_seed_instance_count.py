@@ -1477,6 +1477,41 @@ def test_tracking_stats_persist_missing_instance_frame_stats(tmp_path) -> None:
     assert int(frame_stats["12"]["unresolved_missing_instance_count"]) == 1
 
 
+def test_tracking_stats_missing_instance_fields_can_be_cleared_on_rerun(
+    tmp_path,
+) -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.video_name = str(tmp_path / "clip.mp4")
+    processor.video_folder = tmp_path / "clip"
+    processor._tracking_stats_cache = None
+    processor._tracking_stats_dirty = False
+    processor._tracking_stats_pending_updates = 0
+
+    processor._update_tracking_frame_stat(
+        12,
+        source="prediction",
+        missing_instance_count=1,
+        missing_instance_labels=["stim_2"],
+        unresolved_missing_instance_count=1,
+        unresolved_missing_instance_labels=["stim_2"],
+    )
+    processor._update_tracking_frame_stat(
+        12,
+        source="prediction",
+        missing_instance_count=0,
+        missing_instance_labels=[],
+        unresolved_missing_instance_count=0,
+        unresolved_missing_instance_labels=[],
+    )
+
+    payload = processor._build_tracking_stats_persist_payload(
+        processor._load_tracking_stats()
+    )
+
+    assert "12" not in payload["frame_stats"]
+    assert int(payload["summary"]["missing_instance_frames"]) == 0
+
+
 def test_collect_labeled_frame_indices_treats_empty_store_records_as_completed(
     tmp_path,
 ) -> None:

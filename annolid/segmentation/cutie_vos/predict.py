@@ -2883,6 +2883,18 @@ class CutieCoreVideoProcessor:
                                     "filled_from_seed_mask(start_frame)"
                                 )
 
+                    if not frame_already_labeled:
+                        # Always refresh missing-instance stats for processed frames so
+                        # reruns can clear stale missing markers from prior bad runs.
+                        self._update_tracking_frame_stat(
+                            current_frame_index,
+                            source="prediction",
+                            missing_instance_count=0,
+                            missing_instance_labels=[],
+                            unresolved_missing_instance_count=0,
+                            unresolved_missing_instance_labels=[],
+                        )
+
                     if (not frame_already_labeled) and len(mask_dict) < expected_instance_count:
                         missing_instances = instance_names - set(mask_dict.keys())
                         if missing_instances:

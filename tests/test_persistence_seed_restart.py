@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import annolid.gui.mixins.persistence_lifecycle_mixin as persistence_mod
@@ -145,6 +146,24 @@ def test_delete_all_future_predictions_preserves_manual_seed_pairs(
 
     # Manual seed pair for frame 12 should be preserved.
     (folder / "video_results_000000012.png").write_text("seed", encoding="utf-8")
+    stats_path = folder / "video_results_tracking_stats.json"
+    stats_path.write_text(
+        """
+{
+  "frame_stats": {
+    "11": {"missing_instance_count": 1},
+    "12": {"sources": ["manual_seed"], "missing_instance_count": 1},
+    "13": {"missing_instance_count": 1}
+  },
+  "prediction_segments": [
+    {"start_frame": 11, "end_frame": 13, "status": "halted"},
+    {"start_frame": 20, "end_frame": 30, "status": "processed"}
+  ],
+  "summary": {}
+}
+""".strip(),
+        encoding="utf-8",
+    )
 
     store = _DummyStore()
     monkeypatch.setattr(
@@ -164,6 +183,11 @@ def test_delete_all_future_predictions_preserves_manual_seed_pairs(
     assert store.last_after_call is None
     assert store.last_range_call == (11, 11, {12})
     assert window._prediction_forced_start_frame == 11
+    payload = json.loads(stats_path.read_text(encoding="utf-8"))
+    frame_stats = payload.get("frame_stats", {})
+    assert "11" not in frame_stats
+    assert "12" in frame_stats
+    assert "13" in frame_stats
 
 
 def test_delete_all_future_predictions_sets_restart_hint_even_without_removals(
@@ -198,6 +222,23 @@ def test_delete_all_future_predictions_without_future_seed_deletes_all_future(
 
     # Only current seed exists; no future seed pair.
     (folder / "video_results_000000010.png").write_text("seed", encoding="utf-8")
+    stats_path = folder / "video_results_tracking_stats.json"
+    stats_path.write_text(
+        """
+{
+  "frame_stats": {
+    "10": {"sources": ["manual_seed"]},
+    "11": {"missing_instance_count": 1},
+    "12": {"missing_instance_count": 1}
+  },
+  "prediction_segments": [
+    {"start_frame": 11, "end_frame": 12, "status": "halted"}
+  ],
+  "summary": {}
+}
+""".strip(),
+        encoding="utf-8",
+    )
 
     store = _DummyStore()
     monkeypatch.setattr(
@@ -214,3 +255,8 @@ def test_delete_all_future_predictions_without_future_seed_deletes_all_future(
     assert (folder / "video_results_000000013.json").exists() is False
     assert store.last_after_call == (10, {10})
     assert store.last_range_call is None
+    payload = json.loads(stats_path.read_text(encoding="utf-8"))
+    frame_stats = payload.get("frame_stats", {})
+    assert "10" in frame_stats
+    assert "11" not in frame_stats
+    assert "12" not in frame_stats

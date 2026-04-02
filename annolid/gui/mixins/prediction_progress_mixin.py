@@ -619,6 +619,7 @@ class PredictionProgressMixin:
             self._clear_prediction_progress_mark()
             return
         self._refresh_manual_seed_slider_marks(folder_path)
+        self._refresh_missing_instance_slider_marks_from_tracking_stats(folder_path)
 
         try:
             path = Path(folder_path)
