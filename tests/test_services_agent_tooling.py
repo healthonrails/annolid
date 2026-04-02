@@ -1,116 +1,141 @@
 from __future__ import annotations
 
-from annolid.services.agent_tooling import validate_agent_tools
+from pathlib import Path
 
 
-def test_validate_agent_tools_returns_ok(monkeypatch) -> None:
-    import annolid.core.agent.tools.artifacts as artifacts_mod
-    import annolid.core.agent.tools.base as base_mod
-    import annolid.core.agent.tools.function_builtin as builtin_mod
-    import annolid.core.agent.tools.function_registry as fn_registry_mod
-    import annolid.core.agent.tools.registry as registry_mod
-    import annolid.core.agent.tools.sampling as sampling_mod
-    import annolid.core.agent.tools.utility as utility_mod
-    import annolid.core.agent.tools.vector_index as vector_mod
+def test_describe_agent_tool_pool_resolves_allowed_and_denied(monkeypatch) -> None:
+    from annolid.core.agent.config import AgentConfig
+    import annolid.services.agent_tooling as tooling_mod
 
-    class _Store:
-        def __init__(self, **kwargs):
-            pass
+    cfg = AgentConfig()
+    cfg.tools.profile = "minimal"
+    cfg.tools.allow = ["read_file"]
+    cfg.tools.deny = ["write_*"]
 
-        def resolve(self, name, kind="cache"):
-            return name
+    class _StubTool:
+        def __init__(self, name: str):
+            self.name = name
 
-        def write_meta(self, path, payload):
-            return None
+        def to_schema(self):
+            return {"type": "function", "function": {"name": self.name}}
 
-        def should_reuse_cache(self, path, digest):
-            return True
-
-    monkeypatch.setattr(artifacts_mod, "FileArtifactStore", _Store)
-    monkeypatch.setattr(artifacts_mod, "content_hash", lambda payload: "hash")
-
-    class _Uniform:
-        def __init__(self, step):
-            pass
-
-        def sample_indices(self, n, **kwargs):
-            return [0, 2]
-
-    class _FPS:
-        def __init__(self, target_fps):
-            pass
-
-        def sample_indices(self, n, fps=None):
-            return [0]
-
-    class _Random:
-        def __init__(self, count, seed):
-            pass
-
-        def sample_indices(self, n):
-            return [1]
-
-    monkeypatch.setattr(sampling_mod, "UniformSampler", _Uniform)
-    monkeypatch.setattr(sampling_mod, "FPSampler", _FPS)
-    monkeypatch.setattr(sampling_mod, "RandomSampler", _Random)
-
-    class _Tool:
-        @classmethod
-        def __class_getitem__(cls, item):
-            return cls
-
-    class _Ctx:
-        pass
-
-    class _Registry:
-        def __init__(self):
-            self.names = set()
-            self.classes = {}
-
-        def register(self, name, cls):
-            self.names.add(name)
-            self.classes[name] = cls
-
-        def has(self, name):
-            return name in self.names
-
-        def create(self, name):
-            return self.classes[name]()
-
-    class _FnRegistry:
-        def __init__(self):
-            self.names = set()
-
-        def has(self, name):
-            return name in self.names
-
-    monkeypatch.setattr(base_mod, "Tool", _Tool)
-    monkeypatch.setattr(base_mod, "ToolContext", _Ctx)
-    monkeypatch.setattr(registry_mod, "ToolRegistry", _Registry)
-    monkeypatch.setattr(fn_registry_mod, "FunctionToolRegistry", _FnRegistry)
-    monkeypatch.setattr(
-        utility_mod,
-        "register_builtin_utility_tools",
-        lambda registry: registry.names.add("calculator"),
-    )
-
-    async def _register_nanobot_style_tools(registry):
-        registry.names.update({"read_file", "exec"})
+    async def _register_stub_tools(registry, **kwargs):
+        del kwargs
+        registry.register(_StubTool("read_file"))
+        registry.register(_StubTool("write_file"))
+        registry.register(_StubTool("exec"))
 
     monkeypatch.setattr(
-        builtin_mod, "register_nanobot_style_tools", _register_nanobot_style_tools
+        "annolid.core.agent.config.load_config",
+        lambda config_path=None: cfg,
+    )
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.nanobot.register_nanobot_style_tools",
+        _register_stub_tools,
+    )
+    monkeypatch.setattr(
+        "annolid.core.agent.utils.get_agent_workspace_path",
+        lambda workspace=None: Path(workspace) if workspace else Path("/tmp/ws"),
     )
 
-    class _Index:
-        def __init__(self, **kwargs):
-            pass
+    payload = tooling_mod.describe_agent_tool_pool(
+        workspace="/tmp/ws",
+        provider="ollama",
+        model="qwen3",
+    )
+    assert payload["workspace"] == "/tmp/ws"
+    assert payload["counts"]["registered"] == 3
+    assert "read_file" in payload["allowed_tools"]
+    assert "write_file" in payload["denied_tools"]
+    assert payload["permission_context"]["deny_names"]
 
-        def search(self, vector, top_k=1):
-            return [{"frame_index": 0}]
 
-    monkeypatch.setattr(vector_mod, "NumpyEmbeddingIndex", _Index)
+def test_describe_agent_skill_pool_returns_summary_and_suggestions(
+    monkeypatch,
+) -> None:
+    import annolid.services.agent_tooling as tooling_mod
 
-    summary, exit_code = validate_agent_tools()
+    class _StubLoader:
+        def __init__(self, workspace):
+            self.workspace = workspace
 
-    assert exit_code == 0
-    assert summary["status"] == "ok"
+        def describe_skill_pool(self):
+            return {
+                "retrieval_mode": "lexical",
+                "counts": {
+                    "total": 2,
+                    "available": 2,
+                    "unavailable": 0,
+                    "always": 1,
+                },
+            }
+
+        def suggest_skills_for_task_scored(self, task_hint, top_k=5):
+            del top_k
+            return [
+                {
+                    "name": "weather",
+                    "score": 1.0,
+                    "strategy": "lexical",
+                    "source": "workspace",
+                    "description": str(task_hint),
+                }
+            ]
+
+    monkeypatch.setattr(
+        "annolid.core.agent.skills.AgentSkillsLoader",
+        _StubLoader,
+    )
+    monkeypatch.setattr(
+        "annolid.core.agent.utils.get_agent_workspace_path",
+        lambda workspace=None: Path(workspace) if workspace else Path("/tmp/ws"),
+    )
+
+    payload = tooling_mod.describe_agent_skill_pool(
+        workspace="/tmp/ws",
+        task_hint="weather forecast",
+        top_k=3,
+    )
+    assert payload["workspace"] == "/tmp/ws"
+    assert payload["task_hint"] == "weather forecast"
+    assert payload["skill_pool"]["counts"]["total"] == 2
+    assert payload["suggested_skills"][0]["name"] == "weather"
+
+
+def test_describe_agent_capabilities_combines_tools_and_skills(monkeypatch) -> None:
+    import annolid.services.agent_tooling as tooling_mod
+
+    monkeypatch.setattr(
+        tooling_mod,
+        "describe_agent_tool_pool",
+        lambda **kwargs: {
+            "workspace": str(kwargs.get("workspace") or "/tmp/ws"),
+            "provider": str(kwargs.get("provider") or "ollama"),
+            "model": str(kwargs.get("model") or "qwen3"),
+            "counts": {"registered": 4, "allowed": 3, "denied": 1},
+        },
+    )
+    monkeypatch.setattr(
+        tooling_mod,
+        "describe_agent_skill_pool",
+        lambda **kwargs: {
+            "workspace": str(kwargs.get("workspace") or "/tmp/ws"),
+            "task_hint": str(kwargs.get("task_hint") or ""),
+            "skill_pool": {
+                "counts": {"total": 2, "available": 2, "unavailable": 0, "always": 1}
+            },
+            "suggested_skills": [{"name": "weather"}],
+        },
+    )
+
+    payload = tooling_mod.describe_agent_capabilities(
+        workspace="/tmp/ws",
+        provider="ollama",
+        model="qwen3",
+        task_hint="weather forecast",
+        top_k=3,
+    )
+    assert payload["workspace"] == "/tmp/ws"
+    assert payload["tool_pool"]["counts"]["registered"] == 4
+    assert payload["skill_pool"]["skill_pool"]["counts"]["available"] == 2
+    assert payload["summary"]["suggested_skills"] == 1

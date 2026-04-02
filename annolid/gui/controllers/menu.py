@@ -427,6 +427,14 @@ class MenuController:
                 ),
             },
             {
+                "name": "open_agent_capabilities",
+                "text": w.tr("Agent &Capabilities…"),
+                "slot": self._open_agent_capabilities,
+                "tip": w.tr(
+                    "Inspect combined agent tools, skills, and task-based suggestions"
+                ),
+            },
+            {
                 "name": "open_florence2",
                 "text": w.tr("Florence-&2 Assistant"),
                 "slot": w.openFlorence2,
@@ -1824,6 +1832,20 @@ class MenuController:
 
             dialog = AgentWorkspaceOnboardingDialog(w)
             w._agent_workspace_onboarding_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _open_agent_capabilities(self) -> None:
+        w = self._window
+        dialog = getattr(w, "_agent_capabilities_dialog", None)
+        if dialog is None:
+            from annolid.gui.widgets.agent_capabilities_dialog import (
+                AgentCapabilitiesDialog,
+            )
+
+            dialog = AgentCapabilitiesDialog(w)
+            w._agent_capabilities_dialog = dialog
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()

@@ -42,6 +42,41 @@ def test_skills_loader_lists_workspace_skill(tmp_path: Path) -> None:
     assert "demo skill" in loader.build_skills_summary()
 
 
+def test_skills_loader_describe_skill_pool_and_scored_suggestions(
+    tmp_path: Path,
+) -> None:
+    weather_dir = tmp_path / "skills" / "weather-helper"
+    weather_dir.mkdir(parents=True, exist_ok=True)
+    (weather_dir / "SKILL.md").write_text(
+        "---\n"
+        "description: Use for weather and forecast questions\n"
+        'metadata: \'{"annolid": {"always": true}}\'\n'
+        "---\n"
+        "Weather workflow.\n",
+        encoding="utf-8",
+    )
+    code_dir = tmp_path / "skills" / "code-helper"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    (code_dir / "SKILL.md").write_text(
+        "---\ndescription: Debug python errors and stack traces\n---\nCode workflow.\n",
+        encoding="utf-8",
+    )
+    loader = AgentSkillsLoader(tmp_path, builtin_skills_dir=tmp_path / "builtin")
+    pool = loader.describe_skill_pool(preview_limit=10)
+    assert pool["counts"]["total"] == 2
+    assert pool["counts"]["available"] == 2
+    assert "weather-helper" in pool["always_skills"]
+    assert len(pool["preview"]) == 2
+
+    suggestions = loader.suggest_skills_for_task_scored(
+        "Need weather forecast in Boston", top_k=2
+    )
+    assert suggestions
+    assert suggestions[0]["name"] == "weather-helper"
+    assert suggestions[0]["strategy"] in {"lexical", "embedding", "hybrid"}
+    assert float(suggestions[0]["score"]) >= 0.0
+
+
 def test_skills_loader_lists_builtin_skills() -> None:
     loader = AgentSkillsLoader(Path.cwd())
     skills = loader.list_skills(filter_unavailable=False)
@@ -302,6 +337,7 @@ def test_context_builder_auto_selects_skills_from_task_hint(tmp_path: Path) -> N
     )
     system_content = str(messages[0]["content"])
     assert "# Auto-selected Skills" in system_content
+    assert "Selection rationale:" in system_content
     assert "### Skill: weather-helper" in system_content
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-from qtpy import QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.infrastructure.agent_workspace import get_agent_workspace_path
 from annolid.services.agent_cron import (
@@ -35,6 +35,16 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
+        self.guide_progress = QtWidgets.QProgressBar()
+        self.guide_progress.setRange(0, 4)
+        self.guide_progress.setValue(0)
+        self.guide_progress.setFormat("Guide progress: %v/4")
+        layout.addWidget(self.guide_progress)
+
+        self.guide_list = QtWidgets.QListWidget()
+        self.guide_list.setAlternatingRowColors(True)
+        self.guide_list.setMinimumHeight(120)
+        layout.addWidget(self.guide_list)
 
         path_row = QtWidgets.QHBoxLayout()
         path_row.addWidget(QtWidgets.QLabel("Workspace:"))
@@ -68,9 +78,15 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         self.restore_btn = QtWidgets.QPushButton("Restore Latest Backup")
         self.restore_btn.clicked.connect(self._restore_latest_backup)
         button_row.addWidget(self.restore_btn)
+        self.open_workspace_btn = QtWidgets.QPushButton("Open Workspace Folder")
+        self.open_workspace_btn.clicked.connect(self._open_workspace_folder)
+        button_row.addWidget(self.open_workspace_btn)
         self.status_btn = QtWidgets.QPushButton("Refresh Status")
         self.status_btn.clicked.connect(self._refresh_status)
         button_row.addWidget(self.status_btn)
+        self.capabilities_btn = QtWidgets.QPushButton("Open Capabilities")
+        self.capabilities_btn.clicked.connect(self._open_capabilities_dialog)
+        button_row.addWidget(self.capabilities_btn)
         button_row.addStretch(1)
         self.close_btn = QtWidgets.QPushButton("Close")
         self.close_btn.clicked.connect(self.close)
@@ -97,6 +113,7 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         )
         if selected:
             self.workspace_edit.setText(selected)
+            self._refresh_status()
 
     def _workspace(self) -> str:
         value = self.workspace_edit.text().strip()
@@ -148,7 +165,7 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         self._refresh_status()
 
     def _refresh_status(self) -> None:
-        payload = get_agent_status()
+        payload = get_agent_status(workspace=self._workspace())
         templates = dict(payload.get("workspace_templates") or {})
         rows = []
         missing = 0
@@ -158,9 +175,19 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
                 missing += 1
             rows.append(("status", str(path), status))
         self._set_rows(rows)
+        health = dict(payload.get("workspace_health") or {})
+        guidance = list(health.get("guidance") or [])
+        guidance_text = " | ".join(str(line) for line in guidance) if guidance else ""
         self.summary_label.setText(
             f"Workspace status: {payload.get('workspace')} | "
             f"{len(templates) - missing}/{len(templates)} templates present."
+            + (f" | {guidance_text}" if guidance_text else "")
+        )
+        self._update_guide(
+            has_templates=missing == 0,
+            has_preview=False,
+            has_apply=False,
+            has_backup=bool(payload.get("workspace_backup_count", 0)),
         )
 
     def _render_onboard_result(self, payload: Dict[str, Any], *, title: str) -> None:
@@ -183,6 +210,13 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         if backup_dir:
             details += f" | backup_dir={backup_dir}"
         self.summary_label.setText(details)
+        health_after = dict(payload.get("workspace_health_after") or {})
+        self._update_guide(
+            has_templates=int(health_after.get("template_missing_count", 0)) == 0,
+            has_preview=bool(payload.get("dry_run")),
+            has_apply=not bool(payload.get("dry_run")),
+            has_backup=bool(backup_dir),
+        )
 
     def _render_restore_result(self, payload: Dict[str, Any]) -> None:
         if not bool(payload.get("restored")):
@@ -205,11 +239,83 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         if pre_backup:
             details += f" | pre_restore_backup_dir={pre_backup}"
         self.summary_label.setText(details)
+        self._update_guide(
+            has_templates=True,
+            has_preview=False,
+            has_apply=True,
+            has_backup=bool(payload.get("backup_dir")),
+        )
 
     def _set_rows(self, rows: list[tuple[str, str, str]]) -> None:
         self.results_table.setRowCount(len(rows))
+        status_colors = {
+            "missing": QtGui.QColor(220, 53, 69),
+            "skipped": QtGui.QColor(234, 179, 8),
+            "would_skipped": QtGui.QColor(234, 179, 8),
+            "created": QtGui.QColor(22, 163, 74),
+            "overwritten": QtGui.QColor(22, 163, 74),
+            "removed": QtGui.QColor(22, 163, 74),
+            "restored": QtGui.QColor(22, 163, 74),
+            "present": QtGui.QColor(22, 163, 74),
+            "would_created": QtGui.QColor(59, 130, 246),
+            "would_overwritten": QtGui.QColor(59, 130, 246),
+            "would_removed": QtGui.QColor(59, 130, 246),
+            "would_restore": QtGui.QColor(59, 130, 246),
+            "unchanged": QtGui.QColor(107, 114, 128),
+        }
         for row_idx, (group, path, status) in enumerate(rows):
             self.results_table.setItem(row_idx, 0, QtWidgets.QTableWidgetItem(group))
             self.results_table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(path))
-            self.results_table.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(status))
+            status_item = QtWidgets.QTableWidgetItem(status)
+            color = status_colors.get(str(status).lower())
+            if color is not None:
+                status_item.setForeground(QtGui.QBrush(color))
+            self.results_table.setItem(row_idx, 2, status_item)
         self.results_table.resizeColumnsToContents()
+
+    def _update_guide(
+        self,
+        *,
+        has_templates: bool,
+        has_preview: bool,
+        has_apply: bool,
+        has_backup: bool,
+    ) -> None:
+        steps = [
+            ("Workspace selected", True),
+            ("Preview onboarding plan", has_preview),
+            ("Apply onboarding/update", has_apply),
+            ("All templates present", has_templates),
+            ("Backup available (optional)", has_backup),
+        ]
+        self.guide_list.clear()
+        completed = 0
+        for title, done in steps:
+            prefix = "✓" if done else "○"
+            item = QtWidgets.QListWidgetItem(f"{prefix} {title}")
+            if done:
+                completed += 1
+                item.setForeground(QtGui.QBrush(QtGui.QColor(22, 163, 74)))
+            self.guide_list.addItem(item)
+        self.guide_progress.setValue(min(completed, 4))
+
+    def _open_workspace_folder(self) -> None:
+        path = self._workspace()
+        QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl.fromLocalFile(str(Path(path).expanduser()))
+        )
+
+    def _open_capabilities_dialog(self) -> None:
+        dialog = getattr(self, "_agent_capabilities_dialog", None)
+        if dialog is None:
+            from annolid.gui.widgets.agent_capabilities_dialog import (
+                AgentCapabilitiesDialog,
+            )
+
+            dialog = AgentCapabilitiesDialog(self)
+            self._agent_capabilities_dialog = dialog
+        dialog.workspace_edit.setText(self._workspace())
+        dialog.refresh()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()

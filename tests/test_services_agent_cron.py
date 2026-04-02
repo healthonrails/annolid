@@ -60,9 +60,13 @@ def test_onboard_agent_workspace_and_status(monkeypatch, tmp_path: Path) -> None
     assert onboard["prune_bootstrap"] is True
     assert onboard["pruned_files"]["legacy/OLD.md"] == "removed"
     assert isinstance(onboard["summary"], dict)
+    assert "workspace_health_before" in onboard
+    assert "workspace_health_after" in onboard
+    assert isinstance(onboard["workspace_health_before"].get("guidance"), list)
     assert status["data_dir"] == str(data_dir)
     assert status["cron_store_path"] == str(store_path)
     assert status["cron"] == {"jobs": 1}
+    assert "workspace_health" in status
 
 
 def test_list_add_remove_enable_and_run_cron(monkeypatch) -> None:
@@ -180,3 +184,36 @@ def test_restore_agent_workspace_backup_when_missing(
     payload = restore_agent_workspace_backup(workspace=str(workspace), latest=True)
     assert payload["restored"] is False
     assert payload["backup_dir"] is None
+
+
+def test_get_agent_status_respects_requested_workspace(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.core.agent.utils as utils_mod
+    import annolid.services.agent_cron as cron_mod
+
+    workspace = tmp_path / "custom-workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    requested: list[str | None] = []
+
+    def _resolve(ws=None):
+        requested.append(ws)
+        return workspace
+
+    monkeypatch.setattr(utils_mod, "get_agent_workspace_path", _resolve)
+    monkeypatch.setattr(utils_mod, "get_agent_data_path", lambda: tmp_path / "data")
+    monkeypatch.setattr(
+        cron_mod,
+        "_default_agent_cron_store_path",
+        lambda: tmp_path / "cron" / "jobs.json",
+    )
+
+    class _Service:
+        def status(self):
+            return {"jobs": 0}
+
+    monkeypatch.setattr(cron_mod, "_agent_cron_service", lambda: _Service())
+    payload = cron_mod.get_agent_status(workspace=str(workspace))
+    assert requested[-1] == str(workspace)
+    assert payload["workspace"] == str(workspace)
+    assert payload["workspace_health"]["workspace"] == str(workspace)

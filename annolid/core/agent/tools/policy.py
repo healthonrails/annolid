@@ -271,6 +271,46 @@ class ResolvedToolPolicy:
     source: str
 
 
+@dataclass(frozen=True)
+class ToolPermissionContext:
+    deny_names: frozenset[str]
+    deny_prefixes: tuple[str, ...] = ()
+
+    @classmethod
+    def from_iterables(
+        cls,
+        *,
+        deny_names: Iterable[str] = (),
+        deny_prefixes: Iterable[str] = (),
+    ) -> "ToolPermissionContext":
+        return cls(
+            deny_names=frozenset(
+                str(name or "").strip().lower()
+                for name in deny_names
+                if str(name or "").strip()
+            ),
+            deny_prefixes=tuple(
+                str(prefix or "").strip().lower()
+                for prefix in deny_prefixes
+                if str(prefix or "").strip()
+            ),
+        )
+
+    def blocks(self, tool_name: str) -> bool:
+        lowered = str(tool_name or "").strip().lower()
+        if not lowered:
+            return False
+        return lowered in self.deny_names or any(
+            lowered.startswith(prefix) for prefix in self.deny_prefixes
+        )
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "deny_names": sorted(self.deny_names),
+            "deny_prefixes": list(self.deny_prefixes),
+        }
+
+
 _HIGH_RISK_INTENT_MARKERS = {
     "intent:high-risk",
     "intent:high_risk",
@@ -434,6 +474,38 @@ def resolve_allowed_tools(
         allow_patterns=list(tools_cfg.allow),
         deny_patterns=list(tools_cfg.deny),
         source=source,
+    )
+
+
+def build_tool_permission_context(
+    *,
+    all_tool_names: Sequence[str],
+    resolved_policy: ResolvedToolPolicy,
+    extra_deny_patterns: Sequence[str] = (),
+) -> ToolPermissionContext:
+    all_names = {
+        str(name or "").strip().lower() for name in all_tool_names if str(name).strip()
+    }
+    allowed = {
+        str(name or "").strip().lower()
+        for name in resolved_policy.allowed_tools
+        if str(name).strip()
+    }
+    deny_names = all_names.difference(allowed)
+
+    deny_prefixes: list[str] = []
+    for raw in [*list(resolved_policy.deny_patterns), *list(extra_deny_patterns)]:
+        pattern = str(raw or "").strip().lower()
+        if not pattern:
+            continue
+        # Keep a lightweight prefix set for simple fast checks.
+        if pattern.endswith("*") and pattern.count("*") == 1 and "?" not in pattern:
+            prefix = pattern[:-1].strip()
+            if prefix:
+                deny_prefixes.append(prefix)
+    return ToolPermissionContext.from_iterables(
+        deny_names=sorted(deny_names),
+        deny_prefixes=deny_prefixes,
     )
 
 

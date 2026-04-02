@@ -291,6 +291,16 @@ def test_ollama_llm_callable_accepts_on_token_callback(monkeypatch) -> None:
     assert chunks == ["hello ", "world"]
 
 
+def test_weather_lookup_promise_triggers_fallback() -> None:
+    task = StreamingChatTask("check today's weather", widget=None)
+    assert (
+        task._should_force_web_fallback(
+            "check today's weather", "I'll check the weather skill first for guidance."
+        )
+        is True
+    )
+
+
 def test_compact_system_prompt_includes_allowed_read_roots(tmp_path: Path) -> None:
     task = StreamingChatTask("hi", widget=None)
     prompt = task._build_compact_system_prompt(
@@ -330,6 +340,25 @@ def test_compact_system_prompt_scopes_aliases_to_available_tools(
     assert "`automation_schedule`" in prompt
     assert "'list automation tasks'" in prompt
     assert "'list cron jobs'" not in prompt
+
+
+def test_compact_system_prompt_compacts_runtime_tooling_list(tmp_path: Path) -> None:
+    task = StreamingChatTask("hi", widget=None)
+    tool_names = [f"tool_{idx:02d}" for idx in range(40)]
+    prompt = task._build_compact_system_prompt(
+        tmp_path,
+        allowed_read_roots=[],
+        allow_web_tools=False,
+        available_tool_names=tool_names,
+        tool_policy_profile="strict",
+        tool_policy_source="unit-test",
+        include_workspace_docs=False,
+    )
+    assert "## Runtime Tooling" in prompt
+    assert "`tool_00`" in prompt
+    assert "`tool_23`" in prompt
+    assert "`tool_24`" not in prompt
+    assert "... and 16 additional tools" in prompt
 
 
 def test_workspace_skill_name_cache_invalidation_detects_new_skill_file(

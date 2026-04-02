@@ -143,7 +143,12 @@ from .function_video import (
     VideoSampleFramesTool,
     VideoSegmentTool,
 )
-from .policy import ResolvedToolPolicy, resolve_allowed_tools
+from .policy import (
+    ResolvedToolPolicy,
+    ToolPermissionContext,
+    build_tool_permission_context,
+    resolve_allowed_tools,
+)
 from .function_registry import FunctionToolRegistry
 from .llm import CaptionResult, CaptionTool
 from .sampling import FPSampler, MotionSampler, RandomSampler, UniformSampler
@@ -233,6 +238,8 @@ __all__ = [
     "VideoProcessSegmentsTool",
     "VideoRunModelInferenceTool",
     "ResolvedToolPolicy",
+    "ToolPermissionContext",
+    "build_tool_permission_context",
     "resolve_allowed_tools",
     "GuiContextTool",
     "GuiSelfUpdateTool",

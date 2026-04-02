@@ -4,6 +4,9 @@ import re
 from typing import Any, Dict
 
 from annolid.core.agent.web_intents import LIVE_WEB_INTENT_HINTS
+from annolid.core.agent.gui_backend.command_registry import (
+    parse_direct_slash_command,
+)
 
 _DIRECT_GUI_REFUSAL_HINTS = (
     "cannot directly access",
@@ -149,129 +152,6 @@ def _parse_interval_seconds(
     return value
 
 
-def _parse_slash_command_action_args(raw: str, slash: str) -> Dict[str, str]:
-    trimmed = str(raw or "").strip()
-    slash_lower = str(slash or "").strip().lower()
-    if not slash_lower or not trimmed.lower().startswith(slash_lower):
-        return {"kind": "no-match", "action": "", "args": ""}
-    rest = trimmed[len(slash) :].strip()
-    if not rest:
-        return {"kind": "empty", "action": "", "args": ""}
-    match = re.match(r"^(\S+)(?:\s+([\s\S]+))?$", rest)
-    if not match:
-        return {"kind": "invalid", "action": "", "args": ""}
-    action = str(match.group(1) or "").strip().lower()
-    args = str(match.group(2) or "").strip()
-    return {"kind": "parsed", "action": action, "args": args}
-
-
-def _extract_command_identifier(text: str) -> str:
-    match = re.search(r"\b([a-zA-Z0-9_-]{3,128})\b", str(text or ""))
-    return str(match.group(1) if match else "").strip()
-
-
-def _parse_slash_direct_command(prompt: str) -> Dict[str, Any]:
-    text = str(prompt or "").strip()
-    if not text.startswith("/"):
-        return {}
-
-    cron = _parse_slash_command_action_args(text, "/cron")
-    if cron["kind"] in {"empty", "parsed"}:
-        action = "status"
-        job_id = ""
-        if cron["kind"] == "parsed":
-            raw_action = cron["action"]
-            args = cron["args"]
-            if raw_action in {"list", "ls", "show"}:
-                action = "list"
-            elif raw_action in {"status"}:
-                action = "status"
-            elif raw_action in {"check"}:
-                action = "check"
-                job_id = _extract_command_identifier(args)
-            elif raw_action in {"remove", "delete", "cancel"}:
-                action = "remove"
-                job_id = _extract_command_identifier(args)
-            elif raw_action in {"run", "enable", "disable"}:
-                action = raw_action
-                job_id = _extract_command_identifier(args)
-            else:
-                return {}
-        payload: Dict[str, Any] = {"action": action}
-        if job_id:
-            payload["job_id"] = job_id
-        return {"name": "cron", "args": payload}
-
-    automation = _parse_slash_command_action_args(text, "/automation")
-    if automation["kind"] in {"empty", "parsed"}:
-        if automation["kind"] == "empty":
-            return {"name": "automation_schedule", "args": {"action": "status"}}
-        raw_action = automation["action"]
-        args = automation["args"]
-        if raw_action in {"list", "ls", "show"}:
-            return {"name": "automation_schedule", "args": {"action": "list"}}
-        if raw_action in {"status"}:
-            return {"name": "automation_schedule", "args": {"action": "status"}}
-        if raw_action in {"run", "remove", "delete", "cancel"}:
-            task_id = _extract_command_identifier(args)
-            if not task_id:
-                return {}
-            action = "run" if raw_action == "run" else "remove"
-            return {
-                "name": "automation_schedule",
-                "args": {"action": action, "task_id": task_id},
-            }
-        return {}
-
-    session = _parse_slash_command_action_args(text, "/session")
-    if session["kind"] in {"empty", "parsed"}:
-        if session["kind"] == "empty":
-            return {"name": "exec_process", "args": {"action": "list"}}
-        raw_action = session["action"]
-        args = session["args"]
-        session_id = _extract_command_identifier(args)
-        if raw_action in {"list", "ls", "show"}:
-            return {"name": "exec_process", "args": {"action": "list"}}
-        if raw_action in {"poll", "status", "check"} and session_id:
-            return {
-                "name": "exec_process",
-                "args": {"action": "poll", "session_id": session_id, "wait_ms": 1500},
-            }
-        if raw_action in {"log", "logs", "tail", "output"} and session_id:
-            return {
-                "name": "exec_process",
-                "args": {"action": "log", "session_id": session_id, "tail_lines": 200},
-            }
-        if raw_action in {"kill", "stop", "terminate", "cancel"} and session_id:
-            return {
-                "name": "exec_process",
-                "args": {"action": "kill", "session_id": session_id},
-            }
-        return {}
-
-    git = _parse_slash_command_action_args(text, "/git")
-    if git["kind"] in {"empty", "parsed"}:
-        if git["kind"] == "empty" or git["action"] == "status":
-            return {"name": "git_status", "args": {"short": True}}
-        if git["action"] in {"diff"}:
-            return {"name": "git_diff", "args": {}}
-        if git["action"] in {"log"}:
-            return {"name": "git_log", "args": {"max_count": 20, "oneline": True}}
-        return {}
-
-    gh = _parse_slash_command_action_args(text, "/gh")
-    if gh["kind"] in {"empty", "parsed"}:
-        if gh["kind"] == "empty":
-            return {"name": "github_pr_status", "args": {}}
-        if gh["action"] in {"status", "pr-status", "pr_status"}:
-            return {"name": "github_pr_status", "args": {}}
-        if gh["action"] in {"checks", "pr-checks", "pr_checks"}:
-            return {"name": "github_pr_checks", "args": {}}
-        return {}
-
-    return {}
-
-
 def _extract_tutorial_level(text: str) -> str:
     lower = str(text or "").lower()
     if re.search(r"\b(?:beginner|basic|intro|introduction)\b", lower):
@@ -287,7 +167,7 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         return {}
     lower = text.lower()
 
-    slash_command = _parse_slash_direct_command(text)
+    slash_command = parse_direct_slash_command(text)
     if slash_command:
         return slash_command
 

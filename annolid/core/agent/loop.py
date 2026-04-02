@@ -65,6 +65,7 @@ from .tool_call_utils import (
     sanitize_tool_call_requests,
     sanitize_tool_name,
 )
+from .web_prompt_utils import derive_web_lookup_prompt_from_messages
 
 if TYPE_CHECKING:  # pragma: no cover
     from .subagent import SubagentManager
@@ -232,6 +233,8 @@ class AgentLoop:
         "Do not call any more tools. Keep it concise, concrete, and directly actionable."
     )
     _MAX_TOOL_RESULT_CHARS_FOR_LLM = 32000
+    _CONTEXT_COMPACT_MAX_MESSAGES = 48
+    _CONTEXT_COMPACT_MAX_NON_SYSTEM_MESSAGES = 36
 
     def __init__(
         self,
@@ -388,6 +391,9 @@ class AgentLoop:
         empty_final_repair_passes = 0
         message_build_ms = 0.0
         mcp_connect_ms = 0.0
+        loop_result: Optional[AgentLoopResult] = None
+        context_compaction_runs = 0
+        context_messages_trimmed = 0
         memory_enabled = (
             self._memory_config.enabled if use_memory is None else bool(use_memory)
         )
@@ -528,6 +534,14 @@ class AgentLoop:
                             )
                         except Exception:
                             pass
+
+                compacted_messages, trimmed_count = self._compact_context_messages(
+                    messages
+                )
+                if trimmed_count > 0:
+                    context_compaction_runs += 1
+                    context_messages_trimmed += trimmed_count
+                    messages = compacted_messages
 
                 response, llm_elapsed_ms = await self._execute_llm_cycle(
                     session_id=session_id,
@@ -785,6 +799,7 @@ class AgentLoop:
                     media=tuple(messages_media),
                     stopped_reason=stopped_reason,
                 )
+                loop_result = result
                 self._capture_anonymized_run_trace(
                     session_id=session_id,
                     channel=channel,
@@ -875,6 +890,7 @@ class AgentLoop:
                 tool_runs=tuple(tool_runs),
                 stopped_reason=stopped_reason,
             )
+            loop_result = result
             self._record_session_event(
                 session_id=session_id,
                 direction="outbound",
@@ -935,6 +951,23 @@ class AgentLoop:
                 bottleneck_name,
                 bottleneck_ms,
                 other_ms,
+            )
+            self._record_turn_snapshot(
+                session_id=session_id,
+                turn_id=turn_id,
+                result=loop_result,
+                total_ms=total_ms,
+                mcp_connect_ms=mcp_connect_ms,
+                message_build_ms=message_build_ms,
+                llm_total_ms=llm_total_ms,
+                tool_exec_total_ms=tool_exec_total_ms,
+                tool_call_count=tool_call_count,
+                empty_final_repair_passes=empty_final_repair_passes,
+                bottleneck_name=bottleneck_name,
+                bottleneck_ms=bottleneck_ms,
+                other_ms=other_ms,
+                context_compaction_runs=context_compaction_runs,
+                context_messages_trimmed=context_messages_trimmed,
             )
             await self._disconnect_mcp()
 
@@ -1089,6 +1122,11 @@ class AgentLoop:
             name = str(call.get("name") or "")
             raw_args = call.get("arguments")
             args = self._normalize_args(raw_args)
+            args = self._repair_tool_arguments_for_execution(
+                name=name,
+                args=args,
+                messages=messages,
+            )
             tool_started = time.perf_counter()
             try:
                 block_reason = self._high_risk_block_reason(
@@ -1291,6 +1329,32 @@ class AgentLoop:
                 return "\n".join(parts)
         return ""
 
+    def _repair_tool_arguments_for_execution(
+        self,
+        *,
+        name: str,
+        args: Mapping[str, Any],
+        messages: Sequence[Mapping[str, Any]],
+    ) -> Dict[str, Any]:
+        repaired = dict(args or {})
+        tool_name = str(name or "").strip().lower()
+        if tool_name != "web_search":
+            return repaired
+        query = str(repaired.get("query") or repaired.get("q") or "").strip()
+        if query:
+            repaired["query"] = query
+            return repaired
+        derived_query, repaired_prompt = derive_web_lookup_prompt_from_messages(
+            messages
+        )
+        if derived_query:
+            repaired["query"] = derived_query
+            if repaired_prompt:
+                self._logger.info(
+                    "annolid-bot repaired missing web_search query from prompt"
+                )
+        return repaired
+
     @staticmethod
     def _tool_result_looks_user_ready(tool_name: str, preview: str) -> bool:
         name = str(tool_name or "").strip().lower()
@@ -1353,6 +1417,53 @@ class AgentLoop:
         messages.append(repair_prompt)
         messages.append({"role": "assistant", "content": assistant_text})
         return final_content, llm_elapsed_ms
+
+    @classmethod
+    def _compact_context_messages(
+        cls, messages: Sequence[Mapping[str, Any]]
+    ) -> tuple[List[Dict[str, Any]], int]:
+        materialized = [dict(msg) for msg in messages]
+        total_count = len(materialized)
+        if total_count <= cls._CONTEXT_COMPACT_MAX_MESSAGES:
+            return materialized, 0
+
+        system_indices = [
+            idx
+            for idx, msg in enumerate(materialized)
+            if str(msg.get("role") or "").strip().lower() == "system"
+        ]
+        system_set = set(system_indices)
+        non_system_indices = [
+            idx for idx in range(total_count) if idx not in system_set
+        ]
+        kept_non_system = non_system_indices[
+            -cls._CONTEXT_COMPACT_MAX_NON_SYSTEM_MESSAGES :
+        ]
+
+        max_total = max(1, int(cls._CONTEXT_COMPACT_MAX_MESSAGES))
+        system_budget = max(0, max_total - len(kept_non_system))
+        kept_system: List[int] = []
+        if system_indices and system_budget > 0:
+            if len(system_indices) <= system_budget:
+                kept_system = list(system_indices)
+            elif system_budget == 1:
+                kept_system = [system_indices[0]]
+            else:
+                first = system_indices[0]
+                tail = system_indices[-(system_budget - 1) :]
+                kept_system = [first] + [idx for idx in tail if idx != first]
+        elif system_indices and max_total > 1:
+            # Preserve the first system message when possible, then keep newest context.
+            kept_system = [system_indices[0]]
+            kept_non_system = kept_non_system[-(max_total - 1) :]
+        elif system_indices and max_total == 1:
+            kept_system = [system_indices[0]]
+            kept_non_system = []
+
+        kept_indices = sorted(set(kept_system + kept_non_system))
+        compacted = [materialized[idx] for idx in kept_indices][-max_total:]
+        trimmed = max(0, total_count - len(compacted))
+        return compacted, trimmed
 
     async def _build_initial_messages(
         self,
@@ -2061,6 +2172,89 @@ class AgentLoop:
                 idempotency_key=str(idempotency_key or "").strip(),
             )
         except Exception:
+            return
+
+    def _record_turn_snapshot(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        result: Optional[AgentLoopResult],
+        total_ms: float,
+        mcp_connect_ms: float,
+        message_build_ms: float,
+        llm_total_ms: float,
+        tool_exec_total_ms: float,
+        tool_call_count: int,
+        empty_final_repair_passes: int,
+        bottleneck_name: str,
+        bottleneck_ms: float,
+        other_ms: float,
+        context_compaction_runs: int,
+        context_messages_trimmed: int,
+    ) -> None:
+        recorder = getattr(self._memory_store, "record_turn_snapshot", None)
+        if not callable(recorder):
+            return
+        tool_runs = list(result.tool_runs) if result is not None else []
+        tool_names = sorted(
+            {
+                str(run.name).strip()
+                for run in tool_runs
+                if str(getattr(run, "name", "")).strip()
+            }
+        )
+        content_preview = ""
+        if result is not None:
+            content_preview = str(result.content or "").strip().replace("\n", " ")
+            if len(content_preview) > 280:
+                content_preview = content_preview[:280].rstrip() + "..."
+        usage_by_tool: Dict[str, int] = {}
+        for run in tool_runs:
+            name = str(getattr(run, "name", "")).strip()
+            if not name:
+                continue
+            usage_by_tool[name] = usage_by_tool.get(name, 0) + 1
+        payload = {
+            "session_id": str(session_id or ""),
+            "turn_id": str(turn_id or ""),
+            "provider": str(self._provider or ""),
+            "model": str(self.model or ""),
+            "stopped_reason": (
+                str(result.stopped_reason or "") if result is not None else "aborted"
+            ),
+            "iterations": int(result.iterations if result is not None else 0),
+            "tool_call_count": int(max(0, int(tool_call_count))),
+            "tool_run_count": len(tool_runs),
+            "tools_invoked": tool_names,
+            "tool_usage_counts": usage_by_tool,
+            "durations_ms": {
+                "total": float(total_ms),
+                "mcp_connect": float(mcp_connect_ms),
+                "message_build": float(message_build_ms),
+                "llm_total": float(llm_total_ms),
+                "tool_exec_total": float(tool_exec_total_ms),
+                "other": float(other_ms),
+                "bottleneck": {
+                    "name": str(bottleneck_name or ""),
+                    "duration_ms": float(bottleneck_ms),
+                },
+            },
+            "empty_final_repair_passes": int(max(0, int(empty_final_repair_passes))),
+            "context_compaction": {
+                "runs": int(max(0, int(context_compaction_runs))),
+                "messages_trimmed": int(max(0, int(context_messages_trimmed))),
+            },
+            "final_content_preview": content_preview,
+        }
+        try:
+            recorder(session_id, payload=payload, limit=200)
+        except Exception as exc:
+            self._logger.warning(
+                "annolid-bot turn snapshot record failed session=%s err=%s",
+                session_id,
+                exc,
+            )
             return
 
     def _capture_anonymized_run_trace(

@@ -7,6 +7,10 @@ from annolid.core.agent.gui_backend.commands import (
     parse_direct_gui_command,
     prompt_may_need_tools,
 )
+from annolid.core.agent.gui_backend.command_registry import (
+    build_root_slash_completion_entries,
+    matches_slash_completion_search,
+)
 from annolid.core.agent.gui_backend.context_blocks import (
     build_live_pdf_context_prompt_block,
     build_live_web_context_prompt_block,
@@ -32,6 +36,7 @@ from annolid.core.agent.gui_backend.heuristics import (
     looks_like_open_url_suggestion,
     looks_like_url_request,
     looks_like_web_access_refusal,
+    looks_like_web_lookup_promise,
     prompt_may_need_mcp,
     should_attach_live_pdf_context,
     should_attach_live_web_context,
@@ -109,6 +114,7 @@ __all__ = [
     "TURN_STATUS_QUEUED",
     "TURN_STATUS_RUNNING",
     "build_extractive_summary",
+    "build_root_slash_completion_entries",
     "build_gui_compact_system_prompt",
     "build_live_pdf_context_prompt_block",
     "build_live_web_context_prompt_block",
@@ -148,12 +154,14 @@ __all__ = [
     "looks_like_open_url_suggestion",
     "looks_like_url_request",
     "looks_like_web_access_refusal",
+    "looks_like_web_lookup_promise",
     "maybe_handle_ollama_plain_mode",
     "normalize_gui_messages_for_ollama",
     "parse_direct_gui_command",
     "parse_gui_ollama_tool_calls",
     "prompt_may_need_mcp",
     "prompt_may_need_tools",
+    "matches_slash_completion_search",
     "resolve_video_path_for_roots",
     "select_annolid_reference_paths",
     "should_attach_live_pdf_context",

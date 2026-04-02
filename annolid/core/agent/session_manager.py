@@ -70,6 +70,9 @@ class AgentSessionManager:
     def _session_path(self, key: str) -> Path:
         return self.sessions_dir / f"{_encode_key(key)}.jsonl"
 
+    def _snapshot_path(self, key: str) -> Path:
+        return self.sessions_dir / "snapshots" / f"{_encode_key(key)}.jsonl"
+
     def get_or_create(self, key: str) -> AgentSession:
         with self._lock:
             if key in self._cache:
@@ -206,6 +209,59 @@ class AgentSessionManager:
         if changed:
             session.updated_at = datetime.now()
             self.save(session)
+
+    def append_snapshot(
+        self,
+        key: str,
+        snapshot: Mapping[str, Any],
+        *,
+        max_entries: int = 200,
+    ) -> Path:
+        path = self._snapshot_path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = dict(snapshot or {})
+        payload.setdefault("timestamp", _now_iso())
+        rows: List[Dict[str, Any]] = []
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as fh:
+                    for line in fh:
+                        text = line.strip()
+                        if not text:
+                            continue
+                        row = json.loads(text)
+                        if isinstance(row, dict):
+                            rows.append(dict(row))
+            except Exception:
+                rows = []
+        rows.append(payload)
+        keep = max(1, int(max_entries))
+        rows = rows[-keep:]
+        tmp_path = path.with_name(f"{path.name}.tmp")
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        tmp_path.replace(path)
+        return path
+
+    def read_snapshots(self, key: str, *, limit: int = 50) -> List[Dict[str, Any]]:
+        path = self._snapshot_path(key)
+        if not path.exists():
+            return []
+        rows: List[Dict[str, Any]] = []
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    text = line.strip()
+                    if not text:
+                        continue
+                    row = json.loads(text)
+                    if isinstance(row, dict):
+                        rows.append(dict(row))
+        except Exception:
+            return []
+        keep = max(1, int(limit))
+        return rows[-keep:]
 
 
 class PersistentSessionStore:
@@ -574,6 +630,33 @@ class PersistentSessionStore:
             session.metadata["automation_runs"] = runs
             session.updated_at = datetime.now()
             self._manager.save(session)
+
+    def record_turn_snapshot(
+        self,
+        session_id: str,
+        *,
+        payload: Mapping[str, Any],
+        limit: int = 200,
+    ) -> str:
+        with self._lock:
+            path = self._manager.append_snapshot(
+                session_id,
+                snapshot=dict(payload or {}),
+                max_entries=max(1, int(limit)),
+            )
+            return str(path)
+
+    def get_turn_snapshots(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        with self._lock:
+            return self._manager.read_snapshots(
+                session_id,
+                limit=max(1, int(limit)),
+            )
 
     @staticmethod
     def _compact_messages(

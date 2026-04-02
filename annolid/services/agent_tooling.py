@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 from pathlib import Path
+from typing import Any
 
 
 def validate_agent_tools() -> tuple[dict[str, object], int]:
@@ -98,4 +99,145 @@ def validate_agent_tools() -> tuple[dict[str, object], int]:
     return summary, (0 if summary.get("status") == "ok" else 1)
 
 
-__all__ = ["validate_agent_tools"]
+def describe_agent_tool_pool(
+    *,
+    workspace: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    config_path: str | None = None,
+) -> dict[str, Any]:
+    from annolid.core.agent.config import load_config
+    from annolid.core.agent.tools.function_registry import FunctionToolRegistry
+    from annolid.core.agent.tools.nanobot import register_nanobot_style_tools
+    from annolid.core.agent.tools.policy import (
+        build_tool_permission_context,
+        resolve_allowed_tools,
+    )
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    cfg = load_config(Path(config_path).expanduser() if config_path else None)
+    resolved_workspace = get_agent_workspace_path(workspace)
+    resolved_model = str(model or cfg.agents.defaults.model or "").strip()
+    resolved_provider = str(
+        provider or cfg.get_provider_name(model=resolved_model) or ""
+    )
+    if not resolved_provider:
+        resolved_provider = "unknown"
+
+    registry = FunctionToolRegistry()
+    asyncio.run(
+        register_nanobot_style_tools(
+            registry,
+            allowed_dir=resolved_workspace,
+            allowed_read_roots=cfg.tools.allowed_read_roots,
+            email_cfg=cfg.tools.email,
+            calendar_cfg=cfg.tools.calendar,
+            box_cfg=cfg.tools.box,
+            gws_cfg=cfg.tools.gws,
+            mcp_servers=cfg.tools.mcp_servers,
+            stack=None,
+        )
+    )
+    all_names = sorted(set(registry.tool_names))
+    resolved_policy = resolve_allowed_tools(
+        all_tool_names=all_names,
+        tools_cfg=cfg.tools,
+        provider=resolved_provider,
+        model=resolved_model,
+    )
+    permission_ctx = build_tool_permission_context(
+        all_tool_names=all_names,
+        resolved_policy=resolved_policy,
+    )
+    denied = sorted(
+        tool_name
+        for tool_name in all_names
+        if tool_name not in resolved_policy.allowed_tools
+    )
+
+    return {
+        "workspace": str(resolved_workspace),
+        "provider": resolved_provider,
+        "model": resolved_model,
+        "policy_profile": resolved_policy.profile,
+        "policy_source": resolved_policy.source,
+        "allow_patterns": list(resolved_policy.allow_patterns),
+        "deny_patterns": list(resolved_policy.deny_patterns),
+        "counts": {
+            "registered": len(all_names),
+            "allowed": len(resolved_policy.allowed_tools),
+            "denied": len(denied),
+        },
+        "allowed_tools": sorted(resolved_policy.allowed_tools),
+        "denied_tools": denied,
+        "permission_context": permission_ctx.to_dict(),
+    }
+
+
+def describe_agent_skill_pool(
+    *,
+    workspace: str | None = None,
+    task_hint: str | None = None,
+    top_k: int = 5,
+) -> dict[str, Any]:
+    from annolid.core.agent.skills import AgentSkillsLoader
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    resolved_workspace = get_agent_workspace_path(workspace)
+    loader = AgentSkillsLoader(resolved_workspace)
+    pool = loader.describe_skill_pool()
+    hint = str(task_hint or "").strip()
+    suggested = (
+        loader.suggest_skills_for_task_scored(hint, top_k=max(1, int(top_k)))
+        if hint
+        else []
+    )
+    return {
+        "workspace": str(resolved_workspace),
+        "task_hint": hint,
+        "skill_pool": pool,
+        "suggested_skills": suggested,
+    }
+
+
+def describe_agent_capabilities(
+    *,
+    workspace: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    task_hint: str | None = None,
+    top_k: int = 5,
+    config_path: str | None = None,
+) -> dict[str, Any]:
+    tool_pool = describe_agent_tool_pool(
+        workspace=workspace,
+        provider=provider,
+        model=model,
+        config_path=config_path,
+    )
+    skill_pool = describe_agent_skill_pool(
+        workspace=workspace,
+        task_hint=task_hint,
+        top_k=top_k,
+    )
+    return {
+        "workspace": tool_pool["workspace"],
+        "provider": tool_pool["provider"],
+        "model": tool_pool["model"],
+        "tool_pool": tool_pool,
+        "skill_pool": skill_pool,
+        "summary": {
+            "registered_tools": int(tool_pool["counts"]["registered"]),
+            "available_tools": int(tool_pool["counts"]["allowed"]),
+            "available_skills": int(skill_pool["skill_pool"]["counts"]["available"]),
+            "suggested_skills": len(skill_pool["suggested_skills"]),
+        },
+    }
+
+
+__all__ = [
+    "describe_agent_capabilities",
+    "describe_agent_skill_pool",
+    "describe_agent_tool_pool",
+    "validate_agent_tools",
+]

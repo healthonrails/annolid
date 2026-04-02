@@ -52,12 +52,18 @@ class AgentContextBuilder:
         bootstrap = self._load_bootstrap_files()
         t1 = time.perf_counter()
         auto_skill_names: List[str] = []
+        auto_skill_matches: List[Mapping[str, Any]] = []
         explicit_skill_names = [s for s in (skill_names or []) if str(s).strip()]
         if not explicit_skill_names and task_hint and self._auto_skill_top_k > 0:
-            auto_skill_names = self.skills.suggest_skills_for_task(
+            auto_skill_matches = self.skills.suggest_skills_for_task_scored(
                 str(task_hint),
                 top_k=self._auto_skill_top_k,
             )
+            auto_skill_names = [
+                str(row.get("name") or "").strip()
+                for row in auto_skill_matches
+                if str(row.get("name") or "").strip()
+            ]
 
         memory_context = self.memory.get_memory_context()
         t2 = time.perf_counter()
@@ -93,7 +99,21 @@ class AgentContextBuilder:
                 if explicit_skill_names
                 else "# Auto-selected Skills"
             )
-            section_map["requested_skills"] = f"{title}\n\n{requested_content}"
+            rationale = ""
+            if auto_skill_matches:
+                lines: List[str] = []
+                for row in auto_skill_matches:
+                    name = str(row.get("name") or "").strip()
+                    if not name:
+                        continue
+                    strategy = str(row.get("strategy") or "").strip() or "lexical"
+                    score = float(row.get("score") or 0.0)
+                    lines.append(f"- `{name}` ({strategy}, score={score:.2f})")
+                if lines:
+                    rationale = "Selection rationale:\n" + "\n".join(lines) + "\n\n"
+            section_map["requested_skills"] = (
+                f"{title}\n\n{rationale}{requested_content}"
+            )
         if skills_summary:
             section_map["skills_summary"] = (
                 "# Skills\n\n"

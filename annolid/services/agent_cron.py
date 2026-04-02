@@ -25,6 +25,68 @@ def _bootstrap_backup_root(workspace: Path) -> Path:
     return workspace / ".annolid" / "bootstrap-backups"
 
 
+_WORKSPACE_TEMPLATE_PATHS = (
+    "AGENTS.md",
+    "SOUL.md",
+    "USER.md",
+    "IDENTITY.md",
+    "TOOLS.md",
+    "HEARTBEAT.md",
+    "BOOT.md",
+    "BOOTSTRAP.md",
+    "memory/MEMORY.md",
+    "memory/HISTORY.md",
+)
+
+
+def _workspace_template_status(workspace: Path) -> Dict[str, bool]:
+    out: Dict[str, bool] = {}
+    for rel in _WORKSPACE_TEMPLATE_PATHS:
+        out[rel] = (workspace / rel).exists()
+    return out
+
+
+def _looks_like_annolid_repo_root(path: Path) -> bool:
+    return (
+        (path / "pyproject.toml").exists()
+        and (path / "annolid").is_dir()
+        and (path / "tests").is_dir()
+    )
+
+
+def _build_workspace_guidance(
+    workspace: Path, template_status: Dict[str, bool]
+) -> list[str]:
+    missing = [rel for rel, ok in template_status.items() if not ok]
+    guidance: list[str] = []
+    if missing:
+        guidance.append(
+            "Workspace bootstrap files are missing; run onboarding to initialize templates."
+        )
+    else:
+        guidance.append("Workspace bootstrap templates are present.")
+
+    if _looks_like_annolid_repo_root(workspace):
+        guidance.append(
+            "Selected workspace looks like an Annolid source repository root; prefer ~/.annolid/workspace to avoid mixing runtime memory with project source control."
+        )
+    return guidance
+
+
+def _workspace_health_payload(workspace: Path) -> dict:
+    templates = _workspace_template_status(workspace)
+    missing = sorted([rel for rel, ok in templates.items() if not ok])
+    return {
+        "workspace": str(workspace),
+        "template_count": len(templates),
+        "template_present_count": len(templates) - len(missing),
+        "template_missing_count": len(missing),
+        "template_missing": missing,
+        "looks_like_repo_root": bool(_looks_like_annolid_repo_root(workspace)),
+        "guidance": _build_workspace_guidance(workspace, templates),
+    }
+
+
 def _list_backup_dirs(backup_root: Path) -> list[Path]:
     if not backup_root.exists():
         return []
@@ -48,6 +110,7 @@ def onboard_agent_workspace(
     from annolid.core.agent.utils import get_agent_workspace_path
 
     resolved_workspace = get_agent_workspace_path(workspace)
+    health_before = _workspace_health_payload(resolved_workspace)
     should_backup = bool(overwrite) and bool(backup)
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     resolved_backup_dir = (
@@ -79,6 +142,9 @@ def onboard_agent_workspace(
     counts: Dict[str, int] = {}
     for status in list(outcomes.values()) + list(prune_outcomes.values()):
         counts[status] = counts.get(status, 0) + 1
+    health_after = (
+        _workspace_health_payload(resolved_workspace) if not dry_run else health_before
+    )
     return {
         "workspace": str(resolved_workspace),
         "overwrite": bool(overwrite),
@@ -89,33 +155,27 @@ def onboard_agent_workspace(
         "summary": counts,
         "files": outcomes,
         "pruned_files": prune_outcomes,
+        "workspace_health_before": health_before,
+        "workspace_health_after": health_after,
     }
 
 
-def get_agent_status() -> dict:
+def get_agent_status(*, workspace: str | None = None) -> dict:
     from annolid.core.agent.utils import get_agent_data_path, get_agent_workspace_path
 
     data_dir = get_agent_data_path()
-    workspace = get_agent_workspace_path()
+    resolved_workspace = get_agent_workspace_path(workspace)
     store_path = _default_agent_cron_store_path()
     cron_status = _agent_cron_service().status()
-    backup_root = _bootstrap_backup_root(workspace)
+    backup_root = _bootstrap_backup_root(resolved_workspace)
     backups = _list_backup_dirs(backup_root)
+    templates = _workspace_template_status(resolved_workspace)
+    health = _workspace_health_payload(resolved_workspace)
     return {
         "data_dir": str(data_dir),
-        "workspace": str(workspace),
-        "workspace_templates": {
-            "AGENTS.md": (workspace / "AGENTS.md").exists(),
-            "SOUL.md": (workspace / "SOUL.md").exists(),
-            "USER.md": (workspace / "USER.md").exists(),
-            "IDENTITY.md": (workspace / "IDENTITY.md").exists(),
-            "TOOLS.md": (workspace / "TOOLS.md").exists(),
-            "HEARTBEAT.md": (workspace / "HEARTBEAT.md").exists(),
-            "BOOT.md": (workspace / "BOOT.md").exists(),
-            "BOOTSTRAP.md": (workspace / "BOOTSTRAP.md").exists(),
-            "memory/MEMORY.md": (workspace / "memory" / "MEMORY.md").exists(),
-            "memory/HISTORY.md": (workspace / "memory" / "HISTORY.md").exists(),
-        },
+        "workspace": str(resolved_workspace),
+        "workspace_templates": templates,
+        "workspace_health": health,
         "cron_store_path": str(store_path),
         "workspace_backup_root": str(backup_root),
         "workspace_backup_count": len(backups),

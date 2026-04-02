@@ -22,6 +22,8 @@ _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "agent",
             "agent-onboard",
             "agent-status",
+            "agent-capabilities",
+            "agent-skill-pool",
             "agent-security-check",
             "agent-security-audit",
             "agent-secrets-audit",
@@ -80,10 +82,11 @@ def _root_help_epilog() -> str:
         "  annolid-run train <model> --help-model\n"
         "  annolid-run predict <model> --help-model\n"
         "  annolid-run agent-status\n"
+        "  annolid-run agent-capabilities\n"
         "  annolid-run help train\n\n"
         "Common areas:\n"
         "  Models: train, predict, list-models\n"
-        "  Agent: agent, agent-status, agent-security-*, agent-cron-*\n"
+        "  Agent: agent, agent-status, agent-capabilities, agent-security-*, agent-cron-*\n"
         "  Data: collect-labels, index-to-yolo, import-deeplabcut-training-data\n"
         "  Utilities: citations-*, validate-agent-output, validate-agent-tools"
     )
@@ -320,6 +323,7 @@ def _format_root_help(parser: argparse.ArgumentParser) -> str:
         "  annolid-run train <model> --help-model",
         "  annolid-run predict <model> --help-model",
         "  annolid-run agent-status",
+        "  annolid-run agent-capabilities",
         "  annolid-run help train",
         "",
     ]
@@ -876,6 +880,67 @@ def _cmd_agent_status(_: argparse.Namespace) -> int:
 
     summary = get_agent_status()
     print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _cmd_agent_tool_pool(args: argparse.Namespace) -> int:
+    from annolid.services.agent_tooling import describe_agent_tool_pool
+
+    summary = describe_agent_tool_pool(
+        workspace=getattr(args, "workspace", None),
+        provider=getattr(args, "provider", None),
+        model=getattr(args, "model", None),
+        config_path=getattr(args, "config", None),
+    )
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _cmd_agent_skill_pool(args: argparse.Namespace) -> int:
+    from annolid.services.agent_tooling import describe_agent_skill_pool
+
+    summary = describe_agent_skill_pool(
+        workspace=getattr(args, "workspace", None),
+        task_hint=getattr(args, "task_hint", None),
+        top_k=max(1, int(getattr(args, "top_k", 5) or 5)),
+    )
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _cmd_agent_capabilities(args: argparse.Namespace) -> int:
+    from annolid.services.agent_tooling import describe_agent_capabilities
+
+    summary = describe_agent_capabilities(
+        workspace=getattr(args, "workspace", None),
+        provider=getattr(args, "provider", None),
+        model=getattr(args, "model", None),
+        task_hint=getattr(args, "task_hint", None),
+        top_k=max(1, int(getattr(args, "top_k", 5) or 5)),
+        config_path=getattr(args, "config", None),
+    )
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _cmd_agent_turn_snapshots(args: argparse.Namespace) -> int:
+    from annolid.core.agent.session_manager import AgentSessionManager
+    from annolid.core.agent.utils import get_agent_workspace_path
+
+    workspace = get_agent_workspace_path(getattr(args, "workspace", None))
+    manager = AgentSessionManager(workspace=workspace)
+    session_id = str(getattr(args, "session_id", "") or "default")
+    rows = manager.read_snapshots(
+        session_id,
+        limit=max(1, int(getattr(args, "limit", 20) or 20)),
+    )
+    payload = {
+        "workspace": str(workspace),
+        "session_id": session_id,
+        "count": len(rows),
+        "snapshots": rows,
+    }
+    print(json.dumps(payload, indent=2))
     return 0
 
 
@@ -2268,6 +2333,113 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Show Annolid agent workspace/cron status.",
     )
     status_p.set_defaults(_handler=_cmd_agent_status)
+
+    capabilities_p = sub.add_parser(
+        "agent-capabilities",
+        help="Show combined agent tool and skill capability summary.",
+    )
+    capabilities_p.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace path used for both skill and tool discovery.",
+    )
+    capabilities_p.add_argument(
+        "--provider",
+        default=None,
+        help="Provider override for tool policy resolution.",
+    )
+    capabilities_p.add_argument(
+        "--model",
+        default=None,
+        help="Model override for tool policy resolution.",
+    )
+    capabilities_p.add_argument(
+        "--task-hint",
+        default=None,
+        help="Optional task text used to score likely skills.",
+    )
+    capabilities_p.add_argument(
+        "--top-k",
+        type=int,
+        default=5,
+        help="Maximum suggested skills returned for the task hint.",
+    )
+    capabilities_p.add_argument(
+        "--config",
+        default=None,
+        help="Optional path to agent config JSON.",
+    )
+    capabilities_p.set_defaults(_handler=_cmd_agent_capabilities)
+
+    skill_pool_p = sub.add_parser(
+        "agent-skill-pool",
+        help="Show effective skill pool summary and optional task-based suggestions.",
+    )
+    skill_pool_p.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace path for skill discovery (default: ~/.annolid/workspace).",
+    )
+    skill_pool_p.add_argument(
+        "--task-hint",
+        default=None,
+        help="Optional task text used to score and suggest relevant skills.",
+    )
+    skill_pool_p.add_argument(
+        "--top-k",
+        type=int,
+        default=5,
+        help="Maximum suggested skills returned when --task-hint is provided.",
+    )
+    skill_pool_p.set_defaults(_handler=_cmd_agent_skill_pool)
+
+    tool_pool_p = sub.add_parser(
+        "agent-tool-pool",
+        help="Show effective registered/allowed/denied agent tools for current policy.",
+    )
+    tool_pool_p.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace path for tool initialization (default: ~/.annolid/workspace).",
+    )
+    tool_pool_p.add_argument(
+        "--provider",
+        default=None,
+        help="Provider override for policy resolution.",
+    )
+    tool_pool_p.add_argument(
+        "--model",
+        default=None,
+        help="Model override for policy resolution.",
+    )
+    tool_pool_p.add_argument(
+        "--config",
+        default=None,
+        help="Optional path to agent config JSON.",
+    )
+    tool_pool_p.set_defaults(_handler=_cmd_agent_tool_pool)
+
+    snapshots_p = sub.add_parser(
+        "agent-turn-snapshots",
+        help="Show recent lightweight runtime turn snapshots for a session.",
+    )
+    snapshots_p.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace path (default: ~/.annolid/workspace).",
+    )
+    snapshots_p.add_argument(
+        "--session-id",
+        default="default",
+        help="Session identifier used by the agent runtime.",
+    )
+    snapshots_p.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum number of recent snapshots to return (default: 20).",
+    )
+    snapshots_p.set_defaults(_handler=_cmd_agent_turn_snapshots)
 
     meta_status_p = sub.add_parser(
         "agent-meta-learning-status",

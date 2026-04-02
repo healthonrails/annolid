@@ -9,8 +9,9 @@ Each skill is a folder containing `SKILL.md` with:
 - frontmatter (`name`, `description`, optional invocation/gating keys)
 - markdown instructions used by the agent
 
-`metadata` may be a JSON string/object and can include `annolid` or `openclaw`
-namespaces. Supported fields include:
+`metadata` may be a JSON string/object and should use the `annolid`
+namespace (legacy `openclaw` keys are still accepted for compatibility).
+Supported fields include:
 
 - `always`: load this skill automatically in context
 - `user-invocable` (default `true`)

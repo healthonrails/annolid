@@ -400,3 +400,56 @@ def test_persistent_session_store_replay_events_roundtrip(tmp_path: Path) -> Non
     assert len(inbound) == 1
     assert inbound[0]["payload"]["text"] == "hello"
     assert len(all_rows) == 2
+
+
+def test_persistent_session_store_turn_snapshot_roundtrip(tmp_path: Path) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    store = PersistentSessionStore(manager)
+    session_id = "gui:snapshots"
+    _ = store.record_turn_snapshot(
+        session_id,
+        payload={
+            "turn_id": "turn-1",
+            "stopped_reason": "done",
+            "tool_call_count": 0,
+            "durations_ms": {"total": 10.0},
+        },
+    )
+    _ = store.record_turn_snapshot(
+        session_id,
+        payload={"turn_id": "turn-2", "stopped_reason": "max_iterations"},
+    )
+    rows = store.get_turn_snapshots(session_id, limit=10)
+    assert len(rows) == 2
+    assert rows[-1]["turn_id"] == "turn-2"
+    assert rows[0]["stopped_reason"] == "done"
+
+
+def test_agent_loop_records_turn_snapshot(tmp_path: Path) -> None:
+    manager = AgentSessionManager(sessions_dir=tmp_path / "sessions")
+    store = PersistentSessionStore(manager)
+    registry = FunctionToolRegistry()
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        return {"content": "done"}
+
+    loop = AgentLoop(
+        tools=registry,
+        llm_callable=fake_llm,
+        model="fake",
+        memory_store=store,
+    )
+    result = asyncio.run(loop.run("hello", session_id="snapshot-1"))
+    assert result.content == "done"
+    snapshots = store.get_turn_snapshots("snapshot-1", limit=5)
+    assert snapshots
+    latest = snapshots[-1]
+    assert latest["model"] == "fake"
+    assert latest["stopped_reason"] == "done"
+    assert int(latest["tool_call_count"]) == 0

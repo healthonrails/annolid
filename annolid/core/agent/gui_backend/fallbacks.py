@@ -12,6 +12,7 @@ from annolid.core.agent.gui_backend.pdf_hints import (
     parse_source_page_hint,
     source_matches_active_pdf,
 )
+from annolid.core.agent.web_prompt_utils import normalize_web_lookup_prompt
 from annolid.core.agent.tools import FunctionToolRegistry
 
 
@@ -50,7 +51,10 @@ async def try_web_fetch_fallback(
         return ""
     if not registry.has("web_fetch"):
         return ""
-    urls = candidate_urls_for_prompt(prompt)
+    normalized_prompt, repaired = normalize_web_lookup_prompt(prompt)
+    if repaired:
+        emit_progress("Repairing web_fetch prompt context")
+    urls = candidate_urls_for_prompt(normalized_prompt)
     if not urls:
         return ""
     target_url = urls[0]
@@ -93,12 +97,15 @@ async def try_web_search_fallback(
         return ""
     if not registry.has("web_search"):
         return ""
-    query = " ".join(str(prompt or "").split()).strip()
+    query, repaired = normalize_web_lookup_prompt(prompt)
+    query = " ".join(str(query or "").split()).strip()
     if not query:
         return ""
     if len(query) > 280:
         query = query[:280].rstrip()
     try:
+        if repaired:
+            emit_progress("Repairing web_search prompt context")
         emit_progress("Retrying with web_search")
         payload_raw = await registry.execute(
             "web_search",
@@ -148,7 +155,8 @@ async def try_browser_search_fallback(
         return ""
     if not registry.has("gui_web_run_steps"):
         return ""
-    query = " ".join(str(prompt or "").split()).strip()
+    query, repaired = normalize_web_lookup_prompt(prompt)
+    query = " ".join(str(query or "").split()).strip()
     if not query:
         return ""
     if len(query) > 280:
@@ -163,6 +171,8 @@ async def try_browser_search_fallback(
         {"action": "get_text", "max_chars": 9000},
     ]
     try:
+        if repaired:
+            emit_progress("Repairing browser search prompt context")
         emit_progress("Retrying with browser search workflow")
         payload_raw = await registry.execute(
             "gui_web_run_steps",

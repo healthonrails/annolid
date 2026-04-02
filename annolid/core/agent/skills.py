@@ -173,36 +173,135 @@ class AgentSkillsLoader:
     def suggest_skills_for_task(
         self, task_description: str, top_k: int = 3
     ) -> List[str]:
-        """
-        Suggest relevant skill names for a task description.
-        Supports lexical matching (default) and optional embedding retrieval.
-        """
+        scored = self.suggest_skills_for_task_scored(task_description, top_k=top_k)
+        return [str(row.get("name") or "") for row in scored if str(row.get("name"))]
+
+    def suggest_skills_for_task_scored(
+        self, task_description: str, top_k: int = 3
+    ) -> List[Dict[str, Any]]:
+        """Suggest skills with score/strategy metadata for profiling and UX."""
         text = str(task_description or "").strip().lower()
         if not text:
             return []
         k = max(0, int(top_k))
         if k == 0:
             return []
-        if self._skill_retrieval_mode == "embedding":
-            suggested = self._suggest_skills_embedding(text, k)
-            if suggested:
-                return suggested
-        if self._skill_retrieval_mode == "hybrid":
-            suggested = self._suggest_skills_hybrid(text, k)
-            if suggested:
-                return suggested
-        return self._suggest_skills_lexical(text, k)
+        skills = self.list_skills(filter_unavailable=True)
+        ranked, strategy = self._rank_skills_for_mode(text, skills)
+        if not ranked:
+            return []
+        indexed = {
+            str(row.get("name") or "").strip(): row
+            for row in skills
+            if str(row.get("name") or "").strip()
+        }
+        out: List[Dict[str, Any]] = []
+        for name, score in ranked[:k]:
+            skill = indexed.get(name, {})
+            out.append(
+                {
+                    "name": name,
+                    "score": float(score),
+                    "strategy": strategy,
+                    "source": str(skill.get("source") or ""),
+                    "description": str(skill.get("description") or ""),
+                    "path": str(skill.get("path") or ""),
+                }
+            )
+        return out
+
+    def describe_skill_pool(self, *, preview_limit: int = 25) -> Dict[str, Any]:
+        all_skills = self.list_skills(filter_unavailable=False)
+        available_names = {
+            str(row.get("name") or "")
+            for row in self.list_skills(filter_unavailable=True)
+            if str(row.get("name") or "")
+        }
+        source_counts: Dict[str, int] = {}
+        unavailable: List[Dict[str, str]] = []
+        always: List[str] = []
+        for row in all_skills:
+            source = str(row.get("source") or "unknown")
+            source_counts[source] = source_counts.get(source, 0) + 1
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            if name in available_names:
+                if bool(
+                    (row.get("parsed_meta") or {}).get("always")
+                    if isinstance(row.get("parsed_meta"), dict)
+                    else False
+                ):
+                    always.append(name)
+                continue
+            parsed_meta = row.get("parsed_meta")
+            if not isinstance(parsed_meta, dict):
+                parsed_meta = self._get_skill_meta_by_path(str(row.get("path") or ""))
+            missing = self._get_missing_requirements(parsed_meta)
+            unavailable.append(
+                {
+                    "name": name,
+                    "source": source,
+                    "reason": str(missing or "requirements_not_met"),
+                }
+            )
+        rows_preview = [
+            {
+                "name": str(row.get("name") or ""),
+                "source": str(row.get("source") or ""),
+                "description": str(row.get("description") or ""),
+                "available": str(row.get("name") or "") in available_names,
+            }
+            for row in all_skills[: max(1, int(preview_limit))]
+        ]
+        return {
+            "retrieval_mode": str(self._skill_retrieval_mode or "lexical"),
+            "counts": {
+                "total": len(all_skills),
+                "available": len(available_names),
+                "unavailable": max(0, len(all_skills) - len(available_names)),
+                "always": len(always),
+            },
+            "source_counts": source_counts,
+            "always_skills": sorted(set(always)),
+            "preview": rows_preview,
+            "preview_truncated": max(0, len(all_skills) - len(rows_preview)),
+            "unavailable_skills": unavailable[: max(1, int(preview_limit))],
+        }
+
+    def _rank_skills_for_mode(
+        self,
+        text: str,
+        skills: Sequence[Dict[str, Any]],
+    ) -> tuple[List[tuple[str, float]], str]:
+        mode = str(self._skill_retrieval_mode or "lexical").strip().lower()
+        if mode == "embedding":
+            ranked = self._rank_skills_embedding(text, skills)
+            if ranked:
+                return ranked, "embedding"
+            return self._rank_skills_lexical(text, skills), "embedding->lexical"
+        if mode == "hybrid":
+            ranked = self._rank_skills_hybrid(text, skills)
+            if ranked:
+                return ranked, "hybrid"
+            return self._rank_skills_lexical(text, skills), "hybrid->lexical"
+        return self._rank_skills_lexical(text, skills), "lexical"
 
     def _suggest_skills_lexical(self, text: str, k: int) -> List[str]:
         ranked = self._rank_skills_lexical(text)
         return [name for name, _ in ranked[:k]]
 
-    def _rank_skills_lexical(self, text: str) -> List[tuple[str, float]]:
+    def _rank_skills_lexical(
+        self,
+        text: str,
+        skills: Optional[Sequence[Dict[str, Any]]] = None,
+    ) -> List[tuple[str, float]]:
         task_tokens = {
             token for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", text) if token
         }
         scored: List[tuple[str, float]] = []
-        for skill in self.list_skills(filter_unavailable=True):
+        candidates = list(skills or self.list_skills(filter_unavailable=True))
+        for skill in candidates:
             name = str(skill.get("name") or "").strip()
             if not name:
                 continue
@@ -231,13 +330,17 @@ class AgentSkillsLoader:
         ranked = self._rank_skills_embedding(text)
         return [name for name, _ in ranked[:k]]
 
-    def _rank_skills_embedding(self, text: str) -> List[tuple[str, float]]:
-        skills = self.list_skills(filter_unavailable=True)
-        if not skills:
+    def _rank_skills_embedding(
+        self,
+        text: str,
+        skills: Optional[Sequence[Dict[str, Any]]] = None,
+    ) -> List[tuple[str, float]]:
+        candidates = list(skills or self.list_skills(filter_unavailable=True))
+        if not candidates:
             return []
         signature = tuple(
             f"{str(s.get('name') or '').strip()}|{str(s.get('description') or '').strip()}"
-            for s in skills
+            for s in candidates
             if str(s.get("name") or "").strip()
         )
         if not signature:
@@ -249,7 +352,7 @@ class AgentSkillsLoader:
             pairs: list[tuple[str, list[float]]] = []
             texts: list[str] = []
             names: list[str] = []
-            for s in skills:
+            for s in candidates:
                 name = str(s.get("name") or "").strip()
                 if not name:
                     continue
@@ -282,8 +385,9 @@ class AgentSkillsLoader:
         return [(name, (float(sim) - float(worst)) / span) for sim, name in scored]
 
     def _suggest_skills_hybrid(self, text: str, k: int) -> List[str]:
-        lexical = self._rank_skills_lexical(text)
-        embedding = self._rank_skills_embedding(text)
+        skills = self.list_skills(filter_unavailable=True)
+        lexical = self._rank_skills_lexical(text, skills)
+        embedding = self._rank_skills_embedding(text, skills)
         if not embedding:
             return [name for name, _ in lexical[:k]]
         combined: dict[str, float] = {}
@@ -293,6 +397,23 @@ class AgentSkillsLoader:
             combined[name] = combined.get(name, 0.0) + (0.6 * float(score))
         ranked = sorted(combined.items(), key=lambda row: (-row[1], row[0].lower()))
         return [name for name, _ in ranked[:k]]
+
+    def _rank_skills_hybrid(
+        self,
+        text: str,
+        skills: Optional[Sequence[Dict[str, Any]]] = None,
+    ) -> List[tuple[str, float]]:
+        candidates = list(skills or self.list_skills(filter_unavailable=True))
+        lexical = self._rank_skills_lexical(text, candidates)
+        embedding = self._rank_skills_embedding(text, candidates)
+        if not embedding:
+            return lexical
+        combined: dict[str, float] = {}
+        for name, score in lexical:
+            combined[name] = combined.get(name, 0.0) + (0.4 * float(score))
+        for name, score in embedding:
+            combined[name] = combined.get(name, 0.0) + (0.6 * float(score))
+        return sorted(combined.items(), key=lambda row: (-row[1], row[0].lower()))
 
     def _get_embedding_model(self) -> Any:
         if self._embedding_client is not None:

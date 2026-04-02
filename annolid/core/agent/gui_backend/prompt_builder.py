@@ -5,6 +5,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from annolid.core.agent.gui_backend.command_registry import (
+    build_direct_command_alias_line,
+)
+
+_TOOLING_SECTION_PREVIEW_LIMIT = 24
+
 
 @dataclass(frozen=True)
 class PromptBuildInputs:
@@ -73,52 +79,15 @@ def _build_tooling_section(
         f"Policy: profile={policy} source={source}",
         "Available tools (case-sensitive names):",
     ]
-    lines.extend(f"- `{name}`" for name in tool_names)
+    preview = list(tool_names[:_TOOLING_SECTION_PREVIEW_LIMIT])
+    lines.extend(f"- `{name}`" for name in preview)
+    remaining = max(0, len(tool_names) - len(preview))
+    if remaining > 0:
+        lines.append(f"- ... and {remaining} additional tools")
     lines.append(
         "Use these available tools first. Do not claim a capability is unavailable before trying the matching tool."
     )
     return "\n".join(lines)
-
-
-def _build_direct_command_alias_line(tool_names: List[str]) -> str:
-    tool_set = {name.lower() for name in tool_names}
-    examples: List[str] = []
-    if not tool_set or "automation_schedule" in tool_set:
-        examples.extend(
-            [
-                "'schedule camera check every 5 minutes'",
-                "'schedule periodic report every 10 minutes'",
-                "'schedule email summary every 1 hour'",
-                "'list automation tasks'",
-                "'automation scheduler status'",
-                "'run automation task <task_id>'",
-                "'remove automation task <task_id>'",
-            ]
-        )
-    if not tool_set or "cron" in tool_set:
-        examples.extend(
-            [
-                "'list cron jobs'",
-                "'cron status'",
-                "'check cron job <job_id>'",
-            ]
-        )
-    if not tool_set or "exec_start" in tool_set or "exec_process" in tool_set:
-        examples.extend(
-            [
-                "'start shell session for <command>'",
-                "'list sessions'",
-                "'poll session <session_id>'",
-                "'show session log <session_id>'",
-                "'kill session <session_id>'",
-            ]
-        )
-    if not examples:
-        return ""
-    return (
-        "Direct command aliases are supported for automation scheduling and shell sessions. "
-        "Use these forms when helpful: " + ", ".join(examples) + "."
-    )
 
 
 def _build_tracking_stats_guidance(tool_names: List[str]) -> str:
@@ -229,7 +198,7 @@ def build_compact_system_prompt(
         "When users ask for how-to guidance or tutorials, produce structured on-demand tutorials with: "
         "goal, prerequisites, step-by-step workflow, verification checklist, and troubleshooting tips."
     )
-    alias_line = _build_direct_command_alias_line(tool_names)
+    alias_line = build_direct_command_alias_line(tool_names)
     if alias_line:
         parts.append(alias_line)
     tracking_stats_line = _build_tracking_stats_guidance(tool_names)
@@ -332,8 +301,10 @@ def build_compact_system_prompt(
                 )
                 if "weather" in {name.strip().lower() for name in names}:
                     parts.append(
-                        "For weather/forecast requests, consult the `weather` skill first "
-                        "before ad-hoc browsing."
+                        "For weather/forecast requests, the `weather` skill is guidance "
+                        "only. Do not answer with a plan or promise to check later. "
+                        "Use the skill instructions and a live lookup tool immediately, "
+                        "then answer with the retrieved weather result."
                     )
         docs_preview = _annolid_docs_index_preview()
         if docs_preview:

@@ -118,6 +118,158 @@ def test_agent_status_uses_patched_paths(tmp_path: Path, monkeypatch, capsys) ->
     assert payload["workspace_templates"]["AGENTS.md"] is True
 
 
+def test_agent_tool_pool_cli(monkeypatch, capsys) -> None:
+    import annolid.services.agent_tooling as tooling_mod
+
+    monkeypatch.setattr(
+        tooling_mod,
+        "describe_agent_tool_pool",
+        lambda **kwargs: {
+            "workspace": str(kwargs.get("workspace") or ""),
+            "provider": str(kwargs.get("provider") or ""),
+            "model": str(kwargs.get("model") or ""),
+            "counts": {"registered": 2, "allowed": 1, "denied": 1},
+            "allowed_tools": ["read_file"],
+            "denied_tools": ["write_file"],
+            "permission_context": {"deny_names": ["write_file"], "deny_prefixes": []},
+        },
+    )
+    rc = annolid_run(
+        [
+            "agent-tool-pool",
+            "--workspace",
+            "/tmp/ws",
+            "--provider",
+            "ollama",
+            "--model",
+            "qwen3",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["workspace"] == "/tmp/ws"
+    assert payload["counts"]["allowed"] == 1
+    assert payload["denied_tools"] == ["write_file"]
+
+
+def test_agent_skill_pool_cli(monkeypatch, capsys) -> None:
+    import annolid.services.agent_tooling as tooling_mod
+
+    monkeypatch.setattr(
+        tooling_mod,
+        "describe_agent_skill_pool",
+        lambda **kwargs: {
+            "workspace": str(kwargs.get("workspace") or ""),
+            "task_hint": str(kwargs.get("task_hint") or ""),
+            "skill_pool": {
+                "counts": {"total": 3, "available": 2, "unavailable": 1, "always": 1}
+            },
+            "suggested_skills": [
+                {
+                    "name": "weather",
+                    "strategy": "lexical",
+                    "score": 1.0,
+                    "source": "workspace",
+                }
+            ],
+        },
+    )
+    rc = annolid_run(
+        [
+            "agent-skill-pool",
+            "--workspace",
+            "/tmp/ws",
+            "--task-hint",
+            "weather forecast",
+            "--top-k",
+            "3",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["workspace"] == "/tmp/ws"
+    assert payload["task_hint"] == "weather forecast"
+    assert payload["skill_pool"]["counts"]["total"] == 3
+    assert payload["suggested_skills"][0]["name"] == "weather"
+
+
+def test_agent_capabilities_cli(monkeypatch, capsys) -> None:
+    import annolid.services.agent_tooling as tooling_mod
+
+    monkeypatch.setattr(
+        tooling_mod,
+        "describe_agent_capabilities",
+        lambda **kwargs: {
+            "workspace": str(kwargs.get("workspace") or ""),
+            "provider": str(kwargs.get("provider") or ""),
+            "model": str(kwargs.get("model") or ""),
+            "tool_pool": {"counts": {"registered": 4, "allowed": 3, "denied": 1}},
+            "skill_pool": {
+                "skill_pool": {"counts": {"total": 2, "available": 2, "unavailable": 0}}
+            },
+            "summary": {
+                "registered_tools": 4,
+                "available_tools": 3,
+                "available_skills": 2,
+                "suggested_skills": 1,
+            },
+        },
+    )
+    rc = annolid_run(
+        [
+            "agent-capabilities",
+            "--workspace",
+            "/tmp/ws",
+            "--provider",
+            "ollama",
+            "--model",
+            "qwen3",
+            "--task-hint",
+            "weather forecast",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["workspace"] == "/tmp/ws"
+    assert payload["tool_pool"]["counts"]["registered"] == 4
+    assert payload["skill_pool"]["skill_pool"]["counts"]["available"] == 2
+
+
+def test_agent_turn_snapshots_cli(tmp_path: Path, capsys) -> None:
+    from annolid.core.agent.session_manager import AgentSessionManager
+
+    workspace = tmp_path / "workspace"
+    manager = AgentSessionManager(workspace=workspace)
+    _ = manager.append_snapshot(
+        "email:test@example.com",
+        {"turn_id": "turn-1", "stopped_reason": "done", "tool_call_count": 1},
+        max_entries=20,
+    )
+    _ = manager.append_snapshot(
+        "email:test@example.com",
+        {"turn_id": "turn-2", "stopped_reason": "max_iterations", "tool_call_count": 2},
+        max_entries=20,
+    )
+
+    rc = annolid_run(
+        [
+            "agent-turn-snapshots",
+            "--workspace",
+            str(workspace),
+            "--session-id",
+            "email:test@example.com",
+            "--limit",
+            "5",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["workspace"] == str(workspace)
+    assert payload["session_id"] == "email:test@example.com"
+    assert payload["count"] == 2
+    assert payload["snapshots"][-1]["turn_id"] == "turn-2"
+
+
 def test_agent_meta_learning_status_cli(tmp_path: Path, monkeypatch, capsys) -> None:
     import annolid.core.agent.utils as utils_mod
 

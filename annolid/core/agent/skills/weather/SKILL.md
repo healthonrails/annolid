@@ -11,8 +11,9 @@ Guidelines:
 1. Use explicit locations (city/state/country) when possible.
 2. Prefer concise forecast summaries (temperature, precipitation, wind).
 3. Include date/time context and units.
-4. Lookup order for reliability:
+4. Do not answer with a promise to check later. Use the lookup tools immediately, then return the weather result.
+5. Lookup order for reliability:
    - First try embedded browser weather lookup (`gui_web_run_steps`).
    - If unavailable, use `web_search` (Scrapling-first backend).
    - If a direct weather URL is available, use `web_fetch` for extraction.
-5. If model output is empty or says it cannot browse, immediately run a web lookup tool instead of returning a refusal.
+6. If model output is empty or says it cannot browse, immediately run a web lookup tool instead of returning a refusal.

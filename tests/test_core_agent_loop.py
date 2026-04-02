@@ -6,6 +6,7 @@ import logging
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
+import pytest
 
 from annolid.core.agent.loop import AgentLoop, AgentMemoryConfig, AgentToolRun
 from annolid.core.agent.session_manager import (
@@ -347,6 +348,27 @@ def test_agent_loop_runs_tool_then_finishes() -> None:
     assert result.iterations == 2
     assert len(result.tool_runs) == 1
     assert result.tool_runs[0].result == "tool:hello"
+
+
+def test_agent_loop_compacts_context_messages_with_stable_limits() -> None:
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "base instructions"},
+        {"role": "system", "content": "memory facts"},
+    ]
+    for idx in range(60):
+        role = "user" if idx % 2 == 0 else "assistant"
+        messages.append({"role": role, "content": f"message-{idx}"})
+
+    compacted, trimmed = AgentLoop._compact_context_messages(messages)
+
+    assert trimmed > 0
+    assert len(compacted) <= AgentLoop._CONTEXT_COMPACT_MAX_MESSAGES
+    non_system_count = sum(
+        1 for msg in compacted if str(msg.get("role") or "").lower() != "system"
+    )
+    assert non_system_count <= AgentLoop._CONTEXT_COMPACT_MAX_NON_SYSTEM_MESSAGES
+    assert compacted[0]["role"] == "system"
+    assert compacted[-1]["content"] == "message-59"
 
 
 def test_agent_loop_blocks_high_risk_tool_combo_without_explicit_intent() -> None:
@@ -1831,6 +1853,80 @@ def test_agent_loop_toolcall_web_search_example() -> None:
     assert len(result.tool_runs) == 1
     assert result.tool_runs[0].name == "web_search"
     assert "BRAVE_API_KEY not configured" in result.tool_runs[0].result
+
+
+def test_agent_loop_repairs_missing_web_search_query_from_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CaptureWebSearchTool(FunctionTool):
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        @property
+        def name(self) -> str:
+            return "web_search"
+
+        @property
+        def description(self) -> str:
+            return "Search the web."
+
+        @property
+        def parameters(self) -> dict[str, Any]:
+            return {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            }
+
+        async def execute(self, **kwargs: Any) -> str:
+            self.calls.append(dict(kwargs))
+            return f"search:{kwargs.get('query', '')}"
+
+    registry = FunctionToolRegistry()
+    tool = _CaptureWebSearchTool()
+    registry.register(tool)
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del model, on_token
+        state["n"] += 1
+        if state["n"] == 1:
+            assert any(
+                isinstance(t.get("function"), Mapping)
+                and t["function"].get("name") == "web_search"
+                for t in tools
+            )
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "search_1", "name": "web_search", "arguments": {}}
+                ],
+            }
+        assert any(m.get("role") == "tool" for m in messages)
+        return {"content": "Search step completed."}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    log_messages: list[str] = []
+    monkeypatch.setattr(
+        "annolid.core.agent.loop.logger.info",
+        lambda msg, *args, **kwargs: log_messages.append(
+            str(msg % args) if args else str(msg)
+        ),
+    )
+    result = asyncio.run(loop.run("/skill weather\nCheck today's weather"))
+    assert result.content == "Search step completed."
+    assert tool.calls == [{"query": "Check today's weather"}]
+    assert result.tool_runs[0].arguments["query"] == "Check today's weather"
+    assert result.tool_runs[0].result == "search:Check today's weather"
+    assert any(
+        "repaired missing web_search query from prompt" in message
+        for message in log_messages
+    )
 
 
 def test_agent_loop_selects_relevant_tools_by_description() -> None:

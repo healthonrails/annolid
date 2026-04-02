@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from annolid.core.agent.config import ToolPolicyConfig, ToolsConfig
-from annolid.core.agent.tools.policy import resolve_allowed_tools
+from annolid.core.agent.tools.policy import (
+    build_tool_permission_context,
+    resolve_allowed_tools,
+)
 
 
 def test_policy_profile_and_group_allow_deny() -> None:
@@ -386,3 +389,30 @@ def test_policy_denies_runtime_exec_with_messaging_without_explicit_intent() -> 
     assert "message" in resolved.allowed_tools
     assert "exec_start" not in resolved.allowed_tools
     assert "exec_process" not in resolved.allowed_tools
+
+
+def test_build_tool_permission_context_tracks_denied_tools_and_prefixes() -> None:
+    cfg = ToolsConfig(
+        profile="minimal",
+        allow=["read_file"],
+        deny=["mcp_browser_*"],
+    )
+    all_tools = [
+        "read_file",
+        "write_file",
+        "mcp_browser",
+        "mcp_browser_click",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="ollama",
+        model="qwen3",
+    )
+    ctx = build_tool_permission_context(
+        all_tool_names=all_tools,
+        resolved_policy=resolved,
+    )
+    assert ctx.blocks("write_file") is True
+    assert ctx.blocks("mcp_browser_click") is True
+    assert ctx.blocks("read_file") is False

@@ -104,6 +104,7 @@ from annolid.services.chat_backend_support import (
     looks_like_open_url_suggestion,
     looks_like_url_request,
     looks_like_web_access_refusal,
+    looks_like_web_lookup_promise,
     maybe_handle_ollama_plain_mode,
     normalize_gui_messages_for_ollama,
     parse_direct_gui_command,
@@ -412,6 +413,45 @@ class InboundChatMessage:
     show_tool_trace: bool
     enable_web_tools: bool
     settings: Dict[str, Any]
+    selected_skill_names: Optional[List[str]] = None
+    selected_tool_names: Optional[List[str]] = None
+    slash_commands: Optional[List[str]] = None
+
+
+def _append_selected_capabilities_prompt(
+    base_prompt: str,
+    *,
+    selected_skill_names: Optional[Sequence[str]] = None,
+    selected_tool_names: Optional[Sequence[str]] = None,
+) -> str:
+    parts = [str(base_prompt or "").rstrip()]
+    skill_names = [
+        str(name or "").strip()
+        for name in (selected_skill_names or [])
+        if str(name or "").strip()
+    ]
+    tool_names = [
+        str(name or "").strip()
+        for name in (selected_tool_names or [])
+        if str(name or "").strip()
+    ]
+    if skill_names:
+        parts.append(
+            "## Selected Skills\n"
+            + "\n".join(f"- `{name}`" for name in skill_names)
+            + "\n"
+            "Treat these skills as user-selected priorities. Inspect the matching "
+            "`SKILL.md` files before answering when they apply to the request."
+        )
+    if tool_names:
+        parts.append(
+            "## Selected Tools\n"
+            + "\n".join(f"- `{name}`" for name in tool_names)
+            + "\n"
+            "Prefer these tools when they match the request. Do not ignore them in "
+            "favor of a generic answer if the selected tool fits better."
+        )
+    return "\n\n".join(part for part in parts if part).strip()
 
 
 class _TaskCancelledError(RuntimeError):
@@ -437,6 +477,8 @@ class StreamingChatTask(QRunnable):
         inbound: Optional[Any] = None,
     ):
         super().__init__()
+        self.selected_skill_names: List[str] = []
+        self.selected_tool_names: List[str] = []
         if inbound is not None:
             if isinstance(inbound, BusInboundMessage):
                 inbound_meta = dict(inbound.metadata or {})
@@ -468,6 +510,24 @@ class StreamingChatTask(QRunnable):
                     .lower()
                 )
                 self.chat_mode = inbound_mode or "default"
+                self.selected_skill_names = [
+                    str(name or "").strip()
+                    for name in (
+                        inbound_meta.get("selected_skill_names")
+                        or inbound_meta.get("skill_names")
+                        or []
+                    )
+                    if str(name or "").strip()
+                ]
+                self.selected_tool_names = [
+                    str(name or "").strip()
+                    for name in (
+                        inbound_meta.get("selected_tool_names")
+                        or inbound_meta.get("tool_names")
+                        or []
+                    )
+                    if str(name or "").strip()
+                ]
             else:
                 self.prompt = str(inbound.prompt or "")
                 inbound_image = str(inbound.image_path or "").strip()
@@ -483,6 +543,16 @@ class StreamingChatTask(QRunnable):
                 self.enable_web_tools = bool(inbound.enable_web_tools)
                 inbound_mode = str(inbound.chat_mode or "").strip().lower()
                 self.chat_mode = inbound_mode or "default"
+                self.selected_skill_names = [
+                    str(name or "").strip()
+                    for name in (getattr(inbound, "selected_skill_names", None) or [])
+                    if str(name or "").strip()
+                ]
+                self.selected_tool_names = [
+                    str(name or "").strip()
+                    for name in (getattr(inbound, "selected_tool_names", None) or [])
+                    if str(name or "").strip()
+                ]
         else:
             self.prompt = prompt
             self.image_path = image_path
@@ -493,6 +563,8 @@ class StreamingChatTask(QRunnable):
             self.show_tool_trace = bool(show_tool_trace)
             self.enable_web_tools = bool(enable_web_tools)
             self.chat_mode = str(chat_mode or "default").strip().lower() or "default"
+            self.selected_skill_names = []
+            self.selected_tool_names = []
         self.widget = widget
         self.session_store = session_store or get_chat_session_store()
         self.workspace = get_chat_workspace()
@@ -917,7 +989,9 @@ class StreamingChatTask(QRunnable):
 
         prompt_needs_tools = self._prompt_may_need_tools(self.prompt)
         context = await self._build_agent_execution_context(
-            include_tools=prompt_needs_tools
+            include_tools=prompt_needs_tools,
+            selected_skill_names=self.selected_skill_names,
+            selected_tool_names=self.selected_tool_names,
         )
         self._raise_if_cancelled()
 
@@ -1071,7 +1145,11 @@ class StreamingChatTask(QRunnable):
         return True
 
     async def _build_agent_execution_context(
-        self, *, include_tools: bool = True
+        self,
+        *,
+        include_tools: bool = True,
+        selected_skill_names: Optional[List[str]] = None,
+        selected_tool_names: Optional[List[str]] = None,
     ) -> _AgentExecutionContext:
         self._emit_progress("Loading tools and context")
         profile_t0 = time.perf_counter()
@@ -1097,6 +1175,8 @@ class StreamingChatTask(QRunnable):
             allowed_read_roots=allowed_read_roots,
             allow_web_tools=bool(include_tools and self.enable_web_tools),
             available_tool_names=list(tools.tool_names),
+            selected_skill_names=selected_skill_names,
+            selected_tool_names=selected_tool_names,
             tool_policy_profile=policy_profile,
             tool_policy_source=policy_source,
             include_workspace_docs=bool(include_tools),
@@ -1445,6 +1525,8 @@ class StreamingChatTask(QRunnable):
         )
 
     def _should_force_web_fallback(self, prompt: str, text: str) -> bool:
+        if looks_like_web_lookup_promise(text):
+            return True
         if str(text or "").strip():
             return False
         if should_attach_live_web_context(prompt):
@@ -2044,7 +2126,16 @@ class StreamingChatTask(QRunnable):
             "exec_start": self._tool_gui_exec_start,
             "exec_process": self._tool_gui_exec_process,
             "self_update": self._tool_gui_self_update,
+            "open_agent_capabilities": self._tool_gui_open_agent_capabilities,
         }
+
+    def _tool_gui_open_agent_capabilities(self) -> Dict[str, Any]:
+        widget = self.widget
+        if widget is None:
+            return {"ok": False, "error": "Agent capabilities dialog is unavailable."}
+        if not self._invoke_widget_slot("open_agent_capabilities_dialog"):
+            return {"ok": False, "error": "Agent capabilities dialog is unavailable."}
+        return {"ok": True, "opened": True}
 
     @staticmethod
     def _looks_like_local_access_refusal(text: str) -> bool:
@@ -3747,11 +3838,13 @@ class StreamingChatTask(QRunnable):
         allowed_read_roots: Optional[List[str]] = None,
         allow_web_tools: Optional[bool] = None,
         available_tool_names: Optional[List[str]] = None,
+        selected_skill_names: Optional[List[str]] = None,
+        selected_tool_names: Optional[List[str]] = None,
         tool_policy_profile: str = "",
         tool_policy_source: str = "",
         include_workspace_docs: bool = True,
     ) -> str:
-        return build_gui_compact_system_prompt(
+        prompt = build_gui_compact_system_prompt(
             inputs=PromptBuildInputs(
                 workspace=workspace,
                 prompt=self.prompt,
@@ -3772,6 +3865,11 @@ class StreamingChatTask(QRunnable):
             should_attach_tracking_stats_context=self._should_attach_tracking_stats_context,
             build_live_web_context_prompt_block=self._build_live_web_context_prompt_block,
             build_live_pdf_context_prompt_block=self._build_live_pdf_context_prompt_block,
+        )
+        return _append_selected_capabilities_prompt(
+            prompt,
+            selected_skill_names=selected_skill_names,
+            selected_tool_names=selected_tool_names,
         )
 
     @staticmethod

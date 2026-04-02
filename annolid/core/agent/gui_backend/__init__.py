@@ -3,6 +3,13 @@ from .commands import (
     parse_direct_gui_command,
     prompt_may_need_tools,
 )
+from .command_registry import (
+    build_direct_command_alias_line,
+    build_root_slash_completion_entries,
+    iter_direct_slash_command_specs,
+    matches_slash_completion_search,
+    parse_direct_slash_command,
+)
 from .context_setup import (
     ContextToolPreparation,
     ExecutionPrerequisites,
@@ -25,6 +32,7 @@ from .heuristics import (
     looks_like_open_url_suggestion,
     looks_like_url_request,
     looks_like_web_access_refusal,
+    looks_like_web_lookup_promise,
     prompt_may_need_mcp,
     should_attach_live_pdf_context,
     should_attach_live_web_context,
@@ -180,8 +188,13 @@ from .prompt_builder import PromptBuildInputs, build_compact_system_prompt
 
 __all__ = [
     "parse_direct_gui_command",
+    "parse_direct_slash_command",
     "looks_like_local_access_refusal",
     "prompt_may_need_tools",
+    "build_direct_command_alias_line",
+    "build_root_slash_completion_entries",
+    "iter_direct_slash_command_specs",
+    "matches_slash_completion_search",
     "ExecutionPrerequisites",
     "ContextToolPreparation",
     "load_execution_prerequisites",
@@ -194,6 +207,7 @@ __all__ = [
     "should_attach_live_pdf_context",
     "should_attach_tracking_stats_context",
     "looks_like_web_access_refusal",
+    "looks_like_web_lookup_promise",
     "looks_like_knowledge_gap_response",
     "looks_like_open_url_suggestion",
     "looks_like_open_pdf_suggestion",

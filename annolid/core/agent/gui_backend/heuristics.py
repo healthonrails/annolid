@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 from typing import List, Tuple
 
@@ -88,6 +89,23 @@ PDF_READ_PROMISE_HINTS: Tuple[str, ...] = (
     "let me look at",
 )
 
+WEB_LOOKUP_PROMISE_HINTS: Tuple[str, ...] = (
+    "i'll check",
+    "i will check",
+    "let me check",
+    "i'll look up",
+    "i will look up",
+    "let me look up",
+    "i'll search",
+    "i will search",
+    "let me search",
+    "i'll use the weather skill",
+    "i will use the weather skill",
+    "check the weather skill",
+    "weather skill first",
+    "guidance on retrieving weather information",
+)
+
 PDF_PHRASE_MISS_HINTS: Tuple[str, ...] = (
     "don't see that specific phrase",
     "do not see that specific phrase",
@@ -146,8 +164,38 @@ TRACKING_STATS_CONTEXT_HINTS: Tuple[str, ...] = (
     "prediction segments",
 )
 
+MCP_PROMPT_PHRASE_HINTS: Tuple[str, ...] = (
+    "http://",
+    "https://",
+    "www.",
+    "open website",
+    "web page",
+)
+
+MCP_PROMPT_TOKEN_HINTS: Tuple[str, ...] = (
+    "browser",
+    "navigate",
+    "playwright",
+    "mcp",
+    "dom",
+    "click",
+    "scroll",
+    "form",
+    "url",
+    "link",
+)
+
 EMBEDDED_SEARCH_URL_TEMPLATE = "https://html.duckduckgo.com/html/?q={query}"
 EMBEDDED_SEARCH_SOURCE = "DuckDuckGo search results page (embedded web viewer)."
+_WORD_RE = re.compile(r"[a-zA-Z0-9_]+")
+
+
+@dataclass(frozen=True)
+class PhraseHeuristic:
+    hints: Tuple[str, ...]
+    max_chars: int | None = None
+    required_any_terms: Tuple[str, ...] = ()
+    required_all_terms: Tuple[str, ...] = ()
 
 
 def contains_hint(text: str, hints: Tuple[str, ...]) -> bool:
@@ -155,6 +203,10 @@ def contains_hint(text: str, hints: Tuple[str, ...]) -> bool:
     if not lowered:
         return False
     return any(h in lowered for h in hints)
+
+
+def _token_set(text: str) -> set[str]:
+    return set(_WORD_RE.findall(str(text or "").lower()))
 
 
 def looks_like_url_request(text: str) -> bool:
@@ -181,6 +233,26 @@ def should_attach_tracking_stats_context(prompt: str) -> bool:
     return contains_hint(prompt, TRACKING_STATS_CONTEXT_HINTS)
 
 
+def _matches_phrase_heuristic(text: str, spec: PhraseHeuristic) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    token_set = _token_set(lowered)
+    if spec.max_chars is not None and len(lowered) > spec.max_chars:
+        return False
+    if not contains_hint(lowered, spec.hints):
+        return False
+    if spec.required_any_terms and not any(
+        term.lower() in token_set for term in spec.required_any_terms
+    ):
+        return False
+    if spec.required_all_terms and not all(
+        term.lower() in token_set for term in spec.required_all_terms
+    ):
+        return False
+    return True
+
+
 def looks_like_web_access_refusal(text: str) -> bool:
     return contains_hint(text, WEB_ACCESS_REFUSAL_HINTS)
 
@@ -198,39 +270,53 @@ def looks_like_open_pdf_suggestion(text: str) -> bool:
 
 
 def looks_like_pdf_read_promise(text: str) -> bool:
-    lowered = str(text or "").strip().lower()
-    if not lowered:
-        return False
-    if len(lowered) > 280:
-        return False
-    if not contains_hint(lowered, PDF_READ_PROMISE_HINTS):
-        return False
-    return bool(
-        ("pdf" in lowered)
-        or ("page" in lowered)
-        or ("section" in lowered)
-        or ("document" in lowered)
+    return _matches_phrase_heuristic(
+        text,
+        PhraseHeuristic(
+            hints=PDF_READ_PROMISE_HINTS,
+            max_chars=280,
+            required_any_terms=("pdf", "page", "section", "document"),
+        ),
+    )
+
+
+def looks_like_web_lookup_promise(text: str) -> bool:
+    return _matches_phrase_heuristic(
+        text,
+        PhraseHeuristic(
+            hints=WEB_LOOKUP_PROMISE_HINTS,
+            max_chars=320,
+            required_any_terms=(
+                "weather",
+                "forecast",
+                "temperature",
+                "web",
+                "browser",
+                "skill",
+            ),
+        ),
     )
 
 
 def looks_like_pdf_phrase_miss_response(text: str) -> bool:
-    lowered = str(text or "").strip().lower()
-    if not lowered:
-        return False
-    if len(lowered) > 420:
-        return False
-    if not contains_hint(lowered, PDF_PHRASE_MISS_HINTS):
-        return False
-    return ("pdf" in lowered) or ("page" in lowered) or ("document" in lowered)
+    return _matches_phrase_heuristic(
+        text,
+        PhraseHeuristic(
+            hints=PDF_PHRASE_MISS_HINTS,
+            max_chars=420,
+            required_any_terms=("pdf", "page", "document"),
+        ),
+    )
 
 
 def looks_like_pdf_summary_request(text: str) -> bool:
-    lowered = str(text or "").strip().lower()
-    if not lowered:
-        return False
-    if not contains_hint(lowered, PDF_CONTEXT_HINTS):
-        return False
-    return contains_hint(lowered, PDF_SUMMARY_ACTION_HINTS)
+    return _matches_phrase_heuristic(
+        text,
+        PhraseHeuristic(
+            hints=PDF_SUMMARY_ACTION_HINTS,
+            required_any_terms=PDF_CONTEXT_HINTS,
+        ),
+    )
 
 
 def extract_web_urls(text: str) -> List[str]:
@@ -306,21 +392,9 @@ def prompt_may_need_mcp(prompt: str) -> bool:
     text = str(prompt or "").lower()
     if not text:
         return False
-    hints = (
-        "http://",
-        "https://",
-        "www.",
-        "browser",
-        "navigate",
-        "open website",
-        "web page",
-        "playwright",
-        "mcp",
-        "dom",
-        "click",
-        "scroll",
-        "form",
-        "search",
-        *LIVE_WEB_INTENT_HINTS,
-    )
-    return any(token in text for token in hints)
+    token_set = _token_set(text)
+    if contains_hint(text, MCP_PROMPT_PHRASE_HINTS):
+        return True
+    if token_set.intersection(set(MCP_PROMPT_TOKEN_HINTS)):
+        return True
+    return bool(token_set.intersection(set(LIVE_WEB_INTENT_HINTS)))
