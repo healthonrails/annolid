@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 import torch
 import torch.nn.functional as torchF
+from annolid.utils.logger import logger
 from sam3.sam.rope import apply_rotary_enc, apply_rotary_enc_real, compute_axial_cis
 from sam3.sam.transformer import RoPEAttention
 from sam3.utils.device import select_device
@@ -1292,12 +1293,46 @@ class TransformerEncoderDecoupledCrossAttention(nn.Module):
         memory_pos: Optional[Tensor] = None,  # pos_enc for cross-attention inputs
         num_obj_ptr_tokens: int = 0,  # number of object pointer *tokens*
     ):
-        assert src.shape[1] == memory.shape[1], (
-            "Batch size must be the same for src and memory"
-        )
-        assert image.shape[1] == memory_image.shape[1], (
-            "Batch size must be the same for image and memory_image"
-        )
+        def _align_batch_dim(tensor: Tensor, target_batch: int, tensor_name: str) -> Tensor:
+            if tensor.shape[1] == target_batch:
+                return tensor
+            current_batch = int(tensor.shape[1])
+            if current_batch == 1:
+                return tensor.expand(-1, target_batch, *tensor.shape[2:])
+            if current_batch == 0:
+                logger.warning(
+                    "SAM3 decoder: empty batch dimension in %s; padding to %d for stable fusion.",
+                    tensor_name,
+                    int(target_batch),
+                )
+                out_shape = list(tensor.shape)
+                out_shape[1] = int(target_batch)
+                return tensor.new_zeros(tuple(out_shape))
+            if current_batch < target_batch:
+                pad_shape = list(tensor.shape)
+                pad_shape[1] = int(target_batch - current_batch)
+                pad = tensor.new_zeros(tuple(pad_shape))
+                return torch.cat([tensor, pad], dim=1)
+            logger.warning(
+                "SAM3 decoder: truncating %s batch dimension from %d to %d.",
+                tensor_name,
+                int(current_batch),
+                int(target_batch),
+            )
+            return tensor[:, :target_batch, ...]
+
+        memory = _align_batch_dim(memory, int(src.shape[1]), "memory")
+        memory_image = _align_batch_dim(memory_image, int(image.shape[1]), "memory_image")
+        if src_pos is not None and src_pos.shape[1] != src.shape[1]:
+            src_pos = _align_batch_dim(src_pos, int(src.shape[1]), "src_pos")
+        if image_pos is not None and image_pos.shape[1] != image.shape[1]:
+            image_pos = _align_batch_dim(image_pos, int(image.shape[1]), "image_pos")
+        if memory_pos is not None and memory_pos.shape[1] != memory.shape[1]:
+            memory_pos = _align_batch_dim(memory_pos, int(memory.shape[1]), "memory_pos")
+        if memory_image_pos is not None and memory_image_pos.shape[1] != memory_image.shape[1]:
+            memory_image_pos = _align_batch_dim(
+                memory_image_pos, int(memory_image.shape[1]), "memory_image_pos"
+            )
 
         output = src
 

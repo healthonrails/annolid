@@ -1345,9 +1345,12 @@ class VideoTrackingMultiplex(nn.Module):
                 return torch.cat([tensor, pad], dim=1)
             return tensor[:, :target_buckets, ...]
 
-        vision_feat = _align_bucket_dim(current_vision_feats[-1], B)
-        vision_mask = _align_bucket_dim(current_vision_masks[-1], B)
-        vision_pos_embed = _align_bucket_dim(current_vision_pos_embeds[-1], B)
+        current_image_feat = _align_bucket_dim(current_vision_feats[-1], B)
+        current_image_pos_embed = _align_bucket_dim(current_vision_pos_embeds[-1], B)
+        current_image_mask = _align_bucket_dim(current_vision_masks[-1], B)
+        vision_feat = current_image_feat
+        vision_mask = current_image_mask
+        vision_pos_embed = current_image_pos_embed
 
         C = self.hidden_dim
         H, W = feat_sizes[-1]  # top-level (lowest-resolution) feature size
@@ -1628,11 +1631,11 @@ class VideoTrackingMultiplex(nn.Module):
             image_pos_embed = torch.cat(to_cat_image_pos_embed, dim=0)
 
             encoder_out = self.transformer.encoder(
-                image=current_vision_feats[-1],
+                image=current_image_feat,
                 src=vision_feat,
                 memory_image=image_feat,
                 memory=prompt,
-                image_pos=current_vision_pos_embeds[-1],
+                image_pos=current_image_pos_embed,
                 src_pos=vision_pos_embed,
                 memory_image_pos=image_pos_embed,
                 memory_pos=prompt_pos_embed,
