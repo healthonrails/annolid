@@ -94,6 +94,7 @@ nav:
       - Simulation and FlyBody: simulation_flybody.md
       - COCO Data Flow: coco_data_flow.md
       - Tutorials Overview: tutorials.md
+      - Video Downsample Workflow (GUI): tutorials/video_downsample_workflow.md
       - Behavior Labeling (Timeline + Flags + Bot): tutorials/behavior_timeline_flags_bot.md
       - Video Processing with FFmpeg: tutorials/video_ffmpeg_processing.md
       - Segment-based Batch Tracking: tutorials/segment-based-batch-tracking.md

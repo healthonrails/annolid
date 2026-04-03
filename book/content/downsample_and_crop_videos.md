@@ -5,9 +5,10 @@ The **Downsample Videos** tool is the safest way to prepare a folder of lab vide
 - set one folder-wide default configuration,
 - override only the videos that need special treatment,
 - crop videos interactively or by coordinates,
+- assign a different crop to one specific video during folder review,
 - keep a per-video processing record for reproducibility.
 
-If you only have a single video, the same dialog works as a simple one-off rescale tool. Folder input unlocks the per-video review workflow.
+If you only have a single video, the same dialog works as a simple one-off rescale tool. Folder input unlocks the per-video review workflow, including custom crops for individual videos.
 
 For a visual walkthrough of the full batch workflow, see [Batch downsampling with sequential video review](../tutorials/Downsample_video_batch_overrides.md).
 
@@ -18,7 +19,7 @@ For a visual walkthrough of the full batch workflow, see [Batch downsampling wit
 3. Open the **`Processing`** tab and set the default values that should apply to most videos.
 4. If one or more videos need different settings, click **`Review Videos One by One (Folder Input)`**.
 5. Review the **`Summary`** tab to confirm the batch settings before you run it.
-6. Use **`Save & Next`** for exceptions and **`Skip`** for videos that should keep the folder defaults.
+6. Use **`Save & Next`** for exceptions, including a one-off crop on a single video, and **`Skip`** for videos that should keep the folder defaults.
 7. Open the **`Run`** tab and start processing.
 
 This pattern keeps the default case simple and makes the unusual cases explicit.
@@ -33,6 +34,8 @@ Use a separate output folder. That keeps the source data unchanged and makes the
 If you leave the output folder blank, Annolid writes to a sibling folder with the same name plus `_downsampled` appended.
 
 If you choose a single video instead of a folder, the tool behaves like a one-file processor and writes to a sibling `_downsampled` folder unless you choose a custom output directory.
+
+![Annolid downsample dialog - Processing tab](../images/downsample_gui_processing.png)
 
 ## Step 2: Set folder-wide defaults
 
@@ -66,10 +69,13 @@ If you already know the coordinates, enter:
 - `height`
 
 The crop is only applied when the checkbox is enabled and all four values are valid integers.
+When you review a folder one video at a time, you can replace that shared crop with a custom crop on just the selected video.
 
 ## Step 4: Customize individual videos
 
 Click **`Review Videos One by One (Folder Input)`** to open the sequential review dialog.
+
+![Annolid downsample dialog - per-video review](../images/downsample_gui_review.png)
 
 Inside that dialog:
 
@@ -130,7 +136,7 @@ Use this when one video has a different camera position or a bad frame rate.
 2. Open the per-video review dialog.
 3. Review videos in order.
 4. Change only the outlier video.
-5. Click **`Save & Next`** for that file.
+5. Click **`Save & Next`** for that file to store its custom crop or other override.
 6. Run processing.
 
 ### Reuse the same custom configuration everywhere

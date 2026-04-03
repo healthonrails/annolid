@@ -4,6 +4,8 @@ Annolid provides a built-in agent capability (the `video-ffmpeg` skill) that all
 
 If you prefer a direct GUI workflow for folder-based processing, use **`File` > `Downsample Videos`** in the Annolid desktop app. The dialog keeps shared defaults in one place and offers a sequential per-video review button for exceptions.
 
+For a complete click-by-click GUI tutorial, see [Video Downsample Workflow (GUI)](video_downsample_workflow.md).
+
 ## What it can do
 
 You can ask the Annolid bot to perform common video operations, such as:

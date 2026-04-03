@@ -2,7 +2,7 @@
 
 This tutorial shows the recommended way to process a folder of videos when most files share the same settings but a few need custom crops or other adjustments.
 
-![Annolid main window](../images/annolid_gui.png)
+![Annolid downsample dialog - Processing tab](../images/downsample_gui_processing.png)
 
 The main dialog now uses four tabs:
 
@@ -23,9 +23,9 @@ The review dialog walks through one video at a time.
 6. `Apply Denoise`: enable denoising only for this file.
 7. `Auto Contrast Enhancement`: enable contrast correction only for this file.
 8. `Auto Contrast Strength:` tune how strong the contrast correction should be.
-9. `Enable Crop Region`: turn on a custom crop for this file.
-10. `Crop Region (x, y, width, height):` enter the exact crop rectangle.
-11. `Preview Crop On Current Video`: open the first frame and draw a crop visually.
+9. `Enable Crop Region`: turn on a custom crop for this file without affecting the rest of the folder.
+10. `Crop Region (x, y, width, height):` enter the exact crop rectangle for the current video.
+11. `Preview Crop On Current Video`: open the first frame and draw a crop visually for the current video.
 12. `Previous`: move back to the previous video.
 13. `Skip`: keep the folder defaults for the current video and move on.
 14. `Save & Next`: store the current settings for the current video and move on.
@@ -83,11 +83,13 @@ Open the **`Processing`** tab and click **`Review Videos One by One (Folder Inpu
 For each video:
 
 1. Change only the fields that should differ from the folder defaults.
-2. Use **`Preview Crop On Current Video`** when you need to draw a crop visually.
+2. Use **`Preview Crop On Current Video`** when you need to draw a crop visually for that specific video.
 3. Click **`Save & Next`** to store a custom override and move forward.
 4. Click **`Skip`** to keep the folder defaults for that video and move forward.
 
 Use **`Previous`** if you need to correct an earlier video.
+
+![Annolid downsample dialog - per-video review](../images/downsample_gui_review.png)
 
 ### 5. Run the batch
 
@@ -132,5 +134,5 @@ The clean workflow is:
 2. Open the review dialog.
 3. Review the 11 normal videos and click **`Skip`** for each one.
 4. Change only the outlier video's crop.
-5. Click **`Save & Next`** for that file.
+5. Click **`Save & Next`** for that file to save its custom crop.
 6. Run the batch.
