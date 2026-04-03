@@ -365,17 +365,16 @@ class Prompt:
         )
 
     def append_masks(self, masks, labels=None, attn_mask=None):
-        if labels is not None:
+        if labels is None:
+            labels = torch.ones(
+                masks.shape[0], masks.shape[1], device=masks.device, dtype=torch.long
+            )
+        else:
             assert list(masks.shape[:2]) == list(labels.shape[:2])
         if self.mask_embeddings is None:
             self.mask_embeddings = masks
             mask_seq_len, bs = masks.shape[:2]
-            if labels is None:
-                self.mask_labels = torch.ones(
-                    mask_seq_len, bs, device=masks.device, dtype=torch.long
-                )
-            else:
-                self.mask_labels = labels
+            self.mask_labels = labels
             if attn_mask is None:
                 self.mask_mask = torch.zeros(
                     bs, mask_seq_len, device=masks.device, dtype=torch.bool
@@ -383,7 +382,22 @@ class Prompt:
             else:
                 self.mask_mask = attn_mask
         else:
-            raise NotImplementedError("Only one mask per prompt is supported.")
+            bs = self.mask_embeddings.shape[1]
+            assert masks.shape[1] == bs
+            assert masks.shape[2:] == self.mask_embeddings.shape[2:], (
+                "Mask prompt resolution must match when appending masks."
+            )
+            if attn_mask is None:
+                attn_mask = torch.zeros(
+                    bs, masks.shape[0], dtype=torch.bool, device=masks.device
+                )
+            self.mask_labels, _ = concat_padded_sequences(
+                self.mask_labels.unsqueeze(-1), self.mask_mask, labels.unsqueeze(-1), attn_mask
+            )
+            self.mask_labels = self.mask_labels.squeeze(-1)
+            self.mask_embeddings, self.mask_mask = concat_padded_sequences(
+                self.mask_embeddings, self.mask_mask, masks, attn_mask
+            )
 
     def clone(self):
         return Prompt(
@@ -398,6 +412,13 @@ class Prompt:
             box_labels=None if self.box_labels is None else self.box_labels.clone(),
             point_labels=(
                 None if self.point_labels is None else self.point_labels.clone()
+            ),
+            mask_embeddings=(
+                None if self.mask_embeddings is None else self.mask_embeddings.clone()
+            ),
+            mask_mask=None if self.mask_mask is None else self.mask_mask.clone(),
+            mask_labels=(
+                None if self.mask_labels is None else self.mask_labels.clone()
             ),
         )
 
@@ -691,9 +712,6 @@ class SequenceGeometryEncoder(nn.Module):
         img_feats: torch.Tensor = None,
     ):
         n_masks, bs = masks.shape[:2]
-        assert n_masks == 1, (
-            "We assume one mask per prompt for now. Code should still be functional if this assertion is removed."
-        )
         assert list(attn_mask.shape) == [
             bs,
             n_masks,

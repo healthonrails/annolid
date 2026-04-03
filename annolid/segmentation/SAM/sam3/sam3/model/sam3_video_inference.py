@@ -870,6 +870,8 @@ class Sam3VideoInference(Sam3VideoBase):
         text_str=None,
         boxes_xywh=None,
         box_labels=None,
+        mask_inputs=None,
+        mask_labels=None,
     ):
         """
         Add text, point or box prompts on a single frame. This method returns the inference
@@ -881,8 +883,8 @@ class Sam3VideoInference(Sam3VideoBase):
         logger.debug("Running add_prompt on frame %d", frame_idx)
 
         num_frames = inference_state["num_frames"]
-        assert text_str is not None or boxes_xywh is not None, (
-            "at least one type of prompt (text, boxes) must be provided"
+        assert text_str is not None or boxes_xywh is not None or mask_inputs is not None, (
+            "at least one type of prompt (text, boxes, masks) must be provided"
         )
         assert 0 <= frame_idx < num_frames, (
             f"{frame_idx=} is out of range for a total of {num_frames} frames"
@@ -905,6 +907,14 @@ class Sam3VideoInference(Sam3VideoBase):
 
         # 2) handle box prompt
         assert (boxes_xywh is not None) == (box_labels is not None)
+        semantic_prompt = Prompt(
+            box_embeddings=torch.zeros(0, 1, 4, device=device),
+            box_mask=torch.zeros(1, 0, device=device, dtype=torch.bool),
+            box_labels=torch.zeros(0, 1, device=device, dtype=torch.long),
+            point_embeddings=torch.zeros(0, 1, 2, device=device),
+            point_mask=torch.zeros(1, 0, device=device, dtype=torch.bool),
+            point_labels=torch.zeros(0, 1, device=device, dtype=torch.long),
+        )
         if boxes_xywh is not None:
             boxes_xywh = torch.as_tensor(boxes_xywh, dtype=torch.float32)
             box_labels = torch.as_tensor(box_labels, dtype=torch.long)
@@ -924,8 +934,40 @@ class Sam3VideoInference(Sam3VideoBase):
             boxes_cxcywh, box_labels, geometric_prompt = self._get_visual_prompt(
                 inference_state, frame_idx, boxes_cxcywh, box_labels
             )
+            if geometric_prompt is None:
+                geometric_prompt = semantic_prompt
+            if boxes_cxcywh is not None and boxes_cxcywh.size(0) > 0:
+                geometric_prompt.append_boxes(
+                    boxes=boxes_cxcywh.view(-1, 1, 4).to(device),
+                    labels=box_labels.view(-1, 1).to(device),
+                )
+            semantic_prompt = geometric_prompt
 
-            inference_state["per_frame_geometric_prompt"][frame_idx] = geometric_prompt
+        if mask_inputs is not None:
+            mask_inputs = torch.as_tensor(mask_inputs, dtype=torch.float32, device=device)
+            if mask_inputs.ndim == 2:
+                mask_inputs = mask_inputs.unsqueeze(0).unsqueeze(0).unsqueeze(0)
+            elif mask_inputs.ndim == 3:
+                mask_inputs = mask_inputs.unsqueeze(1).unsqueeze(2)
+            elif mask_inputs.ndim == 4:
+                mask_inputs = mask_inputs.unsqueeze(1)
+            elif mask_inputs.ndim != 5:
+                raise ValueError(
+                    f"mask_inputs must be a stack of masks, got shape {tuple(mask_inputs.shape)}"
+                )
+            if mask_labels is None:
+                mask_labels = torch.ones(mask_inputs.shape[0], dtype=torch.long, device=device)
+            else:
+                mask_labels = torch.as_tensor(mask_labels, dtype=torch.long, device=device)
+            if mask_labels.ndim == 1:
+                mask_labels = mask_labels[:, None]
+            if mask_labels.shape[0] != mask_inputs.shape[0]:
+                raise ValueError(
+                    "mask_labels must match the number of mask prompts"
+                )
+            semantic_prompt.append_masks(mask_inputs, labels=mask_labels)
+
+        inference_state["per_frame_geometric_prompt"][frame_idx] = semantic_prompt
 
         with safe_autocast(device=self.device, dtype=torch.bfloat16):
             out = self._run_single_frame_inference(
@@ -1393,6 +1435,8 @@ class Sam3VideoInferenceWithInstanceInteractivity(Sam3VideoInference):
         text_str=None,
         boxes_xywh=None,
         box_labels=None,
+        mask_inputs=None,
+        mask_labels=None,
         points=None,
         point_labels=None,
         obj_id=None,
@@ -1400,8 +1444,8 @@ class Sam3VideoInferenceWithInstanceInteractivity(Sam3VideoInference):
     ):
         if points is not None:
             # Tracker instance prompts
-            assert text_str is None and boxes_xywh is None, (
-                "When points are provided, text_str and boxes_xywh must be None."
+            assert text_str is None and boxes_xywh is None and mask_inputs is None, (
+                "When points are provided, text_str, boxes_xywh and mask_inputs must be None."
             )
             assert obj_id is not None, (
                 "When points are provided, obj_id must be provided."
@@ -1423,6 +1467,8 @@ class Sam3VideoInferenceWithInstanceInteractivity(Sam3VideoInference):
                 text_str=text_str,
                 boxes_xywh=boxes_xywh,
                 box_labels=box_labels,
+                mask_inputs=mask_inputs,
+                mask_labels=mask_labels,
             )
 
     @torch.inference_mode()

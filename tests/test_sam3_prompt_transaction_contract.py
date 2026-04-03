@@ -118,3 +118,85 @@ def test_canvas_prompt_extraction_preserves_polygons_and_group_ids() -> None:
     point_ann = next(a for a in annotations if a["type"] == "points")
     assert point_ann["obj_id"] == 8
     assert point_ann["labels"] == [1, 0]
+
+
+def test_window_annotation_shift_groups_by_local_frame() -> None:
+    grouped = Sam3SessionManager._shift_annotations_to_window(
+        [
+            {"type": "box", "ann_frame_idx": 3, "box": [1, 2, 3, 4]},
+            {
+                "type": "polygon",
+                "ann_frame_idx": 4,
+                "polygon": [[1, 1], [2, 1], [2, 2]],
+            },
+            {"type": "points", "ann_frame_idx": 8, "points": [[5, 5]]},
+        ],
+        start_idx=3,
+        end_idx=7,
+    )
+
+    assert sorted(grouped.keys()) == [0, 1]
+    assert grouped[0][0]["ann_frame_idx"] == 0
+    assert grouped[1][0]["ann_frame_idx"] == 1
+    assert grouped[0][0]["box"] == [1, 2, 3, 4]
+
+
+def test_polygon_seed_annotations_expand_to_dense_mask_prompt() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.frame_shape = (100, 100, 3)
+    session._predictor = SimpleNamespace(
+        add_prompt=lambda **kwargs: {"frame_index": kwargs["frame_idx"], "outputs": {}}
+    )
+    session._session_id = "session-1"
+    session.id_to_labels = {7: "mouse"}
+
+    (
+        prompt_frame_idx,
+        boxes,
+        box_labels,
+        mask_inputs,
+        mask_labels,
+        points,
+        point_labels,
+        obj_ids,
+        point_obj_ids,
+    ) = session._prepare_prompts(
+        [
+            {
+                "type": "polygon",
+                "ann_frame_idx": 4,
+                "polygon": [[10, 10], [30, 10], [30, 40], [10, 40]],
+                "labels": [7],
+                "obj_id": 7,
+            }
+        ],
+        text_prompt=None,
+    )
+
+    assert prompt_frame_idx == 4
+    assert boxes == []
+    assert box_labels == []
+    assert len(mask_inputs) == 1
+    assert mask_inputs[0].shape == (100, 100)
+    assert int(mask_inputs[0].sum()) > 0
+    assert mask_labels == [1]
+    assert obj_ids == [7]
+    assert points == []
+    assert point_labels == []
+    assert point_obj_ids == []
+
+    transaction = session._execute_prompt_transaction(
+        session_id="session-1",
+        frame_idx=prompt_frame_idx,
+        text=None,
+        boxes=boxes,
+        box_labels=box_labels,
+        mask_inputs=mask_inputs,
+        mask_labels=mask_labels,
+        points=points,
+        point_labels=point_labels,
+        obj_id=None,
+    )
+    assert transaction["transaction_step_kinds"] == ["semantic"]
+    assert transaction["transaction_steps"][0]["prompt_kind"] == "semantic"
+    assert transaction["outputs"] == {}

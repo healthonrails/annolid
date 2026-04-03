@@ -58,6 +58,8 @@ class Sam3BasePredictor:
                 bounding_boxes=request.get("bounding_boxes", None),
                 bounding_box_labels=request.get("bounding_box_labels", None),
                 clear_old_boxes=request.get("clear_old_boxes", True),
+                mask_inputs=request.get("mask_inputs", None),
+                mask_labels=request.get("mask_labels", None),
                 output_prob_thresh=request.get(
                     "output_prob_thresh",
                     getattr(self, "default_output_prob_thresh", 0.5),
@@ -141,6 +143,8 @@ class Sam3BasePredictor:
         bounding_boxes=None,
         bounding_box_labels=None,
         clear_old_boxes: bool = True,
+        mask_inputs=None,
+        mask_labels=None,
         output_prob_thresh: float = 0.5,
         obj_id: Optional[int] = None,
     ):
@@ -160,6 +164,10 @@ class Sam3BasePredictor:
             bounding_box_labels, torch.Tensor
         ):
             bounding_box_labels = torch.tensor(bounding_box_labels, dtype=torch.int32)
+        if mask_inputs is not None and not isinstance(mask_inputs, torch.Tensor):
+            mask_inputs = torch.as_tensor(mask_inputs, dtype=torch.float32)
+        if mask_labels is not None and not isinstance(mask_labels, torch.Tensor):
+            mask_labels = torch.tensor(mask_labels, dtype=torch.int32)
 
         kwargs = dict(
             inference_state=inference_state,
@@ -171,6 +179,8 @@ class Sam3BasePredictor:
             boxes_xywh=bounding_boxes,
             box_labels=bounding_box_labels,
             clear_old_boxes=clear_old_boxes,
+            mask_inputs=mask_inputs,
+            mask_labels=mask_labels,
             output_prob_thresh=output_prob_thresh,
         )
         if obj_id is not None:
