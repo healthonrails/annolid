@@ -991,6 +991,20 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         _, _, w, h = [float(v) for v in np.asarray(box, dtype=float).tolist()]
         return max(0.0, w) * max(0.0, h)
 
+    def _track_match_max_gap(self) -> int:
+        """
+        Maximum allowed gap for cross-window matching.
+
+        Use the larger of window size and stride so the matcher survives the
+        actual handoff between windows instead of treating the next window as
+        stale by default.
+        """
+        return max(
+            2,
+            int(self.sliding_window_size or 0),
+            int(self.sliding_window_stride or 0),
+        )
+
     def _box_track_match_score(
         self,
         prev_box: np.ndarray,
@@ -1029,7 +1043,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             size_score = float(min(prev_area, cand_area) / max(prev_area, cand_area))
 
         if max_gap is None:
-            max_gap = max(2, min(int(self.sliding_window_size or 5), 10))
+            max_gap = self._track_match_max_gap()
         gap_norm = max(1.0, float(max_gap))
         age_penalty = min(0.3, max(0.0, float(age_frames)) / gap_norm * 0.15)
 
@@ -1047,7 +1061,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         if used_ids is None:
             used_ids = set()
 
-        max_gap = max(2, min(int(self.sliding_window_size or 5), 10))
+        max_gap = self._track_match_max_gap()
         candidates: List[Tuple[float, int]] = []
         for gid, prev_box in self._global_track_last_box.items():
             if gid in used_ids:
@@ -1126,6 +1140,12 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
         age = max(0, int(frame_idx) - int(last_seen))
         if age <= 0:
+            return np.asarray(prev_box, dtype=float)
+
+        # Use short-range motion only. Longer gaps should rely on the last
+        # observed box rather than a linear extrapolation that can overshoot.
+        motion_horizon = max(1, min(self._track_match_max_gap(), 3))
+        if age > motion_horizon:
             return np.asarray(prev_box, dtype=float)
 
         last_box = np.asarray(history[-1], dtype=float)
@@ -2222,6 +2242,43 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             grouped.setdefault(local_idx, []).append(shifted)
         return grouped
 
+    @staticmethod
+    def _build_window_seed_segments(
+        seed_frame_indices: Iterable[int],
+        window_length: int,
+        *,
+        has_text_prompt: bool,
+    ) -> List[Tuple[int, int]]:
+        """
+        Normalize seeded frames into ordered local segments for one window.
+
+        This mirrors CUTIE's segment-oriented handling of multiple seed frames:
+        each seed starts a contiguous pass until the next seed, and text-only
+        fallback anchors the window at frame 0 when no manual labels exist.
+        """
+        normalized = sorted(
+            {
+                int(idx)
+                for idx in seed_frame_indices or []
+                if idx is not None and 0 <= int(idx) < int(window_length)
+            }
+        )
+        if not normalized and has_text_prompt:
+            normalized = [0]
+        elif has_text_prompt and 0 not in normalized:
+            normalized = [0, *normalized]
+            normalized = sorted(set(normalized))
+
+        segments: List[Tuple[int, int]] = []
+        for idx, start_local in enumerate(normalized):
+            next_local = (
+                normalized[idx + 1] if idx + 1 < len(normalized) else int(window_length)
+            )
+            if int(next_local) <= int(start_local):
+                continue
+            segments.append((int(start_local), int(next_local)))
+        return segments
+
     def _propagate_annotations_windowed(
         self,
         annotations: Iterable[dict],
@@ -2321,6 +2378,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     def _seed_frame(local_frame_idx: int) -> bool:
                         abs_frame_idx = window_start_idx + int(local_frame_idx)
                         frame_annotations = local_ann_groups.get(int(local_frame_idx), [])
+                        seed_mask_count = 0
                         if frame_annotations:
                             (
                                 prompt_frame_idx,
@@ -2374,39 +2432,32 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                                 point_obj_ids=[],
                                 label_hints=[],
                             )
+                        elif self.text_prompt:
+                            logger.info(
+                                "SAM3.1 annotated window #%d frame=%d had no local annotations; falling back to text prompt.",
+                                int(window_idx),
+                                int(abs_frame_idx),
+                            )
+                            seed_mask_count = self._apply_seed_prompts(
+                                frame_idx=int(local_frame_idx),
+                                session_id=session_id,
+                                boxes=[],
+                                labels=[],
+                                mask_inputs=[],
+                                mask_labels=[],
+                                points=[],
+                                point_labels=[],
+                                point_obj_ids=[],
+                                label_hints=[],
+                            )
+                        else:
+                            return False
                         if seed_mask_count <= 0:
                             logger.info(
                                 "SAM3.1 annotated window #%d frame=%d text prompt produced no seed masks; skipping propagation from this prompt frame.",
                                 int(window_idx),
                                 int(abs_frame_idx),
-                            )
-                            return False
-                        return True
-                        if not self.text_prompt:
-                            return False
-                        logger.info(
-                            "SAM3.1 annotated window #%d frame=%d had no local annotations; falling back to text prompt.",
-                            int(window_idx),
-                            int(abs_frame_idx),
-                        )
-                        seed_mask_count = self._apply_seed_prompts(
-                            frame_idx=int(local_frame_idx),
-                            session_id=session_id,
-                            boxes=[],
-                            labels=[],
-                            mask_inputs=[],
-                            mask_labels=[],
-                            points=[],
-                            point_labels=[],
-                            point_obj_ids=[],
-                            label_hints=[],
-                        )
-                        if seed_mask_count <= 0:
-                            logger.info(
-                                "SAM3.1 annotated window #%d frame=%d text prompt produced no seed masks; skipping propagation from this prompt frame.",
-                                int(window_idx),
-                                int(abs_frame_idx),
-                            )
+                                )
                             return False
                         return True
 
@@ -2456,32 +2507,19 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             )
                         return int(frames_processed), int(masks_written)
 
-                    segment_starts = list(local_prompt_frames)
-                    if not segment_starts:
-                        segment_starts = [0]
-                    segment_starts = sorted(
-                        {idx for idx in segment_starts if 0 <= int(idx) < len(frames)}
+                    seed_segments = self._build_window_seed_segments(
+                        local_prompt_frames,
+                        len(frames),
+                        has_text_prompt=bool(self.text_prompt),
                     )
-                    if 0 not in segment_starts and self.text_prompt:
-                        segment_starts = [0] + segment_starts
-                        segment_starts = sorted(set(segment_starts))
-
-                    if segment_starts:
-                        # Start with the first prompt frame and then reseed at later
-                        # prompt frames inside the same window.
-                        for seg_idx, start_local in enumerate(segment_starts):
-                            if int(start_local) not in local_ann_groups and not (
-                                seg_idx == 0 and self.text_prompt
-                            ):
-                                continue
-                            if not _seed_frame(int(start_local)):
-                                continue
-                            next_local = (
-                                segment_starts[seg_idx + 1]
-                                if seg_idx + 1 < len(segment_starts)
-                                else len(frames)
-                            )
-                            _propagate_segment(int(start_local), int(next_local))
+                    for start_local, next_local in seed_segments:
+                        if int(start_local) not in local_ann_groups and not (
+                            int(start_local) == 0 and self.text_prompt
+                        ):
+                            continue
+                        if not _seed_frame(int(start_local)):
+                            continue
+                        _propagate_segment(int(start_local), int(next_local))
                 finally:
                     try:
                         self._predictor.close_session(session_id)

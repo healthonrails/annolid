@@ -76,6 +76,7 @@ def test_iter_video_windows_streams_sequentially_without_seeking(monkeypatch) ->
 def test_global_track_assignment_rejects_stale_tracks() -> None:
     session = Sam3SessionManager.__new__(Sam3SessionManager)
     session.sliding_window_size = 5
+    session.sliding_window_stride = 4
     session._global_track_next_id = 3
     session._global_track_last_box = {
         1: np.asarray([0.0, 0.0, 10.0, 10.0], dtype=float),
@@ -107,7 +108,8 @@ def test_global_track_assignment_rejects_stale_tracks() -> None:
 
 def test_global_track_assignment_refreshes_match_history() -> None:
     session = Sam3SessionManager.__new__(Sam3SessionManager)
-    session.sliding_window_size = 5
+    session.sliding_window_size = 15
+    session.sliding_window_stride = 14
     session._global_track_next_id = 2
     session._global_track_last_box = {
         1: np.asarray([10.0, 0.0, 10.0, 10.0], dtype=float),
@@ -139,6 +141,40 @@ def test_global_track_assignment_refreshes_match_history() -> None:
     assert session._global_track_last_seen_frame[1] == 3
     assert len(session._global_track_history[1]) == 3
     assert np.allclose(session._global_track_history[1][-1], [30.0, 0.0, 10.0, 10.0])
+
+
+def test_global_track_assignment_survives_window_stride_gap() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.sliding_window_size = 15
+    session.sliding_window_stride = 14
+    session._global_track_next_id = 2
+    session._global_track_last_box = {
+        1: np.asarray([50.0, 30.0, 12.0, 12.0], dtype=float),
+    }
+    session._global_track_last_seen_frame = {1: 0}
+    session._global_track_history = {
+        1: deque(
+            [
+                np.asarray([48.0, 30.0, 12.0, 12.0], dtype=float),
+                np.asarray([50.0, 30.0, 12.0, 12.0], dtype=float),
+            ],
+            maxlen=4,
+        )
+    }
+
+    outputs = session._map_outputs_to_global_ids_at_frame(
+        {
+            "out_obj_ids": np.asarray([7], dtype=np.int64),
+            "out_boxes_xywh": np.asarray(
+                [[52.0, 30.0, 12.0, 12.0]],
+                dtype=np.float32,
+            ),
+        },
+        frame_idx=14,
+    )
+
+    assert outputs["out_obj_ids"].tolist() == [1]
+    assert session._global_track_next_id == 2
 
 
 def test_mid_window_refresh_policy_is_forward_only() -> None:
@@ -178,6 +214,18 @@ def test_mid_window_refresh_runner_calls_callbacks_in_order() -> None:
         ("refresh", 3, None),
         ("propagate", 4, 2),
     ]
+
+
+def test_window_seed_segments_are_ordered_and_text_anchored() -> None:
+    assert Sam3SessionManager._build_window_seed_segments(
+        [5, 2, 5], 8, has_text_prompt=False
+    ) == [(2, 5), (5, 8)]
+    assert Sam3SessionManager._build_window_seed_segments(
+        [], 8, has_text_prompt=True
+    ) == [(0, 8)]
+    assert Sam3SessionManager._build_window_seed_segments(
+        [3, 6], 8, has_text_prompt=True
+    ) == [(0, 3), (3, 6), (6, 8)]
 
 
 def test_optional_sam3_agent_modules_import_without_iopath() -> None:
@@ -557,6 +605,7 @@ def test_text_windowed_refresh_seeds_mid_window(monkeypatch, tmp_path) -> None:
     session.use_sliding_window_for_text_prompt = True
     session.offload_video_to_cpu = True
     session.frame_shape = (4, 4, 3)
+    session.frame_names = []
     session._predictor = None
     session._predictor_device = None
     session._session_id = None
@@ -593,4 +642,217 @@ def test_text_windowed_refresh_seeds_mid_window(monkeypatch, tmp_path) -> None:
     assert prompt_calls == [(0, False), (2, False)]
     assert propagate_calls == [(0, 2), (3, 1)]
     assert handle_calls == [0, 1, 2, 3]
+    assert len(created_predictors) == 1
+
+
+def test_annotated_window_falls_back_to_text_when_no_local_annotations(
+    monkeypatch, tmp_path
+) -> None:
+    frames = [np.full((4, 4, 3), idx, dtype=np.uint8) for idx in range(4)]
+    prompt_calls: list[tuple[int, bool]] = []
+    created_predictors: list[object] = []
+
+    class _FakePredictor:
+        def __init__(self) -> None:
+            self.sessions: list[str] = []
+
+        def start_session(self, *, resource_path: str, offload_video_to_cpu: bool):
+            self.sessions.append(resource_path)
+            return {"session_id": "fake-session"}
+
+        def close_session(self, session_id: str):
+            return {"session_id": session_id}
+
+        def propagate_in_video(
+            self,
+            *,
+            session_id: str,
+            propagation_direction: str,
+            start_frame_idx: int,
+            max_frame_num_to_track: int,
+        ):
+            yield {
+                "frame_index": 0,
+                "outputs": {
+                    "out_obj_ids": np.asarray([1], dtype=np.int64),
+                    "out_boxes_xywh": np.asarray(
+                        [[0.0, 0.0, 1.0, 1.0]], dtype=np.float32
+                    ),
+                    "out_binary_masks": np.asarray(
+                        [np.ones((2, 2), dtype=np.uint8)],
+                        dtype=object,
+                    ),
+                },
+            }
+
+    def _fake_session_scope(self, target_device=None, *, auto_close=True):
+        @contextmanager
+        def _ctx():
+            self._session_id = "fake-session"
+            yield self._session_id
+            if auto_close:
+                self._session_id = None
+
+        return _ctx()
+
+    def _fake_execute_prompt_transaction(
+        self,
+        *,
+        session_id,
+        frame_idx,
+        text,
+        boxes,
+        box_labels,
+        mask_inputs,
+        mask_labels,
+        points,
+        point_labels,
+        point_obj_ids=None,
+        obj_id=None,
+        label_hints=None,
+        record_outputs=True,
+        merge_existing_on_record=False,
+    ):
+        prompt_calls.append((int(frame_idx), bool(boxes)))
+        return {
+            "outputs": {
+                "out_obj_ids": np.asarray([1], dtype=np.int64),
+                "out_boxes_xywh": np.asarray([[0.0, 0.0, 1.0, 1.0]], dtype=np.float32),
+                "out_binary_masks": np.asarray(
+                    [np.ones((2, 2), dtype=np.uint8)],
+                    dtype=object,
+                ),
+            }
+        }
+
+    def _fake_handle_frame_outputs(
+        self,
+        *,
+        frame_idx,
+        outputs,
+        total_frames=None,
+        yielded_frames=0,
+        label_hints=None,
+        apply_score_threshold=True,
+        merge_existing=False,
+    ):
+        self._frames_processed.add(int(frame_idx))
+        self._frames_with_masks.add(int(frame_idx))
+        self._frame_track_ids[int(frame_idx)] = {1}
+        self._frame_masks[int(frame_idx)] = {"1": np.ones((2, 2), dtype=np.uint8)}
+        return 1, 1
+
+    windows = [(0, 4, frames)]
+
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_resolve_runtime_device",
+        lambda self, target_device: torch.device("cpu"),
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "total_frames_estimate",
+        lambda self: 4,
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_initialize_predictor",
+        lambda self, device: created_predictors.append(_FakePredictor())
+        or created_predictors[-1],
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_session_scope",
+        _fake_session_scope,
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_reset_action_history_if_supported",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_execute_prompt_transaction",
+        _fake_execute_prompt_transaction,
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_handle_frame_outputs",
+        _fake_handle_frame_outputs,
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_ensure_prediction_json_coverage",
+        lambda self, *, expected_frames: (0, 0),
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_iter_video_windows",
+        lambda self, *, window_size, stride: iter(windows),
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_write_window_frames",
+        lambda self, window_dir, frames, previous_count=0, shift=0: len(frames),
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_reacquire_frames_with_visual_and_text",
+        lambda self, frame_indices, target_device=None: None,
+    )
+
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.video_path = str(tmp_path / "video.mp4")
+    session.video_dir = str(tmp_path)
+    session.text_prompt = "mouse"
+    session.sliding_window_size = 4
+    session.sliding_window_stride = 2
+    session.use_sliding_window_for_text_prompt = True
+    session.offload_video_to_cpu = True
+    session.frame_shape = (4, 4, 3)
+    session.frame_names = []
+    session._predictor = None
+    session._predictor_device = None
+    session._session_id = None
+    session._stop_event = None
+    session._stop_requested = False
+    session.id_to_labels = {}
+    session.obj_id_to_label = {}
+    session._frames_processed = set()
+    session._frames_with_masks = set()
+    session._frame_masks = {}
+    session._frame_track_ids = {}
+    session._track_last_seen_frame = {}
+    session._global_track_next_id = 1
+    session._global_track_last_box = {}
+    session._global_track_last_seen_frame = {}
+    session._global_track_history = {}
+    session.max_num_objects = 4
+    session.multiplex_count = 4
+    session.compile_model = False
+    session.checkpoint_path = None
+    session.default_device = "cpu"
+    session.score_threshold_detection = None
+    session.new_det_thresh = None
+    session.max_frame_num_to_track = 4
+    session.propagation_direction = "forward"
+
+    total_frames, total_masks = session._propagate_annotations_windowed(
+        annotations=[
+            {
+                "type": "box",
+                "ann_frame_idx": 99,
+                "box": [1, 1, 2, 2],
+                "labels": [1],
+                "obj_id": 1,
+            }
+        ],
+        target_device="cpu",
+        propagation_direction="forward",
+        max_frame_num_to_track=4,
+    )
+
+    assert total_frames == 1
+    assert total_masks == 1
+    assert prompt_calls == [(0, False)]
     assert len(created_predictors) == 1
