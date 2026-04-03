@@ -219,3 +219,36 @@ def test_window_telemetry_entry_defaults_boundary_skips_to_zero() -> None:
     assert telemetry["zero_mask_frames"] == 1
     assert telemetry["boundary_empty_skips"] == 0
     assert telemetry["latency_ms"] == 42.0
+
+
+def test_add_prompt_supports_explicit_window_session_id() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session._predictor = object()
+    session._session_id = None
+    session.frame_names = []
+    session.max_frame_num_to_track = 0
+
+    captured: dict[str, object] = {}
+
+    def _execute_prompt_transaction(**kwargs):
+        captured["session_id"] = kwargs["session_id"]
+        return {"transaction_steps": [{"outputs": {}}]}
+
+    def _handle_frame_outputs(**kwargs):
+        captured["recorded"] = True
+        return 0, False
+
+    session._execute_prompt_transaction = _execute_prompt_transaction
+    session._handle_frame_outputs = _handle_frame_outputs
+
+    session.add_prompt(
+        frame_idx=0,
+        session_id="window-session-1",
+        text="mouse",
+        record_outputs=True,
+        merge_existing_on_record=False,
+        label_hints=["mouse"],
+    )
+
+    assert captured["session_id"] == "window-session-1"
+    assert captured["recorded"] is True

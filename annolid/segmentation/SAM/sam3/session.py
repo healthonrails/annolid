@@ -537,7 +537,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 except Exception:
                     pass
 
-    def _reset_action_history_if_supported(self):
+    def _reset_action_history_if_supported(self, session_id: Optional[str] = None):
         """
         Best-effort clearing of cached action history on the underlying predictor
         so the next propagation performs a full pass.
@@ -547,7 +547,12 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             states = getattr(raw_predictor, "_ALL_INFERENCE_STATES", None)
             if states is None:
                 states = getattr(raw_predictor, "_all_inference_states", None)
-            state_entry = states.get(self._session_id) if isinstance(states, dict) else None
+            target_session_id = str(session_id or self._session_id or "")
+            state_entry = (
+                states.get(target_session_id)
+                if isinstance(states, dict) and target_session_id
+                else None
+            )
             if state_entry and isinstance(state_entry, dict):
                 inference_state = state_entry.get("state")
                 if isinstance(inference_state, dict) and "action_history" in inference_state:
@@ -567,11 +572,13 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         points: Optional[List[List[float]]] = None,
         point_labels: Optional[List[int]] = None,
         obj_id: Optional[int] = None,
+        session_id: Optional[str] = None,
         record_outputs: bool = False,
         merge_existing_on_record: bool = False,
         label_hints: Optional[List[str]] = None,
     ):
-        if not self._predictor or not self._session_id:
+        target_session_id = str(session_id or self._session_id or "")
+        if not self._predictor or not target_session_id:
             raise RuntimeError("SAM3 session has not been started.")
         logger.debug(
             "SAM3 add_prompt(frame=%s, text=%s, boxes=%d, masks=%d, points=%d)",
@@ -582,7 +589,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             len(points or []),
         )
         result = self._execute_prompt_transaction(
-            session_id=self._session_id,
+            session_id=target_session_id,
             frame_idx=frame_idx,
             text=text,
             boxes=boxes,
@@ -2270,6 +2277,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             label_hints = self._label_hints_from_ids(obj_ids, self.id_to_labels)
                             self._apply_seed_prompts(
                                 frame_idx=int(prompt_frame_idx),
+                                session_id=session_id,
                                 boxes=boxes,
                                 labels=labels,
                                 mask_inputs=mask_inputs,
@@ -2287,9 +2295,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         if carry_boxes_abs:
                             h, w = frames[int(local_frame_idx)].shape[:2]
                             carry_boxes = self._normalize_boxes(carry_boxes_abs, w, h)
-                            self._reset_action_history_if_supported()
+                            self._reset_action_history_if_supported(session_id=session_id)
                             self.add_prompt(
                                 frame_idx=int(local_frame_idx),
+                                session_id=session_id,
                                 text=self.text_prompt,
                                 boxes=carry_boxes,
                                 box_labels=[1] * len(carry_boxes),
@@ -2584,6 +2593,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self,
         *,
         frame_idx: int,
+        session_id: Optional[str],
         boxes: List[List[float]],
         labels: List[int],
         mask_inputs: List[object],
@@ -2602,6 +2612,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         if self.text_prompt or boxes or mask_inputs:
             self.add_prompt(
                 frame_idx=frame_idx,
+                session_id=session_id,
                 text=self.text_prompt,
                 boxes=boxes or None,
                 box_labels=labels or None,
@@ -2631,6 +2642,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 point_hint = self.id_to_labels.get(int(obj_id), str(obj_id))
                 self.add_prompt(
                     frame_idx=frame_idx,
+                    session_id=session_id,
                     text=None,
                     points=payload["points"],
                     point_labels=payload["point_labels"],
@@ -2780,6 +2792,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
                 self._apply_seed_prompts(
                     frame_idx=prompt_frame_idx,
+                    session_id=self._session_id,
                     boxes=boxes,
                     labels=labels,
                     mask_inputs=mask_inputs,
