@@ -2687,7 +2687,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 mask_labels,
                 points,
                 point_labels,
-                _,
+                obj_ids,
                 point_obj_ids,
             ) = self._prepare_prompts(
                 annotations, self.text_prompt
