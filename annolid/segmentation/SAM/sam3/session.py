@@ -88,7 +88,7 @@ class _PredictorAPIAdapter:
         session_id: str,
         frame_idx: int,
         text: Optional[str],
-        points: Optional[List[List[float]]],
+        points: Optional[List[List[float]]] = None,
         point_labels: Optional[List[int]],
         bounding_boxes: Optional[List[List[float]]],
         bounding_box_labels: Optional[List[int]],
@@ -707,7 +707,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         box_labels: Optional[List[int]],
         mask_inputs: Optional[List[object]],
         mask_labels: Optional[List[int]],
-        points: Optional[List[List[float]]],
+        points: Optional[List[List[float]]] = None,
         point_labels: Optional[List[int]],
         obj_id: Optional[int],
     ) -> List[Dict[str, Any]]:
@@ -867,11 +867,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         text: Optional[str],
         boxes: Optional[List[List[float]]],
         box_labels: Optional[List[int]],
-        mask_inputs: Optional[List[object]],
-        mask_labels: Optional[List[int]],
+        mask_inputs: Optional[List[object]] = None,
+        mask_labels: Optional[List[int]] = None,
         points: Optional[List[List[float]]],
-        point_labels: Optional[List[int]],
-        obj_id: Optional[int],
+        point_labels: Optional[List[int]] = None,
+        obj_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         if not self._predictor:
             raise RuntimeError("SAM3 predictor is not initialized.")

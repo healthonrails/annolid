@@ -409,3 +409,25 @@ def test_apply_seed_prompts_uses_text_only_when_no_other_prompt_formats_exist() 
     assert kwargs["mask_inputs"] is None
     assert kwargs.get("points") is None
     assert kwargs.get("point_labels") is None
+
+
+def test_execute_prompt_transaction_allows_optional_mask_and_point_prompts() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session._predictor = SimpleNamespace(
+        add_prompt=lambda **kwargs: {"outputs": {}, "kwargs": kwargs}
+    )
+    session._build_prompt_transaction_steps = lambda **kwargs: [
+        {"kind": "semantic", "text": kwargs.get("text")}
+    ]
+
+    result = session._execute_prompt_transaction(
+        session_id="window-1",
+        frame_idx=0,
+        text="vole",
+        boxes=None,
+        box_labels=None,
+        points=None,
+    )
+
+    assert result["transaction_step_kinds"] == ["semantic"]
+    assert result["outputs"] == {}
