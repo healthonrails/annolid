@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from annolid.segmentation.SAM.sam_v2 import BaseSAMVideoProcessor
+from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.logger import logger
 from .sam3.utils import set_default_device
 from .window_refresh import compute_mid_window_refresh_index, run_mid_window_refresh
@@ -671,26 +672,32 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         return points
 
     @staticmethod
-    def _polygon_to_mask(
-        polygon: List[List[float]],
+    def _shape_points_to_mask(
+        points: List[List[float]],
         frame_shape: Tuple[int, int, int] | Tuple[int, int],
+        *,
+        shape_type: str = "polygon",
     ) -> Optional[np.ndarray]:
-        if not polygon:
+        if not points:
             return None
-        arr = np.asarray(polygon, dtype=float)
+        arr = np.asarray(points, dtype=float)
         if arr.ndim != 2 or arr.shape[1] != 2:
             return None
         if len(arr) >= 2 and np.allclose(arr[0], arr[-1]):
             arr = arr[:-1]
         if len(arr) < 3:
             return None
-        height, width = int(frame_shape[0]), int(frame_shape[1])
-        pts = np.rint(arr).astype(np.int32)
-        pts[:, 0] = np.clip(pts[:, 0], 0, max(0, width - 1))
-        pts[:, 1] = np.clip(pts[:, 1], 0, max(0, height - 1))
-        mask = np.zeros((height, width), dtype=np.uint8)
-        cv2.fillPoly(mask, [pts.reshape(-1, 1, 2)], 1)
-        return mask
+        try:
+            mask = shape_to_mask(
+                img_shape=(int(frame_shape[0]), int(frame_shape[1])),
+                points=arr.tolist(),
+                shape_type=shape_type or "polygon",
+            )
+        except Exception:
+            return None
+        if mask is None:
+            return None
+        return np.asarray(mask, dtype=np.uint8)
 
     def _build_prompt_transaction_steps(
         self,
@@ -2517,7 +2524,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     if not poly_pts:
                         continue
                     try:
-                        mask = self._polygon_to_mask(poly_pts, self.frame_shape)
+                        mask = self._shape_points_to_mask(
+                            poly_pts,
+                            self.frame_shape,
+                            shape_type="polygon",
+                        )
                         if mask is None or not np.any(mask):
                             continue
                     except Exception:

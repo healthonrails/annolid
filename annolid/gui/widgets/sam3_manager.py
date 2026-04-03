@@ -4,9 +4,11 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import numpy as np
 from qtpy import QtWidgets
 
 import yaml
+from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.logger import logger
 
 
@@ -404,6 +406,12 @@ class Sam3Manager:
             next_start = max(reverse_label_map.values()) + 1
         next_id_ref: Dict[str, int] = {"value": max(1, int(next_start))}
 
+        image_h: Optional[int] = None
+        image_w: Optional[int] = None
+        frame_image = getattr(self.window, "image", None)
+        if isinstance(frame_image, np.ndarray) and frame_image.ndim >= 2:
+            image_h, image_w = int(frame_image.shape[0]), int(frame_image.shape[1])
+
         ann_records: list = []
         for shape in canvas.shapes:
             label = str(getattr(shape, "label", "") or "").strip() or "object"
@@ -430,6 +438,26 @@ class Sam3Manager:
                 )
             elif shape.shape_type == "polygon" and shape.points:
                 poly = [[float(pt.x()), float(pt.y())] for pt in shape.points]
+                if image_h and image_w:
+                    try:
+                        mask = shape_to_mask(
+                            img_shape=(int(image_h), int(image_w)),
+                            points=poly,
+                            shape_type="polygon",
+                        )
+                    except Exception:
+                        mask = None
+                    if mask is not None and np.any(mask):
+                        ann_records.append(
+                            {
+                                "type": "mask",
+                                "ann_frame_idx": int(frame_idx),
+                                "mask": np.asarray(mask, dtype=np.uint8),
+                                "labels": [int(obj_id)],
+                                "obj_id": int(obj_id),
+                            }
+                        )
+                        continue
                 ann_records.append(
                     {
                         "type": "polygon",

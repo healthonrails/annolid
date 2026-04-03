@@ -39,6 +39,41 @@ if supports_tf32():
     torch.backends.cudnn.allow_tf32 = True
 
 
+def _normalize_single_frame_detection_batch(
+    det_out: Dict[str, Tensor],
+    pos_pred_mask: Tensor,
+) -> Tuple[Dict[str, Tensor], Tensor]:
+    """
+    Normalize detector outputs to a single-frame, unbatched layout.
+
+    The detector can return either unbatched tensors (N, ...) or tensors with a
+    leading batch dimension (1, N, ...). This helper canonicalizes both into
+    (N, ...) so downstream logic can sort/filter detections deterministically.
+    """
+    if not isinstance(pos_pred_mask, torch.Tensor):
+        pos_pred_mask = torch.as_tensor(pos_pred_mask)
+
+    if pos_pred_mask.ndim == 0:
+        pos_pred_mask = pos_pred_mask.unsqueeze(0)
+
+    # Common case: [1, N] -> [N]
+    if pos_pred_mask.ndim >= 2 and pos_pred_mask.shape[0] == 1:
+        pos_pred_mask = pos_pred_mask[0]
+        normalized = {}
+        for k, v in det_out.items():
+            if isinstance(v, torch.Tensor) and v.ndim >= 2 and v.shape[0] == 1:
+                normalized[k] = v[0]
+            else:
+                normalized[k] = v
+        return normalized, pos_pred_mask
+
+    # Fallback: flatten leading dimensions of the keep mask.
+    if pos_pred_mask.ndim > 1:
+        pos_pred_mask = pos_pred_mask.reshape(-1)
+
+    return det_out, pos_pred_mask
+
+
 class Sam3MultiplexTrackerPredictor(nn.Module):
     def __init__(
         self,
@@ -536,10 +571,10 @@ class Sam3MultiplexBase(Sam3VideoBase):
             )
 
         with torch.profiler.record_function("GPU sync and filter"):
-            # Remove leading dimension (assumes batch size 1)
-            assert pos_pred_mask.shape[0] == 1
-            pos_pred_mask = pos_pred_mask.squeeze(0)
-            det_out = {k: det_out[k][0] for k in det_out}
+            # Normalize detector outputs: accept either [N,...] or [1,N,...].
+            det_out, pos_pred_mask = _normalize_single_frame_detection_batch(
+                det_out, pos_pred_mask
+            )
             # Move detections we'll actually keep at the top for future logic
             pos_pred_mask_idx = pos_pred_mask.argsort(descending=True)
             pos_pred_mask = torch.index_select(

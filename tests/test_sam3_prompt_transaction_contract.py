@@ -120,6 +120,35 @@ def test_canvas_prompt_extraction_preserves_polygons_and_group_ids() -> None:
     assert point_ann["labels"] == [1, 0]
 
 
+def test_canvas_polygon_prefers_mask_annotation_when_frame_image_available() -> None:
+    manager = Sam3Manager.__new__(Sam3Manager)
+    manager.window = SimpleNamespace(
+        frame_number=3,
+        image=np.zeros((24, 32, 3), dtype=np.uint8),
+        canvas=SimpleNamespace(
+            shapes=[
+                _Shape(
+                    shape_type="polygon",
+                    points=[_Point(1, 1), _Point(10, 1), _Point(10, 8), _Point(1, 8)],
+                    label="vole",
+                    group_id=2,
+                ),
+            ]
+        ),
+    )
+
+    annotations = manager._canvas_prompts_to_annotations(
+        frame_idx=3,
+        id_to_labels={},
+    )
+    assert len(annotations) == 1
+    ann = annotations[0]
+    assert ann["type"] == "mask"
+    assert ann["obj_id"] == 2
+    assert ann["mask"].shape == (24, 32)
+    assert int(np.asarray(ann["mask"]).sum()) > 0
+
+
 def test_window_annotation_shift_groups_by_local_frame() -> None:
     grouped = Sam3SessionManager._shift_annotations_to_window(
         [
