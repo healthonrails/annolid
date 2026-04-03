@@ -49,6 +49,22 @@ class PredictionExecutionMixin:
             return 0
         return start
 
+    @staticmethod
+    def _resolve_sam3_start_frame_from_seed_state(
+        current_start_frame: int,
+        first_manual_seed: int,
+    ) -> int:
+        """Resolve the SAM3 start frame from the earliest manual seed.
+
+        SAM3 windows should start on the frame after the first manual seed when
+        such a seed exists so the labeled frame remains the seed anchor rather
+        than being treated as a propagation target.
+        """
+        start = max(0, int(current_start_frame))
+        if int(first_manual_seed) >= 0:
+            return max(start, int(first_manual_seed) + 1)
+        return start
+
     def _cutie_seed_paths(self, frame_index: int) -> tuple[Path, Path]:
         results_dir = Path(self.video_results_folder)
         stem = results_dir.name
@@ -739,6 +755,7 @@ class PredictionExecutionMixin:
                     # can see completed sections immediately.
                     self._scan_prediction_folder(str(results_folder))
                     manual_seed_max = -1
+                    manual_seed_first = -1
                     try:
                         discover = getattr(self, "_discover_manual_seed_frames", None)
                         seed_frames = (
@@ -747,9 +764,14 @@ class PredictionExecutionMixin:
                             else set()
                         )
                         if seed_frames:
-                            manual_seed_max = max(int(frame) for frame in seed_frames)
+                            seed_frames_sorted = sorted(
+                                int(frame) for frame in seed_frames
+                            )
+                            manual_seed_first = int(seed_frames_sorted[0])
+                            manual_seed_max = int(seed_frames_sorted[-1])
                     except Exception:
                         manual_seed_max = -1
+                        manual_seed_first = -1
 
                     max_existing = self._max_predicted_frame_index(
                         results_folder,
@@ -765,6 +787,13 @@ class PredictionExecutionMixin:
                                 int(inference_start_frame),
                                 int(max_existing),
                                 int(manual_seed_max),
+                            )
+                        )
+                    elif self.sam3_manager.is_sam3_model(model_name, model_weight):
+                        inference_start_frame = (
+                            self._resolve_sam3_start_frame_from_seed_state(
+                                int(inference_start_frame),
+                                int(manual_seed_first),
                             )
                         )
                     elif manual_seed_max >= 0:

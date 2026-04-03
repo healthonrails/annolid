@@ -408,6 +408,183 @@ def test_window_seed_segments_are_ordered_and_text_only_falls_back_without_seeds
     ) == [(3, 6), (6, 8)]
 
 
+def test_first_manual_seed_frame_is_detected_and_skips_earlier_windows(
+    monkeypatch,
+) -> None:
+    frames_a = [np.full((4, 4, 3), idx, dtype=np.uint8) for idx in range(4)]
+    frames_b = [np.full((4, 4, 3), idx + 10, dtype=np.uint8) for idx in range(4)]
+    windows = [
+        (0, 4, frames_a),
+        (4, 8, frames_b),
+    ]
+    annotations = [
+        {"ann_frame_idx": 6, "type": "polygon", "points": [[0, 0], [1, 0], [1, 1]]},
+    ]
+    session_starts: list[int] = []
+    seed_calls: list[int] = []
+    handle_calls: list[int] = []
+
+    class _FakePredictor:
+        def __init__(self) -> None:
+            self.sessions: list[str] = []
+
+        def start_session(self, *, resource_path: str, offload_video_to_cpu: bool):
+            self.sessions.append(resource_path)
+            session_starts.append(len(self.sessions))
+            return {"session_id": "fake-session"}
+
+        def close_session(self, session_id: str):
+            return {"session_id": session_id}
+
+        def propagate_in_video(
+            self,
+            *,
+            session_id: str,
+            propagation_direction: str,
+            start_frame_idx: int,
+            max_frame_num_to_track: int,
+        ):
+            yield {
+                "frame_index": int(start_frame_idx),
+                "outputs": {
+                    "out_obj_ids": np.asarray([1], dtype=np.int64),
+                    "out_boxes_xywh": np.asarray(
+                        [[0.0, 0.0, 1.0, 1.0]], dtype=np.float32
+                    ),
+                    "out_binary_masks": np.asarray(
+                        [np.ones((2, 2), dtype=np.uint8)],
+                        dtype=object,
+                    ),
+                },
+            }
+
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_resolve_runtime_device",
+        lambda self, target_device: torch.device("cpu"),
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "total_frames_estimate",
+        lambda self: 8,
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_initialize_predictor",
+        lambda self, device: _FakePredictor(),
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_iter_video_windows",
+        lambda self, *, window_size, stride: iter(windows),
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_write_window_frames",
+        lambda self, window_dir, frames, previous_count=0, shift=0: len(frames),
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_reset_global_tracks",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_carry_forward_window_state",
+        lambda self, previous_state, shift: None,
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_get_active_session_state",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_ensure_prediction_json_coverage",
+        lambda self, *, expected_frames: (0, 0),
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_prepare_prompts",
+        lambda self, frame_annotations, text_prompt: (
+            int(frame_annotations[0]["ann_frame_idx"]),
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [1],
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_apply_seed_prompts",
+        lambda self, **kwargs: seed_calls.append(int(kwargs["frame_idx"])) or 1,
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_map_outputs_to_global_ids_at_frame",
+        lambda self, outputs, *, frame_idx: outputs,
+    )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_handle_frame_outputs",
+        lambda self, **kwargs: handle_calls.append(int(kwargs["frame_idx"])) or (1, 1),
+    )
+
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.video_path = "/tmp/video.mp4"
+    session.video_dir = "/tmp/video"
+    session.text_prompt = None
+    session.sliding_window_size = 4
+    session.sliding_window_stride = 2
+    session.use_sliding_window_for_text_prompt = True
+    session.offload_video_to_cpu = True
+    session.frame_shape = (4, 4, 3)
+    session.frame_names = []
+    session._predictor = _FakePredictor()
+    session._predictor_device = torch.device("cpu")
+    session._session_id = None
+    session._stop_event = None
+    session._stop_requested = False
+    session.id_to_labels = {}
+    session.obj_id_to_label = {}
+    session._frames_processed = set()
+    session._frames_with_masks = set()
+    session._frame_masks = {}
+    session._frame_track_ids = {}
+    session._track_last_seen_frame = {}
+    session._global_track_next_id = 1
+    session._global_track_last_box = {}
+    session._global_track_last_seen_frame = {}
+    session._global_track_history = {}
+    session.max_num_objects = 4
+    session.multiplex_count = 4
+    session.compile_model = False
+    session.checkpoint_path = None
+    session.default_device = "cpu"
+    session.score_threshold_detection = None
+    session.new_det_thresh = None
+    session.max_frame_num_to_track = 4
+    session.propagation_direction = "forward"
+
+    frames_written, masks_written = session._propagate_annotations_windowed(
+        annotations=annotations,
+        target_device="cpu",
+        propagation_direction="forward",
+        max_frame_num_to_track=None,
+    )
+
+    assert Sam3SessionManager._first_manual_seed_frame(annotations) == 6
+    assert len(session_starts) == 1
+    assert seed_calls == [2]
+    assert handle_calls == [6]
+    assert frames_written == 1
+    assert masks_written == 1
+
+
 def test_optional_sam3_agent_modules_import_without_iopath() -> None:
     agent_core = importlib.import_module(
         "annolid.segmentation.SAM.sam3.sam3.agent.agent_core"
@@ -852,7 +1029,7 @@ def test_annotated_window_falls_back_to_text_when_no_local_annotations(
             max_frame_num_to_track: int,
         ):
             yield {
-                "frame_index": 0,
+                "frame_index": int(start_frame_idx),
                 "outputs": {
                     "out_obj_ids": np.asarray([1], dtype=np.int64),
                     "out_boxes_xywh": np.asarray(
@@ -922,7 +1099,7 @@ def test_annotated_window_falls_back_to_text_when_no_local_annotations(
         self._frame_masks[int(frame_idx)] = {"1": np.ones((2, 2), dtype=np.uint8)}
         return 1, 1
 
-    windows = [(0, 4, frames)]
+    windows = [(0, 4, frames), (4, 8, frames)]
 
     monkeypatch.setattr(
         Sam3SessionManager,
@@ -1021,7 +1198,7 @@ def test_annotated_window_falls_back_to_text_when_no_local_annotations(
         annotations=[
             {
                 "type": "box",
-                "ann_frame_idx": 99,
+                "ann_frame_idx": 2,
                 "box": [1, 1, 2, 2],
                 "labels": [1],
                 "obj_id": 1,
@@ -1032,7 +1209,7 @@ def test_annotated_window_falls_back_to_text_when_no_local_annotations(
         max_frame_num_to_track=4,
     )
 
-    assert total_frames == 1
-    assert total_masks == 1
-    assert prompt_calls == [(0, False)]
+    assert total_frames == 2
+    assert total_masks == 2
+    assert prompt_calls == [(2, True), (0, False)]
     assert len(created_predictors) == 1

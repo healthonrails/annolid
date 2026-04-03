@@ -676,14 +676,14 @@ def load_manual_seed_annotations_from_video(video_path):
             id_to_labels[int(obj_id)] = label
 
             points = shape.get("points") or []
-            if shape_type in {"polygon", "polyline", "mask"}:
-                if len(points) < 3 or image_height <= 0 or image_width <= 0:
+            if shape_type in {"polygon", "polyline", "mask", "rectangle"}:
+                if image_height <= 0 or image_width <= 0:
                     continue
                 try:
                     mask = shape_to_mask(
                         img_shape=(int(image_height), int(image_width)),
                         points=[[float(x), float(y)] for x, y in points],
-                        shape_type="polygon",
+                        shape_type="rectangle" if shape_type == "rectangle" else "polygon",
                     )
                 except Exception:
                     continue
@@ -694,23 +694,6 @@ def load_manual_seed_annotations_from_video(video_path):
                         "type": "mask",
                         "ann_frame_idx": ann_frame_idx,
                         "mask": mask.astype(np.uint8),
-                        "labels": [int(obj_id)],
-                        "obj_id": int(obj_id),
-                    }
-                )
-            elif shape_type == "rectangle":
-                if len(points) != 2:
-                    continue
-                try:
-                    p1, p2 = points
-                    box = [float(p1[0]), float(p1[1]), float(p2[0]), float(p2[1])]
-                except Exception:
-                    continue
-                all_annotations.append(
-                    {
-                        "type": "box",
-                        "ann_frame_idx": ann_frame_idx,
-                        "box": box,
                         "labels": [int(obj_id)],
                         "obj_id": int(obj_id),
                     }

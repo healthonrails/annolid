@@ -427,6 +427,26 @@ class Sam3Manager:
                 p1, p2 = shape.points
                 x1, y1 = float(p1.x()), float(p1.y())
                 x2, y2 = float(p2.x()), float(p2.y())
+                if image_h and image_w:
+                    try:
+                        mask = shape_to_mask(
+                            img_shape=(int(image_h), int(image_w)),
+                            points=[[x1, y1], [x2, y2]],
+                            shape_type="rectangle",
+                        )
+                    except Exception:
+                        mask = None
+                    if mask is not None and np.any(mask):
+                        ann_records.append(
+                            {
+                                "type": "mask",
+                                "ann_frame_idx": int(frame_idx),
+                                "mask": np.asarray(mask, dtype=np.uint8),
+                                "labels": [int(obj_id)],
+                                "obj_id": int(obj_id),
+                            }
+                        )
+                        continue
                 ann_records.append(
                     {
                         "type": "box",

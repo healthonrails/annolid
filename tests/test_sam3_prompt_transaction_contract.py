@@ -169,6 +169,12 @@ def test_canvas_prompt_extraction_preserves_polygons_and_group_ids() -> None:
                     group_id=8,
                 ),
                 _Shape(
+                    shape_type="rectangle",
+                    points=[_Point(5, 5), _Point(10, 12)],
+                    label="mouse",
+                    group_id=9,
+                ),
+                _Shape(
                     shape_type="points",
                     points=[_Point(12, 14), _Point(16, 18)],
                     label="mouse",
@@ -181,7 +187,7 @@ def test_canvas_prompt_extraction_preserves_polygons_and_group_ids() -> None:
 
     prompts = manager.extract_prompts_from_canvas()
     assert prompts["frame_idx"] == 7
-    assert prompts["boxes_abs"] == [[10, 20, 20, 30]]
+    assert prompts["boxes_abs"] == [[10, 20, 20, 30], [5, 5, 5, 7]]
     assert prompts["polygons_abs"] == [[[1, 1], [4, 1], [4, 4], [1, 4]]]
     assert prompts["point_labels"] == [1, 0]
 
@@ -189,9 +195,10 @@ def test_canvas_prompt_extraction_preserves_polygons_and_group_ids() -> None:
         frame_idx=7,
         id_to_labels={5: "mouse", 8: "mouse"},
     )
-    assert len(annotations) == 3
+    assert len(annotations) == 4
     assert any(a["type"] == "polygon" and a["obj_id"] == 8 for a in annotations)
     assert any(a["type"] == "box" and a["obj_id"] == 5 for a in annotations)
+    assert any(a["type"] == "box" and a["obj_id"] == 9 for a in annotations)
     point_ann = next(a for a in annotations if a["type"] == "points")
     assert point_ann["obj_id"] == 8
     assert point_ann["labels"] == [1, 0]
@@ -210,6 +217,12 @@ def test_canvas_polygon_prefers_mask_annotation_when_frame_image_available() -> 
                     label="vole",
                     group_id=2,
                 ),
+                _Shape(
+                    shape_type="rectangle",
+                    points=[_Point(12, 2), _Point(20, 9)],
+                    label="vole_rect",
+                    group_id=3,
+                ),
             ]
         ),
     )
@@ -218,10 +231,38 @@ def test_canvas_polygon_prefers_mask_annotation_when_frame_image_available() -> 
         frame_idx=3,
         id_to_labels={},
     )
+    assert len(annotations) == 2
+    assert {ann["obj_id"] for ann in annotations} == {2, 3}
+    assert all(ann["type"] == "mask" for ann in annotations)
+    assert all(ann["mask"].shape == (24, 32) for ann in annotations)
+    assert all(int(np.asarray(ann["mask"]).sum()) > 0 for ann in annotations)
+
+
+def test_canvas_rectangle_prefers_mask_annotation_when_frame_image_available() -> None:
+    manager = Sam3Manager.__new__(Sam3Manager)
+    manager.window = SimpleNamespace(
+        frame_number=5,
+        image=np.zeros((24, 32, 3), dtype=np.uint8),
+        canvas=SimpleNamespace(
+            shapes=[
+                _Shape(
+                    shape_type="rectangle",
+                    points=[_Point(2, 3), _Point(11, 14)],
+                    label="vole",
+                    group_id=4,
+                ),
+            ]
+        ),
+    )
+
+    annotations = manager._canvas_prompts_to_annotations(
+        frame_idx=5,
+        id_to_labels={},
+    )
     assert len(annotations) == 1
     ann = annotations[0]
     assert ann["type"] == "mask"
-    assert ann["obj_id"] == 2
+    assert ann["obj_id"] == 4
     assert ann["mask"].shape == (24, 32)
     assert int(np.asarray(ann["mask"]).sum()) > 0
 
@@ -341,6 +382,13 @@ def test_manual_seed_loader_uses_png_json_pair_and_ignores_store(
                         "shape_type": "polygon",
                         "flags": {},
                     },
+                    {
+                        "label": "vole_rect",
+                        "points": [[2, 12], [8, 18]],
+                        "group_id": 13,
+                        "shape_type": "rectangle",
+                        "flags": {},
+                    },
                 ],
             }
         ),
@@ -368,12 +416,13 @@ def test_manual_seed_loader_uses_png_json_pair_and_ignores_store(
     annotations, id_to_labels = load_manual_seed_annotations_from_video(folder)
     seed_annotations = [ann for ann in annotations if int(ann["ann_frame_idx"]) == 42]
 
-    assert len(seed_annotations) == 3
-    assert sorted(id_to_labels) == [10, 11, 12]
+    assert len(seed_annotations) == 4
+    assert sorted(id_to_labels) == [10, 11, 12, 13]
     assert id_to_labels[10] == "vole_a"
     assert id_to_labels[11] == "vole_b"
     assert id_to_labels[12] == "vole_c"
-    assert {int(ann["obj_id"]) for ann in seed_annotations} == {10, 11, 12}
+    assert id_to_labels[13] == "vole_rect"
+    assert {int(ann["obj_id"]) for ann in seed_annotations} == {10, 11, 12, 13}
     assert all(ann["type"] == "mask" for ann in seed_annotations)
 
 
@@ -831,6 +880,79 @@ def test_base_predictor_expands_mask_batches_for_3d_manual_seed_inputs() -> None
     kwargs = result["outputs"]
     assert isinstance(kwargs["mask_inputs"], torch.Tensor)
     assert tuple(kwargs["mask_inputs"].shape) == (3, 1, 6, 8)
+
+
+def test_carry_forward_window_state_shifts_overlap_frames() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    current_state: dict[str, object] = {
+        "cached_features": {},
+        "point_inputs_per_obj": {},
+        "mask_inputs_per_obj": {},
+        "output_dict": {
+            "cond_frame_outputs": {},
+            "non_cond_frame_outputs": {},
+        },
+        "output_dict_per_obj": {},
+        "temp_output_dict_per_obj": {},
+        "consolidated_frame_inds": {
+            "cond_frame_outputs": set(),
+            "non_cond_frame_outputs": set(),
+        },
+        "frames_already_tracked": {},
+        "user_refined_frames_per_obj": {},
+        "obj_id_to_idx": {},
+        "obj_idx_to_id": {},
+        "obj_ids": [],
+    }
+    session._predictor = SimpleNamespace(
+        raw=SimpleNamespace(_get_session=lambda _sid: {"state": current_state})
+    )
+    session._session_id = "window-1"
+
+    previous_state = {
+        "cached_features": {
+            1: ("image-1", "feat-1"),
+            2: ("image-2", "feat-2"),
+        },
+        "point_inputs_per_obj": {3: {1: "p1", 2: "p2"}},
+        "mask_inputs_per_obj": {3: {1: "m1", 2: "m2"}},
+        "output_dict": {
+            "cond_frame_outputs": {1: "c1", 2: "c2"},
+            "non_cond_frame_outputs": {1: "n1", 2: "n2"},
+        },
+        "output_dict_per_obj": {
+            3: {
+                "cond_frame_outputs": {1: "oc1", 2: "oc2"},
+                "non_cond_frame_outputs": {1: "on1", 2: "on2"},
+            }
+        },
+        "temp_output_dict_per_obj": {
+            3: {
+                "cond_frame_outputs": {1: "tc1", 2: "tc2"},
+                "non_cond_frame_outputs": {1: "tn1", 2: "tn2"},
+            }
+        },
+        "consolidated_frame_inds": {
+            "cond_frame_outputs": {1, 2},
+            "non_cond_frame_outputs": {1, 2},
+        },
+        "frames_already_tracked": {1: True, 2: True},
+        "user_refined_frames_per_obj": {3: {1, 2}},
+        "obj_id_to_idx": {7: 0},
+        "obj_idx_to_id": {0: 7},
+        "obj_ids": [7],
+    }
+
+    session._carry_forward_window_state(previous_state, shift=1)
+
+    assert current_state["cached_features"] == {
+        0: ("image-1", "feat-1"),
+        1: ("image-2", "feat-2"),
+    }
+    assert current_state["output_dict"]["cond_frame_outputs"] == {0: "c1", 1: "c2"}
+    assert current_state["point_inputs_per_obj"][3] == {0: "p1", 1: "p2"}
+    assert current_state["consolidated_frame_inds"]["non_cond_frame_outputs"] == {0, 1}
+    assert current_state["obj_ids"] == [7]
 
 
 def test_execute_prompt_transaction_allows_optional_mask_and_point_prompts() -> None:

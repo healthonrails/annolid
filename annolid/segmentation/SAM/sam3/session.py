@@ -66,22 +66,33 @@ class _PredictorAPIAdapter:
     def __init__(self, predictor: Any):
         self._predictor = predictor
 
-    def start_session(self, *, resource_path: str, offload_video_to_cpu: bool) -> Dict[str, Any]:
+    def start_session(
+        self,
+        *,
+        resource_path: str,
+        offload_video_to_cpu: bool,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         if hasattr(self._predictor, "start_session"):
             try:
                 return self._predictor.start_session(
                     resource_path=resource_path,
                     offload_video_to_cpu=offload_video_to_cpu,
+                    session_id=session_id,
                 )
             except TypeError:
-                return self._predictor.start_session(resource_path=resource_path)
-        return self._predictor.handle_request(
-            {
-                "type": "start_session",
-                "resource_path": resource_path,
-                "offload_video_to_cpu": bool(offload_video_to_cpu),
-            }
-        )
+                try:
+                    return self._predictor.start_session(resource_path=resource_path)
+                except TypeError:
+                    pass
+        request = {
+            "type": "start_session",
+            "resource_path": resource_path,
+            "offload_video_to_cpu": bool(offload_video_to_cpu),
+        }
+        if session_id is not None:
+            request["session_id"] = session_id
+        return self._predictor.handle_request(request)
 
     def add_prompt(
         self,
@@ -478,16 +489,29 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             torch.set_default_dtype(torch.float32)
         return resolved
 
-    def start_session(self, target_device: Optional[torch.device | str] = None) -> str:
+    def start_session(
+        self,
+        target_device: Optional[torch.device | str] = None,
+        *,
+        session_id: Optional[str] = None,
+        resource_path: Optional[str] = None,
+    ) -> str:
         resolved_device = self._resolve_runtime_device(target_device)
 
         if self._predictor is None or self._predictor_device != resolved_device:
             self._predictor = self._initialize_predictor(resolved_device)
             self._predictor_device = resolved_device
-        session = self._predictor.start_session(
-            resource_path=str(self.video_path),
-            offload_video_to_cpu=self.offload_video_to_cpu,
-        )
+        try:
+            session = self._predictor.start_session(
+                resource_path=str(resource_path or self.video_path),
+                session_id=session_id,
+                offload_video_to_cpu=self.offload_video_to_cpu,
+            )
+        except TypeError:
+            session = self._predictor.start_session(
+                resource_path=str(resource_path or self.video_path),
+                offload_video_to_cpu=self.offload_video_to_cpu,
+            )
         self._session_id = session["session_id"]
         logger.info(
             "SAM3.1 session %s started on device=%s (checkpoint=%s)",
@@ -546,6 +570,154 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     self.close_session()
                 except Exception:
                     pass
+
+    def _get_active_session_state(self) -> Optional[dict]:
+        if not self._predictor or not self._session_id:
+            return None
+        raw_predictor = self._predictor.raw if hasattr(self._predictor, "raw") else self._predictor
+        getter = getattr(raw_predictor, "_get_session", None)
+        if callable(getter):
+            try:
+                session = getter(self._session_id)
+                if isinstance(session, dict):
+                    state = session.get("state")
+                    if isinstance(state, dict):
+                        return state
+            except Exception:
+                return None
+        states = getattr(raw_predictor, "_all_inference_states", None)
+        if isinstance(states, dict):
+            session = states.get(str(self._session_id))
+            if isinstance(session, dict):
+                state = session.get("state")
+                if isinstance(state, dict):
+                    return state
+        return None
+
+    @staticmethod
+    def _shift_frame_keyed_mapping(mapping: object, shift: int) -> object:
+        if not isinstance(mapping, dict) or shift <= 0:
+            return mapping
+        remapped: Dict[object, object] = {}
+        for key, value in mapping.items():
+            try:
+                frame_idx = int(key)
+            except Exception:
+                remapped[key] = value
+                continue
+            if frame_idx < shift:
+                continue
+            remapped[int(frame_idx - shift)] = value
+        return remapped
+
+    def _carry_forward_window_state(
+        self,
+        previous_state: Optional[dict],
+        *,
+        shift: int,
+    ) -> None:
+        if not previous_state or shift <= 0:
+            return
+        current_state = self._get_active_session_state()
+        if current_state is None:
+            return
+
+        # Keep image features and per-frame tracking state for overlapping frames.
+        cached_features = previous_state.get("cached_features")
+        if isinstance(cached_features, dict):
+            current_state["cached_features"] = {
+                int(frame_idx - shift): value
+                for frame_idx, value in cached_features.items()
+                if isinstance(frame_idx, int) and frame_idx >= shift
+            }
+
+        for key in ("point_inputs_per_obj", "mask_inputs_per_obj"):
+            src = previous_state.get(key)
+            if isinstance(src, dict) and isinstance(current_state.get(key), dict):
+                remapped: Dict[object, object] = {}
+                for obj_idx, value in src.items():
+                    if isinstance(value, dict):
+                        remapped[obj_idx] = self._shift_frame_keyed_mapping(value, shift)
+                    else:
+                        remapped[obj_idx] = value
+                current_state[key] = remapped
+
+        for key in ("output_dict",):
+            src = previous_state.get(key)
+            dst = current_state.get(key)
+            if isinstance(src, dict) and isinstance(dst, dict):
+                for storage_key in ("cond_frame_outputs", "non_cond_frame_outputs"):
+                    src_storage = src.get(storage_key)
+                    if isinstance(src_storage, dict):
+                        dst[storage_key] = {
+                            int(frame_idx - shift): value
+                            for frame_idx, value in src_storage.items()
+                            if isinstance(frame_idx, int) and frame_idx >= shift
+                        }
+
+        for key in ("output_dict_per_obj", "temp_output_dict_per_obj"):
+            src = previous_state.get(key)
+            if isinstance(src, dict) and isinstance(current_state.get(key), dict):
+                remapped_per_obj: Dict[object, object] = {}
+                for obj_idx, obj_output_dict in src.items():
+                    if not isinstance(obj_output_dict, dict):
+                        remapped_per_obj[obj_idx] = obj_output_dict
+                        continue
+                    remapped_entry: Dict[str, object] = {}
+                    for storage_key in ("cond_frame_outputs", "non_cond_frame_outputs"):
+                        storage = obj_output_dict.get(storage_key)
+                        if isinstance(storage, dict):
+                            remapped_entry[storage_key] = {
+                                int(frame_idx - shift): value
+                                for frame_idx, value in storage.items()
+                                if isinstance(frame_idx, int) and frame_idx >= shift
+                            }
+                    remapped_per_obj[obj_idx] = remapped_entry
+                current_state[key] = remapped_per_obj
+
+        consolidated = previous_state.get("consolidated_frame_inds")
+        if isinstance(consolidated, dict) and isinstance(
+            current_state.get("consolidated_frame_inds"), dict
+        ):
+            current_state["consolidated_frame_inds"] = {
+                storage_key: {
+                    int(frame_idx - shift)
+                    for frame_idx in frames
+                    if isinstance(frame_idx, int) and frame_idx >= shift
+                }
+                for storage_key, frames in consolidated.items()
+                if isinstance(frames, set)
+            }
+
+        frames_already_tracked = previous_state.get("frames_already_tracked")
+        if isinstance(frames_already_tracked, dict):
+            current_state["frames_already_tracked"] = {
+                int(frame_idx - shift): value
+                for frame_idx, value in frames_already_tracked.items()
+                if isinstance(frame_idx, int) and frame_idx >= shift
+            }
+
+        user_refined = previous_state.get("user_refined_frames_per_obj")
+        if isinstance(user_refined, dict):
+            current_state["user_refined_frames_per_obj"] = {
+                obj_idx: {
+                    int(frame_idx - shift)
+                    for frame_idx in frames
+                    if isinstance(frame_idx, int) and frame_idx >= shift
+                }
+                for obj_idx, frames in user_refined.items()
+                if isinstance(frames, set)
+            }
+
+        # Preserve object identity mappings so the new window keeps the same object slots.
+        for key in ("obj_id_to_idx", "obj_idx_to_id", "obj_ids"):
+            if key in previous_state:
+                current_state[key] = previous_state[key]
+
+        # These are window-local tracking flags and should be reset for the new state.
+        current_state["tracking_has_started"] = False
+        current_state["first_ann_frame_idx"] = None
+        current_state["multiplex_state"] = None
 
     def _reset_action_history_if_supported(self, session_id: Optional[str] = None):
         """
@@ -2281,6 +2453,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             window_dir.mkdir(parents=True, exist_ok=True)
             previous_window_frame_count = 0
             previous_window_start_idx: Optional[int] = None
+            shared_session_id: Optional[str] = None
+            previous_session_state: Optional[dict] = None
 
             for window_idx, (start_idx, end_idx, frames) in enumerate(
                 self._iter_video_windows(
@@ -2574,6 +2748,29 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         return grouped
 
     @staticmethod
+    def _first_manual_seed_frame(annotations: Iterable[dict]) -> Optional[int]:
+        """
+        Return the earliest manual seed frame in a label set, if present.
+
+        SAM3 windowed propagation should not spend time on windows that end
+        before the first manual seed, because those windows cannot contribute
+        to a valid seed-driven track.
+        """
+        first_frame: Optional[int] = None
+        for ann in annotations or []:
+            if not isinstance(ann, dict):
+                continue
+            try:
+                frame_idx = int(ann.get("ann_frame_idx", -1))
+            except Exception:
+                continue
+            if frame_idx < 0:
+                continue
+            if first_frame is None or frame_idx < first_frame:
+                first_frame = frame_idx
+        return first_frame
+
+    @staticmethod
     def _build_window_seed_segments(
         seed_frame_indices: Iterable[int],
         window_length: int,
@@ -2640,6 +2837,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         window_frame_to_index: Dict[int, int] = {}
         window_telemetry: List[Dict[str, object]] = []
         annotations_by_window = list(annotations)
+        first_manual_seed_frame = self._first_manual_seed_frame(annotations_by_window)
 
         if self._predictor is None or self._predictor_device != resolved_device:
             self._predictor = self._initialize_predictor(resolved_device)
@@ -2650,6 +2848,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             window_dir.mkdir(parents=True, exist_ok=True)
             previous_window_frame_count = 0
             previous_window_start_idx: Optional[int] = None
+            previous_session_state: Optional[dict] = None
+            shared_session_id: Optional[str] = None
 
             for window_idx, (start_idx, end_idx, frames) in enumerate(
                 self._iter_video_windows(
@@ -2663,6 +2863,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 window_t0 = time.perf_counter()
                 window_start_idx = int(start_idx)
                 window_end_idx = int(end_idx)
+                if (
+                    first_manual_seed_frame is not None
+                    and window_end_idx <= int(first_manual_seed_frame)
+                ):
+                    continue
                 local_ann_groups = self._shift_annotations_to_window(
                     annotations_by_window,
                     window_start_idx,
@@ -2689,171 +2894,171 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     shift=shift,
                 )
                 previous_window_start_idx = window_start_idx
-
-                session_resp = self._predictor.start_session(
+                state_to_carry = previous_session_state
+                session_id = self.start_session(
+                    target_device=resolved_device,
+                    session_id=shared_session_id,
                     resource_path=str(window_dir),
-                    offload_video_to_cpu=self.offload_video_to_cpu,
                 )
-                session_id = str(session_resp["session_id"])
-                try:
-                    propagation_direction_local = (propagation_direction or self.propagation_direction or "forward").lower()
-                    if propagation_direction_local not in {"forward", "both"}:
-                        propagation_direction_local = "forward"
+                shared_session_id = session_id
+                self._carry_forward_window_state(
+                    state_to_carry,
+                    shift=shift,
+                )
+                propagation_direction_local = (
+                    propagation_direction or self.propagation_direction or "forward"
+                ).lower()
+                if propagation_direction_local not in {"forward", "both"}:
+                    propagation_direction_local = "forward"
 
-                    if not local_prompt_frames and self.text_prompt:
-                        local_prompt_frames = [0]
+                if not local_prompt_frames and self.text_prompt:
+                    local_prompt_frames = [0]
 
-                    def _seed_frame(local_frame_idx: int) -> bool:
-                        abs_frame_idx = window_start_idx + int(local_frame_idx)
-                        frame_annotations = local_ann_groups.get(int(local_frame_idx), [])
-                        seed_mask_count = 0
-                        if frame_annotations:
-                            (
-                                prompt_frame_idx,
-                                boxes,
-                                labels,
-                                mask_inputs,
-                                mask_labels,
-                                points,
-                                point_labels,
-                                obj_ids,
-                                point_obj_ids,
-                            ) = self._prepare_prompts(frame_annotations, self.text_prompt)
-                            if prompt_frame_idx is not None:
-                                label_hints = self._label_hints_from_ids(obj_ids, self.id_to_labels)
-                                seed_mask_count = self._apply_seed_prompts(
-                                    frame_idx=int(prompt_frame_idx),
-                                    session_id=session_id,
-                                    boxes=boxes,
-                                    labels=labels,
-                                    mask_inputs=mask_inputs,
-                                    mask_labels=mask_labels,
-                                    points=points,
-                                    point_labels=point_labels,
-                                    point_obj_ids=point_obj_ids,
-                                    label_hints=label_hints,
+                def _seed_frame(local_frame_idx: int) -> bool:
+                    abs_frame_idx = window_start_idx + int(local_frame_idx)
+                    frame_annotations = local_ann_groups.get(int(local_frame_idx), [])
+                    seed_mask_count = 0
+                    if frame_annotations:
+                        (
+                            prompt_frame_idx,
+                            boxes,
+                            labels,
+                            mask_inputs,
+                            mask_labels,
+                            points,
+                            point_labels,
+                            obj_ids,
+                            point_obj_ids,
+                        ) = self._prepare_prompts(frame_annotations, self.text_prompt)
+                        if prompt_frame_idx is not None:
+                            label_hints = self._label_hints_from_ids(obj_ids, self.id_to_labels)
+                            seed_mask_count = self._apply_seed_prompts(
+                                frame_idx=int(prompt_frame_idx),
+                                session_id=session_id,
+                                boxes=boxes,
+                                labels=labels,
+                                mask_inputs=mask_inputs,
+                                mask_labels=mask_labels,
+                                points=points,
+                                point_labels=point_labels,
+                                point_obj_ids=point_obj_ids,
+                                label_hints=label_hints,
+                            )
+                            if seed_mask_count <= 0:
+                                logger.info(
+                                    "SAM3.1 annotated window #%d frame=%d produced no seed masks; skipping propagation from this prompt frame.",
+                                    int(window_idx),
+                                    int(abs_frame_idx),
                                 )
-                                if seed_mask_count <= 0:
-                                    logger.info(
-                                        "SAM3.1 annotated window #%d frame=%d produced no seed masks; skipping propagation from this prompt frame.",
-                                        int(window_idx),
-                                        int(abs_frame_idx),
-                                    )
-                                    return False
-                                return True
-                            if not self.text_prompt:
                                 return False
-                            logger.info(
-                                "SAM3.1 annotated window #%d frame=%d had no usable boxes, masks, or points; falling back to text prompt.",
-                                int(window_idx),
-                                int(abs_frame_idx),
-                            )
-                            seed_mask_count = self._apply_seed_prompts(
-                                frame_idx=int(local_frame_idx),
-                                session_id=session_id,
-                                boxes=[],
-                                labels=[],
-                                mask_inputs=[],
-                                mask_labels=[],
-                                points=[],
-                                point_labels=[],
-                                point_obj_ids=[],
-                                label_hints=[],
-                            )
-                        elif self.text_prompt:
-                            logger.info(
-                                "SAM3.1 annotated window #%d frame=%d had no local annotations; falling back to text prompt.",
-                                int(window_idx),
-                                int(abs_frame_idx),
-                            )
-                            seed_mask_count = self._apply_seed_prompts(
-                                frame_idx=int(local_frame_idx),
-                                session_id=session_id,
-                                boxes=[],
-                                labels=[],
-                                mask_inputs=[],
-                                mask_labels=[],
-                                points=[],
-                                point_labels=[],
-                                point_obj_ids=[],
-                                label_hints=[],
-                            )
-                        else:
+                            return True
+                        if not self.text_prompt:
                             return False
-                        if seed_mask_count <= 0:
-                            logger.info(
-                                "SAM3.1 annotated window #%d frame=%d text prompt produced no seed masks; skipping propagation from this prompt frame.",
-                                int(window_idx),
-                                int(abs_frame_idx),
-                                )
-                            return False
-                        return True
-
-                    def _propagate_segment(
-                        segment_start_local_idx: int,
-                        segment_end_local_exclusive: int,
-                    ) -> Tuple[int, int]:
-                        if segment_end_local_exclusive <= segment_start_local_idx:
-                            return 0, 0
-                        frames_processed = 0
-                        masks_written = 0
-                        max_track = max(
-                            1,
-                            int(segment_end_local_exclusive) - int(segment_start_local_idx) - 1,
+                        logger.info(
+                            "SAM3.1 annotated window #%d frame=%d had no usable boxes, masks, or points; falling back to text prompt.",
+                            int(window_idx),
+                            int(abs_frame_idx),
                         )
-                        for result in self._predictor.propagate_in_video(
+                        seed_mask_count = self._apply_seed_prompts(
+                            frame_idx=int(local_frame_idx),
                             session_id=session_id,
-                            propagation_direction=propagation_direction_local,
-                            start_frame_idx=int(segment_start_local_idx),
-                            max_frame_num_to_track=max_track,
-                        ):
-                            self._check_stop_requested()
-                            local_frame = int(result.get("frame_index", 0))
-                            global_frame = window_start_idx + local_frame
-                            outputs = result.get("outputs", {}) or {}
-                            outputs = self._map_outputs_to_global_ids_at_frame(
-                                outputs,
-                                frame_idx=global_frame,
-                            )
-                            masks_in_frame, _ = self._handle_frame_outputs(
-                                frame_idx=global_frame,
-                                outputs=outputs,
-                                total_frames=total_frames,
-                                yielded_frames=len(frame_to_masks) + 1,
-                                apply_score_threshold=False,
-                            )
-                            frames_processed += 1
-                            masks_written += int(masks_in_frame)
-                            frame_to_masks[global_frame] = max(
-                                int(frame_to_masks.get(global_frame, 0)),
-                                int(masks_in_frame),
-                            )
-                            window_frame_to_index[int(global_frame)] = int(window_idx)
-                            local_mask_counts[int(global_frame)] = max(
-                                int(local_mask_counts.get(global_frame, 0)),
-                                int(masks_in_frame),
-                            )
-                        return int(frames_processed), int(masks_written)
+                            boxes=[],
+                            labels=[],
+                            mask_inputs=[],
+                            mask_labels=[],
+                            points=[],
+                            point_labels=[],
+                            point_obj_ids=[],
+                            label_hints=[],
+                        )
+                    elif self.text_prompt:
+                        logger.info(
+                            "SAM3.1 annotated window #%d frame=%d had no local annotations; falling back to text prompt.",
+                            int(window_idx),
+                            int(abs_frame_idx),
+                        )
+                        seed_mask_count = self._apply_seed_prompts(
+                            frame_idx=int(local_frame_idx),
+                            session_id=session_id,
+                            boxes=[],
+                            labels=[],
+                            mask_inputs=[],
+                            mask_labels=[],
+                            points=[],
+                            point_labels=[],
+                            point_obj_ids=[],
+                            label_hints=[],
+                        )
+                    else:
+                        return False
+                    if seed_mask_count <= 0:
+                        logger.info(
+                            "SAM3.1 annotated window #%d frame=%d text prompt produced no seed masks; skipping propagation from this prompt frame.",
+                            int(window_idx),
+                            int(abs_frame_idx),
+                        )
+                        return False
+                    return True
 
-                    seed_segments = self._build_window_seed_segments(
-                        local_prompt_frames,
-                        len(frames),
-                        has_text_prompt=bool(self.text_prompt),
+                def _propagate_segment(
+                    segment_start_local_idx: int,
+                    segment_end_local_exclusive: int,
+                ) -> Tuple[int, int]:
+                    if segment_end_local_exclusive <= segment_start_local_idx:
+                        return 0, 0
+                    frames_processed = 0
+                    masks_written = 0
+                    max_track = max(
+                        1,
+                        int(segment_end_local_exclusive) - int(segment_start_local_idx) - 1,
                     )
-                    for start_local, next_local in seed_segments:
-                        if int(start_local) not in local_ann_groups and not (
-                            int(start_local) == 0 and self.text_prompt
-                        ):
-                            continue
-                        if not _seed_frame(int(start_local)):
-                            continue
-                        _propagate_segment(int(start_local), int(next_local))
-                finally:
-                    try:
-                        self._predictor.close_session(session_id)
-                    except Exception:
-                        pass
+                    for result in self._predictor.propagate_in_video(
+                        session_id=session_id,
+                        propagation_direction=propagation_direction_local,
+                        start_frame_idx=int(segment_start_local_idx),
+                        max_frame_num_to_track=max_track,
+                    ):
+                        self._check_stop_requested()
+                        local_frame = int(result.get("frame_index", 0))
+                        global_frame = window_start_idx + local_frame
+                        outputs = result.get("outputs", {}) or {}
+                        outputs = self._map_outputs_to_global_ids_at_frame(
+                            outputs,
+                            frame_idx=global_frame,
+                        )
+                        masks_in_frame, _ = self._handle_frame_outputs(
+                            frame_idx=global_frame,
+                            outputs=outputs,
+                            total_frames=total_frames,
+                            yielded_frames=len(frame_to_masks) + 1,
+                            apply_score_threshold=False,
+                        )
+                        frames_processed += 1
+                        masks_written += int(masks_in_frame)
+                        frame_to_masks[global_frame] = max(
+                            int(frame_to_masks.get(global_frame, 0)),
+                            int(masks_in_frame),
+                        )
+                        window_frame_to_index[int(global_frame)] = int(window_idx)
+                        local_mask_counts[int(global_frame)] = max(
+                            int(local_mask_counts.get(global_frame, 0)),
+                            int(masks_in_frame),
+                        )
+                    return int(frames_processed), int(masks_written)
 
+                seed_segments = self._build_window_seed_segments(
+                    local_prompt_frames,
+                    len(frames),
+                    has_text_prompt=bool(self.text_prompt),
+                )
+                for start_local, next_local in seed_segments:
+                    if int(start_local) not in local_ann_groups and not (
+                        int(start_local) == 0 and self.text_prompt
+                    ):
+                        continue
+                    if not _seed_frame(int(start_local)):
+                        continue
+                    _propagate_segment(int(start_local), int(next_local))
                 latency_ms = float((time.perf_counter() - window_t0) * 1000.0)
                 telemetry = self._build_window_telemetry_entry(
                     window_index=int(window_idx),
@@ -2875,6 +3080,13 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     float(telemetry["dropped_mask_rate"]),
                     float(latency_ms),
                 )
+                previous_session_state = self._get_active_session_state()
+
+            if shared_session_id is not None:
+                try:
+                    self._predictor.close_session(shared_session_id)
+                except Exception:
+                    pass
 
         if not frame_to_masks:
             raise RuntimeError("SAM3.1 annotated windowed propagation yielded no frames")

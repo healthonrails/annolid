@@ -32,6 +32,30 @@ def test_cutie_start_keeps_frame_zero_bootstrap_for_single_seed() -> None:
     assert start == 0
 
 
+def test_sam3_start_uses_first_manual_seed_plus_one() -> None:
+    start = PredictionExecutionMixin._resolve_sam3_start_frame_from_seed_state(
+        current_start_frame=0,
+        first_manual_seed=39,
+    )
+    assert start == 40
+
+
+def test_sam3_start_respects_existing_later_playhead() -> None:
+    start = PredictionExecutionMixin._resolve_sam3_start_frame_from_seed_state(
+        current_start_frame=100,
+        first_manual_seed=39,
+    )
+    assert start == 100
+
+
+def test_sam3_start_with_no_seed_uses_current_start() -> None:
+    start = PredictionExecutionMixin._resolve_sam3_start_frame_from_seed_state(
+        current_start_frame=12,
+        first_manual_seed=-1,
+    )
+    assert start == 12
+
+
 def test_cutie_brightness_contrast_kwargs_reads_video_settings() -> None:
     class _Host(PredictionExecutionMixin):
         video_file = "/tmp/demo.mp4"
