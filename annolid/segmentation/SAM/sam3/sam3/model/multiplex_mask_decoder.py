@@ -168,6 +168,40 @@ class MultiplexMaskDecoder(nn.Module):
           object_score_logits: batched predictions of object existence
         """
 
+        if image_embeddings.shape[0] == 0:
+            spatial_h = int(image_embeddings.shape[-2]) * 4
+            spatial_w = int(image_embeddings.shape[-1]) * 4
+            selected_mask_tokens = 1
+            empty_masks = image_embeddings.new_zeros(
+                0,
+                self.multiplex_count,
+                1 if not multimask_output else self.num_mask_output_per_object,
+                spatial_h,
+                spatial_w,
+            )
+            empty_iou = image_embeddings.new_zeros(
+                0,
+                self.multiplex_count,
+                1 if not multimask_output else self.num_mask_output_per_object,
+            )
+            empty_tokens = image_embeddings.new_zeros(
+                0,
+                self.multiplex_count,
+                selected_mask_tokens,
+                self.transformer_dim,
+            )
+            empty_scores = image_embeddings.new_zeros(
+                0,
+                self.multiplex_count,
+                1,
+            )
+            return {
+                "masks": empty_masks,
+                "iou_pred": empty_iou,
+                "mask_tokens_out": empty_tokens,
+                "object_score_logits": empty_scores,
+            }
+
         if self.num_multimask_outputs <= 0:
             assert not multimask_output, (
                 f"multimask_output must be False with {self.num_multimask_outputs=}"

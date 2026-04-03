@@ -3,9 +3,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import torch
 
 from annolid.gui.widgets.sam3_manager import Sam3Manager
 from annolid.segmentation.SAM.sam3.session import Sam3SessionManager
+from annolid.segmentation.SAM.sam3.sam3.model.multiplex_mask_decoder import (
+    MultiplexMaskDecoder,
+)
 
 
 class _Point:
@@ -431,3 +435,23 @@ def test_execute_prompt_transaction_allows_optional_mask_and_point_prompts() -> 
 
     assert result["transaction_step_kinds"] == ["semantic"]
     assert result["outputs"] == {}
+
+
+def test_multiplex_mask_decoder_returns_empty_outputs_for_empty_batch() -> None:
+    decoder = MultiplexMaskDecoder(
+        transformer_dim=32,
+        transformer=SimpleNamespace(),
+        multiplex_count=4,
+        num_multimask_outputs=3,
+    )
+
+    outputs = decoder.forward(
+        image_embeddings=torch.zeros(0, 32, 8, 8),
+        image_pe=torch.zeros(1, 32, 8, 8),
+        multimask_output=False,
+    )
+
+    assert outputs["masks"].shape == (0, 4, 1, 32, 32)
+    assert outputs["iou_pred"].shape == (0, 4, 1)
+    assert outputs["mask_tokens_out"].shape == (0, 4, 1, 32)
+    assert outputs["object_score_logits"].shape == (0, 4, 1)
