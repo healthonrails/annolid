@@ -158,3 +158,32 @@ def test_get_frame_uses_cache_without_rerunning_migration(tmp_path, monkeypatch)
     assert store.get_frame(0)["shapes"][0]["label"] == "mouse"
     assert store.get_frame(0)["shapes"][0]["label"] == "mouse"
     assert calls["count"] == 1
+
+
+def test_legacy_store_migration_falls_back_to_memory_on_permission_error(
+    tmp_path, monkeypatch
+):
+    frame_path = tmp_path / "video" / "video_000000000.json"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    store = AnnotationStore.for_frame_path(frame_path)
+    store.store_path.write_text(
+        json.dumps(
+            {
+                "shapes": [{"label": "mouse"}],
+                "imageHeight": 1,
+                "imageWidth": 1,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def _deny_replace(_lines):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(store, "_write_lines_atomically", _deny_replace)
+
+    record = store.get_frame(0)
+    assert record is not None
+    assert record["frame"] == 0
+    assert record["shapes"][0]["label"] == "mouse"

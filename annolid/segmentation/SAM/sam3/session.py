@@ -1058,8 +1058,12 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 age = max(0, int(frame_idx) - int(last_seen))
                 if age > max_gap:
                     continue
+            reference_box = self._predict_global_track_box(
+                gid,
+                frame_idx=frame_idx,
+            )
             score, iou, center_score, _ = self._box_track_match_score(
-                prev_box,
+                reference_box,
                 box_xywh,
                 age_frames=age,
                 max_gap=max_gap,
@@ -1077,6 +1081,65 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self._global_track_last_box.clear()
         self._global_track_last_seen_frame.clear()
         self._global_track_history.clear()
+
+    def _record_global_track_observation(
+        self,
+        gid: int,
+        box_xywh: np.ndarray,
+        *,
+        frame_idx: Optional[int] = None,
+    ) -> None:
+        box_arr = np.asarray(box_xywh, dtype=float)
+        self._global_track_last_box[int(gid)] = box_arr
+        if frame_idx is not None:
+            self._global_track_last_seen_frame[int(gid)] = int(frame_idx)
+        history = self._global_track_history.setdefault(int(gid), deque(maxlen=4))
+        history.append(box_arr)
+
+    def _predict_global_track_box(
+        self,
+        gid: int,
+        *,
+        frame_idx: Optional[int] = None,
+    ) -> np.ndarray:
+        """
+        Predict the reference box for a track using its recent motion history.
+
+        The last observed box remains the fallback. When we have at least two
+        observations and a positive frame gap, extrapolate a simple linear
+        motion estimate. This improves matching continuity across windows when
+        objects move steadily between refresh points.
+        """
+        prev_box = self._global_track_last_box.get(int(gid))
+        if prev_box is None:
+            return np.asarray([0.0, 0.0, 0.0, 0.0], dtype=float)
+
+        history = self._global_track_history.get(int(gid))
+        last_seen = self._global_track_last_seen_frame.get(int(gid))
+        if (
+            frame_idx is None
+            or last_seen is None
+            or history is None
+            or len(history) < 2
+        ):
+            return np.asarray(prev_box, dtype=float)
+
+        age = max(0, int(frame_idx) - int(last_seen))
+        if age <= 0:
+            return np.asarray(prev_box, dtype=float)
+
+        last_box = np.asarray(history[-1], dtype=float)
+        prev_hist_box = np.asarray(history[-2], dtype=float)
+        delta = last_box - prev_hist_box
+        predicted = last_box + (delta * float(age))
+        predicted = np.asarray(predicted, dtype=float)
+        if predicted.shape != (4,):
+            return np.asarray(prev_box, dtype=float)
+        predicted[2] = max(1.0, float(predicted[2]))
+        predicted[3] = max(1.0, float(predicted[3]))
+        if not np.all(np.isfinite(predicted)):
+            return np.asarray(prev_box, dtype=float)
+        return predicted
 
     def _assign_global_track_id(
         self,
@@ -1098,19 +1161,20 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         if candidates:
             best_score, best_gid = candidates[0]
             if best_score >= max(0.2, float(iou_threshold) * 0.9):
-                self._global_track_last_box[best_gid] = box_xywh
-                if frame_idx is not None:
-                    self._global_track_last_seen_frame[best_gid] = int(frame_idx)
-                history = self._global_track_history.setdefault(best_gid, deque(maxlen=4))
-                history.append(np.asarray(box_xywh, dtype=float))
+                self._record_global_track_observation(
+                    best_gid,
+                    box_xywh,
+                    frame_idx=frame_idx,
+                )
                 return best_gid
 
         gid = self._global_track_next_id
         self._global_track_next_id += 1
-        self._global_track_last_box[gid] = box_xywh
-        if frame_idx is not None:
-            self._global_track_last_seen_frame[gid] = int(frame_idx)
-        self._global_track_history[gid] = deque([np.asarray(box_xywh, dtype=float)], maxlen=4)
+        self._record_global_track_observation(
+            gid,
+            box_xywh,
+            frame_idx=frame_idx,
+        )
         return gid
 
     @staticmethod
@@ -1275,6 +1339,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             assigned_dets.add(det_idx)
             assigned_gids.add(gid)
             used.add(gid)
+            self._record_global_track_observation(
+                gid,
+                np.asarray(boxes_arr[det_idx], dtype=float),
+                frame_idx=frame_idx,
+            )
 
         for idx, mapped_gid in enumerate(mapped):
             if mapped_gid is not None:

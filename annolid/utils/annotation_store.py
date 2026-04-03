@@ -102,6 +102,7 @@ class AnnotationStore:
             ) from exc
 
         rewritten_lines = []
+        cache_records: Dict[int, Dict[str, Any]] = {}
         needs_rewrite = False
         record_index = 0
         for raw_line in raw_lines:
@@ -124,7 +125,10 @@ class AnnotationStore:
                     )
                 record = dict(record)
                 record["frame"] = int(inferred_frame)
+                cache_records[int(inferred_frame)] = dict(record)
                 needs_rewrite = True
+            else:
+                cache_records[int(explicit_frame)] = dict(record)
             rewritten_lines.append(
                 json.dumps(record, ensure_ascii=False, separators=(",", ":"))
             )
@@ -132,6 +136,18 @@ class AnnotationStore:
 
         if not needs_rewrite:
             return
+
+        def _cache_rewritten_records() -> None:
+            try:
+                stat = self.store_path.stat()
+            except OSError:
+                return
+            AnnotationStore._CACHE[self.store_path] = {
+                "mtime": stat.st_mtime,
+                "size": stat.st_size,
+                "records": dict(cache_records),
+                "migration_in_memory": True,
+            }
 
         try:
             lines_with_newline = [f"{line}\n" for line in rewritten_lines]
@@ -158,9 +174,23 @@ class AnnotationStore:
                     return
             except Exception:
                 pass
-            raise AnnotationStoreError(
-                f"Failed to migrate annotation store {self.store_path}: {exc}"
-            ) from exc
+
+            if isinstance(exc, PermissionError):
+                logger.warning(
+                    "Annotation store migration on %s was blocked by a file lock; "
+                    "continuing with an in-memory migrated cache.",
+                    self.store_path,
+                )
+                _cache_rewritten_records()
+                return
+
+            logger.warning(
+                "Annotation store migration on %s failed (%s); continuing with an in-memory migrated cache.",
+                self.store_path,
+                exc,
+            )
+            _cache_rewritten_records()
+            return
 
         AnnotationStore._CACHE.pop(self.store_path, None)
 
@@ -354,6 +384,8 @@ class AnnotationStore:
                 return self._cached_records_or_empty()
 
             cached = AnnotationStore._CACHE.get(self.store_path)
+            if cached and cached.get("migration_in_memory"):
+                return cached["records"]
             if (
                 not force_reload
                 and cached
@@ -365,6 +397,9 @@ class AnnotationStore:
             # Only pay the migration cost when the cache is stale or missing.
             # This avoids re-reading large NDJSON stores on every frame render.
             self._ensure_explicit_frame_metadata()
+            cached = AnnotationStore._CACHE.get(self.store_path)
+            if cached and cached.get("migration_in_memory"):
+                return cached["records"]
             try:
                 stat = self.store_path.stat()
             except FileNotFoundError:
@@ -373,6 +408,7 @@ class AnnotationStore:
                     continue
                 return self._cached_records_or_empty()
 
+            cached = AnnotationStore._CACHE.get(self.store_path)
             records: Dict[int, Dict[str, Any]] = {}
             try:
                 with self.store_path.open("r", encoding="utf-8") as fh:

@@ -105,6 +105,42 @@ def test_global_track_assignment_rejects_stale_tracks() -> None:
     assert session._global_track_next_id == 4
 
 
+def test_global_track_assignment_refreshes_match_history() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.sliding_window_size = 5
+    session._global_track_next_id = 2
+    session._global_track_last_box = {
+        1: np.asarray([10.0, 0.0, 10.0, 10.0], dtype=float),
+    }
+    session._global_track_last_seen_frame = {1: 1}
+    session._global_track_history = {
+        1: deque(
+            [
+                np.asarray([0.0, 0.0, 10.0, 10.0], dtype=float),
+                np.asarray([10.0, 0.0, 10.0, 10.0], dtype=float),
+            ],
+            maxlen=4,
+        )
+    }
+
+    outputs = session._map_outputs_to_global_ids_at_frame(
+        {
+            "out_obj_ids": np.asarray([42], dtype=np.int64),
+            "out_boxes_xywh": np.asarray(
+                [[30.0, 0.0, 10.0, 10.0]],
+                dtype=np.float32,
+            ),
+        },
+        frame_idx=3,
+    )
+
+    assert outputs["out_obj_ids"].tolist() == [1]
+    assert np.allclose(session._global_track_last_box[1], [30.0, 0.0, 10.0, 10.0])
+    assert session._global_track_last_seen_frame[1] == 3
+    assert len(session._global_track_history[1]) == 3
+    assert np.allclose(session._global_track_history[1][-1], [30.0, 0.0, 10.0, 10.0])
+
+
 def test_mid_window_refresh_policy_is_forward_only() -> None:
     assert compute_mid_window_refresh_index(4, "forward") == 2
     assert compute_mid_window_refresh_index(4, "both") is None
