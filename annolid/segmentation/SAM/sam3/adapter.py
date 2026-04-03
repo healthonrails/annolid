@@ -15,7 +15,9 @@ import numpy as np
 import torch
 from qtpy import QtCore
 
-from annolid.segmentation.SAM.sam_v2 import load_annotations_from_video
+from annolid.segmentation.SAM.sam_v2 import (
+    load_manual_seed_annotations_from_video,
+)
 from annolid.utils.logger import logger
 from annolid.gui.shape import Shape
 
@@ -168,7 +170,7 @@ def process_video(
     Returns:
         A short status string for the GUI.
     """
-    annotations, id_to_labels = load_annotations_from_video(video_path)
+    annotations, id_to_labels = load_manual_seed_annotations_from_video(video_path)
     processor = SAM3VideoProcessor(
         video_dir=video_path,
         id_to_labels=id_to_labels,

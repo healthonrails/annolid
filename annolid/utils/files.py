@@ -142,19 +142,52 @@ def find_manual_labeled_json_files(folder_path):
     return manually_labeled_files
 
 
+def find_manual_seed_json_files(folder_path):
+    """
+    Find manual seed JSON files that have explicit PNG+JSON sidecar pairs.
+
+    Unlike `find_manual_labeled_json_files`, this helper does not fall back to
+    the annotation store. It is intended for seed discovery, where only manual
+    polygon/shape pairs should be treated as authoritative inputs.
+    """
+    from annolid.datasets.labelme_collection import resolve_image_path
+
+    manual_seed_files = []
+    if not os.path.exists(folder_path):
+        return manual_seed_files
+
+    folder_path_obj = Path(folder_path)
+    stem_prefix = f"{folder_path_obj.name}_".lower()
+
+    for png_path in folder_path_obj.glob("*.png"):
+        stem = png_path.stem.lower()
+        if not stem.startswith(stem_prefix):
+            continue
+        suffix = stem[len(stem_prefix) :]
+        if len(suffix) != 9 or not suffix.isdigit():
+            continue
+        json_path = png_path.with_suffix(".json")
+        if not json_path.exists():
+            continue
+        if resolve_image_path(json_path) is None:
+            continue
+        manual_seed_files.append(json_path.name)
+
+    return sorted(manual_seed_files)
+
+
 def has_manual_labeled_frame(folder_path, frame_number: int) -> bool:
     """Return True if `folder_path` contains a manually labeled frame.
 
-    Manual labels are detected via `find_manual_labeled_json_files`, i.e. a frame
-    is considered manual when its `<folder>_<frame>.png` exists alongside the
-    corresponding LabelMe JSON (or via the AnnotationStore fallback).
+    Manual labels are detected via explicit PNG+JSON pairs. AnnotationStore
+    records are prediction outputs and do not count as manual seed frames.
     """
     try:
         target = int(frame_number)
     except Exception:
         return False
     try:
-        manual_files = find_manual_labeled_json_files(str(folder_path))
+        manual_files = find_manual_seed_json_files(str(folder_path))
     except Exception:
         return False
     for name in manual_files:

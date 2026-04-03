@@ -40,7 +40,7 @@ def test_has_manual_labeled_frame_annotation_store_fallback(tmp_path: Path) -> N
     store_path = folder / "video_annotations.ndjson"
     store_path.write_text(json.dumps({"frame": 0}) + "\n", encoding="utf-8")
 
-    assert has_manual_labeled_frame(folder, 0) is True
+    assert has_manual_labeled_frame(folder, 0) is False
     assert has_frame_annotation(folder, 0) is True
     assert should_start_predictions_from_frame0(folder) is False
 

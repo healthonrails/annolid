@@ -487,6 +487,47 @@ class Sam3Manager:
                 )
         return ann_records
 
+    @staticmethod
+    def _merge_canvas_annotations(
+        annotations: list,
+        canvas_annotations: list,
+    ) -> list:
+        """
+        Merge live canvas prompts into loaded annotations.
+
+        Canvas prompts win for the same frame/object pair so that a user who
+        edits frame 42 in the GUI does not get overridden by stale saved data.
+        """
+        if not canvas_annotations:
+            return list(annotations or [])
+
+        canvas_frame_ids = {
+            int(ann.get("ann_frame_idx", -1))
+            for ann in canvas_annotations
+            if isinstance(ann, dict)
+        }
+        merged = []
+        for ann in annotations or []:
+            if not isinstance(ann, dict):
+                continue
+            try:
+                ann_frame_idx = int(ann.get("ann_frame_idx", -1))
+            except Exception:
+                ann_frame_idx = -1
+            if ann_frame_idx in canvas_frame_ids:
+                continue
+            merged.append(dict(ann))
+
+        merged.extend(dict(ann) for ann in canvas_annotations if isinstance(ann, dict))
+        merged.sort(
+            key=lambda ann: (
+                int(ann.get("ann_frame_idx", 0)),
+                int(ann.get("obj_id", 0)),
+                str(ann.get("type", "")),
+            )
+        )
+        return merged
+
     def build_video_processor(
         self, model_name: str, model_weight: str, text_prompt: Optional[str]
     ):
@@ -497,7 +538,7 @@ class Sam3Manager:
         try:
             from annolid.segmentation.SAM.sam3 import adapter as sam3_adapter
             from annolid.segmentation.SAM.sam_v2 import (
-                load_annotations_from_video,
+                load_manual_seed_annotations_from_video,
             )
         except Exception as exc:  # pragma: no cover - import guard
             QtWidgets.QMessageBox.warning(
@@ -518,7 +559,7 @@ class Sam3Manager:
             sam3_checkpoint if sam3_checkpoint else "auto-download",
         )
         try:
-            annotations, id_to_labels = load_annotations_from_video(
+            annotations, id_to_labels = load_manual_seed_annotations_from_video(
                 self.window.video_file
             )
         except FileNotFoundError:
@@ -528,6 +569,14 @@ class Sam3Manager:
                 "continuing with text-only prompt if provided.",
                 self.window.video_file,
             )
+
+        prompt_frame_idx = max(getattr(self.window, "frame_number", 0), 0)
+        canvas_ann = self._canvas_prompts_to_annotations(
+            frame_idx=prompt_frame_idx,
+            id_to_labels=id_to_labels,
+        )
+        if canvas_ann:
+            annotations = self._merge_canvas_annotations(annotations, canvas_ann)
 
         if not annotations and not text_prompt:
             QtWidgets.QMessageBox.warning(
@@ -611,24 +660,44 @@ class Sam3Manager:
                     return False
             return default
 
+        compile_model_override = getattr(self, "compile_model", None)
+        offload_video_to_cpu_override = getattr(self, "offload_video_to_cpu", None)
+        score_threshold_detection_override = getattr(
+            self, "score_threshold_detection", None
+        )
+        new_det_thresh_override = getattr(self, "new_det_thresh", None)
+        propagation_direction_override = getattr(self, "propagation_direction", None)
+        max_frame_num_to_track_override = getattr(self, "max_frame_num_to_track", None)
+        device_override_override = getattr(self, "device_override", None)
+        sliding_window_size_override = getattr(self, "sliding_window_size", None)
+        sliding_window_stride_override = getattr(self, "sliding_window_stride", None)
+        max_num_objects_override = getattr(self, "max_num_objects", None)
+        multiplex_count_override = getattr(self, "multiplex_count", None)
+        agent_det_thresh_override = getattr(self, "agent_det_thresh", None)
+        agent_window_size_override = getattr(self, "agent_window_size", None)
+        agent_stride_override = getattr(self, "agent_stride", None)
+        agent_output_dir_override = getattr(self, "agent_output_dir", None)
+
         compile_model = _parse_bool(
-            self.compile_model if self.compile_model is not None else compile_model_cfg,
+            compile_model_override
+            if compile_model_override is not None
+            else compile_model_cfg,
             False,
         )
         offload_video_to_cpu = _parse_bool(
-            self.offload_video_to_cpu
-            if self.offload_video_to_cpu is not None
+            offload_video_to_cpu_override
+            if offload_video_to_cpu_override is not None
             else offload_video_to_cpu_cfg,
             True,
         )
-        if self.score_threshold_detection is not None:
-            score_threshold_detection = self.score_threshold_detection
-        if self.new_det_thresh is not None:
-            new_det_thresh = self.new_det_thresh
+        if score_threshold_detection_override is not None:
+            score_threshold_detection = score_threshold_detection_override
+        if new_det_thresh_override is not None:
+            new_det_thresh = new_det_thresh_override
         if score_threshold_detection is None:
-            score_threshold_detection = self.score_threshold_detection
+            score_threshold_detection = score_threshold_detection_override
         if new_det_thresh is None:
-            new_det_thresh = self.new_det_thresh
+            new_det_thresh = new_det_thresh_override
         try:
             if isinstance(sliding_window_stride, str):
                 sliding_window_stride = int(sliding_window_stride)
@@ -658,59 +727,53 @@ class Sam3Manager:
                 multiplex_count_cfg = int(multiplex_count_cfg)
         except Exception:
             multiplex_count_cfg = 16
-        if self.propagation_direction:
-            propagation_direction = self.propagation_direction
-        if self.max_frame_num_to_track is not None:
-            max_frame_num_to_track = self.max_frame_num_to_track
-        if self.device_override:
-            device_override = self.device_override
-        if self.sliding_window_size is not None:
-            sliding_window_size = self.sliding_window_size
-        if self.sliding_window_stride is not None:
-            sliding_window_stride = self.sliding_window_stride
+        if propagation_direction_override:
+            propagation_direction = propagation_direction_override
+        if max_frame_num_to_track_override is not None:
+            max_frame_num_to_track = max_frame_num_to_track_override
+        if device_override_override:
+            device_override = device_override_override
+        if sliding_window_size_override is not None:
+            sliding_window_size = sliding_window_size_override
+        if sliding_window_stride_override is not None:
+            sliding_window_stride = sliding_window_stride_override
         max_num_objects = (
-            self.max_num_objects
-            if self.max_num_objects is not None
+            max_num_objects_override
+            if max_num_objects_override is not None
             else max_num_objects_cfg
         )
         multiplex_count = (
-            self.multiplex_count
-            if self.multiplex_count is not None
+            multiplex_count_override
+            if multiplex_count_override is not None
             else multiplex_count_cfg
         )
         agent_det_thresh = (
-            self.agent_det_thresh
-            if self.agent_det_thresh is not None
+            agent_det_thresh_override
+            if agent_det_thresh_override is not None
             else agent_det_thresh_cfg
             if agent_det_thresh_cfg is not None
             else score_threshold_detection
         )
         agent_window_size = (
-            self.agent_window_size
-            if self.agent_window_size is not None
+            agent_window_size_override
+            if agent_window_size_override is not None
             else agent_window_size_cfg
             if agent_window_size_cfg is not None
             else sliding_window_size
         )
         agent_stride = (
-            self.agent_stride
-            if self.agent_stride is not None
+            agent_stride_override
+            if agent_stride_override is not None
             else agent_stride_cfg
             if agent_stride_cfg is not None
             else sliding_window_stride
         )
         agent_output_dir = (
-            self.agent_output_dir or agent_output_dir_cfg or "sam3_agent_out"
+            agent_output_dir_override or agent_output_dir_cfg or "sam3_agent_out"
         )
 
         if not annotations:
-            prompt_frame_idx = max(getattr(self.window, "frame_number", 0), 0)
-            canvas_ann = self._canvas_prompts_to_annotations(
-                frame_idx=prompt_frame_idx,
-                id_to_labels=id_to_labels,
-            )
-            if canvas_ann:
-                annotations = canvas_ann
+            annotations = canvas_ann
 
         def _build_standard_sam3_runner():
             try:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -18,6 +20,9 @@ from annolid.segmentation.SAM.sam3.sam3.model.video_tracking_multiplex_demo impo
 from annolid.segmentation.SAM.sam3.sam3.model.sam3_multiplex_base import (
     _ensure_object_masks,
     _select_positive_detections,
+)
+from annolid.segmentation.SAM.sam_v2 import (
+    load_manual_seed_annotations_from_video,
 )
 
 
@@ -56,6 +61,22 @@ class _MismatchedTransformer(torch.nn.Module):
         hs = src.new_zeros((tokens.shape[0], tokens.shape[1], c))
         src_out = src.new_zeros((0, c, h, w))
         return hs, src_out
+
+
+class _FakeSAM3VideoProcessor:
+    last_init_kwargs: dict | None = None
+
+    def __init__(self, **kwargs) -> None:
+        type(self).last_init_kwargs = dict(kwargs)
+
+    def run(self, stop_event=None):  # noqa: ANN001
+        return 1, 2
+
+    def close_session(self, session_id=None):  # noqa: ANN001
+        return None
+
+    def request_stop(self):  # noqa: D401
+        return None
 
 
 def test_prompt_transaction_merge_keeps_all_prompt_steps() -> None:
@@ -168,6 +189,157 @@ def test_canvas_polygon_prefers_mask_annotation_when_frame_image_available() -> 
     assert ann["obj_id"] == 2
     assert ann["mask"].shape == (24, 32)
     assert int(np.asarray(ann["mask"]).sum()) > 0
+
+
+def test_build_video_processor_merges_live_canvas_seed_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from annolid.segmentation.SAM.sam3 import adapter as sam3_adapter
+
+    video_dir = tmp_path / "video"
+    video_dir.mkdir()
+    manager = Sam3Manager.__new__(Sam3Manager)
+    manager.window = SimpleNamespace(
+        video_file=str(video_dir),
+        frame_number=42,
+        image=np.zeros((24, 32, 3), dtype=np.uint8),
+        epsilon_for_polygon=0.0,
+        _config={"sam3": {}},
+        _current_text_prompt=lambda: None,
+        canvas=SimpleNamespace(
+            shapes=[
+                _Shape(
+                    shape_type="polygon",
+                    points=[_Point(1, 1), _Point(10, 1), _Point(10, 8), _Point(1, 8)],
+                    label="vole_a",
+                    group_id=10,
+                ),
+                _Shape(
+                    shape_type="polygon",
+                    points=[_Point(12, 1), _Point(20, 1), _Point(20, 8), _Point(12, 8)],
+                    label="vole_b",
+                    group_id=11,
+                ),
+                _Shape(
+                    shape_type="polygon",
+                    points=[
+                        _Point(1, 10),
+                        _Point(10, 10),
+                        _Point(10, 18),
+                        _Point(1, 18),
+                    ],
+                    label="vole_c",
+                    group_id=12,
+                ),
+            ]
+        ),
+    )
+
+    monkeypatch.setattr(
+        "annolid.segmentation.SAM.sam_v2.load_manual_seed_annotations_from_video",
+        lambda *_args, **_kwargs: (
+            [
+                {"type": "box", "ann_frame_idx": 42, "box": [0, 0, 5, 5], "obj_id": 99},
+                {"type": "box", "ann_frame_idx": 7, "box": [3, 3, 6, 6], "obj_id": 7},
+            ],
+            {99: "stale", 7: "persist"},
+        ),
+    )
+    monkeypatch.setattr(sam3_adapter, "SAM3VideoProcessor", _FakeSAM3VideoProcessor)
+
+    runner = manager.build_video_processor("sam3", "weights.pt", None)
+    assert callable(runner)
+    result = runner()
+    assert result == (1, 2)
+
+    kwargs = _FakeSAM3VideoProcessor.last_init_kwargs
+    assert kwargs is not None
+    annotations = kwargs["annotations"]
+    assert any(int(ann["ann_frame_idx"]) == 7 for ann in annotations)
+    assert not any(
+        int(ann["ann_frame_idx"]) == 42 and int(ann.get("obj_id", -1)) == 99
+        for ann in annotations
+    )
+    assert sum(1 for ann in annotations if int(ann["ann_frame_idx"]) == 42) == 3
+    assert kwargs["id_to_labels"][10] == "vole_a"
+    assert kwargs["id_to_labels"][11] == "vole_b"
+    assert kwargs["id_to_labels"][12] == "vole_c"
+
+
+def test_manual_seed_loader_uses_png_json_pair_and_ignores_store(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "video"
+    folder.mkdir()
+
+    png_path = folder / f"{folder.name}_000000042.png"
+    png_path.write_bytes(b"png")
+    json_path = png_path.with_suffix(".json")
+    json_path.write_text(
+        json.dumps(
+            {
+                "version": "5.0.0",
+                "flags": {},
+                "imagePath": png_path.name,
+                "imageHeight": 24,
+                "imageWidth": 32,
+                "shapes": [
+                    {
+                        "label": "vole_a",
+                        "points": [[1, 1], [10, 1], [10, 8], [1, 8]],
+                        "group_id": 10,
+                        "shape_type": "polygon",
+                        "flags": {},
+                    },
+                    {
+                        "label": "vole_b",
+                        "points": [[12, 1], [20, 1], [20, 8], [12, 8]],
+                        "group_id": 11,
+                        "shape_type": "polygon",
+                        "flags": {},
+                    },
+                    {
+                        "label": "vole_c",
+                        "points": [[1, 10], [10, 10], [10, 18], [1, 18]],
+                        "group_id": 12,
+                        "shape_type": "polygon",
+                        "flags": {},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    store_path = folder / f"{folder.name}_annotations.ndjson"
+    store_path.write_text(
+        json.dumps(
+            {
+                "frame": 42,
+                "shapes": [
+                    {
+                        "label": "prediction",
+                        "points": [[0, 0], [1, 1]],
+                        "shape_type": "polygon",
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    annotations, id_to_labels = load_manual_seed_annotations_from_video(folder)
+    seed_annotations = [ann for ann in annotations if int(ann["ann_frame_idx"]) == 42]
+
+    assert len(seed_annotations) == 3
+    assert sorted(id_to_labels) == [10, 11, 12]
+    assert id_to_labels[10] == "vole_a"
+    assert id_to_labels[11] == "vole_b"
+    assert id_to_labels[12] == "vole_c"
+    assert {int(ann["obj_id"]) for ann in seed_annotations} == {10, 11, 12}
+    assert all(ann["type"] == "mask" for ann in seed_annotations)
 
 
 def test_window_annotation_shift_groups_by_local_frame() -> None:

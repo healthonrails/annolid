@@ -22,6 +22,8 @@ import json
 from huggingface_hub import hf_hub_download
 from hydra import initialize_config_module
 from hydra.core.global_hydra import GlobalHydra
+from annolid.utils.files import find_manual_seed_json_files
+from annolid.utils.annotation_compat import shape_to_mask
 
 # Enable CPU fallback for unsupported MPS ops
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
@@ -606,6 +608,143 @@ def load_annotations_from_video(video_path):
         annotations = label_processor.convert_shapes_to_annotations(ann_frame_idx)
         all_annotations.extend(annotations)
         id_to_labels.update(label_processor.get_id_to_labels())
+
+    return all_annotations, id_to_labels
+
+
+def load_manual_seed_annotations_from_video(video_path):
+    """
+    Load only manual seed LabelMe annotations backed by PNG+JSON pairs.
+
+    This mirrors CUTIE-style manual seed handling: explicit seed frames are the
+    authoritative inputs, while prediction outputs in the annotation store are
+    intentionally ignored.
+    """
+    video_dir = BaseSAMVideoProcessor._normalize_video_path(video_path)
+    anno_json_names = find_manual_seed_json_files(video_dir)
+    if not anno_json_names:
+        raise FileNotFoundError(
+            "No manual PNG+JSON seed pairs found in the video directory."
+        )
+
+    id_to_labels: dict[int, str] = {}
+    all_annotations: list[dict] = []
+
+    for anno_name in anno_json_names:
+        anno_json = os.path.join(video_dir, anno_name)
+        try:
+            with open(anno_json, "r", encoding="utf-8") as fp:
+                payload = json.load(fp) or {}
+        except Exception:
+            continue
+
+        frame_idx = os.path.splitext(os.path.basename(anno_json))[0]
+        if "_" in frame_idx:
+            frame_idx = frame_idx.split("_")[-1]
+        try:
+            ann_frame_idx = int(frame_idx)
+        except ValueError:
+            ann_frame_idx = 0
+
+        image_height = int(payload.get("imageHeight") or 0)
+        image_width = int(payload.get("imageWidth") or 0)
+        shapes = payload.get("shapes") or []
+        if not isinstance(shapes, list) or not shapes:
+            continue
+
+        next_obj_id = 1
+        for shape in shapes:
+            if not isinstance(shape, dict):
+                continue
+            shape_type = str(shape.get("shape_type", "")).strip().lower()
+            label = str(shape.get("label", "") or "").strip()
+            if not label:
+                continue
+            obj_id = None
+            try:
+                group_id = shape.get("group_id")
+                if group_id is not None:
+                    obj_id = int(group_id)
+                    if obj_id <= 0:
+                        obj_id = None
+            except Exception:
+                obj_id = None
+            if obj_id is None:
+                obj_id = next_obj_id
+                next_obj_id += 1
+
+            id_to_labels[int(obj_id)] = label
+
+            points = shape.get("points") or []
+            if shape_type in {"polygon", "polyline", "mask"}:
+                if len(points) < 3 or image_height <= 0 or image_width <= 0:
+                    continue
+                try:
+                    mask = shape_to_mask(
+                        img_shape=(int(image_height), int(image_width)),
+                        points=[[float(x), float(y)] for x, y in points],
+                        shape_type="polygon",
+                    )
+                except Exception:
+                    continue
+                if mask is None or not np.any(mask):
+                    continue
+                all_annotations.append(
+                    {
+                        "type": "mask",
+                        "ann_frame_idx": ann_frame_idx,
+                        "mask": mask.astype(np.uint8),
+                        "labels": [int(obj_id)],
+                        "obj_id": int(obj_id),
+                    }
+                )
+            elif shape_type == "rectangle":
+                if len(points) != 2:
+                    continue
+                try:
+                    p1, p2 = points
+                    box = [float(p1[0]), float(p1[1]), float(p2[0]), float(p2[1])]
+                except Exception:
+                    continue
+                all_annotations.append(
+                    {
+                        "type": "box",
+                        "ann_frame_idx": ann_frame_idx,
+                        "box": box,
+                        "labels": [int(obj_id)],
+                        "obj_id": int(obj_id),
+                    }
+                )
+            elif shape_type in {"point", "points"}:
+                if not points:
+                    continue
+                point_labels = shape.get("point_labels") or [1] * len(points)
+                converted_points = []
+                converted_labels = []
+                for idx, pt in enumerate(points):
+                    if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                        continue
+                    try:
+                        x = float(pt[0])
+                        y = float(pt[1])
+                    except Exception:
+                        continue
+                    converted_points.append([x, y])
+                    raw_label = point_labels[idx] if idx < len(point_labels) else 1
+                    try:
+                        converted_labels.append(1 if int(raw_label) > 0 else 0)
+                    except Exception:
+                        converted_labels.append(1)
+                if converted_points:
+                    all_annotations.append(
+                        {
+                            "type": "points",
+                            "ann_frame_idx": ann_frame_idx,
+                            "points": converted_points,
+                            "labels": converted_labels,
+                            "obj_id": int(obj_id),
+                        }
+                    )
 
     return all_annotations, id_to_labels
 

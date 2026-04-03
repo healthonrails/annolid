@@ -18,7 +18,7 @@ from annolid.tracking.domain import (
     KeypointState,
 )
 from annolid.utils.files import (
-    find_manual_labeled_json_files,
+    find_manual_seed_json_files,
     get_frame_number_from_json,
 )
 from annolid.utils.annotation_store import load_labelme_json
@@ -37,10 +37,10 @@ class AnnotationAdapter:
     persist_json: bool = True
 
     def load_initial_state(self, annotation_dir: Path) -> Tuple[int, InstanceRegistry]:
-        json_files = find_manual_labeled_json_files(str(annotation_dir))
+        json_files = find_manual_seed_json_files(str(annotation_dir))
         if not json_files:
             raise RuntimeError(
-                "No labeled JSON files found. Provide an initial annotation for the first frame."
+                "No manual PNG+JSON seed pairs found. Provide an initial annotation for the first frame."
             )
         candidates: List[Tuple[float, int, Path]] = []
         for name in json_files:
