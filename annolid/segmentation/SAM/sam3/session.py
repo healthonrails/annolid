@@ -17,6 +17,7 @@ import torch
 from annolid.segmentation.SAM.sam_v2 import BaseSAMVideoProcessor
 from annolid.utils.logger import logger
 from .sam3.utils import set_default_device
+from .window_refresh import compute_mid_window_refresh_index, run_mid_window_refresh
 
 SAM3_IMPORT_ERROR: Optional[Exception] = None
 _SAM3_REQUIRED_MODULES = ("iopath", "ftfy")
@@ -392,6 +393,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         # Cross-window tracking id state used by SAM3.1 windowed mode.
         self._global_track_next_id: int = 1
         self._global_track_last_box: Dict[int, np.ndarray] = {}
+        self._global_track_last_seen_frame: Dict[int, int] = {}
+        self._global_track_history: Dict[int, deque[np.ndarray]] = {}
 
     @staticmethod
     def _sanitize_checkpoint_path(checkpoint_path: Optional[str]) -> Optional[str]:
@@ -862,36 +865,136 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             return 0.0
         return float(inter / union)
 
+    @staticmethod
+    def _box_center_xywh(box: np.ndarray) -> Tuple[float, float]:
+        x, y, w, h = [float(v) for v in np.asarray(box, dtype=float).tolist()]
+        return x + (w / 2.0), y + (h / 2.0)
+
+    @staticmethod
+    def _box_area_xywh(box: np.ndarray) -> float:
+        _, _, w, h = [float(v) for v in np.asarray(box, dtype=float).tolist()]
+        return max(0.0, w) * max(0.0, h)
+
+    def _box_track_match_score(
+        self,
+        prev_box: np.ndarray,
+        candidate_box: np.ndarray,
+        *,
+        age_frames: int = 0,
+        max_gap: Optional[int] = None,
+    ) -> Tuple[float, float, float, float]:
+        """
+        Score how likely a detection continues a previously seen track.
+
+        The score blends overlap, center proximity, and scale similarity. A
+        modest age penalty keeps stale tracks from stealing identities after a
+        long gap.
+        """
+        prev = np.asarray(prev_box, dtype=float)
+        cand = np.asarray(candidate_box, dtype=float)
+        iou = self._box_iou_xywh(prev, cand)
+        prev_cx, prev_cy = self._box_center_xywh(prev)
+        cand_cx, cand_cy = self._box_center_xywh(cand)
+        center_dx = cand_cx - prev_cx
+        center_dy = cand_cy - prev_cy
+        prev_w, prev_h = float(prev[2]), float(prev[3])
+        cand_w, cand_h = float(cand[2]), float(cand[3])
+        prev_diag = float(np.hypot(max(prev_w, cand_w), max(prev_h, cand_h)))
+        if prev_diag <= 0.0:
+            prev_diag = 1.0
+        center_dist = float(np.hypot(center_dx, center_dy) / prev_diag)
+        center_score = float(max(0.0, 1.0 - min(center_dist, 2.0)))
+
+        prev_area = self._box_area_xywh(prev)
+        cand_area = self._box_area_xywh(cand)
+        if prev_area <= 0.0 or cand_area <= 0.0:
+            size_score = 0.0
+        else:
+            size_score = float(min(prev_area, cand_area) / max(prev_area, cand_area))
+
+        if max_gap is None:
+            max_gap = max(2, min(int(self.sliding_window_size or 5), 10))
+        gap_norm = max(1.0, float(max_gap))
+        age_penalty = min(0.3, max(0.0, float(age_frames)) / gap_norm * 0.15)
+
+        score = (0.6 * iou) + (0.25 * center_score) + (0.15 * size_score) - age_penalty
+        return float(score), float(iou), float(center_score), float(size_score)
+
+    def _track_match_candidates(
+        self,
+        box_xywh: np.ndarray,
+        *,
+        frame_idx: Optional[int] = None,
+        used_ids: Optional[set[int]] = None,
+        min_score: float = 0.35,
+    ) -> List[Tuple[float, int]]:
+        if used_ids is None:
+            used_ids = set()
+
+        max_gap = max(2, min(int(self.sliding_window_size or 5), 10))
+        candidates: List[Tuple[float, int]] = []
+        for gid, prev_box in self._global_track_last_box.items():
+            if gid in used_ids:
+                continue
+            last_seen = self._global_track_last_seen_frame.get(gid)
+            age = 0
+            if frame_idx is not None and last_seen is not None:
+                age = max(0, int(frame_idx) - int(last_seen))
+                if age > max_gap:
+                    continue
+            score, iou, center_score, _ = self._box_track_match_score(
+                prev_box,
+                box_xywh,
+                age_frames=age,
+                max_gap=max_gap,
+            )
+            if score < min_score:
+                continue
+            if iou < 0.05 and center_score < 0.45:
+                continue
+            candidates.append((float(score), int(gid)))
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates
+
     def _reset_global_tracks(self) -> None:
         self._global_track_next_id = 1
         self._global_track_last_box.clear()
+        self._global_track_last_seen_frame.clear()
+        self._global_track_history.clear()
 
     def _assign_global_track_id(
         self,
         box_xywh: np.ndarray,
         used_ids: Optional[set[int]] = None,
+        *,
+        frame_idx: Optional[int] = None,
         iou_threshold: float = 0.3,
     ) -> int:
         if used_ids is None:
             used_ids = set()
 
-        best_gid: Optional[int] = None
-        best_iou = 0.0
-        for gid, prev_box in self._global_track_last_box.items():
-            if gid in used_ids:
-                continue
-            iou = self._box_iou_xywh(prev_box, box_xywh)
-            if iou > best_iou:
-                best_iou = iou
-                best_gid = gid
-
-        if best_gid is not None and best_iou >= iou_threshold:
-            self._global_track_last_box[best_gid] = box_xywh
-            return best_gid
+        candidates = self._track_match_candidates(
+            box_xywh,
+            frame_idx=frame_idx,
+            used_ids=used_ids,
+            min_score=max(0.2, float(iou_threshold) * 0.9),
+        )
+        if candidates:
+            best_score, best_gid = candidates[0]
+            if best_score >= max(0.2, float(iou_threshold) * 0.9):
+                self._global_track_last_box[best_gid] = box_xywh
+                if frame_idx is not None:
+                    self._global_track_last_seen_frame[best_gid] = int(frame_idx)
+                history = self._global_track_history.setdefault(best_gid, deque(maxlen=4))
+                history.append(np.asarray(box_xywh, dtype=float))
+                return best_gid
 
         gid = self._global_track_next_id
         self._global_track_next_id += 1
         self._global_track_last_box[gid] = box_xywh
+        if frame_idx is not None:
+            self._global_track_last_seen_frame[gid] = int(frame_idx)
+        self._global_track_history[gid] = deque([np.asarray(box_xywh, dtype=float)], maxlen=4)
         return gid
 
     @staticmethod
@@ -1013,6 +1116,14 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             cap.release()
 
     def _map_outputs_to_global_ids(self, outputs: Dict[str, object]) -> Dict[str, object]:
+        return self._map_outputs_to_global_ids_at_frame(outputs, frame_idx=None)
+
+    def _map_outputs_to_global_ids_at_frame(
+        self,
+        outputs: Dict[str, object],
+        *,
+        frame_idx: Optional[int],
+    ) -> Dict[str, object]:
         obj_ids = outputs.get("out_obj_ids", [])
         boxes = outputs.get("out_boxes_xywh", [])
         if boxes is None:
@@ -1025,16 +1136,42 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             return outputs
 
         used: set[int] = set()
-        mapped: List[int] = []
+        pairs: List[Tuple[float, int, int]] = []
         for idx, _ in enumerate(obj_ids):
+            candidates = self._track_match_candidates(
+                np.asarray(boxes_arr[idx], dtype=float),
+                frame_idx=frame_idx,
+                used_ids=used,
+            )
+            for score, gid in candidates:
+                pairs.append((float(score), int(idx), int(gid)))
+
+        pairs.sort(key=lambda item: item[0], reverse=True)
+        mapped: List[Optional[int]] = [None] * len(obj_ids)
+        assigned_gids: set[int] = set()
+        assigned_dets: set[int] = set()
+        for score, det_idx, gid in pairs:
+            if det_idx in assigned_dets or gid in assigned_gids:
+                continue
+            if score < 0.35:
+                continue
+            mapped[det_idx] = gid
+            assigned_dets.add(det_idx)
+            assigned_gids.add(gid)
+            used.add(gid)
+
+        for idx, mapped_gid in enumerate(mapped):
+            if mapped_gid is not None:
+                continue
             gid = self._assign_global_track_id(
                 box_xywh=np.asarray(boxes_arr[idx], dtype=float),
                 used_ids=used,
+                frame_idx=frame_idx,
             )
             used.add(gid)
-            mapped.append(int(gid))
+            mapped[idx] = int(gid)
         outputs = dict(outputs)
-        outputs["out_obj_ids"] = np.asarray(mapped, dtype=np.int64)
+        outputs["out_obj_ids"] = np.asarray([int(v) for v in mapped], dtype=np.int64)
         return outputs
 
     @staticmethod
@@ -1592,7 +1729,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     if isinstance(prompt_result, dict)
                     else {}
                 ) or {}
-                prompt_outputs = self._map_outputs_to_global_ids(prompt_outputs)
+                prompt_outputs = self._map_outputs_to_global_ids_at_frame(
+                    prompt_outputs,
+                    frame_idx=0,
+                )
                 prompt_masks, _ = self._handle_frame_outputs(
                     frame_idx=0,
                     outputs=prompt_outputs,
@@ -1611,7 +1751,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 ):
                     self._check_stop_requested()
                     frame_idx = int(result.get("frame_index", 0))
-                    outputs = self._map_outputs_to_global_ids(result.get("outputs", {}) or {})
+                    outputs = self._map_outputs_to_global_ids_at_frame(
+                        result.get("outputs", {}) or {},
+                        frame_idx=frame_idx,
+                    )
                     masks_in_frame, _ = self._handle_frame_outputs(
                         frame_idx=frame_idx,
                         outputs=outputs,
@@ -1679,6 +1822,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     boundary_empty_skips = 0
                     window_start_idx = int(start_idx)
                     window_end_idx = int(end_idx)
+                    refresh_local_idx = compute_mid_window_refresh_index(
+                        len(frames),
+                        "forward",
+                    )
                     # When windows overlap and slide forward by stride, reuse temp
                     # files by shifting existing files and writing only the new tail.
                     shift = 0
@@ -1705,84 +1852,167 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     )
                     session_id = str(session_resp["session_id"])
                     try:
-                        # Use previous masks as a visual cue when available.
-                        carry_boxes_abs = self._derive_boxes_from_neighbor_masks(
-                            start_idx, max_boxes=min(4, self.max_num_objects)
-                        )
-                        if carry_boxes_abs:
-                            h, w = frames[0].shape[:2]
-                            carry_boxes = self._normalize_boxes(carry_boxes_abs, w, h)
-                        else:
-                            carry_boxes = None
+                        propagation_direction = "forward"
 
-                        prompt_result = self._execute_prompt_transaction(
-                            session_id=session_id,
-                            frame_idx=0,
-                            text=text_prompt,
-                            boxes=carry_boxes,
-                            box_labels=[1] * len(carry_boxes) if carry_boxes else None,
-                            points=None,
-                            point_labels=None,
-                            obj_id=None,
-                        )
-                        prompt_outputs = (
-                            prompt_result.get("outputs", {})
-                            if isinstance(prompt_result, dict)
-                            else {}
-                        ) or {}
-                        prompt_outputs = self._map_outputs_to_global_ids(prompt_outputs)
-                        prompt_global_frame = int(start_idx)
-                        prompt_masks_in_frame, _ = self._handle_frame_outputs(
-                            frame_idx=prompt_global_frame,
-                            outputs=prompt_outputs,
-                            total_frames=total_frames,
-                            yielded_frames=len(frame_to_masks) + 1,
-                            apply_score_threshold=False,
-                        )
-                        frame_to_masks[prompt_global_frame] = max(
-                            int(frame_to_masks.get(prompt_global_frame, 0)),
-                            int(prompt_masks_in_frame),
-                        )
-                        window_frame_to_index[int(prompt_global_frame)] = int(window_idx)
-                        local_mask_counts[int(prompt_global_frame)] = max(
-                            int(local_mask_counts.get(prompt_global_frame, 0)),
-                            int(prompt_masks_in_frame),
-                        )
-                        for result in self._predictor.propagate_in_video(
-                            session_id=session_id,
-                            propagation_direction="forward",
-                            start_frame_idx=0,
-                            max_frame_num_to_track=len(frames),
-                        ):
-                            self._check_stop_requested()
-                            local_frame = int(result.get("frame_index", 0))
-                            global_frame = start_idx + local_frame
-                            outputs = result.get("outputs", {}) or {}
-                            # Keep previously materialized non-empty frames stable:
-                            # SAM3 can emit duplicate boundary frames with empty outputs.
-                            if (
-                                int(frame_to_masks.get(global_frame, 0)) > 0
-                                and self._output_candidate_mask_count(outputs) == 0
-                            ):
-                                boundary_empty_skips += 1
-                                continue
-                            outputs = self._map_outputs_to_global_ids(outputs)
-                            masks_in_frame, _ = self._handle_frame_outputs(
-                                frame_idx=global_frame,
-                                outputs=outputs,
+                        def seed_first_frame() -> None:
+                            # Use previous masks as a visual cue when available.
+                            carry_boxes_abs = self._derive_boxes_from_neighbor_masks(
+                                start_idx, max_boxes=min(4, self.max_num_objects)
+                            )
+                            if carry_boxes_abs:
+                                h, w = frames[0].shape[:2]
+                                carry_boxes = self._normalize_boxes(
+                                    carry_boxes_abs, w, h
+                                )
+                            else:
+                                carry_boxes = None
+
+                            prompt_result = self._execute_prompt_transaction(
+                                session_id=session_id,
+                                frame_idx=0,
+                                text=text_prompt,
+                                boxes=carry_boxes,
+                                box_labels=[1] * len(carry_boxes) if carry_boxes else None,
+                                points=None,
+                                point_labels=None,
+                                obj_id=None,
+                            )
+                            prompt_outputs = (
+                                prompt_result.get("outputs", {})
+                                if isinstance(prompt_result, dict)
+                                else {}
+                            ) or {}
+                            prompt_outputs = self._map_outputs_to_global_ids_at_frame(
+                                prompt_outputs,
+                                frame_idx=int(start_idx),
+                            )
+                            prompt_global_frame = int(start_idx)
+                            prompt_masks_in_frame, _ = self._handle_frame_outputs(
+                                frame_idx=prompt_global_frame,
+                                outputs=prompt_outputs,
                                 total_frames=total_frames,
                                 yielded_frames=len(frame_to_masks) + 1,
                                 apply_score_threshold=False,
                             )
-                            frame_to_masks[global_frame] = max(
-                                int(frame_to_masks.get(global_frame, 0)),
-                                int(masks_in_frame),
+                            frame_to_masks[prompt_global_frame] = max(
+                                int(frame_to_masks.get(prompt_global_frame, 0)),
+                                int(prompt_masks_in_frame),
                             )
-                            window_frame_to_index[int(global_frame)] = int(window_idx)
-                            local_mask_counts[int(global_frame)] = max(
-                                int(local_mask_counts.get(global_frame, 0)),
-                                int(masks_in_frame),
+                            window_frame_to_index[int(prompt_global_frame)] = int(window_idx)
+                            local_mask_counts[int(prompt_global_frame)] = max(
+                                int(local_mask_counts.get(prompt_global_frame, 0)),
+                                int(prompt_masks_in_frame),
                             )
+
+                        def propagate_segment(
+                            segment_start_local_idx: int,
+                            segment_len: int,
+                        ) -> Tuple[int, int]:
+                            nonlocal boundary_empty_skips
+                            frames_processed = 0
+                            masks_written = 0
+                            for result in self._predictor.propagate_in_video(
+                                session_id=session_id,
+                                propagation_direction=propagation_direction,
+                                start_frame_idx=int(segment_start_local_idx),
+                                max_frame_num_to_track=int(segment_len),
+                            ):
+                                self._check_stop_requested()
+                                local_frame = int(result.get("frame_index", 0))
+                                global_frame = start_idx + local_frame
+                                outputs = result.get("outputs", {}) or {}
+                                if (
+                                    int(frame_to_masks.get(global_frame, 0)) > 0
+                                    and self._output_candidate_mask_count(outputs) == 0
+                                ):
+                                    boundary_empty_skips += 1
+                                    continue
+                                outputs = self._map_outputs_to_global_ids_at_frame(
+                                    outputs,
+                                    frame_idx=global_frame,
+                                )
+                                masks_in_frame, _ = self._handle_frame_outputs(
+                                    frame_idx=global_frame,
+                                    outputs=outputs,
+                                    total_frames=total_frames,
+                                    yielded_frames=len(frame_to_masks) + 1,
+                                    apply_score_threshold=False,
+                                )
+                                frames_processed += 1
+                                masks_written += int(masks_in_frame)
+                                frame_to_masks[global_frame] = max(
+                                    int(frame_to_masks.get(global_frame, 0)),
+                                    int(masks_in_frame),
+                                )
+                                window_frame_to_index[int(global_frame)] = int(window_idx)
+                                local_mask_counts[int(global_frame)] = max(
+                                    int(local_mask_counts.get(global_frame, 0)),
+                                    int(masks_in_frame),
+                                )
+                            return int(frames_processed), int(masks_written)
+
+                        def refresh_mid_frame(refresh_local_idx: int) -> Tuple[int, int]:
+                            refresh_global_frame = int(start_idx + int(refresh_local_idx))
+                            refresh_carry_boxes_abs = self._derive_boxes_from_neighbor_masks(
+                                refresh_global_frame,
+                                max_boxes=min(4, self.max_num_objects),
+                            )
+                            if refresh_carry_boxes_abs:
+                                h, w = frames[int(refresh_local_idx)].shape[:2]
+                                refresh_carry_boxes = self._normalize_boxes(
+                                    refresh_carry_boxes_abs,
+                                    w,
+                                    h,
+                                )
+                            else:
+                                refresh_carry_boxes = None
+
+                            refresh_result = self._execute_prompt_transaction(
+                                session_id=session_id,
+                                frame_idx=int(refresh_local_idx),
+                                text=text_prompt,
+                                boxes=refresh_carry_boxes,
+                                box_labels=[1] * len(refresh_carry_boxes)
+                                if refresh_carry_boxes
+                                else None,
+                                points=None,
+                                point_labels=None,
+                                obj_id=None,
+                            )
+                            refresh_outputs = (
+                                refresh_result.get("outputs", {})
+                                if isinstance(refresh_result, dict)
+                                else {}
+                            ) or {}
+                            refresh_outputs = self._map_outputs_to_global_ids_at_frame(
+                                refresh_outputs,
+                                frame_idx=refresh_global_frame,
+                            )
+                            refresh_masks_in_frame, _ = self._handle_frame_outputs(
+                                frame_idx=refresh_global_frame,
+                                outputs=refresh_outputs,
+                                total_frames=total_frames,
+                                yielded_frames=len(frame_to_masks) + 1,
+                                apply_score_threshold=False,
+                            )
+                            frame_to_masks[refresh_global_frame] = max(
+                                int(frame_to_masks.get(refresh_global_frame, 0)),
+                                int(refresh_masks_in_frame),
+                            )
+                            window_frame_to_index[int(refresh_global_frame)] = int(window_idx)
+                            local_mask_counts[int(refresh_global_frame)] = max(
+                                int(local_mask_counts.get(refresh_global_frame, 0)),
+                                int(refresh_masks_in_frame),
+                            )
+                            return 1, int(refresh_masks_in_frame)
+
+                        _frames_processed, _masks_written, _ = run_mid_window_refresh(
+                            len(frames),
+                            propagation_direction,
+                            seed_first_frame=seed_first_frame,
+                            propagate_segment=propagate_segment,
+                            refresh_mid_frame=refresh_mid_frame,
+                        )
                     finally:
                         try:
                             self._predictor.close_session(session_id)
@@ -2284,7 +2514,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     else None,
                 )
                 outputs = result.get("outputs", {}) if isinstance(result, dict) else {}
-                outputs = self._map_outputs_to_global_ids(outputs or {})
+                outputs = self._map_outputs_to_global_ids_at_frame(
+                    outputs or {},
+                    frame_idx=int(frame_idx),
+                )
                 self._handle_frame_outputs(
                     frame_idx=int(frame_idx),
                     outputs=outputs,
@@ -2344,7 +2577,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             else None,
                         )
                         outputs = result.get("outputs", {}) if isinstance(result, dict) else {}
-                        outputs = self._map_outputs_to_global_ids(outputs or {})
+                        outputs = self._map_outputs_to_global_ids_at_frame(
+                            outputs or {},
+                            frame_idx=int(frame_idx),
+                        )
                         self._handle_frame_outputs(
                             frame_idx=int(frame_idx),
                             outputs=outputs,

@@ -1,4 +1,5 @@
 import tempfile
+from collections import deque
 from pathlib import Path
 from typing import Generator, Iterable, List, Dict, Any, Optional, Tuple, Literal
 
@@ -36,29 +37,37 @@ def _iter_video_windows(
         raise ValueError(f"Could not open video: {video_path}")
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or None
-
-    start = 0
-    while True:
-        frames: List[np.ndarray] = []
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start)
-        for _ in range(window_size):
+    try:
+        frames_buf: deque[np.ndarray] = deque()
+        while len(frames_buf) < window_size:
             ret, frame = cap.read()
             if not ret:
                 break
-            frames.append(frame)
+            frames_buf.append(frame)
 
-        if not frames:
-            break
+        start = 0
+        while frames_buf:
+            frames = list(frames_buf)
+            end = start + len(frames)
+            yield start, end, frames
+            if total_frames and end >= total_frames:
+                break
 
-        end = start + len(frames)
-        yield start, end, frames
+            advance = min(stride, len(frames_buf))
+            for _ in range(advance):
+                frames_buf.popleft()
+                start += 1
 
-        if end >= (total_frames or end):
-            break
+            while len(frames_buf) < window_size:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frames_buf.append(frame)
 
-        start += stride
-
-    cap.release()
+            if not frames_buf or (total_frames and start >= total_frames):
+                break
+    finally:
+        cap.release()
 
 
 def _frames_to_pil(frames: List[np.ndarray]) -> List["Image.Image"]:

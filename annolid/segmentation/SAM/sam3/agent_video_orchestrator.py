@@ -17,6 +17,7 @@ from PIL import Image
 
 from annolid.segmentation.SAM.sam3.session import Sam3SessionConfig, Sam3SessionManager
 from .video_window_inference import _iter_video_windows
+from .window_refresh import run_mid_window_refresh
 from .sam3.agent.agent_core import agent_inference
 
 
@@ -84,6 +85,40 @@ def _boxes_from_agent_output(outputs: Dict[str, object], det_thresh: float) -> T
         except Exception:
             continue
     return boxes_abs, kept_scores
+
+
+def _box_iou_xyxy(box_a: List[float], box_b: List[float]) -> float:
+    ax1, ay1, ax2, ay2 = [float(v) for v in box_a]
+    bx1, by1, bx2, by2 = [float(v) for v in box_b]
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    inter = inter_w * inter_h
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    if union <= 0.0:
+        return 0.0
+    return float(inter / union)
+
+
+def _filter_duplicate_boxes(
+    candidate_boxes: List[List[float]],
+    existing_boxes: List[List[float]],
+    *,
+    iou_threshold: float = 0.55,
+) -> List[List[float]]:
+    filtered: List[List[float]] = []
+    for candidate in candidate_boxes:
+        if any(_box_iou_xyxy(candidate, prev) >= iou_threshold for prev in existing_boxes):
+            continue
+        filtered.append(candidate)
+    return filtered
 
 
 def _run_agent_on_frame(
@@ -164,6 +199,7 @@ def run_agent_seeded_sam3_video(
         ):
             if not frames:
                 continue
+            window_end_idx = int(end_idx)
             first_frame = frames[0]
             frame_path = tmpdir_path / f"frame_{start_idx:09}.png"
             _save_frame_to_tmp(first_frame, frame_path)
@@ -179,29 +215,84 @@ def run_agent_seeded_sam3_video(
             for lid, hint in zip(box_labels, label_hints):
                 session.id_to_labels.setdefault(lid, hint)
 
-            # Clear per-run tracking state to avoid leaking across windows.
-            session._frames_processed.clear()
-            session._frames_with_masks.clear()
-            session._frame_masks.clear()
-            session.obj_id_to_label.clear()
-
-            max_frames = tracking_cfg.max_frame_num_to_track or (
-                end_idx - start_idx)
+            # Keep the session-level tracking history alive across windows so
+            # overlap can stabilize IDs and box carry-over.
             with session._session_scope(
                 target_device=tracking_cfg.device, auto_close=True
             ):
                 session._reset_action_history_if_supported()
-                session.add_prompt_boxes_abs(
-                    frame_idx=start_idx,
-                    boxes_abs=boxes_abs,
-                    box_labels=box_labels,
-                    record_outputs=True,
-                    label_hints=label_hints,
-                )
-                frames_processed, masks_written = session.propagate(
-                    start_frame_idx=start_idx,
-                    propagation_direction=tracking_cfg.propagation_direction,
-                    max_frame_num_to_track=max_frames,
+                propagation_direction = (tracking_cfg.propagation_direction or "forward").lower()
+
+                def seed_first_frame() -> None:
+                    session.add_prompt_boxes_abs(
+                        frame_idx=start_idx,
+                        boxes_abs=boxes_abs,
+                        box_labels=box_labels,
+                        record_outputs=True,
+                        label_hints=label_hints,
+                    )
+
+                def propagate_segment(
+                    segment_start_local_idx: int,
+                    segment_len: int,
+                ) -> Tuple[int, int]:
+                    return session.propagate(
+                        start_frame_idx=start_idx + int(segment_start_local_idx),
+                        propagation_direction=propagation_direction,
+                        max_frame_num_to_track=int(segment_len),
+                    )
+
+                def refresh_mid_frame(refresh_local_idx: int) -> Tuple[int, int]:
+                    refresh_frame = frames[int(refresh_local_idx)]
+                    refresh_path = tmpdir_path / f"frame_{start_idx + refresh_local_idx:09}.png"
+                    _save_frame_to_tmp(refresh_frame, refresh_path)
+                    refresh_boxes_abs, _ = _run_agent_on_frame(refresh_path, agent_cfg)
+                    refresh_boxes_abs = _filter_duplicate_boxes(
+                        refresh_boxes_abs,
+                        boxes_abs,
+                    )
+                    if refresh_boxes_abs:
+                        refresh_label_offset = len(boxes_abs) + 1
+                        refresh_labels = list(
+                            range(
+                                refresh_label_offset,
+                                refresh_label_offset + len(refresh_boxes_abs),
+                            )
+                        )
+                        refresh_hints = [
+                            f"{agent_cfg.prompt}_refresh_{i+1}"
+                            for i in range(len(refresh_boxes_abs))
+                        ]
+                        for lid, hint in zip(refresh_labels, refresh_hints):
+                            session.id_to_labels.setdefault(lid, hint)
+                        refresh_result = session.add_prompt_boxes_abs(
+                            frame_idx=start_idx + int(refresh_local_idx),
+                            boxes_abs=refresh_boxes_abs,
+                            box_labels=refresh_labels,
+                            record_outputs=True,
+                            label_hints=refresh_hints,
+                        )
+                        refresh_outputs = (
+                            refresh_result.get("outputs", {})
+                            if isinstance(refresh_result, dict)
+                            else {}
+                        ) or {}
+                        refresh_outputs = session._map_outputs_to_global_ids_at_frame(
+                            refresh_outputs,
+                            frame_idx=start_idx + int(refresh_local_idx),
+                        )
+                        refresh_obj_ids = refresh_outputs.get("out_obj_ids", []) or []
+                        refresh_masks = len(refresh_obj_ids)
+                    else:
+                        refresh_masks = 0
+                    return 1, int(refresh_masks)
+
+                frames_processed, masks_written, _ = run_mid_window_refresh(
+                    len(frames),
+                    propagation_direction,
+                    seed_first_frame=seed_first_frame,
+                    propagate_segment=propagate_segment,
+                    refresh_mid_frame=refresh_mid_frame,
                 )
                 total_frames += frames_processed
                 total_masks += masks_written
