@@ -1174,19 +1174,35 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         model_constants = inference_state["constants"]
         # "out_maskmem_pos_enc" should be either a list of tensors or None
         out_maskmem_pos_enc = current_out["maskmem_pos_enc"]
+        if not out_maskmem_pos_enc:
+            return None
         if out_maskmem_pos_enc is not None:
             if "maskmem_pos_enc" not in model_constants:
                 assert isinstance(out_maskmem_pos_enc, list)
                 # only take the slice for one object, since it's same across objects
-                maskmem_pos_enc = [x[0:1].clone() for x in out_maskmem_pos_enc]
+                maskmem_pos_enc = [
+                    x[0:1].clone() if x is not None and x.shape[0] > 0 else x
+                    for x in out_maskmem_pos_enc
+                ]
                 model_constants["maskmem_pos_enc"] = maskmem_pos_enc
             else:
                 maskmem_pos_enc = model_constants["maskmem_pos_enc"]
             # expand the cached maskmem_pos_enc to the actual batch size
-            batch_size = out_maskmem_pos_enc[0].size(0)
-            expanded_maskmem_pos_enc = [
-                x.expand(batch_size, -1, -1, -1) for x in maskmem_pos_enc
-            ]
+            first_non_none = next(
+                (x for x in out_maskmem_pos_enc if x is not None), None
+            )
+            if first_non_none is None:
+                return None
+            batch_size = first_non_none.size(0)
+            if batch_size == 0:
+                expanded_maskmem_pos_enc = [
+                    x[:0].clone() if x is not None else None for x in maskmem_pos_enc
+                ]
+            else:
+                expanded_maskmem_pos_enc = [
+                    x.expand(batch_size, -1, -1, -1) if x is not None else None
+                    for x in maskmem_pos_enc
+                ]
         else:
             expanded_maskmem_pos_enc = None
         return expanded_maskmem_pos_enc

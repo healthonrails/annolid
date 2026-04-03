@@ -18,6 +18,40 @@ from sam3.utils.device import module_device, select_device, to_device
 from tqdm import tqdm
 
 
+def _safe_slice_first_dim(
+    tensor: Optional[torch.Tensor],
+    indices: list[int],
+    *,
+    field_name: str,
+) -> Optional[torch.Tensor]:
+    """Slice a tensor on its leading dimension without crashing on empty state."""
+    if tensor is None:
+        return None
+    if not torch.is_tensor(tensor):
+        return tensor
+    if tensor.ndim == 0 or tensor.shape[0] == 0:
+        return tensor
+    valid_indices = [idx for idx in indices if 0 <= int(idx) < tensor.shape[0]]
+    if len(valid_indices) == len(indices):
+        return tensor[valid_indices]
+    if not valid_indices:
+        logging.warning(
+            "SAM3 multiplex: no valid indices for %s with shape %s; preserving empty slice.",
+            field_name,
+            tuple(tensor.shape),
+        )
+        return tensor[:0]
+    dropped = [idx for idx in indices if int(idx) not in valid_indices]
+    logging.warning(
+        "SAM3 multiplex: %s shape %s missing bucket indices %s; keeping %s.",
+        field_name,
+        tuple(tensor.shape),
+        dropped,
+        valid_indices,
+    )
+    return tensor[valid_indices]
+
+
 class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
     """
     The demo class that extends the `VideoTrackingDynamicMultiplex` to handle user interactions
@@ -2947,19 +2981,35 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         model_constants = inference_state["constants"]
         # "out_maskmem_pos_enc" should be either a list of tensors or None
         out_maskmem_pos_enc = current_out.get("maskmem_pos_enc")
+        if not out_maskmem_pos_enc:
+            return None
         if out_maskmem_pos_enc is not None:
             if "maskmem_pos_enc" not in model_constants:
                 assert isinstance(out_maskmem_pos_enc, list)
                 # only take the slice for one object, since it's same across objects
-                maskmem_pos_enc = [x[0:1].clone() for x in out_maskmem_pos_enc]
+                maskmem_pos_enc = [
+                    x[0:1].clone() if x is not None and x.shape[0] > 0 else x
+                    for x in out_maskmem_pos_enc
+                ]
                 model_constants["maskmem_pos_enc"] = maskmem_pos_enc
             else:
                 maskmem_pos_enc = model_constants["maskmem_pos_enc"]
             # expand the cached maskmem_pos_enc to the actual batch size
-            batch_size = out_maskmem_pos_enc[0].size(0)
-            expanded_maskmem_pos_enc = [
-                x.expand(batch_size, -1, -1, -1) for x in maskmem_pos_enc
-            ]
+            first_non_none = next(
+                (x for x in out_maskmem_pos_enc if x is not None), None
+            )
+            if first_non_none is None:
+                return None
+            batch_size = first_non_none.size(0)
+            if batch_size == 0:
+                expanded_maskmem_pos_enc = [
+                    x[:0].clone() if x is not None else None for x in maskmem_pos_enc
+                ]
+            else:
+                expanded_maskmem_pos_enc = [
+                    x.expand(batch_size, -1, -1, -1) if x is not None else None
+                    for x in maskmem_pos_enc
+                ]
         else:
             expanded_maskmem_pos_enc = None
         return expanded_maskmem_pos_enc
@@ -3106,13 +3156,33 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
         # Step 3: For packed tensor storage, we index the remaining ids and rebuild the per-bucket/per-object slices.
         def _slice_state(output_dict, storage_key):
             for frame_idx, out in output_dict[storage_key].items():
-                out["maskmem_features"] = out["maskmem_features"][buckets_to_keep]
-                out["maskmem_pos_enc"] = [
-                    x[buckets_to_keep] for x in out["maskmem_pos_enc"]
-                ]
-                # "maskmem_pos_enc" is the same across frames, so we only need to store one copy of it
+                out["maskmem_features"] = _safe_slice_first_dim(
+                    out.get("maskmem_features"),
+                    buckets_to_keep,
+                    field_name="maskmem_features",
+                )
+                out["maskmem_pos_enc"] = (
+                    [
+                        _safe_slice_first_dim(
+                            x,
+                            buckets_to_keep,
+                            field_name="maskmem_pos_enc",
+                        )
+                        if x is not None
+                        else None
+                        for x in out.get("maskmem_pos_enc") or []
+                    ]
+                    if out.get("maskmem_pos_enc") is not None
+                    else None
+                )
+                # "maskmem_pos_enc" is the same across frames, so we only need to store one copy of it.
+                # Recompute the expanded version from the cached constant to keep the batch contract explicit.
                 out["maskmem_pos_enc"] = self._get_maskmem_pos_enc(inference_state, out)
-                out["obj_ptr"] = out["obj_ptr"][buckets_to_keep]
+                out["obj_ptr"] = _safe_slice_first_dim(
+                    out.get("obj_ptr"),
+                    buckets_to_keep,
+                    field_name="obj_ptr",
+                )
 
                 # Note that pred_maks and score_logits are stored in a per-object manner
                 # When we add new objects, obj_id_to_idx mapping could be different
@@ -3135,10 +3205,22 @@ class VideoTrackingMultiplexDemo(VideoTrackingDynamicMultiplex):
                     for idx in local_remain_old_obj_inds
                     if 0 <= idx < max_pred and 0 <= idx < max_scores
                 ]
-                out["pred_masks"] = out["pred_masks"][keep_indices]
-                out["object_score_logits"] = out["object_score_logits"][keep_indices]
+                out["pred_masks"] = _safe_slice_first_dim(
+                    out["pred_masks"],
+                    keep_indices,
+                    field_name="pred_masks",
+                )
+                out["object_score_logits"] = _safe_slice_first_dim(
+                    out["object_score_logits"],
+                    keep_indices,
+                    field_name="object_score_logits",
+                )
                 if self.use_memory_selection:
-                    out["iou_score"] = out["iou_score"][keep_indices]
+                    out["iou_score"] = _safe_slice_first_dim(
+                        out["iou_score"],
+                        keep_indices,
+                        field_name="iou_score",
+                    )
                     out["eff_iou_score"] = self.cal_mem_score(
                         out["object_score_logits"], out["iou_score"]
                     )  # recalculate the memory frame score

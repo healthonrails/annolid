@@ -11,6 +11,10 @@ from annolid.segmentation.SAM.sam3.session import Sam3SessionManager
 from annolid.segmentation.SAM.sam3.sam3.model.multiplex_mask_decoder import (
     MultiplexMaskDecoder,
 )
+from annolid.segmentation.SAM.sam3.sam3.model.video_tracking_multiplex_demo import (
+    VideoTrackingMultiplexDemo,
+    _safe_slice_first_dim,
+)
 from annolid.segmentation.SAM.sam3.sam3.model.sam3_multiplex_base import (
     _ensure_object_masks,
     _select_positive_detections,
@@ -532,3 +536,17 @@ def test_ensure_object_masks_accepts_singleton_channel_layout() -> None:
     normalized = _ensure_object_masks(masks)
 
     assert normalized.shape == (1, 288, 288)
+
+
+def test_safe_slice_first_dim_preserves_empty_but_valid_state() -> None:
+    empty = torch.zeros((0, 4, 8), dtype=torch.float32)
+    sliced = _safe_slice_first_dim(empty, [0], field_name="maskmem_features")
+
+    assert sliced.shape == (0, 4, 8)
+    assert sliced.numel() == 0
+
+
+def test_get_maskmem_pos_enc_handles_empty_list() -> None:
+    demo = VideoTrackingMultiplexDemo.__new__(VideoTrackingMultiplexDemo)
+
+    assert demo._get_maskmem_pos_enc({"constants": {}}, {"maskmem_pos_enc": []}) is None
