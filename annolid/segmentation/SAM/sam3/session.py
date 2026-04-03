@@ -1760,6 +1760,41 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
         return _propagate()
 
+    @staticmethod
+    def _build_window_telemetry_entry(
+        *,
+        window_index: int,
+        window_start_idx: int,
+        window_end_idx: int,
+        local_mask_counts: Dict[int, int],
+        boundary_empty_skips: int = 0,
+        latency_ms: float = 0.0,
+        reacquired_frames: int = 0,
+    ) -> Dict[str, object]:
+        covered_frames = sorted(local_mask_counts.keys())
+        frames_in_window = len(covered_frames)
+        zero_mask_frames = sum(
+            1 for f in covered_frames if int(local_mask_counts.get(int(f), 0)) <= 0
+        )
+        nonzero_frames = max(0, frames_in_window - zero_mask_frames)
+        dropped_rate = (
+            float(zero_mask_frames) / float(frames_in_window)
+            if frames_in_window > 0
+            else 0.0
+        )
+        return {
+            "window_index": int(window_index),
+            "start": int(window_start_idx),
+            "end": int(window_end_idx),
+            "frames": int(frames_in_window),
+            "nonzero_frames": int(nonzero_frames),
+            "zero_mask_frames": int(zero_mask_frames),
+            "dropped_mask_rate": float(dropped_rate),
+            "boundary_empty_skips": int(boundary_empty_skips),
+            "latency_ms": float(latency_ms),
+            "reacquired_frames": int(reacquired_frames),
+        }
+
     def _propagate_text_prompt_windowed(
         self,
         *,
@@ -2008,30 +2043,15 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         self._predictor.close_session(session_id)
                     except Exception:
                         pass
-                covered_frames = sorted(local_mask_counts.keys())
-                frames_in_window = len(covered_frames)
-                zero_mask_frames = sum(
-                    1 for f in covered_frames if int(local_mask_counts.get(int(f), 0)) <= 0
-                )
-                nonzero_frames = max(0, frames_in_window - zero_mask_frames)
-                dropped_rate = (
-                    float(zero_mask_frames) / float(frames_in_window)
-                    if frames_in_window > 0
-                    else 0.0
-                )
                 latency_ms = float((time.perf_counter() - window_t0) * 1000.0)
-                telemetry = {
-                    "window_index": int(window_idx),
-                    "start": int(window_start_idx),
-                    "end": int(window_end_idx),
-                    "frames": int(frames_in_window),
-                    "nonzero_frames": int(nonzero_frames),
-                    "zero_mask_frames": int(zero_mask_frames),
-                    "dropped_mask_rate": float(dropped_rate),
-                    "boundary_empty_skips": int(boundary_empty_skips),
-                    "latency_ms": float(latency_ms),
-                    "reacquired_frames": 0,
-                }
+                telemetry = self._build_window_telemetry_entry(
+                    window_index=int(window_idx),
+                    window_start_idx=int(window_start_idx),
+                    window_end_idx=int(window_end_idx),
+                    local_mask_counts=local_mask_counts,
+                    boundary_empty_skips=int(boundary_empty_skips),
+                    latency_ms=float(latency_ms),
+                )
                 window_telemetry.append(telemetry)
                 logger.info(
                     "SAM3.1 window telemetry #%d [%d,%d): frames=%d nonzero=%d zero=%d "
@@ -2039,10 +2059,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     int(window_idx),
                     int(window_start_idx),
                     int(window_end_idx),
-                    int(frames_in_window),
-                    int(nonzero_frames),
-                    int(zero_mask_frames),
-                    float(dropped_rate),
+                    int(telemetry["frames"]),
+                    int(telemetry["nonzero_frames"]),
+                    int(telemetry["zero_mask_frames"]),
+                    float(telemetry["dropped_mask_rate"]),
                     int(boundary_empty_skips),
                     float(latency_ms),
                 )
@@ -2197,6 +2217,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 )
                 local_prompt_frames = sorted(local_ann_groups.keys())
                 local_mask_counts: Dict[int, int] = {}
+                boundary_empty_skips = 0
 
                 shift = 0
                 if (
@@ -2360,40 +2381,25 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     except Exception:
                         pass
 
-                covered_frames = sorted(local_mask_counts.keys())
-                frames_in_window = len(covered_frames)
-                zero_mask_frames = sum(
-                    1 for f in covered_frames if int(local_mask_counts.get(int(f), 0)) <= 0
-                )
-                nonzero_frames = max(0, frames_in_window - zero_mask_frames)
-                dropped_rate = (
-                    float(zero_mask_frames) / float(frames_in_window)
-                    if frames_in_window > 0
-                    else 0.0
-                )
                 latency_ms = float((time.perf_counter() - window_t0) * 1000.0)
-                telemetry = {
-                    "window_index": int(window_idx),
-                    "start": int(window_start_idx),
-                    "end": int(window_end_idx),
-                    "frames": int(frames_in_window),
-                    "nonzero_frames": int(nonzero_frames),
-                    "zero_mask_frames": int(zero_mask_frames),
-                    "dropped_mask_rate": float(dropped_rate),
-                    "boundary_empty_skips": int(boundary_empty_skips),
-                    "latency_ms": float(latency_ms),
-                    "reacquired_frames": 0,
-                }
+                telemetry = self._build_window_telemetry_entry(
+                    window_index=int(window_idx),
+                    window_start_idx=int(window_start_idx),
+                    window_end_idx=int(window_end_idx),
+                    local_mask_counts=local_mask_counts,
+                    boundary_empty_skips=int(boundary_empty_skips),
+                    latency_ms=float(latency_ms),
+                )
                 window_telemetry.append(telemetry)
                 logger.info(
                     "SAM3.1 annotated telemetry #%d [%d,%d): frames=%d nonzero=%d zero=%d drop_rate=%.3f latency_ms=%.1f",
                     int(window_idx),
                     int(window_start_idx),
                     int(window_end_idx),
-                    int(frames_in_window),
-                    int(nonzero_frames),
-                    int(zero_mask_frames),
-                    float(dropped_rate),
+                    int(telemetry["frames"]),
+                    int(telemetry["nonzero_frames"]),
+                    int(telemetry["zero_mask_frames"]),
+                    float(telemetry["dropped_mask_rate"]),
                     float(latency_ms),
                 )
 

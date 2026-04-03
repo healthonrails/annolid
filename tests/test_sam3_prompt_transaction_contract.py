@@ -200,3 +200,22 @@ def test_polygon_seed_annotations_expand_to_dense_mask_prompt() -> None:
     assert transaction["transaction_step_kinds"] == ["semantic"]
     assert transaction["transaction_steps"][0]["prompt_kind"] == "semantic"
     assert transaction["outputs"] == {}
+
+
+def test_window_telemetry_entry_defaults_boundary_skips_to_zero() -> None:
+    telemetry = Sam3SessionManager._build_window_telemetry_entry(
+        window_index=2,
+        window_start_idx=10,
+        window_end_idx=20,
+        local_mask_counts={10: 2, 11: 0, 12: 1},
+        latency_ms=42.0,
+    )
+
+    assert telemetry["window_index"] == 2
+    assert telemetry["start"] == 10
+    assert telemetry["end"] == 20
+    assert telemetry["frames"] == 3
+    assert telemetry["nonzero_frames"] == 2
+    assert telemetry["zero_mask_frames"] == 1
+    assert telemetry["boundary_empty_skips"] == 0
+    assert telemetry["latency_ms"] == 42.0
