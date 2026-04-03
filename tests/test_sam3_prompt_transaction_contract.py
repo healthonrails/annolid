@@ -41,6 +41,14 @@ class _Shape:
         self.point_labels = point_labels or []
 
 
+class _MismatchedTransformer(torch.nn.Module):
+    def forward(self, src, pos_src, tokens):
+        b, c, h, w = src.shape
+        hs = src.new_zeros((tokens.shape[0], tokens.shape[1], c))
+        src_out = src.new_zeros((0, c, h, w))
+        return hs, src_out
+
+
 def test_prompt_transaction_merge_keeps_all_prompt_steps() -> None:
     merged = Sam3SessionManager._merge_prompt_outputs(
         [
@@ -454,4 +462,24 @@ def test_multiplex_mask_decoder_returns_empty_outputs_for_empty_batch() -> None:
     assert outputs["masks"].shape == (0, 4, 1, 32, 32)
     assert outputs["iou_pred"].shape == (0, 4, 1)
     assert outputs["mask_tokens_out"].shape == (0, 4, 1, 32)
+    assert outputs["object_score_logits"].shape == (0, 4, 1)
+
+
+def test_multiplex_mask_decoder_handles_internal_batch_mismatch() -> None:
+    decoder = MultiplexMaskDecoder(
+        transformer_dim=32,
+        transformer=_MismatchedTransformer(),
+        multiplex_count=4,
+        num_multimask_outputs=3,
+    )
+
+    outputs = decoder.forward(
+        image_embeddings=torch.zeros(1, 32, 8, 8),
+        image_pe=torch.zeros(1, 32, 8, 8),
+        multimask_output=False,
+    )
+
+    assert outputs["masks"].shape[0] == 0
+    assert outputs["iou_pred"].shape == (0, 4, 1)
+    assert outputs["sam_tokens_out"].shape[0] == 0
     assert outputs["object_score_logits"].shape == (0, 4, 1)

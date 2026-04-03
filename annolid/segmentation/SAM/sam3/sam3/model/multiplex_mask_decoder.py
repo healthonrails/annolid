@@ -8,6 +8,7 @@
 from typing import List, Optional, Type
 
 import torch
+from annolid.utils.logger import logger
 from sam3.sam.common import LayerNorm2d
 from torch import nn
 from torch.nn import functional as F
@@ -320,6 +321,34 @@ class MultiplexMaskDecoder(nn.Module):
 
         # Run the transformer
         hs, src = self.transformer(src, pos_src, tokens)
+        if src.shape[0] == 0:
+            spatial_h = int(h) * 4
+            spatial_w = int(w) * 4
+            empty_masks = image_embeddings.new_zeros(
+                0,
+                self.multiplex_count,
+                self.num_mask_output_per_object,
+                spatial_h,
+                spatial_w,
+            )
+            empty_iou = image_embeddings.new_zeros(
+                0,
+                self.multiplex_count,
+                self.num_mask_output_per_object,
+            )
+            empty_tokens = image_embeddings.new_zeros(
+                0,
+                self.multiplex_count,
+                self.num_mask_output_per_object,
+                self.transformer_dim,
+            )
+            empty_scores = image_embeddings.new_zeros(0, self.multiplex_count, 1)
+            return {
+                "masks": empty_masks,
+                "iou_pred": empty_iou,
+                "mask_tokens_out": empty_tokens,
+                "object_score_logits": empty_scores,
+            }
 
         # Parse transformer outputs based on token sharing configuration
         if self.decode_mask_attribute_with_shared_tokens:
@@ -376,6 +405,64 @@ class MultiplexMaskDecoder(nn.Module):
                     )
             # hyper_in: [B, M, num_multimask_outputs+1, C]
             hyper_in = torch.stack(hyper_in_list, dim=2)
+
+        # Keep decoder math robust when upstream multiplex state yields
+        # inconsistent batch dimensions (e.g., empty demux bucket paths).
+        batch_dims = [
+            int(upscaled_embedding.shape[0]),
+            int(hyper_in.shape[0]),
+            int(iou_token_out.shape[0]),
+            int(mask_tokens_out.shape[0]),
+        ]
+        if self.pred_obj_scores:
+            batch_dims.append(int(obj_score_token_out.shape[0]))
+        effective_batch = min(batch_dims) if batch_dims else 0
+        if len(set(batch_dims)) > 1:
+            logger.warning(
+                "SAM3 multiplex decoder: batch mismatch before mask projection; "
+                "aligning to batch=%d from dims=%s.",
+                int(effective_batch),
+                batch_dims,
+            )
+
+        if effective_batch <= 0:
+            b, _, h, w = upscaled_embedding.shape
+            empty_masks = upscaled_embedding.new_zeros(
+                0,
+                self.multiplex_count,
+                self.num_mask_output_per_object,
+                h,
+                w,
+            )
+            empty_iou = upscaled_embedding.new_zeros(
+                0,
+                self.multiplex_count,
+                self.num_mask_output_per_object,
+            )
+            empty_tokens = mask_tokens_out.new_zeros(
+                0,
+                self.multiplex_count,
+                mask_tokens_out.shape[2],
+                mask_tokens_out.shape[3],
+            )
+            empty_scores = upscaled_embedding.new_zeros(0, self.multiplex_count, 1)
+            return {
+                "masks": empty_masks,
+                "iou_pred": empty_iou,
+                "mask_tokens_out": empty_tokens,
+                "object_score_logits": empty_scores,
+            }
+
+        if effective_batch != upscaled_embedding.shape[0]:
+            upscaled_embedding = upscaled_embedding[:effective_batch]
+        if effective_batch != hyper_in.shape[0]:
+            hyper_in = hyper_in[:effective_batch]
+        if effective_batch != iou_token_out.shape[0]:
+            iou_token_out = iou_token_out[:effective_batch]
+        if effective_batch != mask_tokens_out.shape[0]:
+            mask_tokens_out = mask_tokens_out[:effective_batch]
+        if self.pred_obj_scores and effective_batch != obj_score_token_out.shape[0]:
+            obj_score_token_out = obj_score_token_out[:effective_batch]
 
         # generate the masks
         b, c, h, w = upscaled_embedding.shape
