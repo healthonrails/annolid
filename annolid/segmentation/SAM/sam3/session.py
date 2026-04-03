@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tupl
 import cv2
 import numpy as np
 import torch
+from scipy.optimize import linear_sum_assignment
 
 from annolid.segmentation.SAM.sam_v2 import BaseSAMVideoProcessor
 from annolid.utils.annotation_compat import shape_to_mask
@@ -381,6 +382,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         # detect partial track loss and recover only the missing instances.
         self._frame_track_ids: Dict[int, set[int]] = {}
         self._track_last_seen_frame: Dict[int, int] = {}
+        # Remember which frames were seeded by manual annotations so later
+        # matching can prefer continuity from the closest real seed context.
+        self._manual_seed_frames: set[int] = set()
         self.max_frame_num_to_track = cfg.max_frame_num_to_track
         # Default propagation settings (can be overridden per-call).
         self.propagation_direction = cfg.propagation_direction or "both"
@@ -402,6 +406,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self._global_track_last_box: Dict[int, np.ndarray] = {}
         self._global_track_last_seen_frame: Dict[int, int] = {}
         self._global_track_history: Dict[int, deque[np.ndarray]] = {}
+        # SAM3 object pointers provide a compact appearance embedding for each
+        # tracked instance. We keep the latest normalized pointer per global id
+        # and use it to resolve cross-window continuity before falling back to
+        # box-only matching.
+        self._global_track_obj_ptr: Dict[int, np.ndarray] = {}
 
     @staticmethod
     def _sanitize_checkpoint_path(checkpoint_path: Optional[str]) -> Optional[str]:
@@ -991,6 +1000,72 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         _, _, w, h = [float(v) for v in np.asarray(box, dtype=float).tolist()]
         return max(0.0, w) * max(0.0, h)
 
+    @staticmethod
+    def _coerce_numpy_float_array(value: object) -> Optional[np.ndarray]:
+        if value is None:
+            return None
+        if torch.is_tensor(value):
+            value = value.detach().cpu().numpy()
+        try:
+            return np.asarray(value, dtype=float)
+        except Exception:
+            return None
+
+    def _normalize_obj_ptr(self, value: object) -> Optional[np.ndarray]:
+        arr = self._coerce_numpy_float_array(value)
+        if arr is None:
+            return None
+        arr = np.asarray(arr, dtype=float).reshape(-1)
+        if arr.size == 0 or not np.all(np.isfinite(arr)):
+            return None
+        norm = float(np.linalg.norm(arr))
+        if norm <= 0.0:
+            return None
+        return arr / norm
+
+    def _extract_obj_ptr_vectors(
+        self, obj_ptrs: object, expected_count: int
+    ) -> List[Optional[np.ndarray]]:
+        if obj_ptrs is None or expected_count <= 0:
+            return [None] * max(0, int(expected_count))
+        arr = self._coerce_numpy_float_array(obj_ptrs)
+        if arr is None:
+            return [None] * expected_count
+        if arr.ndim == 1:
+            if expected_count != 1:
+                return [None] * expected_count
+            return [self._normalize_obj_ptr(arr)]
+        out: List[Optional[np.ndarray]] = []
+        for idx in range(expected_count):
+            if idx >= arr.shape[0]:
+                out.append(None)
+                continue
+            out.append(self._normalize_obj_ptr(arr[idx]))
+        return out
+
+    @staticmethod
+    def _obj_ptr_similarity(
+        track_ptr: Optional[np.ndarray],
+        candidate_ptr: Optional[np.ndarray],
+    ) -> Optional[float]:
+        if track_ptr is None or candidate_ptr is None:
+            return None
+        track = np.asarray(track_ptr, dtype=float).reshape(-1)
+        cand = np.asarray(candidate_ptr, dtype=float).reshape(-1)
+        if track.size == 0 or cand.size == 0:
+            return None
+        if track.shape != cand.shape:
+            return None
+        if not np.all(np.isfinite(track)) or not np.all(np.isfinite(cand)):
+            return None
+        denom = float(np.linalg.norm(track) * np.linalg.norm(cand))
+        if denom <= 0.0:
+            return None
+        similarity = float(np.dot(track, cand) / denom)
+        # Map cosine similarity to [0, 1] so it can be blended with geometric
+        # scores without needing a separate calibration step.
+        return float(max(0.0, min(1.0, (similarity + 1.0) * 0.5)))
+
     def _track_match_max_gap(self) -> int:
         """
         Maximum allowed gap for cross-window matching.
@@ -1005,65 +1080,24 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             int(self.sliding_window_stride or 0),
         )
 
-    def _box_track_match_score(
-        self,
-        prev_box: np.ndarray,
-        candidate_box: np.ndarray,
-        *,
-        age_frames: int = 0,
-        max_gap: Optional[int] = None,
-    ) -> Tuple[float, float, float, float]:
-        """
-        Score how likely a detection continues a previously seen track.
-
-        The score blends overlap, center proximity, and scale similarity. A
-        modest age penalty keeps stale tracks from stealing identities after a
-        long gap.
-        """
-        prev = np.asarray(prev_box, dtype=float)
-        cand = np.asarray(candidate_box, dtype=float)
-        iou = self._box_iou_xywh(prev, cand)
-        prev_cx, prev_cy = self._box_center_xywh(prev)
-        cand_cx, cand_cy = self._box_center_xywh(cand)
-        center_dx = cand_cx - prev_cx
-        center_dy = cand_cy - prev_cy
-        prev_w, prev_h = float(prev[2]), float(prev[3])
-        cand_w, cand_h = float(cand[2]), float(cand[3])
-        prev_diag = float(np.hypot(max(prev_w, cand_w), max(prev_h, cand_h)))
-        if prev_diag <= 0.0:
-            prev_diag = 1.0
-        center_dist = float(np.hypot(center_dx, center_dy) / prev_diag)
-        center_score = float(max(0.0, 1.0 - min(center_dist, 2.0)))
-
-        prev_area = self._box_area_xywh(prev)
-        cand_area = self._box_area_xywh(cand)
-        if prev_area <= 0.0 or cand_area <= 0.0:
-            size_score = 0.0
-        else:
-            size_score = float(min(prev_area, cand_area) / max(prev_area, cand_area))
-
-        if max_gap is None:
-            max_gap = self._track_match_max_gap()
-        gap_norm = max(1.0, float(max_gap))
-        age_penalty = min(0.3, max(0.0, float(age_frames)) / gap_norm * 0.15)
-
-        score = (0.6 * iou) + (0.25 * center_score) + (0.15 * size_score) - age_penalty
-        return float(score), float(iou), float(center_score), float(size_score)
-
     def _track_match_candidates(
         self,
-        box_xywh: np.ndarray,
+        candidate_obj_ptr: Optional[np.ndarray],
         *,
         frame_idx: Optional[int] = None,
         used_ids: Optional[set[int]] = None,
+        preferred_ids: Optional[set[int]] = None,
         min_score: float = 0.35,
     ) -> List[Tuple[float, int]]:
         if used_ids is None:
             used_ids = set()
 
+        if candidate_obj_ptr is None:
+            return []
+
         max_gap = self._track_match_max_gap()
         candidates: List[Tuple[float, int]] = []
-        for gid, prev_box in self._global_track_last_box.items():
+        for gid, prev_ptr in self._global_track_obj_ptr.items():
             if gid in used_ids:
                 continue
             last_seen = self._global_track_last_seen_frame.get(gid)
@@ -1072,110 +1106,37 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 age = max(0, int(frame_idx) - int(last_seen))
                 if age > max_gap:
                     continue
-            reference_box = self._predict_global_track_box(
-                gid,
-                frame_idx=frame_idx,
-            )
-            score, iou, center_score, _ = self._box_track_match_score(
-                reference_box,
-                box_xywh,
-                age_frames=age,
-                max_gap=max_gap,
-            )
-            if score < min_score:
+            appearance_score = self._obj_ptr_similarity(prev_ptr, candidate_obj_ptr)
+            if appearance_score is None:
                 continue
-            if iou < 0.05 and center_score < 0.45:
+            score = appearance_score - min(0.25, float(age) / max(1.0, float(max_gap)) * 0.12)
+            if preferred_ids and int(gid) in preferred_ids:
+                score += 0.08
+            if score < min_score:
                 continue
             candidates.append((float(score), int(gid)))
         candidates.sort(key=lambda item: item[0], reverse=True)
         return candidates
 
-    def _reset_global_tracks(self) -> None:
-        self._global_track_next_id = 1
-        self._global_track_last_box.clear()
-        self._global_track_last_seen_frame.clear()
-        self._global_track_history.clear()
-
-    def _record_global_track_observation(
-        self,
-        gid: int,
-        box_xywh: np.ndarray,
-        *,
-        frame_idx: Optional[int] = None,
-    ) -> None:
-        box_arr = np.asarray(box_xywh, dtype=float)
-        self._global_track_last_box[int(gid)] = box_arr
-        if frame_idx is not None:
-            self._global_track_last_seen_frame[int(gid)] = int(frame_idx)
-        history = self._global_track_history.setdefault(int(gid), deque(maxlen=4))
-        history.append(box_arr)
-
-    def _predict_global_track_box(
-        self,
-        gid: int,
-        *,
-        frame_idx: Optional[int] = None,
-    ) -> np.ndarray:
-        """
-        Predict the reference box for a track using its recent motion history.
-
-        The last observed box remains the fallback. When we have at least two
-        observations and a positive frame gap, extrapolate a simple linear
-        motion estimate. This improves matching continuity across windows when
-        objects move steadily between refresh points.
-        """
-        prev_box = self._global_track_last_box.get(int(gid))
-        if prev_box is None:
-            return np.asarray([0.0, 0.0, 0.0, 0.0], dtype=float)
-
-        history = self._global_track_history.get(int(gid))
-        last_seen = self._global_track_last_seen_frame.get(int(gid))
-        if (
-            frame_idx is None
-            or last_seen is None
-            or history is None
-            or len(history) < 2
-        ):
-            return np.asarray(prev_box, dtype=float)
-
-        age = max(0, int(frame_idx) - int(last_seen))
-        if age <= 0:
-            return np.asarray(prev_box, dtype=float)
-
-        # Use short-range motion only. Longer gaps should rely on the last
-        # observed box rather than a linear extrapolation that can overshoot.
-        motion_horizon = max(1, min(self._track_match_max_gap(), 3))
-        if age > motion_horizon:
-            return np.asarray(prev_box, dtype=float)
-
-        last_box = np.asarray(history[-1], dtype=float)
-        prev_hist_box = np.asarray(history[-2], dtype=float)
-        delta = last_box - prev_hist_box
-        predicted = last_box + (delta * float(age))
-        predicted = np.asarray(predicted, dtype=float)
-        if predicted.shape != (4,):
-            return np.asarray(prev_box, dtype=float)
-        predicted[2] = max(1.0, float(predicted[2]))
-        predicted[3] = max(1.0, float(predicted[3]))
-        if not np.all(np.isfinite(predicted)):
-            return np.asarray(prev_box, dtype=float)
-        return predicted
-
     def _assign_global_track_id(
         self,
         box_xywh: np.ndarray,
+        candidate_obj_ptr: Optional[np.ndarray] = None,
         used_ids: Optional[set[int]] = None,
         *,
         frame_idx: Optional[int] = None,
+        preferred_ids: Optional[set[int]] = None,
+        obj_ptr: Optional[object] = None,
         iou_threshold: float = 0.3,
     ) -> int:
         if used_ids is None:
             used_ids = set()
 
         candidates = self._track_match_candidates(
-            box_xywh,
+            candidate_obj_ptr,
             frame_idx=frame_idx,
             used_ids=used_ids,
+            preferred_ids=preferred_ids,
             min_score=max(0.2, float(iou_threshold) * 0.9),
         )
         if candidates:
@@ -1183,8 +1144,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             if best_score >= max(0.2, float(iou_threshold) * 0.9):
                 self._record_global_track_observation(
                     best_gid,
-                    box_xywh,
+                    np.asarray(box_xywh, dtype=float),
                     frame_idx=frame_idx,
+                    obj_ptr=obj_ptr,
                 )
                 return best_gid
 
@@ -1192,10 +1154,131 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self._global_track_next_id += 1
         self._record_global_track_observation(
             gid,
-            box_xywh,
+            np.asarray(box_xywh, dtype=float),
             frame_idx=frame_idx,
+            obj_ptr=obj_ptr,
         )
         return gid
+
+    def _reset_global_tracks(self) -> None:
+        self._global_track_next_id = 1
+        self._global_track_last_box.clear()
+        self._global_track_last_seen_frame.clear()
+        self._global_track_history.clear()
+        global_obj_ptr = getattr(self, "_global_track_obj_ptr", None)
+        if global_obj_ptr is None:
+            self._global_track_obj_ptr = {}
+        else:
+            global_obj_ptr.clear()
+        manual_seed_frames = getattr(self, "_manual_seed_frames", None)
+        if manual_seed_frames is None:
+            self._manual_seed_frames = set()
+        else:
+            manual_seed_frames.clear()
+
+    def _reset_manual_seed_frames(self) -> None:
+        self._manual_seed_frames.clear()
+
+    def _record_manual_seed_frame(self, frame_idx: int) -> None:
+        manual_seed_frames = getattr(self, "_manual_seed_frames", None)
+        if manual_seed_frames is None:
+            self._manual_seed_frames = {int(frame_idx)}
+        else:
+            manual_seed_frames.add(int(frame_idx))
+
+    def _nearest_manual_seed_track_ids(
+        self,
+        frame_idx: int,
+        *,
+        max_gap: Optional[int] = None,
+    ) -> set[int]:
+        manual_seed_frames = getattr(self, "_manual_seed_frames", set())
+        if not manual_seed_frames:
+            return set()
+        if max_gap is None:
+            max_gap = self._track_match_max_gap()
+        frame_idx = int(frame_idx)
+        nearest = [
+            int(seed_frame)
+            for seed_frame in manual_seed_frames
+            if 0 <= frame_idx - int(seed_frame) <= int(max_gap)
+        ]
+        if not nearest:
+            return set()
+        seed_frame = max(nearest)
+        return {int(v) for v in self._frame_track_ids.get(int(seed_frame), set())}
+
+    def _record_seed_frame_if_manual(self, frame_idx: int, *, has_structured_prompts: bool) -> None:
+        if has_structured_prompts:
+            manual_seed_frames = getattr(self, "_manual_seed_frames", None)
+            if manual_seed_frames is None:
+                self._manual_seed_frames = {int(frame_idx)}
+            else:
+                manual_seed_frames.add(int(frame_idx))
+
+    def _record_global_track_observation(
+        self,
+        gid: int,
+        box_xywh: np.ndarray,
+        *,
+        frame_idx: Optional[int] = None,
+        obj_ptr: Optional[object] = None,
+    ) -> None:
+        box_arr = np.asarray(box_xywh, dtype=float)
+        self._global_track_last_box[int(gid)] = box_arr
+        if frame_idx is not None:
+            self._global_track_last_seen_frame[int(gid)] = int(frame_idx)
+        history = self._global_track_history.setdefault(int(gid), deque(maxlen=4))
+        history.append(box_arr)
+        obj_ptr_arr = self._normalize_obj_ptr(obj_ptr)
+        if obj_ptr_arr is not None:
+            prev_ptr = getattr(self, "_global_track_obj_ptr", {}).get(int(gid))
+            if prev_ptr is None:
+                updated_ptr = obj_ptr_arr
+            else:
+                prev_ptr = np.asarray(prev_ptr, dtype=float).reshape(-1)
+                if prev_ptr.shape != obj_ptr_arr.shape or not np.all(np.isfinite(prev_ptr)):
+                    updated_ptr = obj_ptr_arr
+                else:
+                    updated_ptr = (0.7 * prev_ptr) + (0.3 * obj_ptr_arr)
+                    norm = float(np.linalg.norm(updated_ptr))
+                    if norm > 0.0:
+                        updated_ptr = updated_ptr / norm
+                    else:
+                        updated_ptr = obj_ptr_arr
+            self._global_track_obj_ptr[int(gid)] = updated_ptr
+
+    def _recent_track_mask(
+        self,
+        obj_id: int,
+        *,
+        frame_idx: Optional[int] = None,
+    ) -> Optional[np.ndarray]:
+        track_id = int(obj_id)
+        candidate_frames = [
+            int(frame_idx)
+            for frame_idx, masks in self._frame_masks.items()
+            if masks and str(track_id) in masks
+        ]
+        if not candidate_frames:
+            return None
+        if frame_idx is not None:
+            candidate_frames = [
+                int(candidate_frame)
+                for candidate_frame in candidate_frames
+                if int(candidate_frame) <= int(frame_idx)
+            ]
+            if not candidate_frames:
+                return None
+        candidate_frame = max(candidate_frames)
+        frame_masks = self._frame_masks.get(int(candidate_frame)) or {}
+        mask = frame_masks.get(str(track_id))
+        if mask is None:
+            return None
+        arr = np.asarray(mask, dtype=np.uint8)
+        if arr.ndim != 2 or not arr.any():
+            return None
+        return arr
 
     @staticmethod
     def _empty_window_dir(window_dir: Path) -> None:
@@ -1323,6 +1406,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         outputs: Dict[str, object],
         *,
         frame_idx: Optional[int],
+        allowed_gids: Optional[set[int]] = None,
+        allow_new_ids: bool = True,
     ) -> Dict[str, object]:
         obj_ids = outputs.get("out_obj_ids", [])
         boxes = outputs.get("out_boxes_xywh", [])
@@ -1334,50 +1419,99 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             return outputs
         if len(boxes_arr) != len(obj_ids):
             return outputs
+        obj_ptr_vectors = self._extract_obj_ptr_vectors(
+            outputs.get("obj_ptr"), len(obj_ids)
+        )
 
-        used: set[int] = set()
-        pairs: List[Tuple[float, int, int]] = []
-        for idx, _ in enumerate(obj_ids):
-            candidates = self._track_match_candidates(
-                np.asarray(boxes_arr[idx], dtype=float),
-                frame_idx=frame_idx,
-                used_ids=used,
-            )
-            for score, gid in candidates:
-                pairs.append((float(score), int(idx), int(gid)))
-
-        pairs.sort(key=lambda item: item[0], reverse=True)
         mapped: List[Optional[int]] = [None] * len(obj_ids)
-        assigned_gids: set[int] = set()
-        assigned_dets: set[int] = set()
-        for score, det_idx, gid in pairs:
-            if det_idx in assigned_dets or gid in assigned_gids:
-                continue
-            if score < 0.35:
-                continue
-            mapped[det_idx] = gid
-            assigned_dets.add(det_idx)
-            assigned_gids.add(gid)
-            used.add(gid)
-            self._record_global_track_observation(
-                gid,
-                np.asarray(boxes_arr[det_idx], dtype=float),
-                frame_idx=frame_idx,
+        used: set[int] = set()
+        preferred_ids: set[int] = set()
+        if frame_idx is not None:
+            preferred_ids = self._nearest_manual_seed_track_ids(int(frame_idx))
+            if allowed_gids is not None:
+                preferred_ids &= {int(gid) for gid in allowed_gids}
+
+        track_items: List[Tuple[int, np.ndarray]] = [
+            (int(gid), np.asarray(prev_ptr, dtype=float))
+            for gid, prev_ptr in sorted(self._global_track_obj_ptr.items())
+            if allowed_gids is None or int(gid) in allowed_gids
+        ]
+        if track_items:
+            max_gap = self._track_match_max_gap()
+            valid_cost = 1.0
+            invalid_cost = 10.0
+            cost_matrix = np.full(
+                (len(boxes_arr), len(track_items)),
+                fill_value=invalid_cost,
+                dtype=float,
             )
+            eligible = np.zeros_like(cost_matrix, dtype=bool)
+
+            for det_idx, _det_box in enumerate(boxes_arr):
+                candidate_ptr = obj_ptr_vectors[det_idx]
+                if candidate_ptr is None:
+                    continue
+                for track_idx, (gid, _) in enumerate(track_items):
+                    last_seen = self._global_track_last_seen_frame.get(int(gid))
+                    age = 0
+                    if frame_idx is not None and last_seen is not None:
+                        age = max(0, int(frame_idx) - int(last_seen))
+                        if age > max_gap:
+                            continue
+                    appearance_score = self._obj_ptr_similarity(
+                        getattr(self, "_global_track_obj_ptr", {}).get(int(gid)),
+                        candidate_ptr,
+                    )
+                    if appearance_score is None:
+                        continue
+                    score = appearance_score - min(
+                        0.25, float(age) / max(1.0, float(max_gap)) * 0.12
+                    )
+                    if preferred_ids and int(gid) in preferred_ids:
+                        score += 0.08
+                    if score < 0.35:
+                        continue
+                    eligible[det_idx, track_idx] = True
+                    cost_matrix[det_idx, track_idx] = max(0.0, valid_cost - float(score))
+
+            row_ind, col_ind = linear_sum_assignment(cost_matrix)
+            for det_idx, track_idx in zip(row_ind, col_ind):
+                if not eligible[det_idx, track_idx]:
+                    continue
+                gid = int(track_items[track_idx][0])
+                if gid in used:
+                    continue
+                mapped[det_idx] = gid
+                used.add(gid)
+                self._record_global_track_observation(
+                    gid,
+                    np.asarray(boxes_arr[det_idx], dtype=float),
+                    frame_idx=frame_idx,
+                    obj_ptr=obj_ptr_vectors[det_idx],
+                )
 
         for idx, mapped_gid in enumerate(mapped):
             if mapped_gid is not None:
                 continue
+            if not allow_new_ids:
+                continue
             gid = self._assign_global_track_id(
                 box_xywh=np.asarray(boxes_arr[idx], dtype=float),
+                candidate_obj_ptr=obj_ptr_vectors[idx],
                 used_ids=used,
                 frame_idx=frame_idx,
+                preferred_ids=preferred_ids,
+                obj_ptr=obj_ptr_vectors[idx],
             )
             used.add(gid)
             mapped[idx] = int(gid)
-        outputs = dict(outputs)
-        outputs["out_obj_ids"] = np.asarray([int(v) for v in mapped], dtype=np.int64)
-        return outputs
+        keep_indices = [idx for idx, mapped_gid in enumerate(mapped) if mapped_gid is not None]
+        filtered_outputs = self._filter_outputs_by_indices(outputs, keep_indices)
+        filtered_outputs["out_obj_ids"] = np.asarray(
+            [int(v) for v in mapped if v is not None],
+            dtype=np.int64,
+        )
+        return filtered_outputs
 
     @staticmethod
     def _output_candidate_mask_count(outputs: Dict[str, object]) -> int:
@@ -1394,6 +1528,159 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             return max(0, min(len(obj_ids), len(masks)))
         except Exception:
             return 0
+
+    @staticmethod
+    def _filter_outputs_by_indices(
+        outputs: Dict[str, object],
+        keep_indices: List[int],
+    ) -> Dict[str, object]:
+        if not keep_indices:
+            filtered = dict(outputs)
+            filtered["out_obj_ids"] = np.asarray([], dtype=np.int64)
+            if "out_probs" in filtered:
+                filtered["out_probs"] = np.asarray([], dtype=np.float32)
+            if "out_boxes_xywh" in filtered:
+                filtered["out_boxes_xywh"] = np.asarray([], dtype=np.float32)
+            if "out_binary_masks" in filtered:
+                filtered["out_binary_masks"] = np.asarray([], dtype=object)
+            return filtered
+
+        idx = np.asarray(keep_indices, dtype=np.int64)
+        filtered = dict(outputs)
+        for key in ("out_obj_ids", "out_probs", "out_boxes_xywh", "out_binary_masks"):
+            value = filtered.get(key)
+            if value is None:
+                continue
+            try:
+                arr = np.asarray(value)
+                if arr.ndim == 0:
+                    continue
+                filtered[key] = arr[idx]
+            except Exception:
+                continue
+        return filtered
+
+    @staticmethod
+    def _mask_to_bbox_xywh(mask: np.ndarray) -> Optional[np.ndarray]:
+        arr = np.asarray(mask, dtype=np.uint8)
+        if arr.ndim != 2 or not arr.any():
+            return None
+        ys, xs = np.nonzero(arr)
+        if len(xs) == 0 or len(ys) == 0:
+            return None
+        x1 = float(xs.min())
+        x2 = float(xs.max())
+        y1 = float(ys.min())
+        y2 = float(ys.max())
+        w = max(0.0, x2 - x1)
+        h = max(0.0, y2 - y1)
+        if w <= 0.0 or h <= 0.0:
+            return None
+        return np.asarray([x1, y1, w, h], dtype=float)
+
+    @staticmethod
+    def _bbox_center_xywh(box_xywh: np.ndarray) -> Tuple[float, float]:
+        box = np.asarray(box_xywh, dtype=float)
+        if box.shape != (4,):
+            return 0.0, 0.0
+        return float(box[0] + box[2] / 2.0), float(box[1] + box[3] / 2.0)
+
+    @staticmethod
+    def _bbox_iou_xywh(box_a: np.ndarray, box_b: np.ndarray) -> float:
+        a = np.asarray(box_a, dtype=float)
+        b = np.asarray(box_b, dtype=float)
+        if a.shape != (4,) or b.shape != (4,):
+            return 0.0
+        ax1, ay1, aw, ah = a.tolist()
+        bx1, by1, bw, bh = b.tolist()
+        ax2 = ax1 + max(0.0, aw)
+        ay2 = ay1 + max(0.0, ah)
+        bx2 = bx1 + max(0.0, bw)
+        by2 = by1 + max(0.0, bh)
+        inter_x1 = max(ax1, bx1)
+        inter_y1 = max(ay1, by1)
+        inter_x2 = min(ax2, bx2)
+        inter_y2 = min(ay2, by2)
+        inter_w = max(0.0, inter_x2 - inter_x1)
+        inter_h = max(0.0, inter_y2 - inter_y1)
+        inter_area = inter_w * inter_h
+        area_a = max(0.0, aw) * max(0.0, ah)
+        area_b = max(0.0, bw) * max(0.0, bh)
+        denom = area_a + area_b - inter_area
+        if denom <= 0.0:
+            return 0.0
+        return float(inter_area / denom)
+
+    def _should_accept_sam3_mask(
+        self,
+        *,
+        frame_idx: int,
+        obj_id: int,
+        mask: np.ndarray,
+        box_xywh: Optional[np.ndarray] = None,
+    ) -> bool:
+        """Reject drifted or full-frame masks before persisting them."""
+        arr = np.asarray(mask, dtype=np.uint8)
+        if arr.ndim != 2 or not arr.any():
+            return False
+        frame_shape = self.frame_shape or self.get_frame_shape()
+        frame_h, frame_w = frame_shape[:2]
+        frame_area = float(max(1, frame_h * frame_w))
+        mask_area = float(np.count_nonzero(arr))
+        if mask_area <= 0.0:
+            return False
+        mask_ratio = mask_area / frame_area
+        if mask_ratio >= 0.98:
+            return False
+
+        mask_box = self._mask_to_bbox_xywh(arr)
+        if mask_box is None:
+            return False
+
+        # Guard obvious drift against the current output geometry when present.
+        if box_xywh is not None:
+            try:
+                box_arr = np.asarray(box_xywh, dtype=float)
+                if box_arr.shape == (4,):
+                    center_dist = float(
+                        np.hypot(
+                            *(np.subtract(self._bbox_center_xywh(mask_box), self._bbox_center_xywh(box_arr)))
+                        )
+                    )
+                    diag = float(np.hypot(max(mask_box[2], box_arr[2]), max(mask_box[3], box_arr[3])))
+                    if diag > 0.0 and center_dist / diag > 1.4:
+                        return False
+                    if self._bbox_iou_xywh(mask_box, box_arr) < 0.01:
+                        return False
+            except Exception:
+                pass
+
+        # Compare against the last accepted mask for this track when available.
+        last_seen_frame = self._track_last_seen_frame.get(int(obj_id))
+        if last_seen_frame is not None and int(last_seen_frame) != int(frame_idx):
+            previous_masks = self._frame_masks.get(int(last_seen_frame)) or {}
+            prev_mask = previous_masks.get(str(int(obj_id)))
+            if prev_mask is not None:
+                prev_arr = np.asarray(prev_mask, dtype=np.uint8)
+                prev_box = self._mask_to_bbox_xywh(prev_arr)
+                if prev_box is not None:
+                    iou = self._bbox_iou_xywh(mask_box, prev_box)
+                    if iou < 0.02:
+                        prev_area = float(np.count_nonzero(prev_arr))
+                        if prev_area > 0.0:
+                            area_ratio = mask_area / prev_area
+                            if area_ratio >= 3.5 or area_ratio <= 0.28:
+                                return False
+                        center_dist = float(
+                            np.hypot(
+                                *(np.subtract(self._bbox_center_xywh(mask_box), self._bbox_center_xywh(prev_box)))
+                            )
+                        )
+                        prev_diag = float(np.hypot(max(prev_box[2], mask_box[2]), max(prev_box[3], mask_box[3])))
+                        if prev_diag > 0.0 and center_dist / prev_diag > 1.75:
+                            return False
+
+        return True
 
     @staticmethod
     def _label_hints_from_ids(labels: List[int], id_to_labels: Dict[int, str]) -> List[str]:
@@ -1739,11 +2026,39 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     continue
             if idx < len(boxes):
                 try:
-                    meta["sam3_box_xywh"] = [
-                        float(v) for v in boxes[idx].tolist()]
+                    box_xywh = np.asarray(boxes[idx], dtype=float)
+                    meta["sam3_box_xywh"] = [float(v) for v in box_xywh.tolist()]
                 except Exception:
+                    box_xywh = None
                     pass
-            mask_dict[key] = np.asarray(mask, dtype=np.uint8)
+            else:
+                box_xywh = None
+
+            mask_arr = np.asarray(mask, dtype=np.uint8)
+            if not self._should_accept_sam3_mask(
+                frame_idx=int(frame_idx),
+                obj_id=int(obj_id),
+                mask=mask_arr,
+                box_xywh=box_xywh,
+            ):
+                fallback_mask = self._recent_track_mask(int(obj_id), frame_idx=int(frame_idx))
+                if fallback_mask is not None:
+                    logger.info(
+                        "SAM3 rejected implausible mask for track=%s at frame=%s; falling back to last accepted mask.",
+                        int(obj_id),
+                        int(frame_idx),
+                    )
+                    mask_arr = fallback_mask.copy()
+                    meta["sam3_fallback_mask"] = True
+                else:
+                    logger.info(
+                        "SAM3 rejected implausible mask for track=%s at frame=%s.",
+                        int(obj_id),
+                        int(frame_idx),
+                    )
+                    continue
+
+            mask_dict[key] = mask_arr
             obj_meta[key] = meta
 
         current_track_ids = {int(k) for k in mask_dict.keys()}
@@ -2253,8 +2568,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         Normalize seeded frames into ordered local segments for one window.
 
         This mirrors CUTIE's segment-oriented handling of multiple seed frames:
-        each seed starts a contiguous pass until the next seed, and text-only
-        fallback anchors the window at frame 0 when no manual labels exist.
+        each seed starts a contiguous pass until the next seed. Text-only
+        fallback is only used when the window has no manual seed frames.
         """
         normalized = sorted(
             {
@@ -2265,9 +2580,6 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         )
         if not normalized and has_text_prompt:
             normalized = [0]
-        elif has_text_prompt and 0 not in normalized:
-            normalized = [0, *normalized]
-            normalized = sorted(set(normalized))
 
         segments: List[Tuple[int, int]] = []
         for idx, start_local in enumerate(normalized):
@@ -2757,6 +3069,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         """
         has_prior_record = False
         total_seed_masks = 0
+        has_structured_prompts = bool(boxes or mask_inputs or points)
+        if has_structured_prompts:
+            self._record_seed_frame_if_manual(frame_idx, has_structured_prompts=True)
         if self.text_prompt or boxes or mask_inputs:
             semantic_result = self.add_prompt(
                 frame_idx=frame_idx,
@@ -2874,6 +3189,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             self._frame_masks.clear()
             self._frame_track_ids.clear()
             self._track_last_seen_frame.clear()
+            manual_seed_frames = getattr(self, "_manual_seed_frames", None)
+            if manual_seed_frames is None:
+                self._manual_seed_frames = set()
+            else:
+                manual_seed_frames.clear()
 
             resolved_device = self._resolve_runtime_device(target_device)
             window_size, _ = self._resolve_window_schedule(
@@ -3015,7 +3335,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 return
 
             missing_track_ids = self._missing_track_ids_for_frame(int(frame_idx))
-            target_track_ids = missing_track_ids
+            if not missing_track_ids:
+                return
+            target_track_ids = set(int(track_id) for track_id in missing_track_ids)
 
             with self._session_scope(target_device, auto_close=True):
                 self._reset_session_state()
@@ -3032,7 +3354,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 outputs = self._map_outputs_to_global_ids_at_frame(
                     outputs or {},
                     frame_idx=int(frame_idx),
+                    allowed_gids=target_track_ids,
+                    allow_new_ids=False,
                 )
+                if self._output_candidate_mask_count(outputs) <= 0:
+                    return
                 self._handle_frame_outputs(
                     frame_idx=int(frame_idx),
                     outputs=outputs,
@@ -3060,7 +3386,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             with self._session_scope(target_device, auto_close=True):
                 for frame_idx in frame_indices:
                     missing_track_ids = self._missing_track_ids_for_frame(int(frame_idx))
-                    target_track_ids = missing_track_ids
+                    if not missing_track_ids:
+                        continue
+                    target_track_ids = set(int(track_id) for track_id in missing_track_ids)
                     self._reset_session_state()
                     self._reset_action_history_if_supported()
                     try:
@@ -3078,7 +3406,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         outputs = self._map_outputs_to_global_ids_at_frame(
                             outputs or {},
                             frame_idx=int(frame_idx),
+                            allowed_gids=target_track_ids,
+                            allow_new_ids=False,
                         )
+                        if self._output_candidate_mask_count(outputs) <= 0:
+                            continue
                         self._handle_frame_outputs(
                             frame_idx=int(frame_idx),
                             outputs=outputs,

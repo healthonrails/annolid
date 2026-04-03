@@ -87,6 +87,10 @@ def test_global_track_assignment_rejects_stale_tracks() -> None:
         1: deque([np.asarray([0.0, 0.0, 10.0, 10.0], dtype=float)], maxlen=4),
         2: deque([np.asarray([20.0, 20.0, 10.0, 10.0], dtype=float)], maxlen=4),
     }
+    session._global_track_obj_ptr = {
+        1: np.asarray([1.0, 0.0], dtype=float),
+        2: np.asarray([0.0, 1.0], dtype=float),
+    }
 
     outputs = session._map_outputs_to_global_ids_at_frame(
         {
@@ -98,6 +102,7 @@ def test_global_track_assignment_rejects_stale_tracks() -> None:
                 ],
                 dtype=np.float32,
             ),
+            "obj_ptr": np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
         },
         frame_idx=10,
     )
@@ -124,6 +129,7 @@ def test_global_track_assignment_refreshes_match_history() -> None:
             maxlen=4,
         )
     }
+    session._global_track_obj_ptr = {1: np.asarray([1.0, 0.0], dtype=float)}
 
     outputs = session._map_outputs_to_global_ids_at_frame(
         {
@@ -132,6 +138,7 @@ def test_global_track_assignment_refreshes_match_history() -> None:
                 [[30.0, 0.0, 10.0, 10.0]],
                 dtype=np.float32,
             ),
+            "obj_ptr": np.asarray([[1.0, 0.0]], dtype=np.float32),
         },
         frame_idx=3,
     )
@@ -161,6 +168,7 @@ def test_global_track_assignment_survives_window_stride_gap() -> None:
             maxlen=4,
         )
     }
+    session._global_track_obj_ptr = {1: np.asarray([1.0, 0.0], dtype=float)}
 
     outputs = session._map_outputs_to_global_ids_at_frame(
         {
@@ -169,12 +177,182 @@ def test_global_track_assignment_survives_window_stride_gap() -> None:
                 [[52.0, 30.0, 12.0, 12.0]],
                 dtype=np.float32,
             ),
+            "obj_ptr": np.asarray([[1.0, 0.0]], dtype=np.float32),
         },
         frame_idx=14,
     )
 
     assert outputs["out_obj_ids"].tolist() == [1]
     assert session._global_track_next_id == 2
+
+
+def test_global_track_assignment_uses_one_to_one_matching_for_ambiguous_pairs() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.sliding_window_size = 15
+    session.sliding_window_stride = 14
+    session._global_track_next_id = 3
+    session._global_track_last_box = {
+        1: np.asarray([0.0, 0.0, 10.0, 10.0], dtype=float),
+        2: np.asarray([20.0, 0.0, 10.0, 10.0], dtype=float),
+    }
+    session._global_track_last_seen_frame = {1: 3, 2: 3}
+    session._global_track_history = {
+        1: deque(
+            [
+                np.asarray([0.0, 0.0, 10.0, 10.0], dtype=float),
+                np.asarray([0.0, 0.0, 10.0, 10.0], dtype=float),
+            ],
+            maxlen=4,
+        ),
+        2: deque(
+            [
+                np.asarray([20.0, 0.0, 10.0, 10.0], dtype=float),
+                np.asarray([20.0, 0.0, 10.0, 10.0], dtype=float),
+            ],
+            maxlen=4,
+        ),
+    }
+    session._global_track_obj_ptr = {
+        1: np.asarray([1.0, 0.0], dtype=float),
+        2: np.asarray([0.0, 1.0], dtype=float),
+    }
+
+    outputs = session._map_outputs_to_global_ids_at_frame(
+        {
+            "out_obj_ids": np.asarray([101, 102], dtype=np.int64),
+            "out_boxes_xywh": np.asarray(
+                [
+                    [0.0, 0.0, 10.0, 10.0],
+                    [10.0, 0.0, 10.0, 10.0],
+                ],
+                dtype=np.float32,
+            ),
+            "obj_ptr": np.asarray([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32),
+        },
+        frame_idx=4,
+    )
+
+    assert sorted(outputs["out_obj_ids"].tolist()) == [1, 2]
+    assert outputs["out_obj_ids"].tolist() == [2, 1]
+    assert session._global_track_next_id == 3
+
+
+def test_text_recovery_mapping_does_not_mint_new_ids() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.sliding_window_size = 15
+    session.sliding_window_stride = 14
+    session._global_track_next_id = 3
+    session._global_track_last_box = {
+        1: np.asarray([0.0, 0.0, 10.0, 10.0], dtype=float),
+        2: np.asarray([20.0, 0.0, 10.0, 10.0], dtype=float),
+    }
+    session._global_track_last_seen_frame = {1: 3, 2: 3}
+    session._global_track_history = {
+        1: deque([np.asarray([0.0, 0.0, 10.0, 10.0], dtype=float)], maxlen=4),
+        2: deque([np.asarray([20.0, 0.0, 10.0, 10.0], dtype=float)], maxlen=4),
+    }
+    session._global_track_obj_ptr = {
+        1: np.asarray([1.0, 0.0], dtype=float),
+        2: np.asarray([0.0, 1.0], dtype=float),
+    }
+
+    outputs = session._map_outputs_to_global_ids_at_frame(
+        {
+            "out_obj_ids": np.asarray([99], dtype=np.int64),
+            "out_boxes_xywh": np.asarray(
+                [[80.0, 80.0, 10.0, 10.0]],
+                dtype=np.float32,
+            ),
+            "out_binary_masks": np.asarray(
+                [np.ones((2, 2), dtype=np.uint8)],
+                dtype=object,
+            ),
+            "obj_ptr": np.asarray([[0.5, 0.5]], dtype=np.float32),
+        },
+        frame_idx=4,
+        allowed_gids={1, 2},
+        allow_new_ids=False,
+    )
+
+    assert outputs["out_obj_ids"].size == 1
+    assert outputs["out_obj_ids"].tolist()[0] in {1, 2}
+    assert session._global_track_next_id == 3
+
+
+def test_global_track_assignment_prefers_nearest_manual_seed_ids() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.sliding_window_size = 15
+    session.sliding_window_stride = 14
+    session._global_track_next_id = 3
+    session._global_track_last_box = {
+        1: np.asarray([0.0, 0.0, 10.0, 10.0], dtype=float),
+        2: np.asarray([20.0, 0.0, 10.0, 10.0], dtype=float),
+    }
+    session._global_track_last_seen_frame = {1: 3, 2: 3}
+    session._global_track_history = {
+        1: deque([np.asarray([0.0, 0.0, 10.0, 10.0], dtype=float)], maxlen=4),
+        2: deque([np.asarray([20.0, 0.0, 10.0, 10.0], dtype=float)], maxlen=4),
+    }
+    session._global_track_obj_ptr = {
+        1: np.asarray([1.0, 0.0], dtype=float),
+        2: np.asarray([0.0, 1.0], dtype=float),
+    }
+    session._manual_seed_frames = {3}
+    session._frame_track_ids = {3: {2}}
+
+    outputs = session._map_outputs_to_global_ids_at_frame(
+        {
+            "out_obj_ids": np.asarray([99], dtype=np.int64),
+            "out_boxes_xywh": np.asarray(
+                [[10.0, 0.0, 10.0, 10.0]],
+                dtype=np.float32,
+            ),
+            "out_binary_masks": np.asarray(
+                [np.ones((2, 2), dtype=np.uint8)],
+                dtype=object,
+            ),
+            "obj_ptr": np.asarray([[0.0, 1.0]], dtype=np.float32),
+        },
+        frame_idx=4,
+    )
+
+    assert outputs["out_obj_ids"].tolist() == [2]
+    assert session._global_track_next_id == 3
+
+
+def test_global_track_assignment_prefers_obj_ptr_embedding_over_box_noise() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.sliding_window_size = 15
+    session.sliding_window_stride = 14
+    session._global_track_next_id = 3
+    session._global_track_last_box = {
+        1: np.asarray([0.0, 0.0, 10.0, 10.0], dtype=float),
+        2: np.asarray([30.0, 0.0, 10.0, 10.0], dtype=float),
+    }
+    session._global_track_last_seen_frame = {1: 3, 2: 3}
+    session._global_track_history = {
+        1: deque([np.asarray([0.0, 0.0, 10.0, 10.0], dtype=float)], maxlen=4),
+        2: deque([np.asarray([30.0, 0.0, 10.0, 10.0], dtype=float)], maxlen=4),
+    }
+    session._global_track_obj_ptr = {
+        1: np.asarray([1.0, 0.0], dtype=float),
+        2: np.asarray([0.0, 1.0], dtype=float),
+    }
+
+    outputs = session._map_outputs_to_global_ids_at_frame(
+        {
+            "out_obj_ids": np.asarray([99], dtype=np.int64),
+            "out_boxes_xywh": np.asarray(
+                [[27.0, 0.0, 10.0, 10.0]],
+                dtype=np.float32,
+            ),
+            "obj_ptr": np.asarray([[1.0, 0.0]], dtype=np.float32),
+        },
+        frame_idx=4,
+    )
+
+    assert outputs["out_obj_ids"].tolist() == [1]
+    assert np.allclose(session._global_track_obj_ptr[1], [1.0, 0.0])
 
 
 def test_mid_window_refresh_policy_is_forward_only() -> None:
@@ -216,7 +394,9 @@ def test_mid_window_refresh_runner_calls_callbacks_in_order() -> None:
     ]
 
 
-def test_window_seed_segments_are_ordered_and_text_anchored() -> None:
+def test_window_seed_segments_are_ordered_and_text_only_falls_back_without_seeds() -> (
+    None
+):
     assert Sam3SessionManager._build_window_seed_segments(
         [5, 2, 5], 8, has_text_prompt=False
     ) == [(2, 5), (5, 8)]
@@ -225,7 +405,7 @@ def test_window_seed_segments_are_ordered_and_text_anchored() -> None:
     ) == [(0, 8)]
     assert Sam3SessionManager._build_window_seed_segments(
         [3, 6], 8, has_text_prompt=True
-    ) == [(0, 3), (3, 6), (6, 8)]
+    ) == [(3, 6), (6, 8)]
 
 
 def test_optional_sam3_agent_modules_import_without_iopath() -> None:
