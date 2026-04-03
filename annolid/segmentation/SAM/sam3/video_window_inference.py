@@ -8,9 +8,6 @@ import numpy as np
 from PIL import Image
 import torch
 
-from .sam3.model_builder import build_sam3_video_model
-from .sam3.agent.agent_core import agent_inference
-
 
 def _iter_video_windows(
     video_path: str,
@@ -103,6 +100,8 @@ def run_sam3_video_sliding_window(
     Yields:
         (global_frame_index, sam3_frame_output_dict)
     """
+    from .sam3.model_builder import build_sam3_video_model
+
     sam3_model = model or build_sam3_video_model(device=device)
 
     stride = stride or window_size
@@ -183,6 +182,8 @@ def run_sam3_agent_sliding_window(
             - outputs: model outputs dict
             - rendered: rendered output image (PIL)
     """
+    from .sam3.agent.agent_core import agent_inference
+
     stride = stride or window_size
 
     with tempfile.TemporaryDirectory(prefix="sam3_agent_frames_") as tmpdir:
