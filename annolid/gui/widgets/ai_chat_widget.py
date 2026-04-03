@@ -47,6 +47,7 @@ from annolid.services import (
     describe_agent_capabilities,
     matches_slash_completion_search,
 )
+from annolid.behavior import prompting as behavior_prompting
 from annolid.datasets.labelme_collection import default_label_index_path
 from annolid.gui.realtime_launch import (
     build_realtime_launch_payload,
@@ -3865,7 +3866,13 @@ class AIChatWidget(QtWidgets.QWidget):
             except Exception:
                 payload = None
             if isinstance(payload, dict):
-                label_val = str(payload.get("label") or "").strip()
+                label_val = str(
+                    payload.get("label")
+                    or payload.get("behavior")
+                    or payload.get("classification")
+                    or payload.get("prediction")
+                    or ""
+                ).strip()
                 conf_val = payload.get("confidence", 0.0)
                 try:
                     conf = float(conf_val)
@@ -3992,7 +3999,6 @@ class AIChatWidget(QtWidgets.QWidget):
         inference_cache: Dict[int, tuple[str, float]] = {}
         predictions: List[Dict[str, Any]] = []
         skipped_segments = 0
-        label_options = ", ".join(labels)
 
         try:
             adapter = LLMChatAdapter(
@@ -4032,11 +4038,13 @@ class AIChatWidget(QtWidgets.QWidget):
                             if not cv2.imwrite(image_path, frame):
                                 continue
                             try:
-                                prompt = (
-                                    "Classify behavior in this video segment frame. "
-                                    f"Choose exactly one label from: {label_options}. "
-                                    "Return strict JSON only: "
-                                    '{"label":"<one label>","confidence":0.0}'
+                                segment_text = (
+                                    f"segment frames {int(start_frame)}-{int(end_frame)}, "
+                                    f"representative frame {int(probe_frame)}"
+                                )
+                                prompt = behavior_prompting.build_behavior_classification_prompt(
+                                    behavior_labels=labels,
+                                    segment_label=segment_text,
                                 )
                                 resp = adapter.predict(
                                     ModelRequest(

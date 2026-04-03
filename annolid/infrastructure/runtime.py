@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import sys
 from importlib import util as importlib_util
 from pathlib import Path
+from typing import IO
 
 from annolid.gui.qt_env import configure_qt_api, sanitize_qt_plugin_env
 
@@ -16,6 +18,48 @@ _QT_PACKAGE_LAYOUTS = {
 _QTWEBENGINE_DEFAULT_CHROMIUM_FLAGS = ("--disable-skia-graphite",)
 
 _QTWEBENGINE_UNSUPPORTED_CHROMIUM_FLAGS = ("--use-gl=desktop",)
+_MACOS_SUPPRESSED_STDERR_SUBSTRINGS = (
+    "TSMSendMessageToUIServer: CFMessagePortSendRequest FAILED(-1)",
+    "to send to port com.apple.tsm.uiserver",
+)
+
+
+class _FilteredStderr:
+    def __init__(self, stream: IO[str], suppressed: tuple[str, ...]) -> None:
+        self._stream = stream
+        self._suppressed = tuple(suppressed)
+
+    def write(self, text: str) -> int:
+        message = str(text or "")
+        if message and any(token in message for token in self._suppressed):
+            return len(message)
+        return int(self._stream.write(message))
+
+    def writelines(self, lines) -> None:
+        for line in lines:
+            self.write(str(line))
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
+
+
+def _configure_macos_stderr_filter() -> None:
+    if sys.platform != "darwin":
+        return
+    if os.environ.get("ANNOLID_SUPPRESS_MACOS_TSM_WARNING", "1") in {
+        "0",
+        "false",
+        "False",
+        "no",
+    }:
+        return
+    current = sys.stderr
+    if isinstance(current, _FilteredStderr):
+        return
+    sys.stderr = _FilteredStderr(current, _MACOS_SUPPRESSED_STDERR_SUBSTRINGS)
 
 
 def _append_env_flags(var_name: str, flags: tuple[str, ...]) -> None:
@@ -144,6 +188,7 @@ def configure_qt_runtime() -> None:
     sanitize_qt_plugin_env(os.environ)
     configure_qtwebengine_chromium_flags()
     configure_qtwebengine_resource_paths()
+    _configure_macos_stderr_filter()
 
 
 def create_qapp(argv=None):

@@ -57,6 +57,7 @@ DEFAULT_BEHAVIOR_TIMELINE_BATCH_SIZE = 12
 TIMELINE_CONFIRM_THRESHOLD_WINDOWS = 1800  # ~30 minutes at 1 Hz
 TIMELINE_SIDECAR_SUFFIX = ".behavior_timeline.json"
 TIMESTAMP_CSV_SUFFIX = "_timestamps.csv"
+BEHAVIOR_SEGMENT_LABELS_SUFFIX = "_behavior_segment_labels.json"
 TIMELINE_SIDECAR_VERSION = 1
 SEGMENT_PRE_EXTRACT_LIMIT = 8
 TIMELINE_IMAGE_FORMAT = ".jpg"
@@ -102,6 +103,7 @@ class BehaviorDescribeWidget(QtWidgets.QWidget):
         self._timeline_interval_starts: List[int] = []
         self._timeline_points_by_timestamp: Dict[str, Dict[str, Any]] = {}
         self._timeline_loaded_video_path: Optional[str] = None
+        self._timeline_synced_timestamps: set[str] = set()
 
         self._button = caption_widget.create_button(
             icon_name="dialog-information",
@@ -285,6 +287,7 @@ class BehaviorDescribeWidget(QtWidgets.QWidget):
         self._set_timeline_intervals([])
         self._timeline_points_by_timestamp = {}
         self._timeline_loaded_video_path = None
+        self._timeline_synced_timestamps = set()
 
     def _set_timeline_intervals(self, intervals: Sequence[Dict[str, Any]]) -> None:
         ordered = sorted(
@@ -319,6 +322,7 @@ class BehaviorDescribeWidget(QtWidgets.QWidget):
             key=lambda item: (int(item["frame"]), str(item["timestamp"]))
         )
         self._timeline_points_by_timestamp = mapping
+        self._timeline_synced_timestamps = set(mapping.keys())
         intervals = self._build_timeline_intervals(
             points=cleaned_points, end_frame=end_frame
         )
@@ -335,6 +339,12 @@ class BehaviorDescribeWidget(QtWidgets.QWidget):
             return None
         video = Path(self._video_path)
         return video.parent / f"{video.stem}{TIMESTAMP_CSV_SUFFIX}"
+
+    def _timeline_behavior_log_json_path(self) -> Optional[Path]:
+        if not self._video_path:
+            return None
+        video = Path(self._video_path)
+        return video.parent / f"{video.stem}{BEHAVIOR_SEGMENT_LABELS_SUFFIX}"
 
     def _load_timeline_from_timestamp_csv(self) -> bool:
         csv_path = self._timeline_timestamp_csv_path()
@@ -508,6 +518,262 @@ class BehaviorDescribeWidget(QtWidgets.QWidget):
             )
 
     @staticmethod
+    def _safe_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return int(default)
+
+    @staticmethod
+    def _timecode_to_seconds(value: str) -> Optional[float]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        parts = text.split(":")
+        if len(parts) != 3:
+            return None
+        try:
+            hh = int(parts[0])
+            mm = int(parts[1])
+            ss = int(parts[2])
+        except Exception:
+            return None
+        if hh < 0 or mm < 0 or ss < 0:
+            return None
+        return float((hh * 3600) + (mm * 60) + ss)
+
+    def _known_behavior_labels(self, host: object) -> List[str]:
+        labels: List[str] = []
+        list_catalog = getattr(host, "list_behavior_catalog", None)
+        if callable(list_catalog):
+            try:
+                payload = dict(list_catalog() or {})
+                for item in list(payload.get("behavior_catalog") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    for key in ("name", "code"):
+                        value = str(item.get(key) or "").strip()
+                        if value:
+                            labels.append(value)
+            except Exception:
+                pass
+        behavior_controller = getattr(host, "behavior_controller", None)
+        names = getattr(behavior_controller, "behavior_names", None)
+        if names:
+            try:
+                labels.extend(
+                    [str(name).strip() for name in names if str(name).strip()]
+                )
+            except Exception:
+                pass
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for label in labels:
+            lowered = label.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            deduped.append(label)
+        return deduped
+
+    @staticmethod
+    def _infer_behavior_from_description(
+        description: str, candidates: Sequence[str]
+    ) -> str:
+        desc = str(description or "").strip()
+        if not desc:
+            return ""
+        lowered_desc = desc.lower()
+        for candidate in candidates:
+            cand = str(candidate or "").strip()
+            if cand and lowered_desc == cand.lower():
+                return cand
+        for candidate in candidates:
+            cand = str(candidate or "").strip()
+            if not cand:
+                continue
+            if re.search(rf"\b{re.escape(cand.lower())}\b", lowered_desc):
+                return cand
+        return desc
+
+    def _sync_point_to_annolid_gui(
+        self,
+        point: Dict[str, Any],
+        *,
+        next_frame: Optional[int],
+        step_seconds: int,
+    ) -> None:
+        timestamp = str(point.get("timestamp", "")).strip()
+        if not timestamp or timestamp in self._timeline_synced_timestamps:
+            return
+        description = str(point.get("description", "")).strip()
+        if not description:
+            return
+        try:
+            start_frame = int(point.get("frame"))
+        except Exception:
+            return
+        if start_frame < 0:
+            return
+
+        self._timeline_synced_timestamps.add(timestamp)
+        end_frame = int(start_frame)
+        if next_frame is not None:
+            try:
+                next_frame_int = int(next_frame)
+            except Exception:
+                next_frame_int = start_frame
+            if next_frame_int > start_frame:
+                end_frame = max(start_frame, next_frame_int - 1)
+        elif self._video_fps > 0 and step_seconds > 0:
+            span = max(1, int(round(float(step_seconds) * float(self._video_fps))))
+            end_frame = min(
+                max(0, self._video_num_frames - 1),
+                max(start_frame, start_frame + span - 1),
+            )
+
+        host = self._host_window()
+        if host is None:
+            return
+
+        behavior_name = str(
+            point.get("behavior_label") or point.get("label") or ""
+        ).strip()
+        if not behavior_name:
+            behavior_name = self._infer_behavior_from_description(
+                description,
+                self._known_behavior_labels(host),
+            )
+        if not behavior_name:
+            return
+
+        behavior_controller = getattr(host, "behavior_controller", None)
+        if behavior_controller is not None:
+            create_interval = getattr(behavior_controller, "create_interval", None)
+            if callable(create_interval):
+                try:
+                    create_interval(
+                        behavior=str(behavior_name),
+                        start_frame=int(start_frame),
+                        end_frame=int(end_frame),
+                        subject="Agent",
+                        timestamp_provider=(
+                            lambda frame: float(frame) / float(self._video_fps)
+                            if self._video_fps > 0
+                            else None
+                        ),
+                    )
+                except Exception:
+                    pass
+            add_mark = getattr(behavior_controller, "add_generic_mark", None)
+            if callable(add_mark):
+                try:
+                    add_mark(
+                        int(start_frame),
+                        mark_type="prediction_progress",
+                        color="dodgerblue",
+                    )
+                except Exception:
+                    pass
+
+        refresh_log = getattr(host, "_refresh_behavior_log", None)
+        if callable(refresh_log):
+            try:
+                refresh_log()
+            except Exception:
+                pass
+        timeline_panel = getattr(host, "timeline_panel", None)
+        timeline_visible = False
+        if timeline_panel is not None:
+            is_visible = getattr(timeline_panel, "isVisible", None)
+            if callable(is_visible):
+                try:
+                    timeline_visible = bool(is_visible())
+                except Exception:
+                    timeline_visible = False
+        if timeline_panel is not None and timeline_visible:
+            refresh_timeline = getattr(
+                timeline_panel, "refresh_from_behavior_controller", None
+            )
+            if callable(refresh_timeline):
+                try:
+                    refresh_timeline()
+                except Exception:
+                    pass
+
+    def _save_timeline_behavior_segment_log(
+        self,
+        *,
+        intervals: Sequence[Dict[str, Any]],
+        step_seconds: int,
+        prompt: str,
+        evaluated_segments: int,
+        skipped_segments: int,
+    ) -> Optional[Path]:
+        log_path = self._timeline_behavior_log_json_path()
+        if log_path is None:
+            return None
+        fps = float(self._video_fps or 0.0)
+        segment_frames = (
+            max(1, int(round(float(step_seconds) * fps)))
+            if fps > 0 and step_seconds > 0
+            else 1
+        )
+        predictions: List[Dict[str, Any]] = []
+        for item in intervals:
+            try:
+                start_frame = int(item.get("start_frame", 0))
+                end_frame = int(item.get("end_frame", start_frame))
+            except Exception:
+                continue
+            description = str(item.get("description", "")).strip()
+            if not description:
+                continue
+            predictions.append(
+                {
+                    "start_frame": int(start_frame),
+                    "end_frame": int(end_frame),
+                    "subject": "Subject 1",
+                    "label": description,
+                    "description": description,
+                    "timestamp": str(item.get("start_time", "")).strip(),
+                    "confidence": 1.0,
+                }
+            )
+        payload: Dict[str, Any] = {
+            "video_path": str(self._video_path or ""),
+            "mode": "timeline_describe",
+            "labels_used": [],
+            "segment_frames": int(segment_frames),
+            "segment_seconds": float(max(1, int(step_seconds))),
+            "sample_frames_per_segment": 1,
+            "evaluated_segments": int(max(0, evaluated_segments)),
+            "labeled_segments": int(len(predictions)),
+            "skipped_segments": int(max(0, skipped_segments)),
+            "predictions": predictions,
+            "prompt": str(prompt or "").strip(),
+            "generated_at": datetime.now().isoformat(),
+        }
+        try:
+            log_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.info(
+                "BehaviorDescribeWidget saved %s segment descriptions to %s",
+                len(predictions),
+                log_path,
+            )
+            return log_path
+        except Exception as exc:
+            logger.warning(
+                "BehaviorDescribeWidget failed to save behavior log JSON %s: %s",
+                log_path,
+                exc,
+            )
+            return None
+
+    @staticmethod
     def _parse_timestamped_descriptions(text: str) -> Dict[str, str]:
         parsed: Dict[str, str] = {}
         pattern = re.compile(r"^\s*(\d{2}:\d{2}:\d{2})\s*:\s*(.+?)\s*$")
@@ -649,18 +915,59 @@ class BehaviorDescribeWidget(QtWidgets.QWidget):
             except Exception:
                 continue
             merged[ts] = {"frame": frame, "timestamp": ts, "description": desc}
+            next_frame_value = payload.get("next_frame")
+            next_frame_int: Optional[int] = None
+            if str(next_frame_value or "").strip() != "":
+                try:
+                    next_frame_int = int(next_frame_value)
+                except Exception:
+                    next_frame_int = None
+            self._sync_point_to_annolid_gui(
+                {"frame": frame, "timestamp": ts, "description": desc},
+                next_frame=next_frame_int,
+                step_seconds=self._safe_int(payload.get("step_seconds", 1), 1),
+            )
         self._timeline_points_by_timestamp = merged
         sorted_points = self._sorted_timeline_points()
         self._set_timeline_points(sorted_points, end_frame=end_frame)
         self._timeline_loaded_video_path = self._video_path
         if self._timeline_intervals:
+            step_seconds = self._safe_int(payload.get("step_seconds", 1), 1)
+            prompt_text = str(payload.get("prompt", "")).strip()
+            evaluated_segments = self._safe_int(
+                payload.get("total_points"),
+                self._safe_int(
+                    payload.get("evaluated_segments"),
+                    len(self._timeline_points_by_timestamp),
+                ),
+            )
+            skipped_segments = self._safe_int(payload.get("skipped_points"), 0)
             self._save_timeline_to_sidecar(
                 intervals=self._timeline_intervals,
                 points=sorted_points,
                 end_frame=end_frame,
-                step_seconds=int(payload.get("step_seconds", 1)),
-                prompt=str(payload.get("prompt", "")).strip(),
+                step_seconds=step_seconds,
+                prompt=prompt_text,
             )
+            log_path = self._save_timeline_behavior_segment_log(
+                intervals=self._timeline_intervals,
+                step_seconds=step_seconds,
+                prompt=prompt_text,
+                evaluated_segments=evaluated_segments,
+                skipped_segments=skipped_segments,
+            )
+            if bool(payload.get("final", False)):
+                csv_path = self._timeline_timestamp_csv_path()
+                csv_name = csv_path.name if csv_path is not None else ""
+                log_name = log_path.name if log_path is not None else ""
+                if csv_name and log_name:
+                    self._label.setText(
+                        f"Done ({len(self._timeline_intervals)} segments); saved {csv_name} and {log_name}"
+                    )
+                elif csv_name:
+                    self._label.setText(
+                        f"Done ({len(self._timeline_intervals)} segments); saved {csv_name}"
+                    )
             if self._current_frame is not None:
                 self._apply_timeline_description_for_frame(self._current_frame)
 
@@ -1022,6 +1329,98 @@ class BehaviorDescribeWidget(QtWidgets.QWidget):
     def set_status_label(self, text: str) -> None:
         self._label.setText(text)
 
+    def _host_window(self) -> Optional[object]:
+        host = getattr(self._caption, "host_window_widget", None)
+        if host is not None:
+            return host
+        try:
+            return self._caption.window()
+        except Exception:
+            return None
+
+    @QtCore.Slot(str)
+    def update_timeline_gui_progress(self, payload_json: str) -> None:
+        if not payload_json:
+            return
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            return
+        if payload.get("video_path") != self._video_path:
+            return
+        try:
+            processed = int(payload.get("processed_points", 0))
+        except Exception:
+            processed = 0
+        try:
+            total = int(payload.get("total_points", 0))
+        except Exception:
+            total = 0
+
+        latest = payload.get("latest_point")
+        next_frame_value = payload.get("next_frame")
+        next_frame: Optional[int] = None
+        if str(next_frame_value or "").strip() != "":
+            try:
+                next_frame = int(next_frame_value)
+            except Exception:
+                next_frame = None
+        latest_frame: Optional[int] = None
+        latest_timestamp = ""
+        latest_description = ""
+        if isinstance(latest, dict):
+            try:
+                latest_frame = int(latest.get("frame"))
+            except Exception:
+                latest_frame = None
+            latest_timestamp = str(latest.get("timestamp", "")).strip()
+            latest_description = str(latest.get("description", "")).strip()
+
+        if latest_frame is not None and latest_frame >= 0:
+            self._current_frame = int(latest_frame)
+            # Keep caption text aligned with newly completed segments.
+            if latest_description:
+                self._caption._allow_empty_caption = True
+                line = (
+                    f"{latest_timestamp}: {latest_description}"
+                    if latest_timestamp
+                    else latest_description
+                )
+                self._caption.set_caption(line)
+                self._caption._allow_empty_caption = False
+
+            host = self._host_window()
+            if host is not None:
+                timeline_panel = getattr(host, "timeline_panel", None)
+                set_current_frame = getattr(timeline_panel, "set_current_frame", None)
+                if callable(set_current_frame):
+                    set_current_frame(int(latest_frame))
+                behavior_controller = getattr(host, "behavior_controller", None)
+                add_mark = getattr(behavior_controller, "add_generic_mark", None)
+                if callable(add_mark):
+                    try:
+                        add_mark(
+                            int(latest_frame),
+                            mark_type="prediction_progress",
+                            color="dodgerblue",
+                        )
+                    except Exception:
+                        pass
+                seekbar = getattr(host, "seekbar", None)
+                if next_frame is not None and seekbar is not None:
+                    try:
+                        if int(next_frame) >= 0 and int(next_frame) <= int(
+                            getattr(seekbar, "_val_max", int(next_frame))
+                        ):
+                            seekbar.setValue(int(next_frame))
+                    except Exception:
+                        pass
+
+        if total > 0:
+            self._label.setText(
+                f"Describing… {max(0, min(processed, total))}/{total} segments"
+            )
+
     @QtCore.Slot()
     def finish_behavior_run(self) -> None:
         """Re-enable UI without overwriting the caption contents."""
@@ -1086,6 +1485,15 @@ class BehaviorDescribeWidget(QtWidgets.QWidget):
                     True,
                 )
                 return
+            host = self._host_window()
+            if host is not None:
+                behavior_controller = getattr(host, "behavior_controller", None)
+                clear_marks = getattr(behavior_controller, "clear_generic_marks", None)
+                if callable(clear_marks):
+                    try:
+                        clear_marks(mark_type="prediction_progress")
+                    except Exception:
+                        pass
             task = BehaviorTimelineTask(
                 video_path=self._video_path,
                 fps=self._video_fps,
@@ -1914,6 +2322,18 @@ class BehaviorTimelineTask(QRunnable):
             mapping[ts] = {"frame": frame, "timestamp": ts, "description": desc}
         return mapping
 
+    @staticmethod
+    def _next_frame_from_pairs(
+        pairs: Sequence[Tuple[int, str]], index: int
+    ) -> Optional[int]:
+        next_index = int(index) + 1
+        if next_index < 0 or next_index >= len(pairs):
+            return None
+        try:
+            return int(pairs[next_index][0])
+        except Exception:
+            return None
+
     def run(self) -> None:
         try:
             if self.provider != "ollama":
@@ -1981,6 +2401,9 @@ class BehaviorTimelineTask(QRunnable):
                         "prompt": self.base_prompt,
                         "end_frame": end_frame,
                         "points": timeline_points,
+                        "total_points": int(total),
+                        "skipped_points": int(len(skipped_points)),
+                        "final": True,
                     },
                     ensure_ascii=False,
                 )
@@ -1994,7 +2417,10 @@ class BehaviorTimelineTask(QRunnable):
                     self.widget,
                     "set_status_label",
                     QtCore.Qt.QueuedConnection,
-                    QtCore.Q_ARG(str, "Done (all 1s points already available)"),
+                    QtCore.Q_ARG(
+                        str,
+                        f"Done (all {total} per-{self.step_seconds}s points already available)",
+                    ),
                 )
                 QtCore.QMetaObject.invokeMethod(
                     self.widget,
@@ -2053,22 +2479,51 @@ class BehaviorTimelineTask(QRunnable):
                         batch_results.append(row)
                         timeline_points.append(row)
                     if batch_results:
-                        payload = json.dumps(
-                            {
-                                "video_path": self.video_path,
-                                "step_seconds": self.step_seconds,
-                                "prompt": self.base_prompt,
-                                "end_frame": end_frame,
-                                "points": batch_results,
-                            },
-                            ensure_ascii=False,
-                        )
-                        QtCore.QMetaObject.invokeMethod(
-                            self.widget,
-                            "merge_timeline_result",
-                            QtCore.Qt.QueuedConnection,
-                            QtCore.Q_ARG(str, payload),
-                        )
+                        for offset, row in enumerate(batch_results):
+                            row_index = int(processed + offset)
+                            next_frame = self._next_frame_from_pairs(
+                                pending_points, row_index
+                            )
+                            progress_payload = json.dumps(
+                                {
+                                    "video_path": self.video_path,
+                                    "total_points": int(total),
+                                    "processed_points": int(
+                                        min(total, row_index + 1 + len(skipped_points))
+                                    ),
+                                    "latest_point": row,
+                                    "next_frame": next_frame,
+                                },
+                                ensure_ascii=False,
+                            )
+                            QtCore.QMetaObject.invokeMethod(
+                                self.widget,
+                                "update_timeline_gui_progress",
+                                QtCore.Qt.QueuedConnection,
+                                QtCore.Q_ARG(str, progress_payload),
+                            )
+                            payload = json.dumps(
+                                {
+                                    "video_path": self.video_path,
+                                    "step_seconds": self.step_seconds,
+                                    "prompt": self.base_prompt,
+                                    "end_frame": end_frame,
+                                    "points": [row],
+                                    "total_points": int(total),
+                                    "processed_points": int(
+                                        min(total, row_index + 1 + len(skipped_points))
+                                    ),
+                                    "skipped_points": int(len(skipped_points)),
+                                    "next_frame": next_frame,
+                                },
+                                ensure_ascii=False,
+                            )
+                            QtCore.QMetaObject.invokeMethod(
+                                self.widget,
+                                "merge_timeline_result",
+                                QtCore.Qt.QueuedConnection,
+                                QtCore.Q_ARG(str, payload),
+                            )
                     processed += len(batch_images)
                     batch_images.clear()
                     batch_timestamps.clear()
@@ -2102,22 +2557,51 @@ class BehaviorTimelineTask(QRunnable):
                         batch_results.append(row)
                         timeline_points.append(row)
                     if batch_results:
-                        payload = json.dumps(
-                            {
-                                "video_path": self.video_path,
-                                "step_seconds": self.step_seconds,
-                                "prompt": self.base_prompt,
-                                "end_frame": end_frame,
-                                "points": batch_results,
-                            },
-                            ensure_ascii=False,
-                        )
-                        QtCore.QMetaObject.invokeMethod(
-                            self.widget,
-                            "merge_timeline_result",
-                            QtCore.Qt.QueuedConnection,
-                            QtCore.Q_ARG(str, payload),
-                        )
+                        for offset, row in enumerate(batch_results):
+                            row_index = int(processed + offset)
+                            next_frame = self._next_frame_from_pairs(
+                                pending_points, row_index
+                            )
+                            progress_payload = json.dumps(
+                                {
+                                    "video_path": self.video_path,
+                                    "total_points": int(total),
+                                    "processed_points": int(
+                                        min(total, row_index + 1 + len(skipped_points))
+                                    ),
+                                    "latest_point": row,
+                                    "next_frame": next_frame,
+                                },
+                                ensure_ascii=False,
+                            )
+                            QtCore.QMetaObject.invokeMethod(
+                                self.widget,
+                                "update_timeline_gui_progress",
+                                QtCore.Qt.QueuedConnection,
+                                QtCore.Q_ARG(str, progress_payload),
+                            )
+                            payload = json.dumps(
+                                {
+                                    "video_path": self.video_path,
+                                    "step_seconds": self.step_seconds,
+                                    "prompt": self.base_prompt,
+                                    "end_frame": end_frame,
+                                    "points": [row],
+                                    "total_points": int(total),
+                                    "processed_points": int(
+                                        min(total, row_index + 1 + len(skipped_points))
+                                    ),
+                                    "skipped_points": int(len(skipped_points)),
+                                    "next_frame": next_frame,
+                                },
+                                ensure_ascii=False,
+                            )
+                            QtCore.QMetaObject.invokeMethod(
+                                self.widget,
+                                "merge_timeline_result",
+                                QtCore.Qt.QueuedConnection,
+                                QtCore.Q_ARG(str, payload),
+                            )
                     processed += len(batch_images)
             finally:
                 video.release()
@@ -2129,6 +2613,10 @@ class BehaviorTimelineTask(QRunnable):
                     "prompt": self.base_prompt,
                     "end_frame": end_frame,
                     "points": timeline_points,
+                    "total_points": int(total),
+                    "processed_points": int(processed),
+                    "skipped_points": int(len(skipped_points)),
+                    "final": True,
                 },
                 ensure_ascii=False,
             )

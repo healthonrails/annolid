@@ -27,6 +27,27 @@ DEFAULT_BEHAVIOR_PROMPT_TEMPLATE = textwrap.dedent(
     """
 ).strip()
 
+DEFAULT_BEHAVIOR_CLASSIFICATION_PROMPT_TEMPLATE = textwrap.dedent(
+    """
+    You are an animal behavior observer.
+    {segment_sentence}
+    {view_guidance}
+    {roi_guidance}
+    Report only observable facts about the mouse—pose, locomotion, grooming, rearing, sniffing, tail posture, limb contact.
+    Mention whether it is stationary or moving and describe the pace qualitatively (slow, moderate, rapid) if motion is visible.
+    Note head orientation, activities (sniffing, grooming), and what each set of paws is doing relative to the ground.
+    Keep the description focused on the animal; do not mention the arena, cameras, or lighting.
+    Avoid referencing the arena, camera, or environment. Do not speculate about intent or emotion.
+    Write 2–4 sentences that are concise but detailed.
+
+    Classify behavior using exactly one label from the defined behavior list:
+    {behavior_list}
+
+    Return strict JSON only (no prose or markdown) with this schema:
+    {{"label":"<one label from list>","confidence":0.0,"description":"2-4 sentence observable description"}}
+    """
+).strip()
+
 
 def _prompt_file_path() -> Path:
     return _PROMPT_FILE
@@ -154,6 +175,63 @@ def build_behavior_narrative_prompt(
         "length_guidance": length_guidance,
     }
     template = get_effective_behavior_prompt_template()
+    try:
+        rendered = template.format_map(context)
+    except KeyError:
+        rendered = template
+    return "\n".join(line for line in rendered.splitlines() if line.strip())
+
+
+def build_behavior_classification_prompt(
+    *,
+    behavior_labels: Sequence[str],
+    segment_label: Optional[str] = None,
+    multi_view: bool = False,
+    include_roi_notes: bool = False,
+) -> str:
+    """
+    Prompt for behavior classification with an observation-first narrative.
+    """
+
+    normalized_labels: List[str] = []
+    seen = set()
+    for raw in behavior_labels:
+        label = str(raw or "").strip()
+        if not label:
+            continue
+        lowered = label.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        normalized_labels.append(label)
+
+    if normalized_labels:
+        behavior_list = "\n".join(f"- {label}" for label in normalized_labels)
+    else:
+        behavior_list = "- unknown"
+
+    view_text = (
+        "You receive synchronized multi-view images of the same timepoint; fuse the evidence."
+        if multi_view
+        else "Base your description on the provided image."
+    )
+    roi_text = (
+        "Cropped views may highlight head, paws, or tail. Use them to refine details."
+        if include_roi_notes
+        else ""
+    )
+    segment_text = (
+        f"Describe what the mouse is doing during {segment_label}."
+        if segment_label
+        else "Describe what the mouse is doing at this moment."
+    )
+    context = {
+        "segment_sentence": segment_text,
+        "view_guidance": view_text,
+        "roi_guidance": roi_text,
+        "behavior_list": behavior_list,
+    }
+    template = DEFAULT_BEHAVIOR_CLASSIFICATION_PROMPT_TEMPLATE
     try:
         rendered = template.format_map(context)
     except KeyError:

@@ -88,6 +88,30 @@ What Annolid writes:
 - behavior timestamps CSV,
 - segment-level behavior log JSON.
 
+Prompting behavior used by Annolid Bot labeling:
+
+- The model is instructed to act as an animal behavior observer.
+- It must describe only observable mouse posture/motion facts (2–4 concise sentences).
+- It must classify each segment to exactly one label from your defined behavior list.
+- Output is constrained to strict JSON (`label`, `confidence`, `description`) before Annolid writes timeline/log outputs.
+
+## Caption Widget: Describe Behavior Timeline (Background)
+
+You can also run per-step behavior description directly from the caption panel:
+
+1. In the caption widget, click **Describe behavior**.
+2. Set **Run mode** to **Timeline (describe every N seconds)**.
+3. Set **Describe every (s)** to `1` for 1-second segments.
+4. Pick your start/end range and click **OK**.
+
+The run is queued in background and saves incrementally, so long videos can continue from existing saved points.
+
+Outputs written next to the video:
+
+- `<video_stem>_timestamps.csv`
+- `<video_stem>_behavior_segment_labels.json`
+- `<video_filename>.behavior_timeline.json`
+
 ## Recommended Operating Loop
 
 1. Define behavior names first (Flags or Timeline).

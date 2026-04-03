@@ -98,6 +98,36 @@ def test_parse_direct_gui_command_routes_capabilities_command() -> None:
     assert command == {"name": "open_agent_capabilities", "args": {}}
 
 
+def test_extract_label_from_model_text_accepts_behavior_alias_keys() -> None:
+    labels = ["walking", "grooming", "rearing"]
+    label, confidence = AIChatWidget._extract_label_from_model_text(
+        '{"behavior":"grooming","confidence":0.85}',
+        labels,
+    )
+    assert label == "grooming"
+    assert confidence == 0.85
+
+
+def test_extract_label_from_model_text_accepts_classification_alias_key() -> None:
+    labels = ["walking", "grooming", "rearing"]
+    label, confidence = AIChatWidget._extract_label_from_model_text(
+        '{"classification":"rearing","confidence":0.6}',
+        labels,
+    )
+    assert label == "rearing"
+    assert confidence == 0.6
+
+
+def test_extract_label_from_model_text_accepts_prediction_alias_key() -> None:
+    labels = ["walking", "grooming", "rearing"]
+    label, confidence = AIChatWidget._extract_label_from_model_text(
+        '{"prediction":"walking","confidence":0.4}',
+        labels,
+    )
+    assert label == "walking"
+    assert confidence == 0.4
+
+
 def test_capability_chips_and_shortcuts_route_actions(monkeypatch) -> None:
     _ensure_qapp()
     monkeypatch.setattr(

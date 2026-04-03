@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 
 from annolid.gui.qt_env import configure_qt_api
@@ -99,3 +100,35 @@ def test_configure_qt_runtime_applies_binding_and_webengine_env(monkeypatch) -> 
     assert env["QT_PLUGIN_PATH"] == "/opt/qt/plugins"
     assert env["QTWEBENGINE_CHROMIUM_FLAGS"] == "--disable-skia-graphite"
     assert env["QTWEBENGINE_RESOURCES_PATH"] == "/opt/qt/resources"
+
+
+def test_filtered_stderr_suppresses_known_tsm_warning() -> None:
+    sink = io.StringIO()
+    filtered = runtime._FilteredStderr(
+        sink,
+        (
+            "TSMSendMessageToUIServer: CFMessagePortSendRequest FAILED(-1)",
+            "to send to port com.apple.tsm.uiserver",
+        ),
+    )
+    filtered.write(
+        "2026-04-02 19:54:10 python3 TSMSendMessageToUIServer: CFMessagePortSendRequest FAILED(-1) to send to port com.apple.tsm.uiserver\n"
+    )
+    filtered.write("normal warning line\n")
+    assert sink.getvalue() == "normal warning line\n"
+
+
+def test_configure_qt_runtime_installs_macos_stderr_filter(monkeypatch) -> None:
+    env: dict[str, str] = {}
+    monkeypatch.setattr(runtime.os, "environ", env, raising=False)
+    monkeypatch.setattr(runtime.sys, "platform", "darwin", raising=False)
+    monkeypatch.setattr(runtime, "configure_qt_api", lambda target_env: None)
+    monkeypatch.setattr(runtime, "sanitize_qt_plugin_env", lambda target_env: None)
+    monkeypatch.setattr(runtime, "configure_qtwebengine_chromium_flags", lambda: None)
+    monkeypatch.setattr(runtime, "configure_qtwebengine_resource_paths", lambda: None)
+    fake_stderr = io.StringIO()
+    monkeypatch.setattr(runtime.sys, "stderr", fake_stderr, raising=False)
+
+    runtime.configure_qt_runtime()
+
+    assert isinstance(runtime.sys.stderr, runtime._FilteredStderr)

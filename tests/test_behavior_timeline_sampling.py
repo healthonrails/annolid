@@ -35,6 +35,22 @@ def test_qwen_messages_supports_in_memory_base64_images():
     assert payload[0]["images"] == [fake_base64]
 
 
+def test_build_behavior_classification_prompt_requires_defined_labels_and_json():
+    prompt = behavior_prompting.build_behavior_classification_prompt(
+        behavior_labels=["walking", "grooming", "rearing"],
+        segment_label="00:00:00-00:00:01",
+    )
+    assert "You are an animal behavior observer." in prompt
+    assert "Describe what the mouse is doing during 00:00:00-00:00:01." in prompt
+    assert "Write 2–4 sentences that are concise but detailed." in prompt
+    assert "- walking" in prompt
+    assert "- grooming" in prompt
+    assert "- rearing" in prompt
+    assert '"label":"<one label from list>"' in prompt
+    assert '"confidence":0.0' in prompt
+    assert '"description":"2-4 sentence observable description"' in prompt
+
+
 def test_timeline_intervals_to_timestamp_rows_merges_adjacent_intervals():
     intervals = [
         {"start_frame": 0, "end_frame": 29, "description": "walking"},

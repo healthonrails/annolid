@@ -57,6 +57,14 @@ Best practices:
 3. Use `gui_segment_track_video` for integrated open+segment(+track) flows.
 4. Stop realtime stream explicitly when finished.
 
+### Behavior Annotation and Labeling
+
+When using `gui_label_behavior_segments`, prefer behavior-observer style criteria:
+1. Describe only observable animal facts (pose, locomotion, grooming/rearing/sniffing, tail and paw contact).
+2. Avoid environmental commentary and avoid intent/emotion speculation.
+3. Keep the observation concise (about 2–4 sentences) and then classify to exactly one label from the defined behavior list.
+4. Return structured JSON-compatible outputs whenever the model/provider supports it, so downstream timeline/log writing remains robust.
+
 ## Reliability Pattern
 
 For robust execution:
