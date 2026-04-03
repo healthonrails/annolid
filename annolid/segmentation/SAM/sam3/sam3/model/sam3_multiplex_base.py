@@ -74,6 +74,47 @@ def _normalize_single_frame_detection_batch(
     return det_out, pos_pred_mask
 
 
+def _normalize_detection_masks(pred_masks: Tensor) -> Tensor:
+    """
+    Normalize detector masks to (num_det, H, W) logits.
+
+    Some runtime paths can emit additional per-object/per-candidate mask axes.
+    Downstream multiplex planning expects exactly one mask map per detection.
+    We conservatively collapse extra middle dimensions with max aggregation.
+    """
+    if pred_masks.ndim == 2:
+        return pred_masks.unsqueeze(0)
+    if pred_masks.ndim == 3:
+        return pred_masks
+    if pred_masks.ndim < 2:
+        raise ValueError(
+            f"Unexpected detection mask shape: {tuple(pred_masks.shape)}"
+        )
+
+    masks = pred_masks
+    while masks.ndim > 3 and masks.shape[1] == 1:
+        masks = masks.squeeze(1)
+
+    if masks.ndim == 3:
+        return masks
+
+    if masks.ndim >= 4:
+        num_det = int(masks.shape[0])
+        height = int(masks.shape[-2])
+        width = int(masks.shape[-1])
+        if num_det == 0:
+            return masks.new_zeros((0, height, width))
+        logger.warning(
+            "SAM3 multiplex: collapsing detection mask shape %s to (num_det,H,W).",
+            tuple(masks.shape),
+        )
+        return masks.reshape(num_det, -1, height, width).amax(dim=1)
+
+    raise ValueError(
+        f"Unexpected detection mask shape after normalization: {tuple(masks.shape)}"
+    )
+
+
 class Sam3MultiplexTrackerPredictor(nn.Module):
     def __init__(
         self,
@@ -766,7 +807,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         # note: detections in `sam3_image_out` has already gone through NMS
         pred_probs = sam3_image_out["pred_logits"].squeeze(-1).sigmoid()
         pred_boxes_xyxy = sam3_image_out["pred_boxes_xyxy"]
-        pred_masks = sam3_image_out["pred_masks"]
+        pred_masks = _normalize_detection_masks(sam3_image_out["pred_masks"])
         # get the positive detection outputs above threshold
         pos_pred_mask = pred_probs > self.score_threshold_detection
 

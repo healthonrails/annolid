@@ -10,6 +10,9 @@ from annolid.segmentation.SAM.sam3.session import Sam3SessionManager
 from annolid.segmentation.SAM.sam3.sam3.model.multiplex_mask_decoder import (
     MultiplexMaskDecoder,
 )
+from annolid.segmentation.SAM.sam3.sam3.model.sam3_multiplex_base import (
+    _normalize_detection_masks,
+)
 
 
 class _Point:
@@ -483,3 +486,10 @@ def test_multiplex_mask_decoder_handles_internal_batch_mismatch() -> None:
     assert outputs["iou_pred"].shape == (1, 4, 1)
     assert outputs["sam_tokens_out"].shape == (1, 4, 1, 32)
     assert outputs["object_score_logits"].shape == (1, 4, 1)
+
+
+def test_normalize_detection_masks_collapses_extra_dims() -> None:
+    masks = torch.randn(2, 5, 16, 24)
+    normalized = _normalize_detection_masks(masks)
+
+    assert normalized.shape == (2, 16, 24)
