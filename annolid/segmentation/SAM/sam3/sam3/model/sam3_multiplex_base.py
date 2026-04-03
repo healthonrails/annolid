@@ -39,80 +39,79 @@ if supports_tf32():
     torch.backends.cudnn.allow_tf32 = True
 
 
-def _normalize_single_frame_detection_batch(
-    det_out: Dict[str, Tensor],
+def _select_positive_detections(
+    *,
+    pred_boxes_xyxy: Tensor,
+    pred_masks: Tensor,
+    pred_probs: Tensor,
     pos_pred_mask: Tensor,
-) -> Tuple[Dict[str, Tensor], Tensor]:
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
     """
-    Normalize detector outputs to a single-frame, unbatched layout.
+    Select positive detections from the raw detector outputs and return aligned
+    tensors for boxes, masks, scores, and keep flags.
 
-    The detector can return either unbatched tensors (N, ...) or tensors with a
-    leading batch dimension (1, N, ...). This helper canonicalizes both into
-    (N, ...) so downstream logic can sort/filter detections deterministically.
+    The detector output contract is expected to be [B, Q, ...]. Selection is
+    done before any squeezing so the batch/query axes are preserved correctly.
     """
-    if not isinstance(pos_pred_mask, torch.Tensor):
-        pos_pred_mask = torch.as_tensor(pos_pred_mask)
-
-    if pos_pred_mask.ndim == 0:
-        pos_pred_mask = pos_pred_mask.unsqueeze(0)
-
-    # Common case: [1, N] -> [N]
-    if pos_pred_mask.ndim >= 2 and pos_pred_mask.shape[0] == 1:
-        pos_pred_mask = pos_pred_mask[0]
-        normalized = {}
-        for k, v in det_out.items():
-            if isinstance(v, torch.Tensor) and v.ndim >= 2 and v.shape[0] == 1:
-                normalized[k] = v[0]
-            else:
-                normalized[k] = v
-        return normalized, pos_pred_mask
-
-    # Fallback: flatten leading dimensions of the keep mask.
-    if pos_pred_mask.ndim > 1:
-        pos_pred_mask = pos_pred_mask.reshape(-1)
-
-    return det_out, pos_pred_mask
-
-
-def _normalize_detection_masks(pred_masks: Tensor) -> Tensor:
-    """
-    Normalize detector masks to (num_det, H, W) logits.
-
-    Some runtime paths can emit additional per-object/per-candidate mask axes.
-    Downstream multiplex planning expects exactly one mask map per detection.
-    We conservatively collapse extra middle dimensions with max aggregation.
-    """
-    if pred_masks.ndim == 2:
-        return pred_masks.unsqueeze(0)
-    if pred_masks.ndim == 3:
-        return pred_masks
-    if pred_masks.ndim < 2:
+    if pred_masks.ndim not in (3, 4):
         raise ValueError(
-            f"Unexpected detection mask shape: {tuple(pred_masks.shape)}"
+            f"Unexpected raw detector mask shape: {tuple(pred_masks.shape)}"
+        )
+    if pred_boxes_xyxy.ndim not in (2, 3):
+        raise ValueError(
+            f"Unexpected raw detector box shape: {tuple(pred_boxes_xyxy.shape)}"
+        )
+    if pred_probs.ndim not in (1, 2):
+        raise ValueError(
+            f"Unexpected raw detector score shape: {tuple(pred_probs.shape)}"
         )
 
-    masks = pred_masks
-    while masks.ndim > 3 and masks.shape[1] == 1:
-        masks = masks.squeeze(1)
+    if pos_pred_mask.ndim == 2 and pred_masks.ndim == 4:
+        batch_idx, det_idx = torch.where(pos_pred_mask)
+        selected_masks = pred_masks[batch_idx, det_idx]
+        selected_boxes = pred_boxes_xyxy[batch_idx, det_idx]
+        selected_scores = pred_probs[batch_idx, det_idx]
+    elif pos_pred_mask.ndim == 1:
+        selected_masks = pred_masks[pos_pred_mask]
+        selected_boxes = pred_boxes_xyxy[pos_pred_mask]
+        selected_scores = pred_probs[pos_pred_mask]
+    else:
+        selected_masks = pred_masks[pos_pred_mask]
+        selected_boxes = pred_boxes_xyxy[pos_pred_mask]
+        selected_scores = pred_probs[pos_pred_mask]
 
-    if masks.ndim == 3:
-        return masks
-
-    if masks.ndim >= 4:
-        num_det = int(masks.shape[0])
-        height = int(masks.shape[-2])
-        width = int(masks.shape[-1])
-        if num_det == 0:
-            return masks.new_zeros((0, height, width))
-        logger.warning(
-            "SAM3 multiplex: collapsing detection mask shape %s to (num_det,H,W).",
-            tuple(masks.shape),
+    if selected_masks.ndim == 2:
+        selected_masks = selected_masks.unsqueeze(0)
+    if selected_masks.ndim != 3:
+        raise ValueError(
+            f"Expected selected detector masks to be 3D, got {tuple(selected_masks.shape)}"
         )
-        return masks.reshape(num_det, -1, height, width).amax(dim=1)
+    if selected_boxes.ndim == 1:
+        selected_boxes = selected_boxes.unsqueeze(0)
+    if selected_scores.ndim == 0:
+        selected_scores = selected_scores.unsqueeze(0)
 
-    raise ValueError(
-        f"Unexpected detection mask shape after normalization: {tuple(masks.shape)}"
+    selected_keep = torch.ones(
+        selected_scores.shape[0], dtype=torch.bool, device=selected_scores.device
     )
+    return selected_boxes, selected_masks, selected_scores, selected_keep
+
+
+def _ensure_object_masks(mask_tensor: Tensor) -> Tensor:
+    """
+    Ensure object masks have the canonical (num_obj, H, W) layout.
+
+    We accept a single object mask as (H, W) and a batched singleton channel
+    layout as (N, 1, H, W). Anything more exotic is rejected so contract drift
+    becomes visible instead of being silently rewritten.
+    """
+    if mask_tensor.ndim == 2:
+        return mask_tensor.unsqueeze(0)
+    if mask_tensor.ndim == 3:
+        return mask_tensor
+    if mask_tensor.ndim == 4 and mask_tensor.shape[1] == 1:
+        return mask_tensor.squeeze(1)
+    raise ValueError(f"Unexpected object mask shape: {tuple(mask_tensor.shape)}")
 
 
 class Sam3MultiplexTrackerPredictor(nn.Module):
@@ -581,7 +580,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
         # into `feature_cache`. Despite its distributed inference under the hood, the results would be
         # the same as if it is running backbone and FA for every frame on a single GPU.
         with torch.profiler.record_function("run_backbone_and_detection"):
-            det_out, pos_pred_mask = self.run_backbone_and_detection(
+            det_out, det_keep = self.run_backbone_and_detection(
                 frame_idx=frame_idx,
                 num_frames=num_frames,
                 reverse=reverse,
@@ -611,21 +610,6 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 )
             )
 
-        with torch.profiler.record_function("GPU sync and filter"):
-            # Normalize detector outputs: accept either [N,...] or [1,N,...].
-            det_out, pos_pred_mask = _normalize_single_frame_detection_batch(
-                det_out, pos_pred_mask
-            )
-            # Move detections we'll actually keep at the top for future logic
-            pos_pred_mask_idx = pos_pred_mask.argsort(descending=True)
-            pos_pred_mask = torch.index_select(
-                pos_pred_mask, dim=0, index=pos_pred_mask_idx
-            )
-            det_out = {
-                k: torch.index_select(det_out[k], dim=0, index=pos_pred_mask_idx)
-                for k in det_out
-            }
-
         # Step 3: based on detection outputs and the propagated SAM2 prediction masks, we make plans
         # for SAM2 masklet updates (i.e. which objects to add and remove, how to load-balance them, etc).
         # We also run SAM2 memory encoder globally in this step to resolve non-overlapping constraints.
@@ -640,7 +624,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
                     num_frames=num_frames,
                     reverse=reverse,
                     det_out=det_out,
-                    det_keep=pos_pred_mask,
+                    det_keep=det_keep,
                     tracker_low_res_masks_global=tracker_low_res_masks_global,
                     tracker_obj_scores_global=tracker_obj_scores_global,
                     tracker_metadata_prev=tracker_metadata_prev,
@@ -807,7 +791,6 @@ class Sam3MultiplexBase(Sam3VideoBase):
         # note: detections in `sam3_image_out` has already gone through NMS
         pred_probs = sam3_image_out["pred_logits"].squeeze(-1).sigmoid()
         pred_boxes_xyxy = sam3_image_out["pred_boxes_xyxy"]
-        pred_masks = _normalize_detection_masks(sam3_image_out["pred_masks"])
         # get the positive detection outputs above threshold
         pos_pred_mask = pred_probs > self.score_threshold_detection
 
@@ -815,6 +798,15 @@ class Sam3MultiplexBase(Sam3VideoBase):
             # Suppress detections too close to image edges (for normalized boxes).
             keep = self._suppress_detections_close_to_boundary(pred_boxes_xyxy)
             pos_pred_mask = pos_pred_mask & keep
+
+        pred_boxes_xyxy, pred_masks, pred_probs, det_keep = (
+            _select_positive_detections(
+                pred_boxes_xyxy=pred_boxes_xyxy,
+                pred_masks=sam3_image_out["pred_masks"],
+                pred_probs=pred_probs,
+                pos_pred_mask=pos_pred_mask,
+            )
+        )
 
         det_out = {
             "bbox": pred_boxes_xyxy,
@@ -885,7 +877,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
             )
         # remove from `feature_cache` old features to save GPU memory
         feature_cache.pop(frame_idx - 1 if not reverse else frame_idx + 1, None)
-        return det_out, pos_pred_mask
+        return det_out, det_keep
 
     def run_tracker_propagation(
         self,
@@ -2774,6 +2766,7 @@ class Sam3MultiplexBase(Sam3VideoBase):
                 )
                 tracker_states_local.append(new_sam2_state)
 
+        new_obj_masks = _ensure_object_masks(new_obj_masks)
         assert len(new_obj_ids) == new_obj_masks.size(0)
         assert new_obj_masks.is_floating_point()
         # TODO consider removing this interpolation -- it's probably no longer needed

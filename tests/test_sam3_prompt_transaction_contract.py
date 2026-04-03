@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from annolid.gui.widgets.sam3_manager import Sam3Manager
@@ -11,7 +12,8 @@ from annolid.segmentation.SAM.sam3.sam3.model.multiplex_mask_decoder import (
     MultiplexMaskDecoder,
 )
 from annolid.segmentation.SAM.sam3.sam3.model.sam3_multiplex_base import (
-    _normalize_detection_masks,
+    _ensure_object_masks,
+    _select_positive_detections,
 )
 
 
@@ -488,8 +490,45 @@ def test_multiplex_mask_decoder_handles_internal_batch_mismatch() -> None:
     assert outputs["object_score_logits"].shape == (1, 4, 1)
 
 
-def test_normalize_detection_masks_collapses_extra_dims() -> None:
-    masks = torch.randn(2, 5, 16, 24)
-    normalized = _normalize_detection_masks(masks)
+def test_select_positive_detections_aligns_all_detection_outputs() -> None:
+    boxes = torch.randn(1, 200, 4)
+    masks = torch.randn(1, 200, 288, 288)
+    scores = torch.randn(1, 200)
+    pos_mask = torch.tensor([[False, True] + [False] * 198], dtype=torch.bool)
 
-    assert normalized.shape == (2, 16, 24)
+    selected_boxes, selected_masks, selected_scores, selected_keep = (
+        _select_positive_detections(
+            pred_boxes_xyxy=boxes,
+            pred_masks=masks,
+            pred_probs=scores,
+            pos_pred_mask=pos_mask,
+        )
+    )
+
+    assert selected_boxes.shape == (1, 4)
+    assert selected_masks.shape == (1, 288, 288)
+    assert selected_scores.shape == (1,)
+    assert selected_keep.shape == (1,)
+    assert selected_keep.dtype == torch.bool
+
+
+def test_select_positive_detections_rejects_rank_drift() -> None:
+    boxes = torch.randn(1, 200, 4)
+    masks = torch.randn(1, 200, 2, 288, 288)
+    scores = torch.randn(1, 200)
+    pos_mask = torch.tensor([[False, True] + [False] * 198], dtype=torch.bool)
+
+    with pytest.raises(ValueError):
+        _select_positive_detections(
+            pred_boxes_xyxy=boxes,
+            pred_masks=masks,
+            pred_probs=scores,
+            pos_pred_mask=pos_mask,
+        )
+
+
+def test_ensure_object_masks_accepts_singleton_channel_layout() -> None:
+    masks = torch.randn(1, 1, 288, 288)
+    normalized = _ensure_object_masks(masks)
+
+    assert normalized.shape == (1, 288, 288)
