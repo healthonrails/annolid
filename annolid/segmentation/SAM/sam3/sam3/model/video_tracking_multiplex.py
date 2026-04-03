@@ -1315,10 +1315,12 @@ class VideoTrackingMultiplex(nn.Module):
     ):
         """Fuse the current frame's visual feature map with previous memory."""
         B = int(multiplex_state.num_buckets)
+        warned_empty_bucket = False
 
         def _align_bucket_dim(
             tensor: Optional[torch.Tensor], target_buckets: int
         ) -> Optional[torch.Tensor]:
+            nonlocal warned_empty_bucket
             if tensor is None:
                 return None
             if tensor.ndim < 2:
@@ -1329,12 +1331,13 @@ class VideoTrackingMultiplex(nn.Module):
             if current_buckets == 1:
                 return tensor.expand(-1, target_buckets, *tensor.shape[2:])
             if current_buckets == 0:
-                if target_buckets > 0:
+                if target_buckets > 0 and not warned_empty_bucket:
                     logging.warning(
                         "SAM3 multiplex: empty bucket dimension in vision features; "
                         "padding to %d buckets for stable propagation.",
                         int(target_buckets),
                     )
+                    warned_empty_bucket = True
                 out_shape = list(tensor.shape)
                 out_shape[1] = int(target_buckets)
                 return tensor.new_zeros(tuple(out_shape))

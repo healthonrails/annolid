@@ -147,6 +147,73 @@ class MultiplexMaskDecoder(nn.Module):
         self.dynamic_multimask_stability_delta = dynamic_multimask_stability_delta
         self.dynamic_multimask_stability_thresh = dynamic_multimask_stability_thresh
 
+    def _build_empty_outputs(
+        self,
+        *,
+        ref_tensor: torch.Tensor,
+        batch_size: int,
+        spatial_h: int,
+        spatial_w: int,
+        token_count: int,
+    ) -> dict[str, torch.Tensor]:
+        batch_size = int(max(0, batch_size))
+        return {
+            "masks": ref_tensor.new_zeros(
+                batch_size,
+                self.multiplex_count,
+                self.num_mask_output_per_object,
+                int(spatial_h),
+                int(spatial_w),
+            ),
+            "iou_pred": ref_tensor.new_zeros(
+                batch_size,
+                self.multiplex_count,
+                self.num_mask_output_per_object,
+            ),
+            "mask_tokens_out": ref_tensor.new_zeros(
+                batch_size,
+                self.multiplex_count,
+                int(token_count),
+                self.transformer_dim,
+            ),
+            "object_score_logits": ref_tensor.new_zeros(
+                batch_size,
+                self.multiplex_count,
+                1,
+            ),
+        }
+
+    def _align_batch_dim(
+        self,
+        tensor: torch.Tensor,
+        *,
+        target_batch: int,
+        name: str,
+    ) -> torch.Tensor:
+        current_batch = int(tensor.shape[0])
+        target_batch = int(target_batch)
+        if current_batch == target_batch:
+            return tensor
+        if current_batch == 1 and target_batch > 1:
+            return tensor.expand(target_batch, *tensor.shape[1:])
+        if current_batch == 0:
+            logger.warning(
+                "SAM3 multiplex decoder: empty batch in %s; padding to %d.",
+                name,
+                target_batch,
+            )
+            return tensor.new_zeros((target_batch,) + tensor.shape[1:])
+        if current_batch < target_batch:
+            pad = tensor.new_zeros((target_batch - current_batch,) + tensor.shape[1:])
+            return torch.cat([tensor, pad], dim=0)
+        logger.warning(
+            "SAM3 multiplex decoder: truncating %s batch from %d to %d.",
+            name,
+            current_batch,
+            target_batch,
+        )
+        return tensor[:target_batch]
+
     def forward(
         self,
         image_embeddings: torch.Tensor,
@@ -172,35 +239,23 @@ class MultiplexMaskDecoder(nn.Module):
         if image_embeddings.shape[0] == 0:
             spatial_h = int(image_embeddings.shape[-2]) * 4
             spatial_w = int(image_embeddings.shape[-1]) * 4
-            selected_mask_tokens = 1
-            empty_masks = image_embeddings.new_zeros(
-                0,
-                self.multiplex_count,
-                1 if not multimask_output else self.num_mask_output_per_object,
-                spatial_h,
-                spatial_w,
+            selected_mask_count = (
+                self.num_mask_output_per_object if multimask_output else 1
             )
-            empty_iou = image_embeddings.new_zeros(
-                0,
-                self.multiplex_count,
-                1 if not multimask_output else self.num_mask_output_per_object,
-            )
-            empty_tokens = image_embeddings.new_zeros(
-                0,
-                self.multiplex_count,
-                selected_mask_tokens,
-                self.transformer_dim,
-            )
-            empty_scores = image_embeddings.new_zeros(
-                0,
-                self.multiplex_count,
-                1,
+            empty = self._build_empty_outputs(
+                ref_tensor=image_embeddings,
+                batch_size=0,
+                spatial_h=spatial_h,
+                spatial_w=spatial_w,
+                token_count=selected_mask_count,
             )
             return {
-                "masks": empty_masks,
-                "iou_pred": empty_iou,
-                "mask_tokens_out": empty_tokens,
-                "object_score_logits": empty_scores,
+                "masks": empty["masks"][:, :, :selected_mask_count, :, :],
+                "iou_pred": empty["iou_pred"][:, :, :selected_mask_count],
+                "sam_tokens_out": empty["mask_tokens_out"][
+                    :, :, :selected_mask_count, :
+                ],
+                "object_score_logits": empty["object_score_logits"],
             }
 
         if self.num_multimask_outputs <= 0:
@@ -322,33 +377,13 @@ class MultiplexMaskDecoder(nn.Module):
         # Run the transformer
         hs, src = self.transformer(src, pos_src, tokens)
         if src.shape[0] == 0:
-            spatial_h = int(h) * 4
-            spatial_w = int(w) * 4
-            empty_masks = image_embeddings.new_zeros(
-                0,
-                self.multiplex_count,
-                self.num_mask_output_per_object,
-                spatial_h,
-                spatial_w,
+            return self._build_empty_outputs(
+                ref_tensor=image_embeddings,
+                batch_size=int(B),
+                spatial_h=int(h) * 4,
+                spatial_w=int(w) * 4,
+                token_count=self.num_mask_output_per_object,
             )
-            empty_iou = image_embeddings.new_zeros(
-                0,
-                self.multiplex_count,
-                self.num_mask_output_per_object,
-            )
-            empty_tokens = image_embeddings.new_zeros(
-                0,
-                self.multiplex_count,
-                self.num_mask_output_per_object,
-                self.transformer_dim,
-            )
-            empty_scores = image_embeddings.new_zeros(0, self.multiplex_count, 1)
-            return {
-                "masks": empty_masks,
-                "iou_pred": empty_iou,
-                "mask_tokens_out": empty_tokens,
-                "object_score_logits": empty_scores,
-            }
 
         # Parse transformer outputs based on token sharing configuration
         if self.decode_mask_attribute_with_shared_tokens:
@@ -406,63 +441,25 @@ class MultiplexMaskDecoder(nn.Module):
             # hyper_in: [B, M, num_multimask_outputs+1, C]
             hyper_in = torch.stack(hyper_in_list, dim=2)
 
-        # Keep decoder math robust when upstream multiplex state yields
-        # inconsistent batch dimensions (e.g., empty demux bucket paths).
-        batch_dims = [
-            int(upscaled_embedding.shape[0]),
-            int(hyper_in.shape[0]),
-            int(iou_token_out.shape[0]),
-            int(mask_tokens_out.shape[0]),
-        ]
+        target_batch = int(B)
+        upscaled_embedding = self._align_batch_dim(
+            upscaled_embedding, target_batch=target_batch, name="upscaled_embedding"
+        )
+        hyper_in = self._align_batch_dim(
+            hyper_in, target_batch=target_batch, name="hyper_in"
+        )
+        iou_token_out = self._align_batch_dim(
+            iou_token_out, target_batch=target_batch, name="iou_token_out"
+        )
+        mask_tokens_out = self._align_batch_dim(
+            mask_tokens_out, target_batch=target_batch, name="mask_tokens_out"
+        )
         if self.pred_obj_scores:
-            batch_dims.append(int(obj_score_token_out.shape[0]))
-        effective_batch = min(batch_dims) if batch_dims else 0
-        if len(set(batch_dims)) > 1:
-            logger.warning(
-                "SAM3 multiplex decoder: batch mismatch before mask projection; "
-                "aligning to batch=%d from dims=%s.",
-                int(effective_batch),
-                batch_dims,
+            obj_score_token_out = self._align_batch_dim(
+                obj_score_token_out,
+                target_batch=target_batch,
+                name="obj_score_token_out",
             )
-
-        if effective_batch <= 0:
-            b, _, h, w = upscaled_embedding.shape
-            empty_masks = upscaled_embedding.new_zeros(
-                0,
-                self.multiplex_count,
-                self.num_mask_output_per_object,
-                h,
-                w,
-            )
-            empty_iou = upscaled_embedding.new_zeros(
-                0,
-                self.multiplex_count,
-                self.num_mask_output_per_object,
-            )
-            empty_tokens = mask_tokens_out.new_zeros(
-                0,
-                self.multiplex_count,
-                mask_tokens_out.shape[2],
-                mask_tokens_out.shape[3],
-            )
-            empty_scores = upscaled_embedding.new_zeros(0, self.multiplex_count, 1)
-            return {
-                "masks": empty_masks,
-                "iou_pred": empty_iou,
-                "mask_tokens_out": empty_tokens,
-                "object_score_logits": empty_scores,
-            }
-
-        if effective_batch != upscaled_embedding.shape[0]:
-            upscaled_embedding = upscaled_embedding[:effective_batch]
-        if effective_batch != hyper_in.shape[0]:
-            hyper_in = hyper_in[:effective_batch]
-        if effective_batch != iou_token_out.shape[0]:
-            iou_token_out = iou_token_out[:effective_batch]
-        if effective_batch != mask_tokens_out.shape[0]:
-            mask_tokens_out = mask_tokens_out[:effective_batch]
-        if self.pred_obj_scores and effective_batch != obj_score_token_out.shape[0]:
-            obj_score_token_out = obj_score_token_out[:effective_batch]
 
         # generate the masks
         b, c, h, w = upscaled_embedding.shape

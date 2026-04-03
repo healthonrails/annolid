@@ -461,7 +461,7 @@ def test_multiplex_mask_decoder_returns_empty_outputs_for_empty_batch() -> None:
 
     assert outputs["masks"].shape == (0, 4, 1, 32, 32)
     assert outputs["iou_pred"].shape == (0, 4, 1)
-    assert outputs["mask_tokens_out"].shape == (0, 4, 1, 32)
+    assert outputs["sam_tokens_out"].shape == (0, 4, 1, 32)
     assert outputs["object_score_logits"].shape == (0, 4, 1)
 
 
@@ -479,7 +479,7 @@ def test_multiplex_mask_decoder_handles_internal_batch_mismatch() -> None:
         multimask_output=False,
     )
 
-    assert outputs["masks"].shape[0] == 0
-    assert outputs["iou_pred"].shape == (0, 4, 1)
-    assert outputs["sam_tokens_out"].shape[0] == 0
-    assert outputs["object_score_logits"].shape == (0, 4, 1)
+    assert outputs["masks"].shape == (1, 4, 1, 32, 32)
+    assert outputs["iou_pred"].shape == (1, 4, 1)
+    assert outputs["sam_tokens_out"].shape == (1, 4, 1, 32)
+    assert outputs["object_score_logits"].shape == (1, 4, 1)
