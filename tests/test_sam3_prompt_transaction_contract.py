@@ -950,7 +950,8 @@ def test_carry_forward_window_state_shifts_overlap_frames() -> None:
         1: ("image-2", "feat-2"),
     }
     assert current_state["output_dict"]["cond_frame_outputs"] == {0: "c1", 1: "c2"}
-    assert current_state["point_inputs_per_obj"][3] == {0: "p1", 1: "p2"}
+    assert current_state["point_inputs_per_obj"] == {}
+    assert current_state["mask_inputs_per_obj"] == {}
     assert current_state["consolidated_frame_inds"]["non_cond_frame_outputs"] == {0, 1}
     assert current_state["obj_ids"] == [7]
 

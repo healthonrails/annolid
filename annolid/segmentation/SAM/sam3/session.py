@@ -19,7 +19,7 @@ from annolid.segmentation.SAM.sam_v2 import BaseSAMVideoProcessor
 from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.logger import logger
 from .sam3.utils import set_default_device
-from .window_refresh import compute_mid_window_refresh_index, run_mid_window_refresh
+from .window_refresh import run_mid_window_refresh
 
 SAM3_IMPORT_ERROR: Optional[Exception] = None
 _SAM3_REQUIRED_MODULES = ("iopath", "ftfy")
@@ -48,7 +48,7 @@ if SAM3_IMPORT_ERROR is None:
                 "Bundled SAM3 runtime is missing `build_sam3_predictor`."
             )
         _BUILD_SAM3_PREDICTOR = candidate
-    except Exception as exc:  # pragma: no cover - import guard
+    except Exception:  # pragma: no cover - import guard
         SAM3_IMPORT_ERROR = RuntimeError(
             "Bundled SAM3.1 runtime is unavailable or outdated. Ensure "
             "`annolid/segmentation/SAM/sam3/sam3` contains a build that exposes "
@@ -396,6 +396,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         # Remember which frames were seeded by manual annotations so later
         # matching can prefer continuity from the closest real seed context.
         self._manual_seed_frames: set[int] = set()
+        # Track any frame that was explicitly prompted so new global ids can be
+        # allocated there even if the backend omits obj_ptr for the seed output.
+        self._prompt_seed_frames: set[int] = set()
         self.max_frame_num_to_track = cfg.max_frame_num_to_track
         # Default propagation settings (can be overridden per-call).
         self.propagation_direction = cfg.propagation_direction or "both"
@@ -422,6 +425,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         # and use it to resolve cross-window continuity before falling back to
         # box-only matching.
         self._global_track_obj_ptr: Dict[int, np.ndarray] = {}
+        # SAM3 local object ids are stable within a session. Keep a
+        # session-scoped local->global mapping so global matching only happens
+        # when a local object is first observed in that session.
+        self._active_global_match_session_id: Optional[str] = None
+        self._session_local_to_global_ids: Dict[int, int] = {}
 
     @staticmethod
     def _sanitize_checkpoint_path(checkpoint_path: Optional[str]) -> Optional[str]:
@@ -513,6 +521,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 offload_video_to_cpu=self.offload_video_to_cpu,
             )
         self._session_id = session["session_id"]
+        self._activate_global_match_session(self._session_id)
         logger.info(
             "SAM3.1 session %s started on device=%s (checkpoint=%s)",
             self._session_id,
@@ -528,6 +537,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             except Exception:
                 pass
         self._session_id = None
+        self._activate_global_match_session(None)
 
     def bind_stop_event(self, stop_event) -> None:
         self._stop_event = stop_event
@@ -631,16 +641,13 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 if isinstance(frame_idx, int) and frame_idx >= shift
             }
 
+        # Prompt input maps are intentionally not carried forward.
+        # Each new window replays its own seed prompts explicitly, so reusing
+        # the previous window's prompt inputs can reintroduce stale geometry and
+        # cause the tracker to lag behind the current frame context.
         for key in ("point_inputs_per_obj", "mask_inputs_per_obj"):
-            src = previous_state.get(key)
-            if isinstance(src, dict) and isinstance(current_state.get(key), dict):
-                remapped: Dict[object, object] = {}
-                for obj_idx, value in src.items():
-                    if isinstance(value, dict):
-                        remapped[obj_idx] = self._shift_frame_keyed_mapping(value, shift)
-                    else:
-                        remapped[obj_idx] = value
-                current_state[key] = remapped
+            if isinstance(current_state.get(key), dict):
+                current_state[key] = {}
 
         for key in ("output_dict",):
             src = previous_state.get(key)
@@ -742,6 +749,13 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         except Exception as exc:
             logger.debug("Unable to reset SAM3 action history: %s", exc)
 
+    def _activate_global_match_session(self, session_id: Optional[str]) -> None:
+        normalized = str(session_id) if session_id else None
+        if normalized == getattr(self, "_active_global_match_session_id", None):
+            return
+        self._active_global_match_session_id = normalized
+        self._session_local_to_global_ids = {}
+
     def add_prompt(
         self,
         frame_idx: int,
@@ -770,6 +784,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             len(mask_inputs or []),
             len(points or []),
         )
+        self._record_prompt_seed_frame(int(frame_idx))
         result = self._execute_prompt_transaction(
             session_id=target_session_id,
             frame_idx=frame_idx,
@@ -1056,6 +1071,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
     ) -> Dict[str, Any]:
         if not self._predictor:
             raise RuntimeError("SAM3 predictor is not initialized.")
+        self._record_prompt_seed_frame(int(frame_idx))
         steps = self._build_prompt_transaction_steps(
             text=text,
             boxes=boxes,
@@ -1300,7 +1316,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         preferred_ids: Optional[set[int]] = None,
         obj_ptr: Optional[object] = None,
         iou_threshold: float = 0.3,
-    ) -> int:
+    ) -> Optional[int]:
         if used_ids is None:
             used_ids = set()
 
@@ -1322,6 +1338,17 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 )
                 return best_gid
 
+        is_manual_seed_frame = (
+            frame_idx is not None
+            and int(frame_idx) in getattr(self, "_manual_seed_frames", set())
+        )
+        is_prompt_seed_frame = (
+            frame_idx is not None
+            and int(frame_idx) in getattr(self, "_prompt_seed_frames", set())
+        )
+        if candidate_obj_ptr is None and not (is_manual_seed_frame or is_prompt_seed_frame):
+            return None
+
         gid = self._global_track_next_id
         self._global_track_next_id += 1
         self._record_global_track_observation(
@@ -1342,11 +1369,17 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             self._global_track_obj_ptr = {}
         else:
             global_obj_ptr.clear()
+        self._activate_global_match_session(None)
         manual_seed_frames = getattr(self, "_manual_seed_frames", None)
         if manual_seed_frames is None:
             self._manual_seed_frames = set()
         else:
             manual_seed_frames.clear()
+        prompt_seed_frames = getattr(self, "_prompt_seed_frames", None)
+        if prompt_seed_frames is None:
+            self._prompt_seed_frames = set()
+        else:
+            prompt_seed_frames.clear()
 
     def _reset_manual_seed_frames(self) -> None:
         self._manual_seed_frames.clear()
@@ -1387,6 +1420,13 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 self._manual_seed_frames = {int(frame_idx)}
             else:
                 manual_seed_frames.add(int(frame_idx))
+
+    def _record_prompt_seed_frame(self, frame_idx: int) -> None:
+        prompt_seed_frames = getattr(self, "_prompt_seed_frames", None)
+        if prompt_seed_frames is None:
+            self._prompt_seed_frames = {int(frame_idx)}
+        else:
+            prompt_seed_frames.add(int(frame_idx))
 
     def _record_global_track_observation(
         self,
@@ -1571,7 +1611,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             cap.release()
 
     def _map_outputs_to_global_ids(self, outputs: Dict[str, object]) -> Dict[str, object]:
-        return self._map_outputs_to_global_ids_at_frame(outputs, frame_idx=None)
+        return self._map_outputs_to_global_ids_at_frame(
+            outputs,
+            frame_idx=None,
+            session_id=self._session_id,
+        )
 
     def _map_outputs_to_global_ids_at_frame(
         self,
@@ -1580,7 +1624,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         frame_idx: Optional[int],
         allowed_gids: Optional[set[int]] = None,
         allow_new_ids: bool = True,
+        session_id: Optional[str] = None,
     ) -> Dict[str, object]:
+        self._activate_global_match_session(session_id or getattr(self, "_session_id", None))
         obj_ids = outputs.get("out_obj_ids", [])
         boxes = outputs.get("out_boxes_xywh", [])
         if boxes is None:
@@ -1594,6 +1640,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         obj_ptr_vectors = self._extract_obj_ptr_vectors(
             outputs.get("obj_ptr"), len(obj_ids)
         )
+        local_to_global = getattr(self, "_session_local_to_global_ids", {})
+        self._session_local_to_global_ids = local_to_global
 
         mapped: List[Optional[int]] = [None] * len(obj_ids)
         used: set[int] = set()
@@ -1602,6 +1650,25 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             preferred_ids = self._nearest_manual_seed_track_ids(int(frame_idx))
             if allowed_gids is not None:
                 preferred_ids &= {int(gid) for gid in allowed_gids}
+
+        for det_idx, local_obj_id in enumerate(obj_ids):
+            try:
+                local_id = int(local_obj_id)
+            except Exception:
+                continue
+            existing_gid = local_to_global.get(local_id)
+            if existing_gid is None:
+                continue
+            if allowed_gids is not None and int(existing_gid) not in allowed_gids:
+                continue
+            mapped[det_idx] = int(existing_gid)
+            used.add(int(existing_gid))
+            self._record_global_track_observation(
+                int(existing_gid),
+                np.asarray(boxes_arr[det_idx], dtype=float),
+                frame_idx=frame_idx,
+                obj_ptr=obj_ptr_vectors[det_idx],
+            )
 
         track_items: List[Tuple[int, np.ndarray]] = [
             (int(gid), np.asarray(prev_ptr, dtype=float))
@@ -1620,10 +1687,14 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             eligible = np.zeros_like(cost_matrix, dtype=bool)
 
             for det_idx, _det_box in enumerate(boxes_arr):
+                if mapped[det_idx] is not None:
+                    continue
                 candidate_ptr = obj_ptr_vectors[det_idx]
                 if candidate_ptr is None:
                     continue
                 for track_idx, (gid, _) in enumerate(track_items):
+                    if gid in used:
+                        continue
                     last_seen = self._global_track_last_seen_frame.get(int(gid))
                     age = 0
                     if frame_idx is not None and last_seen is not None:
@@ -1655,6 +1726,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     continue
                 mapped[det_idx] = gid
                 used.add(gid)
+                try:
+                    local_to_global[int(obj_ids[det_idx])] = gid
+                except Exception:
+                    pass
                 self._record_global_track_observation(
                     gid,
                     np.asarray(boxes_arr[det_idx], dtype=float),
@@ -1675,8 +1750,14 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 preferred_ids=preferred_ids,
                 obj_ptr=obj_ptr_vectors[idx],
             )
+            if gid is None:
+                continue
             used.add(gid)
             mapped[idx] = int(gid)
+            try:
+                local_to_global[int(obj_ids[idx])] = int(gid)
+            except Exception:
+                pass
         keep_indices = [idx for idx, mapped_gid in enumerate(mapped) if mapped_gid is not None]
         filtered_outputs = self._filter_outputs_by_indices(outputs, keep_indices)
         filtered_outputs["out_obj_ids"] = np.asarray(
@@ -1719,7 +1800,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
         idx = np.asarray(keep_indices, dtype=np.int64)
         filtered = dict(outputs)
-        for key in ("out_obj_ids", "out_probs", "out_boxes_xywh", "out_binary_masks"):
+        for key in ("out_obj_ids", "out_probs", "out_boxes_xywh", "out_binary_masks", "obj_ptr"):
             value = filtered.get(key)
             if value is None:
                 continue
@@ -1887,6 +1968,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 self._predictor.reset_session(self._session_id)
         except Exception as exc:
             logger.debug("Unable to reset SAM3 session state: %s", exc)
+        self._activate_global_match_session(self._session_id)
 
     def reset_session_state(self) -> None:
         """Public wrapper for resetting active SAM3 session state."""
@@ -2453,8 +2535,6 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             window_dir.mkdir(parents=True, exist_ok=True)
             previous_window_frame_count = 0
             previous_window_start_idx: Optional[int] = None
-            shared_session_id: Optional[str] = None
-            previous_session_state: Optional[dict] = None
 
             for window_idx, (start_idx, end_idx, frames) in enumerate(
                 self._iter_video_windows(
@@ -2468,10 +2548,6 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 boundary_empty_skips = 0
                 window_start_idx = int(start_idx)
                 window_end_idx = int(end_idx)
-                refresh_local_idx = compute_mid_window_refresh_index(
-                    len(frames),
-                    "forward",
-                )
                 # When windows overlap and slide forward by stride, reuse temp
                 # files by shifting existing files and writing only the new tail.
                 shift = 0
@@ -2491,16 +2567,18 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     shift=shift,
                 )
                 previous_window_start_idx = window_start_idx
-
                 session_resp = self._predictor.start_session(
                     resource_path=str(window_dir),
                     offload_video_to_cpu=self.offload_video_to_cpu,
                 )
                 session_id = str(session_resp["session_id"])
+                self._session_id = session_id
+                self._activate_global_match_session(session_id)
                 try:
                     propagation_direction = "forward"
 
                     def seed_first_frame() -> None:
+                        self._record_prompt_seed_frame(int(start_idx))
                         prompt_result = self._execute_prompt_transaction(
                             session_id=session_id,
                             frame_idx=0,
@@ -2587,6 +2665,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
                     def refresh_mid_frame(refresh_local_idx: int) -> Tuple[int, int]:
                         refresh_global_frame = int(start_idx + int(refresh_local_idx))
+                        self._record_prompt_seed_frame(int(refresh_global_frame))
                         refresh_result = self._execute_prompt_transaction(
                             session_id=session_id,
                             frame_idx=int(refresh_local_idx),
@@ -2636,6 +2715,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         self._predictor.close_session(session_id)
                     except Exception:
                         pass
+                    if getattr(self, "_session_id", None) == session_id:
+                        self._session_id = None
+                    self._activate_global_match_session(None)
                 latency_ms = float((time.perf_counter() - window_t0) * 1000.0)
                 telemetry = self._build_window_telemetry_entry(
                     window_index=int(window_idx),
@@ -2848,8 +2930,6 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             window_dir.mkdir(parents=True, exist_ok=True)
             previous_window_frame_count = 0
             previous_window_start_idx: Optional[int] = None
-            previous_session_state: Optional[dict] = None
-            shared_session_id: Optional[str] = None
 
             for window_idx, (start_idx, end_idx, frames) in enumerate(
                 self._iter_video_windows(
@@ -2894,16 +2974,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     shift=shift,
                 )
                 previous_window_start_idx = window_start_idx
-                state_to_carry = previous_session_state
                 session_id = self.start_session(
                     target_device=resolved_device,
-                    session_id=shared_session_id,
+                    session_id=None,
                     resource_path=str(window_dir),
-                )
-                shared_session_id = session_id
-                self._carry_forward_window_state(
-                    state_to_carry,
-                    shift=shift,
                 )
                 propagation_direction_local = (
                     propagation_direction or self.propagation_direction or "forward"
@@ -3080,13 +3154,6 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     float(telemetry["dropped_mask_rate"]),
                     float(latency_ms),
                 )
-                previous_session_state = self._get_active_session_state()
-
-            if shared_session_id is not None:
-                try:
-                    self._predictor.close_session(shared_session_id)
-                except Exception:
-                    pass
 
         if not frame_to_masks:
             raise RuntimeError("SAM3.1 annotated windowed propagation yielded no frames")

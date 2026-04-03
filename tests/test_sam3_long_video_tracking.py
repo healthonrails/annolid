@@ -355,6 +355,71 @@ def test_global_track_assignment_prefers_obj_ptr_embedding_over_box_noise() -> N
     assert np.allclose(session._global_track_obj_ptr[1], [1.0, 0.0])
 
 
+def test_global_track_assignment_reuses_session_local_mapping_without_obj_ptr() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.sliding_window_size = 15
+    session.sliding_window_stride = 14
+    session._global_track_next_id = 1
+    session._global_track_last_box = {}
+    session._global_track_last_seen_frame = {}
+    session._global_track_history = {}
+    session._global_track_obj_ptr = {}
+    session._manual_seed_frames = set()
+    session._frame_track_ids = {}
+
+    first_outputs = session._map_outputs_to_global_ids_at_frame(
+        {
+            "out_obj_ids": np.asarray([7], dtype=np.int64),
+            "out_boxes_xywh": np.asarray([[10.0, 10.0, 8.0, 8.0]], dtype=np.float32),
+            "obj_ptr": np.asarray([[1.0, 0.0]], dtype=np.float32),
+        },
+        frame_idx=42,
+        session_id="window-1",
+    )
+    second_outputs = session._map_outputs_to_global_ids_at_frame(
+        {
+            "out_obj_ids": np.asarray([7], dtype=np.int64),
+            "out_boxes_xywh": np.asarray([[12.0, 10.0, 8.0, 8.0]], dtype=np.float32),
+        },
+        frame_idx=43,
+        session_id="window-1",
+    )
+
+    assert first_outputs["out_obj_ids"].tolist() == [1]
+    assert second_outputs["out_obj_ids"].tolist() == [1]
+    assert session._global_track_next_id == 2
+
+
+def test_global_track_assignment_does_not_mint_new_id_without_obj_ptr_off_seed_frame() -> (
+    None
+):
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.sliding_window_size = 15
+    session.sliding_window_stride = 14
+    session._global_track_next_id = 1
+    session._global_track_last_box = {}
+    session._global_track_last_seen_frame = {}
+    session._global_track_history = {}
+    session._global_track_obj_ptr = {}
+    session._manual_seed_frames = set()
+    session._frame_track_ids = {}
+
+    outputs = session._map_outputs_to_global_ids_at_frame(
+        {
+            "out_obj_ids": np.asarray([8], dtype=np.int64),
+            "out_boxes_xywh": np.asarray([[50.0, 50.0, 8.0, 8.0]], dtype=np.float32),
+            "out_binary_masks": np.asarray(
+                [np.ones((2, 2), dtype=np.uint8)], dtype=object
+            ),
+        },
+        frame_idx=43,
+        session_id="window-2",
+    )
+
+    assert outputs["out_obj_ids"].size == 0
+    assert session._global_track_next_id == 1
+
+
 def test_mid_window_refresh_policy_is_forward_only() -> None:
     assert compute_mid_window_refresh_index(4, "forward") == 2
     assert compute_mid_window_refresh_index(4, "both") is None
@@ -1008,6 +1073,7 @@ def test_annotated_window_falls_back_to_text_when_no_local_annotations(
     frames = [np.full((4, 4, 3), idx, dtype=np.uint8) for idx in range(4)]
     prompt_calls: list[tuple[int, bool]] = []
     created_predictors: list[object] = []
+    carry_forward_calls: list[int] = []
 
     class _FakePredictor:
         def __init__(self) -> None:
@@ -1157,6 +1223,11 @@ def test_annotated_window_falls_back_to_text_when_no_local_annotations(
         "_reacquire_frames_with_visual_and_text",
         lambda self, frame_indices, target_device=None: None,
     )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_carry_forward_window_state",
+        lambda self, previous_state, shift: carry_forward_calls.append(int(shift)),
+    )
 
     session = Sam3SessionManager.__new__(Sam3SessionManager)
     session.video_path = str(tmp_path / "video.mp4")
@@ -1213,3 +1284,4 @@ def test_annotated_window_falls_back_to_text_when_no_local_annotations(
     assert total_masks == 2
     assert prompt_calls == [(2, True), (0, False)]
     assert len(created_predictors) == 1
+    assert carry_forward_calls == []
