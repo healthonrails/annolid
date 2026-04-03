@@ -10,6 +10,9 @@ import torch
 
 from annolid.gui.widgets.sam3_manager import Sam3Manager
 from annolid.segmentation.SAM.sam3.session import Sam3SessionManager
+from annolid.segmentation.SAM.sam3.sam3.model.sam3_base_predictor import (
+    Sam3BasePredictor,
+)
 from annolid.segmentation.SAM.sam3.sam3.model.multiplex_mask_decoder import (
     MultiplexMaskDecoder,
 )
@@ -61,6 +64,38 @@ class _MismatchedTransformer(torch.nn.Module):
         hs = src.new_zeros((tokens.shape[0], tokens.shape[1], c))
         src_out = src.new_zeros((0, c, h, w))
         return hs, src_out
+
+
+class _CaptureMaskModel:
+    def add_prompt(
+        self,
+        inference_state,
+        frame_idx,
+        text_str=None,
+        points=None,
+        point_labels=None,
+        clear_old_points=True,
+        boxes_xywh=None,
+        box_labels=None,
+        clear_old_boxes=True,
+        mask_inputs=None,
+        mask_labels=None,
+        output_prob_thresh=0.5,
+    ):
+        return frame_idx, {
+            "inference_state": inference_state,
+            "frame_idx": frame_idx,
+            "text_str": text_str,
+            "points": points,
+            "point_labels": point_labels,
+            "clear_old_points": clear_old_points,
+            "boxes_xywh": boxes_xywh,
+            "box_labels": box_labels,
+            "clear_old_boxes": clear_old_boxes,
+            "mask_inputs": mask_inputs,
+            "mask_labels": mask_labels,
+            "output_prob_thresh": output_prob_thresh,
+        }
 
 
 class _FakeSAM3VideoProcessor:
@@ -340,6 +375,49 @@ def test_manual_seed_loader_uses_png_json_pair_and_ignores_store(
     assert id_to_labels[12] == "vole_c"
     assert {int(ann["obj_id"]) for ann in seed_annotations} == {10, 11, 12}
     assert all(ann["type"] == "mask" for ann in seed_annotations)
+
+
+def test_apply_seed_prompts_does_not_mix_text_into_structured_manual_seed() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.text_prompt = "black vole"
+    session.id_to_labels = {7: "vole"}
+    session._record_seed_frame_if_manual = lambda *args, **kwargs: None
+
+    captured: dict[str, object] = {}
+
+    def _fake_add_prompt(**kwargs):
+        captured["text"] = kwargs.get("text")
+        captured["boxes"] = kwargs.get("boxes")
+        captured["mask_inputs"] = kwargs.get("mask_inputs")
+        return {
+            "outputs": {
+                "out_obj_ids": np.asarray([7], dtype=np.int64),
+                "out_binary_masks": np.asarray(
+                    [np.ones((2, 2), dtype=np.uint8)], dtype=object
+                ),
+            }
+        }
+
+    session.add_prompt = _fake_add_prompt  # type: ignore[method-assign]
+
+    mask = np.ones((4, 4), dtype=np.uint8)
+    count = session._apply_seed_prompts(
+        frame_idx=39,
+        session_id="session-1",
+        boxes=[],
+        labels=[],
+        mask_inputs=[mask],
+        mask_labels=[1],
+        points=[],
+        point_labels=[],
+        point_obj_ids=[],
+        label_hints=["vole"],
+    )
+
+    assert captured["text"] is None
+    assert captured["boxes"] is None
+    assert isinstance(captured["mask_inputs"], list)
+    assert count == 1
 
 
 def test_window_annotation_shift_groups_by_local_frame() -> None:
@@ -728,6 +806,31 @@ def test_apply_seed_prompts_uses_text_only_when_no_other_prompt_formats_exist() 
     assert kwargs["mask_inputs"] is None
     assert kwargs.get("points") is None
     assert kwargs.get("point_labels") is None
+
+
+def test_base_predictor_expands_mask_batches_for_3d_manual_seed_inputs() -> None:
+    predictor = Sam3BasePredictor.__new__(Sam3BasePredictor)
+    predictor.model = _CaptureMaskModel()
+    predictor._all_inference_states = {}
+    predictor._get_session = lambda _session_id: {"state": {}}
+    predictor._extend_expiration_time = lambda _session: None
+
+    mask_inputs = [
+        np.ones((6, 8), dtype=np.uint8),
+        np.zeros((6, 8), dtype=np.uint8),
+        np.pad(np.ones((2, 2), dtype=np.uint8), ((2, 2), (3, 3)), mode="constant"),
+    ]
+
+    result = predictor.add_prompt(
+        session_id="session-1",
+        frame_idx=39,
+        mask_inputs=mask_inputs,
+        mask_labels=[1, 1, 1],
+    )
+
+    kwargs = result["outputs"]
+    assert isinstance(kwargs["mask_inputs"], torch.Tensor)
+    assert tuple(kwargs["mask_inputs"].shape) == (3, 1, 6, 8)
 
 
 def test_execute_prompt_transaction_allows_optional_mask_and_point_prompts() -> None:

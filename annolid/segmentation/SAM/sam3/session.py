@@ -3088,11 +3088,14 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         has_structured_prompts = bool(boxes or mask_inputs or points)
         if has_structured_prompts:
             self._record_seed_frame_if_manual(frame_idx, has_structured_prompts=True)
-        if self.text_prompt or boxes or mask_inputs:
+        semantic_text = (
+            self.text_prompt if not has_structured_prompts else None
+        )
+        if semantic_text is not None or boxes or mask_inputs:
             semantic_result = self.add_prompt(
                 frame_idx=frame_idx,
                 session_id=session_id,
-                text=self.text_prompt,
+                text=semantic_text,
                 boxes=boxes or None,
                 box_labels=labels or None,
                 mask_inputs=mask_inputs or None,

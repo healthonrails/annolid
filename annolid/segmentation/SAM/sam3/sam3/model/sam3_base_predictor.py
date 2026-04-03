@@ -166,6 +166,11 @@ class Sam3BasePredictor:
             bounding_box_labels = torch.tensor(bounding_box_labels, dtype=torch.int32)
         if mask_inputs is not None and not isinstance(mask_inputs, torch.Tensor):
             mask_inputs = torch.as_tensor(mask_inputs, dtype=torch.float32)
+        if mask_inputs is not None:
+            if mask_inputs.ndim == 2:
+                mask_inputs = mask_inputs.unsqueeze(0).unsqueeze(0)
+            elif mask_inputs.ndim == 3:
+                mask_inputs = mask_inputs.unsqueeze(1)
         if mask_labels is not None and not isinstance(mask_labels, torch.Tensor):
             mask_labels = torch.tensor(mask_labels, dtype=torch.int32)
 
