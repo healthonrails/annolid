@@ -5,6 +5,7 @@ from contextlib import contextmanager
 
 import cv2
 import numpy as np
+import pytest
 import torch
 import importlib
 from PIL import Image
@@ -503,6 +504,13 @@ def test_text_windowed_refresh_seeds_mid_window(monkeypatch, tmp_path) -> None:
         "_reacquire_frames_with_visual_and_text",
         lambda self, frame_indices, target_device=None: None,
     )
+    monkeypatch.setattr(
+        Sam3SessionManager,
+        "_derive_boxes_from_neighbor_masks",
+        lambda self, frame_idx, max_boxes=4: pytest.fail(
+            "text-window seeding must not use neighbor-mask carry boxes"
+        ),
+    )
 
     session = Sam3SessionManager.__new__(Sam3SessionManager)
     session.video_path = str(tmp_path / "video.mp4")
@@ -546,7 +554,7 @@ def test_text_windowed_refresh_seeds_mid_window(monkeypatch, tmp_path) -> None:
 
     assert total_frames == 4
     assert total_masks == 5
-    assert prompt_calls == [(0, False), (2, True)]
+    assert prompt_calls == [(0, False), (2, False)]
     assert propagate_calls == [(0, 2), (3, 1)]
     assert handle_calls == [0, 1, 2, 3]
     assert len(created_predictors) == 1

@@ -1907,24 +1907,12 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     propagation_direction = "forward"
 
                     def seed_first_frame() -> None:
-                        # Use previous masks as a visual cue when available.
-                        carry_boxes_abs = self._derive_boxes_from_neighbor_masks(
-                            start_idx, max_boxes=min(4, self.max_num_objects)
-                        )
-                        if carry_boxes_abs:
-                            h, w = frames[0].shape[:2]
-                            carry_boxes = self._normalize_boxes(
-                                carry_boxes_abs, w, h
-                            )
-                        else:
-                            carry_boxes = None
-
                         prompt_result = self._execute_prompt_transaction(
                             session_id=session_id,
                             frame_idx=0,
                             text=text_prompt,
-                            boxes=carry_boxes,
-                            box_labels=[1] * len(carry_boxes) if carry_boxes else None,
+                            boxes=None,
+                            box_labels=None,
                             points=None,
                             point_labels=None,
                             obj_id=None,
@@ -2005,28 +1993,12 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
                     def refresh_mid_frame(refresh_local_idx: int) -> Tuple[int, int]:
                         refresh_global_frame = int(start_idx + int(refresh_local_idx))
-                        refresh_carry_boxes_abs = self._derive_boxes_from_neighbor_masks(
-                            refresh_global_frame,
-                            max_boxes=min(4, self.max_num_objects),
-                        )
-                        if refresh_carry_boxes_abs:
-                            h, w = frames[int(refresh_local_idx)].shape[:2]
-                            refresh_carry_boxes = self._normalize_boxes(
-                                refresh_carry_boxes_abs,
-                                w,
-                                h,
-                            )
-                        else:
-                            refresh_carry_boxes = None
-
                         refresh_result = self._execute_prompt_transaction(
                             session_id=session_id,
                             frame_idx=int(refresh_local_idx),
                             text=text_prompt,
-                            boxes=refresh_carry_boxes,
-                            box_labels=[1] * len(refresh_carry_boxes)
-                            if refresh_carry_boxes
-                            else None,
+                            boxes=None,
+                            box_labels=None,
                             points=None,
                             point_labels=None,
                             obj_id=None,
@@ -2333,40 +2305,18 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                                 point_obj_ids=[],
                                 label_hints=[],
                             )
-                            if seed_mask_count <= 0:
-                                logger.info(
-                                    "SAM3.1 annotated window #%d frame=%d text prompt produced no seed masks; skipping propagation from this prompt frame.",
-                                    int(window_idx),
-                                    int(abs_frame_idx),
-                                )
-                                return False
-                            return True
-
-                        carry_boxes_abs = self._derive_boxes_from_neighbor_masks(
-                            abs_frame_idx, max_boxes=min(4, self.max_num_objects)
-                        )
-                        if carry_boxes_abs:
-                            h, w = frames[int(local_frame_idx)].shape[:2]
-                            carry_boxes = self._normalize_boxes(carry_boxes_abs, w, h)
-                            self._reset_action_history_if_supported(session_id=session_id)
-                            self.add_prompt(
-                                frame_idx=int(local_frame_idx),
-                                session_id=session_id,
-                                text=self.text_prompt,
-                                boxes=carry_boxes,
-                                box_labels=[1] * len(carry_boxes),
-                                record_outputs=True,
-                                merge_existing_on_record=False,
-                                label_hints=self._label_hints_from_ids(
-                                    list(self._frame_masks.get(int(abs_frame_idx), {}).keys()),
-                                    self.id_to_labels,
-                                ),
+                        if seed_mask_count <= 0:
+                            logger.info(
+                                "SAM3.1 annotated window #%d frame=%d text prompt produced no seed masks; skipping propagation from this prompt frame.",
+                                int(window_idx),
+                                int(abs_frame_idx),
                             )
-                            return True
+                            return False
+                        return True
                         if not self.text_prompt:
                             return False
                         logger.info(
-                            "SAM3.1 annotated window #%d frame=%d had no local annotations or carry-over boxes; falling back to text prompt.",
+                            "SAM3.1 annotated window #%d frame=%d had no local annotations; falling back to text prompt.",
                             int(window_idx),
                             int(abs_frame_idx),
                         )
@@ -2950,41 +2900,22 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         target_device: Optional[torch.device | str] = None,
     ) -> None:
         """
-        Run a lightweight SAM3 pass on a single frame using the text prompt
-        and the last available masks as visual prompts to recover tracking
-        when the main tracker path produced none.
+        Run a lightweight SAM3 pass on a single frame using only the text
+        prompt to recover tracking when the main tracker path produced none.
         """
         with torch.inference_mode():
             if not self.text_prompt:
                 return
 
             missing_track_ids = self._missing_track_ids_for_frame(int(frame_idx))
-            if missing_track_ids:
-                boxes_abs, target_track_ids = self._derive_boxes_for_track_ids(
-                    frame_idx,
-                    missing_track_ids,
-                    max_boxes=min(4, self.max_num_objects),
-                )
-            else:
-                boxes_abs = self._derive_boxes_from_neighbor_masks(
-                    frame_idx, max_boxes=min(4, self.max_num_objects)
-                )
-                target_track_ids = []
-            if not boxes_abs:
-                return
+            target_track_ids = missing_track_ids
 
             with self._session_scope(target_device, auto_close=True):
-                if self.frame_shape is None:
-                    self.frame_shape = self.get_frame_shape()
-                h, w = self.frame_shape[:2]
-                boxes = self._normalize_boxes(boxes_abs, w, h)
                 self._reset_session_state()
                 self._reset_action_history_if_supported()
                 result = self.add_prompt(
                     frame_idx=frame_idx,
                     text=self.text_prompt,
-                    boxes=boxes,
-                    box_labels=[1] * len(boxes),
                     record_outputs=False,
                     label_hints=self._label_hints_from_ids(target_track_ids, self.id_to_labels)
                     if target_track_ids
@@ -3012,40 +2943,23 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         """
         Re-acquire multiple frames using a single temporary session to avoid
         reloading video data repeatedly, improving speed on CPU fallback.
+        The recovery prompt is text-only; object identity comes from the
+        cross-window matcher.
         """
         if not frame_indices or not self.text_prompt or not self._frame_masks:
             return
 
         with torch.inference_mode():
             with self._session_scope(target_device, auto_close=True):
-                if self.frame_shape is None:
-                    self.frame_shape = self.get_frame_shape()
-                h, w = self.frame_shape[:2]
-
                 for frame_idx in frame_indices:
                     missing_track_ids = self._missing_track_ids_for_frame(int(frame_idx))
-                    if missing_track_ids:
-                        boxes_abs, target_track_ids = self._derive_boxes_for_track_ids(
-                            frame_idx,
-                            missing_track_ids,
-                            max_boxes=min(4, self.max_num_objects),
-                        )
-                    else:
-                        boxes_abs = self._derive_boxes_from_neighbor_masks(
-                            frame_idx, max_boxes=min(4, self.max_num_objects)
-                        )
-                        target_track_ids = []
-                    if not boxes_abs:
-                        continue
-                    boxes = self._normalize_boxes(boxes_abs, w, h)
+                    target_track_ids = missing_track_ids
                     self._reset_session_state()
                     self._reset_action_history_if_supported()
                     try:
                         result = self.add_prompt(
                             frame_idx=frame_idx,
                             text=self.text_prompt,
-                            boxes=boxes,
-                            box_labels=[1] * len(boxes),
                             record_outputs=False,
                             label_hints=self._label_hints_from_ids(
                                 target_track_ids, self.id_to_labels
