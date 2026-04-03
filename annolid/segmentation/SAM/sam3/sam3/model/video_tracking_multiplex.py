@@ -1314,15 +1314,40 @@ class VideoTrackingMultiplex(nn.Module):
         multiplex_state: MultiplexState,
     ):
         """Fuse the current frame's visual feature map with previous memory."""
-        B = multiplex_state.num_buckets
-        # B = current_vision_feats[-1].size(1)  # batch size on this frame
-        vision_feat = current_vision_feats[-1].expand(-1, B, -1)
-        vision_mask = (
-            current_vision_masks[-1].expand(-1, B, -1)
-            if current_vision_masks[-1] is not None
-            else None
-        )
-        vision_pos_embed = current_vision_pos_embeds[-1].expand(-1, B, -1)
+        B = int(multiplex_state.num_buckets)
+
+        def _align_bucket_dim(
+            tensor: Optional[torch.Tensor], target_buckets: int
+        ) -> Optional[torch.Tensor]:
+            if tensor is None:
+                return None
+            if tensor.ndim < 2:
+                return tensor
+            current_buckets = int(tensor.shape[1])
+            if current_buckets == target_buckets:
+                return tensor
+            if current_buckets == 1:
+                return tensor.expand(-1, target_buckets, *tensor.shape[2:])
+            if current_buckets == 0:
+                if target_buckets > 0:
+                    logging.warning(
+                        "SAM3 multiplex: empty bucket dimension in vision features; "
+                        "padding to %d buckets for stable propagation.",
+                        int(target_buckets),
+                    )
+                out_shape = list(tensor.shape)
+                out_shape[1] = int(target_buckets)
+                return tensor.new_zeros(tuple(out_shape))
+            if current_buckets < target_buckets:
+                pad_shape = list(tensor.shape)
+                pad_shape[1] = int(target_buckets - current_buckets)
+                pad = tensor.new_zeros(tuple(pad_shape))
+                return torch.cat([tensor, pad], dim=1)
+            return tensor[:, :target_buckets, ...]
+
+        vision_feat = _align_bucket_dim(current_vision_feats[-1], B)
+        vision_mask = _align_bucket_dim(current_vision_masks[-1], B)
+        vision_pos_embed = _align_bucket_dim(current_vision_pos_embeds[-1], B)
 
         C = self.hidden_dim
         H, W = feat_sizes[-1]  # top-level (lowest-resolution) feature size

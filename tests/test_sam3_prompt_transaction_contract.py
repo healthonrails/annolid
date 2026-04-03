@@ -281,3 +281,131 @@ def test_add_prompt_supports_explicit_window_session_id() -> None:
 
     assert captured["session_id"] == "window-session-1"
     assert captured["recorded"] is True
+
+
+def test_apply_seed_prompts_returns_materialized_mask_count() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.text_prompt = "vole"
+    session.id_to_labels = {1: "vole"}
+
+    responses = iter(
+        [
+            {
+                "transaction_steps": [
+                    {
+                        "outputs": {
+                            "out_obj_ids": np.asarray([1], dtype=np.int64),
+                            "out_binary_masks": np.asarray(
+                                [np.ones((2, 2), dtype=np.uint8)],
+                                dtype=object,
+                            ),
+                        }
+                    }
+                ]
+            },
+            {
+                "transaction_steps": [
+                    {
+                        "outputs": {
+                            "out_obj_ids": np.asarray([], dtype=np.int64),
+                            "out_binary_masks": np.asarray([], dtype=object),
+                        }
+                    }
+                ]
+            },
+        ]
+    )
+
+    def _add_prompt(**kwargs):
+        return next(responses)
+
+    session.add_prompt = _add_prompt
+
+    total_masks = session._apply_seed_prompts(
+        frame_idx=0,
+        session_id="window-1",
+        boxes=[[0.1, 0.1, 0.4, 0.4]],
+        labels=[1],
+        mask_inputs=[],
+        mask_labels=[],
+        points=[[0.2, 0.2]],
+        point_labels=[1],
+        point_obj_ids=[1],
+        label_hints=["vole"],
+    )
+
+    assert total_masks == 1
+
+
+def test_prepare_prompts_falls_back_to_text_when_annotations_are_unusable() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.frame_shape = (64, 64, 3)
+    session.video_dir = "/tmp/sam3"
+    session.frame_names = []
+
+    (
+        prompt_frame_idx,
+        boxes,
+        box_labels,
+        mask_inputs,
+        mask_labels,
+        points,
+        point_labels,
+        obj_ids,
+        point_obj_ids,
+    ) = session._prepare_prompts(
+        [
+            {
+                "type": "unsupported",
+                "ann_frame_idx": 7,
+                "labels": [1],
+                "obj_id": 1,
+            }
+        ],
+        text_prompt="vole",
+    )
+
+    assert prompt_frame_idx == 0
+    assert boxes == []
+    assert box_labels == []
+    assert mask_inputs == []
+    assert mask_labels == []
+    assert points == []
+    assert point_labels == []
+    assert obj_ids == []
+    assert point_obj_ids == []
+
+
+def test_apply_seed_prompts_uses_text_only_when_no_other_prompt_formats_exist() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.text_prompt = "vole"
+    session.id_to_labels = {}
+
+    captured: dict[str, object] = {}
+
+    def _add_prompt(**kwargs):
+        captured["kwargs"] = kwargs
+        return {"transaction_steps": [{"outputs": {}}]}
+
+    session.add_prompt = _add_prompt
+
+    total_masks = session._apply_seed_prompts(
+        frame_idx=0,
+        session_id="window-1",
+        boxes=[],
+        labels=[],
+        mask_inputs=[],
+        mask_labels=[],
+        points=[],
+        point_labels=[],
+        point_obj_ids=[],
+        label_hints=[],
+    )
+
+    assert total_masks == 0
+    kwargs = captured["kwargs"]
+    assert kwargs["text"] == "vole"
+    assert kwargs["boxes"] is None
+    assert kwargs["mask_inputs"] is None
+    assert kwargs.get("points") is None
+    assert kwargs.get("point_labels") is None

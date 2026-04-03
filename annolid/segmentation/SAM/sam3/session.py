@@ -762,6 +762,19 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             )
         return steps
 
+    @classmethod
+    def _prompt_result_mask_count(cls, result: Any) -> int:
+        if not isinstance(result, dict):
+            return 0
+        step_results = list(result.get("transaction_steps", []) or [])
+        if not step_results:
+            step_results = [result]
+        total = 0
+        for step in step_results:
+            outputs = step.get("outputs", {}) if isinstance(step, dict) else {}
+            total += cls._output_candidate_mask_count(outputs or {})
+        return int(total)
+
     @staticmethod
     def _as_sequence(value: object) -> List[object]:
         if value is None:
@@ -2279,21 +2292,54 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                                 obj_ids,
                                 point_obj_ids,
                             ) = self._prepare_prompts(frame_annotations, self.text_prompt)
-                            if prompt_frame_idx is None:
-                                return
-                            label_hints = self._label_hints_from_ids(obj_ids, self.id_to_labels)
-                            self._apply_seed_prompts(
-                                frame_idx=int(prompt_frame_idx),
-                                session_id=session_id,
-                                boxes=boxes,
-                                labels=labels,
-                                mask_inputs=mask_inputs,
-                                mask_labels=mask_labels,
-                                points=points,
-                                point_labels=point_labels,
-                                point_obj_ids=point_obj_ids,
-                                label_hints=label_hints,
+                            if prompt_frame_idx is not None:
+                                label_hints = self._label_hints_from_ids(obj_ids, self.id_to_labels)
+                                seed_mask_count = self._apply_seed_prompts(
+                                    frame_idx=int(prompt_frame_idx),
+                                    session_id=session_id,
+                                    boxes=boxes,
+                                    labels=labels,
+                                    mask_inputs=mask_inputs,
+                                    mask_labels=mask_labels,
+                                    points=points,
+                                    point_labels=point_labels,
+                                    point_obj_ids=point_obj_ids,
+                                    label_hints=label_hints,
+                                )
+                                if seed_mask_count <= 0:
+                                    logger.info(
+                                        "SAM3.1 annotated window #%d frame=%d produced no seed masks; skipping propagation from this prompt frame.",
+                                        int(window_idx),
+                                        int(abs_frame_idx),
+                                    )
+                                    return False
+                                return True
+                            if not self.text_prompt:
+                                return False
+                            logger.info(
+                                "SAM3.1 annotated window #%d frame=%d had no usable boxes, masks, or points; falling back to text prompt.",
+                                int(window_idx),
+                                int(abs_frame_idx),
                             )
+                            seed_mask_count = self._apply_seed_prompts(
+                                frame_idx=int(local_frame_idx),
+                                session_id=session_id,
+                                boxes=[],
+                                labels=[],
+                                mask_inputs=[],
+                                mask_labels=[],
+                                points=[],
+                                point_labels=[],
+                                point_obj_ids=[],
+                                label_hints=[],
+                            )
+                            if seed_mask_count <= 0:
+                                logger.info(
+                                    "SAM3.1 annotated window #%d frame=%d text prompt produced no seed masks; skipping propagation from this prompt frame.",
+                                    int(window_idx),
+                                    int(abs_frame_idx),
+                                )
+                                return False
                             return True
 
                         carry_boxes_abs = self._derive_boxes_from_neighbor_masks(
@@ -2317,7 +2363,33 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                                 ),
                             )
                             return True
-                        return False
+                        if not self.text_prompt:
+                            return False
+                        logger.info(
+                            "SAM3.1 annotated window #%d frame=%d had no local annotations or carry-over boxes; falling back to text prompt.",
+                            int(window_idx),
+                            int(abs_frame_idx),
+                        )
+                        seed_mask_count = self._apply_seed_prompts(
+                            frame_idx=int(local_frame_idx),
+                            session_id=session_id,
+                            boxes=[],
+                            labels=[],
+                            mask_inputs=[],
+                            mask_labels=[],
+                            points=[],
+                            point_labels=[],
+                            point_obj_ids=[],
+                            label_hints=[],
+                        )
+                        if seed_mask_count <= 0:
+                            logger.info(
+                                "SAM3.1 annotated window #%d frame=%d text prompt produced no seed masks; skipping propagation from this prompt frame.",
+                                int(window_idx),
+                                int(abs_frame_idx),
+                            )
+                            return False
+                        return True
 
                     def _propagate_segment(
                         segment_start_local_idx: int,
@@ -2460,15 +2532,14 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         if self.frame_shape is None:
             self.frame_shape = self.get_frame_shape()
 
-        if not annotations and text_prompt:
-            logger.info(
-                "SAM3 using text-only prompt; no per-frame annotations found under %s",
-                self.video_dir,
-            )
-            prompt_frame_idx = self._first_frame_index()
-            return prompt_frame_idx, [], [], [], [], [], [], [], []
-
         if not annotations:
+            if text_prompt:
+                logger.info(
+                    "SAM3 using text-only prompt; no per-frame annotations found under %s",
+                    self.video_dir,
+                )
+                prompt_frame_idx = self._first_frame_index()
+                return prompt_frame_idx, [], [], [], [], [], [], [], []
             raise FileNotFoundError(
                 f"No per-frame JSON annotations found under {self.video_dir}"
             )
@@ -2598,6 +2669,14 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     point_obj_ids,
                 )
 
+        if text_prompt:
+            logger.info(
+                "SAM3 using text-only prompt; no usable per-frame annotations were found under %s",
+                self.video_dir,
+            )
+            prompt_frame_idx = self._first_frame_index()
+            return prompt_frame_idx, [], [], [], [], [], [], [], []
+
         return None, [], [], [], [], [], [], [], []
 
     def _apply_seed_prompts(
@@ -2613,15 +2692,16 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         point_labels: List[int],
         point_obj_ids: List[int],
         label_hints: List[str],
-    ) -> None:
+    ) -> int:
         """
         Apply initial prompts with SAM3.1-compatible sequencing:
         - optional text+box prompt first
         - point prompts grouped by stable obj_id
         """
         has_prior_record = False
+        total_seed_masks = 0
         if self.text_prompt or boxes or mask_inputs:
-            self.add_prompt(
+            semantic_result = self.add_prompt(
                 frame_idx=frame_idx,
                 session_id=session_id,
                 text=self.text_prompt,
@@ -2633,6 +2713,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 merge_existing_on_record=False,
                 label_hints=label_hints,
             )
+            total_seed_masks += self._prompt_result_mask_count(semantic_result)
             has_prior_record = True
 
         if points:
@@ -2651,7 +2732,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
             for local_idx, (obj_id, payload) in enumerate(sorted(grouped.items())):
                 point_hint = self.id_to_labels.get(int(obj_id), str(obj_id))
-                self.add_prompt(
+                point_result = self.add_prompt(
                     frame_idx=frame_idx,
                     session_id=session_id,
                     text=None,
@@ -2662,6 +2743,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     merge_existing_on_record=has_prior_record or local_idx > 0,
                     label_hints=[point_hint],
                 )
+                total_seed_masks += self._prompt_result_mask_count(point_result)
+        return int(total_seed_masks)
 
     def _first_frame_index(self) -> int:
         """
