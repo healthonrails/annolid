@@ -11,7 +11,7 @@ from sam3.model.box_ops import box_xyxy_to_xywh
 from sam3.perflib.masks_ops import rle_encode
 
 from .helpers.mask_overlap_removal import remove_overlapping_masks
-from .viz import visualize
+from .render import visualize
 
 
 def sam3_inference(processor, image_path, text_prompt):

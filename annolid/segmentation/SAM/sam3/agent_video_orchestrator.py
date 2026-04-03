@@ -18,7 +18,6 @@ from PIL import Image
 from annolid.segmentation.SAM.sam3.session import Sam3SessionConfig, Sam3SessionManager
 from .video_window_inference import _iter_video_windows
 from .window_refresh import run_mid_window_refresh
-from .sam3.agent.agent_core import agent_inference
 
 
 @dataclass
@@ -128,6 +127,8 @@ def _run_agent_on_frame(
     """
     Run the SAM3 Agent on a single frame image and return filtered boxes/scores.
     """
+    from .sam3.agent.agent_core import agent_inference
+
     try:
         _, outputs, _ = agent_inference(
             img_path=str(frame_path),

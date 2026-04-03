@@ -6,6 +6,9 @@ from contextlib import contextmanager
 import cv2
 import numpy as np
 import torch
+import importlib
+from PIL import Image
+import pycocotools.mask as mask_utils
 
 from annolid.segmentation.SAM.sam3 import agent_video_orchestrator
 from annolid.segmentation.SAM.sam3.session import Sam3SessionManager
@@ -138,6 +141,61 @@ def test_mid_window_refresh_runner_calls_callbacks_in_order() -> None:
         ("refresh", 3, None),
         ("propagate", 4, 2),
     ]
+
+
+def test_optional_sam3_agent_modules_import_without_iopath() -> None:
+    agent_core = importlib.import_module(
+        "annolid.segmentation.SAM.sam3.sam3.agent.agent_core"
+    )
+    client_sam3 = importlib.import_module(
+        "annolid.segmentation.SAM.sam3.sam3.agent.client_sam3"
+    )
+    inference = importlib.import_module(
+        "annolid.segmentation.SAM.sam3.sam3.agent.inference"
+    )
+
+    assert hasattr(agent_core, "agent_inference")
+    assert hasattr(client_sam3, "call_sam_service")
+    assert hasattr(inference, "run_single_image_inference")
+
+
+def test_sam3_renderer_falls_back_without_iopath(tmp_path) -> None:
+    image_path = tmp_path / "image.png"
+    Image.new("RGB", (10, 10), color="white").save(image_path)
+
+    mask = np.zeros((10, 10), dtype=np.uint8)
+    mask[2:7, 3:8] = 1
+    rle = mask_utils.encode(np.asfortranarray(mask))
+    counts = rle["counts"]
+    if isinstance(counts, bytes):
+        counts = counts.decode("ascii")
+
+    render = importlib.import_module("annolid.segmentation.SAM.sam3.sam3.agent.render")
+    full = render.visualize(
+        {
+            "original_image_path": str(image_path),
+            "orig_img_h": 10,
+            "orig_img_w": 10,
+            "pred_boxes": [[3.0, 2.0, 5.0, 5.0]],
+            "pred_masks": [counts],
+            "pred_scores": [0.9],
+        }
+    )
+    zoom, zoomed = render.visualize(
+        {
+            "original_image_path": str(image_path),
+            "orig_img_h": 10,
+            "orig_img_w": 10,
+            "pred_boxes": [[3.0, 2.0, 5.0, 5.0]],
+            "pred_masks": [counts],
+            "pred_scores": [0.9],
+        },
+        zoom_in_index=0,
+    )
+
+    assert full.size == (10, 10)
+    assert zoom.size[0] > 0 and zoom.size[1] > 0
+    assert zoomed.size[0] > 0 and zoomed.size[1] > 0
 
 
 def test_agent_seeded_video_keeps_cross_window_state(monkeypatch, tmp_path) -> None:

@@ -10,8 +10,7 @@ import cv2
 from PIL import Image
 
 from .client_llm import send_generate_request
-from .client_sam3 import call_sam_service
-from .viz import visualize
+from .render import visualize
 
 
 def save_debug_messages(messages_list, debug, debug_folder_path, debug_jsonl_path):
@@ -126,7 +125,7 @@ def agent_inference(
     initial_text_prompt: str,
     debug: bool = False,
     send_generate_request=send_generate_request,
-    call_sam_service=call_sam_service,
+    call_sam_service=None,
     max_generations: int = 100,
     output_dir="../../sam3_agent_out",
 ):
@@ -161,6 +160,11 @@ def agent_inference(
         set()
     )  # Track all previously used text prompts for segment_phrase
     generation_count = 0  # Counter for number of send_generate_request calls
+
+    if call_sam_service is None:
+        from .client_sam3 import call_sam_service as _call_sam_service
+
+        call_sam_service = _call_sam_service
 
     # debug setup
     debug_folder_path = None
@@ -202,9 +206,8 @@ def agent_inference(
     print(f"\n>>> MLLM Response [start]\n{generated_text}\n<<< MLLM Response [end]\n")
     while generated_text is not None:
         save_debug_messages(messages, debug, debug_folder_path, debug_jsonl_path)
-        assert (
-            "<tool>" in generated_text,
-            f"Generated text does not contain <tool> tag: {generated_text}",
+        assert "<tool>" in generated_text, (
+            f"Generated text does not contain <tool> tag: {generated_text}"
         )
         generated_text = generated_text.split("</tool>", 1)[0] + "</tool>"
         tool_call_json_str = (

@@ -5,8 +5,6 @@
 import json
 import os
 
-from sam3.agent.agent_core import agent_inference
-
 
 def run_single_image_inference(
     image_path,
@@ -42,6 +40,8 @@ def run_single_image_inference(
         return
 
     print(f"{'-' * 30} Starting SAM 3 Agent Session... {'-' * 30} ")
+    from .agent_core import agent_inference
+
     agent_history, final_output_dict, rendered_final_output = agent_inference(
         image_path,
         text_prompt,
