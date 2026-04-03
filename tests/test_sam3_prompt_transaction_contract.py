@@ -350,6 +350,26 @@ def test_should_accept_sam3_mask_rejects_full_frame_or_far_drift() -> None:
     )
 
 
+def test_should_accept_sam3_mask_allows_first_observation_without_history() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.frame_shape = (20, 20, 3)
+    session._track_last_seen_frame = {}
+    session._frame_masks = {}
+
+    first_mask = np.pad(
+        np.ones((4, 4), dtype=np.uint8),
+        ((2, 14), (3, 13)),
+        mode="constant",
+    )
+
+    assert session._should_accept_sam3_mask(
+        frame_idx=6,
+        obj_id=7,
+        mask=first_mask,
+        box_xywh=np.asarray([15.0, 15.0, 3.0, 3.0], dtype=float),
+    )
+
+
 def test_handle_frame_outputs_falls_back_to_recent_mask_when_implausible() -> None:
     session = Sam3SessionManager.__new__(Sam3SessionManager)
     session.frame_shape = (20, 20, 3)

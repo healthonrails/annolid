@@ -1637,28 +1637,13 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         if mask_box is None:
             return False
 
-        # Guard obvious drift against the current output geometry when present.
-        if box_xywh is not None:
-            try:
-                box_arr = np.asarray(box_xywh, dtype=float)
-                if box_arr.shape == (4,):
-                    center_dist = float(
-                        np.hypot(
-                            *(np.subtract(self._bbox_center_xywh(mask_box), self._bbox_center_xywh(box_arr)))
-                        )
-                    )
-                    diag = float(np.hypot(max(mask_box[2], box_arr[2]), max(mask_box[3], box_arr[3])))
-                    if diag > 0.0 and center_dist / diag > 1.4:
-                        return False
-                    if self._bbox_iou_xywh(mask_box, box_arr) < 0.01:
-                        return False
-            except Exception:
-                pass
-
         # Compare against the last accepted mask for this track when available.
-        last_seen_frame = self._track_last_seen_frame.get(int(obj_id))
+        track_last_seen_frame = getattr(self, "_track_last_seen_frame", {})
+        frame_masks = getattr(self, "_frame_masks", {})
+        last_seen_frame = track_last_seen_frame.get(int(obj_id))
+        previous_masks = {}
         if last_seen_frame is not None and int(last_seen_frame) != int(frame_idx):
-            previous_masks = self._frame_masks.get(int(last_seen_frame)) or {}
+            previous_masks = frame_masks.get(int(last_seen_frame)) or {}
             prev_mask = previous_masks.get(str(int(obj_id)))
             if prev_mask is not None:
                 prev_arr = np.asarray(prev_mask, dtype=np.uint8)
@@ -1679,6 +1664,37 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         prev_diag = float(np.hypot(max(prev_box[2], mask_box[2]), max(prev_box[3], mask_box[3])))
                         if prev_diag > 0.0 and center_dist / prev_diag > 1.75:
                             return False
+
+        # Guard obvious drift against the current output geometry only for
+        # follow-up observations. The first accepted mask for a track should not
+        # be rejected just because its box estimate is poor.
+        if previous_masks:
+            if box_xywh is not None:
+                try:
+                    box_arr = np.asarray(box_xywh, dtype=float)
+                    if box_arr.shape == (4,):
+                        center_dist = float(
+                            np.hypot(
+                                *(
+                                    np.subtract(
+                                        self._bbox_center_xywh(mask_box),
+                                        self._bbox_center_xywh(box_arr),
+                                    )
+                                )
+                            )
+                        )
+                        diag = float(
+                            np.hypot(
+                                max(mask_box[2], box_arr[2]),
+                                max(mask_box[3], box_arr[3]),
+                            )
+                        )
+                        if diag > 0.0 and center_dist / diag > 1.4:
+                            return False
+                        if self._bbox_iou_xywh(mask_box, box_arr) < 0.01:
+                            return False
+                except Exception:
+                    pass
 
         return True
 
