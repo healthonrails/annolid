@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import tempfile
 import time
 from collections import deque
@@ -13,12 +14,40 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tupl
 import cv2
 import numpy as np
 import torch
-from scipy.optimize import linear_sum_assignment
 
 from annolid.segmentation.SAM.sam_v2 import BaseSAMVideoProcessor
 from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.logger import logger
-from .sam3.utils import set_default_device
+from .prompt_builder import build_prompts_from_annotations, label_hints_from_ids
+from .recovery import (
+    expected_track_ids_for_frame,
+    missing_track_ids_for_frame,
+    reacquire_frame_with_visual_and_text,
+    reacquire_frames_with_visual_and_text,
+    recent_track_mask,
+    should_accept_sam3_mask,
+)
+from .sam3.utils import select_device
+from .session_runtime import Sam3SessionRuntime
+from .telemetry import (
+    Sam3TelemetrySink,
+    build_config_snapshot,
+    build_window_telemetry_entry,
+)
+from .track_identity import (
+    coerce_numpy_float_array,
+    extract_obj_ptr_vectors,
+    map_outputs_to_global_ids_at_frame as map_outputs_with_track_identity,
+    normalize_obj_ptr,
+    obj_ptr_similarity,
+)
+from .windowed_runner import (
+    build_window_seed_segments,
+    first_manual_seed_frame,
+    normalize_window_schedule,
+    resolve_window_schedule,
+    shift_annotations_to_window,
+)
 from .window_refresh import run_mid_window_refresh
 
 SAM3_IMPORT_ERROR: Optional[Exception] = None
@@ -259,6 +288,23 @@ class Sam3SessionConfig:
     sliding_window_size: int = 5
     sliding_window_stride: Optional[int] = None
     use_sliding_window_for_text_prompt: bool = False
+    # Runtime safety flags.
+    # Default to explicit reseeding at window boundaries and no private-state mutation.
+    use_explicit_window_reseed: bool = True
+    allow_private_state_mutation: bool = False
+    telemetry_jsonl_path: Optional[str] = None
+
+
+def _read_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
 
 
 def _resolve_session_config(
@@ -281,6 +327,9 @@ def _resolve_session_config(
     sliding_window_size: int,
     sliding_window_stride: Optional[int],
     use_sliding_window_for_text_prompt: bool,
+    use_explicit_window_reseed: Optional[bool],
+    allow_private_state_mutation: Optional[bool],
+    telemetry_jsonl_path: Optional[str] = None,
 ) -> Sam3SessionConfig:
     """Allow legacy kwargs or a config object to drive initialization."""
     if config is not None:
@@ -303,6 +352,19 @@ def _resolve_session_config(
         sliding_window_size=sliding_window_size,
         sliding_window_stride=sliding_window_stride,
         use_sliding_window_for_text_prompt=use_sliding_window_for_text_prompt,
+        use_explicit_window_reseed=(
+            _read_bool_env("ANNOLID_SAM3_USE_EXPLICIT_WINDOW_RESEED", True)
+            if use_explicit_window_reseed is None
+            else bool(use_explicit_window_reseed)
+        ),
+        allow_private_state_mutation=(
+            _read_bool_env("ANNOLID_SAM3_ALLOW_PRIVATE_STATE_MUTATION", False)
+            if allow_private_state_mutation is None
+            else bool(allow_private_state_mutation)
+        ),
+        telemetry_jsonl_path=(
+            telemetry_jsonl_path or os.getenv("ANNOLID_SAM3_TELEMETRY_JSONL")
+        ),
     )
 
 
@@ -334,6 +396,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         sliding_window_size: int = 5,
         sliding_window_stride: Optional[int] = None,
         use_sliding_window_for_text_prompt: bool = True,
+        use_explicit_window_reseed: Optional[bool] = None,
+        allow_private_state_mutation: Optional[bool] = None,
+        telemetry_jsonl_path: Optional[str] = None,
         config: Optional[Sam3SessionConfig] = None,
     ):
         if SAM3_IMPORT_ERROR:
@@ -361,6 +426,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             sliding_window_size=sliding_window_size,
             sliding_window_stride=sliding_window_stride,
             use_sliding_window_for_text_prompt=use_sliding_window_for_text_prompt,
+            use_explicit_window_reseed=use_explicit_window_reseed,
+            allow_private_state_mutation=allow_private_state_mutation,
+            telemetry_jsonl_path=telemetry_jsonl_path,
         )
 
         self.text_prompt = cfg.text_prompt
@@ -393,6 +461,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         # detect partial track loss and recover only the missing instances.
         self._frame_track_ids: Dict[int, set[int]] = {}
         self._track_last_seen_frame: Dict[int, int] = {}
+        self._drift_rejections_total: int = 0
         # Remember which frames were seeded by manual annotations so later
         # matching can prefer continuity from the closest real seed context.
         self._manual_seed_frames: set[int] = set()
@@ -413,6 +482,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self.sliding_window_size = cfg.sliding_window_size
         self.sliding_window_stride = cfg.sliding_window_stride
         self.use_sliding_window_for_text_prompt = cfg.use_sliding_window_for_text_prompt
+        self.use_explicit_window_reseed = bool(cfg.use_explicit_window_reseed)
+        self.allow_private_state_mutation = bool(cfg.allow_private_state_mutation)
+        self.telemetry_jsonl_path = cfg.telemetry_jsonl_path
         self._stop_event = None
         self._stop_requested = False
         # Cross-window tracking id state used by SAM3.1 windowed mode.
@@ -430,6 +502,22 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         # when a local object is first observed in that session.
         self._active_global_match_session_id: Optional[str] = None
         self._session_local_to_global_ids: Dict[int, int] = {}
+        self._runtime = Sam3SessionRuntime(
+            default_device=self.default_device,
+            offload_video_to_cpu=self.offload_video_to_cpu,
+            initialize_predictor=self._initialize_predictor,
+            activate_global_match_session=self._activate_global_match_session,
+        )
+        self._telemetry = Sam3TelemetrySink(
+            jsonl_path=Path(self.telemetry_jsonl_path)
+            if self.telemetry_jsonl_path
+            else None
+        )
+        self._runtime.hydrate(
+            predictor=self._predictor,
+            predictor_device=self._predictor_device,
+            session_id=self._session_id,
+        )
 
     @staticmethod
     def _sanitize_checkpoint_path(checkpoint_path: Optional[str]) -> Optional[str]:
@@ -482,19 +570,17 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         Note: current SAM3.1 multiplex stack is unstable on MPS for some kernels/
         dtype paths. Prefer CPU fallback over hard abort on macOS.
         """
-        resolved = set_default_device(target_device or self.default_device)
+        runtime = getattr(self, "_runtime", None)
+        if runtime is not None:
+            runtime.default_device = self.default_device
+            return runtime.resolve_runtime_device(target_device)
+        resolved = select_device(target_device or self.default_device)
         if resolved.type == "mps":
             logger.warning(
                 "SAM3.1 multiplex runtime on MPS is unstable in this environment; "
                 "falling back to CPU."
             )
             resolved = torch.device("cpu")
-            try:
-                torch.set_default_device(resolved)
-            except Exception:
-                pass
-        if resolved.type == "cpu":
-            torch.set_default_dtype(torch.float32)
         return resolved
 
     def start_session(
@@ -504,6 +590,33 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         session_id: Optional[str] = None,
         resource_path: Optional[str] = None,
     ) -> str:
+        runtime = getattr(self, "_runtime", None)
+        if runtime is not None:
+            runtime.default_device = self.default_device
+            runtime.offload_video_to_cpu = bool(self.offload_video_to_cpu)
+            runtime.hydrate(
+                predictor=self._predictor,
+                predictor_device=self._predictor_device,
+                session_id=self._session_id,
+            )
+            self._session_id = runtime.start_session(
+                target_device=target_device,
+                session_id=session_id,
+                resource_path=str(resource_path or self.video_path),
+            )
+            self._predictor = runtime.predictor
+            self._predictor_device = runtime.predictor_device
+            resolved_device = (
+                self._predictor_device if self._predictor_device is not None else "unknown"
+            )
+            logger.info(
+                "SAM3.1 session %s started on device=%s (checkpoint=%s)",
+                self._session_id,
+                resolved_device,
+                self.checkpoint_path or "auto-download",
+            )
+            return self._session_id
+
         resolved_device = self._resolve_runtime_device(target_device)
 
         if self._predictor is None or self._predictor_device != resolved_device:
@@ -531,6 +644,18 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         return self._session_id
 
     def close_session(self):
+        runtime = getattr(self, "_runtime", None)
+        if runtime is not None:
+            runtime.hydrate(
+                predictor=self._predictor,
+                predictor_device=self._predictor_device,
+                session_id=self._session_id,
+            )
+            runtime.close_session()
+            self._session_id = runtime.session_id
+            self._predictor = runtime.predictor
+            self._predictor_device = runtime.predictor_device
+            return
         if self._predictor and self._session_id:
             try:
                 self._predictor.close_session(self._session_id)
@@ -550,6 +675,18 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 stop_event.set()
         except Exception:
             pass
+        runtime = getattr(self, "_runtime", None)
+        if runtime is not None:
+            runtime.hydrate(
+                predictor=self._predictor,
+                predictor_device=self._predictor_device,
+                session_id=self._session_id,
+            )
+            runtime.cancel_propagation()
+            self._session_id = runtime.session_id
+            self._predictor = runtime.predictor
+            self._predictor_device = runtime.predictor_device
+            return
         session_id = getattr(self, "_session_id", None)
         predictor = getattr(self, "_predictor", None)
         if session_id and predictor is not None:
@@ -626,6 +763,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         *,
         shift: int,
     ) -> None:
+        if not bool(getattr(self, "allow_private_state_mutation", False)):
+            return
         if not previous_state or shift <= 0:
             return
         current_state = self._get_active_session_state()
@@ -731,6 +870,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         Best-effort clearing of cached action history on the underlying predictor
         so the next propagation performs a full pass.
         """
+        if not bool(getattr(self, "allow_private_state_mutation", False)):
+            return
         try:
             raw_predictor = self._predictor.raw if self._predictor is not None else None
             states = getattr(raw_predictor, "_ALL_INFERENCE_STATES", None)
@@ -1190,69 +1331,22 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
     @staticmethod
     def _coerce_numpy_float_array(value: object) -> Optional[np.ndarray]:
-        if value is None:
-            return None
-        if torch.is_tensor(value):
-            value = value.detach().cpu().numpy()
-        try:
-            return np.asarray(value, dtype=float)
-        except Exception:
-            return None
+        return coerce_numpy_float_array(value)
 
     def _normalize_obj_ptr(self, value: object) -> Optional[np.ndarray]:
-        arr = self._coerce_numpy_float_array(value)
-        if arr is None:
-            return None
-        arr = np.asarray(arr, dtype=float).reshape(-1)
-        if arr.size == 0 or not np.all(np.isfinite(arr)):
-            return None
-        norm = float(np.linalg.norm(arr))
-        if norm <= 0.0:
-            return None
-        return arr / norm
+        return normalize_obj_ptr(value)
 
     def _extract_obj_ptr_vectors(
         self, obj_ptrs: object, expected_count: int
     ) -> List[Optional[np.ndarray]]:
-        if obj_ptrs is None or expected_count <= 0:
-            return [None] * max(0, int(expected_count))
-        arr = self._coerce_numpy_float_array(obj_ptrs)
-        if arr is None:
-            return [None] * expected_count
-        if arr.ndim == 1:
-            if expected_count != 1:
-                return [None] * expected_count
-            return [self._normalize_obj_ptr(arr)]
-        out: List[Optional[np.ndarray]] = []
-        for idx in range(expected_count):
-            if idx >= arr.shape[0]:
-                out.append(None)
-                continue
-            out.append(self._normalize_obj_ptr(arr[idx]))
-        return out
+        return extract_obj_ptr_vectors(obj_ptrs=obj_ptrs, expected_count=expected_count)
 
     @staticmethod
     def _obj_ptr_similarity(
         track_ptr: Optional[np.ndarray],
         candidate_ptr: Optional[np.ndarray],
     ) -> Optional[float]:
-        if track_ptr is None or candidate_ptr is None:
-            return None
-        track = np.asarray(track_ptr, dtype=float).reshape(-1)
-        cand = np.asarray(candidate_ptr, dtype=float).reshape(-1)
-        if track.size == 0 or cand.size == 0:
-            return None
-        if track.shape != cand.shape:
-            return None
-        if not np.all(np.isfinite(track)) or not np.all(np.isfinite(cand)):
-            return None
-        denom = float(np.linalg.norm(track) * np.linalg.norm(cand))
-        if denom <= 0.0:
-            return None
-        similarity = float(np.dot(track, cand) / denom)
-        # Map cosine similarity to [0, 1] so it can be blended with geometric
-        # scores without needing a separate calibration step.
-        return float(max(0.0, min(1.0, (similarity + 1.0) * 0.5)))
+        return obj_ptr_similarity(track_ptr=track_ptr, candidate_ptr=candidate_ptr)
 
     def _track_match_max_gap(self) -> int:
         """
@@ -1466,31 +1560,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         *,
         frame_idx: Optional[int] = None,
     ) -> Optional[np.ndarray]:
-        track_id = int(obj_id)
-        candidate_frames = [
-            int(frame_idx)
-            for frame_idx, masks in self._frame_masks.items()
-            if masks and str(track_id) in masks
-        ]
-        if not candidate_frames:
-            return None
-        if frame_idx is not None:
-            candidate_frames = [
-                int(candidate_frame)
-                for candidate_frame in candidate_frames
-                if int(candidate_frame) <= int(frame_idx)
-            ]
-            if not candidate_frames:
-                return None
-        candidate_frame = max(candidate_frames)
-        frame_masks = self._frame_masks.get(int(candidate_frame)) or {}
-        mask = frame_masks.get(str(track_id))
-        if mask is None:
-            return None
-        arr = np.asarray(mask, dtype=np.uint8)
-        if arr.ndim != 2 or not arr.any():
-            return None
-        return arr
+        return recent_track_mask(self, obj_id, frame_idx=frame_idx)
 
     @staticmethod
     def _empty_window_dir(window_dir: Path) -> None:
@@ -1626,145 +1696,14 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         allow_new_ids: bool = True,
         session_id: Optional[str] = None,
     ) -> Dict[str, object]:
-        self._activate_global_match_session(session_id or getattr(self, "_session_id", None))
-        obj_ids = outputs.get("out_obj_ids", [])
-        boxes = outputs.get("out_boxes_xywh", [])
-        if boxes is None:
-            return outputs
-        try:
-            boxes_arr = np.asarray(boxes, dtype=float)
-        except Exception:
-            return outputs
-        if len(boxes_arr) != len(obj_ids):
-            return outputs
-        obj_ptr_vectors = self._extract_obj_ptr_vectors(
-            outputs.get("obj_ptr"), len(obj_ids)
+        return map_outputs_with_track_identity(
+            self,
+            outputs,
+            frame_idx=frame_idx,
+            allowed_gids=allowed_gids,
+            allow_new_ids=allow_new_ids,
+            session_id=session_id,
         )
-        local_to_global = getattr(self, "_session_local_to_global_ids", {})
-        self._session_local_to_global_ids = local_to_global
-
-        mapped: List[Optional[int]] = [None] * len(obj_ids)
-        used: set[int] = set()
-        preferred_ids: set[int] = set()
-        if frame_idx is not None:
-            preferred_ids = self._nearest_manual_seed_track_ids(int(frame_idx))
-            if allowed_gids is not None:
-                preferred_ids &= {int(gid) for gid in allowed_gids}
-
-        for det_idx, local_obj_id in enumerate(obj_ids):
-            try:
-                local_id = int(local_obj_id)
-            except Exception:
-                continue
-            existing_gid = local_to_global.get(local_id)
-            if existing_gid is None:
-                continue
-            if allowed_gids is not None and int(existing_gid) not in allowed_gids:
-                continue
-            mapped[det_idx] = int(existing_gid)
-            used.add(int(existing_gid))
-            self._record_global_track_observation(
-                int(existing_gid),
-                np.asarray(boxes_arr[det_idx], dtype=float),
-                frame_idx=frame_idx,
-                obj_ptr=obj_ptr_vectors[det_idx],
-            )
-
-        track_items: List[Tuple[int, np.ndarray]] = [
-            (int(gid), np.asarray(prev_ptr, dtype=float))
-            for gid, prev_ptr in sorted(self._global_track_obj_ptr.items())
-            if allowed_gids is None or int(gid) in allowed_gids
-        ]
-        if track_items:
-            max_gap = self._track_match_max_gap()
-            valid_cost = 1.0
-            invalid_cost = 10.0
-            cost_matrix = np.full(
-                (len(boxes_arr), len(track_items)),
-                fill_value=invalid_cost,
-                dtype=float,
-            )
-            eligible = np.zeros_like(cost_matrix, dtype=bool)
-
-            for det_idx, _det_box in enumerate(boxes_arr):
-                if mapped[det_idx] is not None:
-                    continue
-                candidate_ptr = obj_ptr_vectors[det_idx]
-                if candidate_ptr is None:
-                    continue
-                for track_idx, (gid, _) in enumerate(track_items):
-                    if gid in used:
-                        continue
-                    last_seen = self._global_track_last_seen_frame.get(int(gid))
-                    age = 0
-                    if frame_idx is not None and last_seen is not None:
-                        age = max(0, int(frame_idx) - int(last_seen))
-                        if age > max_gap:
-                            continue
-                    appearance_score = self._obj_ptr_similarity(
-                        getattr(self, "_global_track_obj_ptr", {}).get(int(gid)),
-                        candidate_ptr,
-                    )
-                    if appearance_score is None:
-                        continue
-                    score = appearance_score - min(
-                        0.25, float(age) / max(1.0, float(max_gap)) * 0.12
-                    )
-                    if preferred_ids and int(gid) in preferred_ids:
-                        score += 0.08
-                    if score < 0.35:
-                        continue
-                    eligible[det_idx, track_idx] = True
-                    cost_matrix[det_idx, track_idx] = max(0.0, valid_cost - float(score))
-
-            row_ind, col_ind = linear_sum_assignment(cost_matrix)
-            for det_idx, track_idx in zip(row_ind, col_ind):
-                if not eligible[det_idx, track_idx]:
-                    continue
-                gid = int(track_items[track_idx][0])
-                if gid in used:
-                    continue
-                mapped[det_idx] = gid
-                used.add(gid)
-                try:
-                    local_to_global[int(obj_ids[det_idx])] = gid
-                except Exception:
-                    pass
-                self._record_global_track_observation(
-                    gid,
-                    np.asarray(boxes_arr[det_idx], dtype=float),
-                    frame_idx=frame_idx,
-                    obj_ptr=obj_ptr_vectors[det_idx],
-                )
-
-        for idx, mapped_gid in enumerate(mapped):
-            if mapped_gid is not None:
-                continue
-            if not allow_new_ids:
-                continue
-            gid = self._assign_global_track_id(
-                box_xywh=np.asarray(boxes_arr[idx], dtype=float),
-                candidate_obj_ptr=obj_ptr_vectors[idx],
-                used_ids=used,
-                frame_idx=frame_idx,
-                preferred_ids=preferred_ids,
-                obj_ptr=obj_ptr_vectors[idx],
-            )
-            if gid is None:
-                continue
-            used.add(gid)
-            mapped[idx] = int(gid)
-            try:
-                local_to_global[int(obj_ids[idx])] = int(gid)
-            except Exception:
-                pass
-        keep_indices = [idx for idx, mapped_gid in enumerate(mapped) if mapped_gid is not None]
-        filtered_outputs = self._filter_outputs_by_indices(outputs, keep_indices)
-        filtered_outputs["out_obj_ids"] = np.asarray(
-            [int(v) for v in mapped if v is not None],
-            dtype=np.int64,
-        )
-        return filtered_outputs
 
     @staticmethod
     def _output_candidate_mask_count(outputs: Dict[str, object]) -> int:
@@ -1872,97 +1811,32 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         mask: np.ndarray,
         box_xywh: Optional[np.ndarray] = None,
     ) -> bool:
-        """Reject drifted or full-frame masks before persisting them."""
-        arr = np.asarray(mask, dtype=np.uint8)
-        if arr.ndim != 2 or not arr.any():
-            return False
-        frame_shape = self.frame_shape or self.get_frame_shape()
-        frame_h, frame_w = frame_shape[:2]
-        frame_area = float(max(1, frame_h * frame_w))
-        mask_area = float(np.count_nonzero(arr))
-        if mask_area <= 0.0:
-            return False
-        mask_ratio = mask_area / frame_area
-        if mask_ratio >= 0.98:
-            return False
-
-        mask_box = self._mask_to_bbox_xywh(arr)
-        if mask_box is None:
-            return False
-
-        # Compare against the last accepted mask for this track when available.
-        track_last_seen_frame = getattr(self, "_track_last_seen_frame", {})
-        frame_masks = getattr(self, "_frame_masks", {})
-        last_seen_frame = track_last_seen_frame.get(int(obj_id))
-        previous_masks = {}
-        if last_seen_frame is not None and int(last_seen_frame) != int(frame_idx):
-            previous_masks = frame_masks.get(int(last_seen_frame)) or {}
-            prev_mask = previous_masks.get(str(int(obj_id)))
-            if prev_mask is not None:
-                prev_arr = np.asarray(prev_mask, dtype=np.uint8)
-                prev_box = self._mask_to_bbox_xywh(prev_arr)
-                if prev_box is not None:
-                    iou = self._bbox_iou_xywh(mask_box, prev_box)
-                    if iou < 0.02:
-                        prev_area = float(np.count_nonzero(prev_arr))
-                        if prev_area > 0.0:
-                            area_ratio = mask_area / prev_area
-                            if area_ratio >= 3.5 or area_ratio <= 0.28:
-                                return False
-                        center_dist = float(
-                            np.hypot(
-                                *(np.subtract(self._bbox_center_xywh(mask_box), self._bbox_center_xywh(prev_box)))
-                            )
-                        )
-                        prev_diag = float(np.hypot(max(prev_box[2], mask_box[2]), max(prev_box[3], mask_box[3])))
-                        if prev_diag > 0.0 and center_dist / prev_diag > 1.75:
-                            return False
-
-        # Guard obvious drift against the current output geometry only for
-        # follow-up observations. The first accepted mask for a track should not
-        # be rejected just because its box estimate is poor.
-        if previous_masks:
-            if box_xywh is not None:
-                try:
-                    box_arr = np.asarray(box_xywh, dtype=float)
-                    if box_arr.shape == (4,):
-                        center_dist = float(
-                            np.hypot(
-                                *(
-                                    np.subtract(
-                                        self._bbox_center_xywh(mask_box),
-                                        self._bbox_center_xywh(box_arr),
-                                    )
-                                )
-                            )
-                        )
-                        diag = float(
-                            np.hypot(
-                                max(mask_box[2], box_arr[2]),
-                                max(mask_box[3], box_arr[3]),
-                            )
-                        )
-                        if diag > 0.0 and center_dist / diag > 1.4:
-                            return False
-                        if self._bbox_iou_xywh(mask_box, box_arr) < 0.01:
-                            return False
-                except Exception:
-                    pass
-
-        return True
+        return should_accept_sam3_mask(
+            self,
+            frame_idx=frame_idx,
+            obj_id=obj_id,
+            mask=mask,
+            box_xywh=box_xywh,
+        )
 
     @staticmethod
     def _label_hints_from_ids(labels: List[int], id_to_labels: Dict[int, str]) -> List[str]:
-        hints: List[str] = []
-        for lid in labels:
-            try:
-                hints.append(id_to_labels.get(int(lid), str(lid)))
-            except Exception:
-                hints.append(str(lid))
-        return hints
+        return label_hints_from_ids(labels, id_to_labels)
 
     def _reset_session_state(self) -> None:
         """Best-effort reset of current predictor state without reloading video."""
+        runtime = getattr(self, "_runtime", None)
+        if runtime is not None:
+            runtime.hydrate(
+                predictor=self._predictor,
+                predictor_device=self._predictor_device,
+                session_id=self._session_id,
+            )
+            runtime.reset_session_state()
+            self._session_id = runtime.session_id
+            self._predictor = runtime.predictor
+            self._predictor_device = runtime.predictor_device
+            return
         try:
             if self._predictor and self._session_id:
                 self._predictor.reset_session(self._session_id)
@@ -2084,26 +1958,60 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             box_track_ids.append(int(track_id))
         return boxes_abs, box_track_ids
 
+    def _build_boundary_reseed_boxes(
+        self,
+        *,
+        frame_idx: int,
+        frame_width: float,
+        frame_height: float,
+        max_boxes: Optional[int] = None,
+    ) -> Tuple[List[List[float]], List[int]]:
+        """
+        Build normalized carry boxes for a window boundary from prior tracked masks.
+        """
+        if frame_width <= 0.0 or frame_height <= 0.0:
+            return [], []
+
+        if max_boxes is None:
+            max_boxes = max(1, int(self.max_num_objects or 4))
+        limit = max(1, int(max_boxes))
+
+        expected_track_ids = sorted(
+            self._expected_track_ids_for_frame(
+                int(frame_idx),
+                max_gap=self._track_match_max_gap(),
+            )
+        )
+        boxes_abs: List[List[float]]
+        box_track_ids: List[int]
+        boxes_abs, box_track_ids = self._derive_boxes_for_track_ids(
+            int(frame_idx),
+            expected_track_ids,
+            max_boxes=limit,
+        )
+        if not boxes_abs:
+            boxes_abs = self._derive_boxes_from_neighbor_masks(
+                int(frame_idx),
+                max_boxes=limit,
+            )
+            box_track_ids = []
+        if not boxes_abs:
+            return [], []
+        return (
+            self._normalize_boxes(boxes_abs, float(frame_width), float(frame_height)),
+            box_track_ids,
+        )
+
     def _expected_track_ids_for_frame(
         self,
         frame_idx: int,
         *,
         max_gap: Optional[int] = None,
     ) -> set[int]:
-        """Return recently active tracks that should still be considered live."""
-        if max_gap is None:
-            max_gap = max(3, min(int(self.sliding_window_size or 5), 10))
-        expected: set[int] = set()
-        start_frame = max(0, int(frame_idx) - int(max_gap))
-        for prev_frame in range(start_frame, int(frame_idx)):
-            expected.update(int(v) for v in self._frame_track_ids.get(int(prev_frame), set()))
-        return expected
+        return expected_track_ids_for_frame(self, frame_idx, max_gap=max_gap)
 
     def _missing_track_ids_for_frame(self, frame_idx: int) -> List[int]:
-        current = {int(v) for v in self._frame_track_ids.get(int(frame_idx), set())}
-        expected = self._expected_track_ids_for_frame(int(frame_idx))
-        missing = sorted(expected - current)
-        return missing
+        return missing_track_ids_for_frame(self, frame_idx)
 
     @staticmethod
     def _normalize_window_schedule(
@@ -2111,16 +2019,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         window_size: int,
         stride: Optional[int],
     ) -> Tuple[int, int]:
-        window_size = max(1, int(window_size or 1))
-        try:
-            stride_val = int(stride) if stride is not None else max(1, window_size - 1)
-        except Exception:
-            stride_val = max(1, window_size - 1)
-        if stride_val <= 0:
-            stride_val = max(1, window_size - 1)
-        if window_size > 1 and stride_val >= window_size:
-            stride_val = window_size - 1
-        return window_size, stride_val
+        return normalize_window_schedule(window_size=window_size, stride=stride)
 
     def _resolve_window_schedule(
         self,
@@ -2134,30 +2033,12 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         Explicit user settings win. Otherwise prefer larger windows on CUDA and
         moderate overlap on long CPU runs to reduce session churn.
         """
-        user_window_size = self.sliding_window_size
-        user_stride = self.sliding_window_stride
-        if user_window_size is not None or user_stride is not None:
-            window_size, stride = self._normalize_window_schedule(
-                window_size=user_window_size or 5,
-                stride=user_stride,
-            )
-            return window_size, stride
-
-        total = max(0, int(total_frames or 0))
-        if resolved_device.type == "cuda":
-            window_size = 48 if total >= 200 else 24
-            overlap = max(4, window_size // 6)
-        elif resolved_device.type == "cpu":
-            window_size = 32 if total >= 2000 else 24 if total >= 400 else 12
-            overlap = max(2, window_size // 5)
-        else:
-            window_size = 8
-            overlap = 1
-
-        if total > 0:
-            window_size = min(window_size, total)
-        stride = max(1, window_size - overlap)
-        return self._normalize_window_schedule(window_size=window_size, stride=stride)
+        return resolve_window_schedule(
+            resolved_device=resolved_device,
+            total_frames=total_frames,
+            user_window_size=self.sliding_window_size,
+            user_stride=self.sliding_window_stride,
+        )
 
     def add_prompt_points_abs(
         self,
@@ -2245,8 +2126,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         masks = outputs.get("out_binary_masks", [])
         probs = outputs.get("out_probs", [])
         boxes = outputs.get("out_boxes_xywh", [])
+        global_id_assignments = outputs.get("global_id_assignments") or []
         mask_dict = {}
         obj_meta: Dict[str, Dict[str, object]] = {}
+        drift_rejections = 0
 
         frame_stats = outputs.get("frame_stats")
         frame_meta: Optional[dict] = None
@@ -2311,6 +2194,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 mask=mask_arr,
                 box_xywh=box_xywh,
             ):
+                drift_rejections += 1
+                self._drift_rejections_total = int(
+                    getattr(self, "_drift_rejections_total", 0)
+                ) + 1
                 fallback_mask = self._recent_track_mask(int(obj_id), frame_idx=int(frame_idx))
                 if fallback_mask is not None:
                     logger.info(
@@ -2332,6 +2219,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             obj_meta[key] = meta
 
         current_track_ids = {int(k) for k in mask_dict.keys()}
+        expected_track_ids = self._expected_track_ids_for_frame(int(frame_idx))
+        missing_track_count = max(0, int(len(expected_track_ids - current_track_ids)))
         if merge_existing:
             existing_masks = self._frame_masks.get(int(frame_idx)) or {}
             if existing_masks:
@@ -2379,6 +2268,17 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     f"SAM3 progress: {yielded_frames}/{total_frames} frames "
                     f"({progress}%), frame={frame_idx}, masks={len(mask_dict)}"
                 )
+        self._emit_telemetry(
+            "frame",
+            {
+                "frame_idx": int(frame_idx),
+                "n_objects_predicted": int(len(obj_ids)),
+                "n_masks_written": int(len(mask_dict)),
+                "n_missing_tracks": int(missing_track_count),
+                "drift_rejections": int(drift_rejections),
+                "global_id_assignments": list(global_id_assignments),
+            },
+        )
         return len(mask_dict), len(mask_dict)
 
     def _ensure_prediction_json_coverage(
@@ -2472,29 +2372,49 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         latency_ms: float = 0.0,
         reacquired_frames: int = 0,
     ) -> Dict[str, object]:
-        covered_frames = sorted(local_mask_counts.keys())
-        frames_in_window = len(covered_frames)
-        zero_mask_frames = sum(
-            1 for f in covered_frames if int(local_mask_counts.get(int(f), 0)) <= 0
+        return build_window_telemetry_entry(
+            window_index=window_index,
+            window_start_idx=window_start_idx,
+            window_end_idx=window_end_idx,
+            local_mask_counts=local_mask_counts,
+            boundary_empty_skips=boundary_empty_skips,
+            latency_ms=latency_ms,
+            reacquired_frames=reacquired_frames,
         )
-        nonzero_frames = max(0, frames_in_window - zero_mask_frames)
-        dropped_rate = (
-            float(zero_mask_frames) / float(frames_in_window)
-            if frames_in_window > 0
-            else 0.0
+
+    def _telemetry_config_snapshot(self) -> Dict[str, object]:
+        return build_config_snapshot(
+            {
+                "max_num_objects": getattr(self, "max_num_objects", None),
+                "multiplex_count": getattr(self, "multiplex_count", None),
+                "sliding_window_size": getattr(self, "sliding_window_size", None),
+                "sliding_window_stride": getattr(self, "sliding_window_stride", None),
+                "use_sliding_window_for_text_prompt": getattr(
+                    self, "use_sliding_window_for_text_prompt", None
+                ),
+                "use_explicit_window_reseed": getattr(
+                    self, "use_explicit_window_reseed", None
+                ),
+                "allow_private_state_mutation": getattr(
+                    self, "allow_private_state_mutation", None
+                ),
+                "offload_video_to_cpu": getattr(self, "offload_video_to_cpu", None),
+                "async_loading_frames": getattr(self, "async_loading_frames", None),
+                "compile_model": getattr(self, "compile_model", None),
+                "device": getattr(self, "default_device", None),
+                "checkpoint_path": getattr(self, "checkpoint_path", None),
+                "propagation_direction": getattr(self, "propagation_direction", None),
+            }
         )
-        return {
-            "window_index": int(window_index),
-            "start": int(window_start_idx),
-            "end": int(window_end_idx),
-            "frames": int(frames_in_window),
-            "nonzero_frames": int(nonzero_frames),
-            "zero_mask_frames": int(zero_mask_frames),
-            "dropped_mask_rate": float(dropped_rate),
-            "boundary_empty_skips": int(boundary_empty_skips),
-            "latency_ms": float(latency_ms),
-            "reacquired_frames": int(reacquired_frames),
-        }
+
+    def _emit_telemetry(self, event_type: str, payload: Dict[str, object]) -> None:
+        sink = getattr(self, "_telemetry", None)
+        if sink is None:
+            return
+        try:
+            sink.emit(event_type, payload)
+        except Exception:
+            logger.debug("SAM3 telemetry emit failed.", exc_info=True)
 
     def _propagate_text_prompt_windowed(
         self,
@@ -2505,7 +2425,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         """
         SAM3.1 windowed inference for long videos:
         - small frame windows to bound memory
-        - carry visual boxes from previous masks to stabilize continuity
+        - explicit window-boundary reseeding from previous masks/track boxes
         - remap local object ids to stable global ids across windows
         """
         resolved_device = self._resolve_runtime_device(target_device)
@@ -2546,6 +2466,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 window_t0 = time.perf_counter()
                 local_mask_counts: Dict[int, int] = {}
                 boundary_empty_skips = 0
+                local_drift_rejections = 0
                 window_start_idx = int(start_idx)
                 window_end_idx = int(end_idx)
                 # When windows overlap and slide forward by stride, reuse temp
@@ -2578,13 +2499,33 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     propagation_direction = "forward"
 
                     def seed_first_frame() -> None:
+                        nonlocal local_drift_rejections
+                        seed_boxes = None
+                        seed_box_labels = None
+                        seed_label_hints = None
+                        if bool(getattr(self, "use_explicit_window_reseed", True)) and int(window_idx) > 0:
+                            frame_h, frame_w = frames[0].shape[:2]
+                            seed_boxes_candidate, seed_track_ids = self._build_boundary_reseed_boxes(
+                                frame_idx=int(start_idx),
+                                frame_width=float(frame_w),
+                                frame_height=float(frame_h),
+                            )
+                            if seed_boxes_candidate:
+                                seed_boxes = seed_boxes_candidate
+                                seed_box_labels = [1] * len(seed_boxes_candidate)
+                                if seed_track_ids:
+                                    seed_label_hints = self._label_hints_from_ids(
+                                        seed_track_ids,
+                                        self.id_to_labels,
+                                    )
+
                         self._record_prompt_seed_frame(int(start_idx))
                         prompt_result = self._execute_prompt_transaction(
                             session_id=session_id,
                             frame_idx=0,
                             text=text_prompt,
-                            boxes=None,
-                            box_labels=None,
+                            boxes=seed_boxes,
+                            box_labels=seed_box_labels,
                             points=None,
                             point_labels=None,
                             obj_id=None,
@@ -2599,12 +2540,19 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             frame_idx=int(start_idx),
                         )
                         prompt_global_frame = int(start_idx)
+                        drift_before = int(getattr(self, "_drift_rejections_total", 0))
                         prompt_masks_in_frame, _ = self._handle_frame_outputs(
                             frame_idx=prompt_global_frame,
                             outputs=prompt_outputs,
                             total_frames=total_frames,
                             yielded_frames=len(frame_to_masks) + 1,
                             apply_score_threshold=False,
+                            label_hints=seed_label_hints,
+                        )
+                        local_drift_rejections += max(
+                            0,
+                            int(getattr(self, "_drift_rejections_total", 0))
+                            - int(drift_before),
                         )
                         frame_to_masks[prompt_global_frame] = max(
                             int(frame_to_masks.get(prompt_global_frame, 0)),
@@ -2620,7 +2568,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         segment_start_local_idx: int,
                         segment_len: int,
                     ) -> Tuple[int, int]:
-                        nonlocal boundary_empty_skips
+                        nonlocal boundary_empty_skips, local_drift_rejections
                         frames_processed = 0
                         masks_written = 0
                         for result in self._predictor.propagate_in_video(
@@ -2643,12 +2591,18 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                                 outputs,
                                 frame_idx=global_frame,
                             )
+                            drift_before = int(getattr(self, "_drift_rejections_total", 0))
                             masks_in_frame, _ = self._handle_frame_outputs(
                                 frame_idx=global_frame,
                                 outputs=outputs,
                                 total_frames=total_frames,
                                 yielded_frames=len(frame_to_masks) + 1,
                                 apply_score_threshold=False,
+                            )
+                            local_drift_rejections += max(
+                                0,
+                                int(getattr(self, "_drift_rejections_total", 0))
+                                - int(drift_before),
                             )
                             frames_processed += 1
                             masks_written += int(masks_in_frame)
@@ -2664,6 +2618,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         return int(frames_processed), int(masks_written)
 
                     def refresh_mid_frame(refresh_local_idx: int) -> Tuple[int, int]:
+                        nonlocal local_drift_rejections
                         refresh_global_frame = int(start_idx + int(refresh_local_idx))
                         self._record_prompt_seed_frame(int(refresh_global_frame))
                         refresh_result = self._execute_prompt_transaction(
@@ -2685,12 +2640,18 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             refresh_outputs,
                             frame_idx=refresh_global_frame,
                         )
+                        drift_before = int(getattr(self, "_drift_rejections_total", 0))
                         refresh_masks_in_frame, _ = self._handle_frame_outputs(
                             frame_idx=refresh_global_frame,
                             outputs=refresh_outputs,
                             total_frames=total_frames,
                             yielded_frames=len(frame_to_masks) + 1,
                             apply_score_threshold=False,
+                        )
+                        local_drift_rejections += max(
+                            0,
+                            int(getattr(self, "_drift_rejections_total", 0))
+                            - int(drift_before),
                         )
                         frame_to_masks[refresh_global_frame] = max(
                             int(frame_to_masks.get(refresh_global_frame, 0)),
@@ -2727,7 +2688,15 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     boundary_empty_skips=int(boundary_empty_skips),
                     latency_ms=float(latency_ms),
                 )
+                telemetry["drift_rejections"] = int(local_drift_rejections)
                 window_telemetry.append(telemetry)
+                self._emit_telemetry(
+                    "window",
+                    {
+                        "mode": "text_prompt",
+                        **telemetry,
+                    },
+                )
                 logger.info(
                     "SAM3.1 window telemetry #%d [%d,%d): frames=%d nonzero=%d zero=%d "
                     "drop_rate=%.3f boundary_skips=%d latency_ms=%.1f",
@@ -2803,6 +2772,18 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 f" (invalid={int(invalid)})" if invalid > 0 else "",
             )
         total_masks = int(sum(frame_to_masks.values()))
+        self._emit_telemetry(
+            "windowed_summary",
+            {
+                "mode": "text_prompt",
+                "windows": int(len(window_telemetry)),
+                "frames": int(len(frame_to_masks)),
+                "masks": int(total_masks),
+                "drift_rejections": int(
+                    sum(int(t.get("drift_rejections", 0)) for t in window_telemetry)
+                ),
+            },
+        )
         return len(frame_to_masks), total_masks
 
     @staticmethod
@@ -2815,19 +2796,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         Group annotations by local frame index within [start_idx, end_idx).
         Returned annotations have ann_frame_idx rewritten to local window coords.
         """
-        grouped: Dict[int, List[dict]] = {}
-        for ann in annotations:
-            try:
-                frame_idx = int(ann.get("ann_frame_idx", 0))
-            except (TypeError, ValueError):
-                continue
-            if frame_idx < start_idx or frame_idx >= end_idx:
-                continue
-            local_idx = frame_idx - start_idx
-            shifted = dict(ann)
-            shifted["ann_frame_idx"] = local_idx
-            grouped.setdefault(local_idx, []).append(shifted)
-        return grouped
+        return shift_annotations_to_window(
+            annotations=annotations,
+            start_idx=start_idx,
+            end_idx=end_idx,
+        )
 
     @staticmethod
     def _first_manual_seed_frame(annotations: Iterable[dict]) -> Optional[int]:
@@ -2838,19 +2811,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         before the first manual seed, because those windows cannot contribute
         to a valid seed-driven track.
         """
-        first_frame: Optional[int] = None
-        for ann in annotations or []:
-            if not isinstance(ann, dict):
-                continue
-            try:
-                frame_idx = int(ann.get("ann_frame_idx", -1))
-            except Exception:
-                continue
-            if frame_idx < 0:
-                continue
-            if first_frame is None or frame_idx < first_frame:
-                first_frame = frame_idx
-        return first_frame
+        return first_manual_seed_frame(annotations)
 
     @staticmethod
     def _build_window_seed_segments(
@@ -2866,25 +2827,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         each seed starts a contiguous pass until the next seed. Text-only
         fallback is only used when the window has no manual seed frames.
         """
-        normalized = sorted(
-            {
-                int(idx)
-                for idx in seed_frame_indices or []
-                if idx is not None and 0 <= int(idx) < int(window_length)
-            }
+        return build_window_seed_segments(
+            seed_frame_indices=seed_frame_indices,
+            window_length=window_length,
+            has_text_prompt=has_text_prompt,
         )
-        if not normalized and has_text_prompt:
-            normalized = [0]
-
-        segments: List[Tuple[int, int]] = []
-        for idx, start_local in enumerate(normalized):
-            next_local = (
-                normalized[idx + 1] if idx + 1 < len(normalized) else int(window_length)
-            )
-            if int(next_local) <= int(start_local):
-                continue
-            segments.append((int(start_local), int(next_local)))
-        return segments
 
     def _propagate_annotations_windowed(
         self,
@@ -2956,6 +2903,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 local_prompt_frames = sorted(local_ann_groups.keys())
                 local_mask_counts: Dict[int, int] = {}
                 boundary_empty_skips = 0
+                local_drift_rejections = 0
 
                 shift = 0
                 if (
@@ -3078,6 +3026,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     segment_start_local_idx: int,
                     segment_end_local_exclusive: int,
                 ) -> Tuple[int, int]:
+                    nonlocal local_drift_rejections
                     if segment_end_local_exclusive <= segment_start_local_idx:
                         return 0, 0
                     frames_processed = 0
@@ -3100,12 +3049,18 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             outputs,
                             frame_idx=global_frame,
                         )
+                        drift_before = int(getattr(self, "_drift_rejections_total", 0))
                         masks_in_frame, _ = self._handle_frame_outputs(
                             frame_idx=global_frame,
                             outputs=outputs,
                             total_frames=total_frames,
                             yielded_frames=len(frame_to_masks) + 1,
                             apply_score_threshold=False,
+                        )
+                        local_drift_rejections += max(
+                            0,
+                            int(getattr(self, "_drift_rejections_total", 0))
+                            - int(drift_before),
                         )
                         frames_processed += 1
                         masks_written += int(masks_in_frame)
@@ -3142,7 +3097,15 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     boundary_empty_skips=int(boundary_empty_skips),
                     latency_ms=float(latency_ms),
                 )
+                telemetry["drift_rejections"] = int(local_drift_rejections)
                 window_telemetry.append(telemetry)
+                self._emit_telemetry(
+                    "window",
+                    {
+                        "mode": "annotated",
+                        **telemetry,
+                    },
+                )
                 logger.info(
                     "SAM3.1 annotated telemetry #%d [%d,%d): frames=%d nonzero=%d zero=%d drop_rate=%.3f latency_ms=%.1f",
                     int(window_idx),
@@ -3172,6 +3135,18 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 f" (invalid={int(invalid)})" if invalid > 0 else "",
             )
         total_masks = int(sum(frame_to_masks.values()))
+        self._emit_telemetry(
+            "windowed_summary",
+            {
+                "mode": "annotated",
+                "windows": int(len(window_telemetry)),
+                "frames": int(len(frame_to_masks)),
+                "masks": int(total_masks),
+                "drift_rejections": int(
+                    sum(int(t.get("drift_rejections", 0)) for t in window_telemetry)
+                ),
+            },
+        )
         return len(frame_to_masks), total_masks
 
     def _prepare_prompts(
@@ -3195,153 +3170,19 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         """
         if self.frame_shape is None:
             self.frame_shape = self.get_frame_shape()
-
-        if not annotations:
-            if text_prompt:
-                logger.info(
-                    "SAM3 using text-only prompt; no per-frame annotations found under %s",
-                    self.video_dir,
-                )
-                prompt_frame_idx = self._first_frame_index()
-                return prompt_frame_idx, [], [], [], [], [], [], [], []
-            raise FileNotFoundError(
-                f"No per-frame JSON annotations found under {self.video_dir}"
-            )
-
-        height, width = self.frame_shape[:2]
-        annotations_by_frame: Dict[int, List[dict]] = {}
-        for ann in annotations:
-            try:
-                frame_idx = int(ann.get("ann_frame_idx", 0))
-            except (TypeError, ValueError):
-                frame_idx = 0
-            annotations_by_frame.setdefault(frame_idx, []).append(ann)
-
-        for frame_idx in sorted(annotations_by_frame):
-            boxes: List[List[float]] = []
-            box_labels: List[int] = []
-            mask_inputs: List[np.ndarray] = []
-            mask_labels: List[int] = []
-            points: List[List[float]] = []
-            point_labels: List[int] = []
-            obj_ids: List[int] = []
-            point_obj_ids: List[int] = []
-            for ann in annotations_by_frame[frame_idx]:
-                label_val = int(ann["labels"][0]) if ann.get("labels") else 1
-                if ann["type"] == "box":
-                    x1, y1, x2, y2 = ann["box"]
-                    w = max(0.0, x2 - x1)
-                    h = max(0.0, y2 - y1)
-                elif ann["type"] == "mask":
-                    mask = np.asarray(ann["mask"], dtype=np.uint8)
-                    if mask.ndim != 2:
-                        continue
-                    if mask.shape[:2] != (height, width):
-                        try:
-                            mask = cv2.resize(
-                                mask,
-                                (width, height),
-                                interpolation=cv2.INTER_NEAREST,
-                            )
-                        except Exception:
-                            continue
-                    if not np.any(mask):
-                        continue
-                    mask_inputs.append(mask.astype(np.uint8))
-                    mask_labels.append(1)
-                    try:
-                        obj_ids.append(int(ann.get("obj_id", label_val)))
-                    except Exception:
-                        obj_ids.append(int(label_val))
-                    continue
-                elif ann["type"] in {"polygon", "polyline"}:
-                    poly_pts = ann.get("polygon") or ann.get("polyline") or []
-                    if not poly_pts:
-                        continue
-                    try:
-                        mask = self._shape_points_to_mask(
-                            poly_pts,
-                            self.frame_shape,
-                            shape_type="polygon",
-                        )
-                        if mask is None or not np.any(mask):
-                            continue
-                    except Exception:
-                        continue
-                    mask_inputs.append(mask)
-                    mask_labels.append(1)
-                    try:
-                        obj_ids.append(int(ann.get("obj_id", label_val)))
-                    except Exception:
-                        obj_ids.append(int(label_val))
-                    continue
-                elif ann["type"] in {"points", "point"}:
-                    ann_points = ann.get("points") or []
-                    if not ann_points and ann.get("point"):
-                        ann_points = [ann.get("point")]
-                    if not ann_points:
-                        continue
-                    ann_point_labels = ann.get("labels") or []
-                    added_any = False
-                    for idx, pt in enumerate(ann_points):
-                        if not isinstance(pt, (list, tuple)) or len(pt) < 2:
-                            continue
-                        try:
-                            x = float(pt[0])
-                            y = float(pt[1])
-                        except Exception:
-                            continue
-                        if x < 0.0 or y < 0.0:
-                            continue
-                        points.append([x / width, y / height])
-                        raw_label = ann_point_labels[idx] if idx < len(ann_point_labels) else 1
-                        try:
-                            point_labels.append(1 if int(raw_label) > 0 else 0)
-                        except Exception:
-                            point_labels.append(1)
-                        try:
-                            point_obj_ids.append(int(ann.get("obj_id", label_val)))
-                        except Exception:
-                            point_obj_ids.append(int(label_val))
-                        added_any = True
-                    if added_any:
-                        try:
-                            obj_ids.append(int(ann.get("obj_id", label_val)))
-                        except Exception:
-                            obj_ids.append(int(label_val))
-                    continue
-                else:
-                    continue
-
-                if w <= 0 or h <= 0:
-                    continue
-
-                boxes.append([x1 / width, y1 / height, w / width, h / height])
-                box_labels.append(label_val)
-                obj_ids.append(int(ann.get("obj_id", label_val)))
-
-            if boxes or mask_inputs or points:
-                return (
-                    frame_idx,
-                    boxes,
-                    box_labels,
-                    mask_inputs,
-                    mask_labels,
-                    points,
-                    point_labels,
-                    obj_ids,
-                    point_obj_ids,
-                )
-
-        if text_prompt:
-            logger.info(
-                "SAM3 using text-only prompt; no usable per-frame annotations were found under %s",
-                self.video_dir,
-            )
-            prompt_frame_idx = self._first_frame_index()
-            return prompt_frame_idx, [], [], [], [], [], [], [], []
-
-        return None, [], [], [], [], [], [], [], []
+        result = build_prompts_from_annotations(
+            annotations=annotations,
+            text_prompt=text_prompt,
+            frame_shape=self.frame_shape,
+            video_dir=str(getattr(self, "video_dir", "")),
+            first_frame_index=self._first_frame_index,
+            shape_points_to_mask=lambda pts, shape, shape_type: self._shape_points_to_mask(
+                pts,
+                shape,
+                shape_type=shape_type,
+            ),
+        )
+        return result.as_tuple()
 
     def _apply_seed_prompts(
         self,
@@ -3451,6 +3292,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         @torch.inference_mode()
         def _run():
             self._stop_requested = False
+            self._drift_rejections_total = 0
             total_frames = self.total_frames_estimate()
             if total_frames:
                 removed = self.prune_out_of_range_prediction_frames(total_frames)
@@ -3494,6 +3336,15 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 manual_seed_frames.clear()
 
             resolved_device = self._resolve_runtime_device(target_device)
+            self._emit_telemetry(
+                "run_start",
+                {
+                    "mode": "offline",
+                    "config_snapshot": self._telemetry_config_snapshot(),
+                    "total_frames_estimate": int(total_frames) if total_frames else None,
+                    "resolved_device": str(resolved_device),
+                },
+            )
             window_size, _ = self._resolve_window_schedule(
                 resolved_device=resolved_device,
                 total_frames=total_frames,
@@ -3615,7 +3466,20 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         int(repaired),
                         f" (invalid={int(invalid)})" if invalid > 0 else "",
                     )
-            return frames, masks
+                self._emit_telemetry(
+                    "run_summary",
+                    {
+                        "mode": "offline",
+                        "frames": int(frames),
+                        "masks": int(masks),
+                        "repaired_frames": int(repaired),
+                        "invalid_prediction_json": int(invalid),
+                        "drift_rejections": int(
+                            getattr(self, "_drift_rejections_total", 0)
+                        ),
+                    },
+                )
+                return frames, masks
 
         return _run()
 
@@ -3624,102 +3488,19 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         frame_idx: int,
         target_device: Optional[torch.device | str] = None,
     ) -> None:
-        """
-        Run a lightweight SAM3 pass on a single frame using only the text
-        prompt to recover tracking when the main tracker path produced none.
-        """
-        with torch.inference_mode():
-            if not self.text_prompt:
-                return
-
-            missing_track_ids = self._missing_track_ids_for_frame(int(frame_idx))
-            if not missing_track_ids:
-                return
-            target_track_ids = set(int(track_id) for track_id in missing_track_ids)
-
-            with self._session_scope(target_device, auto_close=True):
-                self._reset_session_state()
-                self._reset_action_history_if_supported()
-                result = self.add_prompt(
-                    frame_idx=frame_idx,
-                    text=self.text_prompt,
-                    record_outputs=False,
-                    label_hints=self._label_hints_from_ids(target_track_ids, self.id_to_labels)
-                    if target_track_ids
-                    else None,
-                )
-                outputs = result.get("outputs", {}) if isinstance(result, dict) else {}
-                outputs = self._map_outputs_to_global_ids_at_frame(
-                    outputs or {},
-                    frame_idx=int(frame_idx),
-                    allowed_gids=target_track_ids,
-                    allow_new_ids=False,
-                )
-                if self._output_candidate_mask_count(outputs) <= 0:
-                    return
-                self._handle_frame_outputs(
-                    frame_idx=int(frame_idx),
-                    outputs=outputs,
-                    total_frames=self.total_frames_estimate(),
-                    yielded_frames=len(self._frames_processed) + 1,
-                    apply_score_threshold=False,
-                    merge_existing=True,
-                )
+        reacquire_frame_with_visual_and_text(
+            self,
+            frame_idx=frame_idx,
+            target_device=target_device,
+        )
 
     def _reacquire_frames_with_visual_and_text(
         self,
         frame_indices: List[int],
         target_device: Optional[torch.device | str] = None,
     ) -> None:
-        """
-        Re-acquire multiple frames using a single temporary session to avoid
-        reloading video data repeatedly, improving speed on CPU fallback.
-        The recovery prompt is text-only; object identity comes from the
-        cross-window matcher.
-        """
-        if not frame_indices or not self.text_prompt or not self._frame_masks:
-            return
-
-        with torch.inference_mode():
-            with self._session_scope(target_device, auto_close=True):
-                for frame_idx in frame_indices:
-                    missing_track_ids = self._missing_track_ids_for_frame(int(frame_idx))
-                    if not missing_track_ids:
-                        continue
-                    target_track_ids = set(int(track_id) for track_id in missing_track_ids)
-                    self._reset_session_state()
-                    self._reset_action_history_if_supported()
-                    try:
-                        result = self.add_prompt(
-                            frame_idx=frame_idx,
-                            text=self.text_prompt,
-                            record_outputs=False,
-                            label_hints=self._label_hints_from_ids(
-                                target_track_ids, self.id_to_labels
-                            )
-                            if target_track_ids
-                            else None,
-                        )
-                        outputs = result.get("outputs", {}) if isinstance(result, dict) else {}
-                        outputs = self._map_outputs_to_global_ids_at_frame(
-                            outputs or {},
-                            frame_idx=int(frame_idx),
-                            allowed_gids=target_track_ids,
-                            allow_new_ids=False,
-                        )
-                        if self._output_candidate_mask_count(outputs) <= 0:
-                            continue
-                        self._handle_frame_outputs(
-                            frame_idx=int(frame_idx),
-                            outputs=outputs,
-                            total_frames=self.total_frames_estimate(),
-                            yielded_frames=len(self._frames_processed) + 1,
-                            apply_score_threshold=False,
-                            merge_existing=True,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "SAM3 per-frame reacquisition failed for frame %s: %s",
-                            frame_idx,
-                            exc,
-                        )
+        reacquire_frames_with_visual_and_text(
+            self,
+            frame_indices=frame_indices,
+            target_device=target_device,
+        )

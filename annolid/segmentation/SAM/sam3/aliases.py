@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import types
 from pathlib import Path
@@ -21,6 +22,14 @@ def ensure_sam3_aliases() -> None:
         pkg.__file__ = str(sam3_root / "__init__.py")
         sys.modules["sam3"] = pkg
     else:
+        existing_paths = [str(p) for p in list(getattr(pkg, "__path__", []) or [])]
+        mixing_allowed = str(
+            os.getenv("ANNOLID_SAM3_ALLOW_NAMESPACE_PATH_MIX", "0")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if existing_paths and str(sam3_root) not in existing_paths and not mixing_allowed:
+            # Avoid silently mixing vendored and externally installed SAM3 packages.
+            # In this case we keep the existing import root unchanged.
+            return
         # Make sure our path is available if a namespace package already exists.
         if not hasattr(pkg, "__path__"):
             pkg.__path__ = []

@@ -30,6 +30,8 @@ class Sam3Manager:
         self.sliding_window_stride: Optional[int] = None
         self.compile_model: Optional[bool] = None
         self.offload_video_to_cpu: Optional[bool] = None
+        self.use_explicit_window_reseed: Optional[bool] = None
+        self.allow_private_state_mutation: Optional[bool] = None
         self.max_num_objects: Optional[int] = None
         self.multiplex_count: Optional[int] = None
         self.agent_det_thresh: Optional[float] = None
@@ -151,6 +153,14 @@ class Sam3Manager:
             self.offload_video_to_cpu,
             sam3_cfg.get("offload_video_to_cpu"),
         )
+        use_explicit_window_reseed = _pick(
+            self.use_explicit_window_reseed,
+            sam3_cfg.get("use_explicit_window_reseed"),
+        )
+        allow_private_state_mutation = _pick(
+            self.allow_private_state_mutation,
+            sam3_cfg.get("allow_private_state_mutation"),
+        )
         max_num_objects = _pick(
             self.max_num_objects,
             sam3_cfg.get("max_num_objects"),
@@ -186,6 +196,8 @@ class Sam3Manager:
             "sliding_window_stride": sliding_window_stride,
             "compile_model": compile_model,
             "offload_video_to_cpu": offload_video_to_cpu,
+            "use_explicit_window_reseed": use_explicit_window_reseed,
+            "allow_private_state_mutation": allow_private_state_mutation,
             "max_num_objects": max_num_objects,
             "multiplex_count": multiplex_count,
             "agent_det_thresh": agent_det_thresh,
@@ -213,6 +225,10 @@ class Sam3Manager:
         self.sliding_window_stride = sam3_runtime.get("sliding_window_stride")
         self.compile_model = sam3_runtime.get("compile_model")
         self.offload_video_to_cpu = sam3_runtime.get("offload_video_to_cpu")
+        self.use_explicit_window_reseed = sam3_runtime.get("use_explicit_window_reseed")
+        self.allow_private_state_mutation = sam3_runtime.get(
+            "allow_private_state_mutation"
+        )
         self.max_num_objects = sam3_runtime.get("max_num_objects", self.max_num_objects)
         self.multiplex_count = sam3_runtime.get("multiplex_count", self.multiplex_count)
         self.agent_det_thresh = sam3_runtime.get("agent_det_thresh")
@@ -234,6 +250,8 @@ class Sam3Manager:
             "sliding_window_stride": self.sliding_window_stride,
             "compile_model": self.compile_model,
             "offload_video_to_cpu": self.offload_video_to_cpu,
+            "use_explicit_window_reseed": self.use_explicit_window_reseed,
+            "allow_private_state_mutation": self.allow_private_state_mutation,
             "max_num_objects": self.max_num_objects,
             "multiplex_count": self.multiplex_count,
         }
@@ -521,20 +539,31 @@ class Sam3Manager:
         if not canvas_annotations:
             return list(annotations or [])
 
-        canvas_frame_ids = {
-            int(ann.get("ann_frame_idx", -1))
-            for ann in canvas_annotations
-            if isinstance(ann, dict)
-        }
+        def _annotation_key(ann: dict) -> tuple[int, int, str]:
+            return (
+                int(ann.get("ann_frame_idx", -1)),
+                int(ann.get("obj_id", 0)),
+                str(ann.get("type", "")),
+            )
+
+        canvas_keys = set()
+        for ann in canvas_annotations:
+            if not isinstance(ann, dict):
+                continue
+            try:
+                canvas_keys.add(_annotation_key(ann))
+            except Exception:
+                continue
+
         merged = []
         for ann in annotations or []:
             if not isinstance(ann, dict):
                 continue
             try:
-                ann_frame_idx = int(ann.get("ann_frame_idx", -1))
+                key = _annotation_key(ann)
             except Exception:
-                ann_frame_idx = -1
-            if ann_frame_idx in canvas_frame_ids:
+                key = None
+            if key is not None and key in canvas_keys:
                 continue
             merged.append(dict(ann))
 
@@ -617,6 +646,12 @@ class Sam3Manager:
         sliding_window_stride = sam3_cfg.get("sliding_window_stride")
         compile_model_cfg = sam3_cfg.get("compile_model", False)
         offload_video_to_cpu_cfg = sam3_cfg.get("offload_video_to_cpu", True)
+        use_explicit_window_reseed_cfg = sam3_cfg.get(
+            "use_explicit_window_reseed", True
+        )
+        allow_private_state_mutation_cfg = sam3_cfg.get(
+            "allow_private_state_mutation", False
+        )
         max_num_objects_cfg = sam3_cfg.get("max_num_objects", 16)
         multiplex_count_cfg = sam3_cfg.get("multiplex_count", 16)
         agent_cfg = sam3_cfg.get("agent", {}) or {}
@@ -682,6 +717,12 @@ class Sam3Manager:
 
         compile_model_override = getattr(self, "compile_model", None)
         offload_video_to_cpu_override = getattr(self, "offload_video_to_cpu", None)
+        use_explicit_window_reseed_override = getattr(
+            self, "use_explicit_window_reseed", None
+        )
+        allow_private_state_mutation_override = getattr(
+            self, "allow_private_state_mutation", None
+        )
         score_threshold_detection_override = getattr(
             self, "score_threshold_detection", None
         )
@@ -709,6 +750,18 @@ class Sam3Manager:
             if offload_video_to_cpu_override is not None
             else offload_video_to_cpu_cfg,
             True,
+        )
+        use_explicit_window_reseed = _parse_bool(
+            use_explicit_window_reseed_override
+            if use_explicit_window_reseed_override is not None
+            else use_explicit_window_reseed_cfg,
+            True,
+        )
+        allow_private_state_mutation = _parse_bool(
+            allow_private_state_mutation_override
+            if allow_private_state_mutation_override is not None
+            else allow_private_state_mutation_cfg,
+            False,
         )
         if score_threshold_detection_override is not None:
             score_threshold_detection = score_threshold_detection_override
@@ -813,6 +866,8 @@ class Sam3Manager:
                     multiplex_count=multiplex_count,
                     compile_model=compile_model,
                     offload_video_to_cpu=offload_video_to_cpu,
+                    use_explicit_window_reseed=use_explicit_window_reseed,
+                    allow_private_state_mutation=allow_private_state_mutation,
                     sliding_window_size=sliding_window_size,
                     sliding_window_stride=sliding_window_stride,
                 )
@@ -855,6 +910,8 @@ class Sam3Manager:
                         multiplex_count=multiplex_count,
                         compile_model=compile_model,
                         offload_video_to_cpu=offload_video_to_cpu,
+                        use_explicit_window_reseed=use_explicit_window_reseed,
+                        allow_private_state_mutation=allow_private_state_mutation,
                     )
                     if masks <= 0:
                         raise RuntimeError(

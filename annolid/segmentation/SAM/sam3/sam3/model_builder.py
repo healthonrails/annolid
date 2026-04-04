@@ -69,6 +69,58 @@ def _default_bpe_path() -> str:
     return str(Path(__file__).resolve().parent / "assets" / "bpe_simple_vocab_16e6.txt.gz")
 
 
+def _read_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return int(default)
+    try:
+        return int(raw)
+    except Exception:
+        return int(default)
+
+
+def _resolve_hotstart_params(
+    *,
+    hotstart_delay: Optional[int] = None,
+    hotstart_unmatch_thresh: Optional[int] = None,
+    hotstart_dup_thresh: Optional[int] = None,
+) -> tuple[int, int, int]:
+    """
+    Resolve hotstart heuristics with upstream-aligned defaults.
+
+    Priority:
+    1) explicit function kwargs
+    2) ANNOLID_SAM3_HOTSTART_* env vars
+    3) upstream defaults (0, 0, 0)
+    """
+    delay = (
+        int(hotstart_delay)
+        if hotstart_delay is not None
+        else _read_int_env("ANNOLID_SAM3_HOTSTART_DELAY", 0)
+    )
+    unmatch = (
+        int(hotstart_unmatch_thresh)
+        if hotstart_unmatch_thresh is not None
+        else _read_int_env("ANNOLID_SAM3_HOTSTART_UNMATCH_THRESH", 0)
+    )
+    dup = (
+        int(hotstart_dup_thresh)
+        if hotstart_dup_thresh is not None
+        else _read_int_env("ANNOLID_SAM3_HOTSTART_DUP_THRESH", 0)
+    )
+    delay = max(0, int(delay))
+    unmatch = max(0, int(unmatch))
+    dup = max(0, int(dup))
+    if delay == 0:
+        # Keep thresholds consistent with disabled hotstart.
+        unmatch = 0
+        dup = 0
+    else:
+        unmatch = min(unmatch, delay)
+        dup = min(dup, delay)
+    return int(delay), int(unmatch), int(dup)
+
+
 def _create_position_encoding(precompute_resolution=None):
     """Create position encoding for visual backbone."""
     return PositionEmbeddingSine(
@@ -691,6 +743,9 @@ def build_sam3_video_model(
     geo_encoder_use_img_cross_attn: bool = True,
     strict_state_dict_loading: bool = True,
     apply_temporal_disambiguation: bool = True,
+    hotstart_delay: Optional[int] = None,
+    hotstart_unmatch_thresh: Optional[int] = None,
+    hotstart_dup_thresh: Optional[int] = None,
     device="cuda" if torch.cuda.is_available() else "cpu",
     compile=False,
 ) -> Sam3VideoInferenceWithInstanceInteractivity:
@@ -747,6 +802,13 @@ def build_sam3_video_model(
     )
 
     # Build the main SAM3 video model
+    resolved_hotstart_delay, resolved_hotstart_unmatch, resolved_hotstart_dup = (
+        _resolve_hotstart_params(
+            hotstart_delay=hotstart_delay,
+            hotstart_unmatch_thresh=hotstart_unmatch_thresh,
+            hotstart_dup_thresh=hotstart_dup_thresh,
+        )
+    )
     if apply_temporal_disambiguation:
         model = Sam3VideoInferenceWithInstanceInteractivity(
             detector=detector,
@@ -755,9 +817,9 @@ def build_sam3_video_model(
             assoc_iou_thresh=0.1,
             det_nms_thresh=0.1,
             new_det_thresh=0.7,
-            hotstart_delay=15,
-            hotstart_unmatch_thresh=8,
-            hotstart_dup_thresh=8,
+            hotstart_delay=resolved_hotstart_delay,
+            hotstart_unmatch_thresh=resolved_hotstart_unmatch,
+            hotstart_dup_thresh=resolved_hotstart_dup,
             suppress_unmatched_only_within_hotstart=True,
             min_trk_keep_alive=-1,
             max_trk_keep_alive=30,
@@ -1088,6 +1150,9 @@ def build_sam3_multiplex_video_predictor(
     default_output_prob_thresh: float = 0.5,
     async_loading_frames: bool = True,
     device=None,
+    hotstart_delay: Optional[int] = None,
+    hotstart_unmatch_thresh: Optional[int] = None,
+    hotstart_dup_thresh: Optional[int] = None,
 ):
     """
     Build a fully-initialized Sam3MultiplexVideoPredictor.
@@ -1172,6 +1237,14 @@ def build_sam3_multiplex_video_predictor(
         is_multiplex=True,
     )
 
+    resolved_hotstart_delay, resolved_hotstart_unmatch, resolved_hotstart_dup = (
+        _resolve_hotstart_params(
+            hotstart_delay=hotstart_delay,
+            hotstart_unmatch_thresh=hotstart_unmatch_thresh,
+            hotstart_dup_thresh=hotstart_dup_thresh,
+        )
+    )
+
     # Assemble demo model
     demo_model = Sam3MultiplexTrackingWithInteractivity(
         tracker=sam2_predictor,
@@ -1181,9 +1254,9 @@ def build_sam3_multiplex_video_predictor(
         det_nms_use_iom=True,
         assoc_iou_thresh=0.1,
         new_det_thresh=0.65,
-        hotstart_delay=15,
-        hotstart_unmatch_thresh=8,
-        hotstart_dup_thresh=8,
+        hotstart_delay=resolved_hotstart_delay,
+        hotstart_unmatch_thresh=resolved_hotstart_unmatch,
+        hotstart_dup_thresh=resolved_hotstart_dup,
         suppress_unmatched_only_within_hotstart=False,
         suppress_overlapping_based_on_recent_occlusion_threshold=0.7,
         suppress_det_close_to_boundary=True,

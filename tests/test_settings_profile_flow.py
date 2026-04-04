@@ -264,3 +264,26 @@ def test_advanced_parameters_dialog_tabs_are_scrollable() -> None:
         tab_page = tabs.widget(index)
         assert isinstance(tab_page, QtWidgets.QScrollArea)
         assert tab_page.widgetResizable() is True
+
+
+def test_advanced_parameters_dialog_sam3_runtime_includes_window_handoff_flags() -> (
+    None
+):
+    _ensure_qapp()
+    dialog = AdvancedParametersDialog(
+        sam3_runtime={
+            "use_explicit_window_reseed": False,
+            "allow_private_state_mutation": True,
+        }
+    )
+
+    assert dialog.sam3_explicit_reseed_checkbox.isChecked() is False
+    assert dialog.sam3_private_state_checkbox.isChecked() is True
+
+    dialog.sam3_explicit_reseed_checkbox.setChecked(True)
+    dialog.sam3_private_state_checkbox.setChecked(False)
+    dialog._collect_values()
+    runtime = dialog.get_sam3_runtime_settings()
+
+    assert runtime["use_explicit_window_reseed"] is True
+    assert runtime["allow_private_state_mutation"] is False

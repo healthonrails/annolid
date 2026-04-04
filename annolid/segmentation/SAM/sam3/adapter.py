@@ -49,6 +49,8 @@ class SAM3VideoProcessor(Sam3SessionManager):
         multiplex_count: int = 16,
         compile_model: bool = False,
         offload_video_to_cpu: bool = True,
+        use_explicit_window_reseed: bool = True,
+        allow_private_state_mutation: bool = False,
         sliding_window_size: int = 5,
         sliding_window_stride: Optional[int] = None,
         use_sliding_window_for_text_prompt: bool = True,
@@ -69,6 +71,8 @@ class SAM3VideoProcessor(Sam3SessionManager):
             multiplex_count=multiplex_count,
             compile_model=compile_model,
             offload_video_to_cpu=offload_video_to_cpu,
+            use_explicit_window_reseed=use_explicit_window_reseed,
+            allow_private_state_mutation=allow_private_state_mutation,
             sliding_window_size=sliding_window_size,
             sliding_window_stride=sliding_window_stride,
             use_sliding_window_for_text_prompt=use_sliding_window_for_text_prompt,
@@ -155,6 +159,8 @@ def process_video(
     multiplex_count: int = 16,
     compile_model: bool = False,
     offload_video_to_cpu: bool = True,
+    use_explicit_window_reseed: bool = True,
+    allow_private_state_mutation: bool = False,
     sliding_window_size: int = 5,
     sliding_window_stride: Optional[int] = None,
     use_sliding_window_for_text_prompt: bool = True,
@@ -185,6 +191,8 @@ def process_video(
         multiplex_count=multiplex_count,
         compile_model=compile_model,
         offload_video_to_cpu=offload_video_to_cpu,
+        use_explicit_window_reseed=use_explicit_window_reseed,
+        allow_private_state_mutation=allow_private_state_mutation,
         sliding_window_size=sliding_window_size,
         sliding_window_stride=sliding_window_stride,
         use_sliding_window_for_text_prompt=use_sliding_window_for_text_prompt,
@@ -209,6 +217,8 @@ def process_video_with_agent(
     multiplex_count: int = 16,
     compile_model: bool = False,
     offload_video_to_cpu: bool = True,
+    use_explicit_window_reseed: bool = True,
+    allow_private_state_mutation: bool = False,
 ) -> Tuple[int, int]:
     """
     Run SAM3 video propagation using SAM3 Agent to refine the first frame of
@@ -235,6 +245,8 @@ def process_video_with_agent(
         multiplex_count=multiplex_count,
         compile_model=compile_model,
         offload_video_to_cpu=offload_video_to_cpu,
+        use_explicit_window_reseed=use_explicit_window_reseed,
+        allow_private_state_mutation=allow_private_state_mutation,
     )
     frames, masks = run_agent_seeded_sam3_video(
         video_path=str(video_path),

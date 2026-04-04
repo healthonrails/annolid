@@ -281,7 +281,12 @@ def test_build_video_processor_merges_live_canvas_seed_frame(
         frame_number=42,
         image=np.zeros((24, 32, 3), dtype=np.uint8),
         epsilon_for_polygon=0.0,
-        _config={"sam3": {}},
+        _config={
+            "sam3": {
+                "use_explicit_window_reseed": False,
+                "allow_private_state_mutation": True,
+            }
+        },
         _current_text_prompt=lambda: None,
         canvas=SimpleNamespace(
             shapes=[
@@ -333,14 +338,43 @@ def test_build_video_processor_merges_live_canvas_seed_frame(
     assert kwargs is not None
     annotations = kwargs["annotations"]
     assert any(int(ann["ann_frame_idx"]) == 7 for ann in annotations)
-    assert not any(
+    assert any(
         int(ann["ann_frame_idx"]) == 42 and int(ann.get("obj_id", -1)) == 99
         for ann in annotations
     )
-    assert sum(1 for ann in annotations if int(ann["ann_frame_idx"]) == 42) == 3
+    assert sum(1 for ann in annotations if int(ann["ann_frame_idx"]) == 42) == 4
     assert kwargs["id_to_labels"][10] == "vole_a"
     assert kwargs["id_to_labels"][11] == "vole_b"
     assert kwargs["id_to_labels"][12] == "vole_c"
+    assert kwargs["use_explicit_window_reseed"] is False
+    assert kwargs["allow_private_state_mutation"] is True
+
+
+def test_merge_canvas_annotations_overrides_only_matching_prompt_key() -> None:
+    saved = [
+        {"type": "box", "ann_frame_idx": 42, "box": [0, 0, 10, 10], "obj_id": 1},
+        {"type": "box", "ann_frame_idx": 42, "box": [5, 5, 12, 12], "obj_id": 2},
+        {"type": "box", "ann_frame_idx": 7, "box": [2, 2, 6, 6], "obj_id": 3},
+    ]
+    canvas = [
+        {"type": "box", "ann_frame_idx": 42, "box": [1, 1, 9, 9], "obj_id": 1},
+    ]
+
+    merged = Sam3Manager._merge_canvas_annotations(saved, canvas)
+
+    assert len(merged) == 3
+    assert any(
+        int(ann["ann_frame_idx"]) == 42 and int(ann["obj_id"]) == 2 for ann in merged
+    )
+    assert any(
+        int(ann["ann_frame_idx"]) == 42
+        and int(ann["obj_id"]) == 1
+        and ann["box"] == [1, 1, 9, 9]
+        for ann in merged
+    )
+    assert any(
+        int(ann["ann_frame_idx"]) == 7 and int(ann["obj_id"]) == 3 for ann in merged
+    )
 
 
 def test_manual_seed_loader_uses_png_json_pair_and_ignores_store(
@@ -884,6 +918,7 @@ def test_base_predictor_expands_mask_batches_for_3d_manual_seed_inputs() -> None
 
 def test_carry_forward_window_state_shifts_overlap_frames() -> None:
     session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.allow_private_state_mutation = True
     current_state: dict[str, object] = {
         "cached_features": {},
         "point_inputs_per_obj": {},
@@ -976,6 +1011,130 @@ def test_execute_prompt_transaction_allows_optional_mask_and_point_prompts() -> 
 
     assert result["transaction_step_kinds"] == ["semantic"]
     assert result["outputs"] == {}
+
+
+def test_resolve_runtime_device_does_not_mutate_global_torch_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.default_device = "cpu"
+
+    set_default_device_calls = {"count": 0}
+    set_default_dtype_calls = {"count": 0}
+
+    def _count_set_default_device(*_args, **_kwargs):
+        set_default_device_calls["count"] += 1
+
+    def _count_set_default_dtype(*_args, **_kwargs):
+        set_default_dtype_calls["count"] += 1
+
+    monkeypatch.setattr(
+        "annolid.segmentation.SAM.sam3.session.select_device",
+        lambda _preferred: torch.device("cpu"),
+    )
+    monkeypatch.setattr(torch, "set_default_device", _count_set_default_device)
+    monkeypatch.setattr(torch, "set_default_dtype", _count_set_default_dtype)
+
+    resolved = session._resolve_runtime_device(None)
+
+    assert resolved.type == "cpu"
+    assert set_default_device_calls["count"] == 0
+    assert set_default_dtype_calls["count"] == 0
+
+
+def test_vendored_model_builder_exposes_build_sam3_predictor() -> None:
+    import importlib
+
+    module = importlib.import_module("annolid.segmentation.SAM.sam3.sam3.model_builder")
+    assert callable(getattr(module, "build_sam3_predictor", None))
+
+
+def test_vendored_model_builder_hotstart_defaults_align_with_upstream() -> None:
+    import importlib
+
+    module = importlib.import_module("annolid.segmentation.SAM.sam3.sam3.model_builder")
+    delay, unmatch, dup = module._resolve_hotstart_params()
+    assert (delay, unmatch, dup) == (0, 0, 0)
+
+
+def test_vendored_model_builder_hotstart_can_be_overridden_by_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    module = importlib.import_module("annolid.segmentation.SAM.sam3.sam3.model_builder")
+    monkeypatch.setenv("ANNOLID_SAM3_HOTSTART_DELAY", "12")
+    monkeypatch.setenv("ANNOLID_SAM3_HOTSTART_UNMATCH_THRESH", "9")
+    monkeypatch.setenv("ANNOLID_SAM3_HOTSTART_DUP_THRESH", "20")
+    delay, unmatch, dup = module._resolve_hotstart_params()
+    assert delay == 12
+    # thresholds are clamped to delay for consistency
+    assert unmatch == 9
+    assert dup == 12
+
+
+def test_reset_action_history_is_disabled_without_private_state_mutation() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.allow_private_state_mutation = False
+    state = {"action_history": [1, 2, 3]}
+    session._predictor = SimpleNamespace(
+        raw=SimpleNamespace(_all_inference_states={"window-1": {"state": state}})
+    )
+    session._session_id = "window-1"
+
+    session._reset_action_history_if_supported()
+
+    assert state["action_history"] == [1, 2, 3]
+
+
+def test_reset_action_history_is_enabled_with_private_state_mutation() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.allow_private_state_mutation = True
+    state = {"action_history": [1, 2, 3]}
+    session._predictor = SimpleNamespace(
+        raw=SimpleNamespace(_all_inference_states={"window-1": {"state": state}})
+    )
+    session._session_id = "window-1"
+
+    session._reset_action_history_if_supported()
+
+    assert state["action_history"] == []
+
+
+def test_build_boundary_reseed_boxes_prefers_expected_track_masks() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.sliding_window_size = 5
+    session.sliding_window_stride = 4
+    session.max_num_objects = 4
+    session._frame_track_ids = {10: {7}, 11: {7, 8}}
+    session._frame_masks = {
+        10: {
+            "7": np.pad(
+                np.ones((4, 4), dtype=np.uint8), ((2, 10), (3, 9)), mode="constant"
+            )
+        },
+        11: {
+            "7": np.pad(
+                np.ones((4, 4), dtype=np.uint8), ((3, 9), (4, 8)), mode="constant"
+            ),
+            "8": np.pad(
+                np.ones((3, 3), dtype=np.uint8), ((8, 5), (9, 4)), mode="constant"
+            ),
+        },
+    }
+    session._global_track_last_box = {7: np.asarray([4.0, 3.0, 4.0, 4.0], dtype=float)}
+
+    boxes, track_ids = session._build_boundary_reseed_boxes(
+        frame_idx=12,
+        frame_width=16.0,
+        frame_height=16.0,
+        max_boxes=2,
+    )
+
+    assert len(boxes) >= 1
+    assert all(len(box) == 4 for box in boxes)
+    assert all(0.0 <= v <= 1.0 for box in boxes for v in box)
+    assert 7 in track_ids
 
 
 def test_multiplex_mask_decoder_returns_empty_outputs_for_empty_batch() -> None:

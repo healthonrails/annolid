@@ -97,6 +97,14 @@ class AdvancedParametersDialog(QDialog):
         self.sam3_offload_video_to_cpu = (
             True if raw_offload is None else bool(raw_offload)
         )
+        raw_explicit_reseed = sam3_runtime.get("use_explicit_window_reseed")
+        self.sam3_use_explicit_window_reseed = (
+            True if raw_explicit_reseed is None else bool(raw_explicit_reseed)
+        )
+        raw_private_state = sam3_runtime.get("allow_private_state_mutation")
+        self.sam3_allow_private_state_mutation = (
+            False if raw_private_state is None else bool(raw_private_state)
+        )
 
         layout = QVBoxLayout()
         layout.setContentsMargins(14, 14, 14, 14)
@@ -841,6 +849,25 @@ class AdvancedParametersDialog(QDialog):
         self.sam3_offload_checkbox.setToolTip(
             "Keep frame storage on CPU to reduce VRAM usage. Disable on powerful GPUs to reduce CPU↔GPU transfers."
         )
+        self.sam3_explicit_reseed_checkbox = QCheckBox(
+            "Use explicit window-boundary reseeding"
+        )
+        self.sam3_explicit_reseed_checkbox.setChecked(
+            bool(self.sam3_use_explicit_window_reseed)
+        )
+        self.sam3_explicit_reseed_checkbox.setToolTip(
+            "Replay explicit carry prompts at each window boundary to improve long-video continuity without relying on private predictor state."
+        )
+
+        self.sam3_private_state_checkbox = QCheckBox(
+            "Allow private SAM3 state mutation (legacy compatibility)"
+        )
+        self.sam3_private_state_checkbox.setChecked(
+            bool(self.sam3_allow_private_state_mutation)
+        )
+        self.sam3_private_state_checkbox.setToolTip(
+            "Enables mutation of private predictor internals for legacy behavior. Keep disabled unless debugging compatibility."
+        )
 
         self.sam3_window_size_spinbox = QSpinBox()
         self.sam3_window_size_spinbox.setRange(1, 1000)
@@ -940,6 +967,20 @@ class AdvancedParametersDialog(QDialog):
             self._wrap_checkbox(
                 self.sam3_offload_checkbox,
                 "Leave on for low-VRAM GPUs; disable if you have enough VRAM and want higher throughput.",
+            ),
+        )
+        form.addRow(
+            "Window handoff",
+            self._wrap_checkbox(
+                self.sam3_explicit_reseed_checkbox,
+                "Recommended: explicit carry prompts at window boundaries reduce brittle cross-window drift.",
+            ),
+        )
+        form.addRow(
+            "",
+            self._wrap_checkbox(
+                self.sam3_private_state_checkbox,
+                "Legacy fallback path that touches private SAM3 internals. Prefer leaving this disabled.",
             ),
         )
         form.addRow(
@@ -1101,6 +1142,12 @@ class AdvancedParametersDialog(QDialog):
         )
         self.sam3_compile_model = self.sam3_compile_checkbox.isChecked()
         self.sam3_offload_video_to_cpu = self.sam3_offload_checkbox.isChecked()
+        self.sam3_use_explicit_window_reseed = (
+            self.sam3_explicit_reseed_checkbox.isChecked()
+        )
+        self.sam3_allow_private_state_mutation = (
+            self.sam3_private_state_checkbox.isChecked()
+        )
 
     def get_epsilon_value(self) -> float:
         return self.epsilon_value
@@ -1162,6 +1209,10 @@ class AdvancedParametersDialog(QDialog):
             "sliding_window_stride": self.sam3_sliding_window_stride,
             "compile_model": bool(self.sam3_compile_model),
             "offload_video_to_cpu": bool(self.sam3_offload_video_to_cpu),
+            "use_explicit_window_reseed": bool(self.sam3_use_explicit_window_reseed),
+            "allow_private_state_mutation": bool(
+                self.sam3_allow_private_state_mutation
+            ),
             "agent_det_thresh": self.sam3_agent_det_thresh,
             "agent_window_size": self.sam3_agent_window_size,
             "agent_stride": self.sam3_agent_stride,
