@@ -12,6 +12,7 @@ from PIL import Image
 import pycocotools.mask as mask_utils
 
 from annolid.segmentation.SAM.sam3 import agent_video_orchestrator
+from annolid.segmentation.SAM.sam3 import adapter as sam3_adapter
 from annolid.segmentation.SAM.sam3.session import Sam3SessionManager
 from annolid.segmentation.SAM.sam3.video_window_inference import _iter_video_windows
 from annolid.segmentation.SAM.sam3.window_refresh import (
@@ -71,6 +72,34 @@ def test_iter_video_windows_streams_sequentially_without_seeking(monkeypatch) ->
     assert [start for start, _, _ in windows] == [0, 2]
     assert [end for _, end, _ in windows] == [3, 5]
     assert [int(window[0][0, 0, 0]) for _, _, window in windows] == [0, 2]
+
+
+def test_process_video_with_agent_disables_output_artifacts_by_default(
+    monkeypatch, tmp_path
+) -> None:
+    captured = {}
+
+    def _fake_run_agent_seeded_sam3_video(*, video_path, agent_cfg, tracking_cfg):
+        captured["video_path"] = video_path
+        captured["output_dir"] = agent_cfg.output_dir
+        captured["prompt"] = agent_cfg.prompt
+        return 3, 7
+
+    monkeypatch.setattr(
+        sam3_adapter,
+        "run_agent_seeded_sam3_video",
+        _fake_run_agent_seeded_sam3_video,
+    )
+
+    frames, masks = sam3_adapter.process_video_with_agent(
+        video_path=tmp_path / "video.mp4",
+        agent_prompt="mouse",
+    )
+
+    assert (frames, masks) == (3, 7)
+    assert captured["video_path"] == str(tmp_path / "video.mp4")
+    assert captured["prompt"] == "mouse"
+    assert captured["output_dir"] is None
 
 
 def test_global_track_assignment_rejects_stale_tracks() -> None:

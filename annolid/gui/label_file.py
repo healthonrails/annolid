@@ -130,8 +130,15 @@ class LabelFile(object):
                     flags=s.get("flags", {}),
                     description=s.get("description"),
                     group_id=s.get("group_id"),
+                    # Only hydrate mask payload for true mask shapes.
+                    # Legacy files can contain a stale "mask" key on polygon
+                    # records, which would otherwise render as a filled bitmap
+                    # overlay on canvas even when we expect polygon geometry.
                     mask=utils.img_b64_to_arr(s["mask"]).astype(bool)
-                    if s.get("mask")
+                    if (
+                        str(s.get("shape_type", "polygon")).lower() == "mask"
+                        and s.get("mask")
+                    )
                     else None,
                     # Backward-compatible default: missing/null visibility should
                     # keep shapes visible in the canvas and checked in the list.

@@ -1161,17 +1161,31 @@ class DecoupledTransformerDecoderLayerv2(nn.Module):
 
         self.cross_attention_first = cross_attention_first
 
+    @staticmethod
+    def _cast_for_linear(x: Tensor, layer: nn.Linear) -> Tensor:
+        target_device = layer.weight.device
+        target_dtype = layer.weight.dtype
+        if x.device != target_device:
+            x = x.to(device=target_device)
+        if x.dtype != target_dtype:
+            x = x.to(dtype=target_dtype)
+        return x
+
     def _forward_sa(self, tgt, query_pos):
         # Self-Attention
         tgt2 = self.norm1(tgt)
 
         q = k = tgt2 + query_pos if self.pos_enc_at_attn else tgt2
 
-        q = self.self_attn_q_proj(q)
-        k = self.self_attn_k_proj(k)
-        v = self.self_attn_v_proj(tgt2)
+        q = self.self_attn_q_proj(self._cast_for_linear(q, self.self_attn_q_proj))
+        k = self.self_attn_k_proj(self._cast_for_linear(k, self.self_attn_k_proj))
+        v = self.self_attn_v_proj(
+            self._cast_for_linear(tgt2, self.self_attn_v_proj)
+        )
         out = self.self_attention_rope(q, k, v)
-        tgt2 = self.self_attn_out_proj(out)
+        tgt2 = self.self_attn_out_proj(
+            self._cast_for_linear(out, self.self_attn_out_proj)
+        )
 
         tgt = tgt + self.dropout1(tgt2)
         return tgt
@@ -1195,16 +1209,28 @@ class DecoupledTransformerDecoderLayerv2(nn.Module):
         # Cross-Attention
         tgt2 = self.norm2(tgt)
 
-        q = self.image_cross_attn_q_proj(image) + self.cross_attn_q_proj(tgt2)
+        q = self.image_cross_attn_q_proj(
+            self._cast_for_linear(image, self.image_cross_attn_q_proj)
+        ) + self.cross_attn_q_proj(
+            self._cast_for_linear(tgt2, self.cross_attn_q_proj)
+        )
         if self.pos_enc_at_cross_attn_queries:
             q = q + query_pos
-        k = self.image_cross_attn_k_proj(memory_image) + self.cross_attn_k_proj(memory)
+        k = self.image_cross_attn_k_proj(
+            self._cast_for_linear(memory_image, self.image_cross_attn_k_proj)
+        ) + self.cross_attn_k_proj(
+            self._cast_for_linear(memory, self.cross_attn_k_proj)
+        )
         if self.pos_enc_at_cross_attn_keys:
             k = k + memory_image_pos
-        v = self.cross_attn_v_proj(memory)
+        v = self.cross_attn_v_proj(
+            self._cast_for_linear(memory, self.cross_attn_v_proj)
+        )
 
         out = self.cross_attention_rope(q, k, v, **kwds)
-        tgt2 = self.cross_attn_out_proj(out)
+        tgt2 = self.cross_attn_out_proj(
+            self._cast_for_linear(out, self.cross_attn_out_proj)
+        )
 
         tgt = tgt + self.dropout2(tgt2)
         return tgt

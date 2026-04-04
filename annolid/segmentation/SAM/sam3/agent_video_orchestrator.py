@@ -28,7 +28,7 @@ class AgentConfig:
     det_thresh: float = 0.3
     window_size: int = 5
     stride: Optional[int] = None
-    output_dir: str = "sam3_agent_out"
+    output_dir: Optional[str] = None
     debug: bool = False
     max_generations: int = 100
 

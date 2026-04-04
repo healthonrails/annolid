@@ -377,6 +377,31 @@ def test_merge_canvas_annotations_overrides_only_matching_prompt_key() -> None:
     )
 
 
+def test_dialog_defaults_keep_agent_output_dir_disabled_by_default() -> None:
+    manager = Sam3Manager.__new__(Sam3Manager)
+    manager.score_threshold_detection = None
+    manager.new_det_thresh = None
+    manager.propagation_direction = None
+    manager.max_frame_num_to_track = None
+    manager.device_override = None
+    manager.sliding_window_size = None
+    manager.sliding_window_stride = None
+    manager.compile_model = None
+    manager.offload_video_to_cpu = None
+    manager.use_explicit_window_reseed = None
+    manager.allow_private_state_mutation = None
+    manager.max_num_objects = None
+    manager.multiplex_count = None
+    manager.agent_det_thresh = None
+    manager.agent_window_size = None
+    manager.agent_stride = None
+    manager.agent_output_dir = None
+
+    defaults = manager.dialog_defaults({})
+
+    assert defaults["agent_output_dir"] is None
+
+
 def test_manual_seed_loader_uses_png_json_pair_and_ignores_store(
     tmp_path: Path,
 ) -> None:
@@ -619,6 +644,7 @@ def test_add_prompt_supports_explicit_window_session_id() -> None:
 
     def _handle_frame_outputs(**kwargs):
         captured["recorded"] = True
+        captured["recorded_frame_idx"] = kwargs.get("frame_idx")
         return 0, False
 
     session._execute_prompt_transaction = _execute_prompt_transaction
@@ -629,12 +655,14 @@ def test_add_prompt_supports_explicit_window_session_id() -> None:
         session_id="window-session-1",
         text="mouse",
         record_outputs=True,
+        record_frame_idx=42,
         merge_existing_on_record=False,
         label_hints=["mouse"],
     )
 
     assert captured["session_id"] == "window-session-1"
     assert captured["recorded"] is True
+    assert captured["recorded_frame_idx"] == 42
 
 
 def test_should_accept_sam3_mask_rejects_full_frame_or_far_drift() -> None:

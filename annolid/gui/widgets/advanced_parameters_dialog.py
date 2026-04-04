@@ -86,8 +86,11 @@ class AdvancedParametersDialog(QDialog):
             sam3_runtime.get("agent_window_size") or self.sam3_sliding_window_size
         )
         self.sam3_agent_stride = sam3_runtime.get("agent_stride", None)
-        self.sam3_agent_output_dir = str(
-            sam3_runtime.get("agent_output_dir") or "sam3_agent_out"
+        configured_agent_output_dir = sam3_runtime.get("agent_output_dir")
+        self.sam3_agent_output_dir = (
+            ""
+            if configured_agent_output_dir in (None, "")
+            else str(configured_agent_output_dir)
         )
         raw_compile = sam3_runtime.get("compile_model")
         self.sam3_compile_model = (
@@ -915,7 +918,9 @@ class AdvancedParametersDialog(QDialog):
         )
 
         self.sam3_agent_output_dir_lineedit = QLineEdit(self.sam3_agent_output_dir)
-        self.sam3_agent_output_dir_lineedit.setPlaceholderText("sam3_agent_out")
+        self.sam3_agent_output_dir_lineedit.setPlaceholderText(
+            "Disabled by default (set a folder to save agent JSON/PNG)"
+        )
         self.sam3_agent_output_dir_lineedit.setToolTip(
             "Directory for agent JSON/PNG outputs."
         )
@@ -1022,7 +1027,7 @@ class AdvancedParametersDialog(QDialog):
             "Agent output dir",
             self._wrap_with_hint(
                 self.sam3_agent_output_dir_lineedit,
-                "Where agent JSON/PNG outputs are written.",
+                "Optional. Leave empty to avoid saving agent JSON/PNG outputs.",
             ),
         )
 
@@ -1138,7 +1143,7 @@ class AdvancedParametersDialog(QDialog):
             else int(self.sam3_agent_stride_spinbox.value())
         )
         self.sam3_agent_output_dir = (
-            self.sam3_agent_output_dir_lineedit.text().strip() or "sam3_agent_out"
+            self.sam3_agent_output_dir_lineedit.text().strip() or None
         )
         self.sam3_compile_model = self.sam3_compile_checkbox.isChecked()
         self.sam3_offload_video_to_cpu = self.sam3_offload_checkbox.isChecked()

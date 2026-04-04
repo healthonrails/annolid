@@ -1,10 +1,19 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+"""SAM3 model builder functions.
+
+This module provides factory functions for building SAM3 models:
+- build_sam3_image_model: Build SAM3 image segmentation model
+- build_sam3_video_model: Build SAM3 video tracking model
+- build_sam3_predictor: Build SAM3 video predictor with multiplex support
+- download_ckpt_from_hf: Download checkpoints from HuggingFace Hub
+"""
+
 # pyre-unsafe
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -1326,57 +1335,73 @@ def build_sam3_multiplex_video_predictor(
 def build_sam3_predictor(
     checkpoint_path: Optional[str] = None,
     bpe_path: Optional[str] = None,
-    version: str = "sam3.1",  # "sam3" or "sam3.1"
+    version: str = "sam3.1",
     compile: bool = False,
     warm_up: bool = False,
-    # SAM 3.1 specific
     max_num_objects: int = 16,
     multiplex_count: int = 16,
-    # Common
     use_fa3: bool = True,
     use_rope_real: bool = True,
     async_loading_frames: bool = True,
-    device=None,
+    device: Optional[Union[str, torch.device]] = None,
     **kwargs,
-):
-    """
-    Build a SAM3 video predictor.
+) -> Any:
+    """Build a SAM3 video predictor with unified API.
+
+    This is the main entry point for creating SAM3 video predictors.
+    Supports both SAM 3 (base) and SAM 3.1 (multiplex) versions.
 
     Args:
-        checkpoint_path: Path to model checkpoint
-        bpe_path: Path to BPE tokenizer vocabulary
-        version: Model version - "sam3" for base or "sam3.1" for multiplex
-        compile: Enable torch.compile for ~2x speedup (SAM 3.1 only currently)
+        checkpoint_path: Path to model checkpoint. If None, auto-downloads
+            from HuggingFace Hub.
+        bpe_path: Path to BPE tokenizer vocabulary. If None, uses bundled vocab.
+        version: Model version - "sam3" or "sam3.1"
+        compile: Enable torch.compile for ~2x speedup (SAM 3.1 only)
         warm_up: Run warm-up compilation passes
         max_num_objects: Maximum tracked objects (SAM 3.1 only)
         multiplex_count: Objects per multiplex bucket (SAM 3.1 only)
         use_fa3: Use Flash Attention 3
-        use_rope_real: Use real-valued RoPE
+        use_rope_real: Use real-valued RoPE for compile compatibility
         async_loading_frames: Load video frames asynchronously
-        **kwargs: Additional arguments passed to the underlying builder
+        device: Device to run on ("cuda", "cpu", "mps", or torch.device)
+        **kwargs: Additional arguments passed to underlying builder
 
     Returns:
-        A predictor with handle_request() and handle_stream_request() API.
-        Both versions support: start_session, add_prompt, propagate_in_video,
-        remove_object, reset_session, close_session.
+        Predictor with handle_request() and handle_stream_request() API.
+
+    Raises:
+        ValueError: If version is not "sam3" or "sam3.1"
+        RuntimeError: If model initialization fails
 
     Example:
-        # SAM 3.1 (auto-downloads from HuggingFace):
-        predictor = build_sam3_predictor(version="sam3.1", compile=True)
-
-        # SAM 3 (auto-downloads from HuggingFace):
-        predictor = build_sam3_predictor(version="sam3")
-
-        # Or with a local checkpoint:
-        predictor = build_sam3_predictor(checkpoint_path="path/to/ckpt.pt", version="sam3.1")
-
-        # Both use the same API:
-        response = predictor.handle_request({"type": "start_session", "resource_path": video_dir})
-        session_id = response["session_id"]
-        predictor.handle_request({"type": "add_prompt", "session_id": session_id, "frame_index": 0, "text": "person"})
-        for out in predictor.handle_stream_request({"type": "propagate_in_video", "session_id": session_id}):
-            masks = out["out_binary_masks"]
+        >>> # SAM 3.1 with auto-download
+        >>> predictor = build_sam3_predictor(version="sam3.1", compile=True)
+        >>>
+        >>> # Start session
+        >>> response = predictor.handle_request({
+        ...     "type": "start_session",
+        ...     "resource_path": "/path/to/video.mp4"
+        ... })
+        >>> session_id = response["session_id"]
+        >>>
+        >>> # Add text prompt
+        >>> predictor.handle_request({
+        ...     "type": "add_prompt",
+        ...     "session_id": session_id,
+        ...     "frame_index": 0,
+        ...     "text": "person"
+        ... })
+        >>>
+        >>> # Propagate through video
+        >>> for out in predictor.handle_stream_request({
+        ...     "type": "propagate_in_video",
+        ...     "session_id": session_id
+        ... }):
+        ...     masks = out["out_binary_masks"]
     """
+    if version not in ("sam3", "sam3.1"):
+        raise ValueError(f"Unknown SAM3 version: {version}. Use 'sam3' or 'sam3.1'")
+
     if version == "sam3.1":
         return build_sam3_multiplex_video_predictor(
             checkpoint_path=checkpoint_path,

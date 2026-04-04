@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import gc
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union, Any
 
 import numpy as np
 import torch
@@ -207,7 +207,7 @@ def process_video_with_agent(
     agent_det_thresh: float = 0.3,
     window_size: int = 5,
     stride: Optional[int] = None,
-    output_dir: str = "sam3_agent_out",
+    output_dir: Optional[str] = None,
     checkpoint_path: Optional[str] = None,
     propagation_direction: str = "forward",
     device: Optional[str] = None,
@@ -226,8 +226,6 @@ def process_video_with_agent(
 
     Returns a short status string for the GUI/CLI.
     """
-    os.makedirs(output_dir, exist_ok=True)
-
     agent_cfg = AgentConfig(
         prompt=agent_prompt,
         det_thresh=agent_det_thresh,

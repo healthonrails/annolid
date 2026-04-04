@@ -160,7 +160,7 @@ def run_sam3_agent_sliding_window(
     agent_prompt: str,
     window_size: int = 5,
     stride: Optional[int] = None,
-    output_dir: str = "../../sam3_agent_out",
+    output_dir: Optional[str] = None,
 ) -> Generator[Tuple[int, Dict[str, Any]], None, None]:
     """
     Run the SAM3 agent (LLM-driven) on a video using a sliding window.
@@ -173,7 +173,7 @@ def run_sam3_agent_sliding_window(
         agent_prompt: User prompt passed to the SAM3 agent.
         window_size: Number of frames to hold in memory per window.
         stride: Step between windows. Defaults to window_size (no overlap).
-        output_dir: Directory where agent outputs are written.
+        output_dir: Optional directory where agent outputs are written.
 
     Yields:
         (global_frame_index, agent_result_dict)
@@ -220,7 +220,7 @@ def run_video_sliding_window(
     window_size: int = 5,
     stride: Optional[int] = None,
     device: Optional[str] = None,
-    output_dir: str = "../../sam3_agent_out",
+    output_dir: Optional[str] = None,
     model=None,
 ) -> Iterable[Tuple[int, Dict[str, Any]]]:
     """

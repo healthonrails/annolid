@@ -842,8 +842,12 @@ class Sam3Manager:
             else sliding_window_stride
         )
         agent_output_dir = (
-            agent_output_dir_override or agent_output_dir_cfg or "sam3_agent_out"
+            agent_output_dir_override
+            if agent_output_dir_override is not None
+            else agent_output_dir_cfg
         )
+        if isinstance(agent_output_dir, str):
+            agent_output_dir = agent_output_dir.strip() or None
 
         if not annotations:
             annotations = canvas_ann

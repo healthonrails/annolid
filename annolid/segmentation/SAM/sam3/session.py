@@ -94,6 +94,22 @@ class _PredictorAPIAdapter:
 
     def __init__(self, predictor: Any):
         self._predictor = predictor
+        self._request_handlers: Dict[str, Callable] = {}
+        self._discover_handlers()
+
+    def _discover_handlers(self) -> None:
+        """Discover available request handlers on the predictor."""
+        for method_name in ["handle_request", "handle_stream_request"]:
+            if hasattr(self._predictor, method_name):
+                self._request_handlers[method_name] = getattr(self._predictor, method_name)
+
+    def _call_request(self, request: Dict[str, Any], stream: bool = False) -> Any:
+        """Call the appropriate request handler."""
+        handler_name = "handle_stream_request" if stream else "handle_request"
+        handler = self._request_handlers.get(handler_name)
+        if handler is None:
+            raise RuntimeError(f"No {handler_name} method available on predictor")
+        return handler(request)
 
     def start_session(
         self,
@@ -121,7 +137,7 @@ class _PredictorAPIAdapter:
         }
         if session_id is not None:
             request["session_id"] = session_id
-        return self._predictor.handle_request(request)
+        return self._call_request(request)
 
     def add_prompt(
         self,
@@ -130,77 +146,126 @@ class _PredictorAPIAdapter:
         frame_idx: int,
         text: Optional[str],
         points: Optional[List[List[float]]] = None,
-        point_labels: Optional[List[int]],
-        bounding_boxes: Optional[List[List[float]]],
-        bounding_box_labels: Optional[List[int]],
+        point_labels: Optional[List[int]] = None,
+        bounding_boxes: Optional[List[List[float]]] = None,
+        bounding_box_labels: Optional[List[int]] = None,
         mask_inputs: Optional[List[object]] = None,
         mask_labels: Optional[List[int]] = None,
-        obj_id: Optional[int],
+        obj_id: Optional[int] = None,
     ) -> Dict[str, Any]:
+        """Add a prompt to the session.
+
+        Args:
+            session_id: The session identifier
+            frame_idx: Frame index to add prompt on
+            text: Optional text prompt
+            points: Optional list of point coordinates
+            point_labels: Optional labels for points (1=positive, 0=negative)
+            bounding_boxes: Optional list of bounding boxes [x, y, w, h]
+            bounding_box_labels: Optional labels for boxes
+            mask_inputs: Optional mask inputs
+            mask_labels: Optional labels for masks
+            obj_id: Optional object ID for point prompts
+
+        Returns:
+            Response dictionary from the predictor
+        """
+        # Normalize bounding boxes
         if not bounding_boxes:
             bounding_boxes = None
             bounding_box_labels = None
         elif not bounding_box_labels:
             bounding_box_labels = [1] * len(bounding_boxes)
 
+        # Try direct method first
         if hasattr(self._predictor, "add_prompt"):
-            return self._predictor.add_prompt(
-                session_id=session_id,
-                frame_idx=frame_idx,
-                text=text,
-                points=points,
-                point_labels=point_labels,
-                bounding_boxes=bounding_boxes,
-                bounding_box_labels=bounding_box_labels,
-                mask_inputs=mask_inputs,
-                mask_labels=mask_labels,
-                obj_id=obj_id,
-            )
-        return self._predictor.handle_request(
-            {
-                "type": "add_prompt",
-                "session_id": session_id,
-                "frame_index": frame_idx,
-                "text": text,
-                "points": points,
-                "point_labels": point_labels,
-                "bounding_boxes": bounding_boxes,
-                "bounding_box_labels": bounding_box_labels,
-                "mask_inputs": mask_inputs,
-                "mask_labels": mask_labels,
-                "obj_id": obj_id,
-            }
-        )
+            try:
+                return self._predictor.add_prompt(
+                    session_id=session_id,
+                    frame_idx=frame_idx,
+                    text=text,
+                    points=points,
+                    point_labels=point_labels,
+                    bounding_boxes=bounding_boxes,
+                    bounding_box_labels=bounding_box_labels,
+                    mask_inputs=mask_inputs,
+                    mask_labels=mask_labels,
+                    obj_id=obj_id,
+                )
+            except TypeError:
+                pass  # Fall through to request-based API
+
+        # Build request
+        request = {
+            "type": "add_prompt",
+            "session_id": session_id,
+            "frame_index": frame_idx,
+            "text": text,
+            "points": points,
+            "point_labels": point_labels,
+            "bounding_boxes": bounding_boxes,
+            "bounding_box_labels": bounding_box_labels,
+            "mask_inputs": mask_inputs,
+            "mask_labels": mask_labels,
+            "obj_id": obj_id,
+        }
+        return self._call_request(request)
 
     def propagate_in_video(
         self,
         *,
         session_id: str,
-        propagation_direction: str,
-        start_frame_idx: Optional[int],
-        max_frame_num_to_track: Optional[int],
+        propagation_direction: str = "both",
+        start_frame_idx: Optional[int] = None,
+        max_frame_num_to_track: Optional[int] = None,
     ) -> Iterator[Dict[str, Any]]:
+        """Propagate masks through video.
+
+        Args:
+            session_id: The session identifier
+            propagation_direction: Direction to propagate ("forward", "backward", "both")
+            start_frame_idx: Starting frame index
+            max_frame_num_to_track: Maximum number of frames to track
+
+        Yields:
+            Response dictionaries for each frame
+        """
         if hasattr(self._predictor, "propagate_in_video"):
-            return self._predictor.propagate_in_video(
-                session_id=session_id,
-                propagation_direction=propagation_direction,
-                start_frame_idx=start_frame_idx,
-                max_frame_num_to_track=max_frame_num_to_track,
-            )
-        return self._predictor.handle_stream_request(
-            {
-                "type": "propagate_in_video",
-                "session_id": session_id,
-                "propagation_direction": propagation_direction,
-                "start_frame_index": start_frame_idx,
-                "max_frame_num_to_track": max_frame_num_to_track,
-            }
-        )
+            try:
+                yield from self._predictor.propagate_in_video(
+                    session_id=session_id,
+                    propagation_direction=propagation_direction,
+                    start_frame_idx=start_frame_idx,
+                    max_frame_num_to_track=max_frame_num_to_track,
+                )
+                return
+            except TypeError:
+                pass  # Fall through to request-based API
+
+        request = {
+            "type": "propagate_in_video",
+            "session_id": session_id,
+            "propagation_direction": propagation_direction,
+            "start_frame_index": start_frame_idx,
+            "max_frame_num_to_track": max_frame_num_to_track,
+        }
+        yield from self._call_request(request, stream=True)
 
     def reset_session(self, session_id: str) -> Dict[str, Any]:
+        """Reset the session state.
+
+        Args:
+            session_id: The session identifier
+
+        Returns:
+            Response dictionary
+        """
         if hasattr(self._predictor, "reset_session"):
-            return self._predictor.reset_session(session_id)
-        return self._predictor.handle_request({"type": "reset_session", "session_id": session_id})
+            try:
+                return self._predictor.reset_session(session_id)
+            except TypeError:
+                pass
+        return self._call_request({"type": "reset_session", "session_id": session_id})
 
     def remove_object(
         self,
@@ -209,32 +274,63 @@ class _PredictorAPIAdapter:
         frame_idx: int = 0,
         obj_id: int,
     ) -> Dict[str, Any]:
+        """Remove an object from tracking.
+
+        Args:
+            session_id: The session identifier
+            frame_idx: Frame index
+            obj_id: Object ID to remove
+
+        Returns:
+            Response dictionary
+        """
         if hasattr(self._predictor, "remove_object"):
-            return self._predictor.remove_object(
-                session_id=session_id,
-                frame_idx=frame_idx,
-                obj_id=obj_id,
-            )
-        return self._predictor.handle_request(
-            {
-                "type": "remove_object",
-                "session_id": session_id,
-                "frame_index": frame_idx,
-                "obj_id": obj_id,
-            }
-        )
+            try:
+                return self._predictor.remove_object(
+                    session_id=session_id,
+                    frame_idx=frame_idx,
+                    obj_id=obj_id,
+                )
+            except TypeError:
+                pass
+        return self._call_request({
+            "type": "remove_object",
+            "session_id": session_id,
+            "frame_index": frame_idx,
+            "obj_id": obj_id,
+        })
 
     def close_session(self, session_id: str) -> Dict[str, Any]:
+        """Close the session.
+
+        Args:
+            session_id: The session identifier
+
+        Returns:
+            Response dictionary
+        """
         if hasattr(self._predictor, "close_session"):
-            return self._predictor.close_session(session_id)
-        return self._predictor.handle_request({"type": "close_session", "session_id": session_id})
+            try:
+                return self._predictor.close_session(session_id)
+            except TypeError:
+                pass
+        return self._call_request({"type": "close_session", "session_id": session_id})
 
     def cancel_propagation(self, session_id: str) -> Dict[str, Any]:
+        """Cancel ongoing propagation.
+
+        Args:
+            session_id: The session identifier
+
+        Returns:
+            Response dictionary
+        """
         if hasattr(self._predictor, "cancel_propagation"):
-            return self._predictor.cancel_propagation(session_id=session_id)
-        return self._predictor.handle_request(
-            {"type": "cancel_propagation", "session_id": session_id}
-        )
+            try:
+                return self._predictor.cancel_propagation(session_id=session_id)
+            except TypeError:
+                pass
+        return self._call_request({"type": "cancel_propagation", "session_id": session_id})
 
     @property
     def raw(self) -> Any:
@@ -911,6 +1007,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         obj_id: Optional[int] = None,
         session_id: Optional[str] = None,
         record_outputs: bool = False,
+        record_frame_idx: Optional[int] = None,
         merge_existing_on_record: bool = False,
         label_hints: Optional[List[str]] = None,
     ):
@@ -925,7 +1022,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             len(mask_inputs or []),
             len(points or []),
         )
-        self._record_prompt_seed_frame(int(frame_idx))
+        save_frame_idx = (
+            int(record_frame_idx) if record_frame_idx is not None else int(frame_idx)
+        )
+        self._record_prompt_seed_frame(save_frame_idx)
         result = self._execute_prompt_transaction(
             session_id=target_session_id,
             frame_idx=frame_idx,
@@ -948,7 +1048,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 outputs = step_result.get("outputs", {}) if isinstance(step_result, dict) else {}
                 # Save prompt-frame outputs immediately to avoid losing masks if propagation fails.
                 self._handle_frame_outputs(
-                    frame_idx=frame_idx,
+                    frame_idx=save_frame_idx,
                     outputs=outputs or {},
                     total_frames=max(len(self.frame_names) or 0,
                                      self.max_frame_num_to_track or 0) or None,
@@ -2956,6 +3056,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             label_hints = self._label_hints_from_ids(obj_ids, self.id_to_labels)
                             seed_mask_count = self._apply_seed_prompts(
                                 frame_idx=int(prompt_frame_idx),
+                                output_frame_idx=int(window_start_idx + int(prompt_frame_idx)),
                                 session_id=session_id,
                                 boxes=boxes,
                                 labels=labels,
@@ -2983,6 +3084,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         )
                         seed_mask_count = self._apply_seed_prompts(
                             frame_idx=int(local_frame_idx),
+                            output_frame_idx=int(abs_frame_idx),
                             session_id=session_id,
                             boxes=[],
                             labels=[],
@@ -3001,6 +3103,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         )
                         seed_mask_count = self._apply_seed_prompts(
                             frame_idx=int(local_frame_idx),
+                            output_frame_idx=int(abs_frame_idx),
                             session_id=session_id,
                             boxes=[],
                             labels=[],
@@ -3188,6 +3291,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self,
         *,
         frame_idx: int,
+        output_frame_idx: Optional[int] = None,
         session_id: Optional[str],
         boxes: List[List[float]],
         labels: List[int],
@@ -3221,6 +3325,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 mask_inputs=mask_inputs or None,
                 mask_labels=mask_labels or None,
                 record_outputs=True,
+                record_frame_idx=output_frame_idx,
                 merge_existing_on_record=False,
                 label_hints=label_hints,
             )
@@ -3251,6 +3356,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     point_labels=payload["point_labels"],
                     obj_id=int(obj_id),
                     record_outputs=True,
+                    record_frame_idx=output_frame_idx,
                     merge_existing_on_record=has_prior_record or local_idx > 0,
                     label_hints=[point_hint],
                 )

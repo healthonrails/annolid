@@ -68,7 +68,10 @@ def format_shape(shape):
             "description": shape.description,
         }
     )
-    if getattr(shape, "mask", None) is not None:
+    if (
+        str(getattr(shape, "shape_type", "") or "").lower() == "mask"
+        and getattr(shape, "mask", None) is not None
+    ):
         mask = shape.mask
         if mask is not None:
             mask = np.asarray(mask)

@@ -1,10 +1,20 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+"""Visualization utilities for SAM3 video segmentation and tracking results.
+
+This module provides functions for:
+- Generating perceptually distinct colors
+- Drawing bounding boxes and masks on images
+- Visualizing frame outputs with multiple object masks
+- Rendering masklet videos with overlays
+"""
+
 # pyre-unsafe
 import json
 import os
 import subprocess
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union, Iterator
 
 import cv2
 import matplotlib.patches as patches
@@ -21,30 +31,41 @@ from torchvision.ops import masks_to_boxes
 from tqdm import tqdm
 
 
-def generate_colors(n_colors=256, n_samples=5000):
-    # Step 1: Random RGB samples
-    np.random.seed(42)
+def generate_colors(n_colors: int = 256, n_samples: int = 5000, seed: int = 42) -> np.ndarray:
+    """Generate perceptually distinct colors using k-means clustering in LAB space.
+
+    Args:
+        n_colors: Number of distinct colors to generate
+        n_samples: Number of random samples to cluster
+        seed: Random seed for reproducibility
+
+    Returns:
+        Array of RGB colors with shape (n_colors, 3), values in [0, 1]
+    """
+    np.random.seed(seed)
     rgb = np.random.rand(n_samples, 3)
-    # Step 2: Convert to LAB for perceptual uniformity
-    # print(f"Converting {n_samples} RGB samples to LAB color space...")
     lab = rgb2lab(rgb.reshape(1, -1, 3)).reshape(-1, 3)
-    # print("Conversion to LAB complete.")
-    # Step 3: k-means clustering in LAB
-    kmeans = KMeans(n_clusters=n_colors, n_init=10)
-    # print(f"Fitting KMeans with {n_colors} clusters on {n_samples} samples...")
+
+    kmeans = KMeans(n_clusters=n_colors, n_init=10, random_state=seed)
     kmeans.fit(lab)
-    # print("KMeans fitting complete.")
     centers_lab = kmeans.cluster_centers_
-    # Step 4: Convert LAB back to RGB
+
     colors_rgb = lab2rgb(centers_lab.reshape(1, -1, 3)).reshape(-1, 3)
     colors_rgb = np.clip(colors_rgb, 0, 1)
     return colors_rgb
 
 
+# Pre-generate a default color palette
 COLORS = generate_colors(n_colors=128, n_samples=5000)
 
 
-def show_img_tensor(img_batch, vis_img_idx=0):
+def show_img_tensor(img_batch: torch.Tensor, vis_img_idx: int = 0) -> None:
+    """Display a normalized image tensor using matplotlib.
+
+    Args:
+        img_batch: Batch of images tensor
+        vis_img_idx: Index of image to visualize in batch
+    """
     MEAN_IMG = np.array([0.5, 0.5, 0.5])
     STD_IMG = np.array([0.5, 0.5, 0.5])
     im_tensor = img_batch[vis_img_idx].detach().cpu()
@@ -55,51 +76,77 @@ def show_img_tensor(img_batch, vis_img_idx=0):
     plt.imshow(im_tensor)
 
 
-def draw_box_on_image(image, box, color=(0, 255, 0)):
+def draw_box_on_image(
+    image: Image.Image,
+    box: Tuple[float, float, float, float],
+    color: Tuple[int, int, int] = (0, 255, 0),
+    thickness: int = 2
+) -> Image.Image:
+    """Draw a rectangle on a PIL image using xywh format.
+
+    Args:
+        image: PIL Image to draw on
+        box: Tuple of (x, y, w, h) in pixels
+        color: RGB color tuple
+        thickness: Line thickness in pixels
+
+    Returns:
+        Modified PIL Image
     """
-    Draws a rectangle on a given PIL image using the provided box coordinates in xywh format.
-    :param image: PIL.Image - The image on which to draw the rectangle.
-    :param box: tuple - A tuple (x, y, w, h) representing the top-left corner, width, and height of the rectangle.
-    :param color: tuple - A tuple (R, G, B) representing the color of the rectangle. Default is red.
-    :return: PIL.Image - The image with the rectangle drawn on it.
-    """
-    # Ensure the image is in RGB mode
     image = image.convert("RGB")
-    # Unpack the box coordinates
-    x, y, w, h = box
-    x, y, w, h = int(x), int(y), int(w), int(h)
-    # Get the pixel data
+    x, y, w, h = map(int, box)
     pixels = image.load()
-    # Draw the top and bottom edges
-    for i in range(x, x + w):
-        pixels[i, y] = color
-        pixels[i, y + h - 1] = color
-        pixels[i, y + 1] = color
-        pixels[i, y + h] = color
-        pixels[i, y - 1] = color
-        pixels[i, y + h - 2] = color
-    # Draw the left and right edges
-    for j in range(y, y + h):
-        pixels[x, j] = color
-        pixels[x + 1, j] = color
-        pixels[x - 1, j] = color
-        pixels[x + w - 1, j] = color
-        pixels[x + w, j] = color
-        pixels[x + w - 2, j] = color
+
+    # Draw horizontal lines
+    for t in range(thickness):
+        for i in range(x, x + w):
+            for dy in [-t, t]:
+                py = y + dy
+                if 0 <= py < image.height:
+                    pixels[i, py] = color
+                py = y + h - 1 + dy
+                if 0 <= py < image.height:
+                    pixels[i, py] = color
+
+    # Draw vertical lines
+    for t in range(thickness):
+        for j in range(y, y + h):
+            for dx in [-t, t]:
+                px = x + dx
+                if 0 <= px < image.width:
+                    pixels[px, j] = color
+                px = x + w - 1 + dx
+                if 0 <= px < image.width:
+                    pixels[px, j] = color
+
     return image
 
 
 def plot_bbox(
-    img_height,
-    img_width,
-    box,
-    box_format="XYXY",
-    relative_coords=True,
-    color="r",
-    linestyle="solid",
-    text=None,
-    ax=None,
-):
+    img_height: int,
+    img_width: int,
+    box: Union[List[float], Tuple[float, ...]],
+    box_format: str = "XYXY",
+    relative_coords: bool = True,
+    color: Union[str, Tuple[float, float, float]] = "r",
+    linestyle: str = "solid",
+    text: Optional[str] = None,
+    ax: Optional[plt.Axes] = None,
+) -> None:
+    """Plot a bounding box on matplotlib axes.
+
+    Args:
+        img_height: Image height in pixels
+        img_width: Image width in pixels
+        box: Box coordinates (format depends on box_format)
+        box_format: One of "XYXY", "XYWH", "CxCyWH"
+        relative_coords: If True, box coords are normalized [0, 1]
+        color: Box color (matplotlib color string or RGB tuple)
+        linestyle: Matplotlib linestyle string
+        text: Optional label text to display
+        ax: Matplotlib axes to plot on (uses gca if None)
+    """
+    # Parse box format
     if box_format == "XYXY":
         x, y, x2, y2 = box
         w = x2 - x
@@ -111,7 +158,7 @@ def plot_bbox(
         x = cx - w / 2
         y = cy - h / 2
     else:
-        raise RuntimeError(f"Invalid box_format {box_format}")
+        raise ValueError(f"Invalid box_format: {box_format}")
 
     if relative_coords:
         x *= img_width
@@ -121,6 +168,7 @@ def plot_bbox(
 
     if ax is None:
         ax = plt.gca()
+
     rect = patches.Rectangle(
         (x, y),
         w,
@@ -131,8 +179,8 @@ def plot_bbox(
         linestyle=linestyle,
     )
     ax.add_patch(rect)
+
     if text is not None:
-        facecolor = "w"
         ax.text(
             x,
             y - 5,
@@ -140,45 +188,70 @@ def plot_bbox(
             color=color,
             weight="bold",
             fontsize=8,
-            bbox={"facecolor": facecolor, "alpha": 0.75, "pad": 2},
+            bbox={"facecolor": "w", "alpha": 0.75, "pad": 2},
         )
 
 
-def plot_mask(mask, color="r", ax=None):
+def plot_mask(
+    mask: np.ndarray,
+    color: Union[str, Tuple[float, float, float]] = "r",
+    ax: Optional[plt.Axes] = None,
+    alpha: float = 0.5,
+) -> None:
+    """Plot a binary mask overlay on matplotlib axes.
+
+    Args:
+        mask: Binary mask array (H, W)
+        color: Mask color (matplotlib color string or RGB tuple)
+        ax: Matplotlib axes to plot on (uses gca if None)
+        alpha: Mask transparency [0, 1]
+    """
     im_h, im_w = mask.shape
     mask_img = np.zeros((im_h, im_w, 4), dtype=np.float32)
     mask_img[..., :3] = to_rgb(color)
-    mask_img[..., 3] = mask * 0.5
-    # Use the provided ax or the current axis
+    mask_img[..., 3] = mask * alpha
+
     if ax is None:
         ax = plt.gca()
     ax.imshow(mask_img)
 
 
-def normalize_bbox(bbox_xywh, img_w, img_h):
-    # Assumes bbox_xywh is in XYWH format
+def normalize_bbox(
+    bbox_xywh: Union[List[float], torch.Tensor],
+    img_w: float,
+    img_h: float,
+) -> Union[List[float], torch.Tensor]:
+    """Normalize bounding box coordinates from pixels to [0, 1] range.
+
+    Args:
+        bbox_xywh: Box in XYWH format (list of 4 floats or torch tensor)
+        img_w: Image width in pixels
+        img_h: Image height in pixels
+
+    Returns:
+        Normalized box in same format as input
+    """
     if isinstance(bbox_xywh, list):
-        assert len(bbox_xywh) == 4, (
-            "bbox_xywh list must have 4 elements. Batching not support except for torch tensors."
-        )
+        if len(bbox_xywh) != 4:
+            raise ValueError("bbox_xywh list must have 4 elements")
         normalized_bbox = bbox_xywh.copy()
         normalized_bbox[0] /= img_w
         normalized_bbox[1] /= img_h
         normalized_bbox[2] /= img_w
         normalized_bbox[3] /= img_h
-    else:
-        assert isinstance(bbox_xywh, torch.Tensor), (
-            "Only torch tensors are supported for batching."
-        )
+        return normalized_bbox
+
+    if isinstance(bbox_xywh, torch.Tensor):
         normalized_bbox = bbox_xywh.clone()
-        assert normalized_bbox.size(-1) == 4, (
-            "bbox_xywh tensor must have last dimension of size 4."
-        )
+        if normalized_bbox.size(-1) != 4:
+            raise ValueError("bbox_xywh tensor must have last dimension of size 4")
         normalized_bbox[..., 0] /= img_w
         normalized_bbox[..., 1] /= img_h
         normalized_bbox[..., 2] /= img_w
         normalized_bbox[..., 3] /= img_h
-    return normalized_bbox
+        return normalized_bbox
+
+    raise TypeError(f"Unsupported bbox type: {type(bbox_xywh)}")
 
 
 def visualize_frame_output(frame_idx, video_frames, outputs, figsize=(12, 8)):
@@ -509,15 +582,30 @@ def save_masklet_image(frame, outputs, out_path, alpha=0.5, frame_idx=None):
     print(f"Overlay image saved to {out_path}")
 
 
-def prepare_masks_for_visualization(frame_to_output):
-    # frame_to_obj_masks --> {frame_idx: {'output_probs': np.array, `out_obj_ids`: np.array, `out_binary_masks`: np.array}}
+def prepare_masks_for_visualization(
+    frame_to_output: Dict[int, Dict[str, Any]]
+) -> Dict[int, Dict[int, np.ndarray]]:
+    """Prepare SAM3 outputs for visualization by extracting valid masks.
+
+    Args:
+        frame_to_output: Dictionary mapping frame_idx to output dict containing:
+            - out_obj_ids: Array of object IDs
+            - out_binary_masks: Array of binary masks
+
+    Returns:
+        Dictionary mapping frame_idx to dict of {obj_id: mask}
+    """
+    result: Dict[int, Dict[int, np.ndarray]] = {}
     for frame_idx, out in frame_to_output.items():
-        _processed_out = {}
-        for idx, obj_id in enumerate(out["out_obj_ids"].tolist()):
-            if out["out_binary_masks"][idx].any():
-                _processed_out[obj_id] = out["out_binary_masks"][idx]
-        frame_to_output[frame_idx] = _processed_out
-    return frame_to_output
+        _processed_out: Dict[int, np.ndarray] = {}
+        obj_ids = out.get("out_obj_ids", [])
+        masks = out.get("out_binary_masks", [])
+
+        for idx, obj_id in enumerate(obj_ids):
+            if idx < len(masks) and masks[idx] is not None and np.any(masks[idx]):
+                _processed_out[int(obj_id)] = np.asarray(masks[idx], dtype=np.uint8)
+        result[int(frame_idx)] = _processed_out
+    return result
 
 
 def convert_coco_to_masklet_format(
@@ -931,7 +1019,18 @@ def show_points(coords, labels, ax, marker_size=375):
     )
 
 
-def load_frame(frame):
+def load_frame(frame: Union[str, np.ndarray, Image.Image]) -> np.ndarray:
+    """Load a frame from various sources.
+
+    Args:
+        frame: Can be:
+            - String path to image file
+            - NumPy array (already loaded image)
+            - PIL Image
+
+    Returns:
+        Frame as RGB numpy array with shape (H, W, 3)
+    """
     if isinstance(frame, np.ndarray):
         img = frame
     elif isinstance(frame, Image.Image):
@@ -939,5 +1038,5 @@ def load_frame(frame):
     elif isinstance(frame, str) and os.path.isfile(frame):
         img = plt.imread(frame)
     else:
-        raise ValueError(f"Invalid video frame type: {type(frame)=}")
+        raise ValueError(f"Invalid video frame type: {type(frame)}")
     return img
