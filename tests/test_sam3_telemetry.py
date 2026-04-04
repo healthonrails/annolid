@@ -7,6 +7,7 @@ from annolid.segmentation.SAM.sam3.telemetry import (
     Sam3TelemetrySink,
     build_config_snapshot,
     build_window_telemetry_entry,
+    memory_snapshot,
 )
 
 
@@ -55,3 +56,13 @@ def test_telemetry_sink_writes_jsonl_rows(tmp_path: Path) -> None:
     assert rows[0]["mode"] == "offline"
     assert rows[0]["config_snapshot"]["device"] == "cpu"
     assert "rss_mb" in rows[0]
+
+
+def test_memory_snapshot_handles_missing_resource_module(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "annolid.segmentation.SAM.sam3.telemetry.resource",
+        None,
+    )
+    payload = memory_snapshot()
+    assert "rss_mb" in payload
+    assert payload["rss_mb"] == 0.0

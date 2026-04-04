@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import platform
-import resource
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,8 +9,15 @@ from typing import Dict, Mapping, Optional
 
 import torch
 
+try:
+    import resource  # type: ignore
+except Exception:  # pragma: no cover - platform-specific import
+    resource = None  # type: ignore
+
 
 def _process_rss_mb() -> float:
+    if resource is None:
+        return 0.0
     rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     # macOS reports bytes; Linux reports KiB.
     if platform.system().lower() == "darwin":
