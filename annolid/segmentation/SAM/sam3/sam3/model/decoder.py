@@ -1069,6 +1069,10 @@ class SimpleRoPEAttention(nn.Module):
         # Apply rotary position encoding
         w = h = math.sqrt(q.shape[-2])
         self.freqs_cis = self.freqs_cis.to(q.device)
+        if self.use_rope_real:
+            # Keep real/imag views on the same device as freqs_cis/q.
+            self.freqs_cis_real = self.freqs_cis.real
+            self.freqs_cis_imag = self.freqs_cis.imag
         if self.freqs_cis.shape[0] != q.shape[-2]:
             self.freqs_cis = self.compute_cis(end_x=w, end_y=h, device=q.device)
             if self.use_rope_real:

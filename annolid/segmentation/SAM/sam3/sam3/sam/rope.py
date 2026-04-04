@@ -98,6 +98,10 @@ def apply_rotary_enc_real(
 ):
     assert xk is not None
     assert xk.shape[-2] != 0
+    if freqs_cis_real.device != xq.device:
+        freqs_cis_real = freqs_cis_real.to(xq.device)
+    if freqs_cis_imag.device != xq.device:
+        freqs_cis_imag = freqs_cis_imag.to(xq.device)
 
     xq_real = xq.float().reshape(*xq.shape[:-1], -1, 2)[..., 0]
     xq_imag = xq.float().reshape(*xq.shape[:-1], -1, 2)[..., 1]
