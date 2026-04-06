@@ -17,8 +17,9 @@ class GuiOpenUrlTool(FunctionTool):
     @property
     def description(self) -> str:
         return (
-            "Open a web URL in Annolid's embedded canvas web viewer. "
-            "Accepts full URLs or domains like google.com."
+            "Open a web URL or local file path in Annolid's embedded canvas web "
+            "viewer. Accepts full URLs, domains like google.com, and local "
+            "markdown/html files."
         )
 
     @property

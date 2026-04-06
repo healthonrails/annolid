@@ -1573,6 +1573,62 @@ def test_gui_open_url_queues_for_local_html_file(monkeypatch, tmp_path: Path) ->
     assert calls == ["bot_open_url"]
 
 
+def test_gui_open_url_queues_for_local_markdown_file(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+
+    md_file = tmp_path / "notes.md"
+    md_file.write_text("# Notes\n", encoding="utf-8")
+
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+
+    payload = asyncio.run(task._tool_gui_open_url(f"open {md_file}"))
+    assert payload["ok"] is True
+    assert payload["queued"] is True
+    assert payload["url"] == str(md_file)
+    assert calls == ["bot_open_url"]
+
+
+def test_gui_open_url_queues_for_local_markdown_file_with_open_url_prefix(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+
+    md_file = tmp_path / "notes.md"
+    md_file.write_text("# Notes\n", encoding="utf-8")
+
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+
+    payload = asyncio.run(task._tool_gui_open_url(f"open url {md_file}"))
+    assert payload["ok"] is True
+    assert payload["queued"] is True
+    assert payload["url"] == str(md_file)
+    assert calls == ["bot_open_url"]
+
+
 def test_gui_open_url_blocks_file_scheme(monkeypatch, tmp_path: Path) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
 
@@ -1589,6 +1645,35 @@ def test_gui_open_url_blocks_file_scheme(monkeypatch, tmp_path: Path) -> None:
     payload = asyncio.run(task._tool_gui_open_url("file:///etc/passwd"))
     assert payload["ok"] is False
     assert "file:// URLs are blocked for safety" in str(payload.get("error") or "")
+
+
+def test_gui_open_url_arxiv_uses_arxiv_flow(monkeypatch, tmp_path: Path) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+    arxiv_queries: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+
+    async def _fake_arxiv_search(*, query: str = "") -> None:
+        arxiv_queries.append(query)
+
+    task._safe_run_arxiv_search = _fake_arxiv_search  # type: ignore[method-assign]
+
+    payload = asyncio.run(task._tool_gui_open_url("https://arxiv.org/abs/2403.18690"))
+    assert payload["ok"] is True
+    assert payload["id"] == "2403.18690"
+    assert arxiv_queries == ["id:2403.18690"]
+    assert calls == []
 
 
 def test_gui_web_run_steps_executes_sequence(monkeypatch, tmp_path: Path) -> None:
@@ -2887,6 +2972,12 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_open_local_html["name"] == "open_url"
     assert "ai_studio_code (1).html" in parsed_open_local_html["args"]["url"]
 
+    parsed_open_local_md = task._parse_direct_gui_command(
+        "open /Users/chenyang/Downloads/notes/README.md"
+    )
+    assert parsed_open_local_md["name"] == "open_url"
+    assert parsed_open_local_md["args"]["url"].endswith("README.md")
+
     parsed_open_domain_browser = task._parse_direct_gui_command(
         "open google.com in browser"
     )
@@ -3229,6 +3320,10 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_read_file_quote["name"] == "read_file"
     assert parsed_read_file_quote["args"]["path"] == "some file.txt"
 
+    parsed_read_markdown = task._parse_direct_gui_command("read file README.md")
+    assert parsed_read_markdown["name"] == "read_file"
+    assert parsed_read_markdown["args"]["path"] == "README.md"
+
     parsed_exec = task._parse_direct_gui_command("run command pwd")
     assert parsed_exec["name"] == "exec_command"
     assert parsed_exec["args"]["command"] == "pwd"
@@ -3379,6 +3474,20 @@ def test_parse_direct_gui_command_variants() -> None:
     )
     assert parsed_howto["name"] == "generate_annolid_tutorial"
     assert "behavior analysis" in parsed_howto["args"]["topic"].lower()
+
+
+def test_parse_direct_gui_command_prefers_local_markdown_file_over_domain(
+    tmp_path: Path, monkeypatch
+) -> None:
+    md_path = tmp_path / "RELEASING.md"
+    md_path.write_text("# Release notes\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    task = StreamingChatTask("hi", widget=None)
+    parsed = task._parse_direct_gui_command("RELEASING.md")
+
+    assert parsed["name"] == "open_url"
+    assert parsed["args"]["url"] == str(md_path)
 
 
 def test_direct_annolid_run_prompt_routes_to_annolid_run_tool(monkeypatch) -> None:

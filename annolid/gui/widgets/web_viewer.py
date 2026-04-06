@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import binascii
 import contextlib
+import html
 import json
 import mimetypes
 import re
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -30,9 +32,12 @@ from annolid.utils.citations import (
 )
 from annolid.utils.logger import logger
 from annolid.gui.widgets.webengine_lifecycle import release_webengine_view
-
-
 import os
+
+try:
+    import markdown as _markdown  # type: ignore
+except Exception:
+    _markdown = None
 
 try:
     from qtpy import QtWebEngineWidgets  # type: ignore
@@ -48,6 +53,7 @@ _MAX_CONTEXT_MENU_IMAGE_URL_CHARS = 4096
 _MAX_CONTEXT_MENU_IMAGE_DATA_URL_CHARS = 2_000_000
 _MAX_CONTEXT_MENU_IMAGE_BYTES = 15 * 1024 * 1024
 _MAX_CONTEXT_MENU_IMAGE_PIXELS = 2048 * 2048
+_LOCAL_MARKDOWN_SUFFIXES = {".md", ".markdown", ".mdown", ".mkdn"}
 
 
 def _is_ignorable_js_console_message(message: str, source_id: str = "") -> bool:
@@ -159,6 +165,364 @@ def _sanitize_context_menu_image_src(value: object) -> str:
     if str(parsed.scheme or "").strip().lower() not in {"http", "https"}:
         return ""
     return raw
+
+
+def _is_local_markdown_path(path: Path) -> bool:
+    try:
+        return path.is_file() and path.suffix.lower() in _LOCAL_MARKDOWN_SUFFIXES
+    except Exception:
+        return False
+
+
+def _resolve_case_insensitive_local_file(path: Path) -> Optional[Path]:
+    """Resolve an absolute file path using a case-insensitive walk on macOS."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        candidate = path.expanduser()
+        parts = candidate.parts
+        if not parts or parts[0] != "/":
+            return None
+        cursor = Path("/")
+        for part in parts[1:]:
+            exact = cursor / part
+            if exact.exists():
+                cursor = exact
+                continue
+            if not cursor.exists() or not cursor.is_dir():
+                return None
+            lowered = part.lower()
+            matched = None
+            for child in cursor.iterdir():
+                if child.name.lower() == lowered:
+                    matched = child
+                    break
+            if matched is None:
+                return None
+            cursor = matched
+        if cursor.exists() and cursor.is_file():
+            return cursor.resolve()
+    except Exception:
+        return None
+    return None
+
+
+def _resolve_existing_local_file(value: str) -> Optional[Path]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    direct = Path(text).expanduser()
+    if direct.exists() and direct.is_file():
+        return direct.resolve()
+    resolved_direct = _resolve_case_insensitive_local_file(direct)
+    if resolved_direct is not None:
+        return resolved_direct
+    parsed = QtCore.QUrl(text)
+    if parsed.isValid() and parsed.scheme().lower() == "file":
+        local_text = str(parsed.toLocalFile() or "").strip()
+        if local_text:
+            candidate = Path(local_text).expanduser()
+            if candidate.exists() and candidate.is_file():
+                return candidate.resolve()
+            resolved_candidate = _resolve_case_insensitive_local_file(candidate)
+            if resolved_candidate is not None:
+                return resolved_candidate
+    return None
+
+
+def _render_markdown_document(text: str) -> tuple[str, str]:
+    raw_text = str(text or "").strip()
+    if not raw_text:
+        return "<p><em>Empty document.</em></p>", ""
+    if _markdown is not None:
+        try:
+            markdown_engine = _markdown.Markdown(
+                extensions=["extra", "sane_lists", "tables", "fenced_code", "toc"],
+                output_format="html5",
+            )
+            rendered = markdown_engine.convert(raw_text)
+            toc_html = str(getattr(markdown_engine, "toc", "") or "").strip()
+            if rendered:
+                return rendered, toc_html
+        except Exception:
+            pass
+    return f'<pre class="annolid-markdown-plain">{html.escape(raw_text)}</pre>', ""
+
+
+def _build_local_markdown_view_html(*, source_path: Path, markdown_text: str) -> str:
+    resolved = Path(source_path).expanduser().resolve()
+    title = html.escape(resolved.name or "Markdown", quote=True)
+    path_text = html.escape(str(resolved), quote=True)
+    modified_text = "unknown"
+    with contextlib.suppress(Exception):
+        modified_text = time.strftime(
+            "%Y-%m-%d %H:%M:%S",
+            time.localtime(resolved.stat().st_mtime),
+        )
+    base_url = QtCore.QUrl.fromLocalFile(str(resolved.parent))
+    if not base_url.path().endswith("/"):
+        base_url.setPath(base_url.path() + "/")
+    base_href = html.escape(base_url.toString(), quote=True)
+    modified_escaped = html.escape(modified_text, quote=True)
+    body_html, toc_html = _render_markdown_document(markdown_text)
+    toc_fallback = (
+        '<p class="annolid-markdown-toc-empty">No section headings found.</p>'
+    )
+    toc_inner_html = toc_html or toc_fallback
+    return f"""
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <base href="{base_href}" />
+  <title>{title}</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --panel-strong: #fbfcfd;
+      --text: #1f2937;
+      --muted: #5b6472;
+      --border: #d7dce3;
+      --accent: #2563eb;
+      --code-bg: #eef2f7;
+      --shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
+    }}
+    html, body {{
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 28%),
+        linear-gradient(180deg, #f8fafc 0%, var(--bg) 100%);
+      color: var(--text);
+      font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+    }}
+    .annolid-markdown-shell {{
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 24px 72px;
+      display: grid;
+      grid-template-columns: minmax(0, 250px) minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }}
+    .annolid-markdown-header {{
+      background: linear-gradient(180deg, var(--panel) 0%, var(--panel-strong) 100%);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      padding: 18px 20px;
+      margin-bottom: 12px;
+      grid-column: 1 / -1;
+    }}
+    .annolid-markdown-title {{
+      font-size: 22px;
+      font-weight: 700;
+      margin: 0 0 6px;
+      letter-spacing: -0.01em;
+      font-family: "Georgia", "Iowan Old Style", "Times New Roman", serif;
+    }}
+    .annolid-markdown-path {{
+      font-size: 12px;
+      color: var(--muted);
+      word-break: break-all;
+    }}
+    .annolid-markdown-meta {{
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }}
+    .annolid-markdown-toc {{
+      position: sticky;
+      top: 14px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      padding: 14px 14px 10px;
+    }}
+    .annolid-markdown-toc-title {{
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 10px;
+      font-weight: 700;
+    }}
+    .annolid-markdown-toc-empty {{
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0;
+    }}
+    .annolid-markdown-toc .toc {{
+      font-size: 13px;
+    }}
+    .annolid-markdown-toc .toc > ul {{
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 6px;
+    }}
+    .annolid-markdown-toc .toc > ul > li {{
+      margin: 0;
+      padding: 0;
+    }}
+    .annolid-markdown-toc .toc ul ul {{
+      padding-left: 12px;
+      margin-top: 6px;
+      display: grid;
+      gap: 6px;
+    }}
+    .annolid-markdown-toc .toc a {{
+      color: #0f172a;
+      text-decoration: none;
+      border-radius: 8px;
+      padding: 4px 6px;
+      display: inline-block;
+      line-height: 1.35;
+    }}
+    .annolid-markdown-toc .toc a:hover {{
+      background: #eff6ff;
+      color: var(--accent);
+    }}
+    .annolid-markdown-body {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      padding: 28px 30px;
+      overflow-wrap: anywhere;
+      min-width: 0;
+    }}
+    .annolid-markdown-body h1,
+    .annolid-markdown-body h2,
+    .annolid-markdown-body h3,
+    .annolid-markdown-body h4,
+    .annolid-markdown-body h5,
+    .annolid-markdown-body h6 {{
+      line-height: 1.25;
+      margin-top: 1.4em;
+      margin-bottom: 0.6em;
+      letter-spacing: -0.02em;
+    }}
+    .annolid-markdown-body h1 {{
+      font-size: 2.1em;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.35em;
+    }}
+    .annolid-markdown-body h2 {{
+      font-size: 1.6em;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.25em;
+    }}
+    .annolid-markdown-body p,
+    .annolid-markdown-body ul,
+    .annolid-markdown-body ol,
+    .annolid-markdown-body blockquote,
+    .annolid-markdown-body pre,
+    .annolid-markdown-body table {{
+      margin-top: 0;
+      margin-bottom: 1em;
+    }}
+    .annolid-markdown-body a {{
+      color: var(--accent);
+      text-decoration: none;
+    }}
+    .annolid-markdown-body a:hover {{
+      text-decoration: underline;
+    }}
+    .annolid-markdown-body blockquote {{
+      border-left: 4px solid rgba(37, 99, 235, 0.35);
+      background: rgba(37, 99, 235, 0.05);
+      padding: 0.75em 1em;
+      border-radius: 10px;
+      color: #374151;
+    }}
+    .annolid-markdown-body code {{
+      background: var(--code-bg);
+      padding: 0.15em 0.35em;
+      border-radius: 6px;
+      font-size: 0.94em;
+    }}
+    .annolid-markdown-body pre {{
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 1em 1.1em;
+      border-radius: 12px;
+      overflow: auto;
+    }}
+    .annolid-markdown-body pre code {{
+      background: transparent;
+      padding: 0;
+      color: inherit;
+    }}
+    .annolid-markdown-body table {{
+      border-collapse: collapse;
+      display: block;
+      overflow: auto;
+      max-width: 100%;
+    }}
+    .annolid-markdown-body th,
+    .annolid-markdown-body td {{
+      border: 1px solid var(--border);
+      padding: 0.45em 0.7em;
+      vertical-align: top;
+    }}
+    .annolid-markdown-body th {{
+      background: #f8fafc;
+      font-weight: 700;
+    }}
+    .annolid-markdown-body tr:nth-child(even) td {{
+      background: #fbfdff;
+    }}
+    .annolid-markdown-body img {{
+      max-width: 100%;
+      height: auto;
+      border-radius: 8px;
+      border: 1px solid #e5e7eb;
+    }}
+    .annolid-markdown-plain {{
+      white-space: pre-wrap;
+      word-break: break-word;
+    }}
+    @media (max-width: 960px) {{
+      .annolid-markdown-shell {{
+        grid-template-columns: minmax(0, 1fr);
+      }}
+      .annolid-markdown-toc {{
+        position: static;
+      }}
+      .annolid-markdown-body {{
+        padding: 22px 18px;
+      }}
+      .annolid-markdown-title {{
+        font-size: 20px;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="annolid-markdown-shell">
+    <header class="annolid-markdown-header">
+      <h1 class="annolid-markdown-title">{title}</h1>
+      <div class="annolid-markdown-path">{path_text}</div>
+      <div class="annolid-markdown-meta">Last modified: {modified_escaped}</div>
+    </header>
+    <aside class="annolid-markdown-toc" id="annolid-markdown-toc">
+      <div class="annolid-markdown-toc-title">On This Page</div>
+      {toc_inner_html}
+    </aside>
+    <article class="annolid-markdown-body">
+      {body_html}
+    </article>
+  </main>
+</body>
+</html>
+    """.strip()
 
 
 class _SavePdfTask(QtCore.QRunnable):
@@ -631,6 +995,7 @@ class WebViewerWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self._web_view = None
         self._current_url = ""
+        self._source_url = ""
         self._thread_pool = QtCore.QThreadPool.globalInstance()
         self._pdf_save_in_progress = False
         self._speaking = False
@@ -865,6 +1230,36 @@ class WebViewerWidget(QtWidgets.QWidget):
             return
         self.load_url(target)
 
+    def _set_loaded_source_url(self, source_url: str) -> None:
+        value = str(source_url or "").strip()
+        self._current_url = value
+        self._source_url = value
+        self.url_edit.setText(value)
+
+    def _load_markdown_source(self, path: Path) -> bool:
+        if self._web_view is None:
+            return False
+        try:
+            markdown_text = path.read_text(encoding="utf-8")
+        except Exception as exc:
+            self.status_changed.emit(f"Failed to read markdown: {exc}")
+            return False
+
+        html_text = _build_local_markdown_view_html(
+            source_path=path,
+            markdown_text=markdown_text,
+        )
+        try:
+            base_url = QtCore.QUrl.fromLocalFile(
+                str(path.expanduser().resolve().parent)
+            )
+            self._web_view.setHtml(html_text, base_url)
+            self._set_loaded_source_url(str(path.resolve()))
+            return True
+        except Exception as exc:
+            self.status_changed.emit(f"Failed to render markdown: {exc}")
+            return False
+
     def _go_back(self) -> None:
         if self._web_view is None:
             return
@@ -951,16 +1346,34 @@ class WebViewerWidget(QtWidgets.QWidget):
     def load_url(self, url: str) -> bool:
         if self._web_view is None:
             return False
-        parsed = self._normalize_url(url)
+        value = str(url or "").strip()
+        if not value:
+            return False
+        local_path = _resolve_existing_local_file(value)
+        if local_path is not None:
+            if _is_local_markdown_path(local_path):
+                return self._load_markdown_source(local_path)
+            parsed = QtCore.QUrl.fromLocalFile(str(local_path))
+            self._current_url = parsed.toString()
+            self._source_url = ""
+            self.url_edit.setText(self._current_url)
+            self._web_view.setUrl(parsed)
+            return True
+        parsed = self._normalize_url(value)
         if not parsed.isValid() or parsed.isEmpty():
             return False
         self._current_url = parsed.toString()
+        self._source_url = ""
         self.url_edit.setText(self._current_url)
         self._web_view.setUrl(parsed)
         return True
 
     def open_current_in_browser(self) -> None:
-        target = str(self.url_edit.text() or "").strip() or self._current_url
+        target = (
+            str(self.url_edit.text() or "").strip()
+            or self._source_url
+            or self._current_url
+        )
         parsed = self._normalize_url(target)
         if not parsed.isValid() or parsed.isEmpty():
             self.status_changed.emit("Invalid URL.")
@@ -969,7 +1382,11 @@ class WebViewerWidget(QtWidgets.QWidget):
         self.status_changed.emit(f"Opened in system browser: {parsed.toString()}")
 
     def _on_save_pdf_clicked(self) -> None:
-        target = str(self.url_edit.text() or "").strip() or self._current_url
+        target = (
+            str(self.url_edit.text() or "").strip()
+            or self._source_url
+            or self._current_url
+        )
         if self._pdf_save_in_progress:
             self.status_changed.emit("PDF download already in progress.")
             return
@@ -1025,6 +1442,7 @@ class WebViewerWidget(QtWidgets.QWidget):
         if self._web_view is None:
             return
         self._current_url = ""
+        self._source_url = ""
         self.url_edit.clear()
         self._web_view.setUrl(QtCore.QUrl("about:blank"))
 
@@ -1067,7 +1485,7 @@ class WebViewerWidget(QtWidgets.QWidget):
             "ok": True,
             "webengine_available": bool(_WEBENGINE_AVAILABLE),
             "has_page": bool(has_page),
-            "url": current_url,
+            "url": str(self._source_url or current_url),
             "title": title,
         }
 
@@ -1283,7 +1701,7 @@ class WebViewerWidget(QtWidgets.QWidget):
             text = text[:limit]
         return {
             "ok": True,
-            "url": str(payload.get("url") or self._current_url),
+            "url": str(payload.get("url") or self._source_url or self._current_url),
             "title": str(payload.get("title") or ""),
             "text": text,
             "length": int(payload.get("length") or len(text)),
@@ -1432,6 +1850,10 @@ class WebViewerWidget(QtWidgets.QWidget):
     def _on_url_changed(self, url: QtCore.QUrl) -> None:
         text = url.toString()
         self._current_url = text
+        if self._source_url and (not text or text == "about:blank"):
+            self.url_edit.setText(self._source_url)
+            return
+        self._source_url = ""
         self.url_edit.setText(text)
 
     def _is_pdf_url(self, url: str) -> bool:

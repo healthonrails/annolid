@@ -46,7 +46,18 @@ async def open_url_tool(
             "error": "Only http(s) URLs or existing local files are supported. file:// URLs are blocked for safety.",
             "url": raw_text,
         }
-    target_url = extract_first_web_url_fn(raw_text)
+    target_url = ""
+    candidate = raw_text
+    lowered = candidate.lower()
+    for prefix in ("open url ", "open file ", "open ", "load ", "show "):
+        if lowered.startswith(prefix):
+            candidate = candidate[len(prefix) :].strip()
+            break
+    candidate_path = Path(candidate).expanduser()
+    if candidate_path.exists() and candidate_path.is_file():
+        target_url = str(candidate_path)
+    else:
+        target_url = extract_first_web_url_fn(raw_text)
 
     candidate_url = target_url or raw_text
     arxiv_match = re.search(
@@ -61,17 +72,6 @@ async def open_url_tool(
             "url": f"https://arxiv.org/abs/{arxiv_id}",
             "id": arxiv_id,
         }
-
-    if not target_url:
-        candidate = raw_text
-        lowered = candidate.lower()
-        for prefix in ("open ", "load ", "show ", "open url ", "open file "):
-            if lowered.startswith(prefix):
-                candidate = candidate[len(prefix) :].strip()
-                break
-        candidate_path = Path(candidate).expanduser()
-        if candidate_path.exists() and candidate_path.is_file():
-            target_url = str(candidate_path)
 
     if not target_url:
         return {

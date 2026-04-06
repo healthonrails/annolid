@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Dict
 
 from annolid.core.agent.web_intents import LIVE_WEB_INTENT_HINTS
@@ -1127,6 +1128,17 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
     domain_match = explicit_domain_open or bare_domain
     if domain_match:
         url_text = str(domain_match.group("url") or "").strip().rstrip(").,;!?")
+        local_candidate = Path(url_text).expanduser()
+        if (
+            url_text
+            and not url_text.lower().startswith(("www.", "http://", "https://"))
+            and local_candidate.exists()
+            and local_candidate.is_file()
+        ):
+            return {
+                "name": "open_url",
+                "args": {"url": str(local_candidate.resolve())},
+            }
         if re.search(
             r"\.(?:mp4|avi|mov|mkv|m4v|wmv|flv|pdf|png|jpe?g|gif|tiff?|bmp)\b",
             url_text,
@@ -1218,6 +1230,13 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         text,
         flags=re.IGNORECASE,
     ):
+        return {"name": "open_url", "args": {"url": text}}
+    open_local_markdown_hint = re.match(
+        r"\s*(?:open|load|show)\s+[^\n]+?\.(?:md|markdown|mdown|mkdn)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if open_local_markdown_hint:
         return {"name": "open_url", "args": {"url": text}}
     list_dir_match = re.match(
         r"\s*(?:list\s+directory|ls|dir)\s+(?P<path>[^\n]+?)\s*$",

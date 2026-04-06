@@ -1,8 +1,13 @@
+from pathlib import Path
+import sys
+
 from annolid.gui.widgets.web_viewer import (
+    _build_local_markdown_view_html,
     _clamp_text,
     _console_source_domain,
     _format_suppressed_console_summary,
     _is_ignorable_js_console_message,
+    _resolve_existing_local_file,
     _sanitize_context_menu_image_src,
     _sanitize_image_data_url,
 )
@@ -138,6 +143,61 @@ def test_format_suppressed_console_summary_top_order() -> None:
         {"weather.com": 7, "unknown": 2, "example.org": 5}
     )
     assert summary == "weather.com=7, example.org=5, unknown=2"
+
+
+def test_build_local_markdown_view_html_renders_and_sets_base_href(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "notes.md"
+    source.write_text(
+        "# Title\n\nSee [details](details.md) and `inline code`.\n",
+        encoding="utf-8",
+    )
+
+    html = _build_local_markdown_view_html(
+        source_path=source,
+        markdown_text=source.read_text(encoding="utf-8"),
+    )
+
+    assert "<h1" in html
+    assert "Title" in html
+    assert "details.md" in html
+    assert source.name in html
+    assert str(source.parent) in html
+    assert "annolid-markdown-toc" in html
+    assert 'class="toc"' in html
+    assert "slugify" not in html
+    assert "Last modified:" in html
+
+
+def test_resolve_existing_local_file_accepts_file_url(tmp_path: Path) -> None:
+    source = tmp_path / "README.md"
+    source.write_text("# Demo\n", encoding="utf-8")
+
+    resolved = _resolve_existing_local_file(source.as_uri())
+    assert resolved == source.resolve()
+
+
+def test_resolve_existing_local_file_handles_case_mismatch_file_url(
+    tmp_path: Path,
+) -> None:
+    mixed_dir = tmp_path / "MixedCaseDir"
+    mixed_dir.mkdir()
+    source = mixed_dir / "DocFile.md"
+    source.write_text("# Demo\n", encoding="utf-8")
+    lowered_url = (
+        source.as_uri()
+        .replace("MixedCaseDir", "mixedcasedir")
+        .replace("DocFile.md", "docfile.md")
+    )
+
+    resolved = _resolve_existing_local_file(lowered_url)
+    if sys.platform == "darwin":
+        assert resolved is not None
+        assert resolved.exists()
+        assert resolved.samefile(source)
+    else:
+        assert resolved is None
 
 
 # ---------------------------------------------------------------------------
