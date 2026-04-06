@@ -60,11 +60,33 @@ def test_expected_and_missing_track_ids_for_frame() -> None:
     assert missing_track_ids_for_frame(manager, 3) == [1, 2]
 
 
+def test_expected_track_ids_prefers_last_seen_fast_path() -> None:
+    manager = _RecoveryManager()
+    manager._track_last_seen_frame = {1: 1, 2: 2}
+    manager._frame_track_ids = {}
+
+    assert expected_track_ids_for_frame(manager, 3) == {1, 2}
+
+
 def test_recent_track_mask_returns_latest_valid_mask() -> None:
     manager = _RecoveryManager()
     mask = recent_track_mask(manager, 2, frame_idx=3)
     assert mask is not None
     assert mask.shape == (8, 8)
+    assert int(mask.sum()) > 0
+
+
+def test_recent_track_mask_uses_last_seen_fast_path() -> None:
+    manager = _RecoveryManager()
+    manager._frame_masks = {
+        2: {"2": manager._frame_masks[2]["2"]},
+        1: {"2": np.zeros((8, 8), dtype=np.uint8)},
+    }
+    manager._track_last_seen_frame = {2: 2}
+
+    mask = recent_track_mask(manager, 2, frame_idx=3)
+
+    assert mask is not None
     assert int(mask.sum()) > 0
 
 

@@ -31,6 +31,7 @@ class Sam3Manager:
         self.compile_model: Optional[bool] = None
         self.offload_video_to_cpu: Optional[bool] = None
         self.use_explicit_window_reseed: Optional[bool] = None
+        self.boundary_mask_match_iou_threshold: Optional[float] = None
         self.allow_private_state_mutation: Optional[bool] = None
         self.max_num_objects: Optional[int] = None
         self.multiplex_count: Optional[int] = None
@@ -157,6 +158,12 @@ class Sam3Manager:
             self.use_explicit_window_reseed,
             sam3_cfg.get("use_explicit_window_reseed"),
         )
+        boundary_mask_match_iou_threshold = _pick(
+            self.boundary_mask_match_iou_threshold,
+            sam3_cfg.get("boundary_mask_match_iou_threshold"),
+        )
+        if boundary_mask_match_iou_threshold is None:
+            boundary_mask_match_iou_threshold = 0.2
         allow_private_state_mutation = _pick(
             self.allow_private_state_mutation,
             sam3_cfg.get("allow_private_state_mutation"),
@@ -197,6 +204,7 @@ class Sam3Manager:
             "compile_model": compile_model,
             "offload_video_to_cpu": offload_video_to_cpu,
             "use_explicit_window_reseed": use_explicit_window_reseed,
+            "boundary_mask_match_iou_threshold": boundary_mask_match_iou_threshold,
             "allow_private_state_mutation": allow_private_state_mutation,
             "max_num_objects": max_num_objects,
             "multiplex_count": multiplex_count,
@@ -226,6 +234,17 @@ class Sam3Manager:
         self.compile_model = sam3_runtime.get("compile_model")
         self.offload_video_to_cpu = sam3_runtime.get("offload_video_to_cpu")
         self.use_explicit_window_reseed = sam3_runtime.get("use_explicit_window_reseed")
+        boundary_mask_match_iou_threshold = sam3_runtime.get(
+            "boundary_mask_match_iou_threshold", self.boundary_mask_match_iou_threshold
+        )
+        try:
+            self.boundary_mask_match_iou_threshold = (
+                None
+                if boundary_mask_match_iou_threshold is None
+                else float(boundary_mask_match_iou_threshold)
+            )
+        except Exception:
+            self.boundary_mask_match_iou_threshold = 0.2
         self.allow_private_state_mutation = sam3_runtime.get(
             "allow_private_state_mutation"
         )
@@ -251,6 +270,7 @@ class Sam3Manager:
             "compile_model": self.compile_model,
             "offload_video_to_cpu": self.offload_video_to_cpu,
             "use_explicit_window_reseed": self.use_explicit_window_reseed,
+            "boundary_mask_match_iou_threshold": self.boundary_mask_match_iou_threshold,
             "allow_private_state_mutation": self.allow_private_state_mutation,
             "max_num_objects": self.max_num_objects,
             "multiplex_count": self.multiplex_count,
@@ -649,6 +669,9 @@ class Sam3Manager:
         use_explicit_window_reseed_cfg = sam3_cfg.get(
             "use_explicit_window_reseed", True
         )
+        boundary_mask_match_iou_threshold_cfg = sam3_cfg.get(
+            "boundary_mask_match_iou_threshold", 0.2
+        )
         allow_private_state_mutation_cfg = sam3_cfg.get(
             "allow_private_state_mutation", False
         )
@@ -723,6 +746,9 @@ class Sam3Manager:
         allow_private_state_mutation_override = getattr(
             self, "allow_private_state_mutation", None
         )
+        boundary_mask_match_iou_threshold_override = getattr(
+            self, "boundary_mask_match_iou_threshold", None
+        )
         score_threshold_detection_override = getattr(
             self, "score_threshold_detection", None
         )
@@ -763,6 +789,14 @@ class Sam3Manager:
             else allow_private_state_mutation_cfg,
             False,
         )
+        try:
+            boundary_mask_match_iou_threshold = (
+                float(boundary_mask_match_iou_threshold_override)
+                if boundary_mask_match_iou_threshold_override is not None
+                else float(boundary_mask_match_iou_threshold_cfg)
+            )
+        except Exception:
+            boundary_mask_match_iou_threshold = 0.2
         if score_threshold_detection_override is not None:
             score_threshold_detection = score_threshold_detection_override
         if new_det_thresh_override is not None:
@@ -871,6 +905,7 @@ class Sam3Manager:
                     compile_model=compile_model,
                     offload_video_to_cpu=offload_video_to_cpu,
                     use_explicit_window_reseed=use_explicit_window_reseed,
+                    boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
                     allow_private_state_mutation=allow_private_state_mutation,
                     sliding_window_size=sliding_window_size,
                     sliding_window_stride=sliding_window_stride,
@@ -915,6 +950,7 @@ class Sam3Manager:
                         compile_model=compile_model,
                         offload_video_to_cpu=offload_video_to_cpu,
                         use_explicit_window_reseed=use_explicit_window_reseed,
+                        boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
                         allow_private_state_mutation=allow_private_state_mutation,
                     )
                     if masks <= 0:

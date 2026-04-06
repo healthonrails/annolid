@@ -80,6 +80,7 @@ def map_outputs_to_global_ids_at_frame(
     frame_idx: Optional[int],
     allowed_gids: Optional[set[int]] = None,
     allow_new_ids: bool = True,
+    max_new_ids: Optional[int] = None,
     session_id: Optional[str] = None,
 ) -> Dict[str, object]:
     manager._activate_global_match_session(session_id or getattr(manager, "_session_id", None))
@@ -194,10 +195,13 @@ def map_outputs_to_global_ids_at_frame(
                 obj_ptr=obj_ptr_vectors[det_idx],
             )
 
+    minted_new_ids = 0
     for idx, mapped_gid in enumerate(mapped):
         if mapped_gid is not None:
             continue
         if not allow_new_ids:
+            continue
+        if max_new_ids is not None and minted_new_ids >= int(max_new_ids):
             continue
         gid = manager._assign_global_track_id(
             box_xywh=np.asarray(boxes_arr[idx], dtype=float),
@@ -212,6 +216,7 @@ def map_outputs_to_global_ids_at_frame(
         used.add(gid)
         mapped[idx] = int(gid)
         assignment_scores[int(idx)] = None
+        minted_new_ids += 1
         try:
             local_to_global[int(obj_ids[idx])] = int(gid)
         except Exception:

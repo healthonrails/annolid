@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tupl
 import cv2
 import numpy as np
 import torch
+from scipy.optimize import linear_sum_assignment
 
 from annolid.segmentation.SAM.sam_v2 import BaseSAMVideoProcessor
 from annolid.utils.annotation_compat import shape_to_mask
@@ -388,6 +389,7 @@ class Sam3SessionConfig:
     # Default to explicit reseeding at window boundaries and no private-state mutation.
     use_explicit_window_reseed: bool = True
     allow_private_state_mutation: bool = False
+    boundary_mask_match_iou_threshold: float = 0.2
     telemetry_jsonl_path: Optional[str] = None
 
 
@@ -437,6 +439,7 @@ def _resolve_session_config(
     use_sliding_window_for_text_prompt: bool,
     use_explicit_window_reseed: Optional[bool],
     allow_private_state_mutation: Optional[bool],
+    boundary_mask_match_iou_threshold: float,
     telemetry_jsonl_path: Optional[str] = None,
 ) -> Sam3SessionConfig:
     """Allow legacy kwargs or a config object to drive initialization."""
@@ -470,6 +473,7 @@ def _resolve_session_config(
             if allow_private_state_mutation is None
             else bool(allow_private_state_mutation)
         ),
+        boundary_mask_match_iou_threshold=float(boundary_mask_match_iou_threshold),
         telemetry_jsonl_path=(
             telemetry_jsonl_path or os.getenv("ANNOLID_SAM3_TELEMETRY_JSONL")
         ),
@@ -506,6 +510,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         use_sliding_window_for_text_prompt: bool = True,
         use_explicit_window_reseed: Optional[bool] = None,
         allow_private_state_mutation: Optional[bool] = None,
+        boundary_mask_match_iou_threshold: float = 0.2,
         telemetry_jsonl_path: Optional[str] = None,
         config: Optional[Sam3SessionConfig] = None,
     ):
@@ -536,6 +541,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             use_sliding_window_for_text_prompt=use_sliding_window_for_text_prompt,
             use_explicit_window_reseed=use_explicit_window_reseed,
             allow_private_state_mutation=allow_private_state_mutation,
+            boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
             telemetry_jsonl_path=telemetry_jsonl_path,
         )
 
@@ -592,6 +598,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self.use_sliding_window_for_text_prompt = cfg.use_sliding_window_for_text_prompt
         self.use_explicit_window_reseed = bool(cfg.use_explicit_window_reseed)
         self.allow_private_state_mutation = bool(cfg.allow_private_state_mutation)
+        self.boundary_mask_match_iou_threshold = float(
+            cfg.boundary_mask_match_iou_threshold
+        )
         self.telemetry_jsonl_path = cfg.telemetry_jsonl_path
         self._stop_event = None
         self._stop_requested = False
@@ -1022,6 +1031,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         record_frame_idx: Optional[int] = None,
         merge_existing_on_record: bool = False,
         label_hints: Optional[List[str]] = None,
+        boundary_bundle: Optional[BoundaryPromptBundle] = None,
+        boundary_allowed_gids: Optional[set[int]] = None,
+        boundary_max_new_ids: Optional[int] = None,
     ):
         target_session_id = str(session_id or self._session_id or "")
         if not self._predictor or not target_session_id:
@@ -1058,6 +1070,22 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 step_results = [result if isinstance(result, dict) else {}]
             for idx, step_result in enumerate(step_results):
                 outputs = step_result.get("outputs", {}) if isinstance(step_result, dict) else {}
+                if boundary_bundle is not None:
+                    outputs = self._map_outputs_to_global_ids_from_boundary_bundle_at_frame(
+                        outputs,
+                        frame_idx=save_frame_idx,
+                        boundary_bundle=boundary_bundle,
+                        allowed_gids=boundary_allowed_gids,
+                        allow_new_ids=True,
+                        max_new_ids=boundary_max_new_ids,
+                        session_id=target_session_id,
+                    )
+                else:
+                    outputs = self._map_outputs_to_global_ids_at_frame(
+                        outputs,
+                        frame_idx=save_frame_idx,
+                        session_id=target_session_id,
+                    )
                 # Save prompt-frame outputs immediately to avoid losing masks if propagation fails.
                 self._handle_frame_outputs(
                     frame_idx=save_frame_idx,
@@ -1806,6 +1834,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         frame_idx: Optional[int],
         allowed_gids: Optional[set[int]] = None,
         allow_new_ids: bool = True,
+        max_new_ids: Optional[int] = None,
         session_id: Optional[str] = None,
     ) -> Dict[str, object]:
         return map_outputs_with_track_identity(
@@ -1814,8 +1843,212 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             frame_idx=frame_idx,
             allowed_gids=allowed_gids,
             allow_new_ids=allow_new_ids,
+            max_new_ids=max_new_ids,
             session_id=session_id,
         )
+
+    def _map_outputs_to_global_ids_from_boundary_bundle_at_frame(
+        self,
+        outputs: Dict[str, object],
+        *,
+        frame_idx: Optional[int],
+        boundary_bundle: Optional[BoundaryPromptBundle],
+        allowed_gids: Optional[set[int]] = None,
+        allow_new_ids: bool = True,
+        max_new_ids: Optional[int] = None,
+        session_id: Optional[str] = None,
+        iou_threshold: Optional[float] = None,
+    ) -> Dict[str, object]:
+        """
+        Match a boundary reseed frame against the previous window's last-frame masks.
+
+        This path is shape-first: masks that match the previous frame keep the
+        same global id, and masks that do not match mint new ids instead of
+        falling back to appearance-based reuse.
+        """
+        if not isinstance(outputs, dict):
+            return outputs
+        iou_threshold = float(
+            getattr(self, "boundary_mask_match_iou_threshold", 0.2)
+            if iou_threshold is None
+            else iou_threshold
+        )
+        if boundary_bundle is None or not boundary_bundle.mask_inputs or not boundary_bundle.track_ids:
+            return self._map_outputs_to_global_ids_at_frame(
+                outputs,
+                frame_idx=frame_idx,
+                allowed_gids=allowed_gids,
+                allow_new_ids=allow_new_ids,
+                max_new_ids=max_new_ids,
+                session_id=session_id,
+            )
+
+        self._activate_global_match_session(
+            session_id or getattr(self, "_session_id", None)
+        )
+        obj_ids = outputs.get("out_obj_ids", [])
+        boxes = outputs.get("out_boxes_xywh", [])
+        masks = outputs.get("out_binary_masks", [])
+        if boxes is None or masks is None:
+            return self._map_outputs_to_global_ids_at_frame(
+                outputs,
+                frame_idx=frame_idx,
+                allowed_gids=allowed_gids,
+                allow_new_ids=allow_new_ids,
+                max_new_ids=max_new_ids,
+                session_id=session_id,
+            )
+        try:
+            boxes_arr = np.asarray(boxes, dtype=float)
+            masks_arr = np.asarray(masks, dtype=object)
+        except Exception:
+            return outputs
+        if len(boxes_arr) != len(obj_ids) or len(masks_arr) != len(obj_ids):
+            return self._map_outputs_to_global_ids_at_frame(
+                outputs,
+                frame_idx=frame_idx,
+                allowed_gids=allowed_gids,
+                allow_new_ids=allow_new_ids,
+                max_new_ids=max_new_ids,
+                session_id=session_id,
+            )
+
+        allowed_set = {int(v) for v in allowed_gids} if allowed_gids is not None else None
+        reference_items: List[Tuple[int, np.ndarray]] = []
+        for track_id, mask in zip(boundary_bundle.track_ids, boundary_bundle.mask_inputs):
+            gid = int(track_id)
+            if allowed_set is not None and gid not in allowed_set:
+                continue
+            arr = np.asarray(mask, dtype=np.uint8)
+            if arr.ndim != 2 or not arr.any():
+                continue
+            reference_items.append((gid, arr))
+        if not reference_items:
+            return self._map_outputs_to_global_ids_at_frame(
+                outputs,
+                frame_idx=frame_idx,
+                allowed_gids=allowed_gids,
+                allow_new_ids=allow_new_ids,
+                max_new_ids=max_new_ids,
+                session_id=session_id,
+            )
+
+        detection_indices: List[int] = []
+        detection_masks: List[np.ndarray] = []
+        for det_idx, mask in enumerate(masks_arr.tolist()):
+            arr = np.asarray(mask, dtype=np.uint8)
+            if arr.ndim != 2 or not arr.any():
+                continue
+            detection_indices.append(int(det_idx))
+            detection_masks.append(arr)
+        if not detection_indices:
+            return self._map_outputs_to_global_ids_at_frame(
+                outputs,
+                frame_idx=frame_idx,
+                allowed_gids=allowed_gids,
+                allow_new_ids=allow_new_ids,
+                max_new_ids=max_new_ids,
+                session_id=session_id,
+            )
+
+        iou_matrix = np.zeros((len(detection_masks), len(reference_items)), dtype=float)
+        for det_pos, det_mask in enumerate(detection_masks):
+            for ref_pos, (_, ref_mask) in enumerate(reference_items):
+                iou_matrix[det_pos, ref_pos] = self._mask_iou(det_mask, ref_mask)
+        if iou_matrix.size == 0:
+            return self._map_outputs_to_global_ids_at_frame(
+                outputs,
+                frame_idx=frame_idx,
+                allowed_gids=allowed_gids,
+                allow_new_ids=allow_new_ids,
+                max_new_ids=max_new_ids,
+                session_id=session_id,
+            )
+
+        row_ind, col_ind = linear_sum_assignment(1.0 - iou_matrix)
+        local_to_global = getattr(self, "_session_local_to_global_ids", {})
+        self._session_local_to_global_ids = local_to_global
+        mapped: List[Optional[int]] = [None] * len(obj_ids)
+        used: set[int] = set()
+        assignment_scores: Dict[int, Optional[float]] = {}
+        matched_track_ids: List[int] = []
+        minted_track_ids: List[int] = []
+
+        for det_pos, ref_pos in zip(row_ind, col_ind):
+            if det_pos >= len(detection_indices) or ref_pos >= len(reference_items):
+                continue
+            score = float(iou_matrix[det_pos, ref_pos])
+            if score < float(iou_threshold):
+                continue
+            det_idx = detection_indices[det_pos]
+            gid = int(reference_items[ref_pos][0])
+            mapped[det_idx] = gid
+            used.add(gid)
+            assignment_scores[int(det_idx)] = score
+            matched_track_ids.append(gid)
+            try:
+                local_to_global[int(obj_ids[det_idx])] = gid
+            except Exception:
+                pass
+            self._record_global_track_observation(
+                gid,
+                np.asarray(boxes_arr[det_idx], dtype=float),
+                frame_idx=frame_idx,
+                obj_ptr=None,
+            )
+
+        minted_new_ids = 0
+        for det_idx, mapped_gid in enumerate(mapped):
+            if mapped_gid is not None:
+                continue
+            if not allow_new_ids:
+                continue
+            if max_new_ids is not None and minted_new_ids >= int(max_new_ids):
+                continue
+            gid = int(self._global_track_next_id)
+            self._global_track_next_id += 1
+            used.add(gid)
+            mapped[det_idx] = gid
+            assignment_scores[int(det_idx)] = None
+            minted_track_ids.append(gid)
+            minted_new_ids += 1
+            try:
+                local_to_global[int(obj_ids[det_idx])] = gid
+            except Exception:
+                pass
+            self._record_global_track_observation(
+                gid,
+                np.asarray(boxes_arr[det_idx], dtype=float),
+                frame_idx=frame_idx,
+                obj_ptr=None,
+            )
+
+        if any(gid is not None for gid in mapped):
+            mapped_obj_ids = np.asarray(
+                [int(gid) if gid is not None else int(obj_ids[idx]) for idx, gid in enumerate(mapped)],
+                dtype=np.int64,
+            )
+            mapped_outputs = dict(outputs)
+            mapped_outputs["out_obj_ids"] = mapped_obj_ids
+            mapped_outputs["global_id_assignments"] = [
+                {
+                    "local_id": int(obj_ids[idx]) if idx < len(obj_ids) else idx,
+                    "global_id": int(mapped[idx]) if mapped[idx] is not None else None,
+                    "score": assignment_scores.get(idx),
+                }
+                for idx in range(len(mapped))
+                if idx < len(obj_ids)
+            ]
+            logger.info(
+                "SAM3 boundary reseed frame=%s threshold=%.3f matched=%s minted=%s allowed=%s",
+                int(frame_idx) if frame_idx is not None else -1,
+                float(iou_threshold),
+                matched_track_ids,
+                minted_track_ids,
+                sorted(int(v) for v in allowed_set) if allowed_set is not None else None,
+            )
+            return mapped_outputs
+        return outputs
 
     @staticmethod
     def _output_candidate_mask_count(outputs: Dict[str, object]) -> int:
@@ -1883,6 +2116,22 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         return np.asarray([x1, y1, w, h], dtype=float)
 
     @staticmethod
+    def _mask_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
+        a = np.asarray(mask_a, dtype=np.uint8)
+        b = np.asarray(mask_b, dtype=np.uint8)
+        if a.ndim != 2 or b.ndim != 2 or a.shape != b.shape:
+            return 0.0
+        a_on = a > 0
+        b_on = b > 0
+        inter = float(np.count_nonzero(np.logical_and(a_on, b_on)))
+        if inter <= 0.0:
+            return 0.0
+        union = float(np.count_nonzero(np.logical_or(a_on, b_on)))
+        if union <= 0.0:
+            return 0.0
+        return float(inter / union)
+
+    @staticmethod
     def _bbox_center_xywh(box_xywh: np.ndarray) -> Tuple[float, float]:
         box = np.asarray(box_xywh, dtype=float)
         if box.shape != (4,):
@@ -1934,6 +2183,43 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
     @staticmethod
     def _label_hints_from_ids(labels: List[int], id_to_labels: Dict[int, str]) -> List[str]:
         return label_hints_from_ids(labels, id_to_labels)
+
+    def _recent_track_outputs_for_ids(
+        self,
+        track_ids: Iterable[int],
+        *,
+        frame_idx: int,
+    ) -> Dict[str, object]:
+        """Materialize fallback outputs from the most recent accepted masks."""
+        fallback_obj_ids: List[int] = []
+        fallback_boxes: List[List[float]] = []
+        fallback_masks: List[np.ndarray] = []
+        for track_id in track_ids:
+            try:
+                gid = int(track_id)
+            except Exception:
+                continue
+            recent_mask = self._recent_track_mask(gid, frame_idx=int(frame_idx))
+            if recent_mask is None:
+                continue
+            mask_arr = np.asarray(recent_mask, dtype=np.uint8)
+            box_xywh = self._mask_to_bbox_xywh(mask_arr)
+            if box_xywh is None:
+                continue
+            fallback_obj_ids.append(gid)
+            fallback_boxes.append([float(v) for v in box_xywh.tolist()])
+            fallback_masks.append(mask_arr.copy())
+        if not fallback_obj_ids:
+            return {}
+        return {
+            "out_obj_ids": np.asarray(fallback_obj_ids, dtype=np.int64),
+            "out_boxes_xywh": np.asarray(fallback_boxes, dtype=np.float32),
+            "out_binary_masks": np.asarray(fallback_masks, dtype=object),
+            "global_id_assignments": [
+                {"local_id": int(gid), "global_id": int(gid), "score": None}
+                for gid in fallback_obj_ids
+            ],
+        }
 
     def _reset_session_state(self) -> None:
         """Best-effort reset of current predictor state without reloading video."""
@@ -2004,6 +2290,31 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         limit = max(1, int(max_boxes))
         return boxes_abs[:limit]
 
+    def _boundary_prompt_source_frame_exact(
+        self,
+        frame_idx: int,
+        *,
+        source_frame_idx: Optional[int] = None,
+    ) -> Optional[int]:
+        """
+        Return the exact last frame of the previous window if it has masks.
+
+        This intentionally does not walk backward to older frames. If the last
+        frame in the previous window is empty, the next window must reseed from
+        text only.
+        """
+        candidate_frame = (
+            int(source_frame_idx)
+            if source_frame_idx is not None
+            else int(frame_idx) - 1
+        )
+        if candidate_frame < 0:
+            return None
+        masks_for_frame = self._frame_masks.get(int(candidate_frame)) or {}
+        if not masks_for_frame:
+            return None
+        return int(candidate_frame)
+
     def _boundary_prompt_source_frame(self, frame_idx: int) -> Optional[int]:
         """Return the previous-frame source for a new window, or a nearby fallback."""
         source_frames = self._boundary_prompt_source_frames(
@@ -2044,65 +2355,60 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self,
         frame_idx: int,
         *,
+        source_frame_idx: Optional[int] = None,
         max_prompts: int = 4,
-        max_source_frames: int = 3,
     ) -> Tuple[List[List[float]], List[np.ndarray], List[int]]:
         """
-        Derive boxes and mask inputs from recent good frames before a window handoff.
+        Derive boxes and mask inputs from the exact last frame of the previous window.
 
-        This prefers the exact previous frame first, then walks backward through a
-        bounded number of recent reliable frames so the reseed bundle is resilient
-        to a bad final frame or a transient mask drop.
+        The boundary contract is intentionally strict: if the last frame of the
+        previous window has no masks, the next window should reseed from text
+        only instead of borrowing masks from earlier frames.
         """
-        source_frames = self._boundary_prompt_source_frames(
+        source_frame = self._boundary_prompt_source_frame_exact(
             int(frame_idx),
-            max_frames=max_source_frames,
+            source_frame_idx=source_frame_idx,
         )
-        if not source_frames:
+        if source_frame is None:
             return [], [], []
 
         boxes_abs: List[List[float]] = []
         mask_inputs: List[np.ndarray] = []
         track_ids: List[int] = []
         limit = max(1, int(max_prompts))
-        seen_track_ids: set[int] = set()
-        for source_frame in source_frames:
-            masks_for_frame = self._frame_masks.get(int(source_frame)) or {}
-            if not masks_for_frame:
+        masks_for_frame = self._frame_masks.get(int(source_frame)) or {}
+        if not masks_for_frame:
+            return [], [], []
+
+        frame_track_ids = [
+            int(v)
+            for v in getattr(self, "_frame_track_ids", {}).get(int(source_frame), set())
+            if str(int(v)) in masks_for_frame
+        ]
+        if frame_track_ids:
+            ordered_track_ids = sorted(frame_track_ids)
+        else:
+            ordered_track_ids = sorted(
+                int(k)
+                for k in masks_for_frame.keys()
+                if isinstance(k, (str, int)) and str(k).isdigit()
+            )
+
+        for track_id in ordered_track_ids:
+            mask = masks_for_frame.get(str(int(track_id)))
+            if mask is None:
                 continue
-
-            frame_track_ids = [
-                int(v)
-                for v in getattr(self, "_frame_track_ids", {}).get(int(source_frame), set())
-                if str(int(v)) in masks_for_frame
-            ]
-            if frame_track_ids:
-                ordered_track_ids = sorted(frame_track_ids)
-            else:
-                ordered_track_ids = sorted(
-                    int(k)
-                    for k in masks_for_frame.keys()
-                    if isinstance(k, (str, int)) and str(k).isdigit()
-                )
-
-            for track_id in ordered_track_ids:
-                if int(track_id) in seen_track_ids:
-                    continue
-                mask = masks_for_frame.get(str(int(track_id)))
-                if mask is None:
-                    continue
-                arr = np.asarray(mask, dtype=np.uint8)
-                if arr.ndim != 2 or not arr.any():
-                    continue
-                box = self._mask_to_bbox_xywh(arr)
-                if box is None:
-                    continue
-                boxes_abs.append([float(v) for v in box.tolist()])
-                mask_inputs.append(arr.copy())
-                track_ids.append(int(track_id))
-                seen_track_ids.add(int(track_id))
-                if len(track_ids) >= limit:
-                    return boxes_abs, mask_inputs, track_ids
+            arr = np.asarray(mask, dtype=np.uint8)
+            if arr.ndim != 2 or not arr.any():
+                continue
+            box = self._mask_to_bbox_xywh(arr)
+            if box is None:
+                continue
+            boxes_abs.append([float(v) for v in box.tolist()])
+            mask_inputs.append(arr.copy())
+            track_ids.append(int(track_id))
+            if len(track_ids) >= limit:
+                return boxes_abs, mask_inputs, track_ids
 
         return boxes_abs, mask_inputs, track_ids
 
@@ -2112,16 +2418,15 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         frame_idx: int,
         frame_width: float,
         frame_height: float,
+        source_frame_idx: Optional[int] = None,
         max_prompts: Optional[int] = None,
-        max_source_frames: Optional[int] = None,
     ) -> BoundaryPromptBundle:
         """Build the combined boundary prompt payload for a new window."""
         limit = max(1, int(max_prompts or self.max_num_objects or 4))
-        source_limit = max(1, int(max_source_frames or min(3, limit)))
         boxes_abs, mask_inputs, track_ids = self._derive_boundary_visual_prompts(
             int(frame_idx),
+            source_frame_idx=source_frame_idx,
             max_prompts=limit,
-            max_source_frames=source_limit,
         )
         if not boxes_abs:
             return BoundaryPromptBundle([], [], [], [], [], [])
@@ -2224,14 +2529,12 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         if max_boxes is None:
             max_boxes = max(1, int(self.max_num_objects or 4))
         limit = max(1, int(max_boxes))
-        source_frames = max(1, min(3, limit))
 
         bundle = self._build_boundary_reseed_prompt_bundle(
             frame_idx=int(frame_idx),
             frame_width=float(frame_width),
             frame_height=float(frame_height),
             max_prompts=limit,
-            max_source_frames=source_frames,
         )
         if not bundle.boxes:
             return [], []
@@ -2520,6 +2823,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         self,
         *,
         expected_frames: Iterable[int],
+        processed_frames: Optional[set[int]] = None,
+        verify_processed_frames: bool = True,
     ) -> Tuple[int, int]:
         """Ensure expected frames have valid per-frame JSON prediction files.
 
@@ -2534,6 +2839,13 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             if frame_idx < 0:
                 continue
             frame_path = Path(self.video_dir) / f"{int(frame_idx):09d}.json"
+            if (
+                not verify_processed_frames
+                and processed_frames is not None
+                and int(frame_idx) in processed_frames
+                and frame_path.exists()
+            ):
+                continue
             needs_repair = False
             if not frame_path.exists():
                 needs_repair = True
@@ -2554,6 +2866,23 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             )
             repaired += 1
         return int(repaired), int(invalid)
+
+    def _finalize_prediction_json_coverage(
+        self,
+        *,
+        expected_frames: Iterable[int],
+    ) -> Tuple[int, int]:
+        """Fast-path coverage finalization for live runs with compatibility fallback."""
+        try:
+            return self._ensure_prediction_json_coverage(
+                expected_frames=expected_frames,
+                processed_frames=set(getattr(self, "_frames_processed", set()) or set()),
+                verify_processed_frames=False,
+            )
+        except TypeError:
+            return self._ensure_prediction_json_coverage(
+                expected_frames=expected_frames,
+            )
 
     def propagate(
         self,
@@ -2690,6 +3019,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             window_dir.mkdir(parents=True, exist_ok=True)
             previous_window_frame_count = 0
             previous_window_start_idx: Optional[int] = None
+            previous_window_end_idx: Optional[int] = None
 
             for window_idx, (start_idx, end_idx, frames) in enumerate(
                 self._iter_video_windows(
@@ -2724,6 +3054,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     shift=shift,
                 )
                 previous_window_start_idx = window_start_idx
+                current_window_end_idx = int(window_end_idx)
                 session_resp = self._predictor.start_session(
                     resource_path=str(window_dir),
                     offload_video_to_cpu=self.offload_video_to_cpu,
@@ -2742,16 +3073,22 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         seed_mask_inputs = None
                         seed_mask_labels = None
                         seed_label_hints = None
+                        seed_max_new_ids: Optional[int] = None
+                        boundary_bundle: Optional[BoundaryPromptBundle] = None
+                        boundary_source_frame_idx: Optional[int] = None
                         if bool(getattr(self, "use_explicit_window_reseed", True)) and int(window_idx) > 0:
                             expected_track_ids = self._expected_track_ids_for_frame(
                                 int(start_idx),
                                 max_gap=self._track_match_max_gap(),
                             )
                             frame_h, frame_w = frames[0].shape[:2]
+                            if previous_window_end_idx is not None:
+                                boundary_source_frame_idx = int(previous_window_end_idx) - 1
                             boundary_bundle = self._build_boundary_reseed_prompt_bundle(
                                 frame_idx=int(start_idx),
                                 frame_width=float(frame_w),
                                 frame_height=float(frame_h),
+                                source_frame_idx=boundary_source_frame_idx,
                             )
                             allowed_track_ids = set(int(track_id) for track_id in expected_track_ids)
                             allowed_track_ids.update(
@@ -2759,6 +3096,13 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             )
                             if allowed_track_ids:
                                 window_allowed_gids = allowed_track_ids
+                                if boundary_bundle.boxes:
+                                    seed_max_new_ids = None
+                                else:
+                                    # Text-only reseeds should not mint an arbitrary
+                                    # number of new tracks when we already have live
+                                    # tracks to carry across the boundary.
+                                    seed_max_new_ids = 1
                             if boundary_bundle.boxes:
                                 seed_boxes = boundary_bundle.boxes
                                 seed_box_labels = boundary_bundle.box_labels
@@ -2784,15 +3128,28 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             if isinstance(prompt_result, dict)
                             else {}
                         ) or {}
-                        prompt_outputs = self._map_outputs_to_global_ids_at_frame(
-                            prompt_outputs,
-                            frame_idx=int(start_idx),
-                            allowed_gids=window_allowed_gids,
-                            # Keep carry-forward track matching, but do not block
-                            # freshly appearing animals from being assigned a new
-                            # global track id in the same window.
-                            allow_new_ids=True,
-                        )
+                        if boundary_bundle and boundary_bundle.boxes:
+                            prompt_outputs = self._map_outputs_to_global_ids_from_boundary_bundle_at_frame(
+                                prompt_outputs,
+                                frame_idx=int(start_idx),
+                                boundary_bundle=boundary_bundle,
+                                allowed_gids=window_allowed_gids,
+                                allow_new_ids=True,
+                                max_new_ids=seed_max_new_ids,
+                                session_id=session_id,
+                            )
+                        else:
+                            prompt_outputs = self._map_outputs_to_global_ids_at_frame(
+                                prompt_outputs,
+                                frame_idx=int(start_idx),
+                                allowed_gids=window_allowed_gids,
+                                # Keep carry-forward track matching, but do not block
+                                # freshly appearing animals from being assigned a new
+                                # global track id in the same window.
+                                allow_new_ids=True,
+                                max_new_ids=seed_max_new_ids,
+                                session_id=session_id,
+                            )
                         prompt_global_frame = int(start_idx)
                         drift_before = int(getattr(self, "_drift_rejections_total", 0))
                         prompt_masks_in_frame, _ = self._handle_frame_outputs(
@@ -2835,12 +3192,30 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             local_frame = int(result.get("frame_index", 0))
                             global_frame = start_idx + local_frame
                             outputs = result.get("outputs", {}) or {}
+                            expected_track_ids = self._expected_track_ids_for_frame(
+                                int(global_frame),
+                                max_gap=self._track_match_max_gap(),
+                            )
                             if (
                                 int(frame_to_masks.get(global_frame, 0)) > 0
                                 and self._output_candidate_mask_count(outputs) == 0
                             ):
                                 boundary_empty_skips += 1
                                 continue
+                            if (
+                                self._output_candidate_mask_count(outputs) == 0
+                                and expected_track_ids
+                            ):
+                                outputs = self._recent_track_outputs_for_ids(
+                                    expected_track_ids,
+                                    frame_idx=int(global_frame),
+                                )
+                                if outputs:
+                                    logger.info(
+                                        "SAM3 reused recent accepted masks for frame=%s after empty propagation outputs (tracks=%s).",
+                                        int(global_frame),
+                                        len(expected_track_ids),
+                                    )
                             outputs = self._map_outputs_to_global_ids_at_frame(
                                 outputs,
                                 frame_idx=global_frame,
@@ -2899,6 +3274,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             frame_idx=refresh_global_frame,
                             allowed_gids=window_allowed_gids,
                             allow_new_ids=True,
+                            max_new_ids=0 if window_allowed_gids else None,
                         )
                         drift_before = int(getattr(self, "_drift_rejections_total", 0))
                         refresh_masks_in_frame, _ = self._handle_frame_outputs(
@@ -2950,6 +3326,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 )
                 telemetry["drift_rejections"] = int(local_drift_rejections)
                 window_telemetry.append(telemetry)
+                previous_window_end_idx = current_window_end_idx
                 self._emit_telemetry(
                     "window",
                     {
@@ -3022,8 +3399,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             expected_frames = range(int(total_frames))
         else:
             expected_frames = frame_to_masks.keys()
-        repaired, invalid = self._ensure_prediction_json_coverage(
-            expected_frames=expected_frames
+        repaired, invalid = self._finalize_prediction_json_coverage(
+            expected_frames=expected_frames,
         )
         if repaired > 0:
             logger.info(
@@ -3137,6 +3514,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             window_dir.mkdir(parents=True, exist_ok=True)
             previous_window_frame_count = 0
             previous_window_start_idx: Optional[int] = None
+            previous_window_end_idx: Optional[int] = None
 
             for window_idx, (start_idx, end_idx, frames) in enumerate(
                 self._iter_video_windows(
@@ -3182,6 +3560,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     shift=shift,
                 )
                 previous_window_start_idx = window_start_idx
+                current_window_end_idx = int(window_end_idx)
                 session_id = self.start_session(
                     target_device=resolved_device,
                     session_id=None,
@@ -3201,12 +3580,14 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     bool(getattr(self, "use_explicit_window_reseed", True))
                     and int(window_idx) > 0
                     and self.text_prompt
+                    and previous_window_end_idx is not None
                 ):
                     frame_h, frame_w = frames[0].shape[:2]
                     boundary_bundle = self._build_boundary_reseed_prompt_bundle(
                         frame_idx=int(start_idx),
                         frame_width=float(frame_w),
                         frame_height=float(frame_h),
+                        source_frame_idx=int(previous_window_end_idx) - 1,
                     )
 
                 def _seed_frame(
@@ -3261,6 +3642,15 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                                     and boundary_bundle
                                     and boundary_bundle.boxes
                                 ),
+                                boundary_bundle=boundary_bundle
+                                if include_boundary_prompts
+                                else None,
+                                boundary_allowed_gids=(
+                                    set(int(v) for v in boundary_bundle.track_ids)
+                                    if include_boundary_prompts and boundary_bundle
+                                    else None
+                                ),
+                                boundary_max_new_ids=None,
                             )
                             if seed_mask_count <= 0:
                                 logger.info(
@@ -3305,6 +3695,15 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                                 and boundary_bundle
                                 and boundary_bundle.boxes
                             ),
+                            boundary_bundle=boundary_bundle
+                            if include_boundary_prompts
+                            else None,
+                            boundary_allowed_gids=(
+                                set(int(v) for v in boundary_bundle.track_ids)
+                                if include_boundary_prompts and boundary_bundle
+                                else None
+                            ),
+                            boundary_max_new_ids=None,
                         )
                     elif self.text_prompt:
                         logger.info(
@@ -3340,6 +3739,15 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                                 and boundary_bundle
                                 and boundary_bundle.boxes
                             ),
+                            boundary_bundle=boundary_bundle
+                            if include_boundary_prompts
+                            else None,
+                            boundary_allowed_gids=(
+                                set(int(v) for v in boundary_bundle.track_ids)
+                                if include_boundary_prompts and boundary_bundle
+                                else None
+                            ),
+                            boundary_max_new_ids=None,
                         )
                     else:
                         return False
@@ -3434,6 +3842,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 )
                 telemetry["drift_rejections"] = int(local_drift_rejections)
                 window_telemetry.append(telemetry)
+                previous_window_end_idx = current_window_end_idx
                 self._emit_telemetry(
                     "window",
                     {
@@ -3460,8 +3869,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             expected_frames = range(int(total_frames))
         else:
             expected_frames = frame_to_masks.keys()
-        repaired, invalid = self._ensure_prediction_json_coverage(
-            expected_frames=expected_frames
+        repaired, invalid = self._finalize_prediction_json_coverage(
+            expected_frames=expected_frames,
         )
         if repaired > 0:
             logger.info(
@@ -3534,6 +3943,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         point_obj_ids: List[int],
         label_hints: List[str],
         force_text_with_structured_prompts: bool = False,
+        boundary_bundle: Optional[BoundaryPromptBundle] = None,
+        boundary_allowed_gids: Optional[set[int]] = None,
+        boundary_max_new_ids: Optional[int] = None,
     ) -> int:
         """
         Apply initial prompts with SAM3.1-compatible sequencing:
@@ -3563,6 +3975,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 record_frame_idx=output_frame_idx,
                 merge_existing_on_record=False,
                 label_hints=label_hints,
+                boundary_bundle=boundary_bundle,
+                boundary_allowed_gids=boundary_allowed_gids,
+                boundary_max_new_ids=boundary_max_new_ids,
             )
             total_seed_masks += self._prompt_result_mask_count(semantic_result)
             has_prior_record = True
@@ -3594,6 +4009,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     record_frame_idx=output_frame_idx,
                     merge_existing_on_record=has_prior_record or local_idx > 0,
                     label_hints=[point_hint],
+                    boundary_bundle=boundary_bundle,
+                    boundary_allowed_gids=boundary_allowed_gids,
+                    boundary_max_new_ids=boundary_max_new_ids,
                 )
                 total_seed_masks += self._prompt_result_mask_count(point_result)
         return int(total_seed_masks)
@@ -3798,8 +4216,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     expected_frames = range(int(total_frames))
                 else:
                     expected_frames = self._frames_processed
-                repaired, invalid = self._ensure_prediction_json_coverage(
-                    expected_frames=expected_frames
+                repaired, invalid = self._finalize_prediction_json_coverage(
+                    expected_frames=expected_frames,
                 )
                 if repaired > 0:
                     logger.info(

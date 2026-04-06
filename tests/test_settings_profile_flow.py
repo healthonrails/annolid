@@ -103,7 +103,10 @@ def test_apply_advanced_profile_updates_tracker_and_sam3(monkeypatch, tmp_path) 
             "automatic_pause_enabled": True,
             "follow_prediction_progress": False,
             "tracker_runtime_config": {"track_buffer": 45},
-            "sam3_runtime": {"compile": True},
+            "sam3_runtime": {
+                "compile": True,
+                "boundary_mask_match_iou_threshold": 0.4,
+            },
             "optical_flow_enabled": True,
             "optical_flow_backend": "farneback",
         },
@@ -126,6 +129,7 @@ def test_apply_advanced_profile_updates_tracker_and_sam3(monkeypatch, tmp_path) 
     assert bool(window._follow_prediction_progress) is False
     assert int(window.tracker_runtime_config.track_buffer) == 45
     assert bool(window._config["sam3"]["compile"]) is True
+    assert float(window._config["sam3"]["boundary_mask_match_iou_threshold"]) == 0.4
     assert window.optical_flow_manager.compute is True
 
 
@@ -274,16 +278,20 @@ def test_advanced_parameters_dialog_sam3_runtime_includes_window_handoff_flags()
         sam3_runtime={
             "use_explicit_window_reseed": False,
             "allow_private_state_mutation": True,
+            "boundary_mask_match_iou_threshold": 0.45,
         }
     )
 
     assert dialog.sam3_explicit_reseed_checkbox.isChecked() is False
     assert dialog.sam3_private_state_checkbox.isChecked() is True
+    assert float(dialog.sam3_boundary_mask_match_iou_spinbox.value()) == 0.45
 
     dialog.sam3_explicit_reseed_checkbox.setChecked(True)
     dialog.sam3_private_state_checkbox.setChecked(False)
+    dialog.sam3_boundary_mask_match_iou_spinbox.setValue(0.6)
     dialog._collect_values()
     runtime = dialog.get_sam3_runtime_settings()
 
     assert runtime["use_explicit_window_reseed"] is True
     assert runtime["allow_private_state_mutation"] is False
+    assert float(runtime["boundary_mask_match_iou_threshold"]) == 0.6

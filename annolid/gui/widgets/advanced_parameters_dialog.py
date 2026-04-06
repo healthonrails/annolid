@@ -108,6 +108,14 @@ class AdvancedParametersDialog(QDialog):
         self.sam3_allow_private_state_mutation = (
             False if raw_private_state is None else bool(raw_private_state)
         )
+        raw_boundary_mask_match_iou_threshold = sam3_runtime.get(
+            "boundary_mask_match_iou_threshold"
+        )
+        self.sam3_boundary_mask_match_iou_threshold = (
+            0.2
+            if raw_boundary_mask_match_iou_threshold is None
+            else float(raw_boundary_mask_match_iou_threshold)
+        )
 
         layout = QVBoxLayout()
         layout.setContentsMargins(14, 14, 14, 14)
@@ -862,6 +870,16 @@ class AdvancedParametersDialog(QDialog):
             "Replay explicit carry prompts at each window boundary to improve long-video continuity without relying on private predictor state."
         )
 
+        self.sam3_boundary_mask_match_iou_spinbox = QDoubleSpinBox()
+        self.sam3_boundary_mask_match_iou_spinbox.setRange(0.0, 1.0)
+        self.sam3_boundary_mask_match_iou_spinbox.setSingleStep(0.01)
+        self.sam3_boundary_mask_match_iou_spinbox.setValue(
+            float(self.sam3_boundary_mask_match_iou_threshold)
+        )
+        self.sam3_boundary_mask_match_iou_spinbox.setToolTip(
+            "IoU threshold used to match carried boundary masks to the previous window's last-frame shapes."
+        )
+
         self.sam3_private_state_checkbox = QCheckBox(
             "Allow private SAM3 state mutation (legacy compatibility)"
         )
@@ -979,6 +997,13 @@ class AdvancedParametersDialog(QDialog):
             self._wrap_checkbox(
                 self.sam3_explicit_reseed_checkbox,
                 "Recommended: explicit carry prompts at window boundaries reduce brittle cross-window drift.",
+            ),
+        )
+        form.addRow(
+            "Boundary mask match IoU",
+            self._wrap_with_hint(
+                self.sam3_boundary_mask_match_iou_spinbox,
+                "Match carried masks to the previous window's last-frame shapes by IoU. Higher values are stricter; 0.20 is a reasonable default.",
             ),
         )
         form.addRow(
@@ -1150,6 +1175,9 @@ class AdvancedParametersDialog(QDialog):
         self.sam3_use_explicit_window_reseed = (
             self.sam3_explicit_reseed_checkbox.isChecked()
         )
+        self.sam3_boundary_mask_match_iou_threshold = (
+            self.sam3_boundary_mask_match_iou_spinbox.value()
+        )
         self.sam3_allow_private_state_mutation = (
             self.sam3_private_state_checkbox.isChecked()
         )
@@ -1215,6 +1243,9 @@ class AdvancedParametersDialog(QDialog):
             "compile_model": bool(self.sam3_compile_model),
             "offload_video_to_cpu": bool(self.sam3_offload_video_to_cpu),
             "use_explicit_window_reseed": bool(self.sam3_use_explicit_window_reseed),
+            "boundary_mask_match_iou_threshold": float(
+                self.sam3_boundary_mask_match_iou_threshold
+            ),
             "allow_private_state_mutation": bool(
                 self.sam3_allow_private_state_mutation
             ),

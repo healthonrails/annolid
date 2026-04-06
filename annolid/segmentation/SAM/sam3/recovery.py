@@ -17,10 +17,19 @@ def expected_track_ids_for_frame(
     """Return recently active tracks that should still be considered live."""
     if max_gap is None:
         max_gap = max(3, min(int(getattr(manager, "sliding_window_size", 5) or 5), 10))
+    frame_idx = int(frame_idx)
     expected: set[int] = set()
-    start_frame = max(0, int(frame_idx) - int(max_gap))
+    last_seen_by_track = getattr(manager, "_track_last_seen_frame", {}) or {}
+    if last_seen_by_track:
+        expected.update(
+            int(track_id)
+            for track_id, last_seen_frame in last_seen_by_track.items()
+            if 0 <= frame_idx - int(last_seen_frame) <= int(max_gap)
+            and int(last_seen_frame) < frame_idx
+        )
+    start_frame = max(0, frame_idx - int(max_gap))
     frame_track_ids = getattr(manager, "_frame_track_ids", {})
-    for prev_frame in range(start_frame, int(frame_idx)):
+    for prev_frame in range(start_frame, frame_idx):
         expected.update(int(v) for v in frame_track_ids.get(int(prev_frame), set()))
     return expected
 
@@ -42,30 +51,41 @@ def recent_track_mask(
 ) -> Optional[np.ndarray]:
     track_id = int(obj_id)
     frame_masks = getattr(manager, "_frame_masks", {})
-    candidate_frames = [
-        int(candidate_frame)
-        for candidate_frame, masks in frame_masks.items()
-        if masks and str(track_id) in masks
-    ]
+    candidate_frames: List[int] = []
+    last_seen_frame = (getattr(manager, "_track_last_seen_frame", {}) or {}).get(track_id)
+    if last_seen_frame is not None:
+        last_seen_frame = int(last_seen_frame)
+        if frame_idx is None or last_seen_frame <= int(frame_idx):
+            candidate_frames.append(int(last_seen_frame))
     if not candidate_frames:
-        return None
-    if frame_idx is not None:
         candidate_frames = [
             int(candidate_frame)
-            for candidate_frame in candidate_frames
-            if int(candidate_frame) <= int(frame_idx)
+            for candidate_frame, masks in frame_masks.items()
+            if masks and str(track_id) in masks
         ]
-        if not candidate_frames:
-            return None
-    candidate_frame = max(candidate_frames)
-    masks_for_frame = frame_masks.get(int(candidate_frame)) or {}
-    mask = masks_for_frame.get(str(track_id))
-    if mask is None:
+        if frame_idx is not None:
+            candidate_frames = [
+                int(candidate_frame)
+                for candidate_frame in candidate_frames
+                if int(candidate_frame) <= int(frame_idx)
+            ]
+    if not candidate_frames:
         return None
-    arr = np.asarray(mask, dtype=np.uint8)
-    if arr.ndim != 2 or not arr.any():
-        return None
-    return arr
+
+    seen_frames: set[int] = set()
+    for candidate_frame in sorted(candidate_frames, reverse=True):
+        if int(candidate_frame) in seen_frames:
+            continue
+        seen_frames.add(int(candidate_frame))
+        masks_for_frame = frame_masks.get(int(candidate_frame)) or {}
+        mask = masks_for_frame.get(str(track_id))
+        if mask is None:
+            continue
+        arr = np.asarray(mask, dtype=np.uint8)
+        if arr.ndim != 2 or not arr.any():
+            continue
+        return arr
+    return None
 
 
 def should_accept_sam3_mask(

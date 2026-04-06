@@ -50,6 +50,7 @@ class SAM3VideoProcessor(Sam3SessionManager):
         compile_model: bool = False,
         offload_video_to_cpu: bool = True,
         use_explicit_window_reseed: bool = True,
+        boundary_mask_match_iou_threshold: float = 0.2,
         allow_private_state_mutation: bool = False,
         sliding_window_size: int = 5,
         sliding_window_stride: Optional[int] = None,
@@ -72,6 +73,7 @@ class SAM3VideoProcessor(Sam3SessionManager):
             compile_model=compile_model,
             offload_video_to_cpu=offload_video_to_cpu,
             use_explicit_window_reseed=use_explicit_window_reseed,
+            boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
             allow_private_state_mutation=allow_private_state_mutation,
             sliding_window_size=sliding_window_size,
             sliding_window_stride=sliding_window_stride,
@@ -160,6 +162,7 @@ def process_video(
     compile_model: bool = False,
     offload_video_to_cpu: bool = True,
     use_explicit_window_reseed: bool = True,
+    boundary_mask_match_iou_threshold: float = 0.2,
     allow_private_state_mutation: bool = False,
     sliding_window_size: int = 5,
     sliding_window_stride: Optional[int] = None,
@@ -192,6 +195,7 @@ def process_video(
         compile_model=compile_model,
         offload_video_to_cpu=offload_video_to_cpu,
         use_explicit_window_reseed=use_explicit_window_reseed,
+        boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
         allow_private_state_mutation=allow_private_state_mutation,
         sliding_window_size=sliding_window_size,
         sliding_window_stride=sliding_window_stride,
@@ -218,6 +222,7 @@ def process_video_with_agent(
     compile_model: bool = False,
     offload_video_to_cpu: bool = True,
     use_explicit_window_reseed: bool = True,
+    boundary_mask_match_iou_threshold: float = 0.2,
     allow_private_state_mutation: bool = False,
 ) -> Tuple[int, int]:
     """
@@ -244,6 +249,7 @@ def process_video_with_agent(
         compile_model=compile_model,
         offload_video_to_cpu=offload_video_to_cpu,
         use_explicit_window_reseed=use_explicit_window_reseed,
+        boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
         allow_private_state_mutation=allow_private_state_mutation,
     )
     frames, masks = run_agent_seeded_sam3_video(

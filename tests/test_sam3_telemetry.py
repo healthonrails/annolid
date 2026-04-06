@@ -37,12 +37,14 @@ def test_config_snapshot_keeps_expected_keys() -> None:
             "max_num_objects": 16,
             "multiplex_count": 8,
             "device": "cpu",
+            "boundary_mask_match_iou_threshold": 0.25,
             "unknown_key": "ignored",
         }
     )
     assert snapshot["max_num_objects"] == 16
     assert snapshot["multiplex_count"] == 8
     assert snapshot["device"] == "cpu"
+    assert snapshot["boundary_mask_match_iou_threshold"] == 0.25
     assert "unknown_key" not in snapshot
 
 

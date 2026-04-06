@@ -103,6 +103,7 @@ sam3:
   # Performance knobs (CUDA-only compile).
   compile_model: false
   offload_video_to_cpu: true
+  boundary_mask_match_iou_threshold: 0.2
   sliding_window_size: 15 # best accuracy from the paper
   sliding_window_stride: null
   # Agent seeding defaults

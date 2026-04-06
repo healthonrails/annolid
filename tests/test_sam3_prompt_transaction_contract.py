@@ -285,6 +285,7 @@ def test_build_video_processor_merges_live_canvas_seed_frame(
             "sam3": {
                 "use_explicit_window_reseed": False,
                 "allow_private_state_mutation": True,
+                "boundary_mask_match_iou_threshold": 0.33,
             }
         },
         _current_text_prompt=lambda: None,
@@ -347,6 +348,7 @@ def test_build_video_processor_merges_live_canvas_seed_frame(
     assert kwargs["id_to_labels"][11] == "vole_b"
     assert kwargs["id_to_labels"][12] == "vole_c"
     assert kwargs["use_explicit_window_reseed"] is False
+    assert kwargs["boundary_mask_match_iou_threshold"] == 0.33
     assert kwargs["allow_private_state_mutation"] is True
 
 
@@ -389,6 +391,7 @@ def test_dialog_defaults_keep_agent_output_dir_disabled_by_default() -> None:
     manager.compile_model = None
     manager.offload_video_to_cpu = None
     manager.use_explicit_window_reseed = None
+    manager.boundary_mask_match_iou_threshold = None
     manager.allow_private_state_mutation = None
     manager.max_num_objects = None
     manager.multiplex_count = None
@@ -400,6 +403,7 @@ def test_dialog_defaults_keep_agent_output_dir_disabled_by_default() -> None:
     defaults = manager.dialog_defaults({})
 
     assert defaults["agent_output_dir"] is None
+    assert defaults["boundary_mask_match_iou_threshold"] == 0.2
 
 
 def test_manual_seed_loader_uses_png_json_pair_and_ignores_store(
@@ -791,6 +795,37 @@ def test_handle_frame_outputs_falls_back_to_recent_mask_when_implausible() -> No
     )
 
 
+def test_ensure_prediction_json_coverage_skips_processed_frame_validation_fast_path(
+    tmp_path,
+) -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.video_dir = str(tmp_path)
+    session.frame_shape = (20, 20, 3)
+    session.get_frame_shape = lambda: (20, 20, 3)
+
+    processed_path = tmp_path / "000000005.json"
+    processed_path.write_text("{not-valid-json", encoding="utf-8")
+
+    captured: list[int] = []
+
+    def _save_annotations(filename, mask_dict, frame_shape, **kwargs):
+        captured.append(int(kwargs.get("frame_idx", -1)))
+        Path(filename).write_text("{}", encoding="utf-8")
+        return None
+
+    session._save_annotations = _save_annotations
+
+    repaired, invalid = session._ensure_prediction_json_coverage(
+        expected_frames=[5, 6],
+        processed_frames={5},
+        verify_processed_frames=False,
+    )
+
+    assert repaired == 1
+    assert invalid == 0
+    assert captured == [6]
+
+
 def test_apply_seed_prompts_returns_materialized_mask_count() -> None:
     session = Sam3SessionManager.__new__(Sam3SessionManager)
     session.text_prompt = "vole"
@@ -1165,7 +1200,7 @@ def test_build_boundary_reseed_boxes_prefers_expected_track_masks() -> None:
     assert 7 in track_ids
 
 
-def test_build_boundary_reseed_prompt_bundle_uses_recent_window_masks() -> None:
+def test_build_boundary_reseed_prompt_bundle_uses_last_frame_masks_only() -> None:
     session = Sam3SessionManager.__new__(Sam3SessionManager)
     session.max_num_objects = 4
     session.id_to_labels = {7: "vole", 8: "vole", 9: "vole"}
@@ -1195,14 +1230,148 @@ def test_build_boundary_reseed_prompt_bundle_uses_recent_window_masks() -> None:
         max_prompts=2,
     )
 
-    assert len(bundle.boxes) == 2
-    assert len(bundle.mask_inputs) == 2
-    assert bundle.track_ids == [7, 8]
-    assert bundle.label_hints == ["vole", "vole"]
+    assert len(bundle.boxes) == 1
+    assert len(bundle.mask_inputs) == 1
+    assert bundle.track_ids == [7]
+    assert bundle.label_hints == ["vole"]
     assert all(len(box) == 4 for box in bundle.boxes)
     assert all(0.0 <= v <= 1.0 for box in bundle.boxes for v in box)
     assert int(np.asarray(bundle.mask_inputs[0]).sum()) == 16
-    assert int(np.asarray(bundle.mask_inputs[1]).sum()) == 9
+
+
+def test_build_boundary_reseed_prompt_bundle_requires_last_frame_masks() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.max_num_objects = 4
+    session.id_to_labels = {7: "vole", 8: "vole"}
+    session._frame_track_ids = {10: {8}, 11: {7}}
+    session._frame_masks = {
+        10: {
+            "8": np.pad(
+                np.ones((3, 3), dtype=np.uint8), ((6, 7), (7, 6)), mode="constant"
+            ),
+        },
+        11: {},
+    }
+
+    bundle = session._build_boundary_reseed_prompt_bundle(
+        frame_idx=12,
+        frame_width=16.0,
+        frame_height=16.0,
+        max_prompts=2,
+    )
+
+    assert bundle.boxes == []
+    assert bundle.mask_inputs == []
+    assert bundle.track_ids == []
+    assert bundle.label_hints == []
+
+
+def test_boundary_mask_matching_keeps_previous_ids_and_mints_new_ones() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session._session_id = "session-1"
+    session._active_global_match_session_id = None
+    session._session_local_to_global_ids = {}
+    session._global_track_next_id = 20
+    session._global_track_last_box = {}
+    session._global_track_last_seen_frame = {}
+    session._global_track_history = {}
+    session._global_track_obj_ptr = {}
+    session.sliding_window_size = 4
+    session.sliding_window_stride = 2
+    session._prompt_seed_frames = {12}
+
+    ref_mask = np.zeros((8, 8), dtype=np.uint8)
+    ref_mask[2:5, 2:5] = 1
+    ref_mask_b = np.zeros((8, 8), dtype=np.uint8)
+    ref_mask_b[0:2, 0:2] = 1
+    bundle = type(
+        "Bundle",
+        (),
+        {
+            "boxes": [[2 / 8, 2 / 8, 3 / 8, 3 / 8], [0.0, 0.0, 2 / 8, 2 / 8]],
+            "box_labels": [1, 1],
+            "mask_inputs": [ref_mask, ref_mask_b],
+            "mask_labels": [1, 1],
+            "track_ids": [7, 8],
+            "label_hints": ["vole", "vole"],
+        },
+    )()
+    new_mask = np.zeros((8, 8), dtype=np.uint8)
+    new_mask[2:5, 2:5] = 1
+    unmatched_mask = np.zeros((8, 8), dtype=np.uint8)
+    unmatched_mask[5:7, 5:7] = 1
+    outputs = {
+        "out_obj_ids": np.asarray([1, 2], dtype=np.int64),
+        "out_boxes_xywh": np.asarray(
+            [[2.0, 2.0, 3.0, 3.0], [5.0, 5.0, 2.0, 2.0]], dtype=np.float32
+        ),
+        "out_binary_masks": np.asarray([new_mask, unmatched_mask], dtype=object),
+    }
+
+    mapped = session._map_outputs_to_global_ids_from_boundary_bundle_at_frame(
+        outputs,
+        frame_idx=12,
+        boundary_bundle=bundle,
+        allowed_gids={7, 8},
+        allow_new_ids=True,
+        max_new_ids=None,
+        session_id="session-1",
+    )
+
+    assert mapped["out_obj_ids"].tolist() == [7, 20]
+    assert mapped["global_id_assignments"][0]["global_id"] == 7
+    assert mapped["global_id_assignments"][1]["global_id"] == 20
+
+
+def test_boundary_mask_matching_respects_configurable_threshold() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session._session_id = "session-1"
+    session._active_global_match_session_id = None
+    session._session_local_to_global_ids = {}
+    session._global_track_next_id = 30
+    session._global_track_last_box = {}
+    session._global_track_last_seen_frame = {}
+    session._global_track_history = {}
+    session._global_track_obj_ptr = {}
+    session.sliding_window_size = 4
+    session.sliding_window_stride = 2
+    session.boundary_mask_match_iou_threshold = 0.75
+    session._prompt_seed_frames = {12}
+
+    ref_mask = np.zeros((8, 8), dtype=np.uint8)
+    ref_mask[2:5, 2:5] = 1
+    bundle = type(
+        "Bundle",
+        (),
+        {
+            "boxes": [[2 / 8, 2 / 8, 3 / 8, 3 / 8]],
+            "box_labels": [1],
+            "mask_inputs": [ref_mask],
+            "mask_labels": [1],
+            "track_ids": [7],
+            "label_hints": ["vole"],
+        },
+    )()
+    shifted_mask = np.zeros((8, 8), dtype=np.uint8)
+    shifted_mask[3:6, 3:6] = 1
+    outputs = {
+        "out_obj_ids": np.asarray([1], dtype=np.int64),
+        "out_boxes_xywh": np.asarray([[3.0, 3.0, 3.0, 3.0]], dtype=np.float32),
+        "out_binary_masks": np.asarray([shifted_mask], dtype=object),
+    }
+
+    mapped = session._map_outputs_to_global_ids_from_boundary_bundle_at_frame(
+        outputs,
+        frame_idx=12,
+        boundary_bundle=bundle,
+        allowed_gids={7},
+        allow_new_ids=True,
+        max_new_ids=None,
+        session_id="session-1",
+    )
+
+    assert mapped["out_obj_ids"].tolist() == [30]
+    assert mapped["global_id_assignments"][0]["global_id"] == 30
 
 
 def test_multiplex_mask_decoder_returns_empty_outputs_for_empty_batch() -> None:

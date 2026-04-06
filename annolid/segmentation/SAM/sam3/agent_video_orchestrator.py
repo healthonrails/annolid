@@ -47,6 +47,7 @@ class TrackingConfig:
     compile_model: bool = False
     offload_video_to_cpu: bool = True
     use_explicit_window_reseed: bool = True
+    boundary_mask_match_iou_threshold: float = 0.2
     allow_private_state_mutation: bool = False
     epsilon_for_polygon: float = 2.0
     max_frame_num_to_track: Optional[int] = None
@@ -179,6 +180,7 @@ def run_agent_seeded_sam3_video(
         compile_model=tracking_cfg.compile_model,
         offload_video_to_cpu=tracking_cfg.offload_video_to_cpu,
         use_explicit_window_reseed=tracking_cfg.use_explicit_window_reseed,
+        boundary_mask_match_iou_threshold=tracking_cfg.boundary_mask_match_iou_threshold,
         allow_private_state_mutation=tracking_cfg.allow_private_state_mutation,
         async_loading_frames=False,
         sliding_window_size=agent_cfg.window_size,

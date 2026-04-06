@@ -81,6 +81,7 @@ def build_config_snapshot(config: Mapping[str, object]) -> Dict[str, object]:
         "sliding_window_stride",
         "use_sliding_window_for_text_prompt",
         "use_explicit_window_reseed",
+        "boundary_mask_match_iou_threshold",
         "allow_private_state_mutation",
         "offload_video_to_cpu",
         "async_loading_frames",
