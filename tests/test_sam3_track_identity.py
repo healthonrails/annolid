@@ -114,3 +114,23 @@ def test_map_outputs_to_global_ids_reuses_existing_track() -> None:
         obj_ptr_similarity(manager._global_track_obj_ptr[1], np.asarray([1.0, 0.0]))
         == 1.0
     )
+
+
+def test_map_outputs_to_global_ids_drops_unmatched_when_new_ids_disallowed() -> None:
+    manager = _FakeManager()
+    outputs = {
+        "out_obj_ids": np.asarray([10], dtype=np.int64),
+        "out_boxes_xywh": np.asarray([[2.0, 2.0, 10.0, 10.0]], dtype=np.float32),
+        "obj_ptr": np.asarray([[-1.0, 0.0]], dtype=np.float32),
+    }
+    mapped = map_outputs_to_global_ids_at_frame(
+        manager,
+        outputs,
+        frame_idx=4,
+        session_id="sess-1",
+        allowed_gids={1},
+        allow_new_ids=False,
+    )
+    assert mapped["out_obj_ids"].tolist() == []
+    assert mapped["global_id_assignments"] == []
+    assert manager._global_track_next_id == 2

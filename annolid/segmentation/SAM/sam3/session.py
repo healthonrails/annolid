@@ -2567,6 +2567,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 local_mask_counts: Dict[int, int] = {}
                 boundary_empty_skips = 0
                 local_drift_rejections = 0
+                window_allowed_gids: Optional[set[int]] = None
                 window_start_idx = int(start_idx)
                 window_end_idx = int(end_idx)
                 # When windows overlap and slide forward by stride, reuse temp
@@ -2600,10 +2601,19 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
 
                     def seed_first_frame() -> None:
                         nonlocal local_drift_rejections
+                        nonlocal window_allowed_gids
                         seed_boxes = None
                         seed_box_labels = None
                         seed_label_hints = None
                         if bool(getattr(self, "use_explicit_window_reseed", True)) and int(window_idx) > 0:
+                            expected_track_ids = self._expected_track_ids_for_frame(
+                                int(start_idx),
+                                max_gap=self._track_match_max_gap(),
+                            )
+                            if expected_track_ids:
+                                window_allowed_gids = {
+                                    int(track_id) for track_id in expected_track_ids
+                                }
                             frame_h, frame_w = frames[0].shape[:2]
                             seed_boxes_candidate, seed_track_ids = self._build_boundary_reseed_boxes(
                                 frame_idx=int(start_idx),
@@ -2614,6 +2624,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                                 seed_boxes = seed_boxes_candidate
                                 seed_box_labels = [1] * len(seed_boxes_candidate)
                                 if seed_track_ids:
+                                    window_allowed_gids = {
+                                        int(track_id) for track_id in seed_track_ids
+                                    }
                                     seed_label_hints = self._label_hints_from_ids(
                                         seed_track_ids,
                                         self.id_to_labels,
@@ -2638,6 +2651,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         prompt_outputs = self._map_outputs_to_global_ids_at_frame(
                             prompt_outputs,
                             frame_idx=int(start_idx),
+                            allowed_gids=window_allowed_gids,
+                            allow_new_ids=not bool(window_allowed_gids),
                         )
                         prompt_global_frame = int(start_idx)
                         drift_before = int(getattr(self, "_drift_rejections_total", 0))
@@ -2690,6 +2705,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             outputs = self._map_outputs_to_global_ids_at_frame(
                                 outputs,
                                 frame_idx=global_frame,
+                                allowed_gids=window_allowed_gids,
+                                allow_new_ids=not bool(window_allowed_gids),
                             )
                             drift_before = int(getattr(self, "_drift_rejections_total", 0))
                             masks_in_frame, _ = self._handle_frame_outputs(
@@ -2739,6 +2756,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         refresh_outputs = self._map_outputs_to_global_ids_at_frame(
                             refresh_outputs,
                             frame_idx=refresh_global_frame,
+                            allowed_gids=window_allowed_gids,
+                            allow_new_ids=not bool(window_allowed_gids),
                         )
                         drift_before = int(getattr(self, "_drift_rejections_total", 0))
                         refresh_masks_in_frame, _ = self._handle_frame_outputs(
