@@ -391,6 +391,18 @@ class Sam3SessionConfig:
     telemetry_jsonl_path: Optional[str] = None
 
 
+@dataclass
+class BoundaryPromptBundle:
+    """Combined visual prompt payload carried into a new window."""
+
+    boxes: List[List[float]]
+    box_labels: List[int]
+    mask_inputs: List[np.ndarray]
+    mask_labels: List[int]
+    track_ids: List[int]
+    label_hints: List[str]
+
+
 def _read_bool_env(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -1992,6 +2004,143 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         limit = max(1, int(max_boxes))
         return boxes_abs[:limit]
 
+    def _boundary_prompt_source_frame(self, frame_idx: int) -> Optional[int]:
+        """Return the previous-frame source for a new window, or a nearby fallback."""
+        source_frames = self._boundary_prompt_source_frames(
+            int(frame_idx),
+            max_frames=1,
+        )
+        if source_frames:
+            return int(source_frames[0])
+        return None
+
+    def _boundary_prompt_source_frames(
+        self,
+        frame_idx: int,
+        *,
+        max_frames: int = 3,
+    ) -> List[int]:
+        """
+        Return a bounded list of recent frames that can seed the next window.
+
+        The immediate previous frame is preferred, but we keep walking back
+        through the most recent reliable frames so a weak final frame does not
+        become a single point of failure at the window boundary.
+        """
+        if not self._frame_masks:
+            return []
+        limit = max(1, int(max_frames))
+        candidate_frames = [
+            int(f)
+            for f, masks in self._frame_masks.items()
+            if masks and int(f) < int(frame_idx)
+        ]
+        if not candidate_frames:
+            return []
+        candidate_frames.sort(key=lambda f: (int(frame_idx) - int(f), -int(f)))
+        return candidate_frames[:limit]
+
+    def _derive_boundary_visual_prompts(
+        self,
+        frame_idx: int,
+        *,
+        max_prompts: int = 4,
+        max_source_frames: int = 3,
+    ) -> Tuple[List[List[float]], List[np.ndarray], List[int]]:
+        """
+        Derive boxes and mask inputs from recent good frames before a window handoff.
+
+        This prefers the exact previous frame first, then walks backward through a
+        bounded number of recent reliable frames so the reseed bundle is resilient
+        to a bad final frame or a transient mask drop.
+        """
+        source_frames = self._boundary_prompt_source_frames(
+            int(frame_idx),
+            max_frames=max_source_frames,
+        )
+        if not source_frames:
+            return [], [], []
+
+        boxes_abs: List[List[float]] = []
+        mask_inputs: List[np.ndarray] = []
+        track_ids: List[int] = []
+        limit = max(1, int(max_prompts))
+        seen_track_ids: set[int] = set()
+        for source_frame in source_frames:
+            masks_for_frame = self._frame_masks.get(int(source_frame)) or {}
+            if not masks_for_frame:
+                continue
+
+            frame_track_ids = [
+                int(v)
+                for v in getattr(self, "_frame_track_ids", {}).get(int(source_frame), set())
+                if str(int(v)) in masks_for_frame
+            ]
+            if frame_track_ids:
+                ordered_track_ids = sorted(frame_track_ids)
+            else:
+                ordered_track_ids = sorted(
+                    int(k)
+                    for k in masks_for_frame.keys()
+                    if isinstance(k, (str, int)) and str(k).isdigit()
+                )
+
+            for track_id in ordered_track_ids:
+                if int(track_id) in seen_track_ids:
+                    continue
+                mask = masks_for_frame.get(str(int(track_id)))
+                if mask is None:
+                    continue
+                arr = np.asarray(mask, dtype=np.uint8)
+                if arr.ndim != 2 or not arr.any():
+                    continue
+                box = self._mask_to_bbox_xywh(arr)
+                if box is None:
+                    continue
+                boxes_abs.append([float(v) for v in box.tolist()])
+                mask_inputs.append(arr.copy())
+                track_ids.append(int(track_id))
+                seen_track_ids.add(int(track_id))
+                if len(track_ids) >= limit:
+                    return boxes_abs, mask_inputs, track_ids
+
+        return boxes_abs, mask_inputs, track_ids
+
+    def _build_boundary_reseed_prompt_bundle(
+        self,
+        *,
+        frame_idx: int,
+        frame_width: float,
+        frame_height: float,
+        max_prompts: Optional[int] = None,
+        max_source_frames: Optional[int] = None,
+    ) -> BoundaryPromptBundle:
+        """Build the combined boundary prompt payload for a new window."""
+        limit = max(1, int(max_prompts or self.max_num_objects or 4))
+        source_limit = max(1, int(max_source_frames or min(3, limit)))
+        boxes_abs, mask_inputs, track_ids = self._derive_boundary_visual_prompts(
+            int(frame_idx),
+            max_prompts=limit,
+            max_source_frames=source_limit,
+        )
+        if not boxes_abs:
+            return BoundaryPromptBundle([], [], [], [], [], [])
+        boxes = self._normalize_boxes(boxes_abs, float(frame_width), float(frame_height))
+        box_labels = [1] * len(boxes)
+        mask_labels = [1] * len(mask_inputs)
+        label_hints = self._label_hints_from_ids(
+            track_ids,
+            getattr(self, "id_to_labels", {}),
+        )
+        return BoundaryPromptBundle(
+            boxes=boxes,
+            box_labels=box_labels,
+            mask_inputs=mask_inputs,
+            mask_labels=mask_labels,
+            track_ids=track_ids,
+            label_hints=label_hints,
+        )
+
     def _derive_boxes_for_track_ids(
         self,
         frame_idx: int,
@@ -2075,32 +2224,18 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         if max_boxes is None:
             max_boxes = max(1, int(self.max_num_objects or 4))
         limit = max(1, int(max_boxes))
+        source_frames = max(1, min(3, limit))
 
-        expected_track_ids = sorted(
-            self._expected_track_ids_for_frame(
-                int(frame_idx),
-                max_gap=self._track_match_max_gap(),
-            )
+        bundle = self._build_boundary_reseed_prompt_bundle(
+            frame_idx=int(frame_idx),
+            frame_width=float(frame_width),
+            frame_height=float(frame_height),
+            max_prompts=limit,
+            max_source_frames=source_frames,
         )
-        boxes_abs: List[List[float]]
-        box_track_ids: List[int]
-        boxes_abs, box_track_ids = self._derive_boxes_for_track_ids(
-            int(frame_idx),
-            expected_track_ids,
-            max_boxes=limit,
-        )
-        if not boxes_abs:
-            boxes_abs = self._derive_boxes_from_neighbor_masks(
-                int(frame_idx),
-                max_boxes=limit,
-            )
-            box_track_ids = []
-        if not boxes_abs:
+        if not bundle.boxes:
             return [], []
-        return (
-            self._normalize_boxes(boxes_abs, float(frame_width), float(frame_height)),
-            box_track_ids,
-        )
+        return (bundle.boxes, bundle.track_ids)
 
     def _expected_track_ids_for_frame(
         self,
@@ -2604,33 +2739,32 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         nonlocal window_allowed_gids
                         seed_boxes = None
                         seed_box_labels = None
+                        seed_mask_inputs = None
+                        seed_mask_labels = None
                         seed_label_hints = None
                         if bool(getattr(self, "use_explicit_window_reseed", True)) and int(window_idx) > 0:
                             expected_track_ids = self._expected_track_ids_for_frame(
                                 int(start_idx),
                                 max_gap=self._track_match_max_gap(),
                             )
-                            if expected_track_ids:
-                                window_allowed_gids = {
-                                    int(track_id) for track_id in expected_track_ids
-                                }
                             frame_h, frame_w = frames[0].shape[:2]
-                            seed_boxes_candidate, seed_track_ids = self._build_boundary_reseed_boxes(
+                            boundary_bundle = self._build_boundary_reseed_prompt_bundle(
                                 frame_idx=int(start_idx),
                                 frame_width=float(frame_w),
                                 frame_height=float(frame_h),
                             )
-                            if seed_boxes_candidate:
-                                seed_boxes = seed_boxes_candidate
-                                seed_box_labels = [1] * len(seed_boxes_candidate)
-                                if seed_track_ids:
-                                    window_allowed_gids = {
-                                        int(track_id) for track_id in seed_track_ids
-                                    }
-                                    seed_label_hints = self._label_hints_from_ids(
-                                        seed_track_ids,
-                                        self.id_to_labels,
-                                    )
+                            allowed_track_ids = set(int(track_id) for track_id in expected_track_ids)
+                            allowed_track_ids.update(
+                                int(track_id) for track_id in boundary_bundle.track_ids
+                            )
+                            if allowed_track_ids:
+                                window_allowed_gids = allowed_track_ids
+                            if boundary_bundle.boxes:
+                                seed_boxes = boundary_bundle.boxes
+                                seed_box_labels = boundary_bundle.box_labels
+                                seed_mask_inputs = boundary_bundle.mask_inputs
+                                seed_mask_labels = boundary_bundle.mask_labels
+                                seed_label_hints = boundary_bundle.label_hints
 
                         self._record_prompt_seed_frame(int(start_idx))
                         prompt_result = self._execute_prompt_transaction(
@@ -2639,6 +2773,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             text=text_prompt,
                             boxes=seed_boxes,
                             box_labels=seed_box_labels,
+                            mask_inputs=seed_mask_inputs,
+                            mask_labels=seed_mask_labels,
                             points=None,
                             point_labels=None,
                             obj_id=None,
@@ -2652,7 +2788,10 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             prompt_outputs,
                             frame_idx=int(start_idx),
                             allowed_gids=window_allowed_gids,
-                            allow_new_ids=not bool(window_allowed_gids),
+                            # Keep carry-forward track matching, but do not block
+                            # freshly appearing animals from being assigned a new
+                            # global track id in the same window.
+                            allow_new_ids=True,
                         )
                         prompt_global_frame = int(start_idx)
                         drift_before = int(getattr(self, "_drift_rejections_total", 0))
@@ -2706,7 +2845,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                                 outputs,
                                 frame_idx=global_frame,
                                 allowed_gids=window_allowed_gids,
-                                allow_new_ids=not bool(window_allowed_gids),
+                                allow_new_ids=True,
                             )
                             drift_before = int(getattr(self, "_drift_rejections_total", 0))
                             masks_in_frame, _ = self._handle_frame_outputs(
@@ -2744,6 +2883,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             text=text_prompt,
                             boxes=None,
                             box_labels=None,
+                            mask_inputs=None,
+                            mask_labels=None,
                             points=None,
                             point_labels=None,
                             obj_id=None,
@@ -2757,7 +2898,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             refresh_outputs,
                             frame_idx=refresh_global_frame,
                             allowed_gids=window_allowed_gids,
-                            allow_new_ids=not bool(window_allowed_gids),
+                            allow_new_ids=True,
                         )
                         drift_before = int(getattr(self, "_drift_rejections_total", 0))
                         refresh_masks_in_frame, _ = self._handle_frame_outputs(
@@ -3055,7 +3196,24 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 if not local_prompt_frames and self.text_prompt:
                     local_prompt_frames = [0]
 
-                def _seed_frame(local_frame_idx: int) -> bool:
+                boundary_bundle: Optional[BoundaryPromptBundle] = None
+                if (
+                    bool(getattr(self, "use_explicit_window_reseed", True))
+                    and int(window_idx) > 0
+                    and self.text_prompt
+                ):
+                    frame_h, frame_w = frames[0].shape[:2]
+                    boundary_bundle = self._build_boundary_reseed_prompt_bundle(
+                        frame_idx=int(start_idx),
+                        frame_width=float(frame_w),
+                        frame_height=float(frame_h),
+                    )
+
+                def _seed_frame(
+                    local_frame_idx: int,
+                    *,
+                    include_boundary_prompts: bool = False,
+                ) -> bool:
                     abs_frame_idx = window_start_idx + int(local_frame_idx)
                     frame_annotations = local_ann_groups.get(int(local_frame_idx), [])
                     seed_mask_count = 0
@@ -3072,19 +3230,37 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             point_obj_ids,
                         ) = self._prepare_prompts(frame_annotations, self.text_prompt)
                         if prompt_frame_idx is not None:
-                            label_hints = self._label_hints_from_ids(obj_ids, self.id_to_labels)
+                            label_hints = self._label_hints_from_ids(
+                                obj_ids,
+                                self.id_to_labels,
+                            )
+                            boxes_to_seed = list(boxes)
+                            box_labels_to_seed = list(labels)
+                            mask_inputs_to_seed = list(mask_inputs)
+                            mask_labels_to_seed = list(mask_labels)
+                            if include_boundary_prompts and boundary_bundle and boundary_bundle.boxes:
+                                boxes_to_seed = list(boundary_bundle.boxes) + boxes_to_seed
+                                box_labels_to_seed = list(boundary_bundle.box_labels) + box_labels_to_seed
+                                mask_inputs_to_seed = list(boundary_bundle.mask_inputs) + mask_inputs_to_seed
+                                mask_labels_to_seed = list(boundary_bundle.mask_labels) + mask_labels_to_seed
+                                label_hints = list(boundary_bundle.label_hints) + label_hints
                             seed_mask_count = self._apply_seed_prompts(
                                 frame_idx=int(prompt_frame_idx),
                                 output_frame_idx=int(window_start_idx + int(prompt_frame_idx)),
                                 session_id=session_id,
-                                boxes=boxes,
-                                labels=labels,
-                                mask_inputs=mask_inputs,
-                                mask_labels=mask_labels,
+                                boxes=boxes_to_seed,
+                                labels=box_labels_to_seed,
+                                mask_inputs=mask_inputs_to_seed,
+                                mask_labels=mask_labels_to_seed,
                                 points=points,
                                 point_labels=point_labels,
                                 point_obj_ids=point_obj_ids,
                                 label_hints=label_hints,
+                                force_text_with_structured_prompts=bool(
+                                    include_boundary_prompts
+                                    and boundary_bundle
+                                    and boundary_bundle.boxes
+                                ),
                             )
                             if seed_mask_count <= 0:
                                 logger.info(
@@ -3101,18 +3277,34 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             int(window_idx),
                             int(abs_frame_idx),
                         )
+                        boxes_to_seed: List[List[float]] = []
+                        box_labels_to_seed: List[int] = []
+                        mask_inputs_to_seed: List[object] = []
+                        mask_labels_to_seed: List[int] = []
+                        label_hints: List[str] = []
+                        if include_boundary_prompts and boundary_bundle and boundary_bundle.boxes:
+                            boxes_to_seed = list(boundary_bundle.boxes)
+                            box_labels_to_seed = list(boundary_bundle.box_labels)
+                            mask_inputs_to_seed = list(boundary_bundle.mask_inputs)
+                            mask_labels_to_seed = list(boundary_bundle.mask_labels)
+                            label_hints = list(boundary_bundle.label_hints)
                         seed_mask_count = self._apply_seed_prompts(
                             frame_idx=int(local_frame_idx),
                             output_frame_idx=int(abs_frame_idx),
                             session_id=session_id,
-                            boxes=[],
-                            labels=[],
-                            mask_inputs=[],
-                            mask_labels=[],
+                            boxes=boxes_to_seed,
+                            labels=box_labels_to_seed,
+                            mask_inputs=mask_inputs_to_seed,
+                            mask_labels=mask_labels_to_seed,
                             points=[],
                             point_labels=[],
                             point_obj_ids=[],
-                            label_hints=[],
+                            label_hints=label_hints,
+                            force_text_with_structured_prompts=bool(
+                                include_boundary_prompts
+                                and boundary_bundle
+                                and boundary_bundle.boxes
+                            ),
                         )
                     elif self.text_prompt:
                         logger.info(
@@ -3120,18 +3312,34 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             int(window_idx),
                             int(abs_frame_idx),
                         )
+                        boxes_to_seed = []
+                        box_labels_to_seed = []
+                        mask_inputs_to_seed = []
+                        mask_labels_to_seed = []
+                        label_hints = []
+                        if include_boundary_prompts and boundary_bundle and boundary_bundle.boxes:
+                            boxes_to_seed = list(boundary_bundle.boxes)
+                            box_labels_to_seed = list(boundary_bundle.box_labels)
+                            mask_inputs_to_seed = list(boundary_bundle.mask_inputs)
+                            mask_labels_to_seed = list(boundary_bundle.mask_labels)
+                            label_hints = list(boundary_bundle.label_hints)
                         seed_mask_count = self._apply_seed_prompts(
                             frame_idx=int(local_frame_idx),
                             output_frame_idx=int(abs_frame_idx),
                             session_id=session_id,
-                            boxes=[],
-                            labels=[],
-                            mask_inputs=[],
-                            mask_labels=[],
+                            boxes=boxes_to_seed,
+                            labels=box_labels_to_seed,
+                            mask_inputs=mask_inputs_to_seed,
+                            mask_labels=mask_labels_to_seed,
                             points=[],
                             point_labels=[],
                             point_obj_ids=[],
-                            label_hints=[],
+                            label_hints=label_hints,
+                            force_text_with_structured_prompts=bool(
+                                include_boundary_prompts
+                                and boundary_bundle
+                                and boundary_bundle.boxes
+                            ),
                         )
                     else:
                         return False
@@ -3202,12 +3410,17 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     len(frames),
                     has_text_prompt=bool(self.text_prompt),
                 )
-                for start_local, next_local in seed_segments:
+                for seg_idx, (start_local, next_local) in enumerate(seed_segments):
                     if int(start_local) not in local_ann_groups and not (
                         int(start_local) == 0 and self.text_prompt
                     ):
                         continue
-                    if not _seed_frame(int(start_local)):
+                    if not _seed_frame(
+                        int(start_local),
+                        include_boundary_prompts=bool(
+                            int(window_idx) > 0 and int(seg_idx) == 0
+                        ),
+                    ):
                         continue
                     _propagate_segment(int(start_local), int(next_local))
                 latency_ms = float((time.perf_counter() - window_t0) * 1000.0)
@@ -3320,6 +3533,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         point_labels: List[int],
         point_obj_ids: List[int],
         label_hints: List[str],
+        force_text_with_structured_prompts: bool = False,
     ) -> int:
         """
         Apply initial prompts with SAM3.1-compatible sequencing:
@@ -3332,7 +3546,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         if has_structured_prompts:
             self._record_seed_frame_if_manual(frame_idx, has_structured_prompts=True)
         semantic_text = (
-            self.text_prompt if not has_structured_prompts else None
+            self.text_prompt
+            if force_text_with_structured_prompts or not has_structured_prompts
+            else None
         )
         if semantic_text is not None or boxes or mask_inputs:
             semantic_result = self.add_prompt(

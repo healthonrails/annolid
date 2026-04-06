@@ -1165,6 +1165,46 @@ def test_build_boundary_reseed_boxes_prefers_expected_track_masks() -> None:
     assert 7 in track_ids
 
 
+def test_build_boundary_reseed_prompt_bundle_uses_recent_window_masks() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.max_num_objects = 4
+    session.id_to_labels = {7: "vole", 8: "vole", 9: "vole"}
+    session._frame_track_ids = {9: {9}, 10: {8}, 11: {7}}
+    session._frame_masks = {
+        9: {
+            "9": np.pad(
+                np.ones((2, 2), dtype=np.uint8), ((11, 3), (11, 3)), mode="constant"
+            ),
+        },
+        10: {
+            "8": np.pad(
+                np.ones((3, 3), dtype=np.uint8), ((6, 7), (7, 6)), mode="constant"
+            ),
+        },
+        11: {
+            "7": np.pad(
+                np.ones((4, 4), dtype=np.uint8), ((2, 10), (3, 9)), mode="constant"
+            ),
+        },
+    }
+
+    bundle = session._build_boundary_reseed_prompt_bundle(
+        frame_idx=12,
+        frame_width=16.0,
+        frame_height=16.0,
+        max_prompts=2,
+    )
+
+    assert len(bundle.boxes) == 2
+    assert len(bundle.mask_inputs) == 2
+    assert bundle.track_ids == [7, 8]
+    assert bundle.label_hints == ["vole", "vole"]
+    assert all(len(box) == 4 for box in bundle.boxes)
+    assert all(0.0 <= v <= 1.0 for box in bundle.boxes for v in box)
+    assert int(np.asarray(bundle.mask_inputs[0]).sum()) == 16
+    assert int(np.asarray(bundle.mask_inputs[1]).sum()) == 9
+
+
 def test_multiplex_mask_decoder_returns_empty_outputs_for_empty_batch() -> None:
     decoder = MultiplexMaskDecoder(
         transformer_dim=32,
