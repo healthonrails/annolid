@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import deque
 from contextlib import contextmanager
 import json
+import sys
+import types
 from pathlib import Path
 
 import cv2
@@ -816,8 +818,6 @@ def test_agent_core_default_processor_uses_model_device(monkeypatch) -> None:
     agent_core = importlib.import_module(
         "annolid.segmentation.SAM.sam3.sam3.agent.agent_core"
     )
-    model_builder = importlib.import_module("sam3.model_builder")
-    image_processor_mod = importlib.import_module("sam3.model.sam3_image_processor")
     captured: dict[str, object] = {}
 
     class _FakeModel:
@@ -834,12 +834,20 @@ def test_agent_core_default_processor_uses_model_device(monkeypatch) -> None:
             captured["model"] = model
             captured["device"] = device
 
+    fake_model_builder = types.ModuleType("sam3.model_builder")
+    fake_model_builder.build_sam3_image_model = lambda *args, **kwargs: _FakeModel()
+    fake_image_processor = types.ModuleType("sam3.model.sam3_image_processor")
+    fake_image_processor.Sam3Processor = _FakeProcessor
+
+    monkeypatch.setitem(sys.modules, "sam3.model_builder", fake_model_builder)
+    monkeypatch.setitem(
+        sys.modules, "sam3.model.sam3_image_processor", fake_image_processor
+    )
+
     monkeypatch.setattr(agent_core, "_DEFAULT_SAM3_PROCESSOR", None)
     monkeypatch.setattr(
         agent_core, "_resolve_default_sam3_checkpoint_path", lambda: None
     )
-    monkeypatch.setattr(model_builder, "build_sam3_image_model", lambda: _FakeModel())
-    monkeypatch.setattr(image_processor_mod, "Sam3Processor", _FakeProcessor)
 
     processor = agent_core._get_default_sam3_processor()
 
