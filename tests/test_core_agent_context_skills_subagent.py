@@ -84,9 +84,21 @@ def test_skills_loader_lists_builtin_skills() -> None:
     assert "github" in names
     assert "weather" in names
     assert "web-scraping" in names
+    assert "sam3-agent-video" in names
     summary = loader.build_skills_summary()
     assert "<skills>" in summary
     assert "<location>" in summary
+
+
+def test_skills_loader_suggests_sam3_agent_video_for_long_tracking_tasks() -> None:
+    loader = AgentSkillsLoader(Path.cwd())
+    suggestions = loader.suggest_skills_for_task_scored(
+        "Track mice in a long video with occlusions and identity drift",
+        top_k=5,
+    )
+    assert suggestions
+    assert suggestions[0]["name"] == "sam3-agent-video"
+    assert suggestions[0]["strategy"] in {"lexical", "embedding", "hybrid"}
 
 
 def test_skills_loader_precedence_workspace_over_managed_over_builtin(

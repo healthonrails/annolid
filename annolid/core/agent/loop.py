@@ -2780,6 +2780,7 @@ class AgentLoop:
         "gui_stop_realtime_stream",
         "gui_label_behavior_segments",
         "gui_segment_track_video",
+        "sam3_agent_video_track",
         "gui_open_video",
         "gui_open_url",
         "gui_open_in_browser",

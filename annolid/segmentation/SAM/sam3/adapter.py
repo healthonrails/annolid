@@ -209,6 +209,8 @@ def process_video_with_agent(
     *,
     agent_prompt: str,
     agent_det_thresh: float = 0.3,
+    debug: bool = False,
+    max_generations: int = 100,
     window_size: int = 5,
     stride: Optional[int] = None,
     output_dir: Optional[str] = None,
@@ -224,6 +226,9 @@ def process_video_with_agent(
     use_explicit_window_reseed: bool = True,
     boundary_mask_match_iou_threshold: float = 0.2,
     allow_private_state_mutation: bool = False,
+    llm_provider: Optional[str] = None,
+    llm_model: Optional[str] = None,
+    llm_profile: Optional[str] = None,
 ) -> Tuple[int, int]:
     """
     Run SAM3 video propagation using SAM3 Agent to refine the first frame of
@@ -237,6 +242,11 @@ def process_video_with_agent(
         window_size=window_size,
         stride=stride,
         output_dir=output_dir,
+        debug=bool(debug),
+        max_generations=int(max_generations),
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        llm_profile=llm_profile,
     )
     tracking_cfg = TrackingConfig(
         checkpoint_path=checkpoint_path,

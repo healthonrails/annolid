@@ -282,6 +282,7 @@ from annolid.services.chat_video import (
     open_chat_video_tool,
     resolve_chat_video_path_for_gui_tool,
     segment_track_chat_video_tool,
+    sam3_agent_video_track_tool,
 )
 from annolid.utils.llm_settings import resolve_agent_runtime_config
 from annolid.utils.citations import (
@@ -1312,6 +1313,7 @@ class StreamingChatTask(QRunnable):
                 "set_ai_text_prompt": self._tool_gui_set_ai_text_prompt,
                 "run_ai_text_segmentation": self._tool_gui_run_ai_text_segmentation,
                 "segment_track_video": self._tool_gui_segment_track_video,
+                "sam3_agent_video_track": self._tool_gui_sam3_agent_video_track,
                 "label_behavior_segments": self._tool_gui_label_behavior_segments,
                 "behavior_catalog": self._tool_gui_behavior_catalog,
                 "analyze_tracking_stats": self._tool_gui_analyze_tracking_stats,
@@ -1340,6 +1342,7 @@ class StreamingChatTask(QRunnable):
                 "verify_citations": self._tool_gui_verify_citations,
                 "generate_annolid_tutorial": self._tool_gui_generate_annolid_tutorial,
                 "self_update": self._tool_gui_self_update,
+                "open_track_dialog": self._tool_gui_open_track_dialog,
             },
         )
 
@@ -2091,6 +2094,7 @@ class StreamingChatTask(QRunnable):
             "set_frame": self._tool_gui_set_frame,
             "track_next_frames": self._tool_gui_track_next_frames,
             "segment_track_video": self._tool_gui_segment_track_video,
+            "sam3_agent_video_track": self._tool_gui_sam3_agent_video_track,
             "label_behavior_segments": self._tool_gui_label_behavior_segments,
             "behavior_catalog": self._tool_gui_behavior_catalog,
             "start_realtime_stream": self._tool_gui_start_realtime_stream,
@@ -2122,6 +2126,7 @@ class StreamingChatTask(QRunnable):
             "generate_annolid_tutorial": self._tool_gui_generate_annolid_tutorial,
             "automation_schedule": self._tool_gui_automation_schedule,
             "cron": self._tool_gui_cron,
+            "open_track_dialog": self._tool_gui_open_track_dialog,
             "list_dir": self._tool_gui_list_dir,
             "read_file": self._tool_gui_read_file,
             "exec_command": self._tool_gui_exec_command,
@@ -2139,6 +2144,12 @@ class StreamingChatTask(QRunnable):
         if not self._invoke_widget_slot("open_agent_capabilities_dialog"):
             return {"ok": False, "error": "Agent capabilities dialog is unavailable."}
         return {"ok": True, "opened": True}
+
+    def _tool_gui_open_track_dialog(self) -> Dict[str, Any]:
+        widget = self.widget
+        if widget is None:
+            return {"ok": False, "error": "Guided track dialog is unavailable."}
+        return self._invoke_widget_json_slot("bot_open_track_slash_dialog")
 
     @staticmethod
     def _looks_like_local_access_refusal(text: str) -> bool:
@@ -2516,6 +2527,61 @@ class StreamingChatTask(QRunnable):
         model_name: str = "",
         to_frame: Optional[int] = None,
     ) -> Dict[str, Any]:
+        model_value = str(model_name or "").strip().lower()
+        mode_value = str(mode or "track").strip().lower()
+
+        def invoke_segment_track(
+            vpath: str,
+            prompt: str,
+            mode_norm: str,
+            countgd: bool,
+            model: str,
+            frame: int,
+        ) -> bool:
+            return self._invoke_widget_slot(
+                "bot_segment_track_video",
+                QtCore.Q_ARG(str, vpath),
+                QtCore.Q_ARG(str, prompt),
+                QtCore.Q_ARG(str, mode_norm),
+                QtCore.Q_ARG(bool, countgd),
+                QtCore.Q_ARG(str, model),
+                QtCore.Q_ARG(int, frame),
+            )
+
+        if model_value == "sam3" and mode_value == "track":
+            try:
+                sam3_payload = self._tool_gui_sam3_agent_video_track(
+                    video_path=path,
+                    agent_prompt=text_prompt,
+                    llm_provider=str(self.provider or "").strip(),
+                    llm_model=str(self.model or "").strip(),
+                )
+                if isinstance(sam3_payload, dict) and bool(
+                    sam3_payload.get("ok", False)
+                ):
+                    return sam3_payload
+                return self._fallback_from_sam3_agent_to_gui_tracking(
+                    path=path,
+                    text_prompt=text_prompt,
+                    mode=mode,
+                    use_countgd=use_countgd,
+                    to_frame=to_frame,
+                    invoke_segment_track=invoke_segment_track,
+                    sam3_error=str(
+                        (sam3_payload or {}).get("error")
+                        or "SAM3 agent returned an unsuccessful result."
+                    ),
+                )
+            except Exception as exc:
+                return self._fallback_from_sam3_agent_to_gui_tracking(
+                    path=path,
+                    text_prompt=text_prompt,
+                    mode=mode,
+                    use_countgd=use_countgd,
+                    to_frame=to_frame,
+                    invoke_segment_track=invoke_segment_track,
+                    sam3_error=str(exc),
+                )
         return segment_track_chat_video_tool(
             path=path,
             text_prompt=text_prompt,
@@ -2524,12 +2590,168 @@ class StreamingChatTask(QRunnable):
             model_name=model_name,
             to_frame=to_frame,
             resolve_video_path=self._resolve_video_path_for_gui_tool,
-            invoke_segment_track=lambda vpath,
-            prompt,
-            mode_norm,
-            countgd,
-            model,
-            frame: self._invoke_widget_slot(
+            invoke_segment_track=invoke_segment_track,
+            get_action_result=self._get_widget_action_result,
+        )
+
+    def _fallback_from_sam3_agent_to_gui_tracking(
+        self,
+        *,
+        path: str,
+        text_prompt: str,
+        mode: str,
+        use_countgd: bool,
+        to_frame: Optional[int],
+        invoke_segment_track: Callable[[str, str, str, bool, str, int], bool],
+        sam3_error: str,
+    ) -> Dict[str, Any]:
+        fallback_model = self._resolve_gui_track_fallback_model_name()
+        logger.warning(
+            "SAM3 agent tracking failed; falling back to GUI video workflow "
+            "session=%s model=%s fallback_model=%s error=%s",
+            getattr(self, "session_id", ""),
+            self.model,
+            fallback_model,
+            sam3_error,
+        )
+        fallback_payload = segment_track_chat_video_tool(
+            path=path,
+            text_prompt=text_prompt,
+            mode=mode,
+            use_countgd=use_countgd,
+            model_name=fallback_model,
+            to_frame=to_frame,
+            resolve_video_path=self._resolve_video_path_for_gui_tool,
+            invoke_segment_track=invoke_segment_track,
+            get_action_result=self._get_widget_action_result,
+        )
+        if isinstance(fallback_payload, dict):
+            fallback_payload.setdefault("fallback", "gui_segment_track_video")
+            fallback_payload.setdefault(
+                "warning",
+                "SAM3 agent tracking was unavailable, so Annolid used the "
+                "standard GUI video workflow instead.",
+            )
+            fallback_payload.setdefault("sam3_error", sam3_error)
+        return fallback_payload
+
+    def _resolve_gui_track_fallback_model_name(self) -> str:
+        host = self.host_window_widget or self.window()
+        combo = getattr(host, "_selectAiModelComboBox", None)
+        candidates: list[str] = []
+        current = ""
+        if combo is not None:
+            try:
+                current = str(combo.currentText() or "").strip()
+                for index in range(int(combo.count())):
+                    item = str(combo.itemText(index) or "").strip()
+                    if not item or item.lower() == "sam3":
+                        continue
+                    if item not in candidates:
+                        candidates.append(item)
+            except Exception:
+                current = ""
+                candidates = []
+        if current and current.lower() != "sam3":
+            return current
+        if candidates:
+            return candidates[0]
+        return "Cutie"
+
+    def _tool_sam3_agent_video_track(
+        self,
+        *,
+        video_path: str,
+        agent_prompt: str,
+        window_size: int = 5,
+        stride: int | None = None,
+        output_dir: str | None = None,
+        summary_filename: str | None = None,
+        checkpoint_path: str | None = None,
+        propagation_direction: str = "forward",
+        device: str | None = None,
+        agent_det_thresh: float = 0.3,
+        score_threshold_detection: float | None = None,
+        new_det_thresh: float | None = None,
+        max_num_objects: int = 16,
+        multiplex_count: int = 16,
+        compile_model: bool = False,
+        offload_video_to_cpu: bool = True,
+        use_explicit_window_reseed: bool = True,
+        boundary_mask_match_iou_threshold: float = 0.2,
+        allow_private_state_mutation: bool = False,
+        llm_provider: str = "",
+        llm_model: str = "",
+        llm_profile: str = "",
+        max_generations: int = 100,
+        debug: bool = False,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        raw_result = sam3_agent_video_track_tool(
+            allowed_dir=Path(self.workspace),
+            allowed_read_roots=self._vcs_read_roots(),
+            video_path=video_path,
+            agent_prompt=agent_prompt,
+            window_size=window_size,
+            stride=stride,
+            output_dir=output_dir,
+            summary_filename=summary_filename,
+            checkpoint_path=checkpoint_path,
+            propagation_direction=propagation_direction,
+            device=device,
+            agent_det_thresh=agent_det_thresh,
+            score_threshold_detection=score_threshold_detection,
+            new_det_thresh=new_det_thresh,
+            max_num_objects=max_num_objects,
+            multiplex_count=multiplex_count,
+            compile_model=compile_model,
+            offload_video_to_cpu=offload_video_to_cpu,
+            use_explicit_window_reseed=use_explicit_window_reseed,
+            boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
+            allow_private_state_mutation=allow_private_state_mutation,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            llm_profile=llm_profile,
+            max_generations=max_generations,
+            debug=debug,
+            dry_run=dry_run,
+        )
+        if isinstance(raw_result, dict):
+            return raw_result
+        try:
+            parsed = json.loads(str(raw_result or ""))
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": f"Failed to parse SAM3 agent tracking response: {exc}",
+                "video_path": str(video_path or "").strip(),
+                "agent_prompt": str(agent_prompt or "").strip(),
+            }
+        if isinstance(parsed, dict):
+            return parsed
+        return {
+            "ok": False,
+            "error": "SAM3 agent tracking returned an unexpected response.",
+            "video_path": str(video_path or "").strip(),
+            "agent_prompt": str(agent_prompt or "").strip(),
+        }
+
+    def _tool_gui_sam3_agent_video_track(
+        self,
+        *,
+        video_path: str,
+        agent_prompt: str,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        def invoke_segment_track(
+            vpath: str,
+            prompt: str,
+            mode_norm: str,
+            countgd: bool,
+            model: str,
+            frame: int,
+        ) -> bool:
+            return self._invoke_widget_slot(
                 "bot_segment_track_video",
                 QtCore.Q_ARG(str, vpath),
                 QtCore.Q_ARG(str, prompt),
@@ -2537,8 +2759,36 @@ class StreamingChatTask(QRunnable):
                 QtCore.Q_ARG(bool, countgd),
                 QtCore.Q_ARG(str, model),
                 QtCore.Q_ARG(int, frame),
+            )
+
+        try:
+            payload = self._tool_sam3_agent_video_track(
+                video_path=video_path,
+                agent_prompt=agent_prompt,
+                **kwargs,
+            )
+        except Exception as exc:
+            return self._fallback_from_sam3_agent_to_gui_tracking(
+                path=video_path,
+                text_prompt=agent_prompt,
+                mode="track",
+                use_countgd=False,
+                to_frame=None,
+                invoke_segment_track=invoke_segment_track,
+                sam3_error=str(exc),
+            )
+        if isinstance(payload, dict) and bool(payload.get("ok", False)):
+            return payload
+        return self._fallback_from_sam3_agent_to_gui_tracking(
+            path=video_path,
+            text_prompt=agent_prompt,
+            mode="track",
+            use_countgd=False,
+            to_frame=None,
+            invoke_segment_track=invoke_segment_track,
+            sam3_error=str(
+                (payload or {}).get("error") or "SAM3 agent returned failure."
             ),
-            get_action_result=self._get_widget_action_result,
         )
 
     def _tool_gui_label_behavior_segments(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import deque
 from contextlib import contextmanager
+import json
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -731,6 +733,267 @@ def test_optional_sam3_agent_modules_import_without_iopath() -> None:
     assert hasattr(agent_core, "agent_inference")
     assert hasattr(client_sam3, "call_sam_service")
     assert hasattr(inference, "run_single_image_inference")
+
+
+def test_agent_core_default_sam_caller_binds_processor(monkeypatch) -> None:
+    agent_core = importlib.import_module(
+        "annolid.segmentation.SAM.sam3.sam3.agent.agent_core"
+    )
+    client_sam3 = importlib.import_module(
+        "annolid.segmentation.SAM.sam3.sam3.agent.client_sam3"
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(agent_core, "_get_default_sam3_processor", lambda: "processor")
+
+    def _fake_call_sam_service(
+        sam3_processor,
+        image_path: str,
+        text_prompt: str,
+        output_folder_path: str = "sam3_output",
+    ) -> str:
+        captured["sam3_processor"] = sam3_processor
+        captured["image_path"] = image_path
+        captured["text_prompt"] = text_prompt
+        captured["output_folder_path"] = output_folder_path
+        return "/tmp/fake.json"
+
+    monkeypatch.setattr(client_sam3, "call_sam_service", _fake_call_sam_service)
+
+    bound = agent_core._build_default_call_sam_service()
+    output_path = bound(
+        image_path="/tmp/frame.png",
+        text_prompt="fish",
+        output_folder_path="/tmp/sam-out",
+    )
+
+    assert output_path == "/tmp/fake.json"
+    assert captured["sam3_processor"] == "processor"
+    assert captured["image_path"] == "/tmp/frame.png"
+    assert captured["text_prompt"] == "fish"
+    assert captured["output_folder_path"] == "/tmp/sam-out"
+
+
+def test_agent_core_prefers_env_checkpoint_for_default_processor(
+    monkeypatch, tmp_path
+) -> None:
+    agent_core = importlib.import_module(
+        "annolid.segmentation.SAM.sam3.sam3.agent.agent_core"
+    )
+    ckpt = tmp_path / "sam3.1_multiplex.pt"
+    ckpt.write_bytes(b"stub")
+
+    monkeypatch.setenv("SAM3_CKPT_PATH", str(ckpt))
+    resolved = agent_core._resolve_default_sam3_checkpoint_path()
+    assert resolved == str(ckpt)
+
+
+def test_agent_core_finds_cached_sam31_checkpoint(monkeypatch, tmp_path) -> None:
+    agent_core = importlib.import_module(
+        "annolid.segmentation.SAM.sam3.sam3.agent.agent_core"
+    )
+    fake_home = tmp_path / "home"
+    cached_ckpt = (
+        fake_home
+        / ".cache"
+        / "huggingface"
+        / "hub"
+        / "models--facebook--sam3.1"
+        / "snapshots"
+        / "abc123"
+        / "sam3.1_multiplex.pt"
+    )
+    cached_ckpt.parent.mkdir(parents=True, exist_ok=True)
+    cached_ckpt.write_bytes(b"stub")
+
+    monkeypatch.delenv("SAM3_CKPT_PATH", raising=False)
+    monkeypatch.setattr(agent_core.Path, "home", staticmethod(lambda: Path(fake_home)))
+    resolved = agent_core._resolve_default_sam3_checkpoint_path()
+    assert resolved == str(cached_ckpt)
+
+
+def test_agent_core_default_processor_uses_model_device(monkeypatch) -> None:
+    agent_core = importlib.import_module(
+        "annolid.segmentation.SAM.sam3.sam3.agent.agent_core"
+    )
+    model_builder = importlib.import_module("sam3.model_builder")
+    image_processor_mod = importlib.import_module("sam3.model.sam3_image_processor")
+    captured: dict[str, object] = {}
+
+    class _FakeModel:
+        def __init__(self) -> None:
+            self._param = torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))
+
+        def parameters(self):
+            yield self._param
+
+    class _FakeProcessor:
+        def __init__(
+            self, model, resolution=1008, device=None, confidence_threshold=0.5
+        ):
+            captured["model"] = model
+            captured["device"] = device
+
+    monkeypatch.setattr(agent_core, "_DEFAULT_SAM3_PROCESSOR", None)
+    monkeypatch.setattr(
+        agent_core, "_resolve_default_sam3_checkpoint_path", lambda: None
+    )
+    monkeypatch.setattr(model_builder, "build_sam3_image_model", lambda: _FakeModel())
+    monkeypatch.setattr(image_processor_mod, "Sam3Processor", _FakeProcessor)
+
+    processor = agent_core._get_default_sam3_processor()
+
+    assert isinstance(processor, _FakeProcessor)
+    assert captured["device"] == "cpu"
+
+
+def test_client_sam_service_raises_when_inference_fails(monkeypatch, tmp_path) -> None:
+    client_sam3 = importlib.import_module(
+        "annolid.segmentation.SAM.sam3.sam3.agent.client_sam3"
+    )
+
+    def _fail_inference(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(client_sam3, "sam3_inference", _fail_inference)
+
+    with pytest.raises(RuntimeError, match="SAM3 image grounding failed"):
+        client_sam3.call_sam_service(
+            sam3_processor=object(),
+            image_path=str(tmp_path / "frame_000.png"),
+            text_prompt="fish",
+            output_folder_path=str(tmp_path / "sam_out"),
+        )
+
+
+def test_send_generate_request_serializes_native_tool_calls(monkeypatch) -> None:
+    client_llm = importlib.import_module(
+        "annolid.segmentation.SAM.sam3.sam3.agent.client_llm"
+    )
+    captured: dict[str, object] = {}
+
+    class _FakeFunction:
+        name = "report_no_mask"
+        arguments = "{}"
+
+    class _FakeToolCall:
+        function = _FakeFunction()
+
+    class _FakeMessage:
+        content = None
+        tool_calls = [_FakeToolCall()]
+
+    class _FakeChoice:
+        message = _FakeMessage()
+
+    class _FakeResponse:
+        choices = [_FakeChoice()]
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeResponse()
+
+    class _FakeChat:
+        completions = _FakeCompletions()
+
+    class _FakeClient:
+        def __init__(self, api_key=None, base_url=None):
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+            self.chat = _FakeChat()
+
+    monkeypatch.setattr(client_llm, "OpenAI", _FakeClient)
+    result = client_llm.send_generate_request(
+        messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        server_url="http://localhost",
+        model="moonshotai/kimi-k2.5",
+        api_key="test-key",
+    )
+
+    assert result == '<tool>{"name": "report_no_mask", "parameters": {}}</tool>'
+    assert captured["base_url"] == "http://localhost"
+    assert captured["api_key"] == "test-key"
+    assert isinstance(captured["tools"], list)
+    assert len(captured["tools"]) == 4
+    assert captured["tool_choice"] == "auto"
+
+
+def test_agent_inference_processes_round_two_select_without_false_none_error(
+    monkeypatch, tmp_path
+) -> None:
+    agent_core = importlib.import_module(
+        "annolid.segmentation.SAM.sam3.sam3.agent.agent_core"
+    )
+    raw_image = tmp_path / "frame_000000000.png"
+    masked_image = tmp_path / "fish.png"
+    Image.new("RGB", (8, 8), color="black").save(raw_image)
+    Image.new("RGB", (8, 8), color="white").save(masked_image)
+
+    sam_json = tmp_path / "sam_out" / "fish.json"
+    sam_json.parent.mkdir(parents=True, exist_ok=True)
+    sam_json.write_text(
+        json.dumps(
+            {
+                "original_image_path": str(raw_image),
+                "orig_img_h": 8,
+                "orig_img_w": 8,
+                "pred_boxes": [[1.0, 1.0, 3.0, 3.0]],
+                "pred_scores": [0.9],
+                "pred_masks": ["encoded-mask"],
+                "output_image_path": str(masked_image),
+            }
+        )
+    )
+
+    responses = iter(
+        [
+            '<tool>{"name":"segment_phrase","parameters":{"text_prompt":"fish"}}</tool>',
+            (
+                "All fish are covered.\n"
+                '<tool>{"name":"select_masks_and_return","parameters":{"final_answer_masks":[1]}}</tool>'
+            ),
+        ]
+    )
+
+    def _fake_send_generate_request(_messages):
+        return next(responses, None)
+
+    def _fake_call_sam_service(
+        *, image_path: str, text_prompt: str, output_folder_path: str
+    ):
+        assert image_path == str(raw_image)
+        assert text_prompt == "fish"
+        assert output_folder_path.endswith("sam_out")
+        return str(sam_json)
+
+    monkeypatch.setattr(
+        agent_core,
+        "visualize",
+        lambda _outputs: Image.new("RGB", (8, 8), color="blue"),
+    )
+
+    messages, final_outputs, rendered = agent_core.agent_inference(
+        img_path=str(raw_image),
+        initial_text_prompt="fish",
+        send_generate_request=_fake_send_generate_request,
+        call_sam_service=_fake_call_sam_service,
+        output_dir=str(tmp_path / "agent_out"),
+    )
+
+    assert len(final_outputs["pred_masks"]) == 1
+    assert final_outputs["pred_boxes"] == [[1.0, 1.0, 3.0, 3.0]]
+    assert isinstance(rendered, Image.Image)
+    assert any(
+        msg.get("role") == "assistant"
+        and any(
+            isinstance(c, dict)
+            and c.get("type") == "text"
+            and "select_masks_and_return" in c.get("text", "")
+            for c in msg.get("content", [])
+        )
+        for msg in messages
+    )
 
 
 def test_sam3_renderer_falls_back_without_iopath(tmp_path) -> None:

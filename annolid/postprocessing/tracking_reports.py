@@ -74,7 +74,7 @@ def find_tracking_gaps(video_path: str) -> dict:
     )
 
     # --- 2. Scan and Parse Existing Files ---
-    presence_data = []
+    frame_presence: dict[int, set] = {}
     all_instance_labels = set()
     for file_path in json_directory.glob("*.json"):
         try:
@@ -88,9 +88,7 @@ def find_tracking_gaps(video_path: str) -> dict:
                 data = json.load(f)
 
             labels_in_frame = {shape["label"] for shape in data.get("shapes", [])}
-            presence_data.append(
-                {"frame_number": frame_number, "labels": labels_in_frame}
-            )
+            frame_presence.setdefault(frame_number, set()).update(labels_in_frame)
             all_instance_labels.update(labels_in_frame)
         except (ValueError, IndexError, json.JSONDecodeError) as e:
             logger.warning(f"Could not parse file {file_path.name}: {e}")
@@ -102,16 +100,17 @@ def find_tracking_gaps(video_path: str) -> dict:
     sorted_labels = sorted(list(all_instance_labels))
 
     # --- 3. Build Presence DataFrame and Merge with Master Timeline ---
-    if not presence_data:
+    if not frame_presence:
         df_presence_sparse = pd.DataFrame(
             columns=["frame_number"] + sorted_labels
         ).set_index("frame_number")
     else:
         records = []
-        for item in presence_data:
-            frame_record = {"frame_number": item["frame_number"]}
+        for frame_number in sorted(frame_presence):
+            labels_in_frame = frame_presence[frame_number]
+            frame_record = {"frame_number": frame_number}
             for label in sorted_labels:
-                frame_record[label] = label in item["labels"]
+                frame_record[label] = label in labels_in_frame
             records.append(frame_record)
         df_presence_sparse = pd.DataFrame(records).set_index("frame_number")
 

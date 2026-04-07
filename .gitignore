@@ -150,6 +150,10 @@ skills.md
 *MEDIAR
 *_plan.md
 *openvino*
+.graphify_*
+graphify-out/
+**/graphify-out/
+sam3_agent_out/
 annolid/realtime/models/
 
 # Track only the curated vendored VGGT runtime subset

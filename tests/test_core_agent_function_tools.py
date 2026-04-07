@@ -70,6 +70,7 @@ from annolid.core.agent.tools.function_video import (
     VideoSampleFramesTool,
     VideoSegmentTool,
 )
+from annolid.core.agent.tools.function_sam3 import Sam3AgentVideoTrackTool
 from annolid.core.agent.tools.function_gui import register_annolid_gui_tools
 from annolid.core.agent.tools.function_registry import FunctionToolRegistry
 from annolid.core.agent.tools.mcp import MCPToolWrapper
@@ -2486,6 +2487,84 @@ def test_video_run_model_inference_tool_reports_when_input_flag_is_unknown(
     assert "annolid-run predict fake_video_model" in payload["help"]
 
 
+def test_sam3_agent_video_track_tool_executes_and_writes_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video_path = tmp_path / "tiny.avi"
+    _write_test_video(video_path, fps=8.0, frames=6)
+    captured: dict[str, object] = {}
+
+    def _fake_process_video_with_agent(**kwargs):  # noqa: ANN001
+        captured.update(kwargs)
+        return 11, 7
+
+    monkeypatch.setattr(
+        "annolid.segmentation.SAM.sam3.adapter.process_video_with_agent",
+        _fake_process_video_with_agent,
+    )
+
+    tool = Sam3AgentVideoTrackTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(
+            video_path=str(video_path),
+            agent_prompt="mouse",
+            window_size=6,
+            stride=3,
+            agent_det_thresh=0.4,
+        )
+    )
+    payload = json.loads(result)
+    expected_output_dir = tmp_path / "tiny_sam3_agent"
+    expected_summary = expected_output_dir / "tiny_sam3_agent_tracking.json"
+
+    assert payload["ok"] is True
+    assert payload["frames_processed"] == 11
+    assert payload["masks_written"] == 7
+    assert payload["output_dir"] == str(expected_output_dir)
+    assert payload["summary_path"] == str(expected_summary)
+    assert captured["video_path"] == str(video_path.resolve())
+    assert captured["agent_prompt"] == "mouse"
+    assert captured["window_size"] == 6
+    assert captured["stride"] == 3
+    assert captured["agent_det_thresh"] == 0.4
+    assert expected_summary.exists()
+    assert json.loads(expected_summary.read_text(encoding="utf-8"))["ok"] is True
+
+
+def test_sam3_agent_video_track_tool_dry_run_does_not_execute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video_path = tmp_path / "tiny.avi"
+    _write_test_video(video_path, fps=8.0, frames=6)
+    called = False
+
+    def _fake_process_video_with_agent(**kwargs):  # noqa: ANN001
+        nonlocal called
+        called = True
+        return 11, 7
+
+    monkeypatch.setattr(
+        "annolid.segmentation.SAM.sam3.adapter.process_video_with_agent",
+        _fake_process_video_with_agent,
+    )
+
+    tool = Sam3AgentVideoTrackTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(
+            video_path=str(video_path),
+            agent_prompt="mouse",
+            dry_run=True,
+        )
+    )
+    payload = json.loads(result)
+    expected_output_dir = tmp_path / "tiny_sam3_agent"
+
+    assert payload["ok"] is True
+    assert payload["dry_run"] is True
+    assert called is False
+    assert not expected_output_dir.exists()
+
+
 def test_exec_tool_guard_blocks_dangerous() -> None:
     tool = SandboxedExecTool()
     result = asyncio.run(tool.execute(command="rm -rf /tmp/foo"))
@@ -3177,6 +3256,7 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("video_info")
     assert registry.has("video_list_inference_models")
     assert registry.has("video_run_model_inference")
+    assert registry.has("sam3_agent_video_track")
     assert registry.has("video_sample_frames")
     assert registry.has("video_segment")
     assert registry.has("video_process_segments")

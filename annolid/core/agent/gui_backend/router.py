@@ -1,5 +1,6 @@
 import asyncio
 import ipaddress
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from typing import Any, Callable, Dict
 
@@ -57,6 +58,7 @@ async def execute_direct_gui_command(
     track_next_frames: Callable[[int], Any],
     segment_track_video: Callable[..., Any],
     label_behavior_segments: Callable[..., Any],
+    sam3_agent_video_track: Callable[..., Any],
     behavior_catalog: Callable[..., Any],
     start_realtime_stream: Callable[..., Any],
     stop_realtime_stream: Callable[[], Any],
@@ -87,6 +89,7 @@ async def execute_direct_gui_command(
     generate_annolid_tutorial: Callable[..., Any],
     automation_schedule: Callable[..., Any],
     cron: Callable[..., Any],
+    open_track_dialog: Callable[[], Any] | None = None,
     open_agent_capabilities: Callable[[], Any] | None = None,
     list_dir: Callable[..., Any],
     read_file: Callable[..., Any],
@@ -215,6 +218,21 @@ async def execute_direct_gui_command(
                 "Opened video, segmented, and saved annotations."
             )
         return str(payload.get("error") or "Failed to start workflow.")
+
+    if name == "sam3_agent_video_track":
+        payload = await _run(
+            sam3_agent_video_track,
+            video_path=str(args.get("video_path") or args.get("path") or ""),
+            agent_prompt=str(args.get("agent_prompt") or args.get("text_prompt") or ""),
+        )
+        if payload.get("ok"):
+            basename = str(payload.get("video_path") or args.get("video_path") or "")
+            prompt = str(payload.get("agent_prompt") or args.get("text_prompt") or "")
+            return (
+                f"Started SAM3 agent tracking for '{prompt}' in "
+                f"{Path(basename).name if basename else 'the selected video'}."
+            )
+        return str(payload.get("error") or "Failed to start SAM3 tracking.")
 
     if name == "label_behavior_segments":
         payload = await _run(
@@ -876,6 +894,20 @@ async def execute_direct_gui_command(
             result = str(payload.get("result") or "").strip()
             return result or "Cron command completed."
         return str(payload.get("error") or "Failed to execute cron command.")
+
+    if name == "open_track_dialog":
+        payload = await _run(open_track_dialog) if open_track_dialog else {}
+        if isinstance(payload, dict):
+            if payload.get("ok") and payload.get("command"):
+                return "Prepared guided /track command. Review the prompt, then press Enter."
+            if payload.get("cancelled"):
+                return "Track setup canceled."
+            return str(payload.get("error") or "Failed to open guided track form.")
+        if payload:
+            return (
+                "Prepared guided /track command. Review the prompt, then press Enter."
+            )
+        return "Track setup canceled."
 
     if name == "open_agent_capabilities":
         payload = await _run(open_agent_capabilities) if open_agent_capabilities else {}

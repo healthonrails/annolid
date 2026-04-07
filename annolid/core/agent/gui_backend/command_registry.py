@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import shlex
 import re
 from typing import Any, Callable, Dict, List, Sequence, Tuple
 
@@ -82,6 +83,126 @@ def _strip_wrapping_quotes(text: str) -> str:
 def _extract_command_identifier(text: str) -> str:
     match = re.search(r"\b([a-zA-Z0-9_-]{3,128})\b", str(text or ""))
     return str(match.group(1) if match else "").strip()
+
+
+def _looks_like_video_path_token(value: str) -> bool:
+    token = str(value or "").strip().strip("\"'`")
+    if not token:
+        return False
+    return bool(
+        re.search(
+            r"\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b",
+            token,
+            flags=re.IGNORECASE,
+        )
+        or token.startswith(("~", "/", "./", "../"))
+        or "/" in token
+        or "\\" in token
+    )
+
+
+def _parse_track_command(text: str) -> Dict[str, Any]:
+    """Parse the structured `/track` shortcut into the existing GUI workflow."""
+    trimmed = str(text or "").strip()
+    if not trimmed.lower().startswith("/track"):
+        return {}
+
+    payload: Dict[str, Any] = {
+        "path": "",
+        "text_prompt": "",
+        "mode": "track",
+        "use_countgd": False,
+        "model_name": "",
+        "to_frame": None,
+    }
+    raw_args = trimmed[len("/track") :].strip()
+    if not raw_args:
+        return {"name": "open_track_dialog", "args": {}}
+
+    tokens = shlex.split(raw_args) if raw_args else []
+    positional: list[str] = []
+    key_values: dict[str, str] = {}
+    for token in tokens:
+        if "=" in token:
+            key, value = token.split("=", 1)
+            key_values[str(key).strip().lower()] = str(value).strip()
+        else:
+            positional.append(token)
+
+    prompt_candidates: list[str] = []
+    path_candidates: list[str] = []
+    for token in positional:
+        if not token:
+            continue
+        if _looks_like_video_path_token(token):
+            path_candidates.append(token)
+        else:
+            prompt_candidates.append(token)
+
+    payload["path"] = str(
+        key_values.get("video")
+        or key_values.get("video_path")
+        or key_values.get("video_file")
+        or key_values.get("path")
+        or key_values.get("file")
+        or key_values.get("source")
+        or (path_candidates[0] if path_candidates else "")
+    ).strip()
+
+    payload["text_prompt"] = str(
+        key_values.get("prompt")
+        or key_values.get("text_prompt")
+        or key_values.get("text")
+        or key_values.get("query")
+        or key_values.get("label")
+        or (" ".join(prompt_candidates).strip())
+    ).strip()
+
+    payload["model_name"] = str(
+        key_values.get("model")
+        or key_values.get("model_name")
+        or key_values.get("modelname")
+        or ""
+    ).strip()
+    payload["mode"] = str(key_values.get("mode") or "track").strip().lower()
+    if payload["mode"] not in {"track", "segment"}:
+        payload["mode"] = "track"
+
+    model_name_lower = payload["model_name"].strip().lower()
+    if payload["mode"] == "track" and model_name_lower == "sam3":
+        return {
+            "name": "sam3_agent_video_track",
+            "args": {
+                "video_path": payload["path"],
+                "agent_prompt": payload["text_prompt"],
+            },
+        }
+
+    target_frame = key_values.get("to") or key_values.get("to_frame")
+    if target_frame is None:
+        target_frame = key_values.get("frame") or key_values.get("target_frame")
+    if target_frame is not None:
+        try:
+            payload["to_frame"] = int(str(target_frame).strip())
+        except Exception:
+            payload["to_frame"] = None
+
+    use_countgd_raw = (
+        str(
+            key_values.get("countgd")
+            or key_values.get("use_countgd")
+            or key_values.get("with_countgd")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    if use_countgd_raw:
+        payload["use_countgd"] = use_countgd_raw not in {"0", "false", "no", "off"}
+    elif "countgd" in str(text).lower():
+        payload["use_countgd"] = True
+
+    return {"name": "segment_track_video", "args": payload}
 
 
 def _parse_slash_command_action_args(raw: str, slash: str) -> Dict[str, str]:
@@ -219,6 +340,26 @@ def _parse_capabilities_command(text: str) -> Dict[str, Any]:
 
 DIRECT_SLASH_COMMAND_SPECS: Tuple[SlashCommandSpec, ...] = (
     SlashCommandSpec(
+        name="track",
+        aliases=("track",),
+        display="/track",
+        description="Open the guided video tracking form",
+        insert="/track ",
+        examples=(
+            "'/track video=/path/to/video.mp4 prompt=\"mouse\" model=Cutie'",
+            "'/track video=/path/to/video.mp4 text_prompt=\"mouse\" model=Cutie to_frame=400'",
+            "'/track /path/to/video.mp4 mouse model=Cutie'",
+        ),
+        prompt_examples=(
+            "'track the mouse in /path/to/video.mp4 using model=Cutie'",
+            "'track /path/to/video.mp4 mouse'",
+        ),
+        required_tools=("segment_track_video",),
+        kind="action",
+        action="open_track_dialog",
+        parser=_parse_track_command,
+    ),
+    SlashCommandSpec(
         name="cron",
         aliases=("cron",),
         display="/cron",
@@ -354,6 +495,6 @@ def build_direct_command_alias_line(tool_names: Sequence[str]) -> str:
     if not examples:
         return ""
     return (
-        "Direct command aliases are supported for automation scheduling and shell sessions. "
+        "Direct command aliases are supported for video workflows, automation scheduling, and shell sessions. "
         "Use these forms when helpful: " + ", ".join(examples) + "."
     )

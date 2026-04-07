@@ -4,6 +4,7 @@ import torch
 
 from annolid.segmentation.SAM.sam3.windowed_runner import (
     build_window_seed_segments,
+    compute_window_reuse_shift,
     first_manual_seed_frame,
     normalize_window_schedule,
     resolve_window_schedule,
@@ -24,6 +25,36 @@ def test_resolve_window_schedule_uses_user_values() -> None:
         user_stride=3,
     )
     assert schedule == (9, 3)
+
+
+def test_compute_window_reuse_shift_uses_true_overlap() -> None:
+    assert (
+        compute_window_reuse_shift(
+            previous_window_end_idx=4,
+            window_start_idx=4,
+            frame_count=4,
+            previous_window_frame_count=4,
+        )
+        == 0
+    )
+    assert (
+        compute_window_reuse_shift(
+            previous_window_end_idx=4,
+            window_start_idx=2,
+            frame_count=4,
+            previous_window_frame_count=4,
+        )
+        == 2
+    )
+    assert (
+        compute_window_reuse_shift(
+            previous_window_end_idx=8,
+            window_start_idx=6,
+            frame_count=4,
+            previous_window_frame_count=4,
+        )
+        == 2
+    )
 
 
 def test_shift_annotations_to_window_rewrites_local_indices() -> None:

@@ -581,6 +581,29 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
     assert workflow_payload["mode"] == "track"
     assert workflow_payload["text_prompt"] == "mouse"
 
+    task._tool_sam3_agent_video_track = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "video_path": kwargs.get("video_path"),
+        "agent_prompt": kwargs.get("agent_prompt"),
+        "llm_provider": kwargs.get("llm_provider"),
+        "llm_model": kwargs.get("llm_model"),
+    }
+    task.provider = "nvidia"
+    task.model = "moonshotai/kimi-k2.5"
+    sam3_workflow_payload = task._tool_gui_segment_track_video(
+        path=str(video_file),
+        text_prompt="mouse",
+        mode="track",
+        use_countgd=False,
+        model_name="SAM3",
+        to_frame=120,
+    )
+    assert sam3_workflow_payload["ok"] is True
+    assert sam3_workflow_payload["video_path"] == str(video_file)
+    assert sam3_workflow_payload["agent_prompt"] == "mouse"
+    assert sam3_workflow_payload["llm_provider"] == "nvidia"
+    assert sam3_workflow_payload["llm_model"] == "moonshotai/kimi-k2.5"
+
     tracking_stats_payload = task._tool_gui_analyze_tracking_stats(
         root_dir=str(tmp_path),
         top_k=3,
@@ -1850,6 +1873,113 @@ def test_parse_direct_segment_track_video_command() -> None:
     assert cmd["args"]["text_prompt"] == "mouse"
     assert cmd["args"]["use_countgd"] is True
     assert cmd["args"]["to_frame"] == 120
+
+
+def test_parse_direct_slash_track_command_accepts_structured_arguments() -> None:
+    task = StreamingChatTask("hi", widget=None)
+    cmd = task._parse_direct_gui_command(
+        '/track video=/tmp/mouse.mp4 prompt="mouse" model=Cutie to_frame=400'
+    )
+    assert cmd["name"] == "segment_track_video"
+    assert cmd["args"]["path"] == "/tmp/mouse.mp4"
+    assert cmd["args"]["text_prompt"] == "mouse"
+    assert cmd["args"]["model_name"] == "Cutie"
+    assert cmd["args"]["to_frame"] == 400
+    assert cmd["args"]["mode"] == "track"
+
+
+def test_parse_direct_slash_track_command_routes_sam3_model_to_agent_track() -> None:
+    task = StreamingChatTask("hi", widget=None)
+    cmd = task._parse_direct_gui_command(
+        '/track video=/tmp/mouse.mp4 prompt="mouse" model=SAM3'
+    )
+    assert cmd["name"] == "sam3_agent_video_track"
+    assert cmd["args"] == {
+        "video_path": "/tmp/mouse.mp4",
+        "agent_prompt": "mouse",
+    }
+
+
+def test_parse_empty_slash_track_command_opens_guided_form() -> None:
+    task = StreamingChatTask("hi", widget=None)
+    cmd = task._parse_direct_gui_command("/track")
+    assert cmd == {"name": "open_track_dialog", "args": {}}
+
+
+def test_sam3_track_tool_falls_back_to_gui_workflow(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("hi", widget=None)
+    task._tool_sam3_agent_video_track = lambda **kwargs: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        RuntimeError("agent failed")
+    )
+    task._resolve_gui_track_fallback_model_name = lambda: "Cutie"  # type: ignore[method-assign]
+    captured = {}
+
+    def _fake_segment_track_chat_video_tool(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "model_name": kwargs.get("model_name"), "fallback": True}
+
+    monkeypatch.setattr(
+        backend,
+        "segment_track_chat_video_tool",
+        _fake_segment_track_chat_video_tool,
+    )
+
+    payload = task._tool_gui_segment_track_video(
+        path="/tmp/mouse.mp4",
+        text_prompt="mouse",
+        mode="track",
+        model_name="SAM3",
+    )
+
+    assert payload["ok"] is True
+    assert payload["model_name"] == "Cutie"
+    assert payload["fallback"] is True
+    assert captured["model_name"] == "Cutie"
+
+
+def test_sam3_track_tool_falls_back_when_agent_returns_error_payload(
+    monkeypatch,
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("hi", widget=None)
+    task._tool_sam3_agent_video_track = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": False,
+        "error": "agent inference failed",
+    }
+    task._resolve_gui_track_fallback_model_name = lambda: "Cutie"  # type: ignore[method-assign]
+    captured = {}
+
+    def _fake_segment_track_chat_video_tool(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "model_name": kwargs.get("model_name"), "fallback": True}
+
+    monkeypatch.setattr(
+        backend,
+        "segment_track_chat_video_tool",
+        _fake_segment_track_chat_video_tool,
+    )
+
+    payload = task._tool_gui_segment_track_video(
+        path="/tmp/mouse.mp4",
+        text_prompt="mouse",
+        mode="track",
+        model_name="SAM3",
+    )
+
+    assert payload["ok"] is True
+    assert payload["fallback"] is True
+    assert payload["model_name"] == "Cutie"
+    assert captured["model_name"] == "Cutie"
+    assert "sam3_error" in payload
+
+
+def test_direct_handler_sam3_track_uses_fallback_wrapper() -> None:
+    task = StreamingChatTask("hi", widget=None)
+    handlers = task._direct_command_handlers()
+    assert handlers["sam3_agent_video_track"] == task._tool_gui_sam3_agent_video_track
 
 
 def test_ollama_llm_callable_reprobes_tools_when_prompt_needs_tools(
@@ -3855,6 +3985,18 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
 
     out_track = asyncio.run(task._execute_direct_gui_command("track to frame 60"))
     assert "Started tracking to frame 60." == out_track
+
+    task._tool_sam3_agent_video_track = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "video_path": kwargs.get("video_path"),
+        "agent_prompt": kwargs.get("agent_prompt"),
+    }
+    out_sam3_track = asyncio.run(
+        task._execute_direct_gui_command(
+            '/track video=/tmp/mouse.mp4 prompt="mouse" model=SAM3'
+        )
+    )
+    assert "Started SAM3 agent tracking for 'mouse' in mouse.mp4." == out_sam3_track
 
     out_model = asyncio.run(
         task._execute_direct_gui_command("set chat model ollama/qwen3:8b")

@@ -15,9 +15,14 @@ import tempfile
 import cv2
 from PIL import Image
 
+from annolid.utils.llm_settings import resolve_llm_config
+from annolid.core.agent.providers.openai_compat import resolve_openai_compat
+
 from annolid.segmentation.SAM.sam3.session import Sam3SessionConfig, Sam3SessionManager
+from .sam3.agent.client_llm import send_generate_request as _send_generate_request
 from .video_window_inference import _iter_video_windows
 from .window_refresh import run_mid_window_refresh
+from .windowed_runner import compute_window_reuse_shift
 
 
 @dataclass
@@ -31,6 +36,9 @@ class AgentConfig:
     output_dir: Optional[str] = None
     debug: bool = False
     max_generations: int = 100
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_profile: Optional[str] = None
 
 
 @dataclass
@@ -126,11 +134,15 @@ def _filter_duplicate_boxes(
 def _run_agent_on_frame(
     frame_path: Path,
     agent_cfg: AgentConfig,
+    send_request=None,
 ) -> Tuple[List[List[float]], List[float]]:
     """
     Run the SAM3 Agent on a single frame image and return filtered boxes/scores.
     """
     from .sam3.agent.agent_core import agent_inference
+
+    if send_request is None:
+        send_request = _build_send_generate_request(agent_cfg)[0]
 
     try:
         _, outputs, _ = agent_inference(
@@ -138,6 +150,7 @@ def _run_agent_on_frame(
             initial_text_prompt=agent_cfg.prompt,
             debug=agent_cfg.debug,
             max_generations=agent_cfg.max_generations,
+            send_generate_request=send_request,
             output_dir=agent_cfg.output_dir,
         )
     except Exception as exc:
@@ -147,6 +160,48 @@ def _run_agent_on_frame(
             "Ensure the configured VLM supports tool calls (e.g., qwen3-vl/vision-capable models)."
         ) from exc
     return _boxes_from_agent_output(outputs or {}, agent_cfg.det_thresh)
+
+
+def _call_run_agent_on_frame(
+    frame_path: Path,
+    agent_cfg: AgentConfig,
+    send_request,
+) -> Tuple[List[List[float]], List[float]]:
+    try:
+        return _run_agent_on_frame(frame_path, agent_cfg, send_request)
+    except TypeError as exc:
+        message = str(exc)
+        if "positional arguments" not in message and "positional argument" not in message:
+            raise
+        return _run_agent_on_frame(frame_path, agent_cfg)
+
+
+def _build_send_generate_request(agent_cfg: AgentConfig):
+    """
+    Build a chat completion callable from the currently selected Annolid bot
+    provider/model.
+
+    The SAM3 agent expects an OpenAI-compatible text+image chat backend with
+    tool-call support. We reuse the active bot provider/model selection rather
+    than falling back to an unrelated default.
+    """
+    resolved_cfg = resolve_llm_config(
+        profile=agent_cfg.llm_profile,
+        provider=agent_cfg.llm_provider,
+        model=agent_cfg.llm_model,
+        persist=False,
+    )
+    resolved = resolve_openai_compat(resolved_cfg)
+
+    def _send(messages):
+        return _send_generate_request(
+            messages,
+            server_url=resolved.base_url,
+            model=resolved.model,
+            api_key=resolved.api_key,
+        )
+
+    return _send, resolved
 
 
 def run_agent_seeded_sam3_video(
@@ -192,6 +247,7 @@ def run_agent_seeded_sam3_video(
         id_to_labels=id_to_labels,
         config=session_cfg,
     )
+    send_request, _resolved_llm = _build_send_generate_request(agent_cfg)
 
     total_frames = 0
     total_masks = 0
@@ -199,6 +255,9 @@ def run_agent_seeded_sam3_video(
 
     with tempfile.TemporaryDirectory(prefix="sam3_agent_windows_") as tmpdir:
         tmpdir_path = Path(tmpdir)
+        previous_window_end_idx: Optional[int] = None
+        previous_window_frame_count = 0
+        previous_window_state: Optional[dict] = None
         for start_idx, end_idx, frames in _iter_video_windows(
             video_path=video_path,
             window_size=agent_cfg.window_size,
@@ -210,7 +269,11 @@ def run_agent_seeded_sam3_video(
             first_frame = frames[0]
             frame_path = tmpdir_path / f"frame_{start_idx:09}.png"
             _save_frame_to_tmp(first_frame, frame_path)
-            boxes_abs, scores = _run_agent_on_frame(frame_path, agent_cfg)
+            boxes_abs, scores = _call_run_agent_on_frame(
+                frame_path,
+                agent_cfg,
+                send_request,
+            )
             if not boxes_abs:
                 continue
 
@@ -227,7 +290,15 @@ def run_agent_seeded_sam3_video(
             with session._session_scope(
                 target_device=tracking_cfg.device, auto_close=True
             ):
+                shift = compute_window_reuse_shift(
+                    previous_window_end_idx=previous_window_end_idx,
+                    window_start_idx=int(start_idx),
+                    frame_count=len(frames),
+                    previous_window_frame_count=previous_window_frame_count,
+                )
                 session._reset_action_history_if_supported()
+                if previous_window_state is not None and shift > 0:
+                    session._carry_forward_window_state(previous_window_state, shift=shift)
                 propagation_direction = (tracking_cfg.propagation_direction or "forward").lower()
 
                 def seed_first_frame() -> None:
@@ -253,7 +324,11 @@ def run_agent_seeded_sam3_video(
                     refresh_frame = frames[int(refresh_local_idx)]
                     refresh_path = tmpdir_path / f"frame_{start_idx + refresh_local_idx:09}.png"
                     _save_frame_to_tmp(refresh_frame, refresh_path)
-                    refresh_boxes_abs, _ = _run_agent_on_frame(refresh_path, agent_cfg)
+                    refresh_boxes_abs, _ = _call_run_agent_on_frame(
+                        refresh_path,
+                        agent_cfg,
+                        send_request,
+                    )
                     refresh_boxes_abs = _filter_duplicate_boxes(
                         refresh_boxes_abs,
                         boxes_abs,
@@ -303,6 +378,10 @@ def run_agent_seeded_sam3_video(
                 )
                 total_frames += frames_processed
                 total_masks += masks_written
+                get_state = getattr(session, "_get_active_session_state", None)
+                previous_window_state = get_state() if callable(get_state) else None
+            previous_window_frame_count = len(frames)
+            previous_window_end_idx = int(end_idx)
     if total_masks == 0:
         raise RuntimeError(
             "SAM3 agent-seeded run produced no masks; consider providing an API key "

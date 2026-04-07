@@ -3,10 +3,65 @@
 # pyre-unsafe
 
 import base64
+import json
 import os
 from typing import Any, Optional
 
 from openai import OpenAI
+
+
+_SAM3_TOOL_SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "segment_phrase",
+            "description": "Ground all instances of a simple noun phrase in the image.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text_prompt": {
+                        "type": "string",
+                        "description": "A short and simple noun phrase.",
+                    }
+                },
+                "required": ["text_prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "examine_each_mask",
+            "description": "Inspect each rendered mask independently.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "select_masks_and_return",
+            "description": "Select the final answer masks from the most recent image.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "final_answer_masks": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                    }
+                },
+                "required": ["final_answer_masks"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "report_no_mask",
+            "description": "Report that no mask can match the prompt.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+]
 
 
 def get_image_base64_and_mime(image_path):
@@ -31,6 +86,51 @@ def get_image_base64_and_mime(image_path):
     except Exception as e:
         print(f"Error converting image to base64: {e}")
         return None, None
+
+
+def _serialize_tool_calls(message: Any) -> Optional[str]:
+    if isinstance(message, dict):
+        tool_calls = message.get("tool_calls", None) or []
+    else:
+        tool_calls = getattr(message, "tool_calls", None) or []
+    if not tool_calls:
+        return None
+
+    serialized_calls = []
+    for tool_call in tool_calls:
+        if isinstance(tool_call, dict):
+            function = tool_call.get("function", None)
+            call_id = str(tool_call.get("id", "") or "")
+        else:
+            function = getattr(tool_call, "function", None)
+            call_id = str(getattr(tool_call, "id", "") or "")
+        if function is None:
+            continue
+        if isinstance(function, dict):
+            name = str(function.get("name", "") or "")
+            arguments = function.get("arguments", "") or ""
+        else:
+            name = getattr(function, "name", "") or ""
+            arguments = getattr(function, "arguments", "") or ""
+        if not name:
+            continue
+        if isinstance(arguments, (dict, list)):
+            parameters = arguments
+        else:
+            try:
+                parameters = json.loads(arguments) if arguments else {}
+            except Exception:
+                parameters = arguments
+        call_payload = {"name": name, "parameters": parameters}
+        if call_id:
+            call_payload["id"] = call_id
+        serialized_calls.append(call_payload)
+
+    if not serialized_calls:
+        return None
+    if len(serialized_calls) == 1:
+        return f"<tool>{json.dumps(serialized_calls[0])}</tool>"
+    return "".join(f"<tool>{json.dumps(call)}</tool>" for call in serialized_calls)
 
 
 def send_generate_request(
@@ -112,12 +212,26 @@ def send_generate_request(
             messages=processed_messages,
             max_completion_tokens=max_tokens,
             n=1,
+            tools=_SAM3_TOOL_SCHEMAS,
+            tool_choice="auto",
         )
         # print(f"Received response: {response.choices[0].message}")
 
         # Extract the response content
         if response.choices and len(response.choices) > 0:
-            return response.choices[0].message.content
+            message = response.choices[0].message
+            content = getattr(message, "content", None)
+            if content is None and isinstance(message, dict):
+                content = message.get("content", None)
+            if content is not None and str(content).strip():
+                return content
+            tool_call_text = _serialize_tool_calls(message)
+            if tool_call_text is not None:
+                return tool_call_text
+            print(
+                "Unexpected response format: assistant message had no text content or tool calls."
+            )
+            return None
         else:
             print(f"Unexpected response format: {response}")
             return None

@@ -44,6 +44,7 @@ from .track_identity import (
 )
 from .windowed_runner import (
     build_window_seed_segments,
+    compute_window_reuse_shift,
     first_manual_seed_frame,
     normalize_window_schedule,
     resolve_window_schedule,
@@ -3018,8 +3019,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             window_dir = Path(tmp_root) / "frames"
             window_dir.mkdir(parents=True, exist_ok=True)
             previous_window_frame_count = 0
-            previous_window_start_idx: Optional[int] = None
             previous_window_end_idx: Optional[int] = None
+            previous_window_state: Optional[dict] = None
 
             for window_idx, (start_idx, end_idx, frames) in enumerate(
                 self._iter_video_windows(
@@ -3037,23 +3038,18 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 window_end_idx = int(end_idx)
                 # When windows overlap and slide forward by stride, reuse temp
                 # files by shifting existing files and writing only the new tail.
-                shift = 0
-                if (
-                    previous_window_start_idx is not None
-                    and window_start_idx > int(previous_window_start_idx)
-                    and len(frames) == int(previous_window_frame_count)
-                ):
-                    shift = min(
-                        int(window_start_idx - int(previous_window_start_idx)),
-                        max(0, len(frames) - 1),
-                    )
+                shift = compute_window_reuse_shift(
+                    previous_window_end_idx=previous_window_end_idx,
+                    window_start_idx=window_start_idx,
+                    frame_count=len(frames),
+                    previous_window_frame_count=previous_window_frame_count,
+                )
                 previous_window_frame_count = self._write_window_frames(
                     window_dir,
                     frames,
                     previous_count=previous_window_frame_count,
                     shift=shift,
                 )
-                previous_window_start_idx = window_start_idx
                 current_window_end_idx = int(window_end_idx)
                 session_resp = self._predictor.start_session(
                     resource_path=str(window_dir),
@@ -3062,6 +3058,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 session_id = str(session_resp["session_id"])
                 self._session_id = session_id
                 self._activate_global_match_session(session_id)
+                if previous_window_state is not None and shift > 0:
+                    self._carry_forward_window_state(previous_window_state, shift=shift)
                 try:
                     propagation_direction = "forward"
 
@@ -3308,6 +3306,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         refresh_mid_frame=refresh_mid_frame,
                     )
                 finally:
+                    previous_window_state = self._get_active_session_state()
                     try:
                         self._predictor.close_session(session_id)
                     except Exception:
@@ -3513,8 +3512,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             window_dir = Path(tmp_root) / "frames"
             window_dir.mkdir(parents=True, exist_ok=True)
             previous_window_frame_count = 0
-            previous_window_start_idx: Optional[int] = None
             previous_window_end_idx: Optional[int] = None
+            previous_window_state: Optional[dict] = None
 
             for window_idx, (start_idx, end_idx, frames) in enumerate(
                 self._iter_video_windows(
@@ -3543,29 +3542,26 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 boundary_empty_skips = 0
                 local_drift_rejections = 0
 
-                shift = 0
-                if (
-                    previous_window_start_idx is not None
-                    and window_start_idx > int(previous_window_start_idx)
-                    and len(frames) == int(previous_window_frame_count)
-                ):
-                    shift = min(
-                        int(window_start_idx - int(previous_window_start_idx)),
-                        max(0, len(frames) - 1),
-                    )
+                shift = compute_window_reuse_shift(
+                    previous_window_end_idx=previous_window_end_idx,
+                    window_start_idx=window_start_idx,
+                    frame_count=len(frames),
+                    previous_window_frame_count=previous_window_frame_count,
+                )
                 previous_window_frame_count = self._write_window_frames(
                     window_dir,
                     frames,
                     previous_count=previous_window_frame_count,
                     shift=shift,
                 )
-                previous_window_start_idx = window_start_idx
                 current_window_end_idx = int(window_end_idx)
                 session_id = self.start_session(
                     target_device=resolved_device,
                     session_id=None,
                     resource_path=str(window_dir),
                 )
+                if previous_window_state is not None and shift > 0:
+                    self._carry_forward_window_state(previous_window_state, shift=shift)
                 propagation_direction_local = (
                     propagation_direction or self.propagation_direction or "forward"
                 ).lower()
@@ -3843,6 +3839,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 telemetry["drift_rejections"] = int(local_drift_rejections)
                 window_telemetry.append(telemetry)
                 previous_window_end_idx = current_window_end_idx
+                previous_window_state = self._get_active_session_state()
                 self._emit_telemetry(
                     "window",
                     {

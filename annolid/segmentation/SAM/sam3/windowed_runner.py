@@ -55,6 +55,37 @@ def resolve_window_schedule(
     return normalize_window_schedule(window_size=window_size, stride=stride)
 
 
+def compute_window_reuse_shift(
+    *,
+    previous_window_end_idx: Optional[int],
+    window_start_idx: int,
+    frame_count: int,
+    previous_window_frame_count: int,
+) -> int:
+    """
+    Compute how many leading frames from the previous window can be reused.
+
+    The reuse window is the actual overlap between consecutive windows, not the
+    raw start index delta. This keeps non-overlapping windows from reusing stale
+    frames while still allowing overlapping windows to amortize frame writes
+    and private session-state carry-forward.
+    """
+    if previous_window_end_idx is None:
+        return 0
+    if frame_count <= 1 or previous_window_frame_count <= 1:
+        return 0
+    if frame_count != previous_window_frame_count:
+        return 0
+    overlap = int(previous_window_end_idx) - int(window_start_idx)
+    if overlap <= 0:
+        return 0
+    return min(
+        int(overlap),
+        max(0, int(frame_count) - 1),
+        max(0, int(previous_window_frame_count) - 1),
+    )
+
+
 def shift_annotations_to_window(
     annotations: Iterable[dict],
     start_idx: int,

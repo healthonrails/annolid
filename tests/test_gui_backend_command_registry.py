@@ -17,6 +17,32 @@ def test_direct_slash_parser_handles_registry_aliases() -> None:
         "name": "open_agent_capabilities",
         "args": {},
     }
+    assert parse_direct_slash_command("/track") == {
+        "name": "open_track_dialog",
+        "args": {},
+    }
+    assert parse_direct_slash_command(
+        '/track video=/tmp/mouse.mp4 prompt="mouse" model=Cutie to_frame=400'
+    ) == {
+        "name": "segment_track_video",
+        "args": {
+            "path": "/tmp/mouse.mp4",
+            "text_prompt": "mouse",
+            "mode": "track",
+            "use_countgd": False,
+            "model_name": "Cutie",
+            "to_frame": 400,
+        },
+    }
+    assert parse_direct_slash_command(
+        '/track video=/tmp/mouse.mp4 prompt="mouse" model=SAM3'
+    ) == {
+        "name": "sam3_agent_video_track",
+        "args": {
+            "video_path": "/tmp/mouse.mp4",
+            "agent_prompt": "mouse",
+        },
+    }
 
 
 def test_root_slash_completion_entries_include_registry_commands() -> None:
@@ -27,7 +53,9 @@ def test_root_slash_completion_entries_include_registry_commands() -> None:
     assert "/cron" in searches
     assert "/automation" in searches
     assert "/session" in searches
+    assert "/track" in searches
     assert "open_capabilities" in actions
+    assert "open_track_dialog" in actions
 
 
 def test_slash_completion_search_matches_without_literal_slash() -> None:
@@ -37,8 +65,9 @@ def test_slash_completion_search_matches_without_literal_slash() -> None:
 
 
 def test_direct_command_alias_line_uses_registry_examples() -> None:
-    line = build_direct_command_alias_line(["exec_process"])
+    line = build_direct_command_alias_line(["exec_process", "segment_track_video"])
 
+    assert "'/track video=/path/to/video.mp4 prompt=\"mouse\" model=Cutie'" in line
     assert "'/session list'" in line
     assert "'/session logs <session_id>'" in line
     assert "'/cron status'" not in line

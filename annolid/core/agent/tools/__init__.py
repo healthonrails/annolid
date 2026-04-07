@@ -144,6 +144,7 @@ from .function_video import (
     VideoSampleFramesTool,
     VideoSegmentTool,
 )
+from .function_sam3 import Sam3AgentVideoTrackTool
 from .policy import (
     ResolvedToolPolicy,
     ToolPermissionContext,
@@ -238,6 +239,7 @@ __all__ = [
     "VideoSegmentTool",
     "VideoProcessSegmentsTool",
     "VideoRunModelInferenceTool",
+    "Sam3AgentVideoTrackTool",
     "ResolvedToolPolicy",
     "ToolPermissionContext",
     "build_tool_permission_context",

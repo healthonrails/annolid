@@ -6,13 +6,109 @@ import copy
 import json
 import os
 import tempfile
-from typing import Optional
+from pathlib import Path
+from typing import Callable, Optional
 
 import cv2
 from PIL import Image
 
 from .client_llm import send_generate_request
 from .render import visualize
+
+_DEFAULT_SAM3_PROCESSOR = None
+
+
+def _resolve_default_sam3_checkpoint_path() -> Optional[str]:
+    env_value = str(os.getenv("SAM3_CKPT_PATH") or "").strip()
+    if env_value:
+        env_path = Path(env_value).expanduser()
+        if env_path.is_file():
+            return str(env_path)
+
+    package_root = Path(__file__).resolve().parents[2]
+    local_candidates = [
+        package_root / "checkpoints" / "sam3.1_multiplex.pt",
+    ]
+    for candidate in local_candidates:
+        if candidate.is_file():
+            return str(candidate)
+
+    snapshots_root = (
+        Path.home()
+        / ".cache"
+        / "huggingface"
+        / "hub"
+        / "models--facebook--sam3.1"
+        / "snapshots"
+    )
+    if snapshots_root.is_dir():
+        for snapshot_dir in sorted(snapshots_root.iterdir(), reverse=True):
+            candidate = snapshot_dir / "sam3.1_multiplex.pt"
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def _get_default_sam3_processor():
+    global _DEFAULT_SAM3_PROCESSOR
+    if _DEFAULT_SAM3_PROCESSOR is not None:
+        return _DEFAULT_SAM3_PROCESSOR
+    from sam3.model.sam3_image_processor import Sam3Processor
+    from sam3.model_builder import build_sam3_image_model
+
+    checkpoint_path = _resolve_default_sam3_checkpoint_path()
+    if checkpoint_path:
+        print(f"Using local SAM3 checkpoint for agent image prompts: {checkpoint_path}")
+        model = build_sam3_image_model(
+            checkpoint_path=checkpoint_path,
+            load_from_HF=False,
+        )
+    else:
+        model = build_sam3_image_model()
+    model_device = None
+    try:
+        model_device = str(next(model.parameters()).device)
+    except Exception:
+        model_device = str(getattr(model, "device", "") or "").strip() or None
+    _DEFAULT_SAM3_PROCESSOR = Sam3Processor(model, device=model_device)
+    return _DEFAULT_SAM3_PROCESSOR
+
+
+def _build_default_call_sam_service() -> Callable[..., str]:
+    from .client_sam3 import call_sam_service as _call_sam_service
+
+    def _bound_call_sam_service(
+        *,
+        image_path: str,
+        text_prompt: str,
+        output_folder_path: str,
+    ) -> str:
+        return _call_sam_service(
+            _get_default_sam3_processor(),
+            image_path=image_path,
+            text_prompt=text_prompt,
+            output_folder_path=output_folder_path,
+        )
+
+    return _bound_call_sam_service
+
+
+def _request_agent_turn(send_generate_request, messages, *, retry_hint: str = ""):
+    generated_text = send_generate_request(messages)
+    if generated_text is not None and str(generated_text).strip():
+        return generated_text
+    if retry_hint:
+        messages.append(
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": retry_hint}],
+            }
+        )
+        generated_text = send_generate_request(messages)
+    if generated_text is None:
+        return None
+    text = str(generated_text).strip()
+    return text or None
 
 
 def save_debug_messages(messages_list, debug, debug_folder_path, debug_jsonl_path):
@@ -169,9 +265,7 @@ def agent_inference(
         generation_count = 0  # Counter for number of send_generate_request calls
 
         if call_sam_service is None:
-            from .client_sam3 import call_sam_service as _call_sam_service
-
-            call_sam_service = _call_sam_service
+            call_sam_service = _build_default_call_sam_service()
 
         # debug setup
         debug_folder_path = None
@@ -209,7 +303,14 @@ def agent_inference(
         print("\n\n")
         print("-" * 30 + f" Round {str(generation_count + 1)}" + "-" * 30)
         print("\n\n")
-        generated_text = send_generate_request(messages)
+        generated_text = _request_agent_turn(
+            send_generate_request,
+            messages,
+            retry_hint=(
+                "Your previous response was empty. You must reply with exactly one "
+                "<tool>...</tool> block and no other text."
+            ),
+        )
         print(
             f"\n>>> MLLM Response [start]\n{generated_text}\n<<< MLLM Response [end]\n"
         )
@@ -558,21 +659,28 @@ def agent_inference(
             print("\n\n")
             print("-" * 30 + f" Round {str(generation_count + 1)}" + "-" * 30)
             print("\n\n")
-            generated_text = send_generate_request(messages)
+            generated_text = _request_agent_turn(
+                send_generate_request,
+                messages,
+                retry_hint=(
+                    "Your previous response was empty. You must reply with exactly one "
+                    "<tool>...</tool> block and no other text."
+                ),
+            )
             print(
                 f"\n>>> MLLM Response [start]\n{generated_text}\n<<< MLLM Response [end]\n"
             )
 
-            print("\n\n>>> SAM 3 Agent execution ended.\n\n")
+        print("\n\n>>> SAM 3 Agent execution ended.\n\n")
 
-            error_save_path = os.path.join(
-                error_save_dir,
-                f"{img_path.rsplit('/', 1)[-1].rsplit('.', 1)[0]}_error_history.json",
-            )
-            with open(error_save_path, "w") as f:
-                json.dump(messages, f, indent=4)
-            print("Saved messages history that caused error to:", error_save_path)
-            raise ValueError(
+        error_save_path = os.path.join(
+            error_save_dir,
+            f"{img_path.rsplit('/', 1)[-1].rsplit('.', 1)[0]}_error_history.json",
+        )
+        with open(error_save_path, "w") as f:
+            json.dump(messages, f, indent=4)
+        print("Saved messages history that caused error to:", error_save_path)
+        raise ValueError(
             rf"Generated text is None, which is unexpected. Please check the Qwen server and the input parameters for image path: {img_path} and initial text prompt: {initial_text_prompt}."
         )
     finally:

@@ -47,6 +47,64 @@ def test_find_tracking_gaps_handles_numeric_labels_without_keyerror(
     assert gaps[1][0]["end_frame"] == 1
 
 
+def test_find_tracking_gaps_merges_duplicate_frame_json_files(
+    tmp_path: Path, monkeypatch
+) -> None:
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"")
+    json_dir = tmp_path / "video"
+    json_dir.mkdir()
+
+    (json_dir / "video_000000000.json").write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    {
+                        "label": "fish",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (json_dir / "video_copy_000000000.json").write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    {
+                        "label": "fish",
+                    },
+                    {
+                        "label": "snail",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (json_dir / "video_000000002.json").write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    {
+                        "label": "fish",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(tracking_reports, "OPENCV_AVAILABLE", False)
+
+    gaps = tracking_reports.find_tracking_gaps(str(video_path))
+
+    assert gaps["fish"][0]["start_frame"] == 1
+    assert gaps["fish"][0]["end_frame"] == 1
+    assert gaps["snail"][0]["start_frame"] == 1
+    assert gaps["snail"][0]["end_frame"] == 2
+
+
 def test_convert_json_to_csv_skips_when_existing_csv_is_complete(
     tmp_path: Path,
 ) -> None:

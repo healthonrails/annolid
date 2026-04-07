@@ -134,6 +134,8 @@ def call_sam_service(
         viz_image.save(output_image_path)
         print("✅ Saved visualization at:", output_image_path)
     except Exception as e:
-        print(f"❌ Error calling service: {e}")
+        raise RuntimeError(
+            f"SAM3 image grounding failed for prompt '{text_prompt}' on '{image_path}': {e}"
+        ) from e
 
     return output_json_path

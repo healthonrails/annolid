@@ -82,6 +82,44 @@ For external pose datasets, the first prep step can now stay inside the bot work
 
 The training launcher prefers the workspace `.venv` interpreter when present so bot-initiated runs use the same dependency environment recommended for local validation.
 
+## SAM3 Long-Video Tracking
+
+Annolid Bot can run SAM3 Agent on long videos through the `sam3_agent_video_track` tool.
+
+Use it when the video needs windowed tracking and the same object must survive:
+
+- occlusion
+- drift
+- repeated reappearance
+- identity carry-over across windows
+
+Recommended decision rule:
+
+1. Use `video_info` if you only need metadata.
+2. Use `video_run_model_inference` if you want a generic `annolid-run predict ...` flow.
+3. Use `gui_segment_track_video` if you are already inside the GUI and want the interactive open+track path.
+4. Use `sam3_agent_video_track` if you want Annolid Bot to refine the first frame of each window with SAM3 Agent before propagation.
+
+Example prompt:
+
+```text
+Track the mouse in /path/to/video.mp4 with SAM3 Agent.
+Use a window size of 5, stride 5, and save the summary to the default output folder.
+```
+
+What the tool returns:
+
+- a JSON summary
+- `frames_processed`
+- `masks_written`
+- `summary_path`
+
+Default artifact path:
+
+- `<video_stem>_sam3_agent/<video_stem>_sam3_agent_tracking.json`
+
+Use `dry_run=true` first if you want to confirm paths and settings without running the model.
+
 ## Bot Evaluation Reports
 
 Annolid Bot also exposes a typed evaluation reporting tool:

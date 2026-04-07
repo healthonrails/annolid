@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from annolid.core.agent.gui_backend.tool_handlers_video import (
@@ -13,6 +14,8 @@ from annolid.core.agent.gui_backend.tool_handlers_video_workflow import (
     label_behavior_segments_tool as gui_label_behavior_segments_tool,
     segment_track_video_tool as gui_segment_track_video_tool,
 )
+from annolid.core.agent.gui_backend.direct_commands import run_awaitable_sync
+from annolid.core.agent.tools.function_sam3 import Sam3AgentVideoTrackTool
 
 
 def open_chat_video_tool(path: str, **kwargs: Any) -> dict[str, object]:
@@ -25,6 +28,26 @@ def resolve_chat_video_path_for_gui_tool(raw_path: str, **kwargs: Any):
 
 def segment_track_chat_video_tool(**kwargs: Any) -> dict[str, Any]:
     return gui_segment_track_video_tool(**kwargs)
+
+
+def sam3_agent_video_track_tool(
+    *,
+    allowed_dir=None,
+    allowed_read_roots=None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    tool = Sam3AgentVideoTrackTool(
+        allowed_dir=allowed_dir,
+        allowed_read_roots=allowed_read_roots,
+    )
+    result = run_awaitable_sync(tool.execute(**kwargs))
+    if isinstance(result, dict):
+        return result
+    try:
+        parsed = json.loads(str(result or ""))
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def label_chat_behavior_segments_tool(**kwargs: Any) -> dict[str, Any]:
@@ -41,4 +64,5 @@ __all__ = [
     "open_chat_video_tool",
     "resolve_chat_video_path_for_gui_tool",
     "segment_track_chat_video_tool",
+    "sam3_agent_video_track_tool",
 ]

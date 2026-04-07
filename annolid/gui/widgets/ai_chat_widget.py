@@ -73,6 +73,10 @@ from annolid.gui.widgets.provider_registry import ProviderRegistry
 from annolid.gui.widgets.provider_runtime_sync import (
     refresh_runtime_llm_settings as refresh_runtime_provider_settings,
 )
+from annolid.gui.widgets.track_slash_dialog import (
+    TrackSlashDialog,
+    build_track_slash_command,
+)
 from annolid.gui.workers import FlexibleWorker
 from annolid.utils.log_paths import (
     resolve_annolid_logs_root,
@@ -2153,6 +2157,10 @@ class AIChatWidget(QtWidgets.QWidget):
         if action == "open_capabilities":
             self._hide_slash_completion_ui()
             self._open_agent_capabilities_dialog()
+            return
+        if action == "open_track_dialog":
+            self._hide_slash_completion_ui()
+            self.bot_open_track_slash_dialog()
             return
         context = dict(getattr(self, "_slash_completion_context_state", {}) or {})
         token_start = int(context.get("token_start") or 0)
@@ -5097,6 +5105,82 @@ class AIChatWidget(QtWidgets.QWidget):
         self.prompt_text_edit.setPlainText(value)
         self.prompt_text_edit.setFocus()
         self.status_label.setText("Chat prompt updated by bot.")
+
+    def _track_slash_defaults(self) -> Dict[str, Any]:
+        host = self.host_window_widget or self.window()
+        active_video_path = str(getattr(host, "video_file", "") or "").strip()
+        prompt_text = str(self.prompt_text_edit.toPlainText() or "").strip()
+        if prompt_text.startswith("/track"):
+            prompt_text = ""
+        model_names: list[str] = []
+        combo = getattr(host, "_selectAiModelComboBox", None)
+        if combo is not None:
+            try:
+                model_names = [
+                    str(combo.itemText(index) or "").strip()
+                    for index in range(int(combo.count()))
+                    if str(combo.itemText(index) or "").strip()
+                ]
+            except Exception:
+                model_names = []
+            current_model = str(combo.currentText() or "").strip()
+        else:
+            current_model = ""
+        if not model_names:
+            model_names = list(self.available_models or [])
+        if not current_model:
+            current_model = str(self.selected_model or "").strip()
+        if current_model and current_model not in model_names:
+            model_names.append(current_model)
+        return {
+            "video_path": active_video_path,
+            "prompt": prompt_text,
+            "model_names": model_names,
+            "selected_model": current_model,
+            "mode": "track",
+            "use_countgd": False,
+            "to_frame": 0,
+        }
+
+    @QtCore.Slot()
+    def bot_open_track_slash_dialog(self) -> None:
+        defaults = self._track_slash_defaults()
+        dialog = TrackSlashDialog(
+            self,
+            video_path=str(defaults.get("video_path") or ""),
+            prompt=str(defaults.get("prompt") or ""),
+            model_names=list(defaults.get("model_names") or []),
+            selected_model=str(defaults.get("selected_model") or ""),
+            mode=str(defaults.get("mode") or "track"),
+            use_countgd=bool(defaults.get("use_countgd", False)),
+            to_frame=int(defaults.get("to_frame") or 0),
+            bot_provider=str(self.selected_provider or ""),
+            bot_model=str(self.selected_model or ""),
+        )
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            self._set_bot_action_result(
+                "open_track_dialog",
+                {"ok": False, "cancelled": True},
+            )
+            self.status_label.setText("Track setup canceled.")
+            return
+
+        values = dialog.values()
+        command = build_track_slash_command(values)
+        self.prompt_text_edit.setPlainText(command)
+        self.prompt_text_edit.setFocus()
+        payload = {
+            "ok": True,
+            "command": command,
+            "video_path": str(values.get("video_path") or ""),
+            "text_prompt": str(values.get("text_prompt") or ""),
+            "model_name": str(values.get("model_name") or ""),
+            "mode": str(values.get("mode") or "track"),
+            "use_countgd": bool(values.get("use_countgd", False)),
+            "to_frame": int(values.get("to_frame") or 0) or None,
+        }
+        self._set_bot_action_result("open_track_dialog", payload)
+        self.status_label.setText("Prepared guided /track command.")
 
     @QtCore.Slot()
     def bot_send_chat_prompt(self) -> None:

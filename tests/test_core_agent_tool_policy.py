@@ -150,6 +150,38 @@ def test_policy_group_pdf_includes_open_and_extract_tools() -> None:
     }
 
 
+def test_policy_group_video_includes_sam3_agent_tracking() -> None:
+    cfg = ToolsConfig(
+        profile="minimal",
+        allow=["group:video"],
+    )
+    all_tools = [
+        "video_info",
+        "video_list_inference_models",
+        "video_run_model_inference",
+        "sam3_agent_video_track",
+        "video_sample_frames",
+        "video_segment",
+        "video_process_segments",
+        "exec",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="ollama",
+        model="qwen3",
+    )
+    assert resolved.allowed_tools == {
+        "video_info",
+        "video_list_inference_models",
+        "video_run_model_inference",
+        "sam3_agent_video_track",
+        "video_sample_frames",
+        "video_segment",
+        "video_process_segments",
+    }
+
+
 def test_policy_group_web_includes_unified_mcp_browser_tool() -> None:
     cfg = ToolsConfig(profile="minimal", allow=["group:web"])
     all_tools = [
@@ -221,6 +253,7 @@ def test_policy_coding_profile_includes_google_calendar() -> None:
         "email",
         "list_emails",
         "read_email",
+        "sam3_agent_video_track",
         "gui_context",
     ]
     resolved = resolve_allowed_tools(
@@ -234,6 +267,7 @@ def test_policy_coding_profile_includes_google_calendar() -> None:
     assert "email" in resolved.allowed_tools
     assert "list_emails" in resolved.allowed_tools
     assert "read_email" in resolved.allowed_tools
+    assert "sam3_agent_video_track" in resolved.allowed_tools
 
 
 def test_policy_group_automation_includes_google_calendar() -> None:

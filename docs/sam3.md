@@ -45,6 +45,118 @@ SAM3 runs in two main modes.
 - Uses a text prompt (for example, `mouse`) and runs SAM3.1 windowed propagation.
 - This is the fallback when no usable geometric prompts (box/point/polygon) exist.
 
+## Annolid Bot workflow for long videos
+
+If you want Annolid Bot to do the tracking for you, use the bot-facing long-video tool:
+
+- `sam3_agent_video_track`
+
+Use this when you need the agent to refine each window before propagation. It is the best fit for:
+
+- long recordings that drift with a single pass
+- repeated appearances after occlusion
+- multiple objects that need stable identities across windows
+
+Recommended workflow:
+
+1. Inspect the source video first if you do not know its frame count or FPS.
+   - In Annolid Bot, call `video_info(path)` first.
+2. Run a dry run to confirm the output folder and settings.
+   - Set `dry_run=true`.
+3. Run the full SAM3 agent-seeded tracking pass.
+4. Review the returned JSON summary and the saved artifact path.
+
+Example bot call:
+
+```text
+sam3_agent_video_track(
+  video_path="/path/to/video.mp4",
+  agent_prompt="mouse",
+  window_size=5,
+  stride=5,
+  propagation_direction="forward",
+  dry_run=true
+)
+```
+
+When the settings look right, rerun with `dry_run=false`.
+
+### Output artifacts
+
+The tool returns a JSON summary and writes the same summary to disk.
+
+Default output folder:
+
+- `<video_stem>_sam3_agent/`
+
+Default summary filename:
+
+- `<video_stem>_sam3_agent_tracking.json`
+
+The summary includes:
+
+- `frames_processed`
+- `masks_written`
+- `summary_path`
+- the resolved runtime config
+
+If you specify `output_dir`, Annolid writes the summary there instead.
+
+### Choosing the right tool
+
+Use `sam3_agent_video_track` when:
+
+- you want agent-assisted long-video tracking
+- the object may disappear and reappear
+- you want overlap-aware carry-over between windows
+
+Use `gui_segment_track_video` when:
+
+- you are working interactively inside the GUI
+- you want to open a video and run the standard GUI-assisted segment/track flow
+
+Use `video_run_model_inference` when:
+
+- you only want to run a normal model predict command on a video
+- you do not need SAM3 agent reseeding or window overlap carry-over
+
+## GUI slash track
+
+If you are working in the Annolid GUI chat box, the `/track` slash command is a
+shorter front-end to the interactive video workflow. Typing `/track` with no
+arguments opens a guided form; filling it out inserts a structured command that
+routes to either `gui_segment_track_video` or `sam3_agent_video_track` depending
+on the selected model.
+
+Examples:
+
+```text
+/track
+/track video=/path/to/video.mp4 prompt="mouse" model=Cutie
+/track video=/path/to/video.mp4 prompt="mouse" model=Cutie to_frame=400
+/track /path/to/video.mp4 mouse
+```
+
+Field guide:
+
+- `video=` or `path=` points to the source video
+- `prompt=` or `text_prompt=` provides the text prompt
+- `model=` selects from the AI Models dropdown list in the main window
+- `to_frame=` jumps tracking to a target frame when you want a bounded run
+
+The guided form also shows which bot provider/model SAM3 will reuse for the
+vision seed call, so you can confirm the active LLM before inserting the
+command.
+
+This slash command is the right choice when you want a quick GUI shortcut for
+the standard open-video + prompt + track flow. When you choose `SAM3` from the
+AI Models dropdown, the same slash command uses the SAM3 agent text-prompt
+pipeline instead of the legacy GroundingDINO+SAM workflow, and it reuses the
+current Annolid bot provider/model for the agent VLM call. If that agent path
+cannot complete, Annolid falls back to the standard GUI video workflow so the
+video still opens and tracking can continue with the selected GUI tracking
+model.
+
 ## Prompt transaction model
 
 Annolid enforces a **single prompt type per SAM3 request** at a common boundary in `Sam3SessionManager`.
@@ -235,6 +347,23 @@ If results are still sparse:
 - reduce `sliding_window_size`
 - keep overlap (do not set `stride >= window_size`)
 - lower detection thresholds conservatively
+
+### 5) Annolid Bot run succeeds but the summary file is missing
+
+Symptoms:
+
+- the tool returns `ok=true`, but you cannot find the saved JSON summary
+
+Check:
+
+- whether `output_dir` was set explicitly
+- whether the selected workspace is writable
+- whether `dry_run=true` was used
+
+Remember:
+
+- `dry_run=true` does not execute tracking and does not create the output folder
+- the summary path reported in the JSON payload is the canonical artifact location
 
 ## Debug checklist
 

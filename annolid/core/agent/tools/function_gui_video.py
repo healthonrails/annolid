@@ -143,8 +143,9 @@ class GuiSegmentTrackVideoTool(FunctionTool):
     @property
     def description(self) -> str:
         return (
-            "Open a video, run text-prompt GroundingDINO+SAM segmentation, save, and "
-            "optionally track to a target frame."
+            "Open a video, run the legacy text-prompt GroundingDINO+SAM workflow, "
+            "save, and optionally track to a target frame. Use sam3_agent_video_track "
+            "when the selected tracking model is SAM3."
         )
 
     @property
