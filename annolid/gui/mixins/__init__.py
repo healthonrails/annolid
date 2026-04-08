@@ -15,6 +15,7 @@ from .model_identity_mixin import ModelIdentityMixin
 from .prediction_progress_mixin import PredictionProgressMixin
 from .csv_conversion_mixin import CsvConversionMixin
 from .project_workflow_mixin import ProjectWorkflowMixin
+from .raster_layer_mixin import RasterLayerMixin
 from .agent_analysis_mixin import AgentAnalysisMixin
 from .behavior_log_mixin import BehaviorLogMixin
 from .frame_playback_mixin import FramePlaybackMixin
@@ -52,6 +53,7 @@ __all__ = [
     "PredictionProgressMixin",
     "CsvConversionMixin",
     "ProjectWorkflowMixin",
+    "RasterLayerMixin",
     "AgentAnalysisMixin",
     "BehaviorLogMixin",
     "FramePlaybackMixin",

@@ -1061,16 +1061,74 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
     def openFile(self, _value=False) -> None:
         start_dir = self.lastOpenDir or str(Path.home())
         filters = self.tr("Images/JSON (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.json)")
-        filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+        filenames, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self,
             self.tr("Open Image/Annotation"),
             start_dir,
             filters,
         )
-        if not filename:
+        selected_paths = [
+            str(path or "").strip()
+            for path in list(filenames or [])
+            if str(path or "").strip()
+        ]
+        if not selected_paths:
             return
-        self.lastOpenDir = str(Path(filename).parent)
-        self.loadFile(filename)
+        first_path = selected_paths[0]
+        self.lastOpenDir = str(Path(first_path).parent)
+
+        def _is_large_tiff(path_text: str) -> bool:
+            try:
+                return bool(is_large_tiff_path(Path(path_text)))
+            except Exception:
+                return False
+
+        # User-friendly behavior: when a large TIFF is already open in tiled mode,
+        # let users add another TIFF as a layer instead of always replacing.
+        if (
+            len(selected_paths) == 1
+            and _is_large_tiff(first_path)
+            and getattr(self, "_active_image_view", "") == "tiled"
+            and bool(
+                is_large_tiff_path(Path(str(getattr(self, "imagePath", "") or "")))
+            )
+            and hasattr(self, "addRasterImageLayersFromPaths")
+            and str(Path(first_path))
+            != str(Path(str(getattr(self, "imagePath", "") or "")))
+        ):
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                self.tr("Open Large TIFF"),
+                self.tr(
+                    "A large TIFF is already open.\n\n"
+                    "Choose Yes to add this TIFF as a new layer,\n"
+                    "No to replace the current base image."
+                ),
+                QtWidgets.QMessageBox.Yes
+                | QtWidgets.QMessageBox.No
+                | QtWidgets.QMessageBox.Cancel,
+                QtWidgets.QMessageBox.Yes,
+            )
+            if answer == QtWidgets.QMessageBox.Cancel:
+                return
+            if answer == QtWidgets.QMessageBox.Yes:
+                added = int(self.addRasterImageLayersFromPaths([first_path]))  # type: ignore[attr-defined]
+                if added > 0 and hasattr(self, "status"):
+                    self.status(self.tr("Loaded %d TIFF layer(s)") % int(added))
+                return
+
+        self.loadFile(first_path)
+
+        # Multi-select large TIFF workflow: first file is base image, rest become layers.
+        if (
+            len(selected_paths) > 1
+            and all(_is_large_tiff(path) for path in selected_paths)
+            and getattr(self, "_active_image_view", "") == "tiled"
+            and hasattr(self, "addRasterImageLayersFromPaths")
+        ):
+            added = int(self.addRasterImageLayersFromPaths(selected_paths[1:]))  # type: ignore[attr-defined]
+            if added > 0 and hasattr(self, "status"):
+                self.status(self.tr("Loaded %d TIFF layer(s)") % int(added))
 
     def openDir(self, _value=False) -> None:
         start_dir = self.lastOpenDir or str(Path.home())
@@ -1379,6 +1437,16 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                         label_backend.set_page(target)
                 except Exception:
                     pass
+            if hasattr(self, "_syncRasterImageLayerPages"):
+                try:
+                    self._syncRasterImageLayerPages()
+                except Exception:
+                    pass
+            if hasattr(self, "_restoreBaseRasterImageVisibilityFromState"):
+                try:
+                    self._restoreBaseRasterImageVisibilityFromState()
+                except Exception:
+                    pass
         self.frame_number = target
         self.num_frames = page_count
         if hasattr(self, "_loadLargeImagePageAnnotations"):
@@ -1387,6 +1455,10 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             large_view.set_shapes(getattr(canvas, "shapes", []) or [])
         if hasattr(self, "_restoreLabelImageOverlayFromState"):
             self._restoreLabelImageOverlayFromState()
+        if hasattr(self, "_restoreBaseRasterImageVisibilityFromState"):
+            self._restoreBaseRasterImageVisibilityFromState()
+        if hasattr(self, "_restoreRasterImageLayersFromState"):
+            self._restoreRasterImageLayersFromState()
         seekbar = getattr(self, "seekbar", None)
         if seekbar is not None and self._has_large_image_page_navigation():
             try:
@@ -1717,12 +1789,23 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 page_index = int(backend.get_current_page() or 0)
             except Exception:
                 page_index = 0
+        base_visible = bool(
+            getattr(self, "_active_image_view", "canvas") in {"canvas", "tiled"}
+        )
+        large_view = getattr(self, "large_image_view", None)
+        if (
+            large_view is not None
+            and getattr(self, "_active_image_view", "canvas") == "tiled"
+            and hasattr(large_view, "base_raster_visible")
+        ):
+            try:
+                base_visible = bool(large_view.base_raster_visible())
+            except Exception:
+                pass
         return RasterImageLayer(
             id="raster_image",
             name=Path(image_path).name,
-            visible=bool(
-                getattr(self, "_active_image_view", "canvas") in {"canvas", "tiled"}
-            ),
+            visible=base_visible,
             opacity=1.0,
             locked=True,
             z_index=-100,
@@ -1743,6 +1826,11 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 label_layer = None
             if label_layer is not None:
                 layers.append(label_layer)
+        if hasattr(self, "rasterOverlayLayers"):
+            try:
+                layers.extend(list(self.rasterOverlayLayers() or []))
+            except Exception:
+                pass
         if hasattr(self, "vectorOverlayLayers"):
             try:
                 layers.extend(list(self.vectorOverlayLayers() or []))
@@ -2371,6 +2459,8 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 self._activate_canvas_image_view(image)
                 if hasattr(self, "_restoreLabelImageOverlayFromState"):
                     self._restoreLabelImageOverlayFromState()
+                if hasattr(self, "_restoreRasterImageLayersFromState"):
+                    self._restoreRasterImageLayersFromState()
             elif large_backend is not None:
                 self.setLargeImageDocksActive(True)
                 if (
@@ -2404,6 +2494,10 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                     )
                 if hasattr(self, "_restoreLabelImageOverlayFromState"):
                     self._restoreLabelImageOverlayFromState()
+                if hasattr(self, "_restoreBaseRasterImageVisibilityFromState"):
+                    self._restoreBaseRasterImageVisibilityFromState()
+                if hasattr(self, "_restoreRasterImageLayersFromState"):
+                    self._restoreRasterImageLayersFromState()
             # AnnolidWindow.loadLabels expects LabelFile JSON dict payloads and
             # materializes Shape objects before forwarding to loadShapes.
             if handled_page_shapes:

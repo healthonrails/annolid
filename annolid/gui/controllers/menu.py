@@ -306,6 +306,14 @@ class MenuController:
                 ),
             },
             {
+                "name": "import_raster_image_layers",
+                "text": w.tr("Import &TIFF Layers…"),
+                "slot": w.importRasterImageLayers,
+                "tip": w.tr(
+                    "Import multiple large TIFF images as additional raster layers"
+                ),
+            },
+            {
                 "name": "import_label_image_mapping",
                 "text": w.tr("Import Label &Mapping…"),
                 "slot": w.importLabelImageMapping,
@@ -1226,6 +1234,7 @@ class MenuController:
             (
                 actions["import_svg_overlay"],
                 actions["import_label_image_overlay"],
+                actions["import_raster_image_layers"],
                 actions["import_label_image_mapping"],
                 actions["toggle_vector_overlays_visible"],
                 actions["toggle_label_image_overlay_visible"],

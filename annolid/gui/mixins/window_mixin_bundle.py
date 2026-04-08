@@ -26,6 +26,7 @@ from .playback_draw_mixin import PlaybackDrawMixin
 from .prediction_execution_mixin import PredictionExecutionMixin
 from .prediction_progress_mixin import PredictionProgressMixin
 from .project_workflow_mixin import ProjectWorkflowMixin
+from .raster_layer_mixin import RasterLayerMixin
 from .schema_behavior_loader_mixin import SchemaBehaviorLoaderMixin
 from .settings_timeline_mixin import SettingsTimelineMixin
 from .shape_editing_mixin import ShapeEditingMixin
@@ -58,6 +59,7 @@ class AnnolidWindowMixinBundle(
     SchemaBehaviorLoaderMixin,
     FramePlaybackMixin,
     LabelImageOverlayMixin,
+    RasterLayerMixin,
     LayerDockMixin,
     BehaviorLogMixin,
     AgentAnalysisMixin,

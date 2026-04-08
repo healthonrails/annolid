@@ -13,6 +13,19 @@ from annolid.gui.viewer_layers import (
 
 
 class LayerDockMixin:
+    def _is_raster_overlay_layer_id(self, layer_id: str) -> bool:
+        target = str(layer_id or "")
+        if not target or target == "raster_image":
+            return False
+        for layer in list(getattr(self, "viewerLayerModels", lambda: [])() or []):
+            if (
+                isinstance(layer, RasterImageLayer)
+                and str(getattr(layer, "id", "") or "") == target
+                and target != "raster_image"
+            ):
+                return True
+        return False
+
     def _ensureViewerLayerDock(self) -> ViewerLayerDockWidget:
         dock = getattr(self, "viewer_layer_dock", None)
         if isinstance(dock, ViewerLayerDockWidget):
@@ -21,6 +34,13 @@ class LayerDockMixin:
         dock.layerVisibilityChanged.connect(self._onViewerLayerVisibilityChanged)
         dock.layerOpacityChanged.connect(self._onViewerLayerOpacityChanged)
         dock.layerSelected.connect(self._onViewerLayerSelected)
+        dock.layerMoveRequested.connect(self._onViewerLayerMoveRequested)
+        dock.layerRenameRequested.connect(self._onViewerLayerRenameRequested)
+        dock.layerRemoveRequested.connect(self._onViewerLayerRemoveRequested)
+        dock.layerMoveToTopRequested.connect(self._onViewerLayerMoveToTopRequested)
+        dock.layerMoveToBottomRequested.connect(
+            self._onViewerLayerMoveToBottomRequested
+        )
         self.viewer_layer_dock = dock
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
         vector_dock = getattr(self, "vector_overlay_dock", None)
@@ -35,10 +55,26 @@ class LayerDockMixin:
         entries = []
         for layer in list(getattr(self, "viewerLayerModels", lambda: [])() or []):
             details = []
-            supports_opacity = isinstance(layer, (RasterLabelLayer, VectorOverlayLayer))
-            checkable = not isinstance(layer, RasterImageLayer)
+            is_base_raster = (
+                isinstance(layer, RasterImageLayer) and str(layer.id) == "raster_image"
+            )
+            is_raster_overlay = (
+                isinstance(layer, RasterImageLayer) and not is_base_raster
+            )
+            supports_opacity = (
+                isinstance(layer, (RasterLabelLayer, VectorOverlayLayer))
+                or is_raster_overlay
+            )
+            checkable = bool(
+                is_base_raster
+                or not isinstance(layer, RasterImageLayer)
+                or is_raster_overlay
+            )
             if isinstance(layer, RasterImageLayer):
-                details.append("Base raster image")
+                if str(layer.id) == "raster_image":
+                    details.append("Base raster image")
+                else:
+                    details.append("Raster overlay image")
                 details.append(f"page {int(layer.backend_page_index) + 1}")
             elif isinstance(layer, RasterLabelLayer):
                 details.append("Label overlay")
@@ -57,6 +93,7 @@ class LayerDockMixin:
                     "visible": bool(getattr(layer, "visible", True)),
                     "opacity": float(getattr(layer, "opacity", 1.0)),
                     "supports_opacity": supports_opacity,
+                    "supports_reorder": is_raster_overlay,
                     "checkable": checkable,
                     "details": " | ".join(details),
                 }
@@ -109,6 +146,12 @@ class LayerDockMixin:
             self, "setLabelImageOverlayVisible"
         ):
             changed = bool(self.setLabelImageOverlayVisible(bool(visible)))
+        elif layer_id == "raster_image" and hasattr(self, "setBaseRasterImageVisible"):
+            changed = bool(self.setBaseRasterImageVisible(bool(visible)))
+        elif self._is_raster_overlay_layer_id(layer_id) and hasattr(
+            self, "setRasterImageLayerVisible"
+        ):
+            changed = bool(self.setRasterImageLayerVisible(layer_id, bool(visible)))
         elif layer_id == "annotations":
             changed = self._setAnnotationLayerVisible(bool(visible))
         elif layer_id.endswith("_landmarks") and hasattr(
@@ -156,10 +199,74 @@ class LayerDockMixin:
         changed = False
         if layer_id == "label_image_overlay":
             changed = self._setLabelImageOverlayOpacity(float(opacity))
+        elif self._is_raster_overlay_layer_id(layer_id) and hasattr(
+            self, "setRasterImageLayerOpacity"
+        ):
+            changed = bool(self.setRasterImageLayerOpacity(layer_id, float(opacity)))
         elif hasattr(self, "setVectorOverlayTransform"):
             changed = bool(
                 self.setVectorOverlayTransform(str(layer_id), opacity=float(opacity))
             )
+        if changed:
+            self._refreshViewerLayerDock()
+
+    def _onViewerLayerMoveRequested(self, layer_id: str, direction: int) -> None:
+        layer_id = str(layer_id or "")
+        if not layer_id:
+            return
+        changed = False
+        if self._is_raster_overlay_layer_id(layer_id) and hasattr(
+            self, "moveRasterImageLayer"
+        ):
+            changed = bool(self.moveRasterImageLayer(layer_id, int(direction)))
+        if changed:
+            self._refreshViewerLayerDock()
+
+    def _onViewerLayerRenameRequested(self, layer_id: str, new_name: str) -> None:
+        layer_id = str(layer_id or "")
+        if not layer_id:
+            return
+        changed = False
+        if self._is_raster_overlay_layer_id(layer_id) and hasattr(
+            self, "renameRasterImageLayer"
+        ):
+            changed = bool(self.renameRasterImageLayer(layer_id, str(new_name or "")))
+        if changed:
+            self._refreshViewerLayerDock()
+
+    def _onViewerLayerRemoveRequested(self, layer_id: str) -> None:
+        layer_id = str(layer_id or "")
+        if not layer_id:
+            return
+        changed = False
+        if self._is_raster_overlay_layer_id(layer_id) and hasattr(
+            self, "removeRasterImageLayer"
+        ):
+            changed = bool(self.removeRasterImageLayer(layer_id))
+        if changed:
+            self._refreshViewerLayerDock()
+
+    def _onViewerLayerMoveToTopRequested(self, layer_id: str) -> None:
+        layer_id = str(layer_id or "")
+        if not layer_id:
+            return
+        changed = False
+        if self._is_raster_overlay_layer_id(layer_id) and hasattr(
+            self, "moveRasterImageLayerToEdge"
+        ):
+            changed = bool(self.moveRasterImageLayerToEdge(layer_id, "top"))
+        if changed:
+            self._refreshViewerLayerDock()
+
+    def _onViewerLayerMoveToBottomRequested(self, layer_id: str) -> None:
+        layer_id = str(layer_id or "")
+        if not layer_id:
+            return
+        changed = False
+        if self._is_raster_overlay_layer_id(layer_id) and hasattr(
+            self, "moveRasterImageLayerToEdge"
+        ):
+            changed = bool(self.moveRasterImageLayerToEdge(layer_id, "bottom"))
         if changed:
             self._refreshViewerLayerDock()
 

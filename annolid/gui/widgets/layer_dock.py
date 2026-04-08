@@ -7,6 +7,11 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
     layerVisibilityChanged = QtCore.Signal(str, bool)
     layerOpacityChanged = QtCore.Signal(str, float)
     layerSelected = QtCore.Signal(str)
+    layerMoveRequested = QtCore.Signal(str, int)
+    layerRenameRequested = QtCore.Signal(str, str)
+    layerRemoveRequested = QtCore.Signal(str)
+    layerMoveToTopRequested = QtCore.Signal(str)
+    layerMoveToBottomRequested = QtCore.Signal(str)
 
     def __init__(self, parent=None):
         super().__init__("Layers", parent)
@@ -23,6 +28,8 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         self.layer_list = QtWidgets.QListWidget(container)
         self.layer_list.itemChanged.connect(self._on_item_changed)
         self.layer_list.currentItemChanged.connect(self._on_current_item_changed)
+        self.layer_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.layer_list.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self.layer_list)
 
         self.details_label = QtWidgets.QLabel("", container)
@@ -34,11 +41,26 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
         layout.addWidget(self.opacity_slider)
 
+        move_row = QtWidgets.QHBoxLayout()
+        self.move_up_button = QtWidgets.QPushButton("Move Up", container)
+        self.move_down_button = QtWidgets.QPushButton("Move Down", container)
+        self.move_up_button.clicked.connect(lambda: self._request_move(-1))
+        self.move_down_button.clicked.connect(lambda: self._request_move(1))
+        move_row.addWidget(self.move_up_button)
+        move_row.addWidget(self.move_down_button)
+        layout.addLayout(move_row)
+
         self.setWidget(container)
         self._set_opacity_enabled(False)
+        self._set_reorder_enabled(False)
 
     def _set_opacity_enabled(self, enabled: bool) -> None:
         self.opacity_slider.setEnabled(bool(enabled))
+
+    def _set_reorder_enabled(self, enabled: bool) -> None:
+        enabled_flag = bool(enabled)
+        self.move_up_button.setEnabled(enabled_flag)
+        self.move_down_button.setEnabled(enabled_flag)
 
     def _current_layer_id(self) -> str | None:
         item = self.layer_list.currentItem()
@@ -57,6 +79,7 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
                 int(round(float(layer.get("opacity", 1.0) or 1.0) * 100.0))
             )
         self._set_opacity_enabled(supports_opacity)
+        self._set_reorder_enabled(bool(layer.get("supports_reorder", False)))
         self.details_label.setText(str(layer.get("details", "") or ""))
         if layer_id:
             self.layerSelected.emit(layer_id)
@@ -81,6 +104,57 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         if not bool(layer.get("supports_opacity", False)):
             return
         self.layerOpacityChanged.emit(layer_id, float(value) / 100.0)
+
+    def _request_move(self, direction: int) -> None:
+        layer_id = self._current_layer_id()
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        if not bool(layer.get("supports_reorder", False)):
+            return
+        if int(direction) not in {-1, 1}:
+            return
+        self.layerMoveRequested.emit(layer_id, int(direction))
+
+    def _on_context_menu(self, pos) -> None:
+        item = self.layer_list.itemAt(pos)
+        if item is None:
+            return
+        layer_id = str(item.data(QtCore.Qt.UserRole) or "")
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        if not bool(layer.get("supports_reorder", False)):
+            return
+        self.layer_list.setCurrentItem(item)
+        menu = QtWidgets.QMenu(self.layer_list)
+        rename_action = menu.addAction("Rename Layer")
+        remove_action = menu.addAction("Remove Layer")
+        menu.addSeparator()
+        move_top_action = menu.addAction("Move to Top")
+        move_bottom_action = menu.addAction("Move to Bottom")
+        chosen = menu.exec(self.layer_list.mapToGlobal(pos))
+        if chosen is rename_action:
+            current_name = str(layer.get("name") or layer_id)
+            new_name, ok = QtWidgets.QInputDialog.getText(
+                self.layer_list,
+                "Rename Layer",
+                "Layer name:",
+                text=current_name,
+            )
+            if ok:
+                normalized = str(new_name or "").strip()
+                if normalized and normalized != current_name:
+                    self.layerRenameRequested.emit(layer_id, normalized)
+            return
+        if chosen is remove_action:
+            self.layerRemoveRequested.emit(layer_id)
+            return
+        if chosen is move_top_action:
+            self.layerMoveToTopRequested.emit(layer_id)
+            return
+        if chosen is move_bottom_action:
+            self.layerMoveToBottomRequested.emit(layer_id)
 
     def set_layers(self, layers: list[dict]) -> None:
         self._layer_map = {
@@ -124,3 +198,4 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         if self.layer_list.currentItem() is None:
             self.details_label.setText("")
             self._set_opacity_enabled(False)
+            self._set_reorder_enabled(False)

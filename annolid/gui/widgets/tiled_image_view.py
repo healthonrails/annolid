@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from pathlib import Path
 from typing import Iterable
@@ -51,6 +51,26 @@ class TileCache:
 
     def __len__(self) -> int:
         return len(self._items)
+
+
+@dataclass
+class _RasterOverlayRuntime:
+    layer_id: str
+    name: str
+    backend: LargeImageBackend
+    source_path: str
+    visible: bool = True
+    opacity: float = 1.0
+    z_index: float = 10.0
+    page_index: int = 0
+    tile_cache: TileCache = field(default_factory=TileCache)
+    tile_scheduler: TileRequestScheduler | None = None
+    tile_items: dict[TileKey, QtWidgets.QGraphicsPixmapItem] = field(
+        default_factory=dict
+    )
+    last_level: int = 0
+    last_visible_tile_count: int = 0
+    current_visible_keys: tuple[TileKey, ...] = ()
 
 
 class _LandmarkPairItem(QtWidgets.QGraphicsLineItem):
@@ -363,6 +383,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._label_source_path: str | None = None
         self._label_mapping_path: str | None = None
         self._label_page_index: int = 0
+        self._raster_overlay_layers: dict[str, _RasterOverlayRuntime] = {}
+        self._base_raster_visible: bool = True
         self._label_transform: dict[str, float] = {
             "tx": 0.0,
             "ty": 0.0,
@@ -432,6 +454,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
             self._tile_scheduler.shutdown()
         except Exception:
             pass
+        self.clear_raster_overlay_layers(notify=False)
         self.backend = backend
         self.tile_cache = TileCache()
         self._tile_scheduler = TileRequestScheduler(
@@ -439,6 +462,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
             cache_put=self.tile_cache.put,
             load_tile=self._load_raster_tile,
         )
+        self._base_raster_visible = True
+        self._pixmap_item.setVisible(True)
         self._clear_tile_items()
         self._clear_label_value_cache()
         thumbnail = backend.get_thumbnail(max_size=2048)
@@ -565,6 +590,196 @@ class TiledImageView(QtWidgets.QGraphicsView):
     def label_layer_visible(self) -> bool:
         return bool(self._label_overlay_visible)
 
+    def set_raster_overlay_layers(self, layers: list[dict]) -> None:
+        self.clear_raster_overlay_layers(notify=False)
+        ordered_layers = sorted(
+            list(layers or []),
+            key=lambda layer: float((layer or {}).get("z_index", 0.0) or 0.0),
+        )
+        for layer in ordered_layers:
+            layer_id = str(layer.get("id") or "").strip()
+            backend = layer.get("backend")
+            if not layer_id or backend is None:
+                continue
+            runtime = _RasterOverlayRuntime(
+                layer_id=layer_id,
+                name=str(layer.get("name") or layer_id),
+                backend=backend,
+                source_path=str(layer.get("source_path") or ""),
+                visible=bool(layer.get("visible", True)),
+                opacity=max(0.0, min(1.0, float(layer.get("opacity", 1.0) or 1.0))),
+                z_index=float(layer.get("z_index", 10.0) or 10.0),
+                page_index=int(layer.get("page_index", 0) or 0),
+            )
+            runtime.tile_scheduler = TileRequestScheduler(
+                cache_get=runtime.tile_cache.get,
+                cache_put=runtime.tile_cache.put,
+                load_tile=lambda key,
+                _layer_id=layer_id: self._load_raster_overlay_tile(_layer_id, key),
+                async_load=True,
+            )
+            self._raster_overlay_layers[layer_id] = runtime
+        self.refresh_visible_tiles()
+        self._notify_host_large_image_document_changed()
+
+    def clear_raster_overlay_layers(self, *, notify: bool = True) -> None:
+        for runtime in list(self._raster_overlay_layers.values()):
+            scheduler = runtime.tile_scheduler
+            if scheduler is not None:
+                try:
+                    scheduler.shutdown()
+                except Exception:
+                    pass
+            for item in list(runtime.tile_items.values()):
+                self._scene.removeItem(item)
+            runtime.tile_items.clear()
+        self._raster_overlay_layers.clear()
+        if notify:
+            self.refresh_visible_tiles()
+            self._notify_host_large_image_document_changed()
+
+    def set_raster_overlay_layer_visible(self, layer_id: str, visible: bool) -> bool:
+        runtime = self._raster_overlay_layers.get(str(layer_id or ""))
+        if runtime is None:
+            return False
+        visible_flag = bool(visible)
+        if visible_flag == bool(runtime.visible):
+            return False
+        runtime.visible = visible_flag
+        if not visible_flag:
+            self._remove_stale_tile_items(
+                runtime.tile_items,
+                list(runtime.tile_items.keys()),
+            )
+            runtime.current_visible_keys = ()
+            runtime.last_visible_tile_count = 0
+        self.refresh_visible_tiles()
+        self._notify_host_large_image_document_changed()
+        return True
+
+    def set_base_raster_visible(self, visible: bool) -> bool:
+        visible_flag = bool(visible)
+        if visible_flag == bool(self._base_raster_visible):
+            return False
+        self._base_raster_visible = visible_flag
+        self._pixmap_item.setVisible(visible_flag)
+        if not visible_flag:
+            self._remove_stale_tile_items(
+                self._tile_items, list(self._tile_items.keys())
+            )
+            self._current_visible_raster_keys = ()
+            self._last_visible_tile_count = 0
+        self.refresh_visible_tiles()
+        self._notify_host_large_image_document_changed()
+        return True
+
+    def base_raster_visible(self) -> bool:
+        return bool(self._base_raster_visible)
+
+    def set_raster_overlay_layer_opacity(self, layer_id: str, opacity: float) -> bool:
+        runtime = self._raster_overlay_layers.get(str(layer_id or ""))
+        if runtime is None:
+            return False
+        normalized = max(0.0, min(1.0, float(opacity)))
+        if abs(float(runtime.opacity) - normalized) < 1e-6:
+            return False
+        runtime.opacity = float(normalized)
+        runtime.tile_cache = TileCache()
+        self._remove_stale_tile_items(
+            runtime.tile_items,
+            list(runtime.tile_items.keys()),
+        )
+        runtime.current_visible_keys = ()
+        runtime.last_visible_tile_count = 0
+        self.refresh_visible_tiles()
+        self._notify_host_large_image_document_changed()
+        return True
+
+    def set_raster_overlay_layer_name(self, layer_id: str, name: str) -> bool:
+        runtime = self._raster_overlay_layers.get(str(layer_id or ""))
+        if runtime is None:
+            return False
+        normalized = str(name or "").strip()
+        if not normalized:
+            return False
+        if str(runtime.name) == normalized:
+            return False
+        runtime.name = normalized
+        self._notify_host_large_image_document_changed()
+        return True
+
+    def remove_raster_overlay_layer(self, layer_id: str) -> bool:
+        runtime = self._raster_overlay_layers.pop(str(layer_id or ""), None)
+        if runtime is None:
+            return False
+        scheduler = runtime.tile_scheduler
+        if scheduler is not None:
+            try:
+                scheduler.shutdown()
+            except Exception:
+                pass
+        self._remove_stale_tile_items(
+            runtime.tile_items,
+            list(runtime.tile_items.keys()),
+        )
+        runtime.tile_items.clear()
+        runtime.current_visible_keys = ()
+        runtime.last_visible_tile_count = 0
+        self.refresh_visible_tiles()
+        self._notify_host_large_image_document_changed()
+        return True
+
+    def raster_overlay_layers_state(self) -> list[dict]:
+        state = []
+        ordered_runtimes = sorted(
+            self._raster_overlay_layers.values(),
+            key=lambda runtime: float(runtime.z_index),
+        )
+        for runtime in ordered_runtimes:
+            state.append(
+                {
+                    "id": str(runtime.layer_id),
+                    "name": str(runtime.name),
+                    "source_path": str(runtime.source_path),
+                    "visible": bool(runtime.visible),
+                    "opacity": float(runtime.opacity),
+                    "z_index": float(runtime.z_index),
+                    "page_index": int(runtime.page_index),
+                }
+            )
+        return state
+
+    def sync_raster_overlay_pages(
+        self,
+        *,
+        base_page: int,
+        base_page_count: int,
+    ) -> None:
+        changed = False
+        for runtime in self._raster_overlay_layers.values():
+            backend = runtime.backend
+            try:
+                overlay_page_count = int(
+                    getattr(backend, "get_page_count", lambda: 1)() or 1
+                )
+            except Exception:
+                overlay_page_count = 1
+            if overlay_page_count != int(base_page_count) or overlay_page_count <= 1:
+                continue
+            try:
+                backend.set_page(int(base_page))
+            except Exception:
+                continue
+            runtime.page_index = int(base_page)
+            runtime.tile_cache = TileCache()
+            runtime.tile_items.clear()
+            runtime.current_visible_keys = ()
+            runtime.last_visible_tile_count = 0
+            changed = True
+        if changed:
+            self.refresh_visible_tiles()
+            self._notify_host_large_image_document_changed()
+
     def set_selected_label_value(self, label_value: int | None) -> None:
         normalized = None
         if label_value is not None:
@@ -631,6 +846,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._preview_vertices_item.setPath(QtGui.QPainterPath())
         self._preview_close_item.setPath(QtGui.QPainterPath())
         self._clear_tile_items()
+        self._base_raster_visible = True
+        self.clear_raster_overlay_layers(notify=False)
         self.clear_label_layer()
         self.set_shapes([])
         self._scene.setSceneRect(QtCore.QRectF())
@@ -1415,6 +1632,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         ty: float = 0.0,
         sx: float = 1.0,
         sy: float = 1.0,
+        item_opacity: float | None = None,
     ) -> None:
         for key in visible_keys:
             if key in item_map:
@@ -1429,6 +1647,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
             item.setPos(position)
             item.setTransform(transform)
             item.setZValue(float(z_value_for_key(key)))
+            if item_opacity is not None:
+                item.setOpacity(max(0.0, min(1.0, float(item_opacity))))
             self._scene.addItem(item)
             item_map[key] = item
 
@@ -1505,7 +1725,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
     def _poll_pending_tile_results(self) -> None:
         updated = False
         raster_ready = self._tile_scheduler.take_completed()
-        if raster_ready and self.backend is not None:
+        if raster_ready and self.backend is not None and self._base_raster_visible:
             visible = tuple(
                 key for key in self._current_visible_raster_keys if key in raster_ready
             )
@@ -1518,6 +1738,28 @@ class TiledImageView(QtWidgets.QGraphicsView):
                     z_value_for_key=lambda key: -10.0 - key.level,
                 )
                 updated = True
+        for runtime in self._raster_overlay_layers.values():
+            scheduler = runtime.tile_scheduler
+            if scheduler is None:
+                continue
+            overlay_ready = scheduler.take_completed()
+            if not overlay_ready:
+                continue
+            visible = tuple(
+                key for key in runtime.current_visible_keys if key in overlay_ready
+            )
+            if not visible:
+                continue
+            self._apply_tile_images(
+                backend=runtime.backend,
+                tile_images={key: overlay_ready[key] for key in visible},
+                visible_keys=visible,
+                item_map=runtime.tile_items,
+                z_value_for_key=lambda key, z=runtime.z_index: float(z)
+                + (float(key.level) * -0.05),
+                item_opacity=runtime.opacity,
+            )
+            updated = True
         label_ready = self._label_tile_scheduler.take_completed()
         if label_ready and self._label_backend is not None:
             visible = tuple(
@@ -1540,8 +1782,10 @@ class TiledImageView(QtWidgets.QGraphicsView):
             self.viewport().update()
             self._notify_host_large_image_document_changed()
         stats = self.tile_scheduler_stats()
-        if not int(stats["raster"].get("outstanding_requests", 0)) and not int(
-            stats["label"].get("outstanding_requests", 0)
+        if (
+            not int(stats["raster"].get("outstanding_requests", 0))
+            and not int(stats["label"].get("outstanding_requests", 0))
+            and not int(stats["raster_overlays"].get("outstanding_requests", 0))
         ):
             self._tile_result_timer.stop()
         self._refresh_status_overlay()
@@ -1550,6 +1794,16 @@ class TiledImageView(QtWidgets.QGraphicsView):
         if self.backend is None:
             self._last_visible_tile_count = 0
             self._current_visible_raster_keys = ()
+            self._refresh_status_overlay()
+            return
+        if not self._base_raster_visible:
+            self._last_visible_tile_count = 0
+            self._current_visible_raster_keys = ()
+            self._remove_stale_tile_items(
+                self._tile_items, list(self._tile_items.keys())
+            )
+            self._refresh_visible_raster_overlay_tiles()
+            self._refresh_visible_label_tiles()
             self._refresh_status_overlay()
             return
         # Show the preview thumbnail when zoomed out; lazily add tiles once zoom is meaningful.
@@ -1596,8 +1850,68 @@ class TiledImageView(QtWidgets.QGraphicsView):
             > 0
         ):
             self._tile_result_timer.start()
+        self._refresh_visible_raster_overlay_tiles()
         self._refresh_visible_label_tiles()
         self._refresh_status_overlay()
+
+    def _refresh_visible_raster_overlay_tiles(self) -> None:
+        for runtime in self._raster_overlay_layers.values():
+            if not runtime.visible:
+                self._remove_stale_tile_items(
+                    runtime.tile_items,
+                    list(runtime.tile_items.keys()),
+                )
+                runtime.last_level = 0
+                runtime.last_visible_tile_count = 0
+                runtime.current_visible_keys = ()
+                continue
+            backend = runtime.backend
+            if backend is None:
+                continue
+            if not self._content_size[0] or not self._content_size[1]:
+                continue
+            # Unlike the base raster, overlays do not have a thumbnail pixmap
+            # fallback. Keep scheduling visible tiles at low zoom so a checked
+            # overlay still appears when the base TIFF is hidden.
+            level = self._select_level_for_backend(backend)
+            plan = self._build_tile_render_plan(
+                backend=backend,
+                level=level,
+                current_items=runtime.tile_items,
+            )
+            runtime.last_level = int(level)
+            runtime.last_visible_tile_count = len(plan.visible_keys)
+            ordered_visible = self._prioritize_visible_keys(
+                list(plan.visible_keys), backend=backend
+            )
+            runtime.current_visible_keys = ordered_visible
+            self._remove_stale_tile_items(runtime.tile_items, plan.stale_keys)
+            scheduler = runtime.tile_scheduler
+            if scheduler is None:
+                continue
+            overlay_images = scheduler.schedule(
+                ordered_visible,
+                prefetch_keys=plan.prefetch_keys,
+                prime_keys=ordered_visible[:2],
+            )
+            overlay_images.update(
+                {
+                    key: cached
+                    for key in ordered_visible
+                    if (cached := runtime.tile_cache.get(key)) is not None
+                }
+            )
+            self._apply_tile_images(
+                backend=backend,
+                tile_images=overlay_images,
+                visible_keys=ordered_visible,
+                item_map=runtime.tile_items,
+                z_value_for_key=lambda key, z=runtime.z_index: float(z)
+                + (float(key.level) * -0.05),
+                item_opacity=runtime.opacity,
+            )
+            if int(scheduler.stats().outstanding_requests) > 0:
+                self._tile_result_timer.start()
 
     def _refresh_visible_label_tiles(self) -> None:
         backend = self._label_backend
@@ -1666,6 +1980,18 @@ class TiledImageView(QtWidgets.QGraphicsView):
         )
         return region if isinstance(region, QtGui.QImage) else array_to_qimage(region)
 
+    def _load_raster_overlay_tile(self, layer_id: str, key: TileKey) -> QtGui.QImage:
+        runtime = self._raster_overlay_layers.get(str(layer_id or ""))
+        if runtime is None:
+            return QtGui.QImage()
+        backend = runtime.backend
+        x = key.tx * self.tile_size
+        y = key.ty * self.tile_size
+        region = backend.read_region(
+            x, y, self.tile_size, self.tile_size, level=key.level
+        )
+        return region if isinstance(region, QtGui.QImage) else array_to_qimage(region)
+
     def _load_label_tile(self, key: TileKey) -> QtGui.QImage:
         backend = self._label_backend
         if backend is None:
@@ -1685,9 +2011,25 @@ class TiledImageView(QtWidgets.QGraphicsView):
     def tile_scheduler_stats(self) -> dict[str, dict[str, int]]:
         raster = self._tile_scheduler.stats()
         label = self._label_tile_scheduler.stats()
+        overlay_outstanding = 0
+        overlay_hits = 0
+        overlay_misses = 0
+        for runtime in self._raster_overlay_layers.values():
+            scheduler = runtime.tile_scheduler
+            if scheduler is None:
+                continue
+            stats = scheduler.stats()
+            overlay_outstanding += int(stats.outstanding_requests)
+            overlay_hits += int(stats.cache_hits)
+            overlay_misses += int(stats.cache_misses)
         return {
             "raster": dict(raster.__dict__),
             "label": dict(label.__dict__),
+            "raster_overlays": {
+                "outstanding_requests": int(overlay_outstanding),
+                "cache_hits": int(overlay_hits),
+                "cache_misses": int(overlay_misses),
+            },
         }
 
     def debug_status_text(self) -> str:
@@ -1733,6 +2075,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         stats = self.tile_scheduler_stats()
         raster_stats = dict(stats.get("raster", {}) or {})
         label_stats = dict(stats.get("label", {}) or {})
+        overlay_stats = dict(stats.get("raster_overlays", {}) or {})
         return "\n".join(
             [
                 surface_text,
@@ -1753,6 +2096,13 @@ class TiledImageView(QtWidgets.QGraphicsView):
                     + int(label_stats.get("cache_hits", 0)),
                     int(raster_stats.get("cache_misses", 0))
                     + int(label_stats.get("cache_misses", 0)),
+                ),
+                "raster_overlay_layers=%d overlay_pending=%d overlay_hits=%d overlay_misses=%d"
+                % (
+                    len(self._raster_overlay_layers),
+                    int(overlay_stats.get("outstanding_requests", 0)),
+                    int(overlay_stats.get("cache_hits", 0)),
+                    int(overlay_stats.get("cache_misses", 0)),
                 ),
                 "cache=%s" % cache_name,
             ]
