@@ -626,6 +626,12 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         )
         self.actions.duplicateShapes.setIcon(self._icon("duplicate_polygons.svg"))
         self.actions.duplicateShapes.setEnabled(False)
+        self.actions.startAdjoiningPolygon = self._mk_action(
+            self.tr("Start Adjoining Polygon"),
+            getattr(self, "startAdjoiningPolygonFromSelection", None),
+        )
+        self.actions.startAdjoiningPolygon.setIcon(self._icon("duplicate_polygons.svg"))
+        self.actions.startAdjoiningPolygon.setEnabled(False)
         self.actions.removePoint = self._mk_action(
             self.tr("Remove Point"), getattr(self, "removeSelectedPoint", None)
         )
@@ -982,6 +988,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             "deleteFile",
             "deleteShapes",
             "duplicateShapes",
+            "startAdjoiningPolygon",
             "removePoint",
             "undo",
             "undoLastPoint",
@@ -1007,6 +1014,12 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             action = getattr(self.actions, name, None)
             if action is not None:
                 action.setEnabled(enabled)
+        if enabled:
+            self._update_adjoining_polygon_action_state()
+        else:
+            action = getattr(self.actions, "startAdjoiningPolygon", None)
+            if action is not None:
+                action.setEnabled(False)
 
         # Some mode actions live outside `self.actions` (historical compatibility).
         try:
@@ -1038,6 +1051,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             self.actions.deleteShapes.setEnabled(has_selected)
         if getattr(self.actions, "duplicateShapes", None) is not None:
             self.actions.duplicateShapes.setEnabled(has_selected)
+        self._update_adjoining_polygon_action_state()
         # Avoid feedback loops: selecting shapes on the canvas updates the list,
         # which would otherwise re-select shapes via list selection handlers.
         prev_no_slot = bool(getattr(self, "_noSelectionSlot", False))
@@ -1057,6 +1071,46 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
     def toggleDrawingSensitive(self, drawing: bool) -> None:
         self.actions.editMode.setEnabled(not bool(drawing))
         self.actions.undoLastPoint.setEnabled(bool(drawing))
+        self._update_adjoining_polygon_action_state()
+
+    def _update_adjoining_polygon_action_state(self) -> None:
+        action = getattr(self.actions, "startAdjoiningPolygon", None)
+        if action is None:
+            return
+        editor = None
+        tiled_editor = getattr(self, "large_image_view", None)
+        try:
+            editor = self._active_shape_editor()
+        except Exception:
+            editor = None
+        can_start = False
+        if editor is not None:
+            can_start = bool(
+                getattr(editor, "canStartAdjoiningPolygon", lambda: False)()
+            )
+        if not can_start and tiled_editor is not None:
+            can_start = bool(
+                getattr(tiled_editor, "canStartAdjoiningPolygon", lambda: False)()
+            )
+        if not can_start:
+            selected_shapes = []
+            try:
+                selected_shapes = list(getattr(self.canvas, "selectedShapes", []) or [])
+            except Exception:
+                selected_shapes = []
+            if not selected_shapes and tiled_editor is not None:
+                try:
+                    selected_shapes = list(
+                        getattr(tiled_editor, "selectedShapes", []) or []
+                    )
+                except Exception:
+                    selected_shapes = []
+            can_start = any(
+                str(getattr(item, "shape_type", "") or "").lower() == "polygon"
+                and len(getattr(item, "points", []) or []) >= 2
+                for item in selected_shapes
+            )
+        action.setEnabled(can_start)
 
     def openFile(self, _value=False) -> None:
         start_dir = self.lastOpenDir or str(Path.home())

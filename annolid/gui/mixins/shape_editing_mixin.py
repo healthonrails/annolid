@@ -61,6 +61,46 @@ class ShapeEditingMixin:
         self.shapeSelectionChanged(duplicated)
         self.setDirty()
 
+    def startAdjoiningPolygonFromSelection(self, _value=False) -> None:
+        editor = self._active_shape_editor()
+        tiled_editor = getattr(self, "large_image_view", None)
+
+        def _can_start(target) -> bool:
+            if target is None:
+                return False
+            if bool(getattr(target, "canStartAdjoiningPolygon", lambda: False)()):
+                return True
+            seed_factory = getattr(target, "adjoiningPolygonSeed", None)
+            if callable(seed_factory):
+                try:
+                    return seed_factory() is not None
+                except Exception:
+                    return False
+            return False
+
+        if not _can_start(editor):
+            if _can_start(tiled_editor):
+                editor = tiled_editor
+        if editor is None:
+            return
+        try:
+            self.toggleDrawMode(False, createMode="polygon")
+        except Exception:
+            pass
+        seed_factory = getattr(editor, "adjoiningPolygonSeed", None)
+        begin_seed = getattr(editor, "beginAdjoiningPolygonFromSeed", None)
+        if not callable(seed_factory) or not callable(begin_seed):
+            return
+        seed = seed_factory()
+        if seed is None:
+            return
+        if begin_seed(seed):
+            return
+        try:
+            self.toggleDrawMode(True)
+        except Exception:
+            pass
+
     def newShape(self):
         """Pop-up and give focus to the label editor."""
         editor = self._active_shape_editor()

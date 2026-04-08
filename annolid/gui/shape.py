@@ -723,6 +723,39 @@ class Shape(object):
     def moveVertexBy(self, i, offset):
         self.points[i] = self.points[i] + offset
 
+    def edge_points(self, edge_index):
+        """Return copied endpoints for the requested polygon edge."""
+        if not self.points or len(self.points) < 2:
+            return None
+        try:
+            index = int(edge_index)
+        except Exception:
+            return None
+        if index < 0 or index >= len(self.points):
+            return None
+        start = self.points[index - 1]
+        end = self.points[index]
+        return QtCore.QPointF(start), QtCore.QPointF(end)
+
+    def adjoining_polygon_seed(self, edge_index):
+        """Create an open polygon seeded from an existing edge."""
+        if str(self.shape_type or "").lower() != "polygon":
+            return None
+        edge_points = self.edge_points(edge_index)
+        if edge_points is None:
+            return None
+        seed = Shape(
+            label=None,
+            line_color=self.line_color,
+            shape_type="polygon",
+            visible=bool(getattr(self, "visible", True)),
+        )
+        seed.points = [QtCore.QPointF(point) for point in edge_points]
+        seed.point_labels = [1, 1]
+        seed.fill = bool(getattr(self, "fill", False))
+        seed.selected = False
+        return seed
+
     def highlightVertex(self, i, action):
         self._highlightIndex = i
         self._highlightMode = action

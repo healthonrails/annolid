@@ -146,6 +146,38 @@ def test_ai_model_image_refreshes_after_pixmap_switch():
         w.close()
 
 
+def test_ai_model_image_does_not_refresh_for_same_pixmap_twice():
+    _ensure_qapp()
+
+    from annolid.gui.app import AnnolidWindow
+
+    w = AnnolidWindow(config={})
+    try:
+        img = QtGui.QImage(64, 64, QtGui.QImage.Format_RGB32)
+        img.fill(QtGui.QColor(10, 20, 30))
+
+        class FakeAiModel:
+            name = "fake"
+
+            def __init__(self):
+                self.images = []
+
+            def set_image(self, image):
+                self.images.append(np.asarray(image).copy())
+
+        fake_model = FakeAiModel()
+        w.canvas._ai_model = fake_model
+        w.canvas._ai_model_pixmap_key = None
+
+        pixmap = QtGui.QPixmap.fromImage(img)
+        w.canvas.loadPixmap(pixmap, clear_shapes=False)
+        w.canvas.loadPixmap(pixmap, clear_shapes=False)
+
+        assert len(fake_model.images) == 1
+    finally:
+        w.close()
+
+
 def test_switching_ai_models_closes_previous_instance(monkeypatch):
     _ensure_qapp()
 

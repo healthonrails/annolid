@@ -20,6 +20,12 @@ from annolid.gui.tile_scheduler import TileRenderPlan, TileRequestScheduler
 from annolid.io.large_image import LargeImageBackend
 from annolid.io.large_image.common import array_to_qimage
 
+CURSOR_DEFAULT = QtCore.Qt.ArrowCursor
+CURSOR_POINT = QtCore.Qt.PointingHandCursor
+CURSOR_DRAW = QtCore.Qt.CrossCursor
+CURSOR_MOVE = QtCore.Qt.ClosedHandCursor
+CURSOR_GRAB = QtCore.Qt.OpenHandCursor
+
 
 @dataclass(frozen=True)
 class TileKey:
@@ -355,6 +361,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self.selectedShapes = []
         self._active_shape = None
         self._active_vertex_index: int | None = None
+        self._active_edge_index: int | None = None
         self._selected_vertex_shape = None
         self._selected_vertex_index: int | None = None
         self._dragging_shape = False
@@ -407,6 +414,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._tile_result_timer.timeout.connect(self._poll_pending_tile_results)
         self._current_visible_raster_keys: tuple[TileKey, ...] = ()
         self._current_visible_label_keys: tuple[TileKey, ...] = ()
+        self._adjoining_default_point_pending: bool = False
+        self._cursor = CURSOR_DEFAULT
 
     def set_host_window(self, window) -> None:
         self._host_window = window
@@ -422,6 +431,44 @@ class TiledImageView(QtWidgets.QGraphicsView):
             except Exception:
                 pass
         self._refresh_status_overlay()
+
+    def overrideCursor(self, cursor) -> None:
+        self._cursor = cursor
+        try:
+            self.setCursor(cursor)
+        except Exception:
+            pass
+        viewport = getattr(self, "viewport", None)
+        if callable(viewport):
+            try:
+                vp = viewport()
+                if vp is not None:
+                    vp.setCursor(cursor)
+            except Exception:
+                pass
+
+    def restoreCursor(self) -> None:
+        try:
+            self.unsetCursor()
+        except Exception:
+            pass
+        viewport = getattr(self, "viewport", None)
+        if callable(viewport):
+            try:
+                vp = viewport()
+                if vp is not None:
+                    vp.unsetCursor()
+            except Exception:
+                pass
+        self._refresh_status_overlay()
+
+    def enterEvent(self, event):
+        self.overrideCursor(self._cursor)
+        super().enterEvent(event)
+
+    def focusOutEvent(self, event):
+        self.restoreCursor()
+        super().focusOutEvent(event)
 
     def viewport_state(self) -> dict[str, float | int | str]:
         center = self.mapToScene(self.viewport().rect().center())
@@ -839,6 +886,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._dragging_shape = False
         self._shape_moved_during_drag = False
         self._last_scene_pos = None
+        self._adjoining_default_point_pending = False
         self.current = None
         self.mode = self.EDIT
         self._pixmap_item.setPixmap(QtGui.QPixmap())
@@ -871,10 +919,12 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self.mode = self.EDIT if value else self.CREATE
         if self.mode == self.EDIT:
             self.current = None
+            self._adjoining_default_point_pending = False
             self._preview_item.setPath(QtGui.QPainterPath())
             self._preview_vertices_item.setPath(QtGui.QPainterPath())
             self._preview_close_item.setPath(QtGui.QPainterPath())
             self.drawingPolygon.emit(False)
+            self.restoreCursor()
         self._notify_host_large_image_document_changed()
 
     def _supports_create_mode(self, create_mode: str) -> bool:
@@ -1046,6 +1096,70 @@ class TiledImageView(QtWidgets.QGraphicsView):
         points = list(getattr(shape, "points", []) or [])
         return 0 <= int(index) < len(points)
 
+    def _boundary_polygon_source(self):
+        if (
+            self._active_shape is not None
+            and str(getattr(self._active_shape, "shape_type", "") or "").lower()
+            == "polygon"
+            and len(getattr(self._active_shape, "points", []) or []) >= 2
+            and self._active_edge_index is not None
+        ):
+            return self._active_shape, self._active_edge_index
+        return None, None
+
+    def canStartAdjoiningPolygon(self) -> bool:
+        shape, edge_index = self._boundary_polygon_source()
+        if shape is not None and edge_index is not None:
+            return bool(
+                getattr(shape, "adjoining_polygon_seed", lambda _idx: None)(edge_index)
+            )
+        return bool(
+            any(
+                str(getattr(item, "shape_type", "") or "").lower() == "polygon"
+                and len(getattr(item, "points", []) or []) >= 2
+                for item in (self.selectedShapes or [])
+            )
+        )
+
+    def adjoiningPolygonSeed(self):
+        shape, edge_index = self._boundary_polygon_source()
+        if shape is None or edge_index is None:
+            return None
+        return getattr(shape, "adjoining_polygon_seed", lambda _idx: None)(edge_index)
+
+    def beginAdjoiningPolygonFromSeed(self, seed_shape) -> bool:
+        if seed_shape is None:
+            return False
+        self.current = seed_shape
+        self.current.setOpen()
+        self.current.fill = bool(getattr(seed_shape, "fill", False))
+        try:
+            self.current.highlightClear()
+        except Exception:
+            pass
+        self._active_shape = None
+        self._active_vertex_index = None
+        self._active_edge_index = None
+        self._set_selected_vertex(None, None)
+        self._apply_selection([], emit_signal=True)
+        self.mode = self.CREATE
+        self.createMode = "polygon"
+        self.overrideCursor(CURSOR_DRAW)
+        last_point = QtCore.QPointF(self.current.points[-1])
+        self.current.addPoint(QtCore.QPointF(last_point))
+        self._adjoining_default_point_pending = True
+        self._update_drawing_preview(last_point)
+        self.drawingPolygon.emit(True)
+        self._notify_host_large_image_document_changed()
+        return True
+
+    def startAdjoiningPolygonFromSelection(self) -> bool:
+        shape, edge_index = self._boundary_polygon_source()
+        if shape is None or edge_index is None:
+            return False
+        seed = getattr(shape, "adjoining_polygon_seed", lambda _idx: None)(edge_index)
+        return self.beginAdjoiningPolygonFromSeed(seed)
+
     def removeSelectedPoint(self) -> bool:
         shape = self._selected_vertex_shape
         index = self._selected_vertex_index
@@ -1093,6 +1207,57 @@ class TiledImageView(QtWidgets.QGraphicsView):
             self.epsilon / max(self.current_scale(), 0.01)
         )
 
+    def _nearest_shape_vertex(
+        self,
+        scene_pos: QtCore.QPointF,
+        *,
+        exclude_shape=None,
+    ) -> QtCore.QPointF | None:
+        scale = max(self.current_scale(), 0.01)
+        epsilon = self.epsilon / scale
+        best_point = None
+        best_distance = None
+        for shape in reversed(list(self._shapes or [])):
+            if shape is exclude_shape:
+                continue
+            if not self._is_editable_shape(shape):
+                continue
+            points = list(getattr(shape, "points", []) or [])
+            if not points:
+                continue
+            vertex_index = None
+            try:
+                vertex_index = shape.nearestVertex(scene_pos, epsilon)
+            except Exception:
+                vertex_index = None
+            if vertex_index is None:
+                continue
+            try:
+                candidate = QtCore.QPointF(points[int(vertex_index)])
+            except Exception:
+                continue
+            distance = QtCore.QLineF(scene_pos, candidate).length()
+            if best_distance is None or distance < best_distance:
+                best_distance = distance
+                best_point = candidate
+        return best_point
+
+    def _drawing_snap_target(self, scene_pos: QtCore.QPointF) -> QtCore.QPointF:
+        mode = str(self.createMode or "").lower()
+        if self.current is None:
+            return QtCore.QPointF(scene_pos)
+        if mode not in {"polygon", "linestrip"}:
+            return QtCore.QPointF(scene_pos)
+        close_target = self._polygon_close_target(scene_pos)
+        if close_target is not None:
+            return QtCore.QPointF(close_target)
+        vertex_target = self._nearest_shape_vertex(
+            scene_pos, exclude_shape=self.current
+        )
+        if vertex_target is not None:
+            return QtCore.QPointF(vertex_target)
+        return QtCore.QPointF(scene_pos)
+
     def _store_canvas_shapes_backup(self) -> None:
         host = self.window()
         canvas = getattr(host, "canvas", None)
@@ -1116,15 +1281,16 @@ class TiledImageView(QtWidgets.QGraphicsView):
             self._preview_close_item.setPath(QtGui.QPainterPath())
             return
         mode = str(self.createMode or "").lower()
+        pending_default = bool(
+            mode == "polygon" and self._adjoining_default_point_pending
+        )
         raw_target = (
             QtCore.QPointF(scene_pos)
             if scene_pos is not None
             else QtCore.QPointF(points[-1])
         )
-        close_target = self._polygon_close_target(raw_target)
-        scene_target = (
-            QtCore.QPointF(close_target) if close_target is not None else raw_target
-        )
+        scene_target = self._drawing_snap_target(raw_target)
+        close_target = self._polygon_close_target(scene_target)
         path.moveTo(points[0])
         if mode == "point":
             radius = 4.5
@@ -1150,25 +1316,53 @@ class TiledImageView(QtWidgets.QGraphicsView):
         else:
             for point in points[1:]:
                 path.lineTo(point)
-            path.lineTo(scene_target)
-        preview_color = QtGui.QColor(0, 255, 255, 235)
+            if not pending_default:
+                path.lineTo(scene_target)
+        scale = max(self.current_scale(), 0.01)
+        base_color = getattr(self.current, "line_color", None)
+        if isinstance(base_color, QtGui.QColor):
+            preview_color = QtGui.QColor(base_color)
+        else:
+            preview_color = QtGui.QColor(0, 255, 255, 235)
+        preview_color.setAlpha(max(200, int(preview_color.alpha())))
         pen = QtGui.QPen(preview_color)
-        pen.setWidthF(max(2.0, 2.6 / max(self.current_scale(), 0.25)))
+        pen.setWidthF(float(max(1, int(round(2.0 / scale)))))
         pen.setCapStyle(QtCore.Qt.RoundCap)
         pen.setJoinStyle(QtCore.Qt.RoundJoin)
+        preview_brush = QtGui.QBrush(QtCore.Qt.NoBrush)
+        if mode == "polygon" and bool(getattr(self.current, "fill", False)):
+            fill_color = getattr(self.current, "fill_color", None)
+            if isinstance(fill_color, QtGui.QColor):
+                fill = QtGui.QColor(fill_color)
+            else:
+                fill = QtGui.QColor(preview_color)
+            fill.setAlpha(max(50, min(165, int(fill.alpha()))))
+            preview_brush = QtGui.QBrush(fill)
+            if not close_target and len(points) >= 2:
+                fill_path = QtGui.QPainterPath(points[0])
+                for point in points[1:]:
+                    fill_path.lineTo(point)
+                fill_path.lineTo(scene_target)
+                fill_path.closeSubpath()
+                path = fill_path
         self._preview_item.setPen(pen)
-        self._preview_item.setBrush(QtGui.QBrush(QtCore.Qt.NoBrush))
+        self._preview_item.setBrush(preview_brush)
         self._preview_item.setPath(path)
         vertex_path = QtGui.QPainterPath()
-        vertex_radius = max(2.0, min(5.0, 5.0 / max(self.current_scale(), 0.5)))
+        point_size = float(getattr(self.current, "point_size", Shape.point_size))
+        vertex_radius = max(1.5, point_size / (2.0 * scale))
         for point in points:
             vertex_path.addEllipse(point, vertex_radius, vertex_radius)
-        if mode in {"polygon", "linestrip"} and scene_pos is not None:
+        if (
+            mode in {"polygon", "linestrip"}
+            and scene_pos is not None
+            and not pending_default
+        ):
             vertex_path.addEllipse(
                 scene_target, vertex_radius * 0.75, vertex_radius * 0.75
             )
         vertex_pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 245))
-        vertex_pen.setWidthF(max(1.0, 1.4 / max(self.current_scale(), 0.5)))
+        vertex_pen.setWidthF(float(max(1, int(round(1.2 / scale)))))
         self._preview_vertices_item.setPen(vertex_pen)
         self._preview_vertices_item.setBrush(QtGui.QBrush(preview_color))
         self._preview_vertices_item.setPath(vertex_path)
@@ -1177,7 +1371,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
             close_radius = vertex_radius * 1.9
             close_path.addEllipse(points[0], close_radius, close_radius)
             close_pen = QtGui.QPen(QtGui.QColor(255, 215, 0, 245))
-            close_pen.setWidthF(max(1.5, 2.2 / max(self.current_scale(), 0.5)))
+            close_pen.setWidthF(float(max(1, int(round(2.0 / scale)))))
             self._preview_close_item.setPen(close_pen)
             self._preview_close_item.setBrush(QtGui.QBrush(QtCore.Qt.NoBrush))
         self._preview_close_item.setPath(close_path)
@@ -1204,6 +1398,9 @@ class TiledImageView(QtWidgets.QGraphicsView):
             return
         mode = str(self.createMode or "").lower()
         if mode == "polygon":
+            if self._adjoining_default_point_pending and self.current.points:
+                self.current.popPoint()
+                self._adjoining_default_point_pending = False
             if len(self.current.points) < 3:
                 return
             self.current.close()
@@ -1223,6 +1420,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._store_canvas_shapes_backup()
         finished = self.current
         self.current = None
+        self._adjoining_default_point_pending = False
         self._preview_item.setPath(QtGui.QPainterPath())
         self._preview_vertices_item.setPath(QtGui.QPainterPath())
         self._preview_close_item.setPath(QtGui.QPainterPath())
@@ -1243,6 +1441,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
     def undoLastLine(self):
         if self.current is not None:
             self.current = None
+            self._adjoining_default_point_pending = False
             self._preview_item.setPath(QtGui.QPainterPath())
             self._preview_vertices_item.setPath(QtGui.QPainterPath())
             self._preview_close_item.setPath(QtGui.QPainterPath())
@@ -1256,10 +1455,16 @@ class TiledImageView(QtWidgets.QGraphicsView):
     def undoLastPoint(self):
         if self.current is None:
             return
+        if self._adjoining_default_point_pending and len(self.current.points) >= 3:
+            self.current.popPoint()
+            self._adjoining_default_point_pending = False
+            self._update_drawing_preview(self.current.points[-1])
+            return
         if getattr(self.current, "points", None):
             self.current.popPoint()
         if not getattr(self.current, "points", None):
             self.current = None
+            self._adjoining_default_point_pending = False
             self._preview_item.setPath(QtGui.QPainterPath())
             self._preview_vertices_item.setPath(QtGui.QPainterPath())
             self._preview_close_item.setPath(QtGui.QPainterPath())
@@ -2304,6 +2509,22 @@ class TiledImageView(QtWidgets.QGraphicsView):
         if callable(post_status):
             post_status(str(text), 1500)
 
+    def _scene_xy_text(self, scene_pos: QtCore.QPointF) -> str:
+        return f"x:{float(scene_pos.x()):.1f},y:{float(scene_pos.y()):.1f}"
+
+    def _set_hover_feedback(self, tooltip: str, *, status: str | None = None) -> None:
+        self.setToolTip(str(tooltip or ""))
+        try:
+            self.setStatusTip(str(tooltip or ""))
+        except Exception:
+            pass
+        if status is None:
+            status = tooltip
+        host = getattr(self, "_host_window", None)
+        post_status = getattr(host, "_post_window_status", None) if host else None
+        if callable(post_status) and status:
+            post_status(str(status), 1500)
+
     def set_zoom_percent(self, percent: int) -> None:
         if not self._content_size[0] or not self._content_size[1]:
             return
@@ -2367,36 +2588,45 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 event.accept()
                 return
             mode = str(self.createMode or "").lower()
+            snapped_scene_pos = self._drawing_snap_target(
+                self._clamp_scene_point(scene_pos)
+            )
             if self.current is None:
                 from annolid.gui.shape import Shape
 
                 self.current = Shape(
                     shape_type=mode if mode != "polygon" else "polygon"
                 )
-                self.current.addPoint(QtCore.QPointF(scene_pos))
+                self.current.addPoint(QtCore.QPointF(snapped_scene_pos))
                 if mode == "point":
                     self.finalise()
                 else:
                     self.drawingPolygon.emit(True)
-                    self._update_drawing_preview(scene_pos)
+                    self._update_drawing_preview(snapped_scene_pos)
                 event.accept()
                 return
             if mode == "polygon":
-                if self._polygon_close_target(scene_pos) is not None:
+                if self._polygon_close_target(snapped_scene_pos) is not None:
                     self.finalise()
                 else:
-                    self.current.addPoint(QtCore.QPointF(scene_pos))
-                    self._update_drawing_preview(scene_pos)
+                    if self._adjoining_default_point_pending and self.current.points:
+                        self.current.points[-1] = QtCore.QPointF(snapped_scene_pos)
+                        self._adjoining_default_point_pending = False
+                    else:
+                        self.current.addPoint(QtCore.QPointF(snapped_scene_pos))
+                    self._update_drawing_preview(snapped_scene_pos)
             elif mode == "linestrip":
-                self.current.addPoint(QtCore.QPointF(scene_pos))
-                self._update_drawing_preview(scene_pos)
+                self._adjoining_default_point_pending = False
+                self.current.addPoint(QtCore.QPointF(snapped_scene_pos))
+                self._update_drawing_preview(snapped_scene_pos)
                 if event.modifiers() & QtCore.Qt.ControlModifier:
                     self.finalise()
             elif mode in {"line", "rectangle", "circle"}:
+                self._adjoining_default_point_pending = False
                 if len(self.current.points) == 1:
-                    self.current.addPoint(QtCore.QPointF(scene_pos))
+                    self.current.addPoint(QtCore.QPointF(snapped_scene_pos))
                 else:
-                    self.current.points[1] = QtCore.QPointF(scene_pos)
+                    self.current.points[1] = QtCore.QPointF(snapped_scene_pos)
                 self.finalise()
             event.accept()
             return
@@ -2437,6 +2667,9 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 self._active_vertex_index = (
                     vertex_index if hit_kind == "vertex" else None
                 )
+                self._active_edge_index = (
+                    int(vertex_index) if hit_kind == "edge" else None
+                )
                 if hit_kind == "vertex":
                     self._set_selected_vertex(shape, int(vertex_index))
                 else:
@@ -2461,7 +2694,22 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 self.set_selected_label_value(label_value)
                 self._update_label_hover_status(scene_pos)
             self._set_selected_vertex(None, None)
+            self._active_edge_index = None
             self._apply_selection([], emit_signal=True)
+        elif event.button() == QtCore.Qt.RightButton:
+            shape, vertex_index, hit_kind = self._shape_hit_test(scene_pos)
+            if shape is not None:
+                self._active_shape = shape
+                self._active_vertex_index = (
+                    int(vertex_index) if hit_kind == "vertex" else None
+                )
+                self._active_edge_index = (
+                    int(vertex_index) if hit_kind == "edge" else None
+                )
+            else:
+                self._active_shape = None
+                self._active_vertex_index = None
+                self._active_edge_index = None
         item = self._pair_item_at_view_pos(pos)
         if isinstance(item, _LandmarkPairItem):
             self.set_selected_landmark_pair(item.pair_id)
@@ -2473,8 +2721,47 @@ class TiledImageView(QtWidgets.QGraphicsView):
     def mouseMoveEvent(self, event):
         pos = event.pos() if hasattr(event, "pos") else event.position().toPoint()
         scene_pos = self.mapToScene(pos)
-        if self.drawing() and self.current is not None:
-            self._update_drawing_preview(self._clamp_scene_point(scene_pos))
+        if self.drawing():
+            mode = str(self.createMode or "").lower()
+            snapped_scene_pos = self._drawing_snap_target(
+                self._clamp_scene_point(scene_pos)
+            )
+            if (
+                mode == "polygon"
+                and self._adjoining_default_point_pending
+                and self.current is not None
+                and self.current.points
+            ):
+                self.current.points[-1] = QtCore.QPointF(snapped_scene_pos)
+            if mode == "polygon":
+                close_target = self._polygon_close_target(snapped_scene_pos)
+                vertex_target = self._nearest_shape_vertex(
+                    snapped_scene_pos, exclude_shape=self.current
+                )
+                self.overrideCursor(
+                    CURSOR_POINT if close_target is not None else CURSOR_DRAW
+                )
+                if close_target is not None:
+                    self._set_hover_feedback(
+                        self.tr("Click to close polygon"),
+                        status=self.tr("Close polygon"),
+                    )
+                elif vertex_target is not None:
+                    self.overrideCursor(CURSOR_POINT)
+                    self._set_hover_feedback(
+                        self.tr("Click to create point"),
+                        status=self.tr("Snap to shared vertex"),
+                    )
+                else:
+                    self._set_hover_feedback(
+                        self.tr("Click to create point"),
+                        status=self.tr("Add polygon point"),
+                    )
+            else:
+                self.overrideCursor(CURSOR_DRAW)
+                self._set_hover_feedback(self.tr("Click to create point"))
+            if self.current is not None:
+                self._update_drawing_preview(snapped_scene_pos)
             event.accept()
             return
         if (
@@ -2489,6 +2776,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
             )
             moved = False
             if self._active_vertex_index is not None:
+                self.overrideCursor(CURSOR_POINT)
                 old_point = QtCore.QPointF(
                     self._active_shape.points[self._active_vertex_index]
                 )
@@ -2498,6 +2786,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
                     self._active_shape.moveVertexBy(self._active_vertex_index, bounded)
                     moved = True
             else:
+                self.overrideCursor(CURSOR_MOVE)
                 moved = self._bounded_move_selected_shapes(delta)
             if moved:
                 self._shape_moved_during_drag = True
@@ -2505,6 +2794,48 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 self.set_shapes(self._shapes)
             event.accept()
             return
+        if self.editing():
+            shape, vertex_index, hit_kind = self._shape_hit_test(scene_pos)
+            if shape is not None:
+                label = str(getattr(shape, "label", "") or "")
+                if hit_kind == "vertex":
+                    self.overrideCursor(CURSOR_POINT)
+                    self._set_hover_feedback(
+                        self.tr("Click & drag to move point"),
+                        status=(
+                            f"{label},{self._scene_xy_text(scene_pos)}"
+                            if label
+                            else self._scene_xy_text(scene_pos)
+                        ),
+                    )
+                elif hit_kind == "edge":
+                    self.overrideCursor(CURSOR_POINT)
+                    self._set_hover_feedback(
+                        self.tr("Click to create point"),
+                        status=(
+                            f"{label},{self._scene_xy_text(scene_pos)}"
+                            if label
+                            else self._scene_xy_text(scene_pos)
+                        ),
+                    )
+                else:
+                    self.overrideCursor(CURSOR_GRAB)
+                    self._set_hover_feedback(
+                        self.tr("Click & drag to move shape '%s'") % label
+                        if label
+                        else self.tr("Click & drag to move shape"),
+                        status=(
+                            f"{label},{self._scene_xy_text(scene_pos)}"
+                            if label
+                            else self._scene_xy_text(scene_pos)
+                        ),
+                    )
+            else:
+                self.restoreCursor()
+                self._set_hover_feedback(
+                    self.tr("Image"),
+                    status=self._scene_xy_text(scene_pos),
+                )
         self._update_label_hover_status(scene_pos)
         super().mouseMoveEvent(event)
 
@@ -2536,6 +2867,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
             self._dragging_shape = False
             self._active_shape = None
             self._active_vertex_index = None
+            self._active_edge_index = None
             self._last_scene_pos = None
             self._shape_moved_during_drag = False
             if released_shape is not None and released_vertex is not None:
@@ -2563,6 +2895,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 self._preview_vertices_item.setPath(QtGui.QPainterPath())
                 self._preview_close_item.setPath(QtGui.QPainterPath())
                 self.drawingPolygon.emit(False)
+                self.restoreCursor()
                 event.accept()
                 return
             if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
@@ -2579,3 +2912,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
                     event.accept()
                     return
         super().keyPressEvent(event)
+
+    def leaveEvent(self, event):
+        self.restoreCursor()
+        self.setToolTip(self.tr("Image"))
+        super().leaveEvent(event)

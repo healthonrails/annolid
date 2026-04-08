@@ -1249,6 +1249,60 @@ class Canvas(QtWidgets.QWidget):
         self.vertexSelected.emit(self.hVertex is not None)
         return True
 
+    def _boundary_polygon_source(self):
+        if (
+            self.hShape is not None
+            and str(getattr(self.hShape, "shape_type", "") or "").lower() == "polygon"
+            and len(getattr(self.hShape, "points", []) or []) >= 2
+            and self.hEdge is not None
+        ):
+            return self.hShape, self.hEdge
+        return None, None
+
+    def canStartAdjoiningPolygon(self) -> bool:
+        shape, edge_index = self._boundary_polygon_source()
+        if shape is not None and edge_index is not None:
+            return bool(
+                getattr(shape, "adjoining_polygon_seed", lambda _idx: None)(edge_index)
+            )
+        return bool(
+            any(
+                str(getattr(item, "shape_type", "") or "").lower() == "polygon"
+                and len(getattr(item, "points", []) or []) >= 2
+                for item in (self.selectedShapes or [])
+            )
+        )
+
+    def adjoiningPolygonSeed(self):
+        shape, edge_index = self._boundary_polygon_source()
+        if shape is None or edge_index is None:
+            return None
+        return getattr(shape, "adjoining_polygon_seed", lambda _idx: None)(edge_index)
+
+    def beginAdjoiningPolygonFromSeed(self, seed_shape) -> bool:
+        if seed_shape is None:
+            return False
+        self.current = seed_shape
+        self.current.setOpen()
+        self.current.fill = self.fillDrawing()
+        self.mode = self.CREATE
+        self.createMode = "polygon"
+        self.line.shape_type = "polygon"
+        last_point = QtCore.QPointF(self.current.points[-1])
+        self.line.points = [QtCore.QPointF(last_point), QtCore.QPointF(last_point)]
+        self.line.point_labels = [1, 1]
+        self.setHiding()
+        self.drawingPolygon.emit(True)
+        self.update()
+        return True
+
+    def startAdjoiningPolygonFromSelection(self) -> bool:
+        shape, edge_index = self._boundary_polygon_source()
+        if shape is None or edge_index is None:
+            return False
+        seed = getattr(shape, "adjoining_polygon_seed", lambda _idx: None)(edge_index)
+        return self.beginAdjoiningPolygonFromSeed(seed)
+
     def _icon(self, filename: str) -> QtGui.QIcon:
         path = self._icons_dir / filename
         if path.exists():
@@ -1425,28 +1479,55 @@ class Canvas(QtWidgets.QWidget):
                 )
                 menu.addAction(sam3_remove_action)
 
+        active_editor = getattr(main_window, "_active_shape_editor", None)
+        editor = active_editor() if callable(active_editor) else None
+        tiled_editor = getattr(main_window, "large_image_view", None)
+        selected_shapes = list(self.selectedShapes or [])
+        if not selected_shapes and tiled_editor is not None:
+            selected_shapes = list(getattr(tiled_editor, "selectedShapes", []) or [])
+        can_start_adjoining = bool(
+            getattr(editor, "canStartAdjoiningPolygon", lambda: False)()
+        ) or bool(getattr(tiled_editor, "canStartAdjoiningPolygon", lambda: False)())
+        if not can_start_adjoining:
+            can_start_adjoining = any(
+                str(getattr(item, "shape_type", "") or "").lower() == "polygon"
+                and len(getattr(item, "points", []) or []) >= 2
+                for item in selected_shapes
+            )
+
         # ------------------------------------------------------------
-        # Shape operations (only when selection exists)
+        # Shape operations
         # ------------------------------------------------------------
-        if self.selectedShapes:
+        if selected_shapes or can_start_adjoining:
             menu.addSeparator()
-            propagate_action = QtWidgets.QAction(
-                self._icon("next_frame.svg"),
-                "Propagate Selected Shape",
-                menu,
-            )
-            propagate_action.triggered.connect(
-                lambda: self.propagateSelectedShapeFromCanvas()
-            )
-            menu.addAction(propagate_action)
+            if selected_shapes:
+                propagate_action = QtWidgets.QAction(
+                    self._icon("next_frame.svg"),
+                    "Propagate Selected Shape",
+                    menu,
+                )
+                propagate_action.triggered.connect(
+                    lambda: self.propagateSelectedShapeFromCanvas()
+                )
+                menu.addAction(propagate_action)
 
             if actions is not None:
-                duplicate_action = getattr(actions, "duplicateShapes", None)
-                _add_existing_action(
-                    duplicate_action, icon_filename="duplicate_polygons.svg"
-                )
-                delete_action = getattr(actions, "deleteShapes", None)
-                _add_existing_action(delete_action, icon_filename="delete_polygons.svg")
+                if selected_shapes:
+                    duplicate_action = getattr(actions, "duplicateShapes", None)
+                    _add_existing_action(
+                        duplicate_action, icon_filename="duplicate_polygons.svg"
+                    )
+                adjoining_action = getattr(actions, "startAdjoiningPolygon", None)
+                if adjoining_action is not None:
+                    adjoining_action.setEnabled(can_start_adjoining)
+                    _add_existing_action(
+                        adjoining_action, icon_filename="duplicate_polygons.svg"
+                    )
+                if selected_shapes:
+                    delete_action = getattr(actions, "deleteShapes", None)
+                    _add_existing_action(
+                        delete_action, icon_filename="delete_polygons.svg"
+                    )
 
             if hasattr(main_window, "run_sam3d_reconstruction"):
                 sam3d_action = QtWidgets.QAction(
@@ -1619,7 +1700,8 @@ class Canvas(QtWidgets.QWidget):
     def mouseReleaseEvent(self, ev):
         if ev.button() == QtCore.Qt.RightButton:
             if self.createMode != "polygonSAM":
-                menu = self.menus[len(self.selectedShapesCopy) > 0]
+                main_window = self.window()
+                menu = self._build_context_menu(main_window)
                 self.restoreCursor()
                 if (
                     not menu.exec_(self.mapToGlobal(ev.pos()))
@@ -2751,9 +2833,23 @@ class Canvas(QtWidgets.QWidget):
         self.update()
 
     def loadPixmap(self, pixmap, clear_shapes=True):
+        previous_pixmap_key = None
+        if self.pixmap is not None and not self.pixmap.isNull():
+            try:
+                previous_pixmap_key = int(self.pixmap.cacheKey())
+            except Exception:
+                previous_pixmap_key = None
         self.pixmap = pixmap
-        self._ai_model_pixmap_key = None
-        self._sync_ai_model_image(force=True)
+        if self.pixmap is not None and not self.pixmap.isNull():
+            try:
+                current_pixmap_key = int(self.pixmap.cacheKey())
+            except Exception:
+                current_pixmap_key = None
+        else:
+            current_pixmap_key = None
+        if current_pixmap_key != previous_pixmap_key:
+            self._ai_model_pixmap_key = None
+            self._sync_ai_model_image(force=True)
         if clear_shapes:
             self.shapes = []
             self.sam_mask = MaskShape()

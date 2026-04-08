@@ -250,10 +250,19 @@ normal canvas: as you draw, Annolid shows the in-progress path and point
 markers, and when the cursor gets close to the first point it highlights the
 close target so you can finish the polygon confidently.
 
+The tiled viewer also mirrors the regular canvas hover feedback more closely:
+hovering a polygon vertex, edge, or body shows the same move/create prompts and
+cursor changes you get in the standard canvas editor.
+
 When editing an existing polygon or linestrip in the tiled viewer, clicking on
 an edge inserts a new point at that location so you can refine the path
 directly. At high zoom, Annolid also reduces point-highlight glow and halo
 intensity so the image detail stays visible while you edit.
+
+For adjoining regions such as atlas or brain-area mapping, you can right-click
+an existing polygon edge and choose **Start Adjoining Polygon**. Annolid seeds
+the new polygon from that exact edge so neighboring regions can share a clean
+boundary without merging into one saved polygon.
 
 This lets you stay in the large-image navigation workflow for common annotation tasks.
 

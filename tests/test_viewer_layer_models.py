@@ -5,13 +5,15 @@ from pathlib import Path
 
 import tifffile
 import numpy as np
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.gui.mixins.label_image_overlay_mixin import LabelImageOverlayMixin
 from annolid.gui.mixins.layer_dock_mixin import LayerDockMixin
+from annolid.gui.mixins.shape_editing_mixin import ShapeEditingMixin
 from annolid.gui.mixins.raster_layer_mixin import RasterLayerMixin
 from annolid.gui.mixins.vector_overlay_mixin import VectorOverlayMixin
 from annolid.gui.shape import Shape
+from annolid.gui.widgets.canvas import Canvas
 from annolid.gui.widgets.tiled_image_view import TiledImageView
 from annolid.gui.window_base import AnnolidWindowBase
 from annolid.io.large_image.tifffile_backend import TiffFileBackend
@@ -805,3 +807,475 @@ def test_open_file_single_large_tiff_prompts_add_layer_when_tiled(
         )
     finally:
         window.close()
+
+
+def test_shape_adjoining_polygon_seed_reuses_edge_coordinates() -> None:
+    shape = Shape(label="brain_region_a", shape_type="polygon")
+    for point in [(1.0, 2.0), (6.0, 2.0), (6.0, 7.0), (1.0, 7.0)]:
+        shape.addPoint(QtCore.QPointF(*point))
+    shape.close()
+
+    seed = shape.adjoining_polygon_seed(1)
+
+    assert seed is not None
+    assert seed.shape_type == "polygon"
+    assert seed.label is None
+    assert not seed.isClosed()
+    assert len(seed.points) == 2
+    assert (seed.points[0].x(), seed.points[0].y()) == (1.0, 2.0)
+    assert (seed.points[1].x(), seed.points[1].y()) == (6.0, 2.0)
+    assert seed.points[0] is not shape.points[0]
+    assert seed.points[1] is not shape.points[1]
+
+
+class _BoundaryEditorStub:
+    def __init__(self, seed):
+        self.seed = seed
+        self.begin_calls = []
+
+    def adjoiningPolygonSeed(self):
+        return self.seed
+
+    def beginAdjoiningPolygonFromSeed(self, seed):
+        self.begin_calls.append(seed)
+        return True
+
+
+class _BoundaryHostStub(ShapeEditingMixin):
+    def __init__(self, editor):
+        self.editor = editor
+        self.toggle_calls = []
+
+    def _active_shape_editor(self):
+        return self.editor
+
+    def toggleDrawMode(self, edit=True, createMode="polygon"):
+        self.toggle_calls.append((edit, createMode))
+
+
+class _BoundaryEditorNoAdjoiningStub:
+    def canStartAdjoiningPolygon(self):
+        return False
+
+    def adjoiningPolygonSeed(self):
+        return None
+
+    def beginAdjoiningPolygonFromSeed(self, _seed):
+        return False
+
+
+class _ContextActionsStub:
+    def __init__(self) -> None:
+        self.editMode = QtWidgets.QAction("Edit")
+        self.createMode = QtWidgets.QAction("Create Polygon")
+        self.createRectangleMode = QtWidgets.QAction("Create Rectangle")
+        self.createCircleMode = QtWidgets.QAction("Create Circle")
+        self.createLineMode = QtWidgets.QAction("Create Line")
+        self.createPointMode = QtWidgets.QAction("Create Point")
+        self.createLineStripMode = QtWidgets.QAction("Create Line Strip")
+        self.createAiPolygonMode = QtWidgets.QAction("AI Polygon")
+        self.createAiMaskMode = QtWidgets.QAction("AI Mask")
+        self.createGroundingSAMMode = QtWidgets.QAction("Grounding SAM")
+        self.duplicateShapes = QtWidgets.QAction("Duplicate")
+        self.startAdjoiningPolygon = QtWidgets.QAction("Start Adjoining Polygon")
+        self.deleteShapes = QtWidgets.QAction("Delete")
+
+
+class _ContextMenuWindowStub:
+    def __init__(self, editor) -> None:
+        self.actions = _ContextActionsStub()
+        self._editor = editor
+
+    def _active_shape_editor(self):
+        return self._editor
+
+
+def test_shape_editing_mixin_starts_adjoining_polygon_from_active_editor() -> None:
+    seed = Shape(shape_type="polygon")
+    for point in [(3.0, 4.0), (8.0, 4.0)]:
+        seed.addPoint(QtCore.QPointF(*point))
+    host = _BoundaryHostStub(_BoundaryEditorStub(seed))
+
+    host.startAdjoiningPolygonFromSelection()
+
+    assert host.toggle_calls == [(False, "polygon")]
+    assert host.editor.begin_calls == [seed]
+
+
+def test_shape_editing_mixin_falls_back_to_tiled_editor_for_adjoining_polygon() -> None:
+    seed = Shape(shape_type="polygon")
+    for point in [(1.0, 1.0), (2.0, 1.0)]:
+        seed.addPoint(QtCore.QPointF(*point))
+    tiled_editor = _BoundaryEditorStub(seed)
+
+    class _Host(ShapeEditingMixin):
+        def __init__(self):
+            self.editor = _BoundaryEditorNoAdjoiningStub()
+            self.large_image_view = tiled_editor
+            self.toggle_calls = []
+
+        def _active_shape_editor(self):
+            return self.editor
+
+        def toggleDrawMode(self, edit=True, createMode="polygon"):
+            self.toggle_calls.append((edit, createMode))
+
+    host = _Host()
+    host.startAdjoiningPolygonFromSelection()
+
+    assert host.toggle_calls == [(False, "polygon")]
+    assert tiled_editor.begin_calls == [seed]
+
+
+def test_shape_editing_mixin_switches_to_polygon_mode_before_seed_check() -> None:
+    class _Host(ShapeEditingMixin):
+        def __init__(self):
+            self.editor = _BoundaryEditorNoAdjoiningStub()
+            self.large_image_view = _BoundaryEditorNoAdjoiningStub()
+            self.toggle_calls = []
+
+        def _active_shape_editor(self):
+            return self.editor
+
+        def toggleDrawMode(self, edit=True, createMode="polygon"):
+            self.toggle_calls.append((edit, createMode))
+
+    host = _Host()
+    host.startAdjoiningPolygonFromSelection()
+
+    assert host.toggle_calls == [(False, "polygon")]
+
+
+def test_canvas_context_menu_shows_adjoining_polygon_for_explicit_edge_only() -> None:
+    _ensure_qapp()
+
+    canvas = Canvas()
+    try:
+        shape = Shape(shape_type="polygon")
+        for point in [(1.0, 1.0), (5.0, 1.0), (5.0, 4.0)]:
+            shape.addPoint(QtCore.QPointF(*point))
+        shape.close()
+        canvas.shapes = [shape]
+        canvas.selectedShapes = []
+        canvas.hShape = shape
+        canvas.hEdge = None
+
+        window = _ContextMenuWindowStub(canvas)
+        menu = canvas._build_context_menu(window)
+        texts = [action.text() for action in menu.actions()]
+        assert "Start Adjoining Polygon" not in texts
+
+        canvas.selectedShapes = [shape]
+        canvas.hEdge = 1
+        menu = canvas._build_context_menu(window)
+        texts = [action.text() for action in menu.actions()]
+        assert "Start Adjoining Polygon" in texts
+    finally:
+        canvas.close()
+
+
+def test_canvas_context_menu_uses_tiled_adjoining_availability() -> None:
+    _ensure_qapp()
+
+    canvas = Canvas()
+    try:
+
+        class _TiledEditor:
+            @staticmethod
+            def canStartAdjoiningPolygon():
+                return True
+
+        class _Window:
+            def __init__(self, editor):
+                self.actions = _ContextActionsStub()
+                self._editor = editor
+                self.large_image_view = _TiledEditor()
+
+            def _active_shape_editor(self):
+                return self._editor
+
+        window = _Window(_BoundaryEditorNoAdjoiningStub())
+        menu = canvas._build_context_menu(window)
+        texts = [action.text() for action in menu.actions()]
+        assert "Start Adjoining Polygon" in texts
+        adjoining = next(
+            action
+            for action in menu.actions()
+            if action.text() == "Start Adjoining Polygon"
+        )
+        assert adjoining.isEnabled()
+    finally:
+        canvas.close()
+
+
+def test_canvas_context_menu_shows_adjoining_polygon_when_shape_selected() -> None:
+    _ensure_qapp()
+
+    canvas = Canvas()
+    try:
+        shape = Shape(shape_type="polygon")
+        for point in [(1.0, 1.0), (5.0, 1.0), (5.0, 4.0)]:
+            shape.addPoint(QtCore.QPointF(*point))
+        shape.close()
+        canvas.shapes = [shape]
+        canvas.selectedShapes = [shape]
+        canvas.hShape = shape
+        canvas.hEdge = None
+
+        window = _ContextMenuWindowStub(_BoundaryEditorNoAdjoiningStub())
+        menu = canvas._build_context_menu(window)
+        texts = [action.text() for action in menu.actions()]
+        assert "Start Adjoining Polygon" in texts
+        adjoining = next(
+            action
+            for action in menu.actions()
+            if action.text() == "Start Adjoining Polygon"
+        )
+        assert adjoining.isEnabled()
+    finally:
+        canvas.close()
+
+
+def test_tiled_image_view_uses_draw_cursor_for_adjoining_polygon_seed() -> None:
+    _ensure_qapp()
+
+    view = TiledImageView()
+    try:
+        seed = Shape(shape_type="polygon")
+        for point in [(2.0, 2.0), (9.0, 2.0)]:
+            seed.addPoint(QtCore.QPointF(*point))
+
+        assert view.beginAdjoiningPolygonFromSeed(seed)
+        assert view._cursor == QtCore.Qt.CrossCursor
+
+        view.restoreCursor()
+        assert view._cursor == QtCore.Qt.CrossCursor
+
+        view.setEditing(True)
+        assert view.mode == view.EDIT
+    finally:
+        view.close()
+
+
+def test_tiled_image_view_shows_adjoining_polygon_for_selected_polygon() -> None:
+    _ensure_qapp()
+
+    view = TiledImageView()
+    try:
+        shape = Shape(shape_type="polygon")
+        for point in [(2.0, 2.0), (9.0, 2.0), (9.0, 8.0)]:
+            shape.addPoint(QtCore.QPointF(*point))
+        shape.close()
+        view.set_shapes([shape])
+        view.selectedShapes = [shape]
+
+        assert view.canStartAdjoiningPolygon()
+        assert view.adjoiningPolygonSeed() is None
+
+        view._active_shape = shape
+        view._active_edge_index = 1
+
+        assert view.canStartAdjoiningPolygon()
+        seed = view.adjoiningPolygonSeed()
+        assert seed is not None
+        assert len(seed.points) == 2
+        assert (seed.points[0].x(), seed.points[0].y()) == (2.0, 2.0)
+        assert (seed.points[1].x(), seed.points[1].y()) == (9.0, 2.0)
+    finally:
+        view.close()
+
+
+def test_tiled_image_view_shows_draw_cursor_before_first_polygon_click() -> None:
+    _ensure_qapp()
+
+    view = TiledImageView()
+    try:
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.setSceneRect(QtCore.QRectF(0.0, 0.0, 200.0, 200.0))
+        view._content_size = (200, 200)
+        view.setEditing(False)
+        view.createMode = "polygon"
+
+        hover_pos = QtCore.QPoint(40, 40)
+        move_event = QtGui.QMouseEvent(
+            QtCore.QEvent.MouseMove,
+            QtCore.QPointF(hover_pos),
+            QtCore.QPointF(view.viewport().mapToGlobal(hover_pos)),
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoModifier,
+        )
+        view.mouseMoveEvent(move_event)
+
+        assert view._cursor == QtCore.Qt.CrossCursor
+        assert view.toolTip() == "Click to create point"
+    finally:
+        view.close()
+
+
+def test_tiled_image_view_hover_feedback_matches_polygon_edit_targets() -> None:
+    _ensure_qapp()
+
+    view = TiledImageView()
+    try:
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.setSceneRect(QtCore.QRectF(0.0, 0.0, 200.0, 200.0))
+        view._content_size = (200, 200)
+
+        shape = Shape(label="region_a", shape_type="polygon")
+        for point in [(20.0, 20.0), (80.0, 20.0), (80.0, 80.0), (20.0, 80.0)]:
+            shape.addPoint(QtCore.QPointF(*point))
+        shape.close()
+        view.set_shapes([shape])
+        view.setEditing(True)
+
+        vertex_pos = view.mapFromScene(QtCore.QPointF(20.0, 20.0))
+        vertex_event = QtGui.QMouseEvent(
+            QtCore.QEvent.MouseMove,
+            QtCore.QPointF(vertex_pos),
+            QtCore.QPointF(view.viewport().mapToGlobal(vertex_pos)),
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoModifier,
+        )
+        view.mouseMoveEvent(vertex_event)
+        assert view._cursor == QtCore.Qt.PointingHandCursor
+        assert view.toolTip() == "Click & drag to move point"
+
+        edge_pos = view.mapFromScene(QtCore.QPointF(50.0, 20.0))
+        edge_event = QtGui.QMouseEvent(
+            QtCore.QEvent.MouseMove,
+            QtCore.QPointF(edge_pos),
+            QtCore.QPointF(view.viewport().mapToGlobal(edge_pos)),
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoModifier,
+        )
+        view.mouseMoveEvent(edge_event)
+        assert view._cursor == QtCore.Qt.PointingHandCursor
+        assert view.toolTip() == "Click to create point"
+
+        body_pos = view.mapFromScene(QtCore.QPointF(50.0, 50.0))
+        body_event = QtGui.QMouseEvent(
+            QtCore.QEvent.MouseMove,
+            QtCore.QPointF(body_pos),
+            QtCore.QPointF(view.viewport().mapToGlobal(body_pos)),
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoButton,
+            QtCore.Qt.NoModifier,
+        )
+        view.mouseMoveEvent(body_event)
+        assert view._cursor == QtCore.Qt.OpenHandCursor
+        assert view.toolTip() == "Click & drag to move shape 'region_a'"
+    finally:
+        view.close()
+
+
+def test_tiled_image_view_snaps_new_polygon_point_to_existing_vertex() -> None:
+    _ensure_qapp()
+
+    view = TiledImageView()
+    try:
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.setSceneRect(QtCore.QRectF(0.0, 0.0, 200.0, 200.0))
+        view._content_size = (200, 200)
+
+        existing = Shape(label="region_b", shape_type="polygon")
+        for point in [(40.0, 40.0), (80.0, 20.0), (120.0, 40.0), (80.0, 80.0)]:
+            existing.addPoint(QtCore.QPointF(*point))
+        existing.close()
+        view.set_shapes([existing])
+
+        view.setEditing(False)
+        view.createMode = "polygon"
+
+        def _left_press(scene_point: QtCore.QPointF) -> None:
+            local = view.mapFromScene(scene_point)
+            event = QtGui.QMouseEvent(
+                QtCore.QEvent.MouseButtonPress,
+                QtCore.QPointF(local),
+                QtCore.QPointF(view.viewport().mapToGlobal(local)),
+                QtCore.Qt.LeftButton,
+                QtCore.Qt.LeftButton,
+                QtCore.Qt.NoModifier,
+            )
+            view.mousePressEvent(event)
+
+        _left_press(QtCore.QPointF(10.0, 10.0))
+        _left_press(QtCore.QPointF(79.3, 20.4))
+
+        assert view.current is not None
+        assert len(view.current.points) >= 2
+        snapped = view.current.points[1]
+        assert snapped.x() == 80.0
+        assert snapped.y() == 20.0
+    finally:
+        view.close()
+
+
+def test_tiled_image_view_polygon_preview_uses_fill_brush_when_enabled() -> None:
+    _ensure_qapp()
+
+    view = TiledImageView()
+    try:
+        view.setSceneRect(QtCore.QRectF(0.0, 0.0, 200.0, 200.0))
+        view._content_size = (200, 200)
+        view.setEditing(False)
+        view.createMode = "polygon"
+
+        shape = Shape(shape_type="polygon")
+        shape.fill = True
+        shape.addPoint(QtCore.QPointF(20.0, 20.0))
+        shape.addPoint(QtCore.QPointF(80.0, 20.0))
+        view.current = shape
+
+        view._update_drawing_preview(QtCore.QPointF(80.0, 80.0))
+
+        assert view._preview_item.brush().style() != QtCore.Qt.NoBrush
+    finally:
+        view.close()
+
+
+def test_tiled_image_view_adjoining_polygon_starts_with_default_point() -> None:
+    _ensure_qapp()
+
+    view = TiledImageView()
+    try:
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.setSceneRect(QtCore.QRectF(0.0, 0.0, 200.0, 200.0))
+        view._content_size = (200, 200)
+
+        seed = Shape(shape_type="polygon")
+        seed.addPoint(QtCore.QPointF(20.0, 20.0))
+        seed.addPoint(QtCore.QPointF(80.0, 20.0))
+        assert view.beginAdjoiningPolygonFromSeed(seed)
+        assert view.current is not None
+        assert len(view.current.points) == 3
+        assert view.current.points[1] == view.current.points[2]
+
+        def _left_press(scene_point: QtCore.QPointF) -> None:
+            local = view.mapFromScene(scene_point)
+            event = QtGui.QMouseEvent(
+                QtCore.QEvent.MouseButtonPress,
+                QtCore.QPointF(local),
+                QtCore.QPointF(view.viewport().mapToGlobal(local)),
+                QtCore.Qt.LeftButton,
+                QtCore.Qt.LeftButton,
+                QtCore.Qt.NoModifier,
+            )
+            view.mousePressEvent(event)
+
+        _left_press(QtCore.QPointF(110.0, 60.0))
+        assert len(view.current.points) == 3
+        assert view.current.points[2].x() == 110.0
+        assert view.current.points[2].y() == 60.0
+    finally:
+        view.close()
