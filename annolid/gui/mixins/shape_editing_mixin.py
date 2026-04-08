@@ -19,6 +19,11 @@ class ShapeEditingMixin:
 
     def deleteSelectedShapes(self, _value=False) -> None:
         # Prefer explicit selection from Label Instances dock when available.
+        canvas = getattr(self, "canvas", None)
+        if canvas is None:
+            return
+
+        active_editor = self._active_shape_editor()
         selected_shapes = []
         for item in self.labelList.selectedItems():
             try:
@@ -29,11 +34,33 @@ class ShapeEditingMixin:
                 selected_shapes.append(shape)
         if selected_shapes:
             try:
-                self.canvas.selectShapes(selected_shapes)
+                canvas.selectShapes(selected_shapes)
             except Exception:
                 pass
 
-        deleted = self.canvas.deleteSelected() or []
+        if active_editor is not canvas:
+            editor_selection = list(getattr(active_editor, "selectedShapes", []) or [])
+            if editor_selection:
+                try:
+                    canvas.selectShapes(editor_selection)
+                except Exception:
+                    pass
+
+        deleted = canvas.deleteSelected() or []
+        if deleted and active_editor is not canvas:
+            try:
+                if hasattr(active_editor, "set_selected_shapes"):
+                    active_editor.set_selected_shapes([])
+                elif hasattr(active_editor, "selectedShapes"):
+                    active_editor.selectedShapes = []
+            except Exception:
+                pass
+            try:
+                if hasattr(active_editor, "set_shapes"):
+                    active_editor.set_shapes(list(getattr(canvas, "shapes", []) or []))
+            except Exception:
+                pass
+
         if deleted:
             self.remLabels(deleted)
             self.setDirty()
@@ -61,45 +88,56 @@ class ShapeEditingMixin:
         self.shapeSelectionChanged(duplicated)
         self.setDirty()
 
-    def startAdjoiningPolygonFromSelection(self, _value=False) -> None:
+    def startAdjoiningPolygonFromSelection(self, _value=False, edge_index=None) -> None:
         editor = self._active_shape_editor()
         tiled_editor = getattr(self, "large_image_view", None)
 
-        def _can_start(target) -> bool:
-            if target is None:
-                return False
-            if bool(getattr(target, "canStartAdjoiningPolygon", lambda: False)()):
-                return True
-            seed_factory = getattr(target, "adjoiningPolygonSeed", None)
-            if callable(seed_factory):
-                try:
-                    return seed_factory() is not None
-                except Exception:
-                    return False
-            return False
-
-        if not _can_start(editor):
-            if _can_start(tiled_editor):
-                editor = tiled_editor
-        if editor is None:
-            return
         try:
             self.toggleDrawMode(False, createMode="polygon")
         except Exception:
             pass
-        seed_factory = getattr(editor, "adjoiningPolygonSeed", None)
-        begin_seed = getattr(editor, "beginAdjoiningPolygonFromSeed", None)
-        if not callable(seed_factory) or not callable(begin_seed):
+
+        starter = getattr(editor, "startAdjoiningPolygonFromSelection", None)
+        if callable(starter):
+            try:
+                if starter(edge_index):
+                    return
+            except Exception:
+                pass
+
+        if tiled_editor is None or tiled_editor is editor:
             return
-        seed = seed_factory()
-        if seed is None:
-            return
-        if begin_seed(seed):
+
+        starter = getattr(tiled_editor, "startAdjoiningPolygonFromSelection", None)
+        if not callable(starter):
             return
         try:
-            self.toggleDrawMode(True)
+            starter(edge_index)
         except Exception:
-            pass
+            return
+
+    def startSharedBoundaryReshape(self, _value=False) -> None:
+        editor = self._active_shape_editor()
+        tiled_editor = getattr(self, "large_image_view", None)
+
+        starter = getattr(editor, "startSharedBoundaryReshape", None)
+        if callable(starter):
+            try:
+                if starter():
+                    return
+            except Exception:
+                pass
+
+        if tiled_editor is None or tiled_editor is editor:
+            return
+
+        starter = getattr(tiled_editor, "startSharedBoundaryReshape", None)
+        if not callable(starter):
+            return
+        try:
+            starter()
+        except Exception:
+            return
 
     def newShape(self):
         """Pop-up and give focus to the label editor."""

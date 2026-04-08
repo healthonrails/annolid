@@ -135,15 +135,32 @@ class LabelPanelMixin:
         def on_shape_visibility_changed(shape: Shape, visible: bool) -> None:
             if shape is None:
                 return
+            visible_flag = bool(visible)
             try:
-                shape.visible = bool(visible)
+                shape.visible = visible_flag
             except Exception:
                 pass
+            canvas = getattr(self, "canvas", None)
             try:
-                self.canvas.setShapeVisible(shape, bool(visible))
+                if canvas is not None and hasattr(canvas, "setShapeVisible"):
+                    canvas.setShapeVisible(shape, visible_flag)
             except Exception:
                 pass
-            self._refresh_shape_views()
+            large_view = getattr(self, "large_image_view", None)
+            tiled_synced = False
+            if large_view is not None and hasattr(large_view, "setShapeVisible"):
+                try:
+                    large_view.setShapeVisible(shape, visible_flag)
+                    tiled_synced = True
+                except Exception:
+                    tiled_synced = False
+            if not tiled_synced:
+                self._refresh_shape_views()
+            elif canvas is not None:
+                try:
+                    canvas.update()
+                except Exception:
+                    pass
             if hasattr(self, "_refreshVectorOverlayDock"):
                 try:
                     self._refreshVectorOverlayDock()

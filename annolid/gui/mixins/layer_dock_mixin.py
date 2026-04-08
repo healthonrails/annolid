@@ -122,15 +122,20 @@ class LayerDockMixin:
             else:
                 shape.visible = bool(visible)
             changed = True
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is not None:
+            for shape in list(getattr(canvas, "shapes", []) or []):
+                if hasattr(large_view, "setShapeVisible"):
+                    try:
+                        large_view.setShapeVisible(shape, bool(visible))
+                    except Exception:
+                        pass
         if not changed:
             return False
         try:
             canvas.update()
         except Exception:
             pass
-        large_view = getattr(self, "large_image_view", None)
-        if large_view is not None:
-            large_view.set_shapes(getattr(canvas, "shapes", []))
         if hasattr(self, "setDirty"):
             self.setDirty()
         if hasattr(self, "_syncLargeImageDocument"):

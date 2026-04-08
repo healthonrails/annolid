@@ -89,6 +89,8 @@ class LabelFile(object):
             "description",
             "mask",
             "visible",
+            "shared_vertex_ids",
+            "shared_edge_ids",
         ]
         try:
             data = load_labelme_json(filename)
@@ -145,6 +147,8 @@ class LabelFile(object):
                     visible=True
                     if s.get("visible") is None
                     else bool(s.get("visible")),
+                    shared_vertex_ids=list(s.get("shared_vertex_ids") or []),
+                    shared_edge_ids=list(s.get("shared_edge_ids") or []),
                     other_data={k: v for k, v in s.items() if k not in shape_keys},
                 )
                 for s in data["shapes"]

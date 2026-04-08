@@ -238,6 +238,19 @@ These workflows now work directly in the tiled large-image viewer:
 - move shapes
 - drag vertices
 - edit imported vector overlays
+
+For polygon-heavy workflows such as brain-area mapping, Annolid supports
+shared vertices and shared boundary edges between adjacent polygons. When you
+drag a polygon vertex onto another polygon vertex, or place a new point close
+enough to an existing polygon vertex, Annolid snaps them together and keeps
+both polygons on the same vertex coordinate. When two polygons share the same
+sequence of linked vertices along a boundary, Annolid also links those edges as
+a shared topological boundary while still storing each region as a separate
+polygon. The editor keeps this topology in an explicit shared-topology
+registry so boundary-linked edits stay synchronized across related polygons.
+For already shared borders, the right-click menu includes **Reshape Shared
+Boundary**, which lets you drag that boundary segment and update every linked
+polygon together.
 - create `point`
 - create `line`
 - create `linestrip`
@@ -260,9 +273,13 @@ directly. At high zoom, Annolid also reduces point-highlight glow and halo
 intensity so the image detail stays visible while you edit.
 
 For adjoining regions such as atlas or brain-area mapping, you can right-click
-an existing polygon edge and choose **Start Adjoining Polygon**. Annolid seeds
-the new polygon from that exact edge so neighboring regions can share a clean
-boundary without merging into one saved polygon.
+an existing polygon and choose **Start Adjoining Polygon**. Annolid switches
+into polygon drawing mode with that polygon as the boundary source, and each
+click snaps to the shared boundary so you can trace across multiple touching
+edges without having to preselect a single edge first.
+
+This keeps neighboring regions as separate saved polygons while letting their
+shared border reuse the same boundary points and coordinates.
 
 This lets you stay in the large-image navigation workflow for common annotation tasks.
 

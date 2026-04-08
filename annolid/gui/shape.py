@@ -1,5 +1,6 @@
 import copy
 import math
+import uuid
 import numpy as np
 import cv2
 
@@ -97,6 +98,8 @@ class Shape(object):
         self.group_id = group_id
         self.points = []
         self.point_labels = []
+        self.shared_vertex_ids = []
+        self.shared_edge_ids = []
         self.fill = False
         self.selected = False
         self._shape_raw = None
@@ -168,6 +171,8 @@ class Shape(object):
         else:
             self.points.append(point)
             self.point_labels.append(label)
+            self.shared_vertex_ids.append(self._new_shared_vertex_id())
+            self.shared_edge_ids.append("")
 
     def canAddPoint(self):
         return self.shape_type in ["polygon", "linestrip"]
@@ -182,12 +187,24 @@ class Shape(object):
                     self.point_labels.pop()
                 except Exception:
                     logger.debug("Failed to pop point label.", exc_info=True)
+            if self.shared_vertex_ids:
+                try:
+                    self.shared_vertex_ids.pop()
+                except Exception:
+                    logger.debug("Failed to pop shared vertex id.", exc_info=True)
+            if self.shared_edge_ids:
+                try:
+                    self.shared_edge_ids.pop()
+                except Exception:
+                    logger.debug("Failed to pop shared edge id.", exc_info=True)
             return point
         return None
 
     def insertPoint(self, i, point, label=1):
         self.points.insert(i, point)
         self.point_labels.insert(i, label)
+        self.shared_vertex_ids.insert(i, self._new_shared_vertex_id())
+        self.shared_edge_ids.insert(i, "")
 
     def removePoint(self, i):
         if not self.canAddPoint():
@@ -214,6 +231,10 @@ class Shape(object):
             return
         self.points.pop(i)
         self.point_labels.pop(i)
+        if self.shared_vertex_ids:
+            self.shared_vertex_ids.pop(i)
+        if self.shared_edge_ids:
+            self.shared_edge_ids.pop(i)
 
     def isClosed(self):
         return self._closed
@@ -660,6 +681,51 @@ class Shape(object):
                 post_i = i
         return post_i
 
+    def project_point_to_edge(self, point, edge_index):
+        if not self.points or len(self.points) < 2:
+            return None
+        try:
+            index = int(edge_index)
+        except Exception:
+            return None
+        if index < 0 or index >= len(self.points):
+            return None
+        start = self.points[index - 1]
+        end = self.points[index]
+        dx = float(end.x()) - float(start.x())
+        dy = float(end.y()) - float(start.y())
+        length_sq = (dx * dx) + (dy * dy)
+        if length_sq <= 1e-12:
+            return QtCore.QPointF(start)
+        px = float(point.x()) - float(start.x())
+        py = float(point.y()) - float(start.y())
+        t = max(0.0, min(1.0, ((px * dx) + (py * dy)) / length_sq))
+        return QtCore.QPointF(
+            float(start.x()) + (t * dx),
+            float(start.y()) + (t * dy),
+        )
+
+    def nearest_boundary_feature(self, point, epsilon):
+        vertex_index = self.nearestVertex(point, epsilon)
+        if vertex_index is not None:
+            vertex = self.points[int(vertex_index)]
+            return {
+                "kind": "vertex",
+                "index": int(vertex_index),
+                "point": QtCore.QPointF(vertex),
+            }
+        edge_index = self.nearestEdge(point, epsilon)
+        if edge_index is None:
+            return None
+        projected = self.project_point_to_edge(point, edge_index)
+        if projected is None:
+            return None
+        return {
+            "kind": "edge",
+            "index": int(edge_index),
+            "point": projected,
+        }
+
     def containsPoint(self, point):
         if self.mask is not None:
             if not self.points:
@@ -723,6 +789,91 @@ class Shape(object):
     def moveVertexBy(self, i, offset):
         self.points[i] = self.points[i] + offset
 
+    @staticmethod
+    def _new_shared_vertex_id():
+        return uuid.uuid4().hex
+
+    def _ensure_shared_vertex_ids(self):
+        while len(self.shared_vertex_ids) < len(self.points):
+            self.shared_vertex_ids.append(self._new_shared_vertex_id())
+        if len(self.shared_vertex_ids) > len(self.points):
+            self.shared_vertex_ids = self.shared_vertex_ids[: len(self.points)]
+
+    def _ensure_shared_edge_ids(self):
+        while len(self.shared_edge_ids) < len(self.points):
+            self.shared_edge_ids.append("")
+        if len(self.shared_edge_ids) > len(self.points):
+            self.shared_edge_ids = self.shared_edge_ids[: len(self.points)]
+
+    def shared_vertex_id(self, i):
+        self._ensure_shared_vertex_ids()
+        if i < 0 or i >= len(self.shared_vertex_ids):
+            return None
+        return self.shared_vertex_ids[i]
+
+    def set_shared_vertex_id(self, i, vertex_id):
+        self._ensure_shared_vertex_ids()
+        if i < 0 or i >= len(self.shared_vertex_ids):
+            return
+        self.shared_vertex_ids[i] = str(vertex_id or "")
+
+    def shared_edge_id(self, i):
+        self._ensure_shared_edge_ids()
+        if i < 0 or i >= len(self.shared_edge_ids):
+            return None
+        return self.shared_edge_ids[i]
+
+    def set_shared_edge_id(self, i, edge_id):
+        self._ensure_shared_edge_ids()
+        if i < 0 or i >= len(self.shared_edge_ids):
+            return
+        self.shared_edge_ids[i] = str(edge_id or "")
+
+    def share_edge_with(self, i, other_shape, other_index):
+        self._ensure_shared_edge_ids()
+        if other_shape is None:
+            return None
+        try:
+            other_shape._ensure_shared_edge_ids()
+        except Exception:
+            return None
+        if i < 0 or i >= len(self.points):
+            return None
+        if other_index < 0 or other_index >= len(other_shape.points):
+            return None
+        edge_id = self.shared_edge_id(i) or other_shape.shared_edge_id(other_index)
+        if not edge_id:
+            edge_id = self._new_shared_vertex_id()
+        edge_id = str(edge_id)
+        self.set_shared_edge_id(i, edge_id)
+        other_shape.set_shared_edge_id(other_index, edge_id)
+        return edge_id
+
+    def share_vertex_with(self, i, other_shape, other_index):
+        self._ensure_shared_vertex_ids()
+        if other_shape is None:
+            return None
+        try:
+            other_shape._ensure_shared_vertex_ids()
+        except Exception:
+            return None
+        if i < 0 or i >= len(self.points):
+            return None
+        if other_index < 0 or other_index >= len(other_shape.points):
+            return None
+        shared_id = self.shared_vertex_id(i) or other_shape.shared_vertex_id(
+            other_index
+        )
+        if not shared_id:
+            shared_id = self._new_shared_vertex_id()
+        shared_id = str(shared_id)
+        self.set_shared_vertex_id(i, shared_id)
+        other_shape.set_shared_vertex_id(other_index, shared_id)
+        shared_point = QtCore.QPointF(other_shape.points[other_index])
+        self.points[i] = QtCore.QPointF(shared_point)
+        other_shape.points[other_index] = QtCore.QPointF(shared_point)
+        return shared_id
+
     def edge_points(self, edge_index):
         """Return copied endpoints for the requested polygon edge."""
         if not self.points or len(self.points) < 2:
@@ -737,9 +888,11 @@ class Shape(object):
         end = self.points[index]
         return QtCore.QPointF(start), QtCore.QPointF(end)
 
-    def adjoining_polygon_seed(self, edge_index):
+    def adjoining_polygon_seed(self, edge_index=None):
         """Create an open polygon seeded from an existing edge."""
         if str(self.shape_type or "").lower() != "polygon":
+            return None
+        if edge_index is None:
             return None
         edge_points = self.edge_points(edge_index)
         if edge_points is None:
@@ -752,6 +905,16 @@ class Shape(object):
         )
         seed.points = [QtCore.QPointF(point) for point in edge_points]
         seed.point_labels = [1, 1]
+        start_vertex_id = self.shared_vertex_id(edge_index - 1)
+        end_vertex_id = self.shared_vertex_id(edge_index)
+        if start_vertex_id or end_vertex_id:
+            seed.shared_vertex_ids = [
+                str(start_vertex_id or ""),
+                str(end_vertex_id or ""),
+            ]
+        boundary_edge_id = self.shared_edge_id(edge_index)
+        if boundary_edge_id:
+            seed.shared_edge_ids = ["", str(boundary_edge_id)]
         seed.fill = bool(getattr(self, "fill", False))
         seed.selected = False
         return seed

@@ -1459,9 +1459,67 @@ def test_label_visibility_toggle_refreshes_tiled_view(
         _ensure_qapp().processEvents()
 
         assert shape.visible is False
-        assert len(host.large_image_view._overlay_items) == 0
+        assert len(host.large_image_view._overlay_items) == 1
+        hidden = host.large_image_view._overlay_items[0]
+        assert getattr(hidden, "_ann_shape", None) is shape
+        assert hidden.isVisible() is False
         assert host._refresh_overlay_dock_calls >= 1
         assert host._dirty_calls >= 1
+
+        item.setCheckState(QtCore.Qt.Checked)
+        _ensure_qapp().processEvents()
+
+        assert shape.visible is True
+        assert len(host.large_image_view._overlay_items) == 1
+        restored = host.large_image_view._overlay_items[0]
+        assert getattr(restored, "_ann_shape", None) is shape
+        assert restored.isVisible() is True
+    finally:
+        host.large_image_view.close()
+        host.labelList.close()
+
+
+def test_label_visibility_toggle_recreates_missing_tiled_overlay_item(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "sample_visibility_restore.ome.tiff"
+    data = np.arange(300 * 520, dtype=np.uint16).reshape(300, 520)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    from annolid.io.large_image import open_large_image
+
+    backend = open_large_image(image_path)
+    host = _VisibilityHost(backend)
+    try:
+        shape = _make_visible_shape()
+        host.canvas.shapes = [shape]
+        host.large_image_view.set_shapes(host.canvas.shapes)
+
+        item = AnnolidLabelListItem("atlas", shape)
+        item.setFlags(
+            item.flags() | QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsSelectable
+        )
+        item.setCheckState(QtCore.Qt.Checked)
+        item.setData(host.labelList.VISIBILITY_STATE_ROLE, True)
+        host.labelList.addItem(item)
+
+        item.setCheckState(QtCore.Qt.Unchecked)
+        _ensure_qapp().processEvents()
+
+        hidden = host.large_image_view._overlay_items[0]
+        host.large_image_view._scene.removeItem(hidden)
+        host.large_image_view._overlay_items = []
+
+        item.setCheckState(QtCore.Qt.Checked)
+        _ensure_qapp().processEvents()
+
+        assert shape.visible is True
+        assert len(host.large_image_view._overlay_items) == 1
+        restored = host.large_image_view._overlay_items[0]
+        assert getattr(restored, "_ann_shape", None) is shape
+        assert restored.isVisible() is True
     finally:
         host.large_image_view.close()
         host.labelList.close()

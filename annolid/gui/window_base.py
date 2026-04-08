@@ -947,7 +947,32 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         canvas = getattr(self, "canvas", None)
         if canvas is None:
             return
+        active_editor = canvas
+        if getattr(self, "_active_image_view", "canvas") == "tiled":
+            tiled = getattr(self, "large_image_view", None)
+            if tiled is not None:
+                active_editor = tiled
+                editor_selection = list(getattr(tiled, "selectedShapes", []) or [])
+                if editor_selection:
+                    try:
+                        canvas.selectShapes(editor_selection)
+                    except Exception:
+                        pass
+
         deleted = canvas.deleteSelected() or []
+        if deleted and active_editor is not canvas:
+            try:
+                if hasattr(active_editor, "set_selected_shapes"):
+                    active_editor.set_selected_shapes([])
+                elif hasattr(active_editor, "selectedShapes"):
+                    active_editor.selectedShapes = []
+            except Exception:
+                pass
+            try:
+                if hasattr(active_editor, "set_shapes"):
+                    active_editor.set_shapes(list(getattr(canvas, "shapes", []) or []))
+            except Exception:
+                pass
         if deleted and hasattr(self, "remLabels"):
             self.remLabels(deleted)
         if deleted and hasattr(self, "setDirty"):
@@ -1091,24 +1116,6 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         if not can_start and tiled_editor is not None:
             can_start = bool(
                 getattr(tiled_editor, "canStartAdjoiningPolygon", lambda: False)()
-            )
-        if not can_start:
-            selected_shapes = []
-            try:
-                selected_shapes = list(getattr(self.canvas, "selectedShapes", []) or [])
-            except Exception:
-                selected_shapes = []
-            if not selected_shapes and tiled_editor is not None:
-                try:
-                    selected_shapes = list(
-                        getattr(tiled_editor, "selectedShapes", []) or []
-                    )
-                except Exception:
-                    selected_shapes = []
-            can_start = any(
-                str(getattr(item, "shape_type", "") or "").lower() == "polygon"
-                and len(getattr(item, "points", []) or []) >= 2
-                for item in selected_shapes
             )
         action.setEnabled(can_start)
 

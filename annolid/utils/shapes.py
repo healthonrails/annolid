@@ -201,6 +201,8 @@ def shape_to_dict(shape):
         "shape_type": shape.shape_type,
         "flags": shape.flags,
         "description": shape.description,
+        "shared_vertex_ids": list(getattr(shape, "shared_vertex_ids", []) or []),
+        "shared_edge_ids": list(getattr(shape, "shared_edge_ids", []) or []),
         "mask": None
         if shape.mask is None
         else shape.mask,  # Adjust conversion as needed

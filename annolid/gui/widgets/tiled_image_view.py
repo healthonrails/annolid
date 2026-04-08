@@ -15,7 +15,9 @@ from annolid.gui.large_image_modes import (
     is_tile_native_create_mode,
     large_image_draw_mode_label,
 )
+from annolid.gui.mixins.shared_polygon_edit_mixin import SharedPolygonEditMixin
 from annolid.gui.shape import Shape
+from annolid.gui.shared_vertices import SharedTopologyRegistry
 from annolid.gui.tile_scheduler import TileRenderPlan, TileRequestScheduler
 from annolid.io.large_image import LargeImageBackend
 from annolid.io.large_image.common import array_to_qimage
@@ -313,7 +315,7 @@ class _ShapeGraphicsItem(QtWidgets.QGraphicsItem):
                 delattr(self._ann_shape, "_vertex_render_overrides")
 
 
-class TiledImageView(QtWidgets.QGraphicsView):
+class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
     """Foundation widget for large-image tile rendering."""
 
     overlayLandmarkPairSelected = QtCore.Signal(str)
@@ -399,6 +401,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
             "sy": 1.0,
         }
         self._last_hovered_label_value: int | None = None
+        self._shared_topology_registry = SharedTopologyRegistry.from_shapes([])
         self.mode = self.EDIT
         self.createMode = "polygon"
         self.current = None
@@ -414,7 +417,13 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._tile_result_timer.timeout.connect(self._poll_pending_tile_results)
         self._current_visible_raster_keys: tuple[TileKey, ...] = ()
         self._current_visible_label_keys: tuple[TileKey, ...] = ()
+        self._adjoining_source_shape: Shape | None = None
         self._adjoining_default_point_pending: bool = False
+        self._shared_boundary_reshape_mode: bool = False
+        self._shared_boundary_shape: Shape | None = None
+        self._shared_boundary_edge_index: int | None = None
+        self._dragging_shared_boundary: bool = False
+        self._shared_boundary_last_pos: QtCore.QPointF | None = None
         self._cursor = CURSOR_DEFAULT
 
     def set_host_window(self, window) -> None:
@@ -467,6 +476,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         super().enterEvent(event)
 
     def focusOutEvent(self, event):
+        self._clearSharedBoundaryReshape()
         self.restoreCursor()
         super().focusOutEvent(event)
 
@@ -887,6 +897,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._shape_moved_during_drag = False
         self._last_scene_pos = None
         self._adjoining_default_point_pending = False
+        self._clear_adjoining_source()
         self.current = None
         self.mode = self.EDIT
         self._pixmap_item.setPixmap(QtGui.QPixmap())
@@ -920,6 +931,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
         if self.mode == self.EDIT:
             self.current = None
             self._adjoining_default_point_pending = False
+            self._clear_adjoining_source()
+            self._clearSharedBoundaryReshape()
             self._preview_item.setPath(QtGui.QPainterPath())
             self._preview_vertices_item.setPath(QtGui.QPainterPath())
             self._preview_close_item.setPath(QtGui.QPainterPath())
@@ -944,6 +957,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._label_value_tile_cache.clear()
 
     def set_shapes(self, shapes) -> None:
+        self._clearSharedBoundaryReshape()
         previous_overlay_items = list(self._overlay_items or [])
         previous_by_shape_id: dict[int, _ShapeGraphicsItem] = {}
         for item in previous_overlay_items:
@@ -958,6 +972,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._pair_endpoint_items = []
         shapes_list = shapes if isinstance(shapes, list) else list(shapes or [])
         self._shapes = shapes_list
+        self._shared_finalize_topology_edit()
         selected_ids = {id(shape) for shape in (self.selectedShapes or [])}
         self.selectedShapes = [
             shape for shape in shapes_list if id(shape) in selected_ids
@@ -1006,6 +1021,11 @@ class TiledImageView(QtWidgets.QGraphicsView):
         for item in self._overlay_items:
             if isinstance(item, _ShapeGraphicsItem):
                 item.set_current_scale(scale)
+
+    def _refresh_overlay_geometry(self) -> None:
+        for item in self._overlay_items:
+            if isinstance(item, _ShapeGraphicsItem):
+                item.sync_shape_geometry()
 
     def set_selected_landmark_pair(self, pair_id: str | None) -> None:
         self._selected_overlay_landmark_pair_id = str(pair_id or "") or None
@@ -1107,30 +1127,119 @@ class TiledImageView(QtWidgets.QGraphicsView):
             return self._active_shape, self._active_edge_index
         return None, None
 
-    def canStartAdjoiningPolygon(self) -> bool:
-        shape, edge_index = self._boundary_polygon_source()
-        if shape is not None and edge_index is not None:
-            return bool(
-                getattr(shape, "adjoining_polygon_seed", lambda _idx: None)(edge_index)
-            )
-        return bool(
-            any(
+    def _selected_polygon_source(self):
+        candidates = list(self.selectedShapes or [])
+        if not candidates:
+            host = getattr(self, "_host_window", None)
+            canvas = getattr(host, "canvas", None) if host is not None else None
+            candidates = list(getattr(canvas, "selectedShapes", []) or [])
+        for item in candidates:
+            if (
                 str(getattr(item, "shape_type", "") or "").lower() == "polygon"
                 and len(getattr(item, "points", []) or []) >= 2
-                for item in (self.selectedShapes or [])
-            )
-        )
+            ):
+                return item
+        return None
 
-    def adjoiningPolygonSeed(self):
-        shape, edge_index = self._boundary_polygon_source()
-        if shape is None or edge_index is None:
+    def _selected_shared_boundary_candidate(self):
+        shape = self._selected_polygon_source()
+        if shape is None:
             return None
-        return getattr(shape, "adjoining_polygon_seed", lambda _idx: None)(edge_index)
+        registry = getattr(self, "_shared_topology_registry", None)
+        if not isinstance(registry, SharedTopologyRegistry):
+            return None
+        for edge_id in list(getattr(shape, "shared_edge_ids", []) or []):
+            if not edge_id:
+                continue
+            try:
+                if len(registry.edge_occurrences(edge_id)) >= 2:
+                    return shape
+            except Exception:
+                continue
+        return None
+
+    def _adjoining_boundary_source(self):
+        source = getattr(self, "_adjoining_source_shape", None)
+        if source is not None and source in (self._shapes or []):
+            return source
+        return self._selected_polygon_source()
+
+    def _clear_adjoining_source(self):
+        self._adjoining_source_shape = None
+
+    def canStartAdjoiningPolygon(self) -> bool:
+        return self._selected_polygon_source() is not None
+
+    def _shared_boundary_source(self):
+        shape = self._active_shape
+        edge_index = self._active_edge_index
+        if shape is None or edge_index is None:
+            return None, None
+        if str(getattr(shape, "shape_type", "") or "").lower() != "polygon":
+            return None, None
+        try:
+            edge_id = shape.shared_edge_id(int(edge_index))
+        except Exception:
+            edge_id = None
+        if not edge_id:
+            return None, None
+        registry = getattr(self, "_shared_topology_registry", None)
+        if isinstance(registry, SharedTopologyRegistry):
+            if len(registry.edge_occurrences(edge_id)) < 2:
+                return None, None
+        return shape, int(edge_index)
+
+    def canStartSharedBoundaryReshape(self) -> bool:
+        shape, edge_index = self._shared_boundary_source()
+        if shape is not None and edge_index is not None:
+            return True
+        return self._selected_shared_boundary_candidate() is not None
+
+    def startSharedBoundaryReshape(self) -> bool:
+        shape, edge_index = self._shared_boundary_source()
+        if shape is None or edge_index is None:
+            shape = self._selected_shared_boundary_candidate()
+            edge_index = None
+        if shape is None:
+            return False
+        self._shared_boundary_reshape_mode = True
+        self._shared_boundary_shape = shape
+        self._shared_boundary_edge_index = (
+            int(edge_index) if edge_index is not None else None
+        )
+        self._dragging_shared_boundary = False
+        self._shared_boundary_last_pos = None
+        self.overrideCursor(CURSOR_MOVE)
+        self._set_hover_feedback(self.tr("Drag shared boundary to reshape"))
+        self._notify_host_large_image_document_changed()
+        return True
+
+    def _clearSharedBoundaryReshape(self) -> None:
+        self._shared_boundary_reshape_mode = False
+        self._shared_boundary_shape = None
+        self._shared_boundary_edge_index = None
+        self._dragging_shared_boundary = False
+        self._shared_boundary_last_pos = None
+
+    def _reshapeSharedBoundaryBy(self, delta) -> bool:
+        shape = self._shared_boundary_shape
+        edge_index = self._shared_boundary_edge_index
+        if shape is None or edge_index is None:
+            return False
+        if not self._shared_reshape_boundary(shape, int(edge_index), delta):
+            return False
+        self._refresh_overlay_geometry()
+        return True
+
+    def adjoiningPolygonSeed(self, edge_index=None):
+        _ = edge_index
+        return None
 
     def beginAdjoiningPolygonFromSeed(self, seed_shape) -> bool:
         if seed_shape is None:
             return False
-        self.current = seed_shape
+        seed = seed_shape
+        self.current = seed
         self.current.setOpen()
         self.current.fill = bool(getattr(seed_shape, "fill", False))
         try:
@@ -1145,7 +1254,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self.mode = self.CREATE
         self.createMode = "polygon"
         self.overrideCursor(CURSOR_DRAW)
-        last_point = QtCore.QPointF(self.current.points[-1])
+        last_point = QtCore.QPointF(seed.points[-1])
         self.current.addPoint(QtCore.QPointF(last_point))
         self._adjoining_default_point_pending = True
         self._update_drawing_preview(last_point)
@@ -1153,12 +1262,17 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self._notify_host_large_image_document_changed()
         return True
 
-    def startAdjoiningPolygonFromSelection(self) -> bool:
-        shape, edge_index = self._boundary_polygon_source()
-        if shape is None or edge_index is None:
+    def startAdjoiningPolygonFromSelection(self, edge_index=None) -> bool:
+        shape = self._selected_polygon_source()
+        if shape is None:
             return False
-        seed = getattr(shape, "adjoining_polygon_seed", lambda _idx: None)(edge_index)
-        return self.beginAdjoiningPolygonFromSeed(seed)
+        seed = self._shared_adjoining_seed_for_shape(shape, edge_index=edge_index)
+        if seed is None:
+            return False
+        self._adjoining_source_shape = shape
+        self._adjoining_default_point_pending = False
+        self.beginAdjoiningPolygonFromSeed(seed)
+        return True
 
     def removeSelectedPoint(self) -> bool:
         shape = self._selected_vertex_shape
@@ -1169,11 +1283,9 @@ class TiledImageView(QtWidgets.QGraphicsView):
         normalized = int(index)
         if normalized < 0 or normalized >= len(points):
             return False
-        before = len(points)
-        shape.removePoint(normalized)
-        updated_points = list(getattr(shape, "points", []) or [])
-        if len(updated_points) == before:
+        if not self._shared_remove_vertex(shape, normalized):
             return False
+        updated_points = list(getattr(shape, "points", []) or [])
         try:
             shape.highlightClear()
         except Exception:
@@ -1194,6 +1306,35 @@ class TiledImageView(QtWidgets.QGraphicsView):
             self.set_shapes(self._shapes)
         self.shapeMoved.emit()
         return True
+
+    def setShapeVisible(self, shape, value):
+        visible_flag = bool(value)
+        try:
+            shape.visible = visible_flag
+        except Exception:
+            pass
+        matched_item = None
+        for item in list(self._overlay_items or []):
+            if getattr(item, "_ann_shape", None) is shape:
+                matched_item = item
+                item.setVisible(visible_flag)
+                try:
+                    item.sync_shape_geometry()
+                except Exception:
+                    pass
+                break
+        if visible_flag and matched_item is None:
+            item = self._make_overlay_item(shape)
+            if item is not None:
+                self._scene.addItem(item)
+                self._overlay_items.append(item)
+                matched_item = item
+        if not visible_flag:
+            selected = [item for item in self.selectedShapes if item is not shape]
+            if len(selected) != len(self.selectedShapes):
+                self._apply_selection(selected, emit_signal=True)
+        self._refresh_overlay_geometry()
+        self._notify_host_large_image_document_changed()
 
     def _scene_pos_from_event(self, event) -> QtCore.QPointF:
         pos = event.pos() if hasattr(event, "pos") else event.position().toPoint()
@@ -1242,8 +1383,29 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 best_point = candidate
         return best_point
 
+    def _adjoining_boundary_feature(
+        self, scene_pos: QtCore.QPointF
+    ) -> tuple[Shape | None, dict | None]:
+        source = self._adjoining_boundary_source()
+        if source is None or str(self.createMode or "").lower() != "polygon":
+            return None, None
+        epsilon = max(1.0, 12.0 / max(self.current_scale(), 0.01))
+        feature = getattr(source, "nearest_boundary_feature", None)
+        if not callable(feature):
+            return source, None
+        try:
+            boundary = feature(scene_pos, epsilon)
+        except Exception:
+            boundary = None
+        if not isinstance(boundary, dict):
+            return source, None
+        return source, boundary
+
     def _drawing_snap_target(self, scene_pos: QtCore.QPointF) -> QtCore.QPointF:
         mode = str(self.createMode or "").lower()
+        source, boundary = self._adjoining_boundary_feature(scene_pos)
+        if source is not None and boundary is not None and mode == "polygon":
+            return QtCore.QPointF(boundary["point"])
         if self.current is None:
             return QtCore.QPointF(scene_pos)
         if mode not in {"polygon", "linestrip"}:
@@ -1257,6 +1419,12 @@ class TiledImageView(QtWidgets.QGraphicsView):
         if vertex_target is not None:
             return QtCore.QPointF(vertex_target)
         return QtCore.QPointF(scene_pos)
+
+    def _sync_shared_vertex(self, shape, index, point=None):
+        try:
+            return self._shared_sync_vertex(shape, index, point=point)
+        except Exception:
+            return None
 
     def _store_canvas_shapes_backup(self) -> None:
         host = self.window()
@@ -1421,6 +1589,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         finished = self.current
         self.current = None
         self._adjoining_default_point_pending = False
+        self._clear_adjoining_source()
         self._preview_item.setPath(QtGui.QPainterPath())
         self._preview_vertices_item.setPath(QtGui.QPainterPath())
         self._preview_close_item.setPath(QtGui.QPainterPath())
@@ -1439,9 +1608,11 @@ class TiledImageView(QtWidgets.QGraphicsView):
         return [self._shapes[-1]]
 
     def undoLastLine(self):
+        self._clearSharedBoundaryReshape()
         if self.current is not None:
             self.current = None
             self._adjoining_default_point_pending = False
+            self._clear_adjoining_source()
             self._preview_item.setPath(QtGui.QPainterPath())
             self._preview_vertices_item.setPath(QtGui.QPainterPath())
             self._preview_close_item.setPath(QtGui.QPainterPath())
@@ -1453,6 +1624,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         self.set_shapes(self._shapes)
 
     def undoLastPoint(self):
+        self._clearSharedBoundaryReshape()
         if self.current is None:
             return
         if self._adjoining_default_point_pending and len(self.current.points) >= 3:
@@ -1465,6 +1637,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         if not getattr(self.current, "points", None):
             self.current = None
             self._adjoining_default_point_pending = False
+            self._clear_adjoining_source()
             self._preview_item.setPath(QtGui.QPainterPath())
             self._preview_vertices_item.setPath(QtGui.QPainterPath())
             self._preview_close_item.setPath(QtGui.QPainterPath())
@@ -1616,9 +1789,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
         bounded = QtCore.QPointF(dx, dy)
         if abs(bounded.x()) < 1e-8 and abs(bounded.y()) < 1e-8:
             return False
-        for shape in self.selectedShapes:
-            shape.moveBy(bounded)
-        return True
+        return self._shared_move_selected_shapes(self.selectedShapes, bounded)
 
     def _pair_item_at_view_pos(self, pos) -> _LandmarkPairItem | None:
         query = self.mapToScene(pos)
@@ -2581,6 +2752,38 @@ class TiledImageView(QtWidgets.QGraphicsView):
     def mousePressEvent(self, event):
         pos = event.pos() if hasattr(event, "pos") else event.position().toPoint()
         scene_pos = self.mapToScene(pos)
+        if (
+            event.button() == QtCore.Qt.LeftButton
+            and self._shared_boundary_reshape_mode
+        ):
+            shape, vertex_index, hit_kind = self._shape_hit_test(scene_pos)
+            if (
+                shape is not None
+                and hit_kind == "edge"
+                and self._shared_boundary_shape is not None
+                and shape is self._shared_boundary_shape
+            ):
+                registry = getattr(self, "_shared_topology_registry", None)
+                edge_id = None
+                try:
+                    edge_id = shape.shared_edge_id(int(vertex_index))
+                except Exception:
+                    edge_id = None
+                if (
+                    edge_id
+                    and isinstance(registry, SharedTopologyRegistry)
+                    and len(registry.edge_occurrences(edge_id)) >= 2
+                ):
+                    self._shared_boundary_shape = shape
+                    self._shared_boundary_edge_index = int(vertex_index)
+                    self._dragging_shared_boundary = True
+                    self._shared_boundary_last_pos = QtCore.QPointF(scene_pos)
+                    self._shape_moved_during_drag = False
+                    self.overrideCursor(CURSOR_MOVE)
+                    event.accept()
+                    return
+            event.accept()
+            return
         if event.button() == QtCore.Qt.LeftButton and self.drawing():
             if not self._supports_create_mode(
                 self.createMode
@@ -2588,9 +2791,11 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 event.accept()
                 return
             mode = str(self.createMode or "").lower()
-            snapped_scene_pos = self._drawing_snap_target(
-                self._clamp_scene_point(scene_pos)
+            clamped_scene_pos = self._clamp_scene_point(scene_pos)
+            adjoining_source, adjoining_feature = self._adjoining_boundary_feature(
+                clamped_scene_pos
             )
+            snapped_scene_pos = self._drawing_snap_target(clamped_scene_pos)
             if self.current is None:
                 from annolid.gui.shape import Shape
 
@@ -2611,9 +2816,19 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 else:
                     if self._adjoining_default_point_pending and self.current.points:
                         self.current.points[-1] = QtCore.QPointF(snapped_scene_pos)
+                        current_index = len(self.current.points) - 1
                         self._adjoining_default_point_pending = False
                     else:
                         self.current.addPoint(QtCore.QPointF(snapped_scene_pos))
+                        current_index = len(self.current.points) - 1
+                    if adjoining_feature is not None and adjoining_source is not None:
+                        self._shared_link_adjoining_point(
+                            self.current,
+                            current_index,
+                            snapped_scene_pos,
+                            adjoining_source,
+                            adjoining_feature,
+                        )
                     self._update_drawing_preview(snapped_scene_pos)
             elif mode == "linestrip":
                 self._adjoining_default_point_pending = False
@@ -2633,12 +2848,26 @@ class TiledImageView(QtWidgets.QGraphicsView):
         if event.button() == QtCore.Qt.LeftButton:
             shape, vertex_index, hit_kind = self._shape_hit_test(scene_pos)
             if shape is not None:
+                if self._shared_boundary_reshape_mode:
+                    shared_shape, shared_edge_index = self._shared_boundary_source()
+                    if shared_shape is not None and shared_edge_index is not None:
+                        self._shared_boundary_shape = shared_shape
+                        self._shared_boundary_edge_index = shared_edge_index
+                        self._dragging_shared_boundary = True
+                        self._shared_boundary_last_pos = QtCore.QPointF(scene_pos)
+                        self.overrideCursor(CURSOR_MOVE)
+                        event.accept()
+                        return
                 if hit_kind == "edge" and bool(
                     getattr(shape, "canAddPoint", lambda: False)()
                 ):
                     insert_index = int(vertex_index)
                     target_point = self._clamp_scene_point(scene_pos)
-                    shape.insertPoint(insert_index, QtCore.QPointF(target_point))
+                    self._shared_insert_vertex_on_edge(
+                        shape,
+                        insert_index,
+                        QtCore.QPointF(target_point),
+                    )
                     try:
                         shape.highlightVertex(insert_index, shape.MOVE_VERTEX)
                     except Exception:
@@ -2650,7 +2879,7 @@ class TiledImageView(QtWidgets.QGraphicsView):
                     self._shape_moved_during_drag = True
                     self._last_scene_pos = QtCore.QPointF(target_point)
                     self._apply_selection([shape], emit_signal=True)
-                    self.set_shapes(self._shapes)
+                    self._refresh_overlay_geometry()
                     event.accept()
                     return
                 multi = bool(event.modifiers() & QtCore.Qt.ControlModifier)
@@ -2784,6 +3013,11 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 bounded = target - old_point
                 if abs(bounded.x()) > 1e-8 or abs(bounded.y()) > 1e-8:
                     self._active_shape.moveVertexBy(self._active_vertex_index, bounded)
+                    self._sync_shared_vertex(
+                        self._active_shape,
+                        self._active_vertex_index,
+                        self._active_shape.points[self._active_vertex_index],
+                    )
                     moved = True
             else:
                 self.overrideCursor(CURSOR_MOVE)
@@ -2791,9 +3025,25 @@ class TiledImageView(QtWidgets.QGraphicsView):
             if moved:
                 self._shape_moved_during_drag = True
                 self._last_scene_pos = QtCore.QPointF(scene_pos)
-                self.set_shapes(self._shapes)
-            event.accept()
-            return
+                self._refresh_overlay_geometry()
+                event.accept()
+                return
+        if (
+            self._dragging_shared_boundary
+            and self._shared_boundary_last_pos is not None
+            and (event.buttons() & QtCore.Qt.LeftButton)
+        ):
+            delta = QtCore.QPointF(
+                float(scene_pos.x()) - float(self._shared_boundary_last_pos.x()),
+                float(scene_pos.y()) - float(self._shared_boundary_last_pos.y()),
+            )
+            if self._reshapeSharedBoundaryBy(delta):
+                self._shared_boundary_last_pos = QtCore.QPointF(scene_pos)
+                self._shape_moved_during_drag = True
+                self._refresh_overlay_geometry()
+                self.update()
+                event.accept()
+                return
         if self.editing():
             shape, vertex_index, hit_kind = self._shape_hit_test(scene_pos)
             if shape is not None:
@@ -2855,6 +3105,17 @@ class TiledImageView(QtWidgets.QGraphicsView):
             if global_pos is not None and self._show_context_menu(global_pos):
                 event.accept()
                 return
+        if event.button() == QtCore.Qt.LeftButton and self._dragging_shared_boundary:
+            moved = bool(self._shape_moved_during_drag)
+            self._dragging_shared_boundary = False
+            self._shared_boundary_last_pos = None
+            self._clearSharedBoundaryReshape()
+            self._shared_finalize_topology_edit()
+            self._refresh_overlay_geometry()
+            if moved:
+                self.shapeMoved.emit()
+            event.accept()
+            return
         if event.button() == QtCore.Qt.LeftButton and self._dragging_shape:
             moved = bool(self._shape_moved_during_drag)
             released_shape = self._active_shape
@@ -2874,7 +3135,9 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 self._set_selected_vertex(
                     released_shape, int(released_vertex), apply_highlight=False
                 )
-            self.set_shapes(self._shapes)
+            if moved:
+                self._shared_finalize_topology_edit()
+            self._refresh_overlay_geometry()
             if moved:
                 self.shapeMoved.emit()
             event.accept()
@@ -2896,6 +3159,8 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 self._preview_close_item.setPath(QtGui.QPainterPath())
                 self.drawingPolygon.emit(False)
                 self.restoreCursor()
+                self._clear_adjoining_source()
+                self._clearSharedBoundaryReshape()
                 event.accept()
                 return
             if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
@@ -2911,9 +3176,24 @@ class TiledImageView(QtWidgets.QGraphicsView):
                 if self.selectedVertex() and self.removeSelectedPoint():
                     event.accept()
                     return
+                host = getattr(self, "_host_window", None) or self.window()
+                delete_fn = getattr(host, "deleteSelectedShapes", None)
+                if callable(delete_fn):
+                    try:
+                        delete_fn()
+                        event.accept()
+                        return
+                    except Exception:
+                        pass
+        if event.key() == QtCore.Qt.Key_Escape and self._shared_boundary_reshape_mode:
+            self._clearSharedBoundaryReshape()
+            self.restoreCursor()
+            event.accept()
+            return
         super().keyPressEvent(event)
 
     def leaveEvent(self, event):
+        self._clearSharedBoundaryReshape()
         self.restoreCursor()
         self.setToolTip(self.tr("Image"))
         super().leaveEvent(event)

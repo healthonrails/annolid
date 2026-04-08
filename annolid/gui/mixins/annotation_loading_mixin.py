@@ -9,6 +9,7 @@ from qtpy import QtCore
 
 from annolid.gui.label_file import LabelFile, LabelFileError
 from annolid.gui.shape import Shape
+from annolid.gui.shared_vertices import rebuild_polygon_topology
 from annolid.infrastructure import AnnotationStore
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.utils.logger import logger
@@ -19,16 +20,16 @@ class AnnotationLoadingMixin:
 
     def _materialize_label_shapes(self, shapes):
         s = []
-        for shape in shapes:
-            label = shape["label"]
-            points = shape["points"]
-            shape_type = shape["shape_type"]
-            flags = shape["flags"]
-            group_id = shape["group_id"]
-            description = shape.get("description", "")
-            other_data = shape["other_data"]
-            if "visible" in shape:
-                visible = shape["visible"]
+        for shape_data in shapes:
+            label = shape_data["label"]
+            points = shape_data["points"]
+            shape_type = shape_data["shape_type"]
+            flags = shape_data["flags"]
+            group_id = shape_data["group_id"]
+            description = shape_data.get("description", "")
+            other_data = shape_data["other_data"]
+            if "visible" in shape_data:
+                visible = shape_data["visible"]
             else:
                 visible = True
 
@@ -40,11 +41,27 @@ class AnnotationLoadingMixin:
                 shape_type=shape_type,
                 group_id=group_id,
                 description=description,
-                mask=shape["mask"],
+                mask=shape_data["mask"],
                 visible=visible,
             )
             for x, y in points:
                 shape.addPoint(QtCore.QPointF(x, y))
+            shared_ids = list(shape_data.get("shared_vertex_ids") or [])
+            if shared_ids:
+                normalized_ids = [str(value or "") for value in shared_ids]
+                if len(normalized_ids) < len(shape.points):
+                    normalized_ids.extend(
+                        [""] * (len(shape.points) - len(normalized_ids))
+                    )
+                shape.shared_vertex_ids = normalized_ids[: len(shape.points)]
+            shared_edge_ids = list(shape_data.get("shared_edge_ids") or [])
+            if shared_edge_ids:
+                normalized_edge_ids = [str(value or "") for value in shared_edge_ids]
+                if len(normalized_edge_ids) < len(shape.points):
+                    normalized_edge_ids.extend(
+                        [""] * (len(shape.points) - len(normalized_edge_ids))
+                    )
+                shape.shared_edge_ids = normalized_edge_ids[: len(shape.points)]
             shape.close()
 
             default_flags = {}
@@ -172,6 +189,7 @@ class AnnotationLoadingMixin:
             self.addLabel(shape, rebuild_unique=False)
         self.labelList.clearSelection()
         self._noSelectionSlot = False
+        rebuild_polygon_topology(shapes)
         self.canvas.loadShapes(shapes, replace=replace)
         if getattr(self, "large_image_view", None) is not None:
             self.large_image_view.set_shapes(self.canvas.shapes)

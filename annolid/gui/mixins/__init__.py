@@ -10,6 +10,7 @@ from .annotation_loading_mixin import AnnotationLoadingMixin
 from .tracking_segment_mixin import TrackingSegmentMixin
 from .workflow_actions_mixin import WorkflowActionsMixin
 from .shape_editing_mixin import ShapeEditingMixin
+from .shared_polygon_edit_mixin import SharedPolygonEditMixin
 from .depth_sam_proxy_mixin import DepthSamProxyMixin
 from .model_identity_mixin import ModelIdentityMixin
 from .prediction_progress_mixin import PredictionProgressMixin
@@ -48,6 +49,7 @@ __all__ = [
     "TrackingSegmentMixin",
     "WorkflowActionsMixin",
     "ShapeEditingMixin",
+    "SharedPolygonEditMixin",
     "DepthSamProxyMixin",
     "ModelIdentityMixin",
     "PredictionProgressMixin",

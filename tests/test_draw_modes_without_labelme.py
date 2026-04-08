@@ -3,6 +3,7 @@ import importlib
 import os
 import threading
 from types import SimpleNamespace
+from pathlib import Path
 
 import numpy as np
 from qtpy import QtCore, QtWidgets, QtGui
@@ -134,11 +135,14 @@ def test_ai_model_image_refreshes_after_pixmap_switch():
         fake_model = FakeAiModel()
         w.canvas._ai_model = fake_model
         w.canvas._ai_model_pixmap_key = None
+        w.canvas._ai_model_image_signature = None
         w.canvas._sync_ai_model_image(force=True)
         assert len(fake_model.images) == 1
 
         second = QtGui.QImage(64, 64, QtGui.QImage.Format_RGB32)
         second.fill(QtGui.QColor(200, 100, 50))
+        w.filename = "second.png"
+        w.imagePath = str(Path("second.png").parent)
         w.canvas.loadPixmap(QtGui.QPixmap.fromImage(second), clear_shapes=False)
         assert len(fake_model.images) == 2
         assert not np.array_equal(fake_model.images[0], fake_model.images[1])
@@ -172,6 +176,41 @@ def test_ai_model_image_does_not_refresh_for_same_pixmap_twice():
         pixmap = QtGui.QPixmap.fromImage(img)
         w.canvas.loadPixmap(pixmap, clear_shapes=False)
         w.canvas.loadPixmap(pixmap, clear_shapes=False)
+
+        assert len(fake_model.images) == 1
+    finally:
+        w.close()
+
+
+def test_ai_model_image_does_not_refresh_for_same_frame_new_pixmap_instance():
+    _ensure_qapp()
+
+    from annolid.gui.app import AnnolidWindow
+
+    w = AnnolidWindow(config={})
+    try:
+        first = QtGui.QImage(64, 64, QtGui.QImage.Format_RGB32)
+        first.fill(QtGui.QColor(10, 20, 30))
+        w.image_to_canvas(first, "frame_000000123.png", 123)
+
+        class FakeAiModel:
+            name = "fake"
+
+            def __init__(self):
+                self.images = []
+
+            def set_image(self, image):
+                self.images.append(np.asarray(image).copy())
+
+        fake_model = FakeAiModel()
+        w.canvas._ai_model = fake_model
+        w.canvas._ai_model_pixmap_key = None
+        w.canvas._ai_model_image_signature = None
+        w.canvas._sync_ai_model_image(force=True)
+
+        second = QtGui.QImage(64, 64, QtGui.QImage.Format_RGB32)
+        second.fill(QtGui.QColor(10, 20, 30))
+        w.canvas.loadPixmap(QtGui.QPixmap.fromImage(second), clear_shapes=False)
 
         assert len(fake_model.images) == 1
     finally:

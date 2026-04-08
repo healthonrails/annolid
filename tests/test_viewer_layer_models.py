@@ -8,11 +8,16 @@ import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.gui.mixins.label_image_overlay_mixin import LabelImageOverlayMixin
+from annolid.gui.mixins.annotation_loading_mixin import AnnotationLoadingMixin
 from annolid.gui.mixins.layer_dock_mixin import LayerDockMixin
 from annolid.gui.mixins.shape_editing_mixin import ShapeEditingMixin
 from annolid.gui.mixins.raster_layer_mixin import RasterLayerMixin
 from annolid.gui.mixins.vector_overlay_mixin import VectorOverlayMixin
 from annolid.gui.shape import Shape
+from annolid.gui.shared_vertices import SharedTopologyRegistry
+from annolid.gui.shared_vertices import insert_shared_vertex_on_edge
+from annolid.gui.shared_vertices import remove_shared_vertex_at
+from annolid.gui.shared_vertices import rebuild_polygon_topology
 from annolid.gui.widgets.canvas import Canvas
 from annolid.gui.widgets.tiled_image_view import TiledImageView
 from annolid.gui.window_base import AnnolidWindowBase
@@ -40,6 +45,19 @@ class _CanvasStub(QtWidgets.QWidget):
         self.selectedShapes = []
         self.createMode = "polygon"
 
+    def selectShapes(self, shapes):
+        self.selectedShapes = list(shapes or [])
+
+    def deleteSelected(self):
+        deleted = list(self.selectedShapes or [])
+        if deleted:
+            selected_ids = {id(shape) for shape in deleted}
+            self.shapes = [
+                shape for shape in self.shapes if id(shape) not in selected_ids
+            ]
+            self.selectedShapes = []
+        return deleted
+
     def update(self):
         return None
 
@@ -48,6 +66,11 @@ class _CanvasStub(QtWidgets.QWidget):
 
     def editing(self):
         return True
+
+
+class _LoadingStub(AnnotationLoadingMixin):
+    def __init__(self):
+        self._config = {"label_flags": {}}
 
 
 class _ViewerLayerWindow(
@@ -828,16 +851,40 @@ def test_shape_adjoining_polygon_seed_reuses_edge_coordinates() -> None:
     assert seed.points[1] is not shape.points[1]
 
 
+def test_canvas_start_adjoining_polygon_from_selection_uses_seeded_shared_vertices() -> (
+    None
+):
+    _ensure_qapp()
+
+    canvas = Canvas()
+    try:
+        shape = Shape(shape_type="polygon")
+        for point in [(2.0, 2.0), (9.0, 2.0), (9.0, 8.0)]:
+            shape.addPoint(QtCore.QPointF(*point))
+        shape.close()
+        canvas.shapes = [shape]
+        canvas.selectedShapes = [shape]
+        canvas.hShape = shape
+        canvas.hEdge = 1
+
+        assert canvas.startAdjoiningPolygonFromSelection()
+        assert canvas.current is not None
+        assert len(canvas.current.points) == 2
+        assert canvas.current.shared_vertex_id(0) == shape.shared_vertex_id(0)
+        assert canvas.current.shared_vertex_id(1) == shape.shared_vertex_id(1)
+        assert canvas.current.points[0].x() == shape.points[0].x()
+        assert canvas.current.points[0].y() == shape.points[0].y()
+    finally:
+        canvas.close()
+
+
 class _BoundaryEditorStub:
     def __init__(self, seed):
         self.seed = seed
-        self.begin_calls = []
+        self.start_calls = []
 
-    def adjoiningPolygonSeed(self):
-        return self.seed
-
-    def beginAdjoiningPolygonFromSeed(self, seed):
-        self.begin_calls.append(seed)
+    def startAdjoiningPolygonFromSelection(self, edge_index=None):
+        self.start_calls.append(edge_index)
         return True
 
 
@@ -857,10 +904,11 @@ class _BoundaryEditorNoAdjoiningStub:
     def canStartAdjoiningPolygon(self):
         return False
 
-    def adjoiningPolygonSeed(self):
+    def adjoiningPolygonSeed(self, edge_index=None):
         return None
 
-    def beginAdjoiningPolygonFromSeed(self, _seed):
+    def startAdjoiningPolygonFromSelection(self, edge_index=None):
+        _ = edge_index
         return False
 
 
@@ -889,6 +937,10 @@ class _ContextMenuWindowStub:
     def _active_shape_editor(self):
         return self._editor
 
+    def startAdjoiningPolygonFromSelection(self, edge_index=None):
+        _ = edge_index
+        return None
+
 
 def test_shape_editing_mixin_starts_adjoining_polygon_from_active_editor() -> None:
     seed = Shape(shape_type="polygon")
@@ -899,7 +951,7 @@ def test_shape_editing_mixin_starts_adjoining_polygon_from_active_editor() -> No
     host.startAdjoiningPolygonFromSelection()
 
     assert host.toggle_calls == [(False, "polygon")]
-    assert host.editor.begin_calls == [seed]
+    assert host.editor.start_calls == [None]
 
 
 def test_shape_editing_mixin_falls_back_to_tiled_editor_for_adjoining_polygon() -> None:
@@ -924,7 +976,34 @@ def test_shape_editing_mixin_falls_back_to_tiled_editor_for_adjoining_polygon() 
     host.startAdjoiningPolygonFromSelection()
 
     assert host.toggle_calls == [(False, "polygon")]
-    assert tiled_editor.begin_calls == [seed]
+    assert tiled_editor.start_calls == [None]
+
+
+def test_shape_editing_mixin_starts_adjoining_polygon_even_with_edge_index_arg() -> (
+    None
+):
+    seed = Shape(shape_type="polygon")
+    for point in [(4.0, 4.0), (7.0, 4.0)]:
+        seed.addPoint(QtCore.QPointF(*point))
+    editor = _BoundaryEditorStub(seed)
+
+    class _Host(ShapeEditingMixin):
+        def __init__(self):
+            self.editor = editor
+            self.large_image_view = _BoundaryEditorNoAdjoiningStub()
+            self.toggle_calls = []
+
+        def _active_shape_editor(self):
+            return self.editor
+
+        def toggleDrawMode(self, edit=True, createMode="polygon"):
+            self.toggle_calls.append((edit, createMode))
+
+    host = _Host()
+    host.startAdjoiningPolygonFromSelection(edge_index=2)
+
+    assert host.toggle_calls == [(False, "polygon")]
+    assert editor.start_calls == [2]
 
 
 def test_shape_editing_mixin_switches_to_polygon_mode_before_seed_check() -> None:
@@ -966,10 +1045,15 @@ def test_canvas_context_menu_shows_adjoining_polygon_for_explicit_edge_only() ->
         assert "Start Adjoining Polygon" not in texts
 
         canvas.selectedShapes = [shape]
-        canvas.hEdge = 1
         menu = canvas._build_context_menu(window)
         texts = [action.text() for action in menu.actions()]
         assert "Start Adjoining Polygon" in texts
+        adjoining = next(
+            action
+            for action in menu.actions()
+            if action.text() == "Start Adjoining Polygon"
+        )
+        assert adjoining.isEnabled()
     finally:
         canvas.close()
 
@@ -1022,7 +1106,7 @@ def test_canvas_context_menu_shows_adjoining_polygon_when_shape_selected() -> No
         canvas.hShape = shape
         canvas.hEdge = None
 
-        window = _ContextMenuWindowStub(_BoundaryEditorNoAdjoiningStub())
+        window = _ContextMenuWindowStub(canvas)
         menu = canvas._build_context_menu(window)
         texts = [action.text() for action in menu.actions()]
         assert "Start Adjoining Polygon" in texts
@@ -1032,6 +1116,43 @@ def test_canvas_context_menu_shows_adjoining_polygon_when_shape_selected() -> No
             if action.text() == "Start Adjoining Polygon"
         )
         assert adjoining.isEnabled()
+    finally:
+        canvas.close()
+
+
+def test_canvas_context_menu_shows_shared_boundary_reshape_for_selected_shared_polygon() -> (
+    None
+):
+    _ensure_qapp()
+
+    canvas = Canvas()
+    try:
+        left = Shape(label="left", shape_type="polygon")
+        for point in [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)]:
+            left.addPoint(QtCore.QPointF(*point))
+        left.close()
+
+        right = Shape(label="right", shape_type="polygon")
+        for point in [(20.0, 10.0), (30.0, 10.0), (30.0, 20.0), (20.0, 20.0)]:
+            right.addPoint(QtCore.QPointF(*point))
+        right.close()
+
+        left.set_shared_vertex_id(1, "shared-a")
+        left.set_shared_vertex_id(2, "shared-b")
+        right.set_shared_vertex_id(0, "shared-a")
+        right.set_shared_vertex_id(3, "shared-b")
+        rebuild_polygon_topology([left, right])
+
+        canvas.shapes = [left, right]
+        canvas._shared_topology_registry = SharedTopologyRegistry.from_shapes(
+            canvas.shapes
+        )
+        canvas.selectedShapes = [left]
+
+        window = _ContextMenuWindowStub(canvas)
+        menu = canvas._build_context_menu(window)
+        texts = [action.text() for action in menu.actions()]
+        assert "Reshape Shared Boundary" in texts
     finally:
         canvas.close()
 
@@ -1070,19 +1191,80 @@ def test_tiled_image_view_shows_adjoining_polygon_for_selected_polygon() -> None
         view.selectedShapes = [shape]
 
         assert view.canStartAdjoiningPolygon()
-        assert view.adjoiningPolygonSeed() is None
-
-        view._active_shape = shape
-        view._active_edge_index = 1
-
-        assert view.canStartAdjoiningPolygon()
-        seed = view.adjoiningPolygonSeed()
-        assert seed is not None
-        assert len(seed.points) == 2
-        assert (seed.points[0].x(), seed.points[0].y()) == (2.0, 2.0)
-        assert (seed.points[1].x(), seed.points[1].y()) == (9.0, 2.0)
+        assert view.startAdjoiningPolygonFromSelection()
+        assert view.current is not None
+        assert view._adjoining_source_shape is shape
+        assert view.createMode == "polygon"
+        assert len(view.current.points) == 3
+        assert view.current.shared_vertex_id(0) == shape.shared_vertex_id(0)
+        assert view.current.shared_vertex_id(1) == shape.shared_vertex_id(1)
+        assert view.current.points[0].x() == shape.points[0].x()
+        assert view.current.points[0].y() == shape.points[0].y()
     finally:
         view.close()
+
+
+def test_tiled_image_view_can_start_shared_boundary_reshape_from_selected_shared_polygon() -> (
+    None
+):
+    _ensure_qapp()
+
+    view = TiledImageView()
+    try:
+        left = Shape(label="left", shape_type="polygon")
+        for point in [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)]:
+            left.addPoint(QtCore.QPointF(*point))
+        left.close()
+
+        right = Shape(label="right", shape_type="polygon")
+        for point in [(20.0, 10.0), (30.0, 10.0), (30.0, 20.0), (20.0, 20.0)]:
+            right.addPoint(QtCore.QPointF(*point))
+        right.close()
+
+        left.set_shared_vertex_id(1, "shared-a")
+        left.set_shared_vertex_id(2, "shared-b")
+        right.set_shared_vertex_id(0, "shared-a")
+        right.set_shared_vertex_id(3, "shared-b")
+        rebuild_polygon_topology([left, right])
+
+        view.set_shapes([left, right])
+        view.selectedShapes = [left]
+
+        assert view.canStartSharedBoundaryReshape()
+        assert view.startSharedBoundaryReshape()
+        assert view._shared_boundary_shape is left
+        assert view._shared_boundary_edge_index is None
+        assert view._shared_boundary_reshape_mode is True
+    finally:
+        view.close()
+
+
+def test_tiled_image_view_can_start_adjoining_polygon_from_canvas_selection() -> None:
+    _ensure_qapp()
+
+    window = _ViewerLayerWindow()
+    try:
+        shape = Shape(shape_type="polygon")
+        for point in [(12.0, 12.0), (24.0, 12.0), (24.0, 24.0)]:
+            shape.addPoint(QtCore.QPointF(*point))
+        shape.close()
+        window.canvas.shapes = [shape]
+        window.canvas.selectedShapes = [shape]
+        window.large_image_view.set_shapes(window.canvas.shapes)
+        window.large_image_view.selectedShapes = []
+        window._active_image_view = "tiled"
+
+        assert window.large_image_view.canStartAdjoiningPolygon()
+        assert window.large_image_view.startAdjoiningPolygonFromSelection()
+        assert window.large_image_view._adjoining_source_shape is shape
+        assert window.large_image_view.createMode == "polygon"
+        assert window.large_image_view.current is not None
+        assert len(window.large_image_view.current.points) == 3
+        assert window.large_image_view.current.shared_vertex_id(
+            0
+        ) == shape.shared_vertex_id(0)
+    finally:
+        window.close()
 
 
 def test_tiled_image_view_shows_draw_cursor_before_first_polygon_click() -> None:
@@ -1242,7 +1424,117 @@ def test_tiled_image_view_polygon_preview_uses_fill_brush_when_enabled() -> None
         view.close()
 
 
-def test_tiled_image_view_adjoining_polygon_starts_with_default_point() -> None:
+def test_tiled_image_view_annotation_visibility_updates_items_without_rebuild() -> None:
+    _ensure_qapp()
+
+    window = _ViewerLayerWindow()
+    try:
+        annotation_shape = _polygon(
+            "manual_region",
+            [(10.0, 10.0), (20.0, 10.0), (15.0, 20.0)],
+            overlay_id=None,
+        )
+        window.canvas.shapes = [annotation_shape]
+        window.large_image_view.set_shapes(window.canvas.shapes)
+        before_items = list(window.large_image_view._overlay_items)
+        assert before_items
+
+        window._setAnnotationLayerVisible(False)
+
+        assert annotation_shape.visible is False
+        after_items = list(window.large_image_view._overlay_items)
+        assert len(after_items) == len(before_items)
+        item = next(
+            (
+                overlay_item
+                for overlay_item in after_items
+                if getattr(overlay_item, "_ann_shape", None) is annotation_shape
+            ),
+            None,
+        )
+        assert item is not None
+        assert item.isVisible() is False
+    finally:
+        window.close()
+
+
+def test_tiled_image_view_delete_key_resyncs_canvas_source_of_truth() -> None:
+    _ensure_qapp()
+
+    window = _ViewerLayerWindow()
+    try:
+        survivor = _polygon(
+            "survivor", [(10.0, 10.0), (20.0, 10.0), (15.0, 20.0)], overlay_id=None
+        )
+        doomed = _polygon(
+            "doomed", [(40.0, 40.0), (60.0, 40.0), (50.0, 60.0)], overlay_id=None
+        )
+        window.canvas.shapes = [survivor, doomed]
+        window.canvas.selectedShapes = [doomed]
+        window.large_image_view._content_size = (120, 80)
+        window.large_image_view.set_shapes(window.canvas.shapes)
+        window.large_image_view.selectedShapes = [doomed]
+        window._active_image_view = "tiled"
+
+        delete_event = QtGui.QKeyEvent(
+            QtCore.QEvent.KeyPress,
+            QtCore.Qt.Key_Delete,
+            QtCore.Qt.NoModifier,
+        )
+        window.large_image_view.keyPressEvent(delete_event)
+
+        assert window.canvas.shapes == [survivor]
+        assert window.large_image_view._shapes == [survivor]
+        assert window.large_image_view.selectedShapes == []
+    finally:
+        window.close()
+
+
+def test_tiled_image_view_moves_shared_vertices_with_selected_shape() -> None:
+    _ensure_qapp()
+
+    view = TiledImageView()
+    try:
+        view.setSceneRect(QtCore.QRectF(0.0, 0.0, 200.0, 200.0))
+
+        left = Shape(label="left", shape_type="polygon")
+        for point in [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)]:
+            left.addPoint(QtCore.QPointF(*point))
+        left.close()
+
+        right = Shape(label="right", shape_type="polygon")
+        for point in [(20.0, 10.0), (30.0, 10.0), (30.0, 20.0), (20.0, 20.0)]:
+            right.addPoint(QtCore.QPointF(*point))
+        right.close()
+
+        left.set_shared_vertex_id(1, "shared-a")
+        left.set_shared_vertex_id(2, "shared-b")
+        right.set_shared_vertex_id(0, "shared-a")
+        right.set_shared_vertex_id(3, "shared-b")
+        rebuild_polygon_topology([left, right])
+
+        view.set_shapes([left, right])
+        view.selectedShapes = [left]
+
+        assert view._bounded_move_selected_shapes(QtCore.QPointF(5.0, 7.0))
+
+        assert left.points[0].x() == 15.0
+        assert left.points[0].y() == 17.0
+        assert left.points[1].x() == 25.0
+        assert left.points[1].y() == 17.0
+        assert right.points[0].x() == 25.0
+        assert right.points[0].y() == 17.0
+        assert right.points[3].x() == 25.0
+        assert right.points[3].y() == 27.0
+        assert left.shared_vertex_id(1) == right.shared_vertex_id(0)
+        assert left.shared_vertex_id(2) == right.shared_vertex_id(3)
+    finally:
+        view.close()
+
+
+def test_tiled_image_view_adjoining_polygon_trace_starts_without_default_point() -> (
+    None
+):
     _ensure_qapp()
 
     view = TiledImageView()
@@ -1256,10 +1548,14 @@ def test_tiled_image_view_adjoining_polygon_starts_with_default_point() -> None:
         seed = Shape(shape_type="polygon")
         seed.addPoint(QtCore.QPointF(20.0, 20.0))
         seed.addPoint(QtCore.QPointF(80.0, 20.0))
-        assert view.beginAdjoiningPolygonFromSeed(seed)
+        view.set_shapes([seed])
+        view.selectedShapes = [seed]
+        assert view.startAdjoiningPolygonFromSelection()
         assert view.current is not None
+        assert view._adjoining_source_shape is seed
         assert len(view.current.points) == 3
-        assert view.current.points[1] == view.current.points[2]
+        assert view.current.shared_vertex_id(0) == seed.shared_vertex_id(0)
+        assert view.current.shared_vertex_id(1) == seed.shared_vertex_id(1)
 
         def _left_press(scene_point: QtCore.QPointF) -> None:
             local = view.mapFromScene(scene_point)
@@ -1274,8 +1570,409 @@ def test_tiled_image_view_adjoining_polygon_starts_with_default_point() -> None:
             view.mousePressEvent(event)
 
         _left_press(QtCore.QPointF(110.0, 60.0))
+        assert view.current is not None
         assert len(view.current.points) == 3
-        assert view.current.points[2].x() == 110.0
-        assert view.current.points[2].y() == 60.0
+        assert view.current.points[-1].x() == 110.0
+        assert view.current.points[-1].y() == 60.0
     finally:
         view.close()
+
+
+def test_tiled_image_view_adjoining_polygon_boundary_point_stays_shared() -> None:
+    _ensure_qapp()
+
+    view = TiledImageView()
+    try:
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.setSceneRect(QtCore.QRectF(0.0, 0.0, 200.0, 200.0))
+        view._content_size = (200, 200)
+
+        source = Shape(shape_type="polygon")
+        for point in [(20.0, 20.0), (80.0, 20.0), (80.0, 80.0), (20.0, 80.0)]:
+            source.addPoint(QtCore.QPointF(*point))
+        source.close()
+        view.set_shapes([source])
+        view.selectedShapes = [source]
+
+        assert view.startAdjoiningPolygonFromSelection()
+        assert view.current is not None
+
+        def _left_press(scene_point: QtCore.QPointF) -> None:
+            local = view.mapFromScene(scene_point)
+            event = QtGui.QMouseEvent(
+                QtCore.QEvent.MouseButtonPress,
+                QtCore.QPointF(local),
+                QtCore.QPointF(view.viewport().mapToGlobal(local)),
+                QtCore.Qt.LeftButton,
+                QtCore.Qt.LeftButton,
+                QtCore.Qt.NoModifier,
+            )
+            view.mousePressEvent(event)
+
+        _left_press(QtCore.QPointF(80.0, 50.0))
+        shared_vertex_id = view.current.shared_vertex_id(2)
+        assert shared_vertex_id not in {None, ""}
+
+        view.finalise()
+        new_shape = view.selectedShapes[0]
+        assert new_shape.shared_vertex_id(2) == shared_vertex_id
+        assert source.shared_vertex_id(2) == shared_vertex_id
+
+        new_shape.moveVertexBy(2, QtCore.QPointF(5.0, 3.0))
+        view._sync_shared_vertex(new_shape, 2, new_shape.points[2])
+
+        assert source.points[2].x() == new_shape.points[2].x()
+        assert source.points[2].y() == new_shape.points[2].y()
+    finally:
+        view.close()
+
+
+def test_annotation_loading_preserves_shared_vertex_ids() -> None:
+    loader = _LoadingStub()
+    shapes = [
+        {
+            "label": "region_a",
+            "points": [(10.0, 10.0), (30.0, 10.0), (20.0, 30.0)],
+            "shape_type": "polygon",
+            "flags": {},
+            "group_id": None,
+            "description": "",
+            "other_data": {},
+            "mask": None,
+            "visible": True,
+            "shared_vertex_ids": ["shared-a", "shared-b", "shared-c"],
+            "shared_edge_ids": ["edge-a", "edge-b", "edge-c"],
+        }
+    ]
+
+    materialized = loader._materialize_label_shapes(shapes)
+
+    assert len(materialized) == 1
+    assert materialized[0].shared_vertex_ids == [
+        "shared-a",
+        "shared-b",
+        "shared-c",
+    ]
+    assert materialized[0].shared_edge_ids == ["edge-a", "edge-b", "edge-c"]
+
+
+def test_canvas_bounded_move_vertex_propagates_shared_vertices() -> None:
+    _ensure_qapp()
+
+    canvas = Canvas()
+    try:
+        canvas.pixmap = QtGui.QPixmap(200, 200)
+        canvas.pixmap.fill(QtCore.Qt.white)
+
+        left = Shape(label="left", shape_type="polygon")
+        for point in [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0)]:
+            left.addPoint(QtCore.QPointF(*point))
+        left.close()
+
+        right = Shape(label="right", shape_type="polygon")
+        for point in [(60.0, 60.0), (70.0, 60.0), (70.0, 70.0)]:
+            right.addPoint(QtCore.QPointF(*point))
+        right.close()
+
+        shared_id = "vertex-shared"
+        left.set_shared_vertex_id(1, shared_id)
+        right.set_shared_vertex_id(0, shared_id)
+        canvas.shapes = [left, right]
+        canvas.hShape = left
+        canvas.hVertex = 1
+
+        canvas.boundedMoveVertex(QtCore.QPointF(26.0, 18.0))
+
+        assert left.points[1].x() == 26.0
+        assert left.points[1].y() == 18.0
+        assert right.points[0].x() == 26.0
+        assert right.points[0].y() == 18.0
+        assert left.shared_vertex_id(1) == right.shared_vertex_id(0) == shared_id
+    finally:
+        canvas.close()
+
+
+def test_canvas_bounded_move_vertex_merges_close_vertices() -> None:
+    _ensure_qapp()
+
+    canvas = Canvas()
+    try:
+        canvas.pixmap = QtGui.QPixmap(200, 200)
+        canvas.pixmap.fill(QtCore.Qt.white)
+
+        left = Shape(label="left", shape_type="polygon")
+        for point in [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0)]:
+            left.addPoint(QtCore.QPointF(*point))
+        left.close()
+
+        right = Shape(label="right", shape_type="polygon")
+        for point in [(40.0, 10.0), (50.0, 10.0), (50.0, 20.0)]:
+            right.addPoint(QtCore.QPointF(*point))
+        right.close()
+
+        canvas.shapes = [left, right]
+        canvas.hShape = left
+        canvas.hVertex = 1
+
+        canvas.boundedMoveVertex(QtCore.QPointF(40.4, 10.2))
+
+        assert left.points[1].x() == 40.0
+        assert left.points[1].y() == 10.0
+        assert right.points[0].x() == 40.0
+        assert right.points[0].y() == 10.0
+        assert left.shared_vertex_id(1) == right.shared_vertex_id(0)
+        assert left.shared_vertex_id(1) not in {None, ""}
+    finally:
+        canvas.close()
+
+
+def test_canvas_polygon_closes_normally_after_shared_topology_update() -> None:
+    _ensure_qapp()
+
+    canvas = Canvas()
+    try:
+        canvas.mode = canvas.CREATE
+        canvas.createMode = "polygon"
+        current = Shape(shape_type="polygon")
+        for point in [(20.0, 20.0), (80.0, 20.0), (80.0, 80.0)]:
+            current.addPoint(QtCore.QPointF(*point))
+        canvas.current = current
+        canvas.finalise()
+
+        assert len(canvas.shapes) == 1
+        assert canvas.shapes[0].shape_type == "polygon"
+        assert canvas.shapes[0].isClosed() is True
+        assert len(canvas.shapes[0].points) == 3
+    finally:
+        canvas.close()
+
+
+def test_canvas_polygon_closes_when_clicking_near_first_vertex() -> None:
+    _ensure_qapp()
+
+    canvas = Canvas()
+    try:
+        canvas.pixmap = QtGui.QPixmap(200, 200)
+        canvas.pixmap.fill(QtCore.Qt.white)
+        canvas.resize(640, 480)
+        canvas.mode = canvas.CREATE
+        canvas.createMode = "polygon"
+        current = Shape(shape_type="polygon")
+        for point in [(20.0, 20.0), (80.0, 20.0), (80.0, 80.0)]:
+            current.addPoint(QtCore.QPointF(*point))
+        canvas.current = current
+        canvas.line.points = [current.points[-1], current.points[-1]]
+        canvas.line.point_labels = [1, 1]
+
+        near_first = QtCore.QPointF(22.0, 21.5)
+        local_pos = canvas.offsetToCenter() + near_first
+        event = QtGui.QMouseEvent(
+            QtCore.QEvent.MouseButtonPress,
+            local_pos,
+            local_pos,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.NoModifier,
+        )
+        canvas.mousePressEvent(event)
+
+        assert len(canvas.shapes) == 1
+        assert canvas.shapes[0].isClosed() is True
+        assert len(canvas.shapes[0].points) == 3
+    finally:
+        canvas.close()
+
+
+def test_open_polygon_keeps_edge_ids_unassigned_until_commit() -> None:
+    _ensure_qapp()
+
+    polygon = Shape(shape_type="polygon")
+    polygon.addPoint(QtCore.QPointF(10.0, 10.0))
+    polygon.addPoint(QtCore.QPointF(20.0, 10.0))
+    polygon.addPoint(QtCore.QPointF(20.0, 20.0))
+
+    assert polygon.isClosed() is False
+    assert len(polygon.shared_edge_ids) == len(polygon.points)
+    assert all(not edge_id for edge_id in polygon.shared_edge_ids)
+
+    polygon.close()
+    rebuild_polygon_topology([polygon])
+
+    assert len(polygon.shared_edge_ids) == len(polygon.points)
+    assert any(edge_id for edge_id in polygon.shared_edge_ids)
+
+
+def test_rebuild_polygon_topology_assigns_shared_edge_ids_for_shared_boundary() -> None:
+    _ensure_qapp()
+
+    left = Shape(label="left", shape_type="polygon")
+    for point in [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)]:
+        left.addPoint(QtCore.QPointF(*point))
+    left.close()
+
+    right = Shape(label="right", shape_type="polygon")
+    for point in [(20.0, 10.0), (30.0, 10.0), (30.0, 20.0), (20.0, 20.0)]:
+        right.addPoint(QtCore.QPointF(*point))
+    right.close()
+
+    shared_vertices = {
+        "a": "shared-a",
+        "b": "shared-b",
+    }
+    left.set_shared_vertex_id(1, shared_vertices["a"])
+    left.set_shared_vertex_id(2, shared_vertices["b"])
+    right.set_shared_vertex_id(0, shared_vertices["a"])
+    right.set_shared_vertex_id(3, shared_vertices["b"])
+
+    rebuild_polygon_topology([left, right])
+
+    assert left.shared_edge_id(2)
+    assert left.shared_edge_id(2) == right.shared_edge_id(0)
+
+
+def test_shared_topology_registry_tracks_shared_memberships() -> None:
+    _ensure_qapp()
+
+    left = Shape(label="left", shape_type="polygon")
+    for point in [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)]:
+        left.addPoint(QtCore.QPointF(*point))
+    left.close()
+
+    right = Shape(label="right", shape_type="polygon")
+    for point in [(20.0, 10.0), (30.0, 10.0), (30.0, 20.0), (20.0, 20.0)]:
+        right.addPoint(QtCore.QPointF(*point))
+    right.close()
+
+    left.set_shared_vertex_id(1, "shared-a")
+    left.set_shared_vertex_id(2, "shared-b")
+    right.set_shared_vertex_id(0, "shared-a")
+    right.set_shared_vertex_id(3, "shared-b")
+
+    registry = SharedTopologyRegistry.from_shapes([left, right])
+
+    assert registry.vertex_occurrences("shared-a")
+    assert registry.vertex_occurrences("shared-b")
+    assert len(registry.vertex_occurrences("shared-a")) == 2
+    assert len(registry.vertex_occurrences("shared-b")) == 2
+    assert left.shared_edge_id(2)
+    assert left.shared_edge_id(2) == right.shared_edge_id(0)
+    assert registry.edge_occurrences(left.shared_edge_id(2))
+
+
+def test_shared_topology_registry_reshapes_shared_boundary_for_all_related_polygons() -> (
+    None
+):
+    _ensure_qapp()
+
+    left = Shape(label="left", shape_type="polygon")
+    for point in [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)]:
+        left.addPoint(QtCore.QPointF(*point))
+    left.close()
+
+    right = Shape(label="right", shape_type="polygon")
+    for point in [(20.0, 10.0), (30.0, 10.0), (30.0, 20.0), (20.0, 20.0)]:
+        right.addPoint(QtCore.QPointF(*point))
+    right.close()
+
+    left.set_shared_vertex_id(1, "shared-a")
+    left.set_shared_vertex_id(2, "shared-b")
+    right.set_shared_vertex_id(0, "shared-a")
+    right.set_shared_vertex_id(3, "shared-b")
+    registry = SharedTopologyRegistry.from_shapes([left, right])
+
+    edge_id = left.shared_edge_id(2)
+    result = registry.reshape_edge(left, 2, QtCore.QPointF(0.0, 5.0))
+
+    assert result is not None
+    assert left.shared_edge_id(2) == edge_id
+    assert right.shared_edge_id(0) == edge_id
+    assert left.points[1] == QtCore.QPointF(20.0, 15.0)
+    assert left.points[2] == QtCore.QPointF(20.0, 25.0)
+    assert right.points[0] == QtCore.QPointF(20.0, 15.0)
+    assert right.points[3] == QtCore.QPointF(20.0, 25.0)
+
+
+def test_insert_shared_vertex_on_edge_updates_all_related_polygons() -> None:
+    _ensure_qapp()
+
+    left = Shape(label="left", shape_type="polygon")
+    for point in [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)]:
+        left.addPoint(QtCore.QPointF(*point))
+    left.close()
+
+    right = Shape(label="right", shape_type="polygon")
+    for point in [(20.0, 10.0), (30.0, 10.0), (30.0, 20.0), (20.0, 20.0)]:
+        right.addPoint(QtCore.QPointF(*point))
+    right.close()
+
+    left.set_shared_vertex_id(1, "shared-a")
+    left.set_shared_vertex_id(2, "shared-b")
+    right.set_shared_vertex_id(0, "shared-a")
+    right.set_shared_vertex_id(3, "shared-b")
+    rebuild_polygon_topology([left, right])
+
+    result = insert_shared_vertex_on_edge(
+        left,
+        2,
+        QtCore.QPointF(20.0, 15.0),
+        [left, right],
+    )
+
+    assert result is not None
+    assert len(left.points) == 5
+    assert len(right.points) == 5
+    assert left.points[2] == QtCore.QPointF(20.0, 15.0)
+    assert right.points[0] == QtCore.QPointF(20.0, 15.0)
+    assert left.shared_vertex_id(2) == right.shared_vertex_id(0)
+    assert left.shared_vertex_id(2) not in {None, ""}
+
+
+def test_remove_shared_vertex_at_updates_all_related_polygons() -> None:
+    _ensure_qapp()
+
+    left = Shape(label="left", shape_type="polygon")
+    for point in [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)]:
+        left.addPoint(QtCore.QPointF(*point))
+    left.close()
+
+    right = Shape(label="right", shape_type="polygon")
+    for point in [(20.0, 10.0), (30.0, 10.0), (30.0, 20.0), (20.0, 20.0)]:
+        right.addPoint(QtCore.QPointF(*point))
+    right.close()
+
+    left.set_shared_vertex_id(1, "shared-a")
+    left.set_shared_vertex_id(2, "shared-b")
+    right.set_shared_vertex_id(0, "shared-a")
+    right.set_shared_vertex_id(3, "shared-b")
+    rebuild_polygon_topology([left, right])
+
+    insert_shared_vertex_on_edge(
+        left,
+        2,
+        QtCore.QPointF(20.0, 15.0),
+        [left, right],
+    )
+
+    result = remove_shared_vertex_at(left, 2, [left, right])
+
+    assert result is not None
+    assert len(left.points) == 4
+    assert len(right.points) == 4
+    assert all(point != QtCore.QPointF(20.0, 15.0) for point in left.points)
+    assert all(point != QtCore.QPointF(20.0, 15.0) for point in right.points)
+
+
+def test_remove_shared_vertex_at_falls_back_to_single_polygon_vertex_delete() -> None:
+    _ensure_qapp()
+
+    shape = Shape(label="solo", shape_type="polygon")
+    for point in [(5.0, 5.0), (50.0, 5.0), (50.0, 50.0), (5.0, 50.0)]:
+        shape.addPoint(QtCore.QPointF(*point))
+    shape.close()
+
+    result = remove_shared_vertex_at(shape, 1, [shape])
+
+    assert result is not None
+    assert len(shape.points) == 3

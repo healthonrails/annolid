@@ -18,6 +18,7 @@ from annolid.annotation.keypoint_visibility import (
 )
 from annolid.annotation.pose_schema import PoseSchema
 from annolid.gui.shape import Shape, MaskShape, MultipoinstShape
+from annolid.gui.shared_vertices import SharedTopologyRegistry
 from annolid.gui.window_base import QT5
 from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 from annolid.utils.annotation_compat import AI_MODELS
@@ -34,6 +35,7 @@ from annolid.gui.widgets.ai_polygon_helpers import (
     predict_ai_polygon_points as _ai_predict,
     simplify_ai_polygon_points as _ai_simplify,
 )
+from annolid.gui.mixins.shared_polygon_edit_mixin import SharedPolygonEditMixin
 # TODO(unknown):
 # - [maybe] Find optimal epsilon value.
 
@@ -47,7 +49,7 @@ CURSOR_GRAB = QtCore.Qt.OpenHandCursor
 MOVE_SPEED = 5.0
 
 
-class Canvas(QtWidgets.QWidget):
+class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
     zoomRequest = QtCore.Signal(int, QtCore.QPoint)
     scrollRequest = QtCore.Signal(int, object)
     newShape = QtCore.Signal()
@@ -128,6 +130,7 @@ class Canvas(QtWidgets.QWidget):
         self.movingShape = False
         self.snapping = True
         self.hShapeIsSelected = False
+        self._adjoining_source_shape = None
         self._cursor = CURSOR_DEFAULT
         self.mouse_xy_text = ""
         self._icons_dir = Path(__file__).resolve().parents[1] / "icons"
@@ -148,12 +151,19 @@ class Canvas(QtWidgets.QWidget):
         self.setFocusPolicy(QtCore.Qt.WheelFocus)
         self._ai_model = None
         self._ai_model_pixmap_key = None
+        self._ai_model_image_signature = None
         self._ai_model_rect = None
         self.sam_predictor = None
         self.sam_hq_model = None
         self.sam_mask = MaskShape()
         self._sam_predictor_missing_logged = False
         self._sam_last_load_error = None
+        self._shared_topology_registry = SharedTopologyRegistry.from_shapes([])
+        self._shared_boundary_reshape_mode = False
+        self._shared_boundary_shape = None
+        self._shared_boundary_edge_index = None
+        self._dragging_shared_boundary = False
+        self._shared_boundary_last_pos = None
         self.behavior_text_position = "top-left"  # Default position
         self.behavior_text_color = QtGui.QColor(255, 255, 255)
         # Semi-transparent background keeps overlay text readable on bright images
@@ -203,6 +213,69 @@ class Canvas(QtWidgets.QWidget):
 
     def setFillDrawing(self, value):
         self._fill_drawing = value
+
+    def _selected_polygon_source(self):
+        for shape in self.selectedShapes or []:
+            if (
+                str(getattr(shape, "shape_type", "") or "").lower() == "polygon"
+                and len(getattr(shape, "points", []) or []) >= 2
+            ):
+                return shape
+        return None
+
+    def _adjoining_boundary_source(self):
+        source = getattr(self, "_adjoining_source_shape", None)
+        if source is not None and source in (self.shapes or []):
+            return source
+        return self._selected_polygon_source()
+
+    def _shared_boundary_source(self):
+        shape = self.hShape if self.hEdge is not None else None
+        edge_index = self.hEdge if self.hEdge is not None else None
+        if shape is None or edge_index is None:
+            return None, None
+        if str(getattr(shape, "shape_type", "") or "").lower() != "polygon":
+            return None, None
+        edge_id = None
+        try:
+            edge_id = shape.shared_edge_id(int(edge_index))
+        except Exception:
+            edge_id = None
+        if not edge_id:
+            return None, None
+        try:
+            registry = getattr(self, "_shared_topology_registry", None)
+            if isinstance(registry, SharedTopologyRegistry):
+                if len(registry.edge_occurrences(edge_id)) < 2:
+                    return None, None
+        except Exception:
+            return None, None
+        return shape, int(edge_index)
+
+    def _clear_adjoining_source(self):
+        self._adjoining_source_shape = None
+
+    def _sync_shared_vertex(self, shape, index, point=None):
+        try:
+            return self._shared_sync_vertex(shape, index, point=point)
+        except Exception:
+            logger.debug("Failed to synchronize shared vertex.", exc_info=True)
+            return None
+
+    def _snap_to_adjoining_boundary(self, pos):
+        source = self._adjoining_boundary_source()
+        if source is None or str(self.createMode or "").lower() != "polygon":
+            return QtCore.QPointF(pos), None
+        epsilon = max(1.0, float(self.epsilon) / max(self.scale, 1e-6))
+        feature = getattr(source, "nearest_boundary_feature", None)
+        if callable(feature):
+            try:
+                boundary = feature(QtCore.QPointF(pos), epsilon)
+            except Exception:
+                boundary = None
+            if boundary is not None:
+                return QtCore.QPointF(boundary["point"]), boundary
+        return QtCore.QPointF(pos), None
 
     def setCaption(self, text):
         self.caption_label.setText(text)
@@ -643,16 +716,45 @@ class Canvas(QtWidgets.QWidget):
             return False
         if self.pixmap is None or self.pixmap.isNull():
             return False
-        pixmap_key = int(self.pixmap.cacheKey())
-        if not force and self._ai_model_pixmap_key == pixmap_key:
+        source_signature = self._ai_model_image_signature_value()
+        if not force and self._ai_model_image_signature == source_signature:
             return True
         try:
             self._ai_model.set_image(image=utils.img_qt_to_arr(self.pixmap.toImage()))
-            self._ai_model_pixmap_key = pixmap_key
+            self._ai_model_pixmap_key = int(self.pixmap.cacheKey())
+            self._ai_model_image_signature = source_signature
             return True
         except Exception:
             logger.debug("Failed to sync AI model image.", exc_info=True)
             return False
+
+    def _ai_model_image_signature_value(self):
+        candidates = []
+        try:
+            candidates.append(self.window())
+        except Exception:
+            pass
+        candidates.append(self)
+        for owner in candidates:
+            if owner is None:
+                continue
+            source_path = str(
+                getattr(owner, "filename", "") or getattr(owner, "imagePath", "") or ""
+            ).strip()
+            frame_number = getattr(owner, "frame_number", None)
+            if source_path:
+                if frame_number is not None:
+                    try:
+                        return (source_path, int(frame_number))
+                    except Exception:
+                        return (source_path, None)
+                return (source_path, None)
+        if self.pixmap is None or self.pixmap.isNull():
+            return None
+        try:
+            return ("pixmap", int(self.pixmap.cacheKey()))
+        except Exception:
+            return None
 
     def _ensure_ai_model_initialized(self, *, force_sync: bool = False) -> bool:
         if self._ai_model is not None:
@@ -991,6 +1093,7 @@ class Canvas(QtWidgets.QWidget):
         # push this right back onto the stack.
         shapesBackup = self.shapesBackups.pop()
         self.shapes = shapesBackup
+        self._shared_topology_registry = SharedTopologyRegistry.from_shapes(self.shapes)
         self.selectedShapes = []
         for shape in self.shapes:
             shape.selected = False
@@ -1001,9 +1104,11 @@ class Canvas(QtWidgets.QWidget):
 
     def leaveEvent(self, ev):
         self.unHighlight()
+        self._clearSharedBoundaryReshape()
         self.restoreCursor()
 
     def focusOutEvent(self, ev):
+        self._clearSharedBoundaryReshape()
         self.restoreCursor()
 
     def isVisible(self, shape):
@@ -1024,10 +1129,13 @@ class Canvas(QtWidgets.QWidget):
         if self.mode == self.EDIT:
             # CREATE -> EDIT
             self._clear_preview_line()
+            self._clear_adjoining_source()
+            self._clearSharedBoundaryReshape()
             self.repaint()  # clear crosshair
         else:
             # EDIT -> CREATE
             self.unHighlight()
+            self._clearSharedBoundaryReshape()
             self.deSelectShape()
 
     def unHighlight(self):
@@ -1075,6 +1183,7 @@ class Canvas(QtWidgets.QWidget):
                 )
 
             self.overrideCursor(CURSOR_DRAW)
+            adjoining_pos, adjoining_feature = self._snap_to_adjoining_boundary(pos)
             if not self.current:
                 if self.createMode == "polygonSAM":
                     points = np.array([[pos.x(), pos.y()]])
@@ -1083,21 +1192,27 @@ class Canvas(QtWidgets.QWidget):
                 self.repaint()  # draw crosshair
                 return
 
-            if self.outOfPixmap(pos):
+            if self.outOfPixmap(adjoining_pos):
                 # Don't allow the user to draw outside the pixmap.
                 # Project the point to the pixmap's edges.
-                pos = self.intersectionPoint(self.current[-1], pos)
+                pos = self.intersectionPoint(self.current[-1], adjoining_pos)
             elif (
                 self.snapping
                 and len(self.current) > 1
                 and self.createMode == "polygon"
-                and self.closeEnough(pos, self.current[0])
+                and self.closeEnough(adjoining_pos, self.current[0])
             ):
                 # Attract line to starting point and
                 # colorise to alert the user.
                 pos = self.current[0]
                 self.overrideCursor(CURSOR_POINT)
                 self.current.highlightVertex(0, Shape.NEAR_VERTEX)
+            elif self.createMode == "polygon" and adjoining_feature is not None:
+                pos = adjoining_pos
+            elif self.createMode == "polygon":
+                close_target = self._polygon_close_target(adjoining_pos)
+                if close_target is not None:
+                    pos = close_target
             if self.createMode in ["polygon", "linestrip"]:
                 self.line.points = [self.current[-1], pos]
                 self.line.point_labels = [1, 1]
@@ -1138,6 +1253,16 @@ class Canvas(QtWidgets.QWidget):
 
         # Polygon/Vertex moving.
         if QtCore.Qt.LeftButton & ev.buttons():
+            if self._dragging_shared_boundary and self._shared_boundary_last_pos:
+                delta = QtCore.QPointF(
+                    float(pos.x()) - float(self._shared_boundary_last_pos.x()),
+                    float(pos.y()) - float(self._shared_boundary_last_pos.y()),
+                )
+                if self._reshapeSharedBoundaryBy(delta):
+                    self._shared_boundary_last_pos = QtCore.QPointF(pos)
+                    self.movingShape = True
+                    self.repaint()
+                return
             if self.selectedVertex():
                 self.boundedMoveVertex(pos)
                 self.repaint()
@@ -1215,7 +1340,7 @@ class Canvas(QtWidgets.QWidget):
         point = self.prevMovePoint
         if shape is None or index is None or point is None:
             return
-        shape.insertPoint(index, point)
+        self._shared_insert_vertex_on_edge(shape, index, point)
         shape.highlightVertex(index, shape.MOVE_VERTEX)
         self.hShape = shape
         self.hVertex = index
@@ -1229,9 +1354,7 @@ class Canvas(QtWidgets.QWidget):
             return False
         if index < 0 or index >= len(shape.points):
             return False
-        point_count_before = len(shape.points)
-        shape.removePoint(index)
-        if len(shape.points) == point_count_before:
+        if not self._shared_remove_vertex(shape, index):
             return False
         shape.highlightClear()
         self.hShape = shape
@@ -1247,6 +1370,7 @@ class Canvas(QtWidgets.QWidget):
         self.prevhEdge = None
         self.movingShape = True  # Save changes
         self.vertexSelected.emit(self.hVertex is not None)
+        self.update()
         return True
 
     def _boundary_polygon_source(self):
@@ -1259,36 +1383,86 @@ class Canvas(QtWidgets.QWidget):
             return self.hShape, self.hEdge
         return None, None
 
-    def canStartAdjoiningPolygon(self) -> bool:
-        shape, edge_index = self._boundary_polygon_source()
-        if shape is not None and edge_index is not None:
-            return bool(
-                getattr(shape, "adjoining_polygon_seed", lambda _idx: None)(edge_index)
-            )
-        return bool(
-            any(
+    def _selected_polygon_source(self):
+        for item in self.selectedShapes or []:
+            if (
                 str(getattr(item, "shape_type", "") or "").lower() == "polygon"
                 and len(getattr(item, "points", []) or []) >= 2
-                for item in (self.selectedShapes or [])
-            )
-        )
+            ):
+                return item
+        return None
 
-    def adjoiningPolygonSeed(self):
-        shape, edge_index = self._boundary_polygon_source()
-        if shape is None or edge_index is None:
+    def _selected_shared_boundary_candidate(self):
+        shape = self._selected_polygon_source()
+        if shape is None:
             return None
-        return getattr(shape, "adjoining_polygon_seed", lambda _idx: None)(edge_index)
+        registry = getattr(self, "_shared_topology_registry", None)
+        if not isinstance(registry, SharedTopologyRegistry):
+            return None
+        for edge_id in list(getattr(shape, "shared_edge_ids", []) or []):
+            if not edge_id:
+                continue
+            try:
+                if len(registry.edge_occurrences(edge_id)) >= 2:
+                    return shape
+            except Exception:
+                continue
+        return None
+
+    def canStartAdjoiningPolygon(self) -> bool:
+        return self._selected_polygon_source() is not None
+
+    def canStartSharedBoundaryReshape(self) -> bool:
+        shape, edge_index = self._shared_boundary_source()
+        if shape is not None and edge_index is not None:
+            return True
+        return self._selected_shared_boundary_candidate() is not None
+
+    def startSharedBoundaryReshape(self) -> bool:
+        shape, edge_index = self._shared_boundary_source()
+        if shape is None or edge_index is None:
+            shape = self._selected_shared_boundary_candidate()
+            edge_index = None
+        if shape is None:
+            return False
+        self._shared_boundary_reshape_mode = True
+        self._shared_boundary_shape = shape
+        self._shared_boundary_edge_index = (
+            int(edge_index) if edge_index is not None else None
+        )
+        self._dragging_shared_boundary = False
+        self._shared_boundary_last_pos = None
+        self.overrideCursor(CURSOR_MOVE)
+        self.update()
+        return True
+
+    def _clearSharedBoundaryReshape(self) -> None:
+        self._shared_boundary_reshape_mode = False
+        self._shared_boundary_shape = None
+        self._shared_boundary_edge_index = None
+        self._dragging_shared_boundary = False
+        self._shared_boundary_last_pos = None
+
+    def _reshapeSharedBoundaryBy(self, delta) -> bool:
+        shape = self._shared_boundary_shape
+        edge_index = self._shared_boundary_edge_index
+        if shape is None or edge_index is None:
+            return False
+        if not self._shared_reshape_boundary(shape, int(edge_index), delta):
+            return False
+        return True
 
     def beginAdjoiningPolygonFromSeed(self, seed_shape) -> bool:
         if seed_shape is None:
             return False
-        self.current = seed_shape
-        self.current.setOpen()
-        self.current.fill = self.fillDrawing()
+        seed = seed_shape
         self.mode = self.CREATE
         self.createMode = "polygon"
+        self.current = seed
+        self.current.setOpen()
+        self.current.fill = self.fillDrawing()
         self.line.shape_type = "polygon"
-        last_point = QtCore.QPointF(self.current.points[-1])
+        last_point = QtCore.QPointF(seed.points[-1])
         self.line.points = [QtCore.QPointF(last_point), QtCore.QPointF(last_point)]
         self.line.point_labels = [1, 1]
         self.setHiding()
@@ -1296,11 +1470,14 @@ class Canvas(QtWidgets.QWidget):
         self.update()
         return True
 
-    def startAdjoiningPolygonFromSelection(self) -> bool:
-        shape, edge_index = self._boundary_polygon_source()
-        if shape is None or edge_index is None:
+    def startAdjoiningPolygonFromSelection(self, edge_index=None) -> bool:
+        shape = self._selected_polygon_source()
+        if shape is None:
             return False
-        seed = getattr(shape, "adjoining_polygon_seed", lambda _idx: None)(edge_index)
+        seed = self._shared_adjoining_seed_for_shape(shape, edge_index=edge_index)
+        if seed is None:
+            return False
+        self._adjoining_source_shape = shape
         return self.beginAdjoiningPolygonFromSeed(seed)
 
     def _icon(self, filename: str) -> QtGui.QIcon:
@@ -1488,17 +1665,15 @@ class Canvas(QtWidgets.QWidget):
         can_start_adjoining = bool(
             getattr(editor, "canStartAdjoiningPolygon", lambda: False)()
         ) or bool(getattr(tiled_editor, "canStartAdjoiningPolygon", lambda: False)())
-        if not can_start_adjoining:
-            can_start_adjoining = any(
-                str(getattr(item, "shape_type", "") or "").lower() == "polygon"
-                and len(getattr(item, "points", []) or []) >= 2
-                for item in selected_shapes
-            )
-
+        can_start_boundary_reshape = bool(
+            getattr(editor, "canStartSharedBoundaryReshape", lambda: False)()
+        ) or bool(
+            getattr(tiled_editor, "canStartSharedBoundaryReshape", lambda: False)()
+        )
         # ------------------------------------------------------------
         # Shape operations
         # ------------------------------------------------------------
-        if selected_shapes or can_start_adjoining:
+        if selected_shapes or can_start_adjoining or can_start_boundary_reshape:
             menu.addSeparator()
             if selected_shapes:
                 propagate_action = QtWidgets.QAction(
@@ -1523,6 +1698,28 @@ class Canvas(QtWidgets.QWidget):
                     _add_existing_action(
                         adjoining_action, icon_filename="duplicate_polygons.svg"
                     )
+                if can_start_boundary_reshape:
+                    boundary_reshape_action = QtWidgets.QAction(
+                        self._icon("edit_polygons.svg"),
+                        "Reshape Shared Boundary",
+                        menu,
+                    )
+                    if boundary_reshape_action.icon().isNull():
+                        boundary_reshape_action.setIcon(
+                            self.style().standardIcon(
+                                QtWidgets.QStyle.SP_DialogApplyButton
+                            )
+                        )
+
+                    def _trigger_boundary_reshape():
+                        starter = getattr(
+                            main_window, "startSharedBoundaryReshape", None
+                        )
+                        if callable(starter):
+                            starter()
+
+                    boundary_reshape_action.triggered.connect(_trigger_boundary_reshape)
+                    menu.addAction(boundary_reshape_action)
                 if selected_shapes:
                     delete_action = getattr(actions, "deleteShapes", None)
                     _add_existing_action(
@@ -1573,10 +1770,22 @@ class Canvas(QtWidgets.QWidget):
 
         if ev.button() == QtCore.Qt.LeftButton:
             if self.drawing():
+                snapped_pos, adjoining_feature = self._snap_to_adjoining_boundary(pos)
                 if self.current:
                     # Add point to existing shape.
                     if self.createMode == "polygon":
-                        self.current.addPoint(self.line[1])
+                        close_target = self._polygon_close_target(snapped_pos)
+                        if close_target is not None:
+                            snapped_pos = close_target
+                        self.current.addPoint(snapped_pos)
+                        if close_target is None and adjoining_feature is not None:
+                            self._shared_link_adjoining_point(
+                                self.current,
+                                len(self.current.points) - 1,
+                                snapped_pos,
+                                self._adjoining_boundary_source(),
+                                adjoining_feature,
+                            )
                         self.line[0] = self.current[-1]
                         if self.current.isClosed():
                             self.finalise()
@@ -1616,7 +1825,9 @@ class Canvas(QtWidgets.QWidget):
                             in ["ai_polygon", "ai_mask", "grounding_sam"]
                             else self.createMode
                         )
-                        self.current.addPoint(pos, label=0 if is_shift_pressed else 1)
+                        self.current.addPoint(
+                            snapped_pos, label=0 if is_shift_pressed else 1
+                        )
                         if self.createMode == "point":
                             if is_shift_pressed:
                                 set_keypoint_visibility_on_shape_object(
@@ -1632,7 +1843,7 @@ class Canvas(QtWidgets.QWidget):
                         else:
                             if self.createMode == "circle":
                                 self.current.shape_type = "circle"
-                            self.line.points = [pos, pos]
+                            self.line.points = [snapped_pos, snapped_pos]
                             if (
                                 self.createMode
                                 in ["ai_polygon", "ai_mask", "grounding_sam"]
@@ -1648,6 +1859,18 @@ class Canvas(QtWidgets.QWidget):
                         self.current = MultipoinstShape()
                         self.current.addPoint(pos, True)
             elif self.editing():
+                if self._shared_boundary_reshape_mode:
+                    shape, edge_index = self._shared_boundary_source()
+                    if shape is not None and edge_index is not None:
+                        self._shared_boundary_shape = shape
+                        self._shared_boundary_edge_index = edge_index
+                        self._dragging_shared_boundary = True
+                        self._shared_boundary_last_pos = QtCore.QPointF(pos)
+                        self.overrideCursor(CURSOR_MOVE)
+                        self.repaint()
+                        return
+                    ev.accept()
+                    return
                 if self.selectedEdge():
                     self.addPointToEdge()
                 elif (
@@ -1712,6 +1935,18 @@ class Canvas(QtWidgets.QWidget):
                     self.repaint()
         elif ev.button() == QtCore.Qt.LeftButton:
             if self.editing():
+                if self._dragging_shared_boundary:
+                    self._dragging_shared_boundary = False
+                    self._shared_boundary_last_pos = None
+                    self._clearSharedBoundaryReshape()
+                    self._shared_finalize_topology_edit()
+                    if self.movingShape:
+                        self.storeShapes()
+                        self.shapeMoved.emit()
+                    self.movingShape = False
+                    self.repaint()
+                    ev.accept()
+                    return
                 if (
                     self.hShape is not None
                     and self.hShapeIsSelected
@@ -1728,6 +1963,7 @@ class Canvas(QtWidgets.QWidget):
         if self.movingShape and self.hShape:
             index = self.shapes.index(self.hShape)
             if self.shapesBackups[-1][index].points != self.shapes[index].points:
+                self._shared_finalize_topology_edit()
                 self.storeShapes()
                 self.shapeMoved.emit()
 
@@ -1746,6 +1982,7 @@ class Canvas(QtWidgets.QWidget):
                 self.selectedShapes[i].points = shape.points
         self.selectedShapesCopy = []
         self.repaint()
+        self._shared_finalize_topology_edit()
         self.storeShapes()
         return True
 
@@ -1861,6 +2098,7 @@ class Canvas(QtWidgets.QWidget):
         if self.outOfPixmap(pos):
             pos = self.intersectionPoint(point, pos)
         shape.moveVertexBy(index, pos - point)
+        self._sync_shared_vertex(shape, index, shape[index])
 
     def boundedMoveShapes(self, shapes, pos):
         if self.outOfPixmap(pos):
@@ -1881,8 +2119,11 @@ class Canvas(QtWidgets.QWidget):
         # self.calculateOffsets(self.selectedShapes, pos)
         dp = pos - self.prevPoint
         if dp:
-            for shape in shapes:
-                shape.moveBy(dp)
+            registry = getattr(self, "_shared_topology_registry", None)
+            if isinstance(registry, SharedTopologyRegistry):
+                registry.translate_shapes(shapes, dp)
+            else:
+                self._shared_move_selected_shapes(shapes, dp)
             self.prevPoint = pos
             return True
         return False
@@ -1904,6 +2145,7 @@ class Canvas(QtWidgets.QWidget):
                         del self.shapes[idx]
                         break
                 deleted_shapes.append(shape)
+            self._shared_finalize_topology_edit()
             self.storeShapes()
             self.selectedShapes = []
             # Keep the rest of the UI in sync (toolbar actions, label list).
@@ -1923,6 +2165,7 @@ class Canvas(QtWidgets.QWidget):
                 if s is shape:
                     del self.shapes[idx]
                     break
+        self._shared_finalize_topology_edit()
         self.storeShapes()
         if not self.selectedShapes:
             try:
@@ -2581,9 +2824,11 @@ class Canvas(QtWidgets.QWidget):
             self.shapes.append(self.sam_mask)
         else:
             self.shapes.append(self.current)
+        self._shared_finalize_topology_edit()
         self.storeShapes()
         self.sam_mask = MaskShape()
         self.current = None
+        self._clear_adjoining_source()
         self._clear_preview_line()
         self.setHiding(False)
         self.newShape.emit()
@@ -2595,6 +2840,15 @@ class Canvas(QtWidgets.QWidget):
         # print "d %.2f, m %d, %.2f" % (d, m, d - m)
         # divide by scale to allow more precision when zoomed in
         return utils.distance(p1 - p2) < (self.epsilon / self.scale)
+
+    def _polygon_close_target(self, pos):
+        if self.current is None or self.createMode != "polygon":
+            return None
+        if len(getattr(self.current, "points", []) or []) < 2:
+            return None
+        if pos is None:
+            return None
+        return self.current[0] if self.closeEnough(pos, self.current[0]) else None
 
     def intersectionPoint(self, p1, p2):
         # Cycle through each image edge in clockwise fashion,
@@ -2703,9 +2957,11 @@ class Canvas(QtWidgets.QWidget):
         if self.drawing():
             if key == QtCore.Qt.Key_Escape and self.current:
                 self.current = None
+                self._clear_adjoining_source()
                 self._clear_preview_line()
                 self.drawingPolygon.emit(False)
                 self.update()
+                self._clearSharedBoundaryReshape()
                 handled = True
             elif key == QtCore.Qt.Key_Return and self.canCloseShape():
                 self.finalise()
@@ -2734,6 +2990,11 @@ class Canvas(QtWidgets.QWidget):
                 handled = True
             elif key == QtCore.Qt.Key_Right:
                 self.moveByKeyboard(QtCore.QPointF(MOVE_SPEED, 0.0))
+                handled = True
+            elif key == QtCore.Qt.Key_Escape and self._shared_boundary_reshape_mode:
+                self._clearSharedBoundaryReshape()
+                self.restoreCursor()
+                self.update()
                 handled = True
         if handled:
             ev.accept()
@@ -2810,6 +3071,7 @@ class Canvas(QtWidgets.QWidget):
 
     def undoLastLine(self):
         assert self.shapes
+        self._clearSharedBoundaryReshape()
         self.current = self.shapes.pop()
         if self.createMode != "polygonSAM":
             self.current.setOpen()
@@ -2824,32 +3086,20 @@ class Canvas(QtWidgets.QWidget):
     def undoLastPoint(self):
         if not self.current or self.current.isClosed():
             return
+        self._clearSharedBoundaryReshape()
         self.current.popPoint()
         if len(self.current) > 0:
             self.line[0] = self.current[-1]
         else:
             self.current = None
+            self._clear_adjoining_source()
             self.drawingPolygon.emit(False)
         self.update()
 
     def loadPixmap(self, pixmap, clear_shapes=True):
-        previous_pixmap_key = None
-        if self.pixmap is not None and not self.pixmap.isNull():
-            try:
-                previous_pixmap_key = int(self.pixmap.cacheKey())
-            except Exception:
-                previous_pixmap_key = None
         self.pixmap = pixmap
-        if self.pixmap is not None and not self.pixmap.isNull():
-            try:
-                current_pixmap_key = int(self.pixmap.cacheKey())
-            except Exception:
-                current_pixmap_key = None
-        else:
-            current_pixmap_key = None
-        if current_pixmap_key != previous_pixmap_key:
-            self._ai_model_pixmap_key = None
-            self._sync_ai_model_image(force=True)
+        if self._ai_model is not None and self.pixmap is not None:
+            self._sync_ai_model_image(force=False)
         if clear_shapes:
             self.shapes = []
             self.sam_mask = MaskShape()
@@ -2924,6 +3174,7 @@ class Canvas(QtWidgets.QWidget):
         return detected_boxes
 
     def loadShapes(self, shapes, replace=True):
+        self._clearSharedBoundaryReshape()
         if replace:
             self.shapes = list(shapes)
             # Visibility is tracked per-shape identity; replacing shapes means
@@ -2931,6 +3182,7 @@ class Canvas(QtWidgets.QWidget):
             self.visible = {}
         else:
             self.shapes.extend(shapes)
+        self._shared_finalize_topology_edit()
         self.storeShapes()
         self.current = None
         self._clear_preview_line()
@@ -2942,7 +3194,9 @@ class Canvas(QtWidgets.QWidget):
 
     def setRealtimeShapes(self, shapes):
         """Replace shapes without touching the undo stack."""
+        self._clearSharedBoundaryReshape()
         self.shapes = list(shapes or [])
+        self._shared_finalize_topology_edit()
         self.current = None
         self._clear_preview_line()
         self.hShape = None
