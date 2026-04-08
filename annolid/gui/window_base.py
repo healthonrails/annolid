@@ -1542,6 +1542,19 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         except Exception:
             return default
 
+    def status(self, message: str, timeout: int = 4000) -> None:
+        """Compat status updater for mixins expecting LabelMe-like status()."""
+        try:
+            bar = self.statusBar()
+        except Exception:
+            bar = None
+        if bar is None:
+            return
+        try:
+            bar.showMessage(str(message), int(timeout))
+        except Exception:
+            pass
+
     def _post_window_status(self, message: str, timeout: int = 4000) -> None:
         image_path = str(getattr(self, "imagePath", "") or "")
         if (
