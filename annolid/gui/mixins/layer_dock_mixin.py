@@ -34,6 +34,10 @@ class LayerDockMixin:
         dock.layerVisibilityChanged.connect(self._onViewerLayerVisibilityChanged)
         dock.layerOpacityChanged.connect(self._onViewerLayerOpacityChanged)
         dock.layerSelected.connect(self._onViewerLayerSelected)
+        dock.layerTranslateRequested.connect(self._onViewerLayerTranslateRequested)
+        dock.layerResetTransformRequested.connect(
+            self._onViewerLayerResetTransformRequested
+        )
         dock.layerMoveRequested.connect(self._onViewerLayerMoveRequested)
         dock.layerRenameRequested.connect(self._onViewerLayerRenameRequested)
         dock.layerRemoveRequested.connect(self._onViewerLayerRemoveRequested)
@@ -65,6 +69,7 @@ class LayerDockMixin:
                 isinstance(layer, (RasterLabelLayer, VectorOverlayLayer))
                 or is_raster_overlay
             )
+            supports_translate = bool(is_raster_overlay)
             checkable = bool(
                 is_base_raster
                 or not isinstance(layer, RasterImageLayer)
@@ -76,6 +81,24 @@ class LayerDockMixin:
                 else:
                     details.append("Raster overlay image")
                 details.append(f"page {int(layer.backend_page_index) + 1}")
+                transform = getattr(layer, "transform", None)
+                if transform is not None:
+                    try:
+                        tx = float(getattr(transform, "tx", 0.0) or 0.0)
+                        ty = float(getattr(transform, "ty", 0.0) or 0.0)
+                        sx = float(getattr(transform, "sx", 1.0) or 1.0)
+                        sy = float(getattr(transform, "sy", 1.0) or 1.0)
+                        if (
+                            abs(tx) > 1e-6
+                            or abs(ty) > 1e-6
+                            or abs(sx - 1.0) > 1e-6
+                            or abs(sy - 1.0) > 1e-6
+                        ):
+                            details.append(
+                                f"offset=({tx:.1f}, {ty:.1f}) scale=({sx:.3f}, {sy:.3f})"
+                            )
+                    except Exception:
+                        pass
             elif isinstance(layer, RasterLabelLayer):
                 details.append("Label overlay")
                 details.append(f"page {int(layer.page_index) + 1}")
@@ -93,6 +116,7 @@ class LayerDockMixin:
                     "visible": bool(getattr(layer, "visible", True)),
                     "opacity": float(getattr(layer, "opacity", 1.0)),
                     "supports_opacity": supports_opacity,
+                    "supports_translate": supports_translate,
                     "supports_reorder": is_raster_overlay,
                     "checkable": checkable,
                     "details": " | ".join(details),
@@ -105,6 +129,18 @@ class LayerDockMixin:
         entries = self._viewerLayerEntries()
         dock.set_layers(entries)
         dock.setVisible(bool(entries))
+
+    def selectedViewerLayerId(self) -> str | None:
+        layer_id = str(getattr(self, "_selected_viewer_layer_id", "") or "")
+        return layer_id or None
+
+    def selectedRasterOverlayLayerId(self) -> str | None:
+        layer_id = self.selectedViewerLayerId()
+        if not layer_id:
+            return None
+        if self._is_raster_overlay_layer_id(layer_id):
+            return layer_id
+        return None
 
     def _setAnnotationLayerVisible(self, visible: bool) -> bool:
         canvas = getattr(self, "canvas", None)
@@ -215,6 +251,38 @@ class LayerDockMixin:
         if changed:
             self._refreshViewerLayerDock()
 
+    def _onViewerLayerTranslateRequested(
+        self, layer_id: str, dx: float, dy: float
+    ) -> None:
+        layer_id = str(layer_id or "")
+        if not layer_id:
+            return
+        changed = False
+        if self._is_raster_overlay_layer_id(layer_id) and hasattr(
+            self, "translateRasterImageLayer"
+        ):
+            changed = bool(
+                self.translateRasterImageLayer(layer_id, float(dx), float(dy))
+            )
+        if changed:
+            self._refreshViewerLayerDock()
+
+    def _onViewerLayerResetTransformRequested(self, layer_id: str) -> None:
+        layer_id = str(layer_id or "")
+        if not layer_id:
+            return
+        changed = False
+        if self._is_raster_overlay_layer_id(layer_id) and hasattr(
+            self, "setRasterImageLayerTransform"
+        ):
+            changed = bool(
+                self.setRasterImageLayerTransform(
+                    layer_id, tx=0.0, ty=0.0, sx=1.0, sy=1.0
+                )
+            )
+        if changed:
+            self._refreshViewerLayerDock()
+
     def _onViewerLayerMoveRequested(self, layer_id: str, direction: int) -> None:
         layer_id = str(layer_id or "")
         if not layer_id:
@@ -278,7 +346,9 @@ class LayerDockMixin:
     def _onViewerLayerSelected(self, layer_id: str) -> None:
         layer_id = str(layer_id or "")
         if not layer_id:
+            self._selected_viewer_layer_id = None
             return
+        self._selected_viewer_layer_id = layer_id
         vector_dock = getattr(self, "vector_overlay_dock", None)
         if layer_id.endswith("_landmarks"):
             overlay_id = layer_id[: -len("_landmarks")]

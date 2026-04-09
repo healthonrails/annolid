@@ -5,7 +5,7 @@ from pathlib import Path
 
 import tifffile
 import numpy as np
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtTest, QtWidgets
 
 from annolid.gui.mixins.label_image_overlay_mixin import LabelImageOverlayMixin
 from annolid.gui.mixins.annotation_loading_mixin import AnnotationLoadingMixin
@@ -19,7 +19,8 @@ from annolid.gui.shared_vertices import insert_shared_vertex_on_edge
 from annolid.gui.shared_vertices import remove_shared_vertex_at
 from annolid.gui.shared_vertices import rebuild_polygon_topology
 from annolid.gui.widgets.canvas import Canvas
-from annolid.gui.widgets.tiled_image_view import TiledImageView
+from annolid.gui.widgets.layer_dock import ViewerLayerDockWidget
+from annolid.gui.widgets.tiled_image_view import TileKey, TiledImageView
 from annolid.gui.window_base import AnnolidWindowBase
 from annolid.io.large_image.tifffile_backend import TiffFileBackend
 
@@ -36,6 +37,39 @@ def _ensure_qapp():
         app = QtWidgets.QApplication([])
     _QAPP = app
     return _QAPP
+
+
+def _send_mouse_drag(view, start: QtCore.QPoint, end: QtCore.QPoint) -> None:
+    viewport = view.viewport()
+    global_start = viewport.mapToGlobal(start)
+    global_end = viewport.mapToGlobal(end)
+    press = QtGui.QMouseEvent(
+        QtCore.QEvent.MouseButtonPress,
+        QtCore.QPointF(start),
+        QtCore.QPointF(global_start),
+        QtCore.Qt.LeftButton,
+        QtCore.Qt.LeftButton,
+        QtCore.Qt.NoModifier,
+    )
+    move = QtGui.QMouseEvent(
+        QtCore.QEvent.MouseMove,
+        QtCore.QPointF(end),
+        QtCore.QPointF(global_end),
+        QtCore.Qt.NoButton,
+        QtCore.Qt.LeftButton,
+        QtCore.Qt.NoModifier,
+    )
+    release = QtGui.QMouseEvent(
+        QtCore.QEvent.MouseButtonRelease,
+        QtCore.QPointF(end),
+        QtCore.QPointF(global_end),
+        QtCore.Qt.LeftButton,
+        QtCore.Qt.NoButton,
+        QtCore.Qt.NoModifier,
+    )
+    view.mousePressEvent(press)
+    view.mouseMoveEvent(move)
+    view.mouseReleaseEvent(release)
 
 
 class _CanvasStub(QtWidgets.QWidget):
@@ -449,12 +483,68 @@ def test_viewer_layer_dock_controls_raster_overlay_layer_visibility(
         )
         assert overlay_entry["checkable"] is True
         assert overlay_entry["visible"] is True
+        assert overlay_entry["supports_translate"] is True
 
         changed = window.setRasterImageLayerVisible("raster_overlay_test", False)
         assert changed is True
         state_after = window.large_image_view.raster_overlay_layers_state()
         assert state_after[0]["visible"] is False
         assert window.otherData["raster_image_layers"][0]["visible"] is False
+    finally:
+        window.close()
+
+
+def test_viewer_layer_dock_move_down_keeps_raster_overlay_visible(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_move_down.ome.tiff"
+    overlay_path = tmp_path / "overlay_move_down.ome.tiff"
+    tifffile.imwrite(base_path, np.zeros((24, 24), dtype=np.uint16), ome=True)
+    tifffile.imwrite(overlay_path, np.ones((24, 24), dtype=np.uint16), ome=True)
+
+    window = _ViewerLayerWindow()
+    try:
+        window.imagePath = str(base_path)
+        window.large_image_backend = TiffFileBackend(base_path)
+        window.large_image_view._content_size = (24, 24)
+        window.large_image_view.set_backend(window.large_image_backend)
+        window.otherData = {
+            "raster_image_layers": [
+                {
+                    "id": "raster_overlay_move",
+                    "name": "overlay move",
+                    "source_path": str(overlay_path),
+                    "visible": True,
+                    "opacity": 1.0,
+                    "page_index": 0,
+                    "z_index": 10,
+                }
+            ]
+        }
+        window._restoreRasterImageLayersFromState()
+        window._syncLargeImageDocument()
+        runtime_before = window.large_image_view._raster_overlay_layers[
+            "raster_overlay_move"
+        ]
+        backend_before = runtime_before.backend
+
+        before_layers = {
+            layer.id: layer.z_index for layer in window.viewerLayerModels()
+        }
+        changed = window.moveRasterImageLayer("raster_overlay_move", 1)
+        assert changed is True
+        after_layers = {layer.id: layer.z_index for layer in window.viewerLayerModels()}
+        assert after_layers["raster_overlay_move"] > before_layers["raster_image"]
+        assert (
+            window.large_image_view.raster_overlay_layers_state()[0]["visible"] is True
+        )
+        runtime_after = window.large_image_view._raster_overlay_layers[
+            "raster_overlay_move"
+        ]
+        assert runtime_after is runtime_before
+        assert runtime_after.backend is backend_before
     finally:
         window.close()
 
@@ -509,6 +599,398 @@ def test_viewer_layer_dock_allows_toggling_base_and_overlay_raster_layers(
         assert window.large_image_view.base_raster_visible() is True
         overlay_state = window.large_image_view.raster_overlay_layers_state()
         assert overlay_state[0]["visible"] is True
+    finally:
+        window.close()
+
+
+def test_raster_overlay_transform_persists_and_updates_runtime_state(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_transform.ome.tiff"
+    overlay_path = tmp_path / "overlay_transform.ome.tiff"
+    tifffile.imwrite(base_path, np.zeros((24, 24), dtype=np.uint16), ome=True)
+    tifffile.imwrite(overlay_path, np.ones((24, 24), dtype=np.uint16), ome=True)
+
+    window = _ViewerLayerWindow()
+    try:
+        window.imagePath = str(base_path)
+        window.large_image_backend = TiffFileBackend(base_path)
+        window.large_image_view._content_size = (24, 24)
+        window.large_image_view.set_backend(window.large_image_backend)
+        window.otherData = {
+            "raster_image_layers": [
+                {
+                    "id": "raster_overlay_tx",
+                    "name": "overlay tx",
+                    "source_path": str(overlay_path),
+                    "visible": True,
+                    "opacity": 1.0,
+                    "page_index": 0,
+                    "z_index": 10,
+                }
+            ]
+        }
+        window._restoreRasterImageLayersFromState()
+        changed = window.setRasterImageLayerTransform(
+            "raster_overlay_tx", tx=3.5, ty=-2.0, sx=1.1, sy=0.9
+        )
+
+        assert changed is True
+
+        state = {
+            str(item["id"]): item
+            for item in window.large_image_view.raster_overlay_layers_state()
+        }
+        record = state["raster_overlay_tx"]
+        assert abs(float(record["tx"]) - 3.5) < 1e-6
+        assert abs(float(record["ty"]) - (-2.0)) < 1e-6
+        assert abs(float(record["sx"]) - 1.1) < 1e-6
+        assert abs(float(record["sy"]) - 0.9) < 1e-6
+
+        stored = {
+            str(item.get("id") or ""): item
+            for item in list(window.otherData.get("raster_image_layers") or [])
+        }
+        assert abs(float(stored["raster_overlay_tx"]["tx"]) - 3.5) < 1e-6
+        assert abs(float(stored["raster_overlay_tx"]["ty"]) - (-2.0)) < 1e-6
+        assert abs(float(stored["raster_overlay_tx"]["sx"]) - 1.1) < 1e-6
+        assert abs(float(stored["raster_overlay_tx"]["sy"]) - 0.9) < 1e-6
+
+        model = next(
+            layer
+            for layer in window.viewerLayerModels()
+            if str(layer.id) == "raster_overlay_tx"
+        )
+        assert abs(float(model.transform.tx) - 3.5) < 1e-6
+        assert abs(float(model.transform.ty) - (-2.0)) < 1e-6
+        assert abs(float(model.transform.sx) - 1.1) < 1e-6
+        assert abs(float(model.transform.sy) - 0.9) < 1e-6
+    finally:
+        window.close()
+
+
+def test_viewer_layer_dock_nudge_translates_raster_overlay_layer(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_nudge.ome.tiff"
+    overlay_path = tmp_path / "overlay_nudge.ome.tiff"
+    tifffile.imwrite(base_path, np.zeros((24, 24), dtype=np.uint16), ome=True)
+    tifffile.imwrite(overlay_path, np.ones((24, 24), dtype=np.uint16), ome=True)
+
+    window = _ViewerLayerWindow()
+    try:
+        window.imagePath = str(base_path)
+        window.large_image_backend = TiffFileBackend(base_path)
+        window.large_image_view._content_size = (24, 24)
+        window.large_image_view.set_backend(window.large_image_backend)
+        window.otherData = {
+            "raster_image_layers": [
+                {
+                    "id": "raster_overlay_nudge",
+                    "name": "overlay nudge",
+                    "source_path": str(overlay_path),
+                    "visible": True,
+                    "opacity": 1.0,
+                    "page_index": 0,
+                    "z_index": 10,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "sx": 1.0,
+                    "sy": 1.0,
+                }
+            ]
+        }
+        window._restoreRasterImageLayersFromState()
+        window._syncLargeImageDocument()
+        window._onViewerLayerSelected("raster_overlay_nudge")
+        window._onViewerLayerTranslateRequested("raster_overlay_nudge", 4.0, -3.0)
+
+        state = {
+            str(item["id"]): item
+            for item in window.large_image_view.raster_overlay_layers_state()
+        }
+        record = state["raster_overlay_nudge"]
+        assert abs(float(record["tx"]) - 4.0) < 1e-6
+        assert abs(float(record["ty"]) - (-3.0)) < 1e-6
+
+        stored = {
+            str(item.get("id") or ""): item
+            for item in list(window.otherData.get("raster_image_layers") or [])
+        }
+        assert abs(float(stored["raster_overlay_nudge"]["tx"]) - 4.0) < 1e-6
+        assert abs(float(stored["raster_overlay_nudge"]["ty"]) - (-3.0)) < 1e-6
+    finally:
+        window.close()
+
+
+def test_raster_overlay_opacity_keeps_reference_layer_visible_for_alignment(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_alignment_reference.ome.tiff"
+    lower_path = tmp_path / "lower_alignment_reference.ome.tiff"
+    upper_path = tmp_path / "upper_alignment_reference.ome.tiff"
+    tifffile.imwrite(base_path, np.zeros((24, 24), dtype=np.uint16), ome=True)
+    tifffile.imwrite(lower_path, np.ones((24, 24), dtype=np.uint16), ome=True)
+    tifffile.imwrite(upper_path, np.full((24, 24), 2, dtype=np.uint16), ome=True)
+
+    window = _ViewerLayerWindow()
+    try:
+        window.imagePath = str(base_path)
+        window.large_image_backend = TiffFileBackend(base_path)
+        window.large_image_view._content_size = (24, 24)
+        window.large_image_view.set_backend(window.large_image_backend)
+        window.otherData = {
+            "raster_image_layers": [
+                {
+                    "id": "raster_overlay_lower",
+                    "name": "lower",
+                    "source_path": str(lower_path),
+                    "visible": False,
+                    "opacity": 1.0,
+                    "page_index": 0,
+                    "z_index": 10,
+                },
+                {
+                    "id": "raster_overlay_upper",
+                    "name": "upper",
+                    "source_path": str(upper_path),
+                    "visible": True,
+                    "opacity": 1.0,
+                    "page_index": 0,
+                    "z_index": 11,
+                },
+            ]
+        }
+        window._restoreRasterImageLayersFromState()
+        changed = window.setRasterImageLayerOpacity("raster_overlay_upper", 0.5)
+
+        assert changed is True
+        state = {
+            str(item["id"]): item
+            for item in window.large_image_view.raster_overlay_layers_state()
+        }
+        assert state["raster_overlay_upper"]["visible"] is True
+        assert state["raster_overlay_lower"]["visible"] is True
+    finally:
+        window.close()
+
+
+def test_raster_overlay_transform_updates_existing_tile_item_in_place(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_transform_in_place.ome.tiff"
+    overlay_path = tmp_path / "overlay_transform_in_place.ome.tiff"
+    tifffile.imwrite(base_path, np.zeros((24, 24), dtype=np.uint16), ome=True)
+    tifffile.imwrite(overlay_path, np.ones((24, 24), dtype=np.uint16), ome=True)
+
+    window = _ViewerLayerWindow()
+    try:
+        window.imagePath = str(base_path)
+        window.large_image_backend = TiffFileBackend(base_path)
+        window.large_image_view._content_size = (24, 24)
+        window.large_image_view.set_backend(window.large_image_backend)
+        window.otherData = {
+            "raster_image_layers": [
+                {
+                    "id": "raster_overlay_in_place",
+                    "name": "overlay in place",
+                    "source_path": str(overlay_path),
+                    "visible": True,
+                    "opacity": 1.0,
+                    "page_index": 0,
+                    "z_index": 10,
+                }
+            ]
+        }
+        window._restoreRasterImageLayersFromState()
+        runtime = window.large_image_view._raster_overlay_layers[
+            "raster_overlay_in_place"
+        ]
+        key = TileKey(level=0, tx=0, ty=0)
+        item = QtWidgets.QGraphicsPixmapItem(QtGui.QPixmap(8, 8))
+        runtime.tile_items[key] = item
+        window.large_image_view._scene.addItem(item)
+
+        changed = window.setRasterImageLayerTransform(
+            "raster_overlay_in_place", tx=5.0, ty=3.0, sx=1.0, sy=1.0
+        )
+
+        assert changed is True
+        assert runtime.tile_items[key] is item
+        assert abs(float(item.pos().x()) - 5.0) < 1e-6
+        assert abs(float(item.pos().y()) - 3.0) < 1e-6
+    finally:
+        window.close()
+
+
+def test_viewer_layer_dock_reset_alignment_clears_raster_overlay_transform(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_reset.ome.tiff"
+    overlay_path = tmp_path / "overlay_reset.ome.tiff"
+    tifffile.imwrite(base_path, np.zeros((24, 24), dtype=np.uint16), ome=True)
+    tifffile.imwrite(overlay_path, np.ones((24, 24), dtype=np.uint16), ome=True)
+
+    window = _ViewerLayerWindow()
+    try:
+        window.imagePath = str(base_path)
+        window.large_image_backend = TiffFileBackend(base_path)
+        window.large_image_view._content_size = (24, 24)
+        window.large_image_view.set_backend(window.large_image_backend)
+        window.otherData = {
+            "raster_image_layers": [
+                {
+                    "id": "raster_overlay_reset",
+                    "name": "overlay reset",
+                    "source_path": str(overlay_path),
+                    "visible": True,
+                    "opacity": 1.0,
+                    "page_index": 0,
+                    "z_index": 10,
+                    "tx": 7.0,
+                    "ty": -5.0,
+                    "sx": 1.25,
+                    "sy": 0.8,
+                }
+            ]
+        }
+        window._restoreRasterImageLayersFromState()
+        window._syncLargeImageDocument()
+        window._onViewerLayerSelected("raster_overlay_reset")
+        window._onViewerLayerResetTransformRequested("raster_overlay_reset")
+
+        state = {
+            str(item["id"]): item
+            for item in window.large_image_view.raster_overlay_layers_state()
+        }
+        record = state["raster_overlay_reset"]
+        assert abs(float(record["tx"]) - 0.0) < 1e-6
+        assert abs(float(record["ty"]) - 0.0) < 1e-6
+        assert abs(float(record["sx"]) - 1.0) < 1e-6
+        assert abs(float(record["sy"]) - 1.0) < 1e-6
+
+        stored = {
+            str(item.get("id") or ""): item
+            for item in list(window.otherData.get("raster_image_layers") or [])
+        }
+        assert abs(float(stored["raster_overlay_reset"]["tx"]) - 0.0) < 1e-6
+        assert abs(float(stored["raster_overlay_reset"]["ty"]) - 0.0) < 1e-6
+        assert abs(float(stored["raster_overlay_reset"]["sx"]) - 1.0) < 1e-6
+        assert abs(float(stored["raster_overlay_reset"]["sy"]) - 1.0) < 1e-6
+    finally:
+        window.close()
+
+
+def test_viewer_layer_dock_keyboard_shortcuts_nudge_and_reset_raster_overlay(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_shortcuts.ome.tiff"
+    overlay_path = tmp_path / "overlay_shortcuts.ome.tiff"
+    tifffile.imwrite(base_path, np.zeros((24, 24), dtype=np.uint16), ome=True)
+    tifffile.imwrite(overlay_path, np.ones((24, 24), dtype=np.uint16), ome=True)
+
+    dock = ViewerLayerDockWidget()
+    try:
+        dock.set_layers(
+            [
+                {
+                    "id": "raster_overlay_shortcut",
+                    "name": "overlay shortcut",
+                    "visible": True,
+                    "opacity": 1.0,
+                    "supports_opacity": True,
+                    "supports_translate": True,
+                    "supports_reorder": True,
+                    "checkable": True,
+                    "details": "Raster overlay image | page 1",
+                }
+            ]
+        )
+
+        assert "Alt+Arrows" in dock.alignment_hint_label.text()
+
+        translated: list[tuple[str, float, float]] = []
+        resets: list[str] = []
+        dock.layerTranslateRequested.connect(
+            lambda layer_id, dx, dy: translated.append((layer_id, dx, dy))
+        )
+        dock.layerResetTransformRequested.connect(
+            lambda layer_id: resets.append(layer_id)
+        )
+
+        dock.show()
+        dock.layer_list.setCurrentRow(0)
+        dock.layer_list.setFocus()
+        QtWidgets.QApplication.processEvents()
+
+        QtTest.QTest.keyClick(dock, QtCore.Qt.Key_Left, QtCore.Qt.AltModifier)
+        QtTest.QTest.keyClick(dock, QtCore.Qt.Key_0, QtCore.Qt.AltModifier)
+        QtWidgets.QApplication.processEvents()
+
+        assert translated == [("raster_overlay_shortcut", -1.0, 0.0)]
+        assert resets == ["raster_overlay_shortcut"]
+    finally:
+        dock.close()
+
+
+def test_selected_raster_overlay_layer_can_be_dragged_in_tiled_view(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_drag.ome.tiff"
+    overlay_path = tmp_path / "overlay_drag.ome.tiff"
+    tifffile.imwrite(base_path, np.zeros((24, 24), dtype=np.uint16), ome=True)
+    tifffile.imwrite(overlay_path, np.ones((24, 24), dtype=np.uint16), ome=True)
+
+    window = _ViewerLayerWindow()
+    try:
+        window.imagePath = str(base_path)
+        window.large_image_backend = TiffFileBackend(base_path)
+        window.large_image_view._content_size = (24, 24)
+        window.large_image_view.set_backend(window.large_image_backend)
+        window.otherData = {
+            "raster_image_layers": [
+                {
+                    "id": "raster_overlay_drag",
+                    "name": "overlay drag",
+                    "source_path": str(overlay_path),
+                    "visible": True,
+                    "opacity": 1.0,
+                    "page_index": 0,
+                    "z_index": 10,
+                }
+            ]
+        }
+        window._restoreRasterImageLayersFromState()
+        window._selected_viewer_layer_id = "raster_overlay_drag"
+        assert window.large_image_view._start_raster_overlay_drag(
+            "raster_overlay_drag", QtCore.QPointF(30.0, 30.0)
+        )
+        assert window.large_image_view._apply_raster_overlay_drag(
+            QtCore.QPointF(90.0, 55.0)
+        )
+        window.large_image_view._end_raster_overlay_drag()
+
+        state = {
+            str(item["id"]): item
+            for item in window.large_image_view.raster_overlay_layers_state()
+        }
+        record = state["raster_overlay_drag"]
+        assert abs(float(record["tx"])) > 0.01
+        assert abs(float(record["ty"])) > 0.01
     finally:
         window.close()
 

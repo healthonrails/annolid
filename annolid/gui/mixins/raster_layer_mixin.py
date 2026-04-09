@@ -6,10 +6,63 @@ from uuid import uuid4
 from qtpy import QtWidgets
 
 from annolid.gui.large_image import open_large_image
-from annolid.gui.viewer_layers import RasterImageLayer
+from annolid.gui.viewer_layers import AffineTransform, RasterImageLayer
 
 
 class RasterLayerMixin:
+    def _base_raster_layer_z_index(self) -> float:
+        raster = getattr(self, "currentRasterImageLayer", lambda: None)()
+        try:
+            return float(getattr(raster, "z_index", -100.0) or -100.0)
+        except Exception:
+            return -100.0
+
+    def _reference_raster_layer_id(self, layer_id: str) -> str:
+        target = str(layer_id or "").strip()
+        if not target:
+            return "raster_image"
+        layers = sorted(
+            list(getattr(self, "viewerLayerModels", lambda: [])() or []),
+            key=lambda layer: float(getattr(layer, "z_index", 0.0) or 0.0),
+        )
+        current_index = next(
+            (
+                idx
+                for idx, layer in enumerate(layers)
+                if isinstance(layer, RasterImageLayer) and str(layer.id or "") == target
+            ),
+            -1,
+        )
+        if current_index < 0:
+            return "raster_image"
+        for index in range(current_index - 1, -1, -1):
+            layer = layers[index]
+            if isinstance(layer, RasterImageLayer):
+                return str(layer.id or "raster_image")
+        return "raster_image"
+
+    def _ensure_raster_alignment_context(self, layer_id: str) -> None:
+        target = str(layer_id or "").strip()
+        if not target:
+            return
+        if hasattr(self, "setRasterImageLayerVisible"):
+            try:
+                self.setRasterImageLayerVisible(target, True)
+            except Exception:
+                pass
+        reference_layer_id = self._reference_raster_layer_id(target)
+        if reference_layer_id == "raster_image":
+            try:
+                self.setBaseRasterImageVisible(True)
+            except Exception:
+                pass
+            return
+        if hasattr(self, "setRasterImageLayerVisible"):
+            try:
+                self.setRasterImageLayerVisible(reference_layer_id, True)
+            except Exception:
+                pass
+
     def setBaseRasterImageVisible(self, visible: bool) -> bool:
         large_view = getattr(self, "large_image_view", None)
         if large_view is None or not hasattr(large_view, "set_base_raster_visible"):
@@ -70,6 +123,10 @@ class RasterLayerMixin:
                     "opacity": 1.0,
                     "page_index": 0,
                     "z_index": 10 + len(records),
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "sx": 1.0,
+                    "sy": 1.0,
                 }
             )
             added += 1
@@ -110,6 +167,12 @@ class RasterLayerMixin:
                     locked=False,
                     z_index=int(
                         float(record.get("z_index", 10 + index) or (10 + index))
+                    ),
+                    transform=AffineTransform(
+                        tx=float(record.get("tx", 0.0) or 0.0),
+                        ty=float(record.get("ty", 0.0) or 0.0),
+                        sx=max(1e-6, float(record.get("sx", 1.0) or 1.0)),
+                        sy=max(1e-6, float(record.get("sy", 1.0) or 1.0)),
                     ),
                     backend_page_index=int(record.get("page_index", 0) or 0),
                     channel=None,
@@ -178,6 +241,7 @@ class RasterLayerMixin:
         layer_id = str(layer_id or "").strip()
         if not layer_id:
             return False
+        self._ensure_raster_alignment_context(layer_id)
         large_view = getattr(self, "large_image_view", None)
         if large_view is None or not hasattr(
             large_view, "set_raster_overlay_layer_opacity"
@@ -203,6 +267,93 @@ class RasterLayerMixin:
             self._syncLargeImageDocument()
         return True
 
+    def setRasterImageLayerTransform(
+        self,
+        layer_id: str,
+        *,
+        tx: float | None = None,
+        ty: float | None = None,
+        sx: float | None = None,
+        sy: float | None = None,
+    ) -> bool:
+        layer_id = str(layer_id or "").strip()
+        if not layer_id:
+            return False
+        self._ensure_raster_alignment_context(layer_id)
+        records = list(self._raster_layer_records())
+        target_record: dict | None = None
+        for record in records:
+            if str((record or {}).get("id") or "") != layer_id:
+                continue
+            target_record = record
+            break
+        if target_record is None:
+            return False
+
+        next_tx = float(target_record.get("tx", 0.0) if tx is None else tx)
+        next_ty = float(target_record.get("ty", 0.0) if ty is None else ty)
+        next_sx = max(1e-6, float(target_record.get("sx", 1.0) if sx is None else sx))
+        next_sy = max(1e-6, float(target_record.get("sy", 1.0) if sy is None else sy))
+        if (
+            abs(float(target_record.get("tx", 0.0) or 0.0) - next_tx) < 1e-9
+            and abs(float(target_record.get("ty", 0.0) or 0.0) - next_ty) < 1e-9
+            and abs(float(target_record.get("sx", 1.0) or 1.0) - next_sx) < 1e-9
+            and abs(float(target_record.get("sy", 1.0) or 1.0) - next_sy) < 1e-9
+        ):
+            return False
+
+        target_record["tx"] = float(next_tx)
+        target_record["ty"] = float(next_ty)
+        target_record["sx"] = float(next_sx)
+        target_record["sy"] = float(next_sy)
+
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is not None and hasattr(
+            large_view, "set_raster_overlay_layer_transform"
+        ):
+            changed = bool(
+                large_view.set_raster_overlay_layer_transform(
+                    layer_id,
+                    tx=float(next_tx),
+                    ty=float(next_ty),
+                    sx=float(next_sx),
+                    sy=float(next_sy),
+                )
+            )
+            if not changed:
+                return False
+
+        self._set_raster_layer_records(records)
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
+        return True
+
+    def translateRasterImageLayer(
+        self, layer_id: str, dx: float = 0.0, dy: float = 0.0
+    ) -> bool:
+        layer_id = str(layer_id or "").strip()
+        if not layer_id:
+            return False
+        records = list(self._raster_layer_records())
+        target_record: dict | None = None
+        for record in records:
+            if str((record or {}).get("id") or "") == layer_id:
+                target_record = record
+                break
+        if target_record is None:
+            return False
+        next_tx = float(target_record.get("tx", 0.0) or 0.0) + float(dx)
+        next_ty = float(target_record.get("ty", 0.0) or 0.0) + float(dy)
+        return bool(
+            self.setRasterImageLayerTransform(
+                layer_id,
+                tx=next_tx,
+                ty=next_ty,
+                sx=float(target_record.get("sx", 1.0) or 1.0),
+                sy=float(target_record.get("sy", 1.0) or 1.0),
+            )
+        )
+
     def moveRasterImageLayer(self, layer_id: str, direction: int) -> bool:
         layer_id = str(layer_id or "").strip()
         step = int(direction)
@@ -226,6 +377,7 @@ class RasterLayerMixin:
             return False
         target_layer = ordered[target_index]
         target_z = float(getattr(target_layer, "z_index", 0.0) or 0.0)
+        base_z = self._base_raster_layer_z_index()
         if step < 0:
             # Move "up" toward the front of the stack: raise z-order.
             next_index = min(len(ordered) - 1, target_index + 1)
@@ -242,6 +394,7 @@ class RasterLayerMixin:
             else:
                 prev_z = float(getattr(ordered[prev_index], "z_index", 0.0) or 0.0)
                 new_z = min(target_z - 0.1, prev_z - 0.1)
+            new_z = max(base_z + 0.1, new_z)
         records = list(self._raster_layer_records())
         updated = False
         for record in records:
@@ -253,7 +406,15 @@ class RasterLayerMixin:
         if not updated:
             return False
         self._set_raster_layer_records(records)
-        self._restoreRasterImageLayersFromState()
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is not None and hasattr(
+            large_view, "set_raster_overlay_layer_z_index"
+        ):
+            changed = bool(large_view.set_raster_overlay_layer_z_index(layer_id, new_z))
+            if not changed:
+                return False
+        else:
+            self._restoreRasterImageLayersFromState()
         if hasattr(self, "_syncLargeImageDocument"):
             self._syncLargeImageDocument()
         return True
@@ -279,7 +440,10 @@ class RasterLayerMixin:
         if edge == "top":
             target_z = float(getattr(ordered[-1], "z_index", 0.0) or 0.0) + 1.0
         else:
-            target_z = float(getattr(ordered[0], "z_index", 0.0) or 0.0) - 1.0
+            target_z = max(
+                self._base_raster_layer_z_index() + 0.1,
+                float(getattr(ordered[0], "z_index", 0.0) or 0.0) - 1.0,
+            )
         records = list(self._raster_layer_records())
         updated = False
         for record in records:
@@ -291,7 +455,17 @@ class RasterLayerMixin:
         if not updated:
             return False
         self._set_raster_layer_records(records)
-        self._restoreRasterImageLayersFromState()
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is not None and hasattr(
+            large_view, "set_raster_overlay_layer_z_index"
+        ):
+            changed = bool(
+                large_view.set_raster_overlay_layer_z_index(layer_id, target_z)
+            )
+            if not changed:
+                return False
+        else:
+            self._restoreRasterImageLayersFromState()
         if hasattr(self, "_syncLargeImageDocument"):
             self._syncLargeImageDocument()
         return True
@@ -420,6 +594,10 @@ class RasterLayerMixin:
                     "opacity": opacity,
                     "z_index": z_index,
                     "page_index": int(target_page),
+                    "tx": float(record.get("tx", 0.0) or 0.0),
+                    "ty": float(record.get("ty", 0.0) or 0.0),
+                    "sx": max(1e-6, float(record.get("sx", 1.0) or 1.0)),
+                    "sy": max(1e-6, float(record.get("sy", 1.0) or 1.0)),
                 }
             )
             valid_records.append(
@@ -431,6 +609,10 @@ class RasterLayerMixin:
                     "opacity": opacity,
                     "z_index": z_index,
                     "page_index": int(target_page),
+                    "tx": float(record.get("tx", 0.0) or 0.0),
+                    "ty": float(record.get("ty", 0.0) or 0.0),
+                    "sx": max(1e-6, float(record.get("sx", 1.0) or 1.0)),
+                    "sy": max(1e-6, float(record.get("sy", 1.0) or 1.0)),
                 }
             )
         if hasattr(large_view, "set_raster_overlay_layers"):

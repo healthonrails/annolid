@@ -71,6 +71,10 @@ class _RasterOverlayRuntime:
     opacity: float = 1.0
     z_index: float = 10.0
     page_index: int = 0
+    tx: float = 0.0
+    ty: float = 0.0
+    sx: float = 1.0
+    sy: float = 1.0
     tile_cache: TileCache = field(default_factory=TileCache)
     tile_scheduler: TileRequestScheduler | None = None
     tile_items: dict[TileKey, QtWidgets.QGraphicsPixmapItem] = field(
@@ -369,6 +373,11 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._dragging_shape = False
         self._shape_moved_during_drag = False
         self._last_scene_pos: QtCore.QPointF | None = None
+        self._dragging_raster_overlay = False
+        self._raster_overlay_drag_layer_id: str | None = None
+        self._raster_overlay_drag_start_pos: QtCore.QPointF | None = None
+        self._raster_overlay_drag_start_tx: float = 0.0
+        self._raster_overlay_drag_start_ty: float = 0.0
         self._host_window = None
         self._content_size: tuple[int, int] = (0, 0)
         self._fit_mode: str = "fit_window"
@@ -415,6 +424,12 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._tile_result_timer = QtCore.QTimer(self)
         self._tile_result_timer.setInterval(30)
         self._tile_result_timer.timeout.connect(self._poll_pending_tile_results)
+        self._visible_tiles_refresh_timer = QtCore.QTimer(self)
+        self._visible_tiles_refresh_timer.setSingleShot(True)
+        self._visible_tiles_refresh_timer.setInterval(40)
+        self._visible_tiles_refresh_timer.timeout.connect(
+            self._refresh_visible_tiles_now
+        )
         self._current_visible_raster_keys: tuple[TileKey, ...] = ()
         self._current_visible_label_keys: tuple[TileKey, ...] = ()
         self._adjoining_source_shape: Shape | None = None
@@ -440,6 +455,16 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             except Exception:
                 pass
         self._refresh_status_overlay()
+
+    def _queue_visible_tiles_refresh(self) -> None:
+        timer = getattr(self, "_visible_tiles_refresh_timer", None)
+        if timer is None:
+            self._refresh_visible_tiles_now()
+            return
+        try:
+            timer.start()
+        except Exception:
+            self._refresh_visible_tiles_now()
 
     def overrideCursor(self, cursor) -> None:
         self._cursor = cursor
@@ -503,7 +528,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             self.centerOn(
                 float(data.get("center_x", 0.0)), float(data.get("center_y", 0.0))
             )
-            self.refresh_visible_tiles()
+            self._queue_visible_tiles_refresh()
         self._notify_host_large_image_document_changed()
 
     def set_backend(self, backend: LargeImageBackend) -> None:
@@ -538,7 +563,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._pixmap_item.setZValue(-100.0)
         self._scene.setSceneRect(0.0, 0.0, float(full_w), float(full_h))
         self.fit_to_window()
-        self.refresh_visible_tiles()
+        self._refresh_visible_tiles_now()
         self._refresh_status_overlay()
         self._notify_host_large_image_document_changed()
 
@@ -583,7 +608,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         )
         self._clear_label_value_cache()
         self._clear_label_tile_items()
-        self.refresh_visible_tiles()
+        self._refresh_visible_tiles_now()
         self._notify_host_large_image_document_changed()
 
     def clear_label_layer(self) -> None:
@@ -631,7 +656,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._label_overlay_opacity = normalized
         self._label_tile_cache = TileCache()
         self._clear_label_tile_items()
-        self.refresh_visible_tiles()
+        self._refresh_visible_tiles_now()
         self._notify_host_large_image_document_changed()
 
     def set_label_layer_visible(self, visible: bool) -> None:
@@ -641,7 +666,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._label_overlay_visible = visible_flag
         if not visible_flag:
             self._clear_label_tile_items()
-        self.refresh_visible_tiles()
+        self._refresh_visible_tiles_now()
         self._notify_host_large_image_document_changed()
 
     def label_layer_visible(self) -> bool:
@@ -667,6 +692,10 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 opacity=max(0.0, min(1.0, float(layer.get("opacity", 1.0) or 1.0))),
                 z_index=float(layer.get("z_index", 10.0) or 10.0),
                 page_index=int(layer.get("page_index", 0) or 0),
+                tx=float(layer.get("tx", 0.0) or 0.0),
+                ty=float(layer.get("ty", 0.0) or 0.0),
+                sx=max(1e-6, float(layer.get("sx", 1.0) or 1.0)),
+                sy=max(1e-6, float(layer.get("sy", 1.0) or 1.0)),
             )
             runtime.tile_scheduler = TileRequestScheduler(
                 cache_get=runtime.tile_cache.get,
@@ -676,7 +705,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 async_load=True,
             )
             self._raster_overlay_layers[layer_id] = runtime
-        self.refresh_visible_tiles()
+        self._refresh_visible_tiles_now()
         self._notify_host_large_image_document_changed()
 
     def clear_raster_overlay_layers(self, *, notify: bool = True) -> None:
@@ -710,7 +739,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             )
             runtime.current_visible_keys = ()
             runtime.last_visible_tile_count = 0
-        self.refresh_visible_tiles()
+        self._refresh_visible_tiles_now()
         self._notify_host_large_image_document_changed()
         return True
 
@@ -726,7 +755,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             )
             self._current_visible_raster_keys = ()
             self._last_visible_tile_count = 0
-        self.refresh_visible_tiles()
+        self._refresh_visible_tiles_now()
         self._notify_host_large_image_document_changed()
         return True
 
@@ -741,14 +770,18 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         if abs(float(runtime.opacity) - normalized) < 1e-6:
             return False
         runtime.opacity = float(normalized)
-        runtime.tile_cache = TileCache()
-        self._remove_stale_tile_items(
-            runtime.tile_items,
-            list(runtime.tile_items.keys()),
+        self._update_existing_tile_items(
+            backend=runtime.backend,
+            item_map=runtime.tile_items,
+            z_value_for_key=lambda key, z=runtime.z_index: float(z)
+            + (float(key.level) * -0.05),
+            tx=float(runtime.tx),
+            ty=float(runtime.ty),
+            sx=float(runtime.sx),
+            sy=float(runtime.sy),
+            item_opacity=runtime.opacity,
         )
-        runtime.current_visible_keys = ()
-        runtime.last_visible_tile_count = 0
-        self.refresh_visible_tiles()
+        self.viewport().update()
         self._notify_host_large_image_document_changed()
         return True
 
@@ -762,6 +795,66 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         if str(runtime.name) == normalized:
             return False
         runtime.name = normalized
+        self._notify_host_large_image_document_changed()
+        return True
+
+    def set_raster_overlay_layer_z_index(self, layer_id: str, z_index: float) -> bool:
+        runtime = self._raster_overlay_layers.get(str(layer_id or ""))
+        if runtime is None:
+            return False
+        normalized = float(z_index)
+        if abs(float(runtime.z_index) - normalized) < 1e-9:
+            return False
+        runtime.z_index = normalized
+        for key, item in list(runtime.tile_items.items()):
+            try:
+                item.setZValue(float(normalized) + (float(key.level) * -0.05))
+            except Exception:
+                continue
+        self.viewport().update()
+        self._notify_host_large_image_document_changed()
+        return True
+
+    def set_raster_overlay_layer_transform(
+        self,
+        layer_id: str,
+        *,
+        tx: float | None = None,
+        ty: float | None = None,
+        sx: float | None = None,
+        sy: float | None = None,
+    ) -> bool:
+        runtime = self._raster_overlay_layers.get(str(layer_id or ""))
+        if runtime is None:
+            return False
+        next_tx = float(runtime.tx if tx is None else tx)
+        next_ty = float(runtime.ty if ty is None else ty)
+        next_sx = max(1e-6, float(runtime.sx if sx is None else sx))
+        next_sy = max(1e-6, float(runtime.sy if sy is None else sy))
+        if (
+            abs(float(runtime.tx) - next_tx) < 1e-9
+            and abs(float(runtime.ty) - next_ty) < 1e-9
+            and abs(float(runtime.sx) - next_sx) < 1e-9
+            and abs(float(runtime.sy) - next_sy) < 1e-9
+        ):
+            return False
+        runtime.tx = next_tx
+        runtime.ty = next_ty
+        runtime.sx = next_sx
+        runtime.sy = next_sy
+        self._update_existing_tile_items(
+            backend=runtime.backend,
+            item_map=runtime.tile_items,
+            z_value_for_key=lambda key, z=runtime.z_index: float(z)
+            + (float(key.level) * -0.05),
+            tx=float(runtime.tx),
+            ty=float(runtime.ty),
+            sx=float(runtime.sx),
+            sy=float(runtime.sy),
+            item_opacity=runtime.opacity,
+        )
+        self.viewport().update()
+        self._queue_visible_tiles_refresh()
         self._notify_host_large_image_document_changed()
         return True
 
@@ -802,6 +895,10 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                     "opacity": float(runtime.opacity),
                     "z_index": float(runtime.z_index),
                     "page_index": int(runtime.page_index),
+                    "tx": float(runtime.tx),
+                    "ty": float(runtime.ty),
+                    "sx": float(runtime.sx),
+                    "sy": float(runtime.sy),
                 }
             )
         return state
@@ -1026,6 +1123,91 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         for item in self._overlay_items:
             if isinstance(item, _ShapeGraphicsItem):
                 item.sync_shape_geometry()
+
+    def _selected_raster_overlay_layer_id(self) -> str | None:
+        host = getattr(self, "_host_window", None)
+        getter = getattr(host, "selectedRasterOverlayLayerId", None)
+        if callable(getter):
+            try:
+                layer_id = str(getter() or "")
+            except Exception:
+                layer_id = ""
+            if layer_id:
+                return layer_id
+        return None
+
+    def _raster_overlay_runtime(self, layer_id: str):
+        return self._raster_overlay_layers.get(str(layer_id or ""))
+
+    def _start_raster_overlay_drag(
+        self, layer_id: str, scene_pos: QtCore.QPointF
+    ) -> bool:
+        runtime = self._raster_overlay_runtime(layer_id)
+        if runtime is None:
+            return False
+        host = getattr(self, "_host_window", None)
+        ensure_context = getattr(host, "_ensure_raster_alignment_context", None)
+        if callable(ensure_context):
+            try:
+                ensure_context(layer_id)
+            except Exception:
+                pass
+        self._dragging_raster_overlay = True
+        self._raster_overlay_drag_layer_id = str(layer_id or "")
+        self._raster_overlay_drag_start_pos = QtCore.QPointF(scene_pos)
+        self._raster_overlay_drag_start_tx = float(runtime.tx)
+        self._raster_overlay_drag_start_ty = float(runtime.ty)
+        self._active_shape = None
+        self._active_vertex_index = None
+        self._active_edge_index = None
+        self._dragging_shape = False
+        self._dragging_shared_boundary = False
+        self.overrideCursor(CURSOR_MOVE)
+        self._set_hover_feedback(self.tr("Drag to align raster overlay"))
+        return True
+
+    def _apply_raster_overlay_drag(self, scene_pos: QtCore.QPointF) -> bool:
+        layer_id = str(self._raster_overlay_drag_layer_id or "")
+        runtime = self._raster_overlay_runtime(layer_id)
+        if (
+            not layer_id
+            or runtime is None
+            or self._raster_overlay_drag_start_pos is None
+        ):
+            return False
+        delta_x = float(scene_pos.x()) - float(self._raster_overlay_drag_start_pos.x())
+        delta_y = float(scene_pos.y()) - float(self._raster_overlay_drag_start_pos.y())
+        next_tx = float(self._raster_overlay_drag_start_tx) + delta_x
+        next_ty = float(self._raster_overlay_drag_start_ty) + delta_y
+        host = getattr(self, "_host_window", None)
+        setter = getattr(host, "setRasterImageLayerTransform", None)
+        if not callable(setter):
+            return False
+        try:
+            moved = bool(
+                setter(
+                    layer_id,
+                    tx=next_tx,
+                    ty=next_ty,
+                    sx=float(runtime.sx),
+                    sy=float(runtime.sy),
+                )
+            )
+        except Exception:
+            moved = False
+        if not moved:
+            return False
+        return True
+
+    def _end_raster_overlay_drag(self) -> None:
+        if not self._dragging_raster_overlay:
+            return
+        self._dragging_raster_overlay = False
+        self._raster_overlay_drag_layer_id = None
+        self._raster_overlay_drag_start_pos = None
+        self._raster_overlay_drag_start_tx = 0.0
+        self._raster_overlay_drag_start_ty = 0.0
+        self._notify_host_large_image_document_changed()
 
     def set_selected_landmark_pair(self, pair_id: str | None) -> None:
         self._selected_overlay_landmark_pair_id = str(pair_id or "") or None
@@ -1950,8 +2132,21 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         backend: LargeImageBackend | None,
         level: int,
         current_items: dict[TileKey, QtWidgets.QGraphicsPixmapItem],
+        tx: float = 0.0,
+        ty: float = 0.0,
+        sx: float = 1.0,
+        sy: float = 1.0,
     ) -> TileRenderPlan[TileKey]:
-        visible_keys = tuple(self._visible_tile_keys_for_backend(backend, level=level))
+        visible_keys = tuple(
+            self._visible_tile_keys_for_backend(
+                backend,
+                level=level,
+                tx=float(tx),
+                ty=float(ty),
+                sx=float(sx),
+                sy=float(sy),
+            )
+        )
         visible_key_set = set(visible_keys)
         stale_keys = tuple(
             key for key in list(current_items) if key not in visible_key_set
@@ -1975,6 +2170,15 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             if item is not None:
                 self._scene.removeItem(item)
 
+    def _scene_scale_for_backend(
+        self, backend: LargeImageBackend
+    ) -> tuple[float, float]:
+        full_w, full_h = self._content_size
+        level_w, level_h = backend.get_level_shape(0)
+        scale_x = float(full_w) / max(1, int(level_w))
+        scale_y = float(full_h) / max(1, int(level_h))
+        return scale_x, scale_y
+
     def _tile_scene_metrics(
         self,
         backend: LargeImageBackend,
@@ -1995,6 +2199,28 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         )
         transform = QtGui.QTransform.fromScale(scale_x * sx, scale_y * sy)
         return position, transform
+
+    def _update_existing_tile_items(
+        self,
+        *,
+        backend: LargeImageBackend,
+        item_map: dict[TileKey, QtWidgets.QGraphicsPixmapItem],
+        z_value_for_key,
+        tx: float = 0.0,
+        ty: float = 0.0,
+        sx: float = 1.0,
+        sy: float = 1.0,
+        item_opacity: float | None = None,
+    ) -> None:
+        for key, item in list(item_map.items()):
+            position, transform = self._tile_scene_metrics(
+                backend, key, tx=tx, ty=ty, sx=sx, sy=sy
+            )
+            item.setPos(position)
+            item.setTransform(transform)
+            item.setZValue(float(z_value_for_key(key)))
+            if item_opacity is not None:
+                item.setOpacity(max(0.0, min(1.0, float(item_opacity))))
 
     def _apply_tile_images(
         self,
@@ -2029,7 +2255,14 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             item_map[key] = item
 
     def _visible_tile_keys_for_backend(
-        self, backend: LargeImageBackend | None, *, level: int = 0
+        self,
+        backend: LargeImageBackend | None,
+        *,
+        level: int = 0,
+        tx: float = 0.0,
+        ty: float = 0.0,
+        sx: float = 1.0,
+        sy: float = 1.0,
     ) -> list[TileKey]:
         if backend is None:
             return []
@@ -2040,12 +2273,20 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             return []
         scale_x = full_w / max(1, level_w)
         scale_y = full_h / max(1, level_h)
+        scene_scale_x = max(1e-12, float(scale_x) * float(sx))
+        scene_scale_y = max(1e-12, float(scale_y) * float(sy))
         max_tx = max(0, (level_w - 1) // self.tile_size)
         max_ty = max(0, (level_h - 1) // self.tile_size)
-        left = max(0, int(rect.left() / scale_x) // self.tile_size)
-        top = max(0, int(rect.top() / scale_y) // self.tile_size)
-        right = min(max_tx, max(0, int(rect.right() / scale_x) // self.tile_size))
-        bottom = min(max_ty, max(0, int(rect.bottom() / scale_y) // self.tile_size))
+        left = max(0, int((rect.left() - float(tx)) / scene_scale_x) // self.tile_size)
+        top = max(0, int((rect.top() - float(ty)) / scene_scale_y) // self.tile_size)
+        right = min(
+            max_tx,
+            max(0, int((rect.right() - float(tx)) / scene_scale_x) // self.tile_size),
+        )
+        bottom = min(
+            max_ty,
+            max(0, int((rect.bottom() - float(ty)) / scene_scale_y) // self.tile_size),
+        )
         return [
             TileKey(level=level, tx=tx, ty=ty)
             for ty in range(top, bottom + 1)
@@ -2133,6 +2374,10 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 item_map=runtime.tile_items,
                 z_value_for_key=lambda key, z=runtime.z_index: float(z)
                 + (float(key.level) * -0.05),
+                tx=float(runtime.tx),
+                ty=float(runtime.ty),
+                sx=float(runtime.sx),
+                sy=float(runtime.sy),
                 item_opacity=runtime.opacity,
             )
             updated = True
@@ -2166,7 +2411,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             self._tile_result_timer.stop()
         self._refresh_status_overlay()
 
-    def refresh_visible_tiles(self) -> None:
+    def _refresh_visible_tiles_now(self) -> None:
         if self.backend is None:
             self._last_visible_tile_count = 0
             self._current_visible_raster_keys = ()
@@ -2230,6 +2475,9 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._refresh_visible_label_tiles()
         self._refresh_status_overlay()
 
+    def refresh_visible_tiles(self) -> None:
+        self._refresh_visible_tiles_now()
+
     def _refresh_visible_raster_overlay_tiles(self) -> None:
         for runtime in self._raster_overlay_layers.values():
             if not runtime.visible:
@@ -2254,6 +2502,10 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 backend=backend,
                 level=level,
                 current_items=runtime.tile_items,
+                tx=float(runtime.tx),
+                ty=float(runtime.ty),
+                sx=float(runtime.sx),
+                sy=float(runtime.sy),
             )
             runtime.last_level = int(level)
             runtime.last_visible_tile_count = len(plan.visible_keys)
@@ -2284,6 +2536,10 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 item_map=runtime.tile_items,
                 z_value_for_key=lambda key, z=runtime.z_index: float(z)
                 + (float(key.level) * -0.05),
+                tx=float(runtime.tx),
+                ty=float(runtime.ty),
+                sx=float(runtime.sx),
+                sy=float(runtime.sy),
                 item_opacity=runtime.opacity,
             )
             if int(scheduler.stats().outstanding_requests) > 0:
@@ -2311,6 +2567,10 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             backend=backend,
             level=level,
             current_items=self._label_tile_items,
+            tx=float(self._label_transform["tx"]),
+            ty=float(self._label_transform["ty"]),
+            sx=float(self._label_transform["sx"]),
+            sy=float(self._label_transform["sy"]),
         )
         self._last_label_level = int(level)
         self._last_label_visible_tile_count = len(plan.visible_keys)
@@ -2704,14 +2964,14 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         factor = max(0.01, float(percent) / 100.0)
         self.scale(factor, factor)
         self._refresh_overlay_render_metrics()
-        self.refresh_visible_tiles()
+        self._queue_visible_tiles_refresh()
         self._notify_host_large_image_document_changed()
 
     def fit_to_window(self) -> None:
         self._fit_mode = "fit_window"
         self.fitInView(self.sceneRect(), QtCore.Qt.KeepAspectRatio)
         self._refresh_overlay_render_metrics()
-        self.refresh_visible_tiles()
+        self._queue_visible_tiles_refresh()
         self._notify_host_large_image_document_changed()
 
     def fit_to_width(self) -> None:
@@ -2724,7 +2984,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         factor = viewport_width / rect.width()
         self.scale(factor, factor)
         self._refresh_overlay_render_metrics()
-        self.refresh_visible_tiles()
+        self._queue_visible_tiles_refresh()
         self._notify_host_large_image_document_changed()
 
     def resizeEvent(self, event):
@@ -2734,19 +2994,19 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         elif self._fit_mode == "fit_width":
             self.fit_to_width()
         else:
-            self.refresh_visible_tiles()
+            self._queue_visible_tiles_refresh()
             self._notify_host_large_image_document_changed()
         self._position_status_overlay()
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:
         super().scrollContentsBy(dx, dy)
-        self.refresh_visible_tiles()
+        self._queue_visible_tiles_refresh()
         self._notify_host_large_image_document_changed()
 
     def wheelEvent(self, event):
         super().wheelEvent(event)
         self._refresh_overlay_render_metrics()
-        self.refresh_visible_tiles()
+        self._queue_visible_tiles_refresh()
         self._notify_host_large_image_document_changed()
 
     def mousePressEvent(self, event):
@@ -2784,6 +3044,17 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                     return
             event.accept()
             return
+        if (
+            event.button() == QtCore.Qt.LeftButton
+            and not self.drawing()
+            and self._selected_raster_overlay_layer_id() is not None
+        ):
+            layer_id = self._selected_raster_overlay_layer_id()
+            if layer_id and self._start_raster_overlay_drag(
+                layer_id, self._clamp_scene_point(scene_pos)
+            ):
+                event.accept()
+                return
         if event.button() == QtCore.Qt.LeftButton and self.drawing():
             if not self._supports_create_mode(
                 self.createMode
@@ -2950,6 +3221,14 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
     def mouseMoveEvent(self, event):
         pos = event.pos() if hasattr(event, "pos") else event.position().toPoint()
         scene_pos = self.mapToScene(pos)
+        if (
+            self._dragging_raster_overlay
+            and self._raster_overlay_drag_layer_id is not None
+            and (event.buttons() & QtCore.Qt.LeftButton)
+        ):
+            if self._apply_raster_overlay_drag(self._clamp_scene_point(scene_pos)):
+                event.accept()
+                return
         if self.drawing():
             mode = str(self.createMode or "").lower()
             snapped_scene_pos = self._drawing_snap_target(
@@ -3105,6 +3384,10 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             if global_pos is not None and self._show_context_menu(global_pos):
                 event.accept()
                 return
+        if event.button() == QtCore.Qt.LeftButton and self._dragging_raster_overlay:
+            self._end_raster_overlay_drag()
+            event.accept()
+            return
         if event.button() == QtCore.Qt.LeftButton and self._dragging_shared_boundary:
             moved = bool(self._shape_moved_during_drag)
             self._dragging_shared_boundary = False

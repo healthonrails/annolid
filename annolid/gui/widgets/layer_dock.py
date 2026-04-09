@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 
 class ViewerLayerDockWidget(QtWidgets.QDockWidget):
     layerVisibilityChanged = QtCore.Signal(str, bool)
     layerOpacityChanged = QtCore.Signal(str, float)
     layerSelected = QtCore.Signal(str)
+    layerTranslateRequested = QtCore.Signal(str, float, float)
+    layerResetTransformRequested = QtCore.Signal(str)
     layerMoveRequested = QtCore.Signal(str, int)
     layerRenameRequested = QtCore.Signal(str, str)
     layerRemoveRequested = QtCore.Signal(str)
@@ -17,6 +19,7 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         super().__init__("Layers", parent)
         self.setObjectName("viewerLayerDock")
         self._layer_map: dict[str, dict] = {}
+        self._shortcuts: list[QtWidgets.QShortcut] = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -41,6 +44,57 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
         layout.addWidget(self.opacity_slider)
 
+        translate_box = QtWidgets.QGroupBox("Align / Nudge", container)
+        translate_layout = QtWidgets.QVBoxLayout(translate_box)
+        translate_layout.setContentsMargins(8, 8, 8, 8)
+        translate_layout.setSpacing(6)
+
+        step_row = QtWidgets.QHBoxLayout()
+        step_label = QtWidgets.QLabel("Step", translate_box)
+        self.translate_step_spin = QtWidgets.QDoubleSpinBox(translate_box)
+        self.translate_step_spin.setRange(0.001, 1000000.0)
+        self.translate_step_spin.setDecimals(3)
+        self.translate_step_spin.setSingleStep(1.0)
+        self.translate_step_spin.setValue(1.0)
+        self.translate_step_spin.setSuffix(" px")
+        step_row.addWidget(step_label)
+        step_row.addWidget(self.translate_step_spin, 1)
+        translate_layout.addLayout(step_row)
+
+        nudge_grid = QtWidgets.QGridLayout()
+        self.nudge_left_button = QtWidgets.QToolButton(translate_box)
+        self.nudge_left_button.setText("Left")
+        self.nudge_right_button = QtWidgets.QToolButton(translate_box)
+        self.nudge_right_button.setText("Right")
+        self.nudge_up_button = QtWidgets.QToolButton(translate_box)
+        self.nudge_up_button.setText("Up")
+        self.nudge_down_button = QtWidgets.QToolButton(translate_box)
+        self.nudge_down_button.setText("Down")
+        self.nudge_left_button.clicked.connect(lambda: self._request_translate(-1, 0))
+        self.nudge_right_button.clicked.connect(lambda: self._request_translate(1, 0))
+        self.nudge_up_button.clicked.connect(lambda: self._request_translate(0, -1))
+        self.nudge_down_button.clicked.connect(lambda: self._request_translate(0, 1))
+        nudge_grid.addWidget(self.nudge_up_button, 0, 1)
+        nudge_grid.addWidget(self.nudge_left_button, 1, 0)
+        nudge_grid.addWidget(self.nudge_right_button, 1, 2)
+        nudge_grid.addWidget(self.nudge_down_button, 2, 1)
+        translate_layout.addLayout(nudge_grid)
+
+        self.reset_translate_button = QtWidgets.QPushButton(
+            "Reset Alignment", translate_box
+        )
+        self.reset_translate_button.clicked.connect(self._request_translate_reset)
+        translate_layout.addWidget(self.reset_translate_button)
+
+        self.alignment_hint_label = QtWidgets.QLabel(
+            "Shortcut: Alt+Arrows nudge, Alt+0 resets", translate_box
+        )
+        self.alignment_hint_label.setWordWrap(True)
+        self.alignment_hint_label.setProperty("class", "mutedHint")
+        translate_layout.addWidget(self.alignment_hint_label)
+
+        layout.addWidget(translate_box)
+
         move_row = QtWidgets.QHBoxLayout()
         self.move_up_button = QtWidgets.QPushButton("Move Up", container)
         self.move_down_button = QtWidgets.QPushButton("Move Down", container)
@@ -53,6 +107,8 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         self.setWidget(container)
         self._set_opacity_enabled(False)
         self._set_reorder_enabled(False)
+        self._set_translate_enabled(False)
+        self._install_shortcuts()
 
     def _set_opacity_enabled(self, enabled: bool) -> None:
         self.opacity_slider.setEnabled(bool(enabled))
@@ -61,6 +117,15 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         enabled_flag = bool(enabled)
         self.move_up_button.setEnabled(enabled_flag)
         self.move_down_button.setEnabled(enabled_flag)
+
+    def _set_translate_enabled(self, enabled: bool) -> None:
+        enabled_flag = bool(enabled)
+        self.translate_step_spin.setEnabled(enabled_flag)
+        self.nudge_left_button.setEnabled(enabled_flag)
+        self.nudge_right_button.setEnabled(enabled_flag)
+        self.nudge_up_button.setEnabled(enabled_flag)
+        self.nudge_down_button.setEnabled(enabled_flag)
+        self.reset_translate_button.setEnabled(enabled_flag)
 
     def _current_layer_id(self) -> str | None:
         item = self.layer_list.currentItem()
@@ -74,12 +139,14 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         )
         layer = self._layer_map.get(layer_id, {})
         supports_opacity = bool(layer.get("supports_opacity", False))
+        supports_translate = bool(layer.get("supports_translate", False))
         with QtCore.QSignalBlocker(self.opacity_slider):
             self.opacity_slider.setValue(
                 int(round(float(layer.get("opacity", 1.0) or 1.0) * 100.0))
             )
         self._set_opacity_enabled(supports_opacity)
         self._set_reorder_enabled(bool(layer.get("supports_reorder", False)))
+        self._set_translate_enabled(supports_translate)
         self.details_label.setText(str(layer.get("details", "") or ""))
         if layer_id:
             self.layerSelected.emit(layer_id)
@@ -115,6 +182,44 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         if int(direction) not in {-1, 1}:
             return
         self.layerMoveRequested.emit(layer_id, int(direction))
+
+    def _request_translate(self, horizontal: int, vertical: int) -> None:
+        layer_id = self._current_layer_id()
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        if not bool(layer.get("supports_translate", False)):
+            return
+        step = float(self.translate_step_spin.value())
+        dx = float(horizontal) * step
+        dy = float(vertical) * step
+        if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+            return
+        self.layerTranslateRequested.emit(layer_id, dx, dy)
+
+    def _request_translate_reset(self) -> None:
+        layer_id = self._current_layer_id()
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        if not bool(layer.get("supports_translate", False)):
+            return
+        self.layerResetTransformRequested.emit(layer_id)
+
+    def _install_shortcuts(self) -> None:
+        shortcuts = [
+            (QtGui.QKeySequence("Alt+Left"), lambda: self._request_translate(-1, 0)),
+            (QtGui.QKeySequence("Alt+Right"), lambda: self._request_translate(1, 0)),
+            (QtGui.QKeySequence("Alt+Up"), lambda: self._request_translate(0, -1)),
+            (QtGui.QKeySequence("Alt+Down"), lambda: self._request_translate(0, 1)),
+            (QtGui.QKeySequence("Alt+0"), self._request_translate_reset),
+        ]
+        self._shortcuts.clear()
+        for sequence, callback in shortcuts:
+            shortcut = QtWidgets.QShortcut(sequence, self)
+            shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(callback)
+            self._shortcuts.append(shortcut)
 
     def _on_context_menu(self, pos) -> None:
         item = self.layer_list.itemAt(pos)
