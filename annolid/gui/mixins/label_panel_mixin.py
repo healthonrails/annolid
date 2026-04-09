@@ -11,6 +11,8 @@ from annolid.annotation.keypoint_visibility import (
     keypoint_visibility_from_shape_object,
     set_keypoint_visibility_on_shape_object,
 )
+from annolid.gui.polygon_tools import is_collapsed_polygon
+from annolid.gui.polygon_tools import restore_polygon_shape
 from annolid.gui.shape import Shape
 from annolid.gui.window_base import AnnolidLabelListItem
 
@@ -26,9 +28,15 @@ class LabelPanelMixin:
             except Exception:
                 pass
         large_view = getattr(self, "large_image_view", None)
-        if large_view is not None and canvas is not None:
+        if large_view is not None:
             try:
-                large_view.set_shapes(getattr(canvas, "shapes", []) or [])
+                if hasattr(large_view, "_refresh_overlay_geometry"):
+                    large_view._refresh_overlay_geometry()
+            except Exception:
+                pass
+            try:
+                if hasattr(large_view, "update"):
+                    large_view.update()
             except Exception:
                 pass
             try:
@@ -39,6 +47,15 @@ class LabelPanelMixin:
                     large_view.set_selected_landmark_pair(selected_pair_id)
             except Exception:
                 pass
+
+    def _label_list_item_for_shape(self, shape):
+        if shape is None:
+            return None
+        for idx in range(self.labelList.count()):
+            item = self.labelList.item(idx)
+            if isinstance(item, AnnolidLabelListItem) and item.shape() is shape:
+                return item
+        return None
 
     def _resolve_pdf_manager(self):
         manager = getattr(self, "pdf_manager", None)
@@ -136,6 +153,11 @@ class LabelPanelMixin:
             if shape is None:
                 return
             visible_flag = bool(visible)
+            if visible_flag and is_collapsed_polygon(shape):
+                try:
+                    restore_polygon_shape(shape)
+                except Exception:
+                    pass
             try:
                 shape.visible = visible_flag
             except Exception:
@@ -159,6 +181,11 @@ class LabelPanelMixin:
             elif canvas is not None:
                 try:
                     canvas.update()
+                except Exception:
+                    pass
+            if hasattr(self, "_update_polygon_tool_action_state"):
+                try:
+                    self._update_polygon_tool_action_state()
                 except Exception:
                     pass
             if hasattr(self, "_refreshVectorOverlayDock"):

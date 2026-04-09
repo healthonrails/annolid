@@ -32,6 +32,12 @@ except ImportError:
     Qt = QtCore.Qt
 from annolid.utils.logger import logger
 from annolid.utils.annotation_compat import utils
+from annolid.gui.polygon_tools import collapse_polygon_shape
+from annolid.gui.polygon_tools import is_collapsed_polygon
+from annolid.gui.polygon_tools import is_inferred_polygon
+from annolid.gui.polygon_tools import mark_polygon_shape_manual
+from annolid.gui.polygon_tools import polygon_edit_state
+from annolid.gui.polygon_tools import restore_polygon_shape
 
 from annolid.annotation.keypoint_visibility import (
     KeypointVisibility,
@@ -165,6 +171,24 @@ class Shape(object):
     def close(self):
         self._closed = True
 
+    def polygonEditState(self) -> dict:
+        return polygon_edit_state(self)
+
+    def isCollapsedPolygon(self) -> bool:
+        return is_collapsed_polygon(self)
+
+    def isInferredPolygon(self) -> bool:
+        return is_inferred_polygon(self)
+
+    def collapsePolygon(self) -> bool:
+        return collapse_polygon_shape(self)
+
+    def restorePolygon(self) -> bool:
+        return restore_polygon_shape(self)
+
+    def markPolygonManual(self) -> bool:
+        return mark_polygon_shape_manual(self)
+
     def addPoint(self, point, label=1):
         if self.points and point == self.points[0]:
             self.close()
@@ -257,6 +281,8 @@ class Shape(object):
 
     def paint(self, painter, image_width=None, image_height=None):
         if not _QT_AVAILABLE:
+            return
+        if not self.visible or is_collapsed_polygon(self):
             return
         if self.mask is None and not self.points:
             return
@@ -727,6 +753,8 @@ class Shape(object):
         }
 
     def containsPoint(self, point):
+        if not self.visible or is_collapsed_polygon(self):
+            return False
         if self.mask is not None:
             if not self.points:
                 return False
@@ -757,6 +785,8 @@ class Shape(object):
         return rectangle
 
     def makePath(self):
+        if not self.visible or is_collapsed_polygon(self):
+            return None
         if self.shape_type in ["rectangle", "mask"]:
             path = QtGui.QPainterPath()
             if len(self.points) == 2:
@@ -778,6 +808,8 @@ class Shape(object):
             return path
 
     def boundingRect(self):
+        if is_collapsed_polygon(self):
+            return None
         path = self.makePath()
         if path:
             return path.boundingRect()

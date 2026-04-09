@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import gc
 import os
 import time
@@ -729,32 +730,49 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
             return False
 
     def _ai_model_image_signature_value(self):
-        candidates = []
-        try:
-            candidates.append(self.window())
-        except Exception:
-            pass
-        candidates.append(self)
-        for owner in candidates:
-            if owner is None:
-                continue
-            source_path = str(
-                getattr(owner, "filename", "") or getattr(owner, "imagePath", "") or ""
-            ).strip()
-            frame_number = getattr(owner, "frame_number", None)
-            if source_path:
-                if frame_number is not None:
-                    try:
-                        return (source_path, int(frame_number))
-                    except Exception:
-                        return (source_path, None)
-                return (source_path, None)
         if self.pixmap is None or self.pixmap.isNull():
             return None
         try:
-            return ("pixmap", int(self.pixmap.cacheKey()))
+            qimage = self.pixmap.toImage()
+            if qimage.isNull():
+                return None
+            image_data = utils.img_qt_to_arr(qimage)
+            digest = hashlib.sha1(
+                np.ascontiguousarray(image_data).tobytes()
+            ).hexdigest()
+            return (
+                "image",
+                digest,
+                int(self.pixmap.width()),
+                int(self.pixmap.height()),
+            )
         except Exception:
-            return None
+            candidates = []
+            try:
+                candidates.append(self.window())
+            except Exception:
+                pass
+            candidates.append(self)
+            for owner in candidates:
+                if owner is None:
+                    continue
+                source_path = str(
+                    getattr(owner, "filename", "")
+                    or getattr(owner, "imagePath", "")
+                    or ""
+                ).strip()
+                frame_number = getattr(owner, "frame_number", None)
+                if source_path:
+                    if frame_number is not None:
+                        try:
+                            return (source_path, int(frame_number))
+                        except Exception:
+                            return (source_path, None)
+                    return (source_path, None)
+            try:
+                return ("pixmap", int(self.pixmap.cacheKey()))
+            except Exception:
+                return None
 
     def _ensure_ai_model_initialized(self, *, force_sync: bool = False) -> bool:
         if self._ai_model is not None:
@@ -1670,11 +1688,26 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         ) or bool(
             getattr(tiled_editor, "canStartSharedBoundaryReshape", lambda: False)()
         )
+        can_infer_page_polygons = bool(
+            getattr(
+                main_window, "canInferCurrentLargeImagePagePolygons", lambda: False
+            )()
+        )
         # ------------------------------------------------------------
         # Shape operations
         # ------------------------------------------------------------
-        if selected_shapes or can_start_adjoining or can_start_boundary_reshape:
+        if (
+            selected_shapes
+            or can_start_adjoining
+            or can_start_boundary_reshape
+            or can_infer_page_polygons
+        ):
             menu.addSeparator()
+            if can_infer_page_polygons:
+                infer_action = getattr(actions, "inferPagePolygons", None)
+                _add_existing_action(
+                    infer_action, icon_filename="duplicate_polygons.svg"
+                )
             if selected_shapes:
                 propagate_action = QtWidgets.QAction(
                     self._icon("next_frame.svg"),
@@ -1698,6 +1731,32 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
                     _add_existing_action(
                         adjoining_action, icon_filename="duplicate_polygons.svg"
                     )
+                collapse_action = getattr(actions, "collapsePolygons", None)
+                if collapse_action is not None:
+                    collapse_action.setEnabled(
+                        bool(
+                            getattr(
+                                main_window,
+                                "canCollapseSelectedPolygons",
+                                lambda: False,
+                            )()
+                        )
+                    )
+                    _add_existing_action(
+                        collapse_action, icon_filename="delete_polygons.svg"
+                    )
+                restore_action = getattr(actions, "restorePolygons", None)
+                if restore_action is not None:
+                    restore_action.setEnabled(
+                        bool(
+                            getattr(
+                                main_window,
+                                "canRestoreSelectedPolygons",
+                                lambda: False,
+                            )()
+                        )
+                    )
+                    _add_existing_action(restore_action, icon_filename="undo.svg")
                 if can_start_boundary_reshape:
                     boundary_reshape_action = QtWidgets.QAction(
                         self._icon("edit_polygons.svg"),
@@ -3206,7 +3265,8 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         self.selectedShapesCopy = []
         self.update()
 
-    def setShapeVisible(self, shape, value):
+    def setShapeVisible(self, shape, value, *, emit_selection=True):
+        _ = emit_selection
         try:
             shape.visible = bool(value)
         except Exception:

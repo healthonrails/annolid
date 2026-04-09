@@ -350,8 +350,15 @@ def _make_visible_shape() -> Shape:
     return shape
 
 
-def _write_page_label_json(path: Path, *, label: str, image_name: str) -> None:
+def _write_page_label_json(
+    path: Path,
+    *,
+    label: str,
+    image_name: str,
+    points: list[list[int]] | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    points = points or [[10, 10], [20, 10], [20, 20], [10, 20]]
     path.write_text(
         (
             "{\n"
@@ -364,7 +371,7 @@ def _write_page_label_json(path: Path, *, label: str, image_name: str) -> None:
             '  "shapes": [\n'
             "    {\n"
             f'      "label": "{label}",\n'
-            '      "points": [[10, 10], [20, 10], [20, 20], [10, 20]],\n'
+            f'      "points": {points},\n'
             '      "group_id": null,\n'
             '      "shape_type": "polygon",\n'
             '      "flags": {},\n'
@@ -601,7 +608,7 @@ def test_multipage_tiff_loads_page_specific_annotations_and_switches_pages(
         window.close()
 
 
-def test_multipage_tiff_page_without_annotation_clears_shapes(
+def test_multipage_tiff_page_without_annotation_infers_from_previous_page(
     tmp_path: Path,
 ) -> None:
     _ensure_qapp()
@@ -628,7 +635,60 @@ def test_multipage_tiff_page_without_annotation_clears_shapes(
         assert len(window.canvas.shapes) == 1
 
         assert window.setLargeImagePageNumber(1) is True
-        assert window.canvas.shapes == []
+        assert len(window.canvas.shapes) == 1
+        inferred = window.canvas.shapes[0]
+        edit_state = inferred.other_data.get("polygon_edit", {})
+
+        assert edit_state.get("state") == "inferred"
+        assert edit_state.get("source_pages") == [0]
+    finally:
+        window.close()
+
+
+def test_multipage_tiff_page_without_annotation_infers_shapes_from_neighbors(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "multipage_stack.tif"
+    tifffile.imwrite(image_path, np.full((40, 60), 5, dtype=np.uint8))
+    annotation_dir = tmp_path / "multipage_stack"
+    _write_page_label_json(
+        annotation_dir / "multipage_stack_000000000.json",
+        label="page",
+        image_name=image_path.name,
+        points=[[10, 10], [20, 10], [20, 20], [10, 20]],
+    )
+    _write_page_label_json(
+        annotation_dir / "multipage_stack_000000002.json",
+        label="page",
+        image_name=image_path.name,
+        points=[[30, 30], [50, 30], [50, 50], [30, 50]],
+    )
+
+    window = _PageAnnotationWindow()
+    try:
+        window.imagePath = str(image_path)
+        window.large_image_backend = type(
+            "_Backend",
+            (),
+            {"get_page_count": lambda self: 3},
+        )()
+
+        assert window._infer_large_image_page_annotations(1) is True
+        assert len(window.canvas.shapes) == 1
+        inferred = window.canvas.shapes[0]
+        edit_state = inferred.other_data.get("polygon_edit", {})
+        xs = [point.x() for point in inferred.points]
+        ys = [point.y() for point in inferred.points]
+
+        assert edit_state.get("state") == "inferred"
+        assert edit_state.get("source_pages") == [0, 2]
+        assert window.otherData["large_image_page"]["inferred"] is True
+        assert min(xs) >= 0.0
+        assert min(ys) >= 0.0
+        assert max(xs) <= 60.0
+        assert max(ys) <= 40.0
     finally:
         window.close()
 
@@ -1443,6 +1503,14 @@ def test_label_visibility_toggle_refreshes_tiled_view(
     try:
         shape = _make_visible_shape()
         host.canvas.shapes = [shape]
+        set_shapes_calls = []
+        original_set_shapes = host.large_image_view.set_shapes
+
+        def _counted_set_shapes(shapes):
+            set_shapes_calls.append(list(shapes or []))
+            return original_set_shapes(shapes)
+
+        host.large_image_view.set_shapes = _counted_set_shapes  # type: ignore[method-assign]
         host.large_image_view.set_shapes(host.canvas.shapes)
 
         assert len(host.large_image_view._overlay_items) == 1
@@ -1463,6 +1531,7 @@ def test_label_visibility_toggle_refreshes_tiled_view(
         hidden = host.large_image_view._overlay_items[0]
         assert getattr(hidden, "_ann_shape", None) is shape
         assert hidden.isVisible() is False
+        assert len(set_shapes_calls) == 1
         assert host._refresh_overlay_dock_calls >= 1
         assert host._dirty_calls >= 1
 
@@ -1474,6 +1543,7 @@ def test_label_visibility_toggle_refreshes_tiled_view(
         restored = host.large_image_view._overlay_items[0]
         assert getattr(restored, "_ann_shape", None) is shape
         assert restored.isVisible() is True
+        assert len(set_shapes_calls) == 1
     finally:
         host.large_image_view.close()
         host.labelList.close()
@@ -1495,6 +1565,14 @@ def test_label_visibility_toggle_recreates_missing_tiled_overlay_item(
     try:
         shape = _make_visible_shape()
         host.canvas.shapes = [shape]
+        set_shapes_calls = []
+        original_set_shapes = host.large_image_view.set_shapes
+
+        def _counted_set_shapes(shapes):
+            set_shapes_calls.append(list(shapes or []))
+            return original_set_shapes(shapes)
+
+        host.large_image_view.set_shapes = _counted_set_shapes  # type: ignore[method-assign]
         host.large_image_view.set_shapes(host.canvas.shapes)
 
         item = AnnolidLabelListItem("atlas", shape)
@@ -1520,6 +1598,7 @@ def test_label_visibility_toggle_recreates_missing_tiled_overlay_item(
         restored = host.large_image_view._overlay_items[0]
         assert getattr(restored, "_ann_shape", None) is shape
         assert restored.isVisible() is True
+        assert len(set_shapes_calls) == 1
     finally:
         host.large_image_view.close()
         host.labelList.close()

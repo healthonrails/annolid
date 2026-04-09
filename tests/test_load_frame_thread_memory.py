@@ -2,9 +2,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from qtpy import QtWidgets
+from qtpy import QtGui, QtWidgets
 
 from annolid.core.media.video import CV2Video
+from annolid.gui import workers as workers_mod
 from annolid.gui.workers import LoadFrameThread
 
 
@@ -75,6 +76,31 @@ def test_frame_loader_shutdown_releases_video_loader():
     worker.shutdown()
 
     assert video_loader.released is True
+
+
+def test_array_to_qimage_detaches_source_buffer_when_accelerated(monkeypatch):
+    _ensure_qapp()
+
+    class _FakeQImage2ndArray:
+        @staticmethod
+        def array2qimage(frame):
+            arr = np.ascontiguousarray(frame)
+            return QtGui.QImage(
+                arr.data,
+                arr.shape[1],
+                arr.shape[0],
+                arr.strides[0],
+                QtGui.QImage.Format_RGB888,
+            )
+
+    monkeypatch.setattr(workers_mod, "qimage2ndarray", _FakeQImage2ndArray)
+
+    frame = np.zeros((4, 4, 3), dtype=np.uint8)
+    frame[..., 0] = 17
+    image = workers_mod._array_to_qimage(frame)
+    frame[..., 0] = 201
+
+    assert image.pixelColor(0, 0).red() == 17
 
 
 def test_cv2video_get_dimensions_without_decoding_first_frame(tmp_path: Path):

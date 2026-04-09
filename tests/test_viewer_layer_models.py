@@ -10,10 +10,14 @@ from qtpy import QtCore, QtGui, QtTest, QtWidgets
 from annolid.gui.mixins.label_image_overlay_mixin import LabelImageOverlayMixin
 from annolid.gui.mixins.annotation_loading_mixin import AnnotationLoadingMixin
 from annolid.gui.mixins.layer_dock_mixin import LayerDockMixin
+from annolid.gui.mixins.label_panel_mixin import LabelPanelMixin
 from annolid.gui.mixins.shape_editing_mixin import ShapeEditingMixin
 from annolid.gui.mixins.raster_layer_mixin import RasterLayerMixin
 from annolid.gui.mixins.vector_overlay_mixin import VectorOverlayMixin
 from annolid.gui.shape import Shape
+from annolid.gui.polygon_tools import collapse_polygon_shape
+from annolid.gui.polygon_tools import is_collapsed_polygon
+from annolid.gui.polygon_tools import restore_polygon_shape
 from annolid.gui.shared_vertices import SharedTopologyRegistry
 from annolid.gui.shared_vertices import insert_shared_vertex_on_edge
 from annolid.gui.shared_vertices import remove_shared_vertex_at
@@ -21,6 +25,8 @@ from annolid.gui.shared_vertices import rebuild_polygon_topology
 from annolid.gui.widgets.canvas import Canvas
 from annolid.gui.widgets.layer_dock import ViewerLayerDockWidget
 from annolid.gui.widgets.tiled_image_view import TileKey, TiledImageView
+from annolid.gui.window_base import AnnolidLabelListItem
+from annolid.gui.window_base import AnnolidLabelListWidget
 from annolid.gui.window_base import AnnolidWindowBase
 from annolid.io.large_image.tifffile_backend import TiffFileBackend
 
@@ -1333,6 +1339,72 @@ def test_shape_adjoining_polygon_seed_reuses_edge_coordinates() -> None:
     assert seed.points[1] is not shape.points[1]
 
 
+def test_polygon_collapse_and_restore_toggle_visibility_and_hit_testing() -> None:
+    shape = Shape(label="brain_region_b", shape_type="polygon")
+    for point in [(4.0, 4.0), (14.0, 4.0), (14.0, 12.0), (4.0, 12.0)]:
+        shape.addPoint(QtCore.QPointF(*point))
+    shape.close()
+    shape.other_data = {
+        "polygon_edit": {
+            "state": "manual",
+            "source_pages": [3, 5],
+        }
+    }
+
+    assert collapse_polygon_shape(shape) is True
+    assert is_collapsed_polygon(shape) is True
+    edit_state = shape.other_data["polygon_edit"]
+    assert edit_state["state"] == "collapsed"
+    assert edit_state["source_pages"] == [3, 5]
+    assert "collapsed_points" in edit_state
+    assert shape.visible is False
+    assert shape.containsPoint(QtCore.QPointF(8.0, 8.0)) is False
+    assert shape.boundingRect() is None
+
+    assert restore_polygon_shape(shape) is True
+    assert is_collapsed_polygon(shape) is False
+    assert shape.visible is True
+    assert shape.containsPoint(QtCore.QPointF(8.0, 8.0)) is True
+
+
+def test_collapse_selected_polygons_updates_tiled_visibility_without_rebuild() -> None:
+    _ensure_qapp()
+
+    host = _CollapseHost()
+    try:
+        shape = Shape(label="brain_region_c", shape_type="polygon")
+        for point in [(4.0, 4.0), (14.0, 4.0), (14.0, 12.0), (4.0, 12.0)]:
+            shape.addPoint(QtCore.QPointF(*point))
+        shape.close()
+        host.canvas.shapes = [shape]
+        host.canvas.selectedShapes = [shape]
+
+        item = AnnolidLabelListItem("brain_region_c", shape)
+        item.setFlags(
+            item.flags() | QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsSelectable
+        )
+        item.setCheckState(QtCore.Qt.Checked)
+        item.setData(host.labelList.VISIBILITY_STATE_ROLE, True)
+        host.labelList.addItem(item)
+
+        collapsed = host.collapseSelectedPolygons()
+
+        assert collapsed == 1
+        assert is_collapsed_polygon(shape) is True
+        assert shape.visible is False
+        assert host.large_image_view.set_shapes_calls == 0
+        assert host.large_image_view.set_shape_visible_calls[-1] == (
+            shape,
+            False,
+            False,
+        )
+        assert item.checkState() == QtCore.Qt.Unchecked
+        assert item.data(host.labelList.VISIBILITY_STATE_ROLE) is False
+        assert host._dirty_calls >= 1
+    finally:
+        host.labelList.close()
+
+
 def test_canvas_start_adjoining_polygon_from_selection_uses_seeded_shared_vertices() -> (
     None
 ):
@@ -1380,6 +1452,64 @@ class _BoundaryHostStub(ShapeEditingMixin):
 
     def toggleDrawMode(self, edit=True, createMode="polygon"):
         self.toggle_calls.append((edit, createMode))
+
+
+class _CollapseLargeViewStub:
+    def __init__(self):
+        self.set_shape_visible_calls = []
+        self.set_shapes_calls = 0
+        self.update_calls = 0
+
+    def setShapeVisible(self, shape, value, *, emit_selection=True):
+        self.set_shape_visible_calls.append((shape, bool(value), bool(emit_selection)))
+        try:
+            shape.visible = bool(value)
+        except Exception:
+            pass
+
+    def set_shapes(self, shapes):
+        self.set_shapes_calls += 1
+        self._last_shapes = list(shapes or [])
+
+    def _refresh_overlay_geometry(self):
+        return None
+
+    def update(self):
+        self.update_calls += 1
+
+
+class _CollapseHost(LabelPanelMixin, ShapeEditingMixin):
+    def __init__(self):
+        self._noSelectionSlot = False
+        self.canvas = _CanvasStub()
+        self.large_image_view = _CollapseLargeViewStub()
+        self.labelList = AnnolidLabelListWidget()
+        self.uniqLabelList = QtWidgets.QListWidget()
+        self._refresh_overlay_dock_calls = 0
+        self._dirty_calls = 0
+        self._rebuild_calls = 0
+        self._setup_label_list_connections()
+
+    def _refreshVectorOverlayDock(self):
+        self._refresh_overlay_dock_calls += 1
+
+    def _get_rgb_by_label(self, _label):
+        return (0, 0, 0)
+
+    def _rebuild_unique_label_list(self):
+        self._rebuild_calls += 1
+
+    def currentItem(self):
+        return self.labelList.currentItem()
+
+    def setDirty(self):
+        self._dirty_calls += 1
+
+    def editLabel(self, *_args, **_kwargs):
+        return None
+
+    def deleteSelectedShapes(self, *_args, **_kwargs):
+        return None
 
 
 class _BoundaryEditorNoAdjoiningStub:
@@ -2107,6 +2237,76 @@ def test_tiled_image_view_adjoining_polygon_boundary_point_stays_shared() -> Non
 
         assert source.points[2].x() == new_shape.points[2].x()
         assert source.points[2].y() == new_shape.points[2].y()
+    finally:
+        view.close()
+
+
+def test_tiled_image_view_shared_adjoining_edge_insert_updates_neighbor_polygon() -> (
+    None
+):
+    _ensure_qapp()
+
+    view = TiledImageView()
+    try:
+        view.resize(320, 240)
+        view.show()
+        _ensure_qapp().processEvents()
+        view.setSceneRect(QtCore.QRectF(0.0, 0.0, 200.0, 200.0))
+        view._content_size = (200, 200)
+
+        left = Shape(shape_type="polygon")
+        for point in [(20.0, 20.0), (80.0, 20.0), (80.0, 80.0), (20.0, 80.0)]:
+            left.addPoint(QtCore.QPointF(*point))
+        left.close()
+
+        right = Shape(shape_type="polygon")
+        for point in [(80.0, 20.0), (140.0, 20.0), (140.0, 80.0), (80.0, 80.0)]:
+            right.addPoint(QtCore.QPointF(*point))
+        right.close()
+
+        left.set_shared_vertex_id(1, "shared-a")
+        left.set_shared_vertex_id(2, "shared-b")
+        right.set_shared_vertex_id(0, "shared-a")
+        right.set_shared_vertex_id(3, "shared-b")
+        rebuild_polygon_topology([left, right])
+
+        view.set_shapes([left, right])
+        view.selectedShapes = [left]
+
+        assert view.startAdjoiningPolygonFromSelection()
+        assert view.current is not None
+
+        def _left_press(scene_point: QtCore.QPointF) -> None:
+            local = view.mapFromScene(scene_point)
+            event = QtGui.QMouseEvent(
+                QtCore.QEvent.MouseButtonPress,
+                QtCore.QPointF(local),
+                QtCore.QPointF(view.viewport().mapToGlobal(local)),
+                QtCore.Qt.LeftButton,
+                QtCore.Qt.LeftButton,
+                QtCore.Qt.NoModifier,
+            )
+            view.mousePressEvent(event)
+
+        _left_press(QtCore.QPointF(80.0, 50.0))
+        shared_vertex_id = view.current.shared_vertex_id(2)
+        assert shared_vertex_id not in {None, ""}
+
+        view.finalise()
+        new_shape = view.selectedShapes[0]
+        assert new_shape.shared_vertex_id(2) == shared_vertex_id
+        assert shared_vertex_id in left.shared_vertex_ids
+        assert shared_vertex_id in right.shared_vertex_ids
+        assert len(left.points) == 5
+        assert len(right.points) == 5
+
+        new_shape.moveVertexBy(2, QtCore.QPointF(5.0, 3.0))
+        view._sync_shared_vertex(new_shape, 2, new_shape.points[2])
+
+        assert left.points[2].x() == new_shape.points[2].x()
+        assert left.points[2].y() == new_shape.points[2].y()
+        assert right.points[0].x() == new_shape.points[2].x()
+        assert right.points[0].y() == new_shape.points[2].y()
     finally:
         view.close()
 

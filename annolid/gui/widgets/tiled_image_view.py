@@ -1489,7 +1489,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self.shapeMoved.emit()
         return True
 
-    def setShapeVisible(self, shape, value):
+    def setShapeVisible(self, shape, value, *, emit_selection: bool = True):
         visible_flag = bool(value)
         try:
             shape.visible = visible_flag
@@ -1512,9 +1512,26 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 self._overlay_items.append(item)
                 matched_item = item
         if not visible_flag:
-            selected = [item for item in self.selectedShapes if item is not shape]
-            if len(selected) != len(self.selectedShapes):
-                self._apply_selection(selected, emit_signal=True)
+            try:
+                shape.highlightClear()
+            except Exception:
+                pass
+            selected_changed = False
+            next_selected = []
+            for selected_shape in list(self.selectedShapes or []):
+                if selected_shape is shape:
+                    selected_changed = True
+                    continue
+                next_selected.append(selected_shape)
+            if selected_changed:
+                self.selectedShapes = next_selected
+                if emit_selection:
+                    try:
+                        self.selectionChanged.emit(list(self.selectedShapes))
+                    except Exception:
+                        pass
+                if self._selected_vertex_shape is shape:
+                    self._set_selected_vertex(None, None)
         self._refresh_overlay_geometry()
         self._notify_host_large_image_document_changed()
 

@@ -52,7 +52,9 @@ except ImportError:  # PyTorch is optional for lighter desktop bundles
 def _array_to_qimage(frame: np.ndarray) -> QtGui.QImage:
     """Convert a NumPy frame to QImage, with optional qimage2ndarray acceleration."""
     if qimage2ndarray is not None:
-        return qimage2ndarray.array2qimage(frame)
+        # Always detach the QImage from the source array so later loader shutdown
+        # cannot invalidate memory referenced by live Qt objects.
+        return qimage2ndarray.array2qimage(frame).copy()
 
     if frame is None:
         raise ValueError("Cannot convert an empty frame to QImage.")

@@ -1,10 +1,72 @@
 from __future__ import annotations
 
+from qtpy import QtCore
 from qtpy.QtCore import Qt
+
+from annolid.gui.polygon_tools import collapse_polygon_shape
+from annolid.gui.polygon_tools import is_collapsed_polygon
+from annolid.gui.polygon_tools import restore_polygon_shape
 
 
 class ShapeEditingMixin:
     """Shape list/canvas editing actions."""
+
+    def _sync_shape_visibility_without_signal(self, shape, visible: bool) -> bool:
+        visible_flag = bool(visible)
+        synced = False
+
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None and hasattr(canvas, "setShapeVisible"):
+            try:
+                canvas.setShapeVisible(
+                    shape,
+                    visible_flag,
+                    emit_selection=False,
+                )
+                synced = True
+            except TypeError:
+                try:
+                    canvas.setShapeVisible(shape, visible_flag)
+                    synced = True
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is not None and hasattr(large_view, "setShapeVisible"):
+            try:
+                large_view.setShapeVisible(
+                    shape,
+                    visible_flag,
+                    emit_selection=False,
+                )
+                synced = True
+            except TypeError:
+                try:
+                    large_view.setShapeVisible(shape, visible_flag)
+                    synced = True
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        try:
+            item = self._label_list_item_for_shape(shape)
+        except Exception:
+            item = None
+        if item is not None:
+            try:
+                with QtCore.QSignalBlocker(self.labelList):
+                    item.setCheckState(Qt.Checked if visible_flag else Qt.Unchecked)
+                    item.setData(
+                        self.labelList.VISIBILITY_STATE_ROLE,
+                        bool(visible_flag),
+                    )
+            except Exception:
+                pass
+
+        return synced
 
     def _active_shape_editor(self):
         if getattr(self, "_active_image_view", "canvas") == "tiled":
@@ -87,6 +149,128 @@ class ShapeEditingMixin:
         self._rebuild_unique_label_list()
         self.shapeSelectionChanged(duplicated)
         self.setDirty()
+
+    def _selected_shapes_for_polygon_tools(self) -> list:
+        shapes = []
+        editor = self._active_shape_editor()
+        for candidate in (
+            list(getattr(editor, "selectedShapes", []) or []),
+            list(getattr(self.canvas, "selectedShapes", []) or []),
+        ):
+            for shape in candidate:
+                if shape is not None and shape not in shapes:
+                    shapes.append(shape)
+        for item in self.labelList.selectedItems():
+            try:
+                shape = item.shape()
+            except Exception:
+                shape = None
+            if shape is not None and shape not in shapes:
+                shapes.append(shape)
+        current = self.currentItem()
+        if current is not None:
+            try:
+                shape = current.shape()
+            except Exception:
+                shape = None
+            if shape is not None and shape not in shapes:
+                shapes.append(shape)
+        return shapes
+
+    def canCollapseSelectedPolygons(self) -> bool:
+        for shape in self._selected_shapes_for_polygon_tools():
+            if str(getattr(shape, "shape_type", "") or "").lower() != "polygon":
+                continue
+            if bool(getattr(shape, "visible", True)) and not is_collapsed_polygon(
+                shape
+            ):
+                return True
+        return False
+
+    def canRestoreSelectedPolygons(self) -> bool:
+        for shape in self._selected_shapes_for_polygon_tools():
+            if str(getattr(shape, "shape_type", "") or "").lower() != "polygon":
+                continue
+            if is_collapsed_polygon(shape):
+                return True
+        return False
+
+    def canInferCurrentLargeImagePagePolygons(self) -> bool:
+        if not bool(getattr(self, "_has_large_image_page_navigation", lambda: False)()):
+            return False
+        for shape in getattr(self.canvas, "shapes", []) or []:
+            if str(getattr(shape, "shape_type", "") or "").lower() != "polygon":
+                continue
+            if bool(getattr(shape, "visible", True)) and not is_collapsed_polygon(
+                shape
+            ):
+                return False
+        return True
+
+    def collapseSelectedPolygons(self, _value=False) -> int:
+        collapsed = 0
+        synced_any = False
+        shapes = [
+            shape
+            for shape in self._selected_shapes_for_polygon_tools()
+            if str(getattr(shape, "shape_type", "") or "").lower() == "polygon"
+        ]
+        if not shapes:
+            return 0
+        for shape in shapes:
+            if not bool(getattr(shape, "visible", True)):
+                continue
+            if is_collapsed_polygon(shape):
+                continue
+            if not collapse_polygon_shape(shape):
+                continue
+            collapsed += 1
+            synced_any = (
+                self._sync_shape_visibility_without_signal(shape, False) or synced_any
+            )
+        if collapsed:
+            if not synced_any:
+                self._refresh_shape_views()
+            self._rebuild_unique_label_list()
+            self.setDirty()
+        return collapsed
+
+    def restoreSelectedPolygons(self, _value=False) -> int:
+        restored = 0
+        synced_any = False
+        shapes = [
+            shape
+            for shape in self._selected_shapes_for_polygon_tools()
+            if str(getattr(shape, "shape_type", "") or "").lower() == "polygon"
+        ]
+        if not shapes:
+            return 0
+        for shape in shapes:
+            if not is_collapsed_polygon(shape):
+                continue
+            if not restore_polygon_shape(shape):
+                continue
+            restored += 1
+            synced_any = (
+                self._sync_shape_visibility_without_signal(shape, True) or synced_any
+            )
+        if restored:
+            if not synced_any:
+                self._refresh_shape_views()
+            self._rebuild_unique_label_list()
+            self.setDirty()
+        return restored
+
+    def inferCurrentLargeImagePagePolygons(self, _value=False) -> bool:
+        inferer = getattr(self, "inferCurrentLargeImagePageAnnotations", None)
+        if not callable(inferer):
+            return False
+        if not self.canInferCurrentLargeImagePagePolygons():
+            return False
+        try:
+            return bool(inferer())
+        except Exception:
+            return False
 
     def startAdjoiningPolygonFromSelection(self, _value=False, edge_index=None) -> None:
         editor = self._active_shape_editor()

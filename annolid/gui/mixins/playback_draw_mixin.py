@@ -84,6 +84,9 @@ class PlaybackDrawMixin:
             self.actions.createPointMode,
             self.actions.createLineStripMode,
             self.actions.editMode,
+            getattr(self.actions, "inferPagePolygons", None),
+            getattr(self.actions, "collapsePolygons", None),
+            getattr(self.actions, "restorePolygons", None),
         )
         utils.addActions(self.menus.edit, actions + self.actions.editMenu)
 

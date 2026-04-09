@@ -264,6 +264,19 @@ registry so boundary-linked edits stay synchronized across related polygons.
 For already shared borders, the right-click menu includes **Reshape Shared
 Boundary**, which lets you drag that boundary segment and update every linked
 polygon together.
+
+For sagittal section workflows, Annolid can also infer polygon outlines for
+the pages between explicitly annotated sections. When a TIFF page does not yet
+have its own annotation JSON, Annolid can load an inferred polygon set from
+the nearest annotated pages so you can open the page and tweak the boundaries
+instead of redrawing everything from scratch.
+
+- `Infer Page Polygons` loads inferred page shapes for a missing section
+- `Collapse Selected Polygons` hides a polygon without deleting it, which is
+  useful when a small region should vanish during manual cleanup
+- checking a collapsed polygon back on in the `Label Instances` dock restores
+  it to normal visibility
+
 - create `point`
 - create `line`
 - create `linestrip`

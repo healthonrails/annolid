@@ -10,6 +10,8 @@ from qtpy import QtCore
 from annolid.gui.label_file import LabelFile, LabelFileError
 from annolid.gui.shape import Shape
 from annolid.gui.shared_vertices import rebuild_polygon_topology
+from annolid.gui.polygon_tools import infer_polygon_shapes_between_pages
+from annolid.gui.polygon_tools import is_inferable_polygon
 from annolid.infrastructure import AnnotationStore
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.utils.logger import logger
@@ -95,6 +97,154 @@ class AnnotationLoadingMixin:
                 ]
         return baseline
 
+    def _large_image_page_label_file(
+        self, page_index: int
+    ) -> tuple[Path, LabelFile] | None:
+        resolver = getattr(self, "_large_image_stack_label_path", None)
+        if not callable(resolver):
+            return None
+        label_path_str = resolver(page_index=page_index)
+        if not label_path_str:
+            return None
+        label_path = Path(label_path_str)
+        if not label_path.exists():
+            return None
+        try:
+            label_file = LabelFile(str(label_path), is_video_frame=True)
+        except Exception as exc:
+            logger.debug(
+                "Unable to load TIFF page label file %s for inference: %s",
+                label_path,
+                exc,
+            )
+            return None
+        return label_path, label_file
+
+    def _large_image_page_candidate_payload(
+        self, page_index: int
+    ) -> dict[str, object] | None:
+        page = self._large_image_page_label_file(page_index)
+        if page is None:
+            return None
+        label_path, label_file = page
+        shapes = self._materialize_label_shapes(
+            list(getattr(label_file, "shapes", []) or [])
+        )
+        if not any(is_inferable_polygon(shape) for shape in shapes):
+            return None
+        return {
+            "page_index": int(page_index),
+            "label_path": label_path,
+            "label_file": label_file,
+            "shapes": shapes,
+            "other_data": dict(getattr(label_file, "otherData", {}) or {}),
+            "caption": label_file.get_caption(),
+        }
+
+    def _large_image_neighbor_page_payloads(self, page_index: int):
+        backend = getattr(self, "large_image_backend", None)
+        page_count = int(getattr(backend, "get_page_count", lambda: 1)() or 1)
+        previous_payload = None
+        next_payload = None
+        for index in range(int(page_index) - 1, -1, -1):
+            previous_payload = self._large_image_page_candidate_payload(index)
+            if previous_payload is not None:
+                break
+        for index in range(int(page_index) + 1, page_count):
+            next_payload = self._large_image_page_candidate_payload(index)
+            if next_payload is not None:
+                break
+        return previous_payload, next_payload
+
+    def _infer_large_image_page_annotations(
+        self,
+        page_index: int,
+        *,
+        fallback_other_data: Optional[dict] = None,
+    ) -> bool:
+        previous_payload, next_payload = self._large_image_neighbor_page_payloads(
+            page_index
+        )
+        previous_shapes = (
+            list(previous_payload.get("shapes") or []) if previous_payload else []
+        )
+        next_shapes = list(next_payload.get("shapes") or []) if next_payload else []
+        if not previous_shapes and not next_shapes:
+            return False
+
+        previous_page = (
+            int(previous_payload["page_index"]) if previous_payload else None
+        )
+        next_page = int(next_payload["page_index"]) if next_payload else None
+        inferred_shapes = infer_polygon_shapes_between_pages(
+            previous_shapes,
+            next_shapes,
+            target_page=int(page_index),
+            previous_page=previous_page,
+            next_page=next_page,
+        )
+        if not inferred_shapes:
+            return False
+
+        baseline_other_data = self._large_image_page_baseline_other_data()
+        merged_other_data = dict(baseline_other_data)
+        if isinstance(fallback_other_data, dict):
+            merged_other_data.update(fallback_other_data)
+        merged_other_data["large_image_page"] = {
+            "page_index": int(page_index),
+            "label_path": str(
+                getattr(
+                    self,
+                    "_large_image_stack_label_path",
+                    lambda **kwargs: "",
+                )(page_index=page_index)
+                or ""
+            ),
+            "inferred": True,
+            "source_pages": [
+                int(payload["page_index"])
+                for payload in (previous_payload, next_payload)
+                if payload is not None
+            ],
+            "source_label_paths": [
+                str(payload["label_path"])
+                for payload in (previous_payload, next_payload)
+                if payload is not None
+            ],
+        }
+        if previous_payload is not None:
+            merged_other_data["large_image_page"]["previous_caption"] = str(
+                previous_payload.get("caption") or ""
+            )
+        if next_payload is not None:
+            merged_other_data["large_image_page"]["next_caption"] = str(
+                next_payload.get("caption") or ""
+            )
+        self.labelFile = None
+        self.otherData = merged_other_data
+        if hasattr(self.canvas, "setBehaviorText"):
+            self.canvas.setBehaviorText(None)
+        self.loadShapes(inferred_shapes, replace=True)
+        if getattr(self, "caption_widget", None) is not None:
+            self.caption_widget.set_caption("")
+            self.caption_widget.set_image_path(
+                str(getattr(self, "imagePath", "") or "")
+            )
+        self._post_window_status(
+            self.tr("Loaded inferred polygons for TIFF page %d") % (int(page_index) + 1)
+        )
+        return True
+
+    def inferCurrentLargeImagePageAnnotations(self) -> bool:
+        if not bool(getattr(self, "_has_large_image_page_navigation", lambda: False)()):
+            return False
+        if not bool(
+            getattr(self, "canInferCurrentLargeImagePagePolygons", lambda: False)()
+        ):
+            return False
+        page_index = int(getattr(self, "frame_number", 0) or 0)
+        return self._infer_large_image_page_annotations(page_index)
+
     def _loadLargeImagePageAnnotations(
         self,
         page_index: int,
@@ -160,6 +310,12 @@ class AnnotationLoadingMixin:
                     )
                 return True
 
+        if not fallback_shapes:
+            if self._infer_large_image_page_annotations(
+                page_index, fallback_other_data=fallback_other_data
+            ):
+                return True
+
         self.labelFile = None
         merged_other_data = dict(baseline_other_data)
         if isinstance(fallback_other_data, dict):
@@ -195,6 +351,11 @@ class AnnotationLoadingMixin:
             self.large_image_view.set_shapes(self.canvas.shapes)
         if hasattr(self, "_refreshVectorOverlayDock"):
             self._refreshVectorOverlayDock()
+        if hasattr(self, "_update_polygon_tool_action_state"):
+            try:
+                self._update_polygon_tool_action_state()
+            except Exception:
+                pass
         self._rebuild_unique_label_list()
         try:
             caption = self.labelFile.get_caption() if self.labelFile else None

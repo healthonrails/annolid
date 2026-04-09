@@ -7,6 +7,7 @@ from annolid.gui.shared_vertices import insert_shared_vertex_on_edge
 from annolid.gui.shared_vertices import rebuild_polygon_topology
 from annolid.gui.shared_vertices import remove_shared_vertex_at
 from annolid.gui.shared_vertices import synchronize_shared_vertex
+from annolid.gui.polygon_tools import mark_polygon_shape_manual
 
 
 class SharedPolygonEditMixin:
@@ -22,6 +23,13 @@ class SharedPolygonEditMixin:
         shapes = self._shared_polygon_shapes()
         self._shared_topology_registry = SharedTopologyRegistry.from_shapes(shapes)
         return self._shared_topology_registry
+
+    def _shared_mark_polygon_shapes_manual(self, shapes) -> None:
+        for shape in list(shapes or []):
+            try:
+                mark_polygon_shape_manual(shape)
+            except Exception:
+                continue
 
     def _shared_current_scale(self) -> float:
         scale_attr = getattr(self, "scale", None)
@@ -60,6 +68,16 @@ class SharedPolygonEditMixin:
                     point=point,
                 )
             self._refresh_shared_topology_registry()
+            self._shared_mark_polygon_shapes_manual([shape])
+            if isinstance(result, str) and result:
+                registry = getattr(self, "_shared_topology_registry", None)
+                if isinstance(registry, SharedTopologyRegistry):
+                    self._shared_mark_polygon_shapes_manual(
+                        [
+                            candidate
+                            for candidate, _ in registry.vertex_occurrences(result)
+                        ]
+                    )
             return result
         except Exception:
             return None
@@ -89,6 +107,24 @@ class SharedPolygonEditMixin:
                 self._refresh_shared_topology_registry()
         if moved:
             self._refresh_shared_topology_registry()
+            self._shared_mark_polygon_shapes_manual(shapes_list)
+            registry = getattr(self, "_shared_topology_registry", None)
+            if isinstance(registry, SharedTopologyRegistry):
+                moved_ids = set()
+                for shape in shapes_list:
+                    for vertex_id in list(
+                        getattr(shape, "shared_vertex_ids", []) or []
+                    ):
+                        vertex_key = str(vertex_id or "")
+                        if vertex_key:
+                            moved_ids.add(vertex_key)
+                for vertex_id in moved_ids:
+                    self._shared_mark_polygon_shapes_manual(
+                        [
+                            candidate
+                            for candidate, _ in registry.vertex_occurrences(vertex_id)
+                        ]
+                    )
         return bool(moved)
 
     def _shared_insert_vertex_on_edge(self, shape, edge_index: int, point):
@@ -101,6 +137,8 @@ class SharedPolygonEditMixin:
         if result is None:
             return False
         self._refresh_shared_topology_registry()
+        inserted_shapes = [candidate for candidate, _ in result.get("inserted", [])]
+        self._shared_mark_polygon_shapes_manual(inserted_shapes)
         return result
 
     def _shared_remove_vertex(self, shape, vertex_index: int) -> bool:
@@ -113,6 +151,8 @@ class SharedPolygonEditMixin:
         if result is None:
             return False
         self._refresh_shared_topology_registry()
+        removed_shapes = [candidate for candidate, _ in result.get("removed", [])]
+        self._shared_mark_polygon_shapes_manual(removed_shapes)
         return True
 
     def _shared_reshape_boundary(self, shape, edge_index: int, delta) -> bool:
@@ -126,6 +166,8 @@ class SharedPolygonEditMixin:
         if result is None:
             return False
         self._refresh_shared_topology_registry()
+        affected = [candidate for candidate, _ in result.get("occurrences", [])]
+        self._shared_mark_polygon_shapes_manual(affected)
         return True
 
     def _shared_finalize_topology_edit(self):
@@ -244,6 +286,11 @@ class SharedPolygonEditMixin:
             return False
         vertex_id = str(result.get("vertex_id") or "")
         if not vertex_id:
+            try:
+                vertex_id = str(source_shape.shared_vertex_id(source_edge_index) or "")
+            except Exception:
+                vertex_id = ""
+        if not vertex_id:
             return False
         setter = getattr(current_shape, "set_shared_vertex_id", None)
         if callable(setter):
@@ -253,6 +300,12 @@ class SharedPolygonEditMixin:
                 return False
         try:
             current_shape.points[normalized_index] = QtCore.QPointF(point)
+        except Exception:
+            return False
+        try:
+            # Commit the shared topology immediately so tiled and canvas views
+            # both reflect the inserted boundary point before the next drag.
+            self._shared_finalize_topology_edit()
         except Exception:
             return False
         return True

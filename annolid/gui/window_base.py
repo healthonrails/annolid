@@ -632,6 +632,24 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         )
         self.actions.startAdjoiningPolygon.setIcon(self._icon("duplicate_polygons.svg"))
         self.actions.startAdjoiningPolygon.setEnabled(False)
+        self.actions.inferPagePolygons = self._mk_action(
+            self.tr("Infer Page Polygons"),
+            getattr(self, "inferCurrentLargeImagePagePolygons", None),
+        )
+        self.actions.inferPagePolygons.setIcon(self._icon("duplicate_polygons.svg"))
+        self.actions.inferPagePolygons.setEnabled(False)
+        self.actions.collapsePolygons = self._mk_action(
+            self.tr("Collapse Selected Polygons"),
+            getattr(self, "collapseSelectedPolygons", None),
+        )
+        self.actions.collapsePolygons.setIcon(self._icon("delete_polygons.svg"))
+        self.actions.collapsePolygons.setEnabled(False)
+        self.actions.restorePolygons = self._mk_action(
+            self.tr("Restore Selected Polygons"),
+            getattr(self, "restoreSelectedPolygons", None),
+        )
+        self.actions.restorePolygons.setIcon(self._icon("undo.svg"))
+        self.actions.restorePolygons.setEnabled(False)
         self.actions.removePoint = self._mk_action(
             self.tr("Remove Point"), getattr(self, "removeSelectedPoint", None)
         )
@@ -720,6 +738,9 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             self.actions.undo,
             self.actions.undoLastPoint,
             self.actions.removePoint,
+            self.actions.inferPagePolygons,
+            self.actions.collapsePolygons,
+            self.actions.restorePolygons,
         )
         self.actions.onShapesPresent = (
             self.actions.save,
@@ -1014,6 +1035,9 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             "deleteShapes",
             "duplicateShapes",
             "startAdjoiningPolygon",
+            "inferPagePolygons",
+            "collapsePolygons",
+            "restorePolygons",
             "removePoint",
             "undo",
             "undoLastPoint",
@@ -1041,10 +1065,19 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 action.setEnabled(enabled)
         if enabled:
             self._update_adjoining_polygon_action_state()
+            self._update_polygon_tool_action_state()
         else:
             action = getattr(self.actions, "startAdjoiningPolygon", None)
             if action is not None:
                 action.setEnabled(False)
+            for name in (
+                "inferPagePolygons",
+                "collapsePolygons",
+                "restorePolygons",
+            ):
+                action = getattr(self.actions, name, None)
+                if action is not None:
+                    action.setEnabled(False)
 
         # Some mode actions live outside `self.actions` (historical compatibility).
         try:
@@ -1077,6 +1110,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         if getattr(self.actions, "duplicateShapes", None) is not None:
             self.actions.duplicateShapes.setEnabled(has_selected)
         self._update_adjoining_polygon_action_state()
+        self._update_polygon_tool_action_state()
         # Avoid feedback loops: selecting shapes on the canvas updates the list,
         # which would otherwise re-select shapes via list selection handlers.
         prev_no_slot = bool(getattr(self, "_noSelectionSlot", False))
@@ -1097,6 +1131,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.actions.editMode.setEnabled(not bool(drawing))
         self.actions.undoLastPoint.setEnabled(bool(drawing))
         self._update_adjoining_polygon_action_state()
+        self._update_polygon_tool_action_state()
 
     def _update_adjoining_polygon_action_state(self) -> None:
         action = getattr(self.actions, "startAdjoiningPolygon", None)
@@ -1118,6 +1153,35 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 getattr(tiled_editor, "canStartAdjoiningPolygon", lambda: False)()
             )
         action.setEnabled(can_start)
+
+    def _update_polygon_tool_action_state(self) -> None:
+        collapse_action = getattr(self.actions, "collapsePolygons", None)
+        restore_action = getattr(self.actions, "restorePolygons", None)
+        infer_action = getattr(self.actions, "inferPagePolygons", None)
+        try:
+            can_collapse = bool(
+                getattr(self, "canCollapseSelectedPolygons", lambda: False)()
+            )
+        except Exception:
+            can_collapse = False
+        try:
+            can_restore = bool(
+                getattr(self, "canRestoreSelectedPolygons", lambda: False)()
+            )
+        except Exception:
+            can_restore = False
+        try:
+            can_infer = bool(
+                getattr(self, "canInferCurrentLargeImagePagePolygons", lambda: False)()
+            )
+        except Exception:
+            can_infer = False
+        if collapse_action is not None:
+            collapse_action.setEnabled(can_collapse)
+        if restore_action is not None:
+            restore_action.setEnabled(can_restore)
+        if infer_action is not None:
+            infer_action.setEnabled(can_infer)
 
     def openFile(self, _value=False) -> None:
         start_dir = self.lastOpenDir or str(Path.home())
