@@ -24,7 +24,6 @@ from annolid.segmentation.SAM.sam3.session import Sam3SessionConfig, Sam3Session
 from .sam3.agent.client_llm import send_generate_request as _send_generate_request
 from .video_window_inference import _iter_video_windows
 from .window_refresh import run_mid_window_refresh
-from .windowed_runner import compute_window_reuse_shift
 
 
 @dataclass
@@ -133,6 +132,13 @@ def _filter_duplicate_boxes(
             continue
         filtered.append(candidate)
     return filtered
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _xyxy_to_xywh(box_xyxy: Sequence[float]) -> List[float]:
@@ -368,8 +374,6 @@ def run_agent_seeded_sam3_video(
     with tempfile.TemporaryDirectory(prefix="sam3_agent_windows_") as tmpdir:
         tmpdir_path = Path(tmpdir)
         previous_window_end_idx: Optional[int] = None
-        previous_window_frame_count = 0
-        previous_window_state: Optional[dict] = None
         for start_idx, end_idx, frames in _iter_video_windows(
             video_path=video_path,
             window_size=agent_cfg.window_size,
@@ -381,152 +385,171 @@ def run_agent_seeded_sam3_video(
             first_frame = frames[0]
             frame_path = tmpdir_path / f"frame_{start_idx:09}.png"
             _save_frame_to_tmp(first_frame, frame_path)
-            boxes_abs, _scores = _call_run_agent_on_frame(
-                frame_path,
-                agent_cfg,
-                send_request,
-            )
-            if not boxes_abs:
-                continue
-
-            # Keep the session-level tracking history alive across windows so
-            # overlap can stabilize IDs and box carry-over.
-            with session._session_scope(
-                target_device=tracking_cfg.device, auto_close=True
-            ):
-                boundary_bundle = None
-                boundary_allowed_gids = None
-                if (
-                    bool(tracking_cfg.use_explicit_window_reseed)
-                    and int(start_idx) > 0
-                    and previous_window_end_idx is not None
-                    and hasattr(session, "_build_boundary_reseed_prompt_bundle")
-                ):
-                    frame_h, frame_w = first_frame.shape[:2]
-                    try:
-                        boundary_bundle = session._build_boundary_reseed_prompt_bundle(
-                            frame_idx=int(start_idx),
-                            frame_width=float(frame_w),
-                            frame_height=float(frame_h),
-                            source_frame_idx=int(previous_window_end_idx) - 1,
-                        )
-                    except Exception:
-                        boundary_bundle = None
-                    if boundary_bundle is not None:
-                        boundary_allowed_gids = {
-                            int(v)
-                            for v in (getattr(boundary_bundle, "track_ids", []) or [])
-                        }
-                shift = compute_window_reuse_shift(
-                    previous_window_end_idx=previous_window_end_idx,
-                    window_start_idx=int(start_idx),
-                    frame_count=len(frames),
-                    previous_window_frame_count=previous_window_frame_count,
+            try:
+                boxes_abs, _scores = _call_run_agent_on_frame(
+                    frame_path,
+                    agent_cfg,
+                    send_request,
                 )
-                session._reset_action_history_if_supported()
-                if previous_window_state is not None and shift > 0:
-                    session._carry_forward_window_state(previous_window_state, shift=shift)
-                propagation_direction = (tracking_cfg.propagation_direction or "forward").lower()
+                if not boxes_abs:
+                    previous_window_end_idx = int(end_idx)
+                    continue
 
-                def seed_first_frame() -> None:
-                    seed_boxes = [_xyxy_to_xywh(v) for v in boxes_abs]
-                    seed_labels = list(range(1, len(seed_boxes) + 1))
-                    seed_hints = [f"{agent_cfg.prompt}_{i + 1}" for i in range(len(seed_boxes))]
+                # Enforce strict per-window lifecycle: always close any lingering
+                # session before opening the next one.
+                current_session_id = getattr(session, "_session_id", None)
+                if current_session_id and hasattr(session, "close_session"):
+                    try:
+                        session.close_session()
+                    except Exception:
+                        pass
+
+                with session._session_scope(
+                    target_device=tracking_cfg.device, auto_close=True
+                ):
+                    # Cross-window ID transfer is prompt-driven only in agent mode.
+                    # We intentionally avoid private-state carry-over between windows.
+                    session._reset_action_history_if_supported()
+                    boundary_bundle = None
+                    boundary_allowed_gids = None
                     if (
-                        tracking_cfg.use_vlm_boundary_id_correction
-                        and boundary_bundle is not None
-                        and getattr(boundary_bundle, "boxes", None)
-                        and getattr(boundary_bundle, "track_ids", None)
+                        bool(tracking_cfg.use_explicit_window_reseed)
+                        and int(start_idx) > 0
+                        and previous_window_end_idx is not None
+                        and hasattr(session, "_build_boundary_reseed_prompt_bundle")
                     ):
                         frame_h, frame_w = first_frame.shape[:2]
-                        seed_labels, seed_hints = _resolve_vlm_boundary_box_labels(
-                            candidate_boxes_xyxy=boxes_abs,
-                            boundary_boxes_norm_xywh=getattr(boundary_bundle, "boxes", []),
-                            boundary_track_ids=getattr(boundary_bundle, "track_ids", []),
-                            frame_width=float(frame_w),
-                            frame_height=float(frame_h),
-                            iou_threshold=float(
-                                tracking_cfg.vlm_boundary_match_iou_threshold
-                            ),
-                            prompt_prefix=agent_cfg.prompt,
-                            id_to_labels=getattr(session, "id_to_labels", {}),
-                        )
-                    session.add_prompt_boxes_abs(
-                        frame_idx=start_idx,
-                        boxes_abs=seed_boxes,
-                        box_labels=seed_labels,
-                        record_outputs=True,
-                        label_hints=seed_hints,
-                        boundary_bundle=boundary_bundle,
-                        boundary_allowed_gids=boundary_allowed_gids,
-                        boundary_max_new_ids=None,
-                    )
+                        try:
+                            boundary_bundle = session._build_boundary_reseed_prompt_bundle(
+                                frame_idx=int(start_idx),
+                                frame_width=float(frame_w),
+                                frame_height=float(frame_h),
+                                source_frame_idx=int(previous_window_end_idx) - 1,
+                            )
+                        except Exception:
+                            boundary_bundle = None
+                        if boundary_bundle is not None:
+                            boundary_allowed_gids = {
+                                int(v)
+                                for v in (getattr(boundary_bundle, "track_ids", []) or [])
+                            }
+                    propagation_direction = (
+                        tracking_cfg.propagation_direction or "forward"
+                    ).lower()
 
-                def propagate_segment(
-                    segment_start_local_idx: int,
-                    segment_len: int,
-                ) -> Tuple[int, int]:
-                    return session.propagate(
-                        start_frame_idx=start_idx + int(segment_start_local_idx),
-                        propagation_direction=propagation_direction,
-                        max_frame_num_to_track=int(segment_len),
-                    )
-
-                def refresh_mid_frame(refresh_local_idx: int) -> Tuple[int, int]:
-                    refresh_frame = frames[int(refresh_local_idx)]
-                    refresh_path = tmpdir_path / f"frame_{start_idx + refresh_local_idx:09}.png"
-                    _save_frame_to_tmp(refresh_frame, refresh_path)
-                    refresh_boxes_abs, _ = _call_run_agent_on_frame(
-                        refresh_path,
-                        agent_cfg,
-                        send_request,
-                    )
-                    refresh_boxes_abs = _filter_duplicate_boxes(
-                        refresh_boxes_abs,
-                        boxes_abs,
-                    )
-                    if refresh_boxes_abs:
-                        refresh_boxes_xywh = [_xyxy_to_xywh(v) for v in refresh_boxes_abs]
-                        refresh_label_offset = len(boxes_abs) + 1
-                        refresh_labels = list(range(refresh_label_offset, refresh_label_offset + len(refresh_boxes_abs)))
-                        refresh_hints = [f"{agent_cfg.prompt}_refresh_{i + 1}" for i in range(len(refresh_boxes_abs))]
-                        for lid, hint in zip(refresh_labels, refresh_hints):
-                            session.id_to_labels.setdefault(lid, hint)
-                        refresh_result = session.add_prompt_boxes_abs(
-                            frame_idx=start_idx + int(refresh_local_idx),
-                            boxes_abs=refresh_boxes_xywh,
-                            box_labels=refresh_labels,
+                    def seed_first_frame() -> None:
+                        seed_boxes = [_xyxy_to_xywh(v) for v in boxes_abs]
+                        seed_labels = list(range(1, len(seed_boxes) + 1))
+                        seed_hints = [
+                            f"{agent_cfg.prompt}_{i + 1}" for i in range(len(seed_boxes))
+                        ]
+                        if (
+                            tracking_cfg.use_vlm_boundary_id_correction
+                            and boundary_bundle is not None
+                            and getattr(boundary_bundle, "boxes", None)
+                            and getattr(boundary_bundle, "track_ids", None)
+                        ):
+                            frame_h, frame_w = first_frame.shape[:2]
+                            seed_labels, seed_hints = _resolve_vlm_boundary_box_labels(
+                                candidate_boxes_xyxy=boxes_abs,
+                                boundary_boxes_norm_xywh=getattr(boundary_bundle, "boxes", []),
+                                boundary_track_ids=getattr(boundary_bundle, "track_ids", []),
+                                frame_width=float(frame_w),
+                                frame_height=float(frame_h),
+                                iou_threshold=float(
+                                    tracking_cfg.vlm_boundary_match_iou_threshold
+                                ),
+                                prompt_prefix=agent_cfg.prompt,
+                                id_to_labels=getattr(session, "id_to_labels", {}),
+                            )
+                        session.add_prompt_boxes_abs(
+                            frame_idx=start_idx,
+                            boxes_abs=seed_boxes,
+                            box_labels=seed_labels,
                             record_outputs=True,
-                            label_hints=refresh_hints,
+                            label_hints=seed_hints,
+                            boundary_bundle=boundary_bundle,
+                            boundary_allowed_gids=boundary_allowed_gids,
+                            boundary_max_new_ids=None,
                         )
-                        refresh_outputs = (
-                            refresh_result.get("outputs", {})
-                            if isinstance(refresh_result, dict)
-                            else {}
-                        ) or {}
-                        refresh_outputs = session._map_outputs_to_global_ids_at_frame(
-                            refresh_outputs,
-                            frame_idx=start_idx + int(refresh_local_idx),
-                        )
-                        refresh_obj_ids = refresh_outputs.get("out_obj_ids", []) or []
-                        refresh_masks = len(refresh_obj_ids)
-                    else:
-                        refresh_masks = 0
-                    return 1, int(refresh_masks)
 
-                frames_processed, masks_written, _ = run_mid_window_refresh(
-                    len(frames),
-                    propagation_direction,
-                    seed_first_frame=seed_first_frame,
-                    propagate_segment=propagate_segment,
-                    refresh_mid_frame=refresh_mid_frame,
-                )
-                total_frames += frames_processed
-                total_masks += masks_written
-                get_state = getattr(session, "_get_active_session_state", None)
-                previous_window_state = get_state() if callable(get_state) else None
-            previous_window_frame_count = len(frames)
-            previous_window_end_idx = int(end_idx)
+                    def propagate_segment(
+                        segment_start_local_idx: int,
+                        segment_len: int,
+                    ) -> Tuple[int, int]:
+                        return session.propagate(
+                            start_frame_idx=start_idx + int(segment_start_local_idx),
+                            propagation_direction=propagation_direction,
+                            max_frame_num_to_track=int(segment_len),
+                        )
+
+                    def refresh_mid_frame(refresh_local_idx: int) -> Tuple[int, int]:
+                        refresh_frame = frames[int(refresh_local_idx)]
+                        refresh_path = (
+                            tmpdir_path / f"frame_{start_idx + refresh_local_idx:09}.png"
+                        )
+                        _save_frame_to_tmp(refresh_frame, refresh_path)
+                        try:
+                            refresh_boxes_abs, _ = _call_run_agent_on_frame(
+                                refresh_path,
+                                agent_cfg,
+                                send_request,
+                            )
+                        finally:
+                            _safe_unlink(refresh_path)
+                        refresh_boxes_abs = _filter_duplicate_boxes(
+                            refresh_boxes_abs,
+                            boxes_abs,
+                        )
+                        if refresh_boxes_abs:
+                            refresh_boxes_xywh = [_xyxy_to_xywh(v) for v in refresh_boxes_abs]
+                            refresh_label_offset = len(boxes_abs) + 1
+                            refresh_labels = list(
+                                range(
+                                    refresh_label_offset,
+                                    refresh_label_offset + len(refresh_boxes_abs),
+                                )
+                            )
+                            refresh_hints = [
+                                f"{agent_cfg.prompt}_refresh_{i + 1}"
+                                for i in range(len(refresh_boxes_abs))
+                            ]
+                            for lid, hint in zip(refresh_labels, refresh_hints):
+                                session.id_to_labels.setdefault(lid, hint)
+                            refresh_result = session.add_prompt_boxes_abs(
+                                frame_idx=start_idx + int(refresh_local_idx),
+                                boxes_abs=refresh_boxes_xywh,
+                                box_labels=refresh_labels,
+                                record_outputs=True,
+                                label_hints=refresh_hints,
+                            )
+                            refresh_outputs = (
+                                refresh_result.get("outputs", {})
+                                if isinstance(refresh_result, dict)
+                                else {}
+                            ) or {}
+                            refresh_outputs = session._map_outputs_to_global_ids_at_frame(
+                                refresh_outputs,
+                                frame_idx=start_idx + int(refresh_local_idx),
+                            )
+                            refresh_obj_ids = refresh_outputs.get("out_obj_ids", []) or []
+                            refresh_masks = len(refresh_obj_ids)
+                        else:
+                            refresh_masks = 0
+                        return 1, int(refresh_masks)
+
+                    frames_processed, masks_written, _ = run_mid_window_refresh(
+                        len(frames),
+                        propagation_direction,
+                        seed_first_frame=seed_first_frame,
+                        propagate_segment=propagate_segment,
+                        refresh_mid_frame=refresh_mid_frame,
+                    )
+                    total_frames += frames_processed
+                    total_masks += masks_written
+                    previous_window_end_idx = int(end_idx)
+            finally:
+                _safe_unlink(frame_path)
     if total_masks == 0:
         raise RuntimeError(
             "SAM3 agent-seeded run produced no masks; consider providing an API key "

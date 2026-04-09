@@ -2116,6 +2116,8 @@ def test_agent_orchestrator_applies_boundary_bundle_to_seed_mapping(
         (4, 8, [np.full((40, 40, 3), 1, dtype=np.uint8) for _ in range(4)]),
     ]
     created_sessions: list[object] = []
+    carry_forward_calls: list[int] = []
+    session_scope_entries: list[int] = []
 
     class _Bundle:
         def __init__(self) -> None:
@@ -2141,6 +2143,7 @@ def test_agent_orchestrator_applies_boundary_bundle_to_seed_mapping(
 
         @contextmanager
         def _session_scope(self, target_device=None, auto_close=True):
+            session_scope_entries.append(1)
             yield self._session_id
 
         def _reset_action_history_if_supported(self) -> None:
@@ -2159,6 +2162,7 @@ def test_agent_orchestrator_applies_boundary_bundle_to_seed_mapping(
             return _Bundle()
 
         def _carry_forward_window_state(self, previous_window_state, shift):
+            carry_forward_calls.append(int(shift))
             return None
 
         def _get_active_session_state(self):
@@ -2243,6 +2247,8 @@ def test_agent_orchestrator_applies_boundary_bundle_to_seed_mapping(
     assert frames == 8
     assert masks == 7
     assert len(created_sessions) == 1
+    assert len(session_scope_entries) == 2
+    assert carry_forward_calls == []
     seed_calls = created_sessions[0].seed_calls
     assert seed_calls[0]["frame_idx"] == 0
     assert seed_calls[1]["frame_idx"] == 4
@@ -2252,3 +2258,92 @@ def test_agent_orchestrator_applies_boundary_bundle_to_seed_mapping(
     assert seed_calls[1]["boundary_allowed_gids"] == {11}
     # xyxy -> xywh conversion must happen before add_prompt_boxes_abs.
     assert seed_calls[1]["boxes_abs"] == [[8.0, 10.0, 20.0, 20.0]]
+
+
+def test_agent_orchestrator_cleans_window_temp_frames_between_windows(
+    monkeypatch, tmp_path
+) -> None:
+    windows = [
+        (0, 4, [np.full((12, 12, 3), 0, dtype=np.uint8) for _ in range(4)]),
+        (4, 8, [np.full((12, 12, 3), 1, dtype=np.uint8) for _ in range(4)]),
+    ]
+    frame_file_counts: list[tuple[str, int]] = []
+
+    class _FakeSession:
+        def __init__(self, *args, **kwargs) -> None:
+            self._session_id = "sess"
+            self.id_to_labels = {}
+            self._frames_processed = set()
+            self._frames_with_masks = set()
+            self._frame_masks = {}
+
+        @contextmanager
+        def _session_scope(self, target_device=None, auto_close=True):
+            yield self._session_id
+
+        def _reset_action_history_if_supported(self) -> None:
+            return None
+
+        def _build_boundary_reseed_prompt_bundle(self, **kwargs):
+            return None
+
+        def add_prompt_boxes_abs(self, frame_idx, boxes_abs, box_labels, **kwargs):
+            self._frames_processed.add(int(frame_idx))
+            return {"outputs": {"out_obj_ids": np.asarray(box_labels, dtype=np.int64)}}
+
+        def _map_outputs_to_global_ids_at_frame(self, outputs, *, frame_idx):
+            return outputs
+
+        def propagate(
+            self, *, start_frame_idx, propagation_direction, max_frame_num_to_track
+        ):
+            span = int(max_frame_num_to_track)
+            return span, span
+
+    def _fake_run_agent_on_frame(frame_path, agent_cfg):
+        file_count = len(list(Path(frame_path).parent.glob("*.png")))
+        frame_file_counts.append((Path(frame_path).name, int(file_count)))
+        return [[1.0, 1.0, 4.0, 4.0]], [0.99]
+
+    monkeypatch.setattr(
+        agent_video_orchestrator,
+        "Sam3SessionManager",
+        _FakeSession,
+    )
+    monkeypatch.setattr(
+        agent_video_orchestrator,
+        "_iter_video_windows",
+        lambda **kwargs: iter(windows),
+    )
+    monkeypatch.setattr(
+        agent_video_orchestrator,
+        "_run_agent_on_frame",
+        _fake_run_agent_on_frame,
+    )
+
+    agent_cfg = agent_video_orchestrator.AgentConfig(
+        prompt="mouse",
+        window_size=4,
+        stride=4,
+    )
+    tracking_cfg = agent_video_orchestrator.TrackingConfig(
+        checkpoint_path="checkpoint.pt",
+        device="cpu",
+        max_frame_num_to_track=1,
+    )
+
+    agent_video_orchestrator.run_agent_seeded_sam3_video(
+        video_path=str(tmp_path / "video.mp4"),
+        agent_cfg=agent_cfg,
+        tracking_cfg=tracking_cfg,
+    )
+
+    start_calls = [
+        item
+        for item in frame_file_counts
+        if item[0].endswith("000000000.png") or item[0].endswith("000000004.png")
+    ]
+    assert len(start_calls) == 2
+    # Each window start should see only its own temp image file.
+    assert start_calls[0][1] == 1
+    assert start_calls[1][1] == 1
