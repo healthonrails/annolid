@@ -225,6 +225,8 @@ def process_video_with_agent(
     offload_video_to_cpu: bool = True,
     use_explicit_window_reseed: bool = True,
     boundary_mask_match_iou_threshold: float = 0.2,
+    use_vlm_boundary_id_correction: bool = True,
+    vlm_boundary_match_iou_threshold: float = 0.2,
     allow_private_state_mutation: bool = False,
     llm_provider: Optional[str] = None,
     llm_model: Optional[str] = None,
@@ -260,6 +262,8 @@ def process_video_with_agent(
         offload_video_to_cpu=offload_video_to_cpu,
         use_explicit_window_reseed=use_explicit_window_reseed,
         boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
+        use_vlm_boundary_id_correction=use_vlm_boundary_id_correction,
+        vlm_boundary_match_iou_threshold=vlm_boundary_match_iou_threshold,
         allow_private_state_mutation=allow_private_state_mutation,
     )
     frames, masks = run_agent_seeded_sam3_video(

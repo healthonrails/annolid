@@ -2084,3 +2084,171 @@ def test_annotated_window_falls_back_to_text_when_no_local_annotations(
     assert prompt_calls[1][0] == 0
     assert len(created_predictors) == 1
     assert carry_forward_calls == []
+
+
+def test_vlm_boundary_box_labels_reuse_boundary_track_ids() -> None:
+    labels, hints = agent_video_orchestrator._resolve_vlm_boundary_box_labels(
+        candidate_boxes_xyxy=[
+            [0.0, 0.0, 20.0, 20.0],
+            [60.0, 60.0, 90.0, 90.0],
+        ],
+        boundary_boxes_norm_xywh=[
+            [0.58, 0.58, 0.3, 0.3],
+            [0.0, 0.0, 0.2, 0.2],
+        ],
+        boundary_track_ids=[3, 7],
+        frame_width=100.0,
+        frame_height=100.0,
+        iou_threshold=0.2,
+        prompt_prefix="mouse",
+        id_to_labels={3: "mouse_3", 7: "mouse_7"},
+    )
+
+    assert labels == [7, 3]
+    assert hints == ["mouse_7", "mouse_3"]
+
+
+def test_agent_orchestrator_applies_boundary_bundle_to_seed_mapping(
+    monkeypatch, tmp_path
+) -> None:
+    windows = [
+        (0, 4, [np.full((40, 40, 3), 0, dtype=np.uint8) for _ in range(4)]),
+        (4, 8, [np.full((40, 40, 3), 1, dtype=np.uint8) for _ in range(4)]),
+    ]
+    created_sessions: list[object] = []
+
+    class _Bundle:
+        def __init__(self) -> None:
+            self.boxes = [[0.2, 0.25, 0.5, 0.5]]
+            self.track_ids = [11]
+            self.box_labels = [1]
+            self.mask_inputs = []
+            self.mask_labels = []
+            self.label_hints = ["mouse_11"]
+
+    class _FakeSession:
+        def __init__(self, video_dir, id_to_labels, config):
+            self.video_dir = video_dir
+            self.id_to_labels = dict(id_to_labels)
+            self.id_to_labels.setdefault(11, "mouse_11")
+            self.config = config
+            self._session_id = "sess"
+            self._frames_processed = set()
+            self._frames_with_masks = set()
+            self._frame_masks = {}
+            self.seed_calls: list[dict] = []
+            created_sessions.append(self)
+
+        @contextmanager
+        def _session_scope(self, target_device=None, auto_close=True):
+            yield self._session_id
+
+        def _reset_action_history_if_supported(self) -> None:
+            return None
+
+        def _build_boundary_reseed_prompt_bundle(
+            self,
+            *,
+            frame_idx,
+            frame_width,
+            frame_height,
+            source_frame_idx=None,
+        ):
+            if int(frame_idx) <= 0:
+                return None
+            return _Bundle()
+
+        def _carry_forward_window_state(self, previous_window_state, shift):
+            return None
+
+        def _get_active_session_state(self):
+            return {"ok": True}
+
+        def _map_outputs_to_global_ids_at_frame(self, outputs, *, frame_idx):
+            return outputs
+
+        def add_prompt_boxes_abs(self, frame_idx, boxes_abs, box_labels, **kwargs):
+            self.seed_calls.append(
+                {
+                    "frame_idx": int(frame_idx),
+                    "boxes_abs": [list(v) for v in boxes_abs],
+                    "box_labels": [int(v) for v in box_labels],
+                    "boundary_bundle": kwargs.get("boundary_bundle"),
+                    "boundary_allowed_gids": kwargs.get("boundary_allowed_gids"),
+                }
+            )
+            self._frames_processed.add(int(frame_idx))
+            self._frames_with_masks.add(int(frame_idx))
+            self._frame_masks.setdefault(int(frame_idx), {})["1"] = np.ones(
+                (2, 2), dtype=np.uint8
+            )
+            return {"outputs": {"out_obj_ids": np.asarray(box_labels, dtype=np.int64)}}
+
+        def propagate(
+            self, *, start_frame_idx, propagation_direction, max_frame_num_to_track
+        ):
+            start = int(start_frame_idx)
+            stop = start + int(max_frame_num_to_track)
+            for frame_idx in range(start, stop):
+                self._frames_processed.add(frame_idx)
+                self._frames_with_masks.add(frame_idx)
+                self._frame_masks.setdefault(frame_idx, {})["1"] = np.ones(
+                    (2, 2), dtype=np.uint8
+                )
+            span = max(0, stop - start)
+            return span, span
+
+    monkeypatch.setattr(
+        agent_video_orchestrator,
+        "Sam3SessionManager",
+        _FakeSession,
+    )
+    monkeypatch.setattr(
+        agent_video_orchestrator,
+        "_iter_video_windows",
+        lambda **kwargs: iter(windows),
+    )
+    monkeypatch.setattr(
+        agent_video_orchestrator,
+        "_run_agent_on_frame",
+        lambda frame_path, agent_cfg: (
+            [[8.0, 10.0, 28.0, 30.0]]
+            if frame_path.name.endswith("000000004.png")
+            else [[1.0, 1.0, 11.0, 11.0]],
+            [0.99],
+        ),
+    )
+
+    agent_cfg = agent_video_orchestrator.AgentConfig(
+        prompt="mouse",
+        window_size=4,
+        stride=4,
+        output_dir=str(tmp_path / "agent"),
+    )
+    tracking_cfg = agent_video_orchestrator.TrackingConfig(
+        checkpoint_path="checkpoint.pt",
+        device="cpu",
+        max_frame_num_to_track=1,
+        use_explicit_window_reseed=True,
+        use_vlm_boundary_id_correction=True,
+        vlm_boundary_match_iou_threshold=0.2,
+    )
+
+    frames, masks = agent_video_orchestrator.run_agent_seeded_sam3_video(
+        video_path=str(tmp_path / "video.mp4"),
+        agent_cfg=agent_cfg,
+        tracking_cfg=tracking_cfg,
+    )
+
+    assert frames == 8
+    assert masks == 7
+    assert len(created_sessions) == 1
+    seed_calls = created_sessions[0].seed_calls
+    assert seed_calls[0]["frame_idx"] == 0
+    assert seed_calls[1]["frame_idx"] == 4
+    assert seed_calls[0]["box_labels"] == [1]
+    assert seed_calls[1]["box_labels"] == [11]
+    assert seed_calls[1]["boundary_bundle"] is not None
+    assert seed_calls[1]["boundary_allowed_gids"] == {11}
+    # xyxy -> xywh conversion must happen before add_prompt_boxes_abs.
+    assert seed_calls[1]["boxes_abs"] == [[8.0, 10.0, 20.0, 20.0]]

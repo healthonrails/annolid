@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 import tempfile
 
 import cv2
+import numpy as np
 from PIL import Image
+from scipy.optimize import linear_sum_assignment
 
 from annolid.utils.llm_settings import resolve_llm_config
 from annolid.core.agent.providers.openai_compat import resolve_openai_compat
@@ -56,6 +58,8 @@ class TrackingConfig:
     offload_video_to_cpu: bool = True
     use_explicit_window_reseed: bool = True
     boundary_mask_match_iou_threshold: float = 0.2
+    use_vlm_boundary_id_correction: bool = True
+    vlm_boundary_match_iou_threshold: float = 0.2
     allow_private_state_mutation: bool = False
     epsilon_for_polygon: float = 2.0
     max_frame_num_to_track: Optional[int] = None
@@ -129,6 +133,114 @@ def _filter_duplicate_boxes(
             continue
         filtered.append(candidate)
     return filtered
+
+
+def _xyxy_to_xywh(box_xyxy: Sequence[float]) -> List[float]:
+    x1, y1, x2, y2 = [float(v) for v in box_xyxy]
+    w = max(0.0, x2 - x1)
+    h = max(0.0, y2 - y1)
+    return [x1, y1, w, h]
+
+
+def _boundary_box_to_xyxy(
+    box_xywh_norm: Sequence[float],
+    *,
+    frame_width: float,
+    frame_height: float,
+) -> Optional[List[float]]:
+    if len(box_xywh_norm) != 4:
+        return None
+    try:
+        x, y, w, h = [float(v) for v in box_xywh_norm]
+    except Exception:
+        return None
+    if frame_width <= 0.0 or frame_height <= 0.0:
+        return None
+    x1 = x * float(frame_width)
+    y1 = y * float(frame_height)
+    x2 = (x + w) * float(frame_width)
+    y2 = (y + h) * float(frame_height)
+    return [x1, y1, x2, y2]
+
+
+def _resolve_vlm_boundary_box_labels(
+    *,
+    candidate_boxes_xyxy: List[List[float]],
+    boundary_boxes_norm_xywh: Sequence[Sequence[float]],
+    boundary_track_ids: Sequence[int],
+    frame_width: float,
+    frame_height: float,
+    iou_threshold: float,
+    prompt_prefix: str,
+    id_to_labels: Dict[int, str],
+) -> Tuple[List[int], List[str]]:
+    """
+    Match VLM detections on a new window's first frame to boundary carry IDs.
+
+    Returns:
+        (box_labels, label_hints), both aligned to candidate_boxes_xyxy order.
+    """
+    if not candidate_boxes_xyxy:
+        return [], []
+    labels: List[int] = []
+    hints: List[str] = []
+    if not boundary_boxes_norm_xywh or not boundary_track_ids:
+        for idx in range(len(candidate_boxes_xyxy)):
+            lid = int(idx + 1)
+            labels.append(lid)
+            hints.append(f"{prompt_prefix}_{lid}")
+        return labels, hints
+
+    reference_items: List[Tuple[int, List[float]]] = []
+    for gid, norm_box in zip(boundary_track_ids, boundary_boxes_norm_xywh):
+        xyxy = _boundary_box_to_xyxy(
+            norm_box,
+            frame_width=float(frame_width),
+            frame_height=float(frame_height),
+        )
+        if xyxy is None:
+            continue
+        reference_items.append((int(gid), xyxy))
+    if not reference_items:
+        for idx in range(len(candidate_boxes_xyxy)):
+            lid = int(idx + 1)
+            labels.append(lid)
+            hints.append(f"{prompt_prefix}_{lid}")
+        return labels, hints
+
+    iou_cost = np.ones((len(candidate_boxes_xyxy), len(reference_items)), dtype=float)
+    valid = np.zeros_like(iou_cost, dtype=bool)
+    for det_idx, det_box in enumerate(candidate_boxes_xyxy):
+        for ref_idx, (_, ref_box) in enumerate(reference_items):
+            iou = _box_iou_xyxy(det_box, ref_box)
+            if iou < float(iou_threshold):
+                continue
+            valid[det_idx, ref_idx] = True
+            iou_cost[det_idx, ref_idx] = 1.0 - float(iou)
+
+    assigned: Dict[int, int] = {}
+    if iou_cost.size > 0:
+        row_ind, col_ind = linear_sum_assignment(iou_cost)
+        for row, col in zip(row_ind, col_ind):
+            if not valid[row, col]:
+                continue
+            assigned[int(row)] = int(reference_items[int(col)][0])
+
+    used_ids = {int(v) for v in assigned.values()}
+    next_local_id = max(1, len(reference_items) + 1)
+    for det_idx in range(len(candidate_boxes_xyxy)):
+        gid = assigned.get(int(det_idx))
+        if gid is not None:
+            labels.append(int(gid))
+            hints.append(str(id_to_labels.get(int(gid)) or f"{prompt_prefix}_{int(gid)}"))
+            continue
+        while next_local_id in used_ids:
+            next_local_id += 1
+        labels.append(int(next_local_id))
+        hints.append(f"{prompt_prefix}_{int(next_local_id)}")
+        used_ids.add(int(next_local_id))
+        next_local_id += 1
+    return labels, hints
 
 
 def _run_agent_on_frame(
@@ -269,7 +381,7 @@ def run_agent_seeded_sam3_video(
             first_frame = frames[0]
             frame_path = tmpdir_path / f"frame_{start_idx:09}.png"
             _save_frame_to_tmp(first_frame, frame_path)
-            boxes_abs, scores = _call_run_agent_on_frame(
+            boxes_abs, _scores = _call_run_agent_on_frame(
                 frame_path,
                 agent_cfg,
                 send_request,
@@ -277,19 +389,34 @@ def run_agent_seeded_sam3_video(
             if not boxes_abs:
                 continue
 
-            # Build label hints and label ids for the prompts.
-            label_hints = [
-                f"{agent_cfg.prompt}_{i+1}" for i in range(len(boxes_abs))
-            ]
-            box_labels = list(range(1, len(boxes_abs) + 1))
-            for lid, hint in zip(box_labels, label_hints):
-                session.id_to_labels.setdefault(lid, hint)
-
             # Keep the session-level tracking history alive across windows so
             # overlap can stabilize IDs and box carry-over.
             with session._session_scope(
                 target_device=tracking_cfg.device, auto_close=True
             ):
+                boundary_bundle = None
+                boundary_allowed_gids = None
+                if (
+                    bool(tracking_cfg.use_explicit_window_reseed)
+                    and int(start_idx) > 0
+                    and previous_window_end_idx is not None
+                    and hasattr(session, "_build_boundary_reseed_prompt_bundle")
+                ):
+                    frame_h, frame_w = first_frame.shape[:2]
+                    try:
+                        boundary_bundle = session._build_boundary_reseed_prompt_bundle(
+                            frame_idx=int(start_idx),
+                            frame_width=float(frame_w),
+                            frame_height=float(frame_h),
+                            source_frame_idx=int(previous_window_end_idx) - 1,
+                        )
+                    except Exception:
+                        boundary_bundle = None
+                    if boundary_bundle is not None:
+                        boundary_allowed_gids = {
+                            int(v)
+                            for v in (getattr(boundary_bundle, "track_ids", []) or [])
+                        }
                 shift = compute_window_reuse_shift(
                     previous_window_end_idx=previous_window_end_idx,
                     window_start_idx=int(start_idx),
@@ -302,12 +429,37 @@ def run_agent_seeded_sam3_video(
                 propagation_direction = (tracking_cfg.propagation_direction or "forward").lower()
 
                 def seed_first_frame() -> None:
+                    seed_boxes = [_xyxy_to_xywh(v) for v in boxes_abs]
+                    seed_labels = list(range(1, len(seed_boxes) + 1))
+                    seed_hints = [f"{agent_cfg.prompt}_{i + 1}" for i in range(len(seed_boxes))]
+                    if (
+                        tracking_cfg.use_vlm_boundary_id_correction
+                        and boundary_bundle is not None
+                        and getattr(boundary_bundle, "boxes", None)
+                        and getattr(boundary_bundle, "track_ids", None)
+                    ):
+                        frame_h, frame_w = first_frame.shape[:2]
+                        seed_labels, seed_hints = _resolve_vlm_boundary_box_labels(
+                            candidate_boxes_xyxy=boxes_abs,
+                            boundary_boxes_norm_xywh=getattr(boundary_bundle, "boxes", []),
+                            boundary_track_ids=getattr(boundary_bundle, "track_ids", []),
+                            frame_width=float(frame_w),
+                            frame_height=float(frame_h),
+                            iou_threshold=float(
+                                tracking_cfg.vlm_boundary_match_iou_threshold
+                            ),
+                            prompt_prefix=agent_cfg.prompt,
+                            id_to_labels=getattr(session, "id_to_labels", {}),
+                        )
                     session.add_prompt_boxes_abs(
                         frame_idx=start_idx,
-                        boxes_abs=boxes_abs,
-                        box_labels=box_labels,
+                        boxes_abs=seed_boxes,
+                        box_labels=seed_labels,
                         record_outputs=True,
-                        label_hints=label_hints,
+                        label_hints=seed_hints,
+                        boundary_bundle=boundary_bundle,
+                        boundary_allowed_gids=boundary_allowed_gids,
+                        boundary_max_new_ids=None,
                     )
 
                 def propagate_segment(
@@ -334,22 +486,15 @@ def run_agent_seeded_sam3_video(
                         boxes_abs,
                     )
                     if refresh_boxes_abs:
+                        refresh_boxes_xywh = [_xyxy_to_xywh(v) for v in refresh_boxes_abs]
                         refresh_label_offset = len(boxes_abs) + 1
-                        refresh_labels = list(
-                            range(
-                                refresh_label_offset,
-                                refresh_label_offset + len(refresh_boxes_abs),
-                            )
-                        )
-                        refresh_hints = [
-                            f"{agent_cfg.prompt}_refresh_{i+1}"
-                            for i in range(len(refresh_boxes_abs))
-                        ]
+                        refresh_labels = list(range(refresh_label_offset, refresh_label_offset + len(refresh_boxes_abs)))
+                        refresh_hints = [f"{agent_cfg.prompt}_refresh_{i + 1}" for i in range(len(refresh_boxes_abs))]
                         for lid, hint in zip(refresh_labels, refresh_hints):
                             session.id_to_labels.setdefault(lid, hint)
                         refresh_result = session.add_prompt_boxes_abs(
                             frame_idx=start_idx + int(refresh_local_idx),
-                            boxes_abs=refresh_boxes_abs,
+                            boxes_abs=refresh_boxes_xywh,
                             box_labels=refresh_labels,
                             record_outputs=True,
                             label_hints=refresh_hints,

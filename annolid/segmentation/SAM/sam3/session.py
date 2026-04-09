@@ -2637,6 +2637,13 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         box_labels: List[int],
         *,
         text: Optional[str] = None,
+        record_outputs: bool = False,
+        record_frame_idx: Optional[int] = None,
+        merge_existing_on_record: bool = False,
+        label_hints: Optional[List[str]] = None,
+        boundary_bundle: Optional[BoundaryPromptBundle] = None,
+        boundary_allowed_gids: Optional[set[int]] = None,
+        boundary_max_new_ids: Optional[int] = None,
     ):
         """Convenience: accept pixel-space boxes [x,y,w,h], normalize, then add prompt."""
         if self.frame_shape is None:
@@ -2648,6 +2655,13 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             text=text,
             boxes=boxes,
             box_labels=box_labels,
+            record_outputs=record_outputs,
+            record_frame_idx=record_frame_idx,
+            merge_existing_on_record=merge_existing_on_record,
+            label_hints=label_hints,
+            boundary_bundle=boundary_bundle,
+            boundary_allowed_gids=boundary_allowed_gids,
+            boundary_max_new_ids=boundary_max_new_ids,
         )
 
     def _handle_frame_outputs(
