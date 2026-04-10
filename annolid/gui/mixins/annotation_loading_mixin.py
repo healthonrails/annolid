@@ -2,16 +2,30 @@ from __future__ import annotations
 
 import re
 from numbers import Number
+import os
 from pathlib import Path
 from typing import Optional
 
 from qtpy import QtCore
 
+from annolid.gui.brain_3d_model import (
+    Brain3DConfig,
+    apply_coronal_polygon_edit,
+    brain_model_from_other_data,
+    build_brain_3d_model,
+    materialize_coronal_plane_shapes,
+    reslice_brain_model,
+    set_region_presence_on_plane,
+    store_brain_model_in_other_data,
+)
 from annolid.gui.label_file import LabelFile, LabelFileError
 from annolid.gui.shape import Shape
 from annolid.gui.shared_vertices import rebuild_polygon_topology
 from annolid.gui.polygon_tools import infer_polygon_shapes_between_pages
 from annolid.gui.polygon_tools import is_inferable_polygon
+from annolid.gui.polygon_tools import polygon_identity_key
+from annolid.gui.status import post_window_status
+from annolid.gui.widgets.brain_3d_dock import Brain3DSessionDockWidget
 from annolid.infrastructure import AnnotationStore
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.utils.logger import logger
@@ -244,6 +258,302 @@ class AnnotationLoadingMixin:
             return False
         page_index = int(getattr(self, "frame_number", 0) or 0)
         return self._infer_large_image_page_annotations(page_index)
+
+    def _ensureBrain3DSessionDock(self) -> Brain3DSessionDockWidget:
+        dock = getattr(self, "brain3d_session_dock", None)
+        if isinstance(dock, Brain3DSessionDockWidget):
+            return dock
+        dock = Brain3DSessionDockWidget(self)
+        dock.rebuildRequested.connect(self.buildBrain3DModelFromSagittalPages)
+        dock.regenerateRequested.connect(self.regenerateBrain3DCoronalPlanes)
+        dock.applyEditsRequested.connect(self.applyCurrentCoronalEditsToBrain3DModel)
+        dock.planeSelectionChanged.connect(self._onBrain3DPlaneSelectionChanged)
+        dock.regionStateRequested.connect(self._onBrain3DRegionStateRequested)
+        self.brain3d_session_dock = dock
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+        try:
+            if getattr(self, "viewer_layer_dock", None) is not None:
+                self.tabifyDockWidget(dock, self.viewer_layer_dock)
+            elif getattr(self, "shape_dock", None) is not None:
+                self.tabifyDockWidget(dock, self.shape_dock)
+        except Exception:
+            pass
+        return dock
+
+    def openBrain3DSession(self, _value=False) -> None:
+        dock = self._ensureBrain3DSessionDock()
+        dock.show()
+        dock.raise_()
+        self._refreshBrain3DSessionDock()
+
+    def _refreshBrain3DSessionDock(self) -> None:
+        dock = getattr(self, "brain3d_session_dock", None)
+        if not isinstance(dock, Brain3DSessionDockWidget):
+            return
+        model = brain_model_from_other_data(getattr(self, "otherData", None))
+        if model is None:
+            dock.set_summary(region_count=0, source_page_count=0, plane_count=0)
+            dock.set_regions([])
+            return
+        planes = reslice_brain_model(
+            model,
+            orientation="coronal",
+            spacing=model.config.coronal_spacing,
+            plane_count=model.config.coronal_plane_count,
+        )
+        plane_count = len(planes)
+        current_plane = int(getattr(self, "frame_number", 0) or 0)
+        if plane_count > 0:
+            current_plane = min(max(current_plane, 0), plane_count - 1)
+        source_page_count = int(model.metadata.get("source_page_count", 0) or 0)
+        dock.set_summary(
+            region_count=len(model.regions),
+            source_page_count=source_page_count,
+            plane_count=plane_count,
+        )
+        dock.set_current_plane(current_plane)
+        if plane_count <= 0:
+            dock.set_regions([])
+            return
+        plane = planes[current_plane]
+        dock.set_regions(
+            [
+                {
+                    "region_id": str(region.region_id),
+                    "label": str(region.label),
+                    "state": str(region.state),
+                    "source": str(region.source),
+                    "points_count": len(region.points),
+                }
+                for region in list(plane.regions or [])
+            ]
+        )
+
+    def _onBrain3DPlaneSelectionChanged(self, plane_index: int) -> None:
+        model = brain_model_from_other_data(getattr(self, "otherData", None))
+        if model is None:
+            return
+        target = int(plane_index)
+        if bool(getattr(self, "_has_large_image_page_navigation", lambda: False)()):
+            self.setLargeImagePageNumber(target)
+        else:
+            planes = reslice_brain_model(
+                model,
+                orientation="coronal",
+                spacing=model.config.coronal_spacing,
+                plane_count=model.config.coronal_plane_count,
+            )
+            if 0 <= target < len(planes):
+                self.loadShapes(
+                    materialize_coronal_plane_shapes(
+                        planes[target], include_hidden=False
+                    ),
+                    replace=True,
+                )
+        self._refreshBrain3DSessionDock()
+
+    def _onBrain3DRegionStateRequested(
+        self, plane_index: int, region_id: str, state: str
+    ) -> None:
+        model = brain_model_from_other_data(getattr(self, "otherData", None))
+        if model is None:
+            return
+        set_region_presence_on_plane(
+            model, int(plane_index), str(region_id), str(state)
+        )
+        self.otherData = store_brain_model_in_other_data(self.otherData, model)
+        self.setDirty()
+        self.regenerateBrain3DCoronalPlanes()
+
+    def _collect_brain3d_sagittal_pages(self) -> list[dict[str, object]]:
+        pages: list[dict[str, object]] = []
+        if bool(getattr(self, "_has_large_image_page_navigation", lambda: False)()):
+            backend = getattr(self, "large_image_backend", None)
+            page_count = int(getattr(backend, "get_page_count", lambda: 1)() or 1)
+            current_page = int(getattr(self, "frame_number", 0) or 0)
+            for page_index in range(page_count):
+                page = self._large_image_page_label_file(page_index)
+                if page is not None:
+                    _, label_file = page
+                    shapes = self._materialize_label_shapes(
+                        list(getattr(label_file, "shapes", []) or [])
+                    )
+                elif page_index == current_page:
+                    shapes = list(getattr(self.canvas, "shapes", []) or [])
+                else:
+                    continue
+                if not shapes:
+                    continue
+                pages.append({"page_index": int(page_index), "shapes": list(shapes)})
+            return pages
+        shapes = list(getattr(self.canvas, "shapes", []) or [])
+        if shapes:
+            pages.append({"page_index": 0, "shapes": shapes})
+        return pages
+
+    def buildBrain3DModelFromSagittalPages(self, _value=False) -> bool:
+        pages = self._collect_brain3d_sagittal_pages()
+        if not pages:
+            post_window_status(
+                self,
+                self.tr("No sagittal polygon pages found for 3D reconstruction."),
+                5000,
+            )
+            return False
+
+        point_count = int(
+            (
+                (self._config or {}).get("brain3d_point_count")
+                if isinstance(getattr(self, "_config", None), dict)
+                else 64
+            )
+            or 64
+        )
+        spacing = (
+            (self._config or {}).get("brain3d_coronal_spacing")
+            if isinstance(getattr(self, "_config", None), dict)
+            else 1.0
+        )
+        config = Brain3DConfig(point_count=max(3, point_count), coronal_spacing=spacing)
+        model = build_brain_3d_model(pages, config)
+        if not isinstance(getattr(self, "otherData", None), dict):
+            self.otherData = {}
+        self.otherData = store_brain_model_in_other_data(self.otherData, model)
+        self.setDirty()
+        post_window_status(
+            self,
+            self.tr("Built Brain 3D model from %d sagittal page(s).") % len(pages),
+            5000,
+        )
+        self._refreshBrain3DSessionDock()
+        return True
+
+    @staticmethod
+    def _brain3d_shape_to_labelme(shape) -> dict[str, object]:
+        other = dict(getattr(shape, "other_data", {}) or {})
+        return {
+            "label": str(getattr(shape, "label", "") or ""),
+            "points": [(float(p.x()), float(p.y())) for p in (shape.points or [])],
+            "group_id": getattr(shape, "group_id", None),
+            "shape_type": "polygon",
+            "flags": dict(getattr(shape, "flags", {}) or {}),
+            "description": str(getattr(shape, "description", "") or ""),
+            "mask": None,
+            "visible": bool(getattr(shape, "visible", True)),
+            "shared_vertex_ids": list(getattr(shape, "shared_vertex_ids", []) or []),
+            "shared_edge_ids": list(getattr(shape, "shared_edge_ids", []) or []),
+            **other,
+        }
+
+    def regenerateBrain3DCoronalPlanes(self, _value=False) -> int:
+        model = brain_model_from_other_data(getattr(self, "otherData", None))
+        if model is None and not self.buildBrain3DModelFromSagittalPages():
+            return 0
+        model = brain_model_from_other_data(getattr(self, "otherData", None))
+        if model is None:
+            return 0
+
+        planes = reslice_brain_model(
+            model,
+            orientation="coronal",
+            spacing=model.config.coronal_spacing,
+            plane_count=model.config.coronal_plane_count,
+        )
+        resolver = getattr(self, "_large_image_stack_label_path", None)
+        write_pages = callable(resolver)
+        written = 0
+        image_path = str(getattr(self, "imagePath", "") or "")
+        image_name = os.path.basename(image_path) if image_path else "image.png"
+        image = getattr(self, "image", None)
+        image_width = int(image.width()) if image is not None else 0
+        image_height = int(image.height()) if image is not None else 0
+        if model.image_shape is not None:
+            image_width = max(image_width, int(model.image_shape[0] or 0))
+            image_height = max(image_height, int(model.image_shape[1] or 0))
+
+        for plane in planes:
+            shapes = materialize_coronal_plane_shapes(plane, include_hidden=False)
+            shape_payload = [
+                self._brain3d_shape_to_labelme(shape) for shape in list(shapes or [])
+            ]
+            if write_pages:
+                label_path = Path(
+                    str(resolver(page_index=int(plane.plane_index)) or "")
+                )
+                if label_path:
+                    label_path.parent.mkdir(parents=True, exist_ok=True)
+                    page_other_data = dict(getattr(self, "otherData", {}) or {})
+                    page_other_data = store_brain_model_in_other_data(
+                        page_other_data, model
+                    )
+                    page_other_data["large_image_page"] = {
+                        "page_index": int(plane.plane_index),
+                        "brain3d_generated": True,
+                        "brain3d_orientation": "coronal",
+                        "brain3d_plane_position": float(plane.plane_position),
+                    }
+                    LabelFile().save(
+                        filename=str(label_path),
+                        shapes=shape_payload,
+                        imagePath=image_name,
+                        imageData=None,
+                        imageHeight=max(1, int(image_height or 1)),
+                        imageWidth=max(1, int(image_width or 1)),
+                        otherData=page_other_data,
+                        flags={},
+                        caption=None,
+                    )
+                    written += 1
+
+            if int(plane.plane_index) == int(getattr(self, "frame_number", 0) or 0):
+                self.loadShapes(list(shapes), replace=True)
+
+        if not isinstance(getattr(self, "otherData", None), dict):
+            self.otherData = {}
+        self.otherData = store_brain_model_in_other_data(self.otherData, model)
+        self.setDirty()
+        post_window_status(
+            self,
+            self.tr("Regenerated %d coronal plane annotation page(s).") % int(written),
+            5000,
+        )
+        self._refreshBrain3DSessionDock()
+        return int(written)
+
+    def applyCurrentCoronalEditsToBrain3DModel(self, _value=False) -> bool:
+        model = brain_model_from_other_data(getattr(self, "otherData", None))
+        if model is None:
+            post_window_status(
+                self,
+                self.tr("No Brain 3D model found. Build the model first."),
+                5000,
+            )
+            return False
+        plane_index = int(getattr(self, "frame_number", 0) or 0)
+        shapes = list(getattr(self.canvas, "shapes", []) or [])
+        updated = 0
+        for shape in shapes:
+            if str(getattr(shape, "shape_type", "") or "").lower() != "polygon":
+                continue
+            other = dict(getattr(shape, "other_data", {}) or {})
+            region_id = str(other.get("region_id", "") or "")
+            if not region_id:
+                label, group_id, description = polygon_identity_key(shape)
+                region_id = f"{label}|{group_id}|{description}"
+            apply_coronal_polygon_edit(model, plane_index, region_id, shape)
+            updated += 1
+        if updated <= 0:
+            post_window_status(self, self.tr("No polygon edits to apply."), 3000)
+            return False
+        self.otherData = store_brain_model_in_other_data(self.otherData, model)
+        self.setDirty()
+        post_window_status(
+            self,
+            self.tr("Applied %d coronal polygon edit(s) to Brain 3D model.") % updated,
+            5000,
+        )
+        self._refreshBrain3DSessionDock()
+        return True
 
     def _loadLargeImagePageAnnotations(
         self,

@@ -782,6 +782,39 @@ class MenuController:
                 "icon_path": here / "icons/reconstruct_3d.svg",
             },
             {
+                "name": "build_brain_3d_model",
+                "text": w.tr("Build Brain 3D Model..."),
+                "slot": w.buildBrain3DModelFromSagittalPages,
+                "tip": w.tr(
+                    "Reconstruct canonical 3D region tracks from sagittal polygon pages"
+                ),
+                "icon_path": here / "icons/reconstruct_3d.svg",
+            },
+            {
+                "name": "open_brain_3d_session",
+                "text": w.tr("Open Brain 3D Session"),
+                "slot": w.openBrain3DSession,
+                "tip": w.tr(
+                    "Open the Brain 3D session dock for coronal plane and region-state editing"
+                ),
+            },
+            {
+                "name": "regenerate_brain_3d_coronal",
+                "text": w.tr("Regenerate Coronal Planes"),
+                "slot": w.regenerateBrain3DCoronalPlanes,
+                "tip": w.tr(
+                    "Generate synchronized editable coronal polygons from Brain 3D model"
+                ),
+            },
+            {
+                "name": "apply_coronal_edits_to_brain_3d",
+                "text": w.tr("Apply Current Coronal Edits to Brain 3D"),
+                "slot": w.applyCurrentCoronalEditsToBrain3DModel,
+                "tip": w.tr(
+                    "Push current coronal polygon edits back into the canonical Brain 3D model"
+                ),
+            },
+            {
                 "name": "optical_flow_settings",
                 "text": w.tr("Optical Flow Settings..."),
                 "slot": w.configure_optical_flow_settings,
@@ -1369,6 +1402,12 @@ class MenuController:
                 w.close_3d_viewer_action,
                 actions["sam3d_reconstruct"],
                 w.threejs_examples_menu.menuAction(),
+            ),
+            (
+                actions["open_brain_3d_session"],
+                actions["build_brain_3d_model"],
+                actions["regenerate_brain_3d_coronal"],
+                actions["apply_coronal_edits_to_brain_3d"],
             ),
             (actions["glitter2"],),
         ]

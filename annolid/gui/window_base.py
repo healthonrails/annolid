@@ -1592,6 +1592,11 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             except Exception:
                 pass
         self._syncLargeImageDocument()
+        if hasattr(self, "_refreshBrain3DSessionDock"):
+            try:
+                self._refreshBrain3DSessionDock()
+            except Exception:
+                pass
         self._post_window_status(
             self.tr("Viewing TIFF page %d of %d") % (target + 1, page_count)
         )
