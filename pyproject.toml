@@ -86,12 +86,6 @@ large_image = [
     "openslide-python>=1.3.1",
 ]
 
-vtk = [
-    # 3D volume rendering via PyVista/PyVistaQt (VTK is pulled transitively).
-    "pyvista>=0.43.0",
-    "pyvistaqt>=0.11.0",
-]
-
 sam3 = [
     "iopath>=0.1.9",
     "ftfy>=6.1.1",

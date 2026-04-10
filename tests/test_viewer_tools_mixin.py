@@ -11,8 +11,8 @@ from annolid.gui.mixins.viewer_tools_mixin import (
     _is_recent_live_flybody_payload,
     _prepare_live_flybody_view_payload,
     _run_logged_subprocess,
-    _supports_builtin_stack_viewer,
 )
+from annolid.gui.threejs_support import supports_threejs_canvas
 from qtpy import QtWidgets
 
 
@@ -145,10 +145,23 @@ class _DummyStatusBar:
 class _DummyManager:
     def __init__(self) -> None:
         self.paths: list[Path] = []
+        self.model_paths: list[Path] = []
+        self.sim_paths: list[Path] = []
 
     def show_simulation_in_viewer(self, path) -> bool:
-        self.paths.append(Path(path))
+        p = Path(path)
+        self.paths.append(p)
+        self.sim_paths.append(p)
         return True
+
+    def show_model_in_viewer(self, path) -> bool:
+        p = Path(path)
+        self.paths.append(p)
+        self.model_paths.append(p)
+        return supports_threejs_canvas(p)
+
+    def is_supported(self, path) -> bool:
+        return supports_threejs_canvas(path)
 
 
 class _DummyViewerHost(ViewerToolsMixin):
@@ -354,123 +367,67 @@ def test_prepare_live_flybody_view_payload_uses_combined_mesh_and_hides_overlays
     }
 
 
-def test_supports_builtin_stack_viewer_only_for_tiff_like_sources() -> None:
-    assert _supports_builtin_stack_viewer(Path("stack.tif")) is True
-    assert _supports_builtin_stack_viewer(Path("stack.ome.tiff")) is True
-    assert _supports_builtin_stack_viewer(Path("structural_brain.nii.gz")) is False
-
-
-def test_open_3d_viewer_does_not_fallback_to_pil_for_nifti(
+def test_open_3d_viewer_reports_unsupported_source_for_nifti(
     monkeypatch, tmp_path: Path
 ) -> None:
     widget = _DummyViewerHost()
     nifti_path = tmp_path / "structural_brain.nii.gz"
     nifti_path.write_text("not-a-real-volume", encoding="utf-8")
-
-    class _TiffStackVideo:
-        pass
-
-    class _VideoLoader(_TiffStackVideo):
-        pass
-
-    monkeypatch.setattr(
-        "annolid.data.videos.TiffStackVideo",
-        _TiffStackVideo,
-    )
-    widget.video_loader = _VideoLoader()
-    widget.video_file = nifti_path
+    widget.video_loader = None
+    widget.video_file = None
     widget.imagePath = ""
     widget.filename = ""
 
-    monkeypatch.setattr(
-        "annolid.gui.widgets.pyvista_volume_viewer.PyVistaVolumeViewerDialog",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            RuntimeError("vtk viewer failed")
-        ),
-    )
-    monkeypatch.setattr(
-        "annolid.gui.widgets.volume_viewer.VolumeViewerDialog",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("built-in viewer must not run for NIfTI")
-        ),
-    )
+    monkeypatch.setattr(widget, "_detect_existing_3d_source", lambda: str(nifti_path))
 
-    warnings: list[str] = []
+    infos: list[str] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "information",
+        lambda *args, **kwargs: infos.append(args[2] if len(args) > 2 else ""),
+    )
     monkeypatch.setattr(
         QtWidgets.QMessageBox,
         "warning",
-        lambda *args, **kwargs: warnings.append(args[2] if len(args) > 2 else ""),
+        lambda *args, **kwargs: infos.append(args[2] if len(args) > 2 else ""),
     )
 
     widget.open_3d_viewer()
 
-    assert warnings
-    assert (
-        "built-in fallback viewer only supports TIFF stacks".lower()
-        in warnings[0].lower()
-    )
+    assert infos
+    message = infos[0].lower()
+    assert "not supported by the three.js viewer" in message
 
 
-def test_open_3d_viewer_retains_volume_dialog_reference(
+def test_open_3d_viewer_routes_model_source_to_threejs(
     monkeypatch, tmp_path: Path
 ) -> None:
     widget = _DummyViewerHost()
-    nifti_path = tmp_path / "structural_brain.nii.gz"
-    nifti_path.write_text("not-a-real-volume", encoding="utf-8")
-
-    class _TiffStackVideo:
-        pass
-
-    class _VideoLoader(_TiffStackVideo):
-        pass
-
-    class _FakeDlg:
-        def __init__(self, *args, **kwargs):
-            self.destroyed = type(
-                "_Signal",
-                (),
-                {"connect": lambda self, cb: None},
-            )()
-            self._schedule_calls: list[int] = []
-
-        def setModal(self, modal: bool):
-            return None
-
-        def show(self):
-            return None
-
-        def _schedule_scene_initialization(self, delay_ms: int):
-            self._schedule_calls.append(delay_ms)
-
-        def raise_(self):
-            return None
-
-        def activateWindow(self):
-            return None
-
-    monkeypatch.setattr("annolid.data.videos.TiffStackVideo", _TiffStackVideo)
-    widget.video_loader = _VideoLoader()
-    widget.video_file = nifti_path
+    model_path = tmp_path / "mesh.obj"
+    model_path.write_text("# fake obj", encoding="utf-8")
+    widget.video_loader = None
+    widget.video_file = None
     widget.imagePath = ""
     widget.filename = ""
-    monkeypatch.setattr(
-        "annolid.gui.widgets.pyvista_volume_viewer.PyVistaVolumeViewerDialog",
-        _FakeDlg,
-    )
-    monkeypatch.setattr(
-        "annolid.gui.widgets.volume_viewer.VolumeViewerDialog",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("built-in viewer must not run")
-        ),
-    )
-    monkeypatch.setattr(
-        QtWidgets.QMessageBox,
-        "warning",
-        lambda *args, **kwargs: None,
-    )
+    monkeypatch.setattr(widget, "_detect_existing_3d_source", lambda: str(model_path))
 
     widget.open_3d_viewer()
 
-    assert hasattr(widget, "_volume_viewer_dialog")
-    assert widget._volume_viewer_dialog is not None
-    assert widget._volume_viewer_dialog._schedule_calls == [0]
+    assert widget.threejs_manager.model_paths == [model_path]
+
+
+def test_open_3d_viewer_routes_json_to_simulation_view(
+    monkeypatch, tmp_path: Path
+) -> None:
+    widget = _DummyViewerHost()
+    payload = tmp_path / "sim.json"
+    payload.write_text("{}", encoding="utf-8")
+    widget.video_loader = None
+    widget.video_file = None
+    widget.imagePath = ""
+    widget.filename = ""
+    monkeypatch.setattr(widget, "_detect_existing_3d_source", lambda: str(payload))
+
+    widget.open_3d_viewer()
+
+    assert widget.threejs_manager.sim_paths == [payload]

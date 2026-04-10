@@ -962,7 +962,7 @@ class MenuController:
         w.open_3d_viewer_action = self._action_factory(
             w.tr("3D Viewer…"),
             w.open_3d_viewer,
-            tip=w.tr("View and explore 3D TIFF image stacks"),
+            tip=w.tr("Open Three.js 3D model/simulation viewer"),
         )
         w.close_3d_viewer_action = self._action_factory(
             w.tr("Close 3D View"),
@@ -1417,11 +1417,30 @@ class MenuController:
         # VIEW MENU - Display toggles and 3D visualization
         # ============================================================
         w.menus.view.aboutToShow.connect(self._update_view_menu_states)
+        view_3d_menu = QtWidgets.QMenu(w.tr("3D && Reconstruction"), w)
+        self._add_menu_sections(
+            view_3d_menu,
+            [
+                (
+                    w.open_3d_viewer_action,
+                    w.close_3d_viewer_action,
+                    w.toggle_threejs_view_action,
+                ),
+                (w.threejs_examples_menu.menuAction(),),
+                (actions["sam3d_reconstruct"],),
+                (
+                    actions["build_brain_3d_model"],
+                    actions["open_brain_3d_session"],
+                    actions["regenerate_brain_3d_coronal"],
+                    actions["apply_coronal_edits_to_brain_3d"],
+                    actions["open_brain_3d_preview"],
+                ),
+            ],
+        )
         view_sections = [
             (self._docks_menu.menuAction(),),
             (
                 w.toggle_web_view_action,
-                w.toggle_threejs_view_action,
                 actions["toggle_pose_edges"],
                 actions["toggle_pose_bbox_display"],
                 actions["toggle_agent_mode"],
@@ -1429,19 +1448,7 @@ class MenuController:
                 w.patch_similarity_action,
                 w.pca_map_action,
             ),
-            (
-                w.open_3d_viewer_action,
-                w.close_3d_viewer_action,
-                actions["sam3d_reconstruct"],
-                w.threejs_examples_menu.menuAction(),
-            ),
-            (
-                actions["open_brain_3d_session"],
-                actions["build_brain_3d_model"],
-                actions["regenerate_brain_3d_coronal"],
-                actions["apply_coronal_edits_to_brain_3d"],
-                actions["open_brain_3d_preview"],
-            ),
+            (view_3d_menu.menuAction(),),
             (actions["glitter2"],),
         ]
         self._add_menu_sections(w.menus.view, view_sections)

@@ -59,7 +59,7 @@ Environment-variable fallbacks:
 2. Select an instance shape on the current frame.
 3. Run the SAM 3D reconstruction action from the GUI.
 4. Annolid generates the mask/frame job, runs SAM 3D, and writes the output directory.
-5. On success, Annolid reports the saved PLY path and may open the bundled VTK-based viewer if available.
+5. On success, Annolid reports the saved PLY path and opens it in the Three.js 3D viewer when available.
 
 ## Output Behavior
 

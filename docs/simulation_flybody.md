@@ -218,9 +218,9 @@ Runtime discovery order currently prefers:
 - the current interpreter
 
 Annolid does not install FlyBody by default. Opening the FlyBody example or
-the 3D viewer uses the built-in fallback path unless you explicitly choose
-`View -> 3D Examples -> Install FlyBody…` or `Install / Update` from the setup
-dialog.
+the 3D viewer uses the Three.js workflow directly; install/update FlyBody only
+if you want live behavior rollouts via `View -> 3D Examples -> Install FlyBody…`
+or `Install / Update` from the setup dialog.
 
 ## 3B. FlyBody Example Uses the Local Repo When Present
 

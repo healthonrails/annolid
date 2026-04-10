@@ -18,12 +18,12 @@ from annolid.gui.flybody_support import (
     summarize_flybody_status,
 )
 from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
+from annolid.gui.threejs_support import supports_threejs_canvas
 from annolid.gui.threejs_examples import (
     attach_flybody_floor,
     attach_flybody_mesh,
     generate_threejs_example,
 )
-from annolid.gui.widgets.volume_utils import path_matches_ext
 from annolid.gui.workers import FlexibleWorker
 from annolid.simulation import (
     SimulationRunRequest,
@@ -37,75 +37,6 @@ _LIVE_FLYBODY_EXAMPLE_SEED = 7
 _LIVE_FLYBODY_EXAMPLE_CACHE_TTL_SECONDS = 300.0
 _LIVE_FLYBODY_SUBPROCESS_TIMEOUT_SECONDS = 45.0
 _LIVE_FLYBODY_PAYLOAD_VERSION = 3
-_BUILTIN_STACK_SUFFIXES = (
-    ".tif",
-    ".tiff",
-    ".ome.tif",
-    ".ome.tiff",
-)
-_POINT_CLOUD_SUFFIXES = {".ply", ".csv", ".xyz"}
-_MESH_SUFFIXES = {".stl", ".obj"}
-_THREEJS_SUFFIXES = _POINT_CLOUD_SUFFIXES | _MESH_SUFFIXES
-
-
-def _supports_builtin_stack_viewer(path: str | Path | None) -> bool:
-    try:
-        if not path:
-            return False
-        return path_matches_ext(Path(path), _BUILTIN_STACK_SUFFIXES)
-    except Exception:
-        return False
-
-
-def _normalize_volume_selection(raw: str) -> str:
-    try:
-        p = Path(raw)
-        if p.is_file():
-            if p.suffix.lower() in (".img", ".hdr"):
-                stem_l = p.stem.lower()
-                for child in p.parent.iterdir():
-                    if (
-                        child.is_file()
-                        and child.stem.lower() == stem_l
-                        and child.suffix.lower() == ".hdr"
-                    ):
-                        return str(child)
-            if p.name.lower() == "zarr.json":
-                return str(p.parent)
-            if p.name.lower() == ".zgroup":
-                return str(p.parent)
-            if (p.parent / ".zarray").exists():
-                return str(p.parent)
-        cur = p
-        for _ in range(3):
-            if (
-                cur.name.lower().endswith(".zarr")
-                or (cur / ".zarray").exists()
-                or (cur / "zarr.json").exists()
-                or (cur / ".zgroup").exists()
-            ):
-                return str(cur)
-            if (cur / "data" / ".zarray").exists() or (
-                cur / "data" / "zarr.json"
-            ).exists():
-                return str(cur / "data")
-            cur = cur.parent
-    except Exception:
-        pass
-    return raw
-
-
-def _retain_dialog(host: object, attr_name: str, dialog: object) -> None:
-    try:
-        setattr(host, attr_name, dialog)
-    except Exception:
-        return
-    destroyed = getattr(dialog, "destroyed", None)
-    if destroyed is not None:
-        try:
-            destroyed.connect(lambda *_args: setattr(host, attr_name, None))
-        except Exception:
-            pass
 
 
 def _is_recent_live_flybody_payload(
@@ -271,17 +202,12 @@ class ViewerToolsMixin:
         except Exception:
             pass
 
-        if source_path:
+        if source_path and supports_threejs_canvas(source_path):
             return source_path
 
         current_image = Path(str(getattr(self, "imagePath", "") or "")).expanduser()
-        large_backend = getattr(self, "large_image_backend", None)
-        if current_image.exists() and current_image.suffix.lower() in {".tif", ".tiff"}:
-            if (
-                large_backend is not None
-                and int(getattr(large_backend, "get_page_count", lambda: 1)() or 1) > 1
-            ):
-                return str(current_image)
+        if current_image.exists() and supports_threejs_canvas(current_image):
+            return str(current_image)
         return None
 
     def _pick_3d_source_from_dialog(self) -> str | None:
@@ -289,10 +215,10 @@ class ViewerToolsMixin:
             str(Path(self.filename).parent) if getattr(self, "filename", None) else "."
         )
         filters = self.tr(
-            "3D sources (*.tif *.tiff *.ome.tif *.ome.tiff *.nii *.nii.gz *.hdr *.img *.dcm *.dicom *.ima *.IMA *.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.zarr *.zarr.json *.zgroup);;All files (*.*)"
+            "3D sources (*.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.glb *.gltf *.json);;All files (*.*)"
         )
         dialog = QtWidgets.QFileDialog(
-            self, self.tr("Choose 3D Volume (TIFF/NIfTI/DICOM/Zarr)")
+            self, self.tr("Choose 3D Model/Simulation Source")
         )
         dialog.setDirectory(start_dir)
         dialog.setNameFilter(filters)
@@ -302,103 +228,10 @@ class ViewerToolsMixin:
         paths: list[str] = []
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             paths = dialog.selectedFiles()
-        if not paths:
-            folder = QtWidgets.QFileDialog.getExistingDirectory(
-                self,
-                self.tr("Choose Volume Folder (DICOM/Zarr)"),
-                start_dir,
-                QtWidgets.QFileDialog.ShowDirsOnly | QtWidgets.QFileDialog.ReadOnly,
-            )
-            if not folder:
-                return None
-            paths = [folder]
-        return _normalize_volume_selection(paths[0]) if paths else None
-
-    def _open_3d_volume_viewer(
-        self, source_path: str
-    ) -> tuple[bool, Exception | None, bool]:
-        backend_missing = False
-        backend_error = None
-        logger.info("3D viewer: opening PyVista viewer for source '%s'.", source_path)
-        try:
-            from annolid.gui.widgets.pyvista_volume_viewer import (
-                PyVistaVolumeViewerDialog,
-            )  # type: ignore
-
-            dlg = PyVistaVolumeViewerDialog(source_path, parent=self)
-            _retain_dialog(self, "_volume_viewer_dialog", dlg)
-            dlg.setModal(False)
-            dlg.show()
-            try:
-                schedule_init = getattr(dlg, "_schedule_scene_initialization", None)
-                if callable(schedule_init):
-                    schedule_init(0)
-                    logger.info(
-                        "3D viewer: explicitly scheduled render initialization for '%s'.",
-                        source_path,
-                    )
-            except Exception:
-                logger.exception(
-                    "3D viewer: failed to explicitly schedule render initialization for '%s'.",
-                    source_path,
-                )
-            dlg.raise_()
-            dlg.activateWindow()
-            return True, None, False
-        except ModuleNotFoundError as exc:
-            backend_error = exc
-            backend_missing = True
-            logger.warning(
-                "3D viewer: PyVista viewer backend module missing for '%s': %s",
-                source_path,
-                exc,
-            )
-        except ImportError as exc:
-            backend_error = exc
-            backend_missing = True
-            logger.warning(
-                "3D viewer: PyVista viewer import failed for '%s': %s",
-                source_path,
-                exc,
-            )
-        except Exception as exc:
-            backend_error = exc
-            logger.exception(
-                "3D viewer: unexpected error while opening PyVista viewer for '%s'.",
-                source_path,
-            )
-        return False, backend_error, backend_missing
-
-    def _probe_3d_backend_available(self) -> tuple[bool, str | None]:
-        try:
-            import pyvista  # noqa: F401
-            import pyvistaqt  # noqa: F401
-
-            return True, None
-        except Exception as exc:
-            return False, str(exc)
-
-    def _open_builtin_stack_viewer(self, source_path: str) -> bool:
-        try:
-            from annolid.gui.widgets.volume_viewer import VolumeViewerDialog
-
-            dlg = VolumeViewerDialog(source_path, parent=self)
-            _retain_dialog(self, "_builtin_volume_viewer_dialog", dlg)
-            dlg.setModal(False)
-            dlg.show()
-            dlg.raise_()
-            dlg.activateWindow()
-            return True
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("3D Viewer"),
-                self.tr(f"Unable to open 3D viewer: {exc}"),
-            )
-            return False
+        return paths[0] if paths else None
 
     def open_3d_viewer(self):
-        """Open Annolid's 3D viewer for volume, mesh, or point-cloud sources."""
+        """Open Annolid's Three.js 3D viewer for model/simulation sources."""
         source_path = (
             self._detect_existing_3d_source() or self._pick_3d_source_from_dialog()
         )
@@ -408,86 +241,60 @@ class ViewerToolsMixin:
             logger.info("3D viewer: no source selected.")
             return
 
-        opened, backend_error, backend_missing = self._open_3d_volume_viewer(
-            source_path
-        )
-        if opened:
-            logger.info("3D viewer: PyVista viewer opened for '%s'.", source_path)
+        manager = getattr(self, "threejs_manager", None)
+        if manager is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("3D Viewer"),
+                self.tr("Three.js viewer is not available in this session."),
+            )
             return
 
         try:
             suffix = Path(source_path).suffix.lower()
         except Exception:
             suffix = ""
-        logger.info(
-            "3D viewer: PyVista open failed for '%s' (suffix='%s', backend_missing=%s, error=%s).",
-            source_path,
-            suffix,
-            backend_missing,
-            backend_error,
-        )
 
-        if suffix in _THREEJS_SUFFIXES:
-            manager = getattr(self, "threejs_manager", None)
-            if manager is not None:
-                try:
-                    if manager.show_model_in_viewer(source_path):
-                        return
-                except Exception:
-                    pass
-
-        requires_backend = suffix in _POINT_CLOUD_SUFFIXES or suffix in _MESH_SUFFIXES
-        backend_ok, backend_probe_error = self._probe_3d_backend_available()
-        backend_missing = not backend_ok
-
-        if requires_backend:
-            if backend_missing:
-                QtWidgets.QMessageBox.information(
-                    self,
-                    self.tr("Mesh/Point Cloud Viewer Requires PyVista"),
-                    self.tr(
-                        "PLY/CSV/XYZ point clouds and STL/OBJ meshes require PyVista with Qt support.\n\n"
-                        f"Details: {backend_probe_error or 'Unknown import error'}\n\n"
-                        "Conda:  conda install -c conda-forge pyvista pyvistaqt\n"
-                        "Pip:    pip install pyvista pyvistaqt"
-                    ),
+        if suffix == ".json":
+            if manager.show_simulation_in_viewer(source_path):
+                logger.info(
+                    "3D viewer: Three.js simulation opened for '%s'.", source_path
                 )
-            else:
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    self.tr("Mesh/Point Cloud Viewer"),
-                    self.tr("Failed to open the 3D mesh/point cloud viewer.\n%s")
-                    % (str(backend_error) if backend_error else ""),
-                )
-            return
-
-        if not _supports_builtin_stack_viewer(source_path):
-            details = f": {backend_error}" if backend_error else ""
+                return
             QtWidgets.QMessageBox.warning(
                 self,
                 self.tr("3D Viewer"),
                 self.tr(
-                    "Unable to open the 3D viewer for this source.\n\n"
-                    "The built-in fallback viewer only supports TIFF stacks.\n"
-                    f"Source: {source_path}{details}"
+                    "Unable to open JSON source in Three.js viewer.\n\n"
+                    f"Source: {source_path}"
                 ),
             )
             return
 
-        if not self._open_builtin_stack_viewer(source_path):
-            return
-
-        if backend_missing:
-            QtWidgets.QMessageBox.information(
+        if manager.is_supported(source_path):
+            if manager.show_model_in_viewer(source_path):
+                logger.info("3D viewer: Three.js model opened for '%s'.", source_path)
+                return
+            QtWidgets.QMessageBox.warning(
                 self,
-                self.tr("True 3D Rendering (Optional)"),
+                self.tr("3D Viewer"),
                 self.tr(
-                    "For interactive 3D volume rendering, install PyVista with Qt support.\n\n"
-                    "Conda:  conda install -c conda-forge pyvista pyvistaqt\n"
-                    "Pip:    pip install pyvista pyvistaqt\n\n"
-                    "You are currently using the built-in slice/MIP viewer."
+                    f"Unable to open model in Three.js viewer.\n\nSource: {source_path}"
                 ),
             )
+            return
+
+        supported = ".stl, .obj, .ply, .csv, .xyz, .glb, .gltf, simulation .json"
+        QtWidgets.QMessageBox.information(
+            self,
+            self.tr("Unsupported 3D Source"),
+            self.tr(
+                "This 3D source format is not supported by the Three.js viewer.\n\n"
+                f"Source: {source_path}\n"
+                f"Detected suffix: {suffix or '(none)'}\n\n"
+                f"Supported sources: {supported}"
+            ),
+        )
 
     def open_threejs_example(self, example_id: str):
         manager = getattr(self, "threejs_manager", None)
