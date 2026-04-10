@@ -112,17 +112,16 @@ Use:
 
 The current implementation can auto-download checkpoints when needed and writes a `depth.ndjson` sidecar plus optional rendered outputs depending on the selected save options.
 
-## 6. Optional 3D Workflow
+## 6. Optional 3D Workflows
 
-Annolid includes an optional SAM 3D reconstruction path from the GUI when configured.
+Annolid supports two separate optional 3D paths:
 
-Use cases:
+- SAM 3D reconstruction from a video/object workflow, documented in [SAM 3D](sam3d.md).
+- Brain 3D reconstruction from sagittal polygon annotations, documented in
+  [Brain 3D Reconstruction](brain_3d_reconstruction.md).
 
-- reconstruct a selected instance on the current frame,
-- save a PLY result and sidecar metadata,
-- optionally view the result in the bundled VTK-based viewer if available.
-
-See [SAM 3D](sam3d.md).
+Use the Brain 3D path when you need canonical sagittal-to-coronal reconstruction,
+region presence controls per plane, and synchronized 2D/3D editing loops.
 
 ## 7. Simulation and FlyBody Workflow
 

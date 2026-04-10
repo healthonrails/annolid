@@ -6,6 +6,7 @@ from uuid import uuid4
 from qtpy import QtWidgets
 
 from annolid.gui.large_image import open_large_image
+from annolid.gui.status import post_window_status
 from annolid.gui.viewer_layers import AffineTransform, RasterImageLayer
 
 
@@ -207,7 +208,7 @@ class RasterLayerMixin:
         added = self.addRasterImageLayersFromPaths(list(filenames or []))
         if added <= 0:
             return
-        self.status(self.tr("Loaded %d TIFF layer(s)") % int(added))
+        post_window_status(self, self.tr("Loaded %d TIFF layer(s)") % int(added))
 
     def setRasterImageLayerVisible(self, layer_id: str, visible: bool) -> bool:
         layer_id = str(layer_id or "").strip()

@@ -27,6 +27,7 @@ class LabelPanelMixin:
                 canvas.update()
             except Exception:
                 pass
+
         large_view = getattr(self, "large_image_view", None)
         if large_view is not None:
             try:
@@ -107,6 +108,147 @@ class LabelPanelMixin:
         finally:
             self.uniqLabelList.blockSignals(False)
 
+    def _schedule_shape_visibility_apply(self) -> None:
+        """Coalesce repeated shape visibility changes into one deferred apply."""
+        if getattr(self, "_shape_visibility_apply_pending", False):
+            return
+        self._shape_visibility_apply_pending = True
+        QtCore.QTimer.singleShot(0, self._apply_pending_shape_visibility_changes)
+
+    def _apply_pending_shape_visibility_changes(self) -> None:
+        """Apply queued visibility changes after the current event loop turn."""
+        self._shape_visibility_apply_pending = False
+        pending = getattr(self, "_pending_shape_visibility", None) or {}
+        self._pending_shape_visibility = {}
+        self._shape_visibility_apply_in_progress = True
+
+        canvas = getattr(self, "canvas", None)
+        large_view = getattr(self, "large_image_view", None)
+        tiled_hide_applied = False
+
+        try:
+            for shape, visible_flag in list(pending.items()):
+                if shape is None:
+                    continue
+
+                visible_flag = bool(visible_flag)
+
+                try:
+                    shape.visible = visible_flag
+                except Exception:
+                    pass
+
+                # Clear selection before hiding to avoid stale selected handles/items.
+                if not visible_flag and canvas is not None:
+                    try:
+                        selected = list(getattr(canvas, "selectedShapes", []) or [])
+                        if shape in selected:
+                            selected = [s for s in selected if s is not shape]
+                            if (
+                                str(getattr(self, "_active_image_view", "canvas"))
+                                == "tiled"
+                            ):
+                                # Avoid cross-view selection signal loops while
+                                # handling a label-list visibility toggle.
+                                canvas.selectedShapes = selected
+                                selected_ids = {id(s) for s in selected}
+                                for canvas_shape in list(
+                                    getattr(canvas, "shapes", []) or []
+                                ):
+                                    try:
+                                        canvas_shape.selected = (
+                                            id(canvas_shape) in selected_ids
+                                        )
+                                    except Exception:
+                                        continue
+                                if hasattr(canvas, "update"):
+                                    canvas.update()
+                            else:
+                                canvas.selectShapes(selected)
+                    except Exception:
+                        pass
+
+                try:
+                    if canvas is not None and hasattr(canvas, "setShapeVisible"):
+                        canvas.setShapeVisible(shape, visible_flag)
+                except Exception:
+                    pass
+
+                try:
+                    if large_view is not None and hasattr(
+                        large_view, "setShapeVisible"
+                    ):
+                        large_view.setShapeVisible(
+                            shape,
+                            visible_flag,
+                            emit_selection=False,
+                        )
+                        if (
+                            not visible_flag
+                            and str(getattr(self, "_active_image_view", "canvas"))
+                            == "tiled"
+                        ):
+                            tiled_hide_applied = True
+                except Exception:
+                    pass
+
+                # Keep label-list checkbox/data consistent with the final applied state.
+                try:
+                    item = self._label_list_item_for_shape(shape)
+                    if item is not None:
+                        role = getattr(
+                            self.labelList,
+                            "VISIBILITY_STATE_ROLE",
+                            int(Qt.UserRole) + 10,
+                        )
+                        with QtCore.QSignalBlocker(self.labelList):
+                            item.setCheckState(
+                                Qt.Checked if visible_flag else Qt.Unchecked
+                            )
+                            item.setData(role, visible_flag)
+                except Exception:
+                    pass
+        finally:
+            self._shape_visibility_apply_in_progress = False
+
+        if tiled_hide_applied:
+            try:
+                if canvas is not None and hasattr(canvas, "update"):
+                    canvas.update()
+            except Exception:
+                pass
+            try:
+                if large_view is not None and hasattr(large_view, "update"):
+                    large_view.update()
+            except Exception:
+                pass
+        else:
+            try:
+                self._refresh_shape_views()
+            except Exception:
+                pass
+
+        try:
+            if hasattr(self, "_update_polygon_tool_action_state"):
+                self._update_polygon_tool_action_state()
+        except Exception:
+            pass
+
+        # Refresh the overlay dock in the same apply pass so tests and UI state
+        # stay consistent after a single event-loop flush. The visibility change
+        # itself is already deferred/coalesced, which is the important safety
+        # boundary for the crash.
+        try:
+            if hasattr(self, "_refreshVectorOverlayDock"):
+                self._refreshVectorOverlayDock()
+        except Exception:
+            pass
+
+        try:
+            self.setDirty()
+        except Exception:
+            pass
+
     def _setup_label_list_connections(self) -> None:
         if getattr(self, "_label_list_connections_setup", False):
             return
@@ -152,51 +294,20 @@ class LabelPanelMixin:
         def on_shape_visibility_changed(shape: Shape, visible: bool) -> None:
             if shape is None:
                 return
+
             visible_flag = bool(visible)
+
             if visible_flag and is_collapsed_polygon(shape):
                 try:
                     restore_polygon_shape(shape)
                 except Exception:
                     pass
-            try:
-                shape.visible = visible_flag
-            except Exception:
-                pass
-            canvas = getattr(self, "canvas", None)
-            try:
-                if canvas is not None and hasattr(canvas, "setShapeVisible"):
-                    canvas.setShapeVisible(shape, visible_flag)
-            except Exception:
-                pass
-            large_view = getattr(self, "large_image_view", None)
-            tiled_synced = False
-            if large_view is not None and hasattr(large_view, "setShapeVisible"):
-                try:
-                    large_view.setShapeVisible(shape, visible_flag)
-                    tiled_synced = True
-                except Exception:
-                    tiled_synced = False
-            if not tiled_synced:
-                self._refresh_shape_views()
-            elif canvas is not None:
-                try:
-                    canvas.update()
-                except Exception:
-                    pass
-            if hasattr(self, "_update_polygon_tool_action_state"):
-                try:
-                    self._update_polygon_tool_action_state()
-                except Exception:
-                    pass
-            if hasattr(self, "_refreshVectorOverlayDock"):
-                try:
-                    self._refreshVectorOverlayDock()
-                except Exception:
-                    pass
-            try:
-                self.setDirty()
-            except Exception:
-                pass
+
+            if not hasattr(self, "_pending_shape_visibility"):
+                self._pending_shape_visibility = {}
+
+            self._pending_shape_visibility[shape] = visible_flag
+            self._schedule_shape_visibility_apply()
 
         def on_shape_delete_requested(shape: Shape) -> None:
             if shape is None:
@@ -204,8 +315,6 @@ class LabelPanelMixin:
             try:
                 self._noSelectionSlot = True
                 self.canvas.selectShapes([shape])
-                # Keep the label list selection aligned so subsequent actions
-                # (e.g. Delete key) behave predictably.
                 with QtCore.QSignalBlocker(self.labelList):
                     for idx in range(self.labelList.count()):
                         it = self.labelList.item(idx)
@@ -271,17 +380,14 @@ class LabelPanelMixin:
                 self.labelList.shapesDeleteRequested.disconnect()
             except Exception:
                 pass
+
         try:
             self.labelList.shapeVisibilityChanged.connect(on_shape_visibility_changed)
             self.labelList.shapeDeleteRequested.connect(on_shape_delete_requested)
             self.labelList.shapesDeleteRequested.connect(on_shapes_delete_requested)
         except Exception:
-            # If the list widget doesn't expose these signals, ignore.
             pass
 
-        # Label Instances dock shortcuts:
-        # - Select all instances in the list
-        # - Delete selected instances directly from the dock
         if not getattr(self, "_label_list_shortcuts_setup", False):
             self._label_list_shortcuts_setup = True
             self._label_list_shortcuts = []
@@ -316,7 +422,6 @@ class LabelPanelMixin:
         self.fileListWidget.currentItemChanged.connect(
             self._on_file_list_current_item_changed
         )
-
         self.fileListWidget.itemChanged.connect(self._on_file_list_item_changed)
 
     def _checked_file_paths(self) -> list[str]:
@@ -487,9 +592,9 @@ class LabelPanelMixin:
             text = str(shape.label)
         else:
             text = "{} ({})".format(shape.label, shape.group_id)
+
         label_list_item = AnnolidLabelListItem(text, shape)
         try:
-            # Per-shape visibility toggle (checkbox in front of each label).
             visible = bool(getattr(shape, "visible", True))
             role = getattr(
                 self.labelList, "VISIBILITY_STATE_ROLE", int(Qt.UserRole) + 10
@@ -504,8 +609,8 @@ class LabelPanelMixin:
                 label_list_item.setData(role, bool(visible))
         except Exception:
             pass
-        self.labelList.addItem(label_list_item)
 
+        self.labelList.addItem(label_list_item)
         self.labelDialog.addLabelHistory(str(shape.label))
         for action in self.actions.onShapesPresent:
             action.setEnabled(True)
@@ -557,6 +662,7 @@ class LabelPanelMixin:
         shape = item.shape()
         if shape is None:
             return
+
         shape_flags = shape.flags or {}
         safe_flags = {k: bool(v) for k, v in shape_flags.items()}
         text, flags, group_id, description = self.labelDialog.popUp(
@@ -575,13 +681,13 @@ class LabelPanelMixin:
                 ),
             )
             return
+
         shape.label = text
         shape.flags = flags
         shape.group_id = group_id
         shape.description = description
 
         rgb = self._update_shape_color(shape)
-
         base_text = (
             str(shape.label)
             if shape.group_id is None
@@ -591,6 +697,7 @@ class LabelPanelMixin:
         if str(getattr(shape, "shape_type", "") or "").lower() == "point":
             visibility = keypoint_visibility_from_shape_object(shape)
             marker = "○" if visibility == int(KeypointVisibility.OCCLUDED) else "●"
+
         self._set_label_list_item_text(
             item,
             base_text=base_text,
@@ -652,9 +759,11 @@ class LabelPanelMixin:
                 "Select one or more keypoint (point) shapes first."
             )
             return
+
         target = KeypointVisibility.VISIBLE if visible else KeypointVisibility.OCCLUDED
         for shape in shapes:
             set_keypoint_visibility_on_shape_object(shape, int(target))
+
         self._refresh_label_list_items_for_shapes(shapes)
         self.canvas.update()
         self.setDirty()
@@ -670,6 +779,7 @@ class LabelPanelMixin:
                 "Select one or more keypoint (point) shapes first."
             )
             return
+
         for shape in shapes:
             current = keypoint_visibility_from_shape_object(shape)
             target = (
@@ -678,6 +788,7 @@ class LabelPanelMixin:
                 else KeypointVisibility.OCCLUDED
             )
             set_keypoint_visibility_on_shape_object(shape, int(target))
+
         self._refresh_label_list_items_for_shapes(shapes)
         self.canvas.update()
         self.setDirty()

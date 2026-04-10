@@ -91,6 +91,7 @@ annolid-run agent acp bridge --workspace /path/to/repo
 - [Agent Secrets](agent_secrets.md)
 - [Agent Security](agent_security.md)
 - [SAM 3D](sam3d.md)
+- [Brain 3D Reconstruction](brain_3d_reconstruction.md)
 - [Deployment](deployment.md)
 
 ## Current Bot/Agent Surfaces

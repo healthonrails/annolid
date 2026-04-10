@@ -288,13 +288,23 @@ class _ShapeGraphicsItem(QtWidgets.QGraphicsItem):
         )
         try:
             point_pixels = self._visual_metrics()
-            stroke = QtGui.QColor(str(other.get("overlay_stroke") or ""))
-            fill = QtGui.QColor(str(other.get("overlay_fill") or ""))
+            stroke = QtGui.QColor(
+                str(
+                    other.get("brain3d_overlay_stroke")
+                    or other.get("overlay_stroke")
+                    or ""
+                )
+            )
+            fill = QtGui.QColor(
+                str(
+                    other.get("brain3d_overlay_fill") or other.get("overlay_fill") or ""
+                )
+            )
             if stroke.isValid():
                 stroke.setAlpha(max(stroke.alpha(), 220))
                 self._ann_shape.line_color = stroke
             if fill.isValid():
-                fill.setAlpha(max(fill.alpha(), 40))
+                fill.setAlpha(max(fill.alpha(), 80))
                 self._ann_shape.fill_color = fill
                 self._ann_shape.fill = True
             elif getattr(self._ann_shape, "selected", False):
@@ -440,6 +450,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._dragging_shared_boundary: bool = False
         self._shared_boundary_last_pos: QtCore.QPointF | None = None
         self._cursor = CURSOR_DEFAULT
+        self._host_document_sync_pending = False
 
     def set_host_window(self, window) -> None:
         self._host_window = window
@@ -455,6 +466,17 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             except Exception:
                 pass
         self._refresh_status_overlay()
+
+    def _defer_host_large_image_document_changed(self) -> None:
+        if self._host_document_sync_pending:
+            return
+        self._host_document_sync_pending = True
+
+        def _flush() -> None:
+            self._host_document_sync_pending = False
+            self._notify_host_large_image_document_changed()
+
+        QtCore.QTimer.singleShot(0, _flush)
 
     def _queue_visible_tiles_refresh(self) -> None:
         timer = getattr(self, "_visible_tiles_refresh_timer", None)
@@ -1122,7 +1144,14 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
     def _refresh_overlay_geometry(self) -> None:
         for item in self._overlay_items:
             if isinstance(item, _ShapeGraphicsItem):
-                item.sync_shape_geometry()
+                # Hidden or detached items are intentionally left untouched.
+                # Calling prepareGeometryChange on those items can crash Qt.
+                if not item.isVisible() or item.scene() is None:
+                    continue
+                try:
+                    item.sync_shape_geometry()
+                except Exception:
+                    continue
 
     def _selected_raster_overlay_layer_id(self) -> str | None:
         host = getattr(self, "_host_window", None)
@@ -1500,10 +1529,14 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             if getattr(item, "_ann_shape", None) is shape:
                 matched_item = item
                 item.setVisible(visible_flag)
-                try:
-                    item.sync_shape_geometry()
-                except Exception:
-                    pass
+                # Only sync geometry when showing; syncing on hidden items can
+                # cause crashes in Qt's graphics system (prepareGeometryChange
+                # on invisible items is unsafe).
+                if visible_flag:
+                    try:
+                        item.sync_shape_geometry()
+                    except Exception:
+                        pass
                 break
         if visible_flag and matched_item is None:
             item = self._make_overlay_item(shape)
@@ -1532,8 +1565,19 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                         pass
                 if self._selected_vertex_shape is shape:
                     self._set_selected_vertex(None, None)
-        self._refresh_overlay_geometry()
-        self._notify_host_large_image_document_changed()
+        if visible_flag:
+            self._refresh_overlay_geometry()
+            self._notify_host_large_image_document_changed()
+        else:
+            # Avoid immediate geometry sync on hide; deferred repaint is safer
+            # for Qt's graphics scene when visibility toggles happen rapidly.
+            try:
+                viewport = self.viewport()
+                if viewport is not None:
+                    viewport.update()
+            except Exception:
+                pass
+            self._defer_host_large_image_document_changed()
 
     def _scene_pos_from_event(self, event) -> QtCore.QPointF:
         pos = event.pos() if hasattr(event, "pos") else event.position().toPoint()

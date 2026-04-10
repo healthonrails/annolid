@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import json
+from pathlib import Path
+import time
 from typing import Any, Sequence
 
 from qtpy import QtCore
@@ -11,7 +15,7 @@ from annolid.gui.polygon_tools import polygon_identity_key
 
 Point2 = tuple[float, float]
 Point3 = tuple[float, float, float]
-PRESENCE_STATES = {"present", "hidden", "created"}
+PRESENCE_STATES = {"present", "hidden", "created", "zero_area"}
 
 
 def _as_point2_list(points: Sequence[Any] | None) -> list[Point2]:
@@ -61,6 +65,166 @@ def _interpolate_point_lists(
     return [(float(point.x()), float(point.y())) for point in blended]
 
 
+def _polygon_signed_area(points: Sequence[Point2]) -> float:
+    if len(points) < 3:
+        return 0.0
+    area2 = 0.0
+    pts = list(points)
+    for index, (x2, y2) in enumerate(pts):
+        x1, y1 = pts[index - 1]
+        area2 += (float(x1) * float(y2)) - (float(x2) * float(y1))
+    return 0.5 * area2
+
+
+def _rotate_points(points: Sequence[Point2], offset: int) -> list[Point2]:
+    pts = list(points or [])
+    if not pts:
+        return []
+    n = len(pts)
+    shift = int(offset) % n
+    return pts[shift:] + pts[:shift]
+
+
+def _alignment_cost(a: Sequence[Point2], b: Sequence[Point2]) -> float:
+    if len(a) != len(b):
+        return float("inf")
+    cost = 0.0
+    for (ax, ay), (bx, by) in zip(a, b):
+        dx = float(ax) - float(bx)
+        dy = float(ay) - float(by)
+        cost += (dx * dx) + (dy * dy)
+    return cost
+
+
+def _align_points_to_reference(
+    reference: Sequence[Point2],
+    candidate: Sequence[Point2],
+) -> list[Point2]:
+    ref = list(reference or [])
+    cand = list(candidate or [])
+    if len(ref) < 3 or len(cand) < 3 or len(ref) != len(cand):
+        return cand
+
+    ref_area = _polygon_signed_area(ref)
+    cand_area = _polygon_signed_area(cand)
+    forward = list(cand)
+    if (ref_area > 0.0 and cand_area < 0.0) or (ref_area < 0.0 and cand_area > 0.0):
+        forward = list(reversed(forward))
+
+    best = forward
+    best_cost = float("inf")
+    for offset in range(len(forward)):
+        rotated = _rotate_points(forward, offset)
+        cost = _alignment_cost(ref, rotated)
+        if cost < best_cost:
+            best_cost = cost
+            best = rotated
+    return best
+
+
+def _smooth_closed_polygon(points: Sequence[Point2], alpha: float) -> list[Point2]:
+    pts = list(points or [])
+    if len(pts) < 3:
+        return pts
+    strength = max(0.0, min(1.0, float(alpha)))
+    if strength <= 1e-6:
+        return pts
+    smoothed: list[Point2] = []
+    n = len(pts)
+    for index, (x, y) in enumerate(pts):
+        px, py = pts[index - 1]
+        nx, ny = pts[(index + 1) % n]
+        avg_x = (float(px) + float(x) + float(nx)) / 3.0
+        avg_y = (float(py) + float(y) + float(ny)) / 3.0
+        new_x = (float(x) * (1.0 - strength)) + (avg_x * strength)
+        new_y = (float(y) * (1.0 - strength)) + (avg_y * strength)
+        smoothed.append((new_x, new_y))
+    return smoothed
+
+
+def _smooth_longitudinal_sections(
+    sections: dict[int, list[Point2]],
+    alpha: float,
+) -> dict[int, list[Point2]]:
+    if not sections:
+        return {}
+    strength = max(0.0, min(1.0, float(alpha)))
+    if strength <= 1e-6:
+        return {int(k): list(v or []) for k, v in dict(sections).items()}
+
+    ordered_sections = sorted(int(section) for section in sections.keys())
+    point_count = len(list(sections.get(ordered_sections[0]) or []))
+    if point_count < 3:
+        return {int(k): list(v or []) for k, v in dict(sections).items()}
+
+    smoothed: dict[int, list[Point2]] = {
+        section: [tuple(point) for point in list(sections.get(section) or [])]
+        for section in ordered_sections
+    }
+    for interior_idx in range(1, len(ordered_sections) - 1):
+        left_key = ordered_sections[interior_idx - 1]
+        key = ordered_sections[interior_idx]
+        right_key = ordered_sections[interior_idx + 1]
+        left = list(sections.get(left_key) or [])
+        cur = list(sections.get(key) or [])
+        right = list(sections.get(right_key) or [])
+        if (
+            len(left) != point_count
+            or len(cur) != point_count
+            or len(right) != point_count
+        ):
+            continue
+        next_points: list[Point2] = []
+        for idx in range(point_count):
+            lx, ly = left[idx]
+            cx, cy = cur[idx]
+            rx, ry = right[idx]
+            avg_x = (float(lx) + float(cx) + float(rx)) / 3.0
+            avg_y = (float(ly) + float(cy) + float(ry)) / 3.0
+            nx = (float(cx) * (1.0 - strength)) + (avg_x * strength)
+            ny = (float(cy) * (1.0 - strength)) + (avg_y * strength)
+            next_points.append((nx, ny))
+        smoothed[key] = next_points
+    return smoothed
+
+
+def _snap_points_to_guides(
+    points: Sequence[Point2],
+    guide_points: Sequence[Point2],
+    *,
+    strength: float,
+    max_distance: float,
+) -> list[Point2]:
+    pts = list(points or [])
+    guides = list(guide_points or [])
+    if not pts or not guides:
+        return pts
+    snap_strength = max(0.0, min(1.0, float(strength)))
+    threshold = max(0.0, float(max_distance))
+    if snap_strength <= 1e-6 or threshold <= 1e-6:
+        return pts
+    threshold2 = threshold * threshold
+    snapped: list[Point2] = []
+    for x, y in pts:
+        best = None
+        best_dist2 = float("inf")
+        for gx, gy in guides:
+            dx = float(gx) - float(x)
+            dy = float(gy) - float(y)
+            dist2 = (dx * dx) + (dy * dy)
+            if dist2 < best_dist2:
+                best_dist2 = dist2
+                best = (float(gx), float(gy))
+        if best is None or best_dist2 > threshold2:
+            snapped.append((float(x), float(y)))
+            continue
+        bx, by = best
+        nx = (float(x) * (1.0 - snap_strength)) + (float(bx) * snap_strength)
+        ny = (float(y) * (1.0 - snap_strength)) + (float(by) * snap_strength)
+        snapped.append((nx, ny))
+    return snapped
+
+
 def _region_id_from_shape(shape: Any) -> str:
     if isinstance(shape, dict):
         label = str(shape.get("label", "") or "")
@@ -96,21 +260,67 @@ def _shape_label(shape: Any) -> str:
     return str(getattr(shape, "label", "") or "")
 
 
+def _shape_group_id(shape: Any) -> str:
+    if isinstance(shape, dict):
+        value = shape.get("group_id", "")
+    else:
+        value = getattr(shape, "group_id", "")
+    return str(value if value is not None else "")
+
+
+def _shape_description(shape: Any) -> str:
+    if isinstance(shape, dict):
+        return str(shape.get("description", "") or "")
+    return str(getattr(shape, "description", "") or "")
+
+
+def _page_polygon_signature(shapes: Sequence[Any] | None) -> str:
+    entries: list[dict[str, Any]] = []
+    for shape in list(shapes or []):
+        if _shape_shape_type(shape) != "polygon":
+            continue
+        points = _shape_points(shape)
+        if len(points) < 3:
+            continue
+        entries.append(
+            {
+                "label": _shape_label(shape),
+                "group_id": _shape_group_id(shape),
+                "description": _shape_description(shape),
+                "points": [[round(float(x), 4), round(float(y), 4)] for x, y in points],
+            }
+        )
+    entries.sort(
+        key=lambda item: (
+            str(item.get("label") or ""),
+            str(item.get("group_id") or ""),
+            str(item.get("description") or ""),
+            len(list(item.get("points") or [])),
+        )
+    )
+    payload = json.dumps(entries, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 @dataclass(slots=True)
 class Brain3DConfig:
     source_orientation: str = "sagittal"
     point_count: int = 64
+    interpolation_density: int = 1
     section_positions: list[float] | None = None
     coronal_spacing: float | None = 1.0
     coronal_plane_count: int | None = None
     smoothing_longitudinal: float = 0.0
     smoothing_inplane: float = 0.0
+    snapping_enabled: bool = False
     snapping_strength: float = 0.0
+    snapping_max_distance: float = 8.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "source_orientation": str(self.source_orientation or "sagittal"),
             "point_count": int(self.point_count or 64),
+            "interpolation_density": max(1, int(self.interpolation_density or 1)),
             "section_positions": (
                 [float(value) for value in list(self.section_positions or [])]
                 if self.section_positions is not None
@@ -126,7 +336,9 @@ class Brain3DConfig:
             ),
             "smoothing_longitudinal": float(self.smoothing_longitudinal or 0.0),
             "smoothing_inplane": float(self.smoothing_inplane or 0.0),
+            "snapping_enabled": bool(self.snapping_enabled),
             "snapping_strength": float(self.snapping_strength or 0.0),
+            "snapping_max_distance": float(self.snapping_max_distance or 8.0),
         }
 
     @classmethod
@@ -136,6 +348,7 @@ class Brain3DConfig:
         return cls(
             source_orientation=str(data.get("source_orientation") or "sagittal"),
             point_count=max(3, int(data.get("point_count") or 64)),
+            interpolation_density=max(1, int(data.get("interpolation_density") or 1)),
             section_positions=(
                 [float(value) for value in list(section_positions or [])]
                 if section_positions is not None
@@ -153,7 +366,9 @@ class Brain3DConfig:
             ),
             smoothing_longitudinal=float(data.get("smoothing_longitudinal") or 0.0),
             smoothing_inplane=float(data.get("smoothing_inplane") or 0.0),
+            snapping_enabled=bool(data.get("snapping_enabled", False)),
             snapping_strength=float(data.get("snapping_strength") or 0.0),
+            snapping_max_distance=float(data.get("snapping_max_distance") or 8.0),
         )
 
 
@@ -163,6 +378,7 @@ class RegionTrack:
     label: str
     observed_sections: list[int] = field(default_factory=list)
     reconstructed_sections: dict[int, list[Point2]] = field(default_factory=dict)
+    contour_nodes_3d: dict[int, list[Point3]] = field(default_factory=dict)
     presence_interval: tuple[int, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -179,6 +395,12 @@ class RegionTrack:
                 str(int(section)): [[float(x), float(y)] for x, y in points]
                 for section, points in dict(self.reconstructed_sections or {}).items()
             },
+            "contour_nodes_3d": {
+                str(int(section)): [
+                    [float(x), float(y), float(z)] for x, y, z in points
+                ]
+                for section, points in dict(self.contour_nodes_3d or {}).items()
+            },
         }
 
     @classmethod
@@ -192,6 +414,22 @@ class RegionTrack:
             except Exception:
                 continue
             reconstructed_sections[section] = _as_point2_list(points)
+        contour_nodes_raw = dict(data.get("contour_nodes_3d") or {})
+        contour_nodes_3d: dict[int, list[Point3]] = {}
+        for key, points in contour_nodes_raw.items():
+            try:
+                section = int(key)
+            except Exception:
+                continue
+            section_nodes: list[Point3] = []
+            for point in list(points or []):
+                try:
+                    section_nodes.append(
+                        (float(point[0]), float(point[1]), float(point[2]))
+                    )
+                except Exception:
+                    continue
+            contour_nodes_3d[section] = section_nodes
         presence_interval = data.get("presence_interval")
         interval_tuple = None
         if isinstance(presence_interval, (list, tuple)) and len(presence_interval) >= 2:
@@ -203,6 +441,7 @@ class RegionTrack:
                 int(value) for value in list(data.get("observed_sections") or [])
             ],
             reconstructed_sections=reconstructed_sections,
+            contour_nodes_3d=contour_nodes_3d,
             presence_interval=interval_tuple,
         )
 
@@ -236,6 +475,7 @@ class Brain3DModel:
     coronal_overrides: dict[int, dict[str, list[Point2]]] = field(default_factory=dict)
     plane_presence: dict[int, dict[str, str]] = field(default_factory=dict)
     generated_coronal_planes: list[float] = field(default_factory=list)
+    mesh_cache_metadata: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -278,6 +518,7 @@ class Brain3DModel:
                 float(position)
                 for position in list(self.generated_coronal_planes or [])
             ],
+            "mesh_cache_metadata": dict(self.mesh_cache_metadata or {}),
             "metadata": dict(self.metadata or {}),
         }
 
@@ -314,7 +555,7 @@ class Brain3DModel:
         image_shape = None
         if isinstance(image_shape_raw, (list, tuple)) and len(image_shape_raw) >= 2:
             image_shape = (int(image_shape_raw[0]), int(image_shape_raw[1]))
-        return cls(
+        model = cls(
             version=int(data.get("version") or 1),
             source_orientation=str(data.get("source_orientation") or "sagittal"),
             section_indices=[
@@ -332,8 +573,12 @@ class Brain3DModel:
                 float(position)
                 for position in list(data.get("generated_coronal_planes") or [])
             ],
+            mesh_cache_metadata=dict(data.get("mesh_cache_metadata") or {}),
             metadata=dict(data.get("metadata") or {}),
         )
+        for track in list(model.regions.values()):
+            _ensure_region_track_contour_nodes(model, track)
+        return model
 
 
 @dataclass(slots=True)
@@ -366,6 +611,56 @@ def _iter_sagittal_pages(pages: Sequence[Any]) -> list[dict[str, Any]]:
     return normalized
 
 
+def _build_interpolated_section_axis(
+    source_section_indices: Sequence[int],
+    interpolation_density: int,
+    section_positions: Sequence[float] | None,
+) -> tuple[list[int], list[float], dict[int, float], list[int]]:
+    density = max(1, int(interpolation_density or 1))
+    source_indices = [int(value) for value in list(source_section_indices or [])]
+    if not source_indices:
+        return [], [], {}, []
+
+    scaled_source_indices = [int(value) * density for value in source_indices]
+    min_section = int(min(scaled_source_indices))
+    max_section = int(max(scaled_source_indices))
+    section_indices = list(range(min_section, max_section + 1))
+
+    if section_positions is not None and len(section_positions) == len(source_indices):
+        source_positions = {
+            int(section): float(position)
+            for section, position in zip(scaled_source_indices, section_positions)
+        }
+        resolved_positions: list[float] = []
+        for section in section_indices:
+            if section in source_positions:
+                resolved_positions.append(float(source_positions[section]))
+                continue
+            left_sections = [idx for idx in scaled_source_indices if idx < section]
+            right_sections = [idx for idx in scaled_source_indices if idx > section]
+            if not left_sections or not right_sections:
+                resolved_positions.append(float(section))
+                continue
+            left = max(left_sections)
+            right = min(right_sections)
+            left_pos = float(source_positions[left])
+            right_pos = float(source_positions[right])
+            if right == left:
+                resolved_positions.append(left_pos)
+                continue
+            ratio = (float(section) - float(left)) / (float(right) - float(left))
+            resolved_positions.append(left_pos + ((right_pos - left_pos) * ratio))
+        return (
+            section_indices,
+            resolved_positions,
+            source_positions,
+            scaled_source_indices,
+        )
+
+    resolved_positions = [float(index) / float(density) for index in section_indices]
+    return section_indices, resolved_positions, {}, scaled_source_indices
+
+
 def build_brain_3d_model(
     sagittal_pages: Sequence[Any],
     config: Brain3DConfig | dict[str, Any] | None,
@@ -376,9 +671,10 @@ def build_brain_3d_model(
         else Brain3DConfig.from_dict(dict(config or {}))
     )
     pages = _iter_sagittal_pages(list(sagittal_pages or []))
+    interpolation_density = max(1, int(cfg.interpolation_density or 1))
     if not pages:
         return Brain3DModel(
-            version=1,
+            version=2,
             source_orientation=str(cfg.source_orientation or "sagittal"),
             section_indices=[],
             section_positions=[],
@@ -389,41 +685,20 @@ def build_brain_3d_model(
         )
 
     source_section_indices = [int(page["page_index"]) for page in pages]
-    if source_section_indices:
-        min_section = int(min(source_section_indices))
-        max_section = int(max(source_section_indices))
-        section_indices = list(range(min_section, max_section + 1))
-    else:
-        section_indices = []
-
-    if cfg.section_positions is not None and len(cfg.section_positions) == len(
-        source_section_indices
-    ):
-        source_positions = {
-            int(section): float(position)
-            for section, position in zip(source_section_indices, cfg.section_positions)
-        }
-        section_positions: list[float] = []
-        for section in section_indices:
-            if section in source_positions:
-                section_positions.append(float(source_positions[section]))
-                continue
-            left_sections = [idx for idx in source_section_indices if idx < section]
-            right_sections = [idx for idx in source_section_indices if idx > section]
-            if not left_sections or not right_sections:
-                section_positions.append(float(section))
-                continue
-            left = max(left_sections)
-            right = min(right_sections)
-            left_pos = float(source_positions[left])
-            right_pos = float(source_positions[right])
-            if right == left:
-                section_positions.append(left_pos)
-                continue
-            ratio = (float(section) - float(left)) / (float(right) - float(left))
-            section_positions.append(left_pos + ((right_pos - left_pos) * ratio))
-    else:
-        section_positions = [float(index) for index in section_indices]
+    source_page_signatures = {
+        int(page["page_index"]): _page_polygon_signature(list(page.get("shapes") or []))
+        for page in pages
+    }
+    (
+        section_indices,
+        section_positions,
+        source_positions_by_index,
+        scaled_source_section_indices,
+    ) = _build_interpolated_section_axis(
+        source_section_indices,
+        interpolation_density,
+        cfg.section_positions,
+    )
 
     image_width = 0.0
     image_height = 0.0
@@ -432,7 +707,7 @@ def build_brain_3d_model(
     observed_sections_by_region: dict[str, set[int]] = {}
 
     for page in pages:
-        page_index = int(page["page_index"])
+        page_index = int(page["page_index"]) * int(interpolation_density)
         for shape in list(page.get("shapes") or []):
             if _shape_shape_type(shape) != "polygon":
                 continue
@@ -448,6 +723,10 @@ def build_brain_3d_model(
             observed_sections_by_region.setdefault(region_id, set()).add(page_index)
 
     region_tracks: dict[str, RegionTrack] = {}
+    section_position_by_index = {
+        int(section): float(position)
+        for section, position in zip(section_indices, section_positions)
+    }
     for region_id, section_map in raw_tracks.items():
         observed_sections = sorted(observed_sections_by_region.get(region_id) or [])
         if not observed_sections:
@@ -455,15 +734,31 @@ def build_brain_3d_model(
         min_section = observed_sections[0]
         max_section = observed_sections[-1]
         point_count = max(3, int(cfg.point_count or 0))
+        aligned_observed_sections: dict[int, list[Point2]] = {}
+        previous_observed_points: list[Point2] | None = None
+        for observed_section in observed_sections:
+            observed_points = _resample_polygon_points(
+                section_map[observed_section], point_count
+            )
+            if previous_observed_points is not None:
+                observed_points = _align_points_to_reference(
+                    previous_observed_points, observed_points
+                )
+            aligned_observed_sections[int(observed_section)] = observed_points
+            previous_observed_points = observed_points
+
         reconstructed: dict[int, list[Point2]] = {}
 
         for section in section_indices:
             if section < min_section or section > max_section:
                 continue
             if section in section_map:
-                reconstructed[section] = _resample_polygon_points(
-                    section_map[section],
-                    point_count,
+                reconstructed[section] = list(
+                    aligned_observed_sections.get(int(section))
+                    or _resample_polygon_points(
+                        section_map[section],
+                        point_count,
+                    )
                 )
                 continue
             left_sections = [value for value in observed_sections if value < section]
@@ -480,17 +775,35 @@ def build_brain_3d_model(
                 continue
             ratio = (float(section) - float(left)) / (float(right) - float(left))
             reconstructed[section] = _interpolate_point_lists(
-                _resample_polygon_points(section_map[left], point_count),
-                _resample_polygon_points(section_map[right], point_count),
+                list(aligned_observed_sections.get(int(left)) or []),
+                list(aligned_observed_sections.get(int(right)) or []),
                 ratio,
                 point_count=point_count,
             )
+
+        reconstructed = _smooth_longitudinal_sections(
+            reconstructed,
+            float(cfg.smoothing_longitudinal or 0.0),
+        )
 
         region_tracks[region_id] = RegionTrack(
             region_id=region_id,
             label=labels_by_region.get(region_id) or _region_label_from_id(region_id),
             observed_sections=observed_sections,
             reconstructed_sections=reconstructed,
+            contour_nodes_3d={
+                int(section): [
+                    (
+                        float(
+                            section_position_by_index.get(int(section), float(section))
+                        ),
+                        float(x),
+                        float(y),
+                    )
+                    for x, y in list(points or [])
+                ]
+                for section, points in dict(reconstructed or {}).items()
+            },
             presence_interval=(min_section, max_section),
         )
 
@@ -499,7 +812,7 @@ def build_brain_3d_model(
         image_shape = (int(round(image_width)) + 1, int(round(image_height)) + 1)
 
     return Brain3DModel(
-        version=1,
+        version=2,
         source_orientation=str(cfg.source_orientation or "sagittal"),
         section_indices=section_indices,
         section_positions=section_positions,
@@ -508,7 +821,49 @@ def build_brain_3d_model(
         regions=region_tracks,
         metadata={
             "source_page_count": len(pages),
+            "source_page_indices": [int(value) for value in source_section_indices],
+            "source_index_scale": int(interpolation_density),
+            "source_section_axis": [
+                {
+                    "page_index": int(page_index),
+                    "section_index": int(section_index),
+                    "position": float(
+                        section_position_by_index.get(
+                            int(section_index), float(section_index)
+                        )
+                    ),
+                }
+                for page_index, section_index in zip(
+                    source_section_indices, scaled_source_section_indices
+                )
+            ],
+            "source_page_signatures": {
+                str(int(index)): str(signature or "")
+                for index, signature in source_page_signatures.items()
+            },
+            "source_section_positions": {
+                str(int(index)): float(position)
+                for index, position in source_positions_by_index.items()
+            },
             "region_count": len(region_tracks),
+            "source_orientation": str(cfg.source_orientation or "sagittal"),
+            "section_positions": [float(value) for value in section_positions],
+            "coronal_spacing": (
+                None if cfg.coronal_spacing is None else float(cfg.coronal_spacing)
+            ),
+            "interpolation_density": int(interpolation_density),
+            "workflow_mode": "additive",
+            "region_presence_intervals": {
+                str(region_id): (
+                    None
+                    if track.presence_interval is None
+                    else [
+                        int(track.presence_interval[0]),
+                        int(track.presence_interval[1]),
+                    ]
+                )
+                for region_id, track in dict(region_tracks or {}).items()
+            },
         },
     )
 
@@ -610,6 +965,26 @@ def _slice_region_at_coronal(
     return polygon
 
 
+def _ensure_region_track_contour_nodes(
+    model: Brain3DModel,
+    track: RegionTrack,
+) -> None:
+    if track.contour_nodes_3d:
+        return
+    section_lookup = {
+        int(section): float(position)
+        for section, position in zip(model.section_indices, model.section_positions)
+    }
+    contour_nodes: dict[int, list[Point3]] = {}
+    for section, points in dict(track.reconstructed_sections or {}).items():
+        section_value = int(section)
+        z_value = float(section_lookup.get(section_value, float(section_value)))
+        contour_nodes[section_value] = [
+            (z_value, float(x), float(y)) for x, y in list(points or [])
+        ]
+    track.contour_nodes_3d = contour_nodes
+
+
 def reslice_brain_model(
     model: Brain3DModel,
     orientation: str = "coronal",
@@ -644,6 +1019,17 @@ def reslice_brain_model(
                     )
                 )
                 continue
+            if explicit_state == "zero_area":
+                region_entries.append(
+                    RegionPlanePolygon(
+                        region_id=region_id,
+                        label=track.label,
+                        state="zero_area",
+                        points=[],
+                        source="state",
+                    )
+                )
+                continue
             override_points = _as_point2_list(override_by_region.get(region_id))
             if override_points:
                 region_entries.append(
@@ -657,6 +1043,11 @@ def reslice_brain_model(
                 )
                 continue
             points = _slice_region_at_coronal(model, track, float(position))
+            if points and float(model.config.smoothing_inplane or 0.0) > 1e-6:
+                points = _smooth_closed_polygon(
+                    points,
+                    float(model.config.smoothing_inplane or 0.0),
+                )
             if points:
                 region_entries.append(
                     RegionPlanePolygon(
@@ -668,7 +1059,11 @@ def reslice_brain_model(
                     )
                 )
             else:
-                fallback_state = "created" if explicit_state == "created" else "hidden"
+                fallback_state = (
+                    "created"
+                    if explicit_state == "created"
+                    else ("zero_area" if explicit_state == "zero_area" else "hidden")
+                )
                 region_entries.append(
                     RegionPlanePolygon(
                         region_id=region_id,
@@ -696,6 +1091,10 @@ def apply_coronal_polygon_edit(
     plane_index: int,
     region_id: str,
     edited_shape: Any,
+    *,
+    guide_points: Sequence[Point2] | None = None,
+    snapping_strength: float | None = None,
+    snapping_max_distance: float = 8.0,
 ) -> Brain3DModel:
     normalized_region = str(region_id or "")
     if not normalized_region:
@@ -713,6 +1112,26 @@ def apply_coronal_polygon_edit(
         points = _as_point2_list(getattr(edited_shape, "points", []) or [])
     else:
         points = _as_point2_list(edited_shape)
+    raw_points = list(points)
+    effective_strength = (
+        float(snapping_strength)
+        if snapping_strength is not None
+        else float(model.config.snapping_strength or 0.0)
+    )
+    if guide_points and effective_strength > 1e-6:
+        points = _snap_points_to_guides(
+            points,
+            list(guide_points or []),
+            strength=effective_strength,
+            max_distance=float(snapping_max_distance),
+        )
+        raw_overrides = model.metadata.setdefault("coronal_overrides_raw", {})
+        if isinstance(raw_overrides, dict):
+            plane_raw = raw_overrides.setdefault(str(int(plane_key)), {})
+            if isinstance(plane_raw, dict):
+                plane_raw[str(normalized_region)] = [
+                    [float(x), float(y)] for x, y in raw_points
+                ]
     model.coronal_overrides.setdefault(plane_key, {})[normalized_region] = list(points)
     neighborhood = model.metadata.setdefault("local_regeneration_requests", [])
     if isinstance(neighborhood, list):
@@ -738,7 +1157,7 @@ def set_region_presence_on_plane(
 ) -> Brain3DModel:
     normalized_state = str(state or "present").strip().lower() or "present"
     if normalized_state not in PRESENCE_STATES:
-        raise ValueError("state must be one of: present, hidden, created.")
+        raise ValueError("state must be one of: present, hidden, created, zero_area.")
     plane_key = int(plane_index)
     region_key = str(region_id or "")
     if not region_key:
@@ -760,14 +1179,20 @@ def set_region_presence_on_plane(
 def export_brain_model_mesh(
     model: Brain3DModel,
     smoothing: float | None = None,
+    *,
+    region_ids: set[str] | None = None,
 ) -> MeshPayload:
     _ = smoothing
+    for track in list(model.regions.values()):
+        _ensure_region_track_contour_nodes(model, track)
     section_lookup = {
         int(section): float(position)
         for section, position in zip(model.section_indices, model.section_positions)
     }
     regions_payload: dict[str, dict[str, Any]] = {}
     for region_id, track in dict(model.regions or {}).items():
+        if region_ids is not None and str(region_id) not in region_ids:
+            continue
         section_ids = sorted(int(key) for key in track.reconstructed_sections.keys())
         if len(section_ids) < 2:
             continue
@@ -805,7 +1230,123 @@ def export_brain_model_mesh(
             "faces": [[a, b, c] for a, b, c in faces],
             "source": "brain3d_contour_volume",
         }
-    return MeshPayload(type="tri_mesh", regions=regions_payload)
+    payload = MeshPayload(type="tri_mesh", regions=regions_payload)
+    model.mesh_cache_metadata = {
+        "kind": "tri_mesh",
+        "region_count": len(regions_payload),
+        "generated_at_epoch_s": float(time.time()),
+        "smoothing": None if smoothing is None else float(smoothing),
+        "filtered_region_ids": sorted(str(value) for value in (region_ids or set())),
+    }
+    return payload
+
+
+def export_brain_model_mesh_ply(
+    model: Brain3DModel,
+    output_path: str | Path,
+    *,
+    smoothing: float | None = None,
+    region_ids: set[str] | None = None,
+) -> Path:
+    mesh = export_brain_model_mesh(model, smoothing=smoothing, region_ids=region_ids)
+    path = Path(output_path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    vertices: list[Point3] = []
+    faces: list[tuple[int, int, int]] = []
+    vertex_offset = 0
+    for region in mesh.regions.values():
+        region_vertices = [
+            (float(x), float(y), float(z))
+            for x, y, z in list(region.get("vertices") or [])
+        ]
+        region_faces = [
+            (int(a), int(b), int(c)) for a, b, c in list(region.get("faces") or [])
+        ]
+        vertices.extend(region_vertices)
+        for a, b, c in region_faces:
+            faces.append(
+                (
+                    int(a) + int(vertex_offset),
+                    int(b) + int(vertex_offset),
+                    int(c) + int(vertex_offset),
+                )
+            )
+        vertex_offset += len(region_vertices)
+
+    lines = [
+        "ply",
+        "format ascii 1.0",
+        f"element vertex {len(vertices)}",
+        "property float x",
+        "property float y",
+        "property float z",
+        f"element face {len(faces)}",
+        "property list uchar int vertex_indices",
+        "end_header",
+    ]
+    lines.extend(f"{x:.6f} {y:.6f} {z:.6f}" for x, y, z in vertices)
+    lines.extend(f"3 {a} {b} {c}" for a, b, c in faces)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    model.mesh_cache_metadata = {
+        **dict(model.mesh_cache_metadata or {}),
+        "format": "ply",
+        "path": str(path),
+        "vertex_count": int(len(vertices)),
+        "face_count": int(len(faces)),
+        "generated_at_epoch_s": float(time.time()),
+    }
+    return path
+
+
+def export_brain_model_mesh_obj(
+    model: Brain3DModel,
+    output_path: str | Path,
+    *,
+    smoothing: float | None = None,
+    region_ids: set[str] | None = None,
+) -> tuple[Path, dict[str, str]]:
+    mesh = export_brain_model_mesh(model, smoothing=smoothing, region_ids=region_ids)
+    path = Path(output_path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    lines: list[str] = ["# Annolid Brain3D mesh export (OBJ)"]
+    vertex_offset = 1
+    object_region_map: dict[str, str] = {}
+    object_index = 1
+
+    for region_id, region in mesh.regions.items():
+        region_vertices = [
+            (float(x), float(y), float(z))
+            for x, y, z in list(region.get("vertices") or [])
+        ]
+        region_faces = [
+            (int(a), int(b), int(c)) for a, b, c in list(region.get("faces") or [])
+        ]
+        if len(region_vertices) < 3 or not region_faces:
+            continue
+        object_name = f"brain3d_region_{object_index:04d}"
+        object_index += 1
+        object_region_map[object_name] = str(region_id)
+        lines.append(f"o {object_name}")
+        lines.append(f"g {object_name}")
+        for x, y, z in region_vertices:
+            lines.append(f"v {x:.6f} {y:.6f} {z:.6f}")
+        for a, b, c in region_faces:
+            lines.append(
+                f"f {int(a) + vertex_offset} {int(b) + vertex_offset} {int(c) + vertex_offset}"
+            )
+        vertex_offset += len(region_vertices)
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    model.mesh_cache_metadata = {
+        **dict(model.mesh_cache_metadata or {}),
+        "format": "obj",
+        "path": str(path),
+        "object_region_count": int(len(object_region_map)),
+        "generated_at_epoch_s": float(time.time()),
+    }
+    return path, object_region_map
 
 
 def brain_model_from_other_data(
@@ -827,6 +1368,21 @@ def store_brain_model_in_other_data(
     merged = dict(other_data or {})
     merged["brain_3d_model"] = model.to_dict()
     return merged
+
+
+def save_brain_model_sidecar(model: Brain3DModel, sidecar_path: str | Path) -> Path:
+    path = Path(sidecar_path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(model.to_dict(), indent=2), encoding="utf-8")
+    return path
+
+
+def load_brain_model_sidecar(sidecar_path: str | Path) -> Brain3DModel:
+    path = Path(sidecar_path).expanduser().resolve()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Brain 3D sidecar content must be a JSON object.")
+    return Brain3DModel.from_dict(payload)
 
 
 def materialize_coronal_plane_shapes(

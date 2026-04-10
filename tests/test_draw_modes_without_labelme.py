@@ -1160,6 +1160,40 @@ def test_ai_polygon_finalise_does_not_force_resync_when_pixmap_unchanged(
         canvas.close()
 
 
+def test_sync_ai_model_image_skips_duplicate_embed_for_same_pixmap_key(
+    monkeypatch,
+) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+
+    class _TrackingAiModel:
+        def __init__(self):
+            self.calls = 0
+
+        def set_image(self, image):
+            _ = image
+            self.calls += 1
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(64, 48, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(10, 20, 30))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas._ai_model = _TrackingAiModel()
+        monkeypatch.setattr(
+            canvas,
+            "_ai_model_image_signature_value",
+            lambda: ("unstable", canvas._ai_model.calls),
+        )
+
+        assert canvas._sync_ai_model_image(force=False) is True
+        assert canvas._sync_ai_model_image(force=False) is True
+        assert canvas._ai_model.calls == 1
+    finally:
+        canvas.close()
+
+
 def test_polygon_preview_line_uses_last_committed_point_not_stale_line_start() -> None:
     _ensure_qapp()
 

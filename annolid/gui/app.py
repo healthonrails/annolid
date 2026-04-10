@@ -271,7 +271,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.canvas.shapeMoved.connect(self.setDirty)
         self.canvas.selectionChanged.connect(self.shapeSelectionChanged)
         self.canvas.selectionChanged.connect(self.large_image_view.set_selected_shapes)
-        self.large_image_view.selectionChanged.connect(self.canvas.selectShapes)
+        self.large_image_view.selectionChanged.connect(self._on_tiled_selection_changed)
         self.large_image_view.shapeMoved.connect(self.canvas.storeShapes)
         self.large_image_view.shapeMoved.connect(self.setDirty)
         self.large_image_view.newShape.connect(self.newShape)
@@ -370,6 +370,14 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
 
     def post_status_message(self, message: str, timeout: int = 4000) -> None:
         self.status_message_requested.emit(str(message or ""), int(timeout or 0))
+
+    def _on_tiled_selection_changed(self, selected_shapes) -> None:
+        if bool(getattr(self, "_shape_visibility_apply_in_progress", False)):
+            return
+        try:
+            self.canvas.selectShapes(selected_shapes)
+        except Exception:
+            pass
 
     def _setup_keypoint_sequence_quick_toggle(self) -> None:
         """Add quick toggle action (toolbar + shortcut) for keypoint sequencing."""

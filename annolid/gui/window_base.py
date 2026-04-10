@@ -1126,6 +1126,12 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         finally:
             self.labelList.blockSignals(False)
             setattr(self, "_noSelectionSlot", prev_no_slot)
+        sync_brain3d = getattr(self, "_syncBrain3DSelectionFromShapes", None)
+        if callable(sync_brain3d):
+            try:
+                sync_brain3d(selected_list)
+            except Exception:
+                pass
 
     def toggleDrawingSensitive(self, drawing: bool) -> None:
         self.actions.editMode.setEnabled(not bool(drawing))

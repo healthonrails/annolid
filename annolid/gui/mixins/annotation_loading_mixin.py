@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from numbers import Number
 import os
+import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
-from qtpy import QtCore
+from qtpy import QtCore, QtWidgets
 
 from annolid.gui.brain_3d_model import (
     Brain3DConfig,
     apply_coronal_polygon_edit,
     brain_model_from_other_data,
     build_brain_3d_model,
+    export_brain_model_mesh_obj,
     materialize_coronal_plane_shapes,
     reslice_brain_model,
     set_region_presence_on_plane,
@@ -34,16 +38,159 @@ from annolid.utils.logger import logger
 class AnnotationLoadingMixin:
     """Annotation/label loading workflow for frames and images."""
 
+    _BRAIN3D_HIGHLIGHT_STROKE_KEY = "brain3d_overlay_stroke"
+    _BRAIN3D_HIGHLIGHT_FILL_KEY = "brain3d_overlay_fill"
+    _BRAIN3D_HIGHLIGHT_FLAG_KEY = "brain3d_highlight"
+    _BRAIN3D_HIGHLIGHT_MODE_KEY = "brain3d_highlight_mode"
+    _BRAIN3D_PENDING_REGION_KEY = "_brain3d_pending_region_id"
+    _BRAIN3D_INTERNAL_MUTATION_KEY = "_brain3d_internal_mutation_in_progress"
+
+    @staticmethod
+    def _brain3d_polygon_signature(shapes) -> str:
+        entries: list[tuple[str, str, str, tuple[tuple[float, float], ...]]] = []
+        for shape in list(shapes or []):
+            if str(getattr(shape, "shape_type", "") or "").lower() != "polygon":
+                continue
+            points = [
+                (round(float(point.x()), 4), round(float(point.y()), 4))
+                for point in list(getattr(shape, "points", []) or [])
+            ]
+            if len(points) < 3:
+                continue
+            entries.append(
+                (
+                    str(getattr(shape, "label", "") or ""),
+                    str(
+                        ""
+                        if getattr(shape, "group_id", None) is None
+                        else getattr(shape, "group_id")
+                    ),
+                    str(getattr(shape, "description", "") or ""),
+                    tuple(points),
+                )
+            )
+        entries.sort(key=lambda value: (value[0], value[1], value[2], len(value[3])))
+        payload = repr(entries).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _brain3d_current_page_index(self) -> int:
+        return int(getattr(self, "frame_number", 0) or 0)
+
+    def _brain3d_current_page_info(self) -> dict:
+        if not isinstance(getattr(self, "otherData", None), dict):
+            return {}
+        return dict(self.otherData.get("large_image_page") or {})
+
+    def _brain3d_is_current_page_generated_coronal(self) -> bool:
+        page_info = self._brain3d_current_page_info()
+        if bool(page_info.get("brain3d_generated", False)):
+            return True
+        if (
+            str(page_info.get("brain3d_orientation", "") or "").strip().lower()
+            == "coronal"
+        ):
+            return True
+        return False
+
+    def _set_dirty_with_brain3d_internal_guard(self) -> None:
+        setattr(self, self._BRAIN3D_INTERNAL_MUTATION_KEY, True)
+        try:
+            self.setDirty()
+        finally:
+            setattr(self, self._BRAIN3D_INTERNAL_MUTATION_KEY, False)
+
+    def _invalidate_brain3d_model(self, *, reason: str) -> bool:
+        if not isinstance(getattr(self, "otherData", None), dict):
+            return False
+        if "brain_3d_model" not in self.otherData:
+            return False
+        updated = dict(self.otherData)
+        updated.pop("brain_3d_model", None)
+        sync = dict(updated.get("brain3d_sync") or {})
+        sync.update(
+            {
+                "valid": False,
+                "invalidated": True,
+                "reason": str(reason or "source_update"),
+                "page_index": int(self._brain3d_current_page_index()),
+                "source_orientation": "sagittal",
+                "updated_at_epoch_s": float(time.time()),
+            }
+        )
+        updated["brain3d_sync"] = sync
+        self.otherData = updated
+        post_window_status(
+            self,
+            self.tr(
+                "Brain 3D model invalidated by sagittal source edits. Rebuild or regenerate before continuing."
+            ),
+            5000,
+        )
+        return True
+
+    def _onAnnotationDirty(self) -> None:
+        if bool(getattr(self, self._BRAIN3D_INTERNAL_MUTATION_KEY, False)):
+            return
+        model = brain_model_from_other_data(getattr(self, "otherData", None))
+        if model is None:
+            return
+        if (
+            str(getattr(model, "source_orientation", "") or "sagittal").lower()
+            != "sagittal"
+        ):
+            return
+        if self._brain3d_is_current_page_generated_coronal():
+            return
+        source_signatures = dict(
+            getattr(model, "metadata", {}).get("source_page_signatures") or {}
+        )
+        source_indices = {
+            int(value)
+            for value in list(
+                getattr(model, "metadata", {}).get("source_page_indices") or []
+            )
+            if isinstance(value, Number)
+        }
+        page_index = int(self._brain3d_current_page_index())
+        if source_indices and page_index not in source_indices:
+            return
+        if not source_signatures and not source_indices:
+            self._invalidate_brain3d_model(reason="source_page_changed")
+            return
+        expected = str(source_signatures.get(str(page_index), "") or "")
+        if not expected:
+            self._invalidate_brain3d_model(reason="source_page_changed")
+            return
+        current = self._brain3d_polygon_signature(
+            getattr(self.canvas, "shapes", []) or []
+        )
+        if current != expected:
+            self._invalidate_brain3d_model(reason="source_page_changed")
+
+    def _brain3d_prepare_save(self, _filename: str) -> None:
+        if bool(getattr(self, self._BRAIN3D_INTERNAL_MUTATION_KEY, False)):
+            return
+        model = brain_model_from_other_data(getattr(self, "otherData", None))
+        if model is None:
+            return
+        if not self._brain3d_is_current_page_generated_coronal():
+            return
+        setattr(self, self._BRAIN3D_INTERNAL_MUTATION_KEY, True)
+        try:
+            self.applyCurrentCoronalEditsToBrain3DModel()
+        finally:
+            setattr(self, self._BRAIN3D_INTERNAL_MUTATION_KEY, False)
+
     def _materialize_label_shapes(self, shapes):
         s = []
         for shape_data in shapes:
             label = shape_data["label"]
             points = shape_data["points"]
             shape_type = shape_data["shape_type"]
-            flags = shape_data["flags"]
+            flags = dict(shape_data.get("flags") or {})
             group_id = shape_data["group_id"]
             description = shape_data.get("description", "")
-            other_data = shape_data["other_data"]
+            other_data = dict(shape_data.get("other_data") or {})
             if "visible" in shape_data:
                 visible = shape_data["visible"]
             else:
@@ -267,7 +414,10 @@ class AnnotationLoadingMixin:
         dock.rebuildRequested.connect(self.buildBrain3DModelFromSagittalPages)
         dock.regenerateRequested.connect(self.regenerateBrain3DCoronalPlanes)
         dock.applyEditsRequested.connect(self.applyCurrentCoronalEditsToBrain3DModel)
+        dock.openPreviewRequested.connect(self.openBrain3DMeshPreview)
         dock.planeSelectionChanged.connect(self._onBrain3DPlaneSelectionChanged)
+        dock.regionSelectionChanged.connect(self._onBrain3DRegionSelectionChanged)
+        dock.highlightModeChanged.connect(self._onBrain3DHighlightModeChanged)
         dock.regionStateRequested.connect(self._onBrain3DRegionStateRequested)
         self.brain3d_session_dock = dock
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
@@ -284,6 +434,11 @@ class AnnotationLoadingMixin:
         dock = self._ensureBrain3DSessionDock()
         dock.show()
         dock.raise_()
+        if isinstance(getattr(self, "otherData", None), dict):
+            mode = str(
+                (self.otherData.get(self._BRAIN3D_HIGHLIGHT_MODE_KEY) or "region_only")
+            )
+            dock.set_highlight_mode(mode)
         self._refreshBrain3DSessionDock()
 
     def _refreshBrain3DSessionDock(self) -> None:
@@ -294,6 +449,9 @@ class AnnotationLoadingMixin:
         if model is None:
             dock.set_summary(region_count=0, source_page_count=0, plane_count=0)
             dock.set_regions([])
+            dock.set_highlight_summary(
+                highlighted_count=0, total_polygons=0, mode="region_only"
+            )
             return
         planes = reslice_brain_model(
             model,
@@ -314,6 +472,9 @@ class AnnotationLoadingMixin:
         dock.set_current_plane(current_plane)
         if plane_count <= 0:
             dock.set_regions([])
+            dock.set_highlight_summary(
+                highlighted_count=0, total_polygons=0, mode="region_only"
+            )
             return
         plane = planes[current_plane]
         dock.set_regions(
@@ -328,6 +489,11 @@ class AnnotationLoadingMixin:
                 for region in list(plane.regions or [])
             ]
         )
+        pending_region = str(getattr(self, self._BRAIN3D_PENDING_REGION_KEY, "") or "")
+        if pending_region:
+            if dock.select_region(pending_region, emit_signal=False):
+                setattr(self, self._BRAIN3D_PENDING_REGION_KEY, "")
+        self._refreshBrain3DHighlightSummary()
 
     def _onBrain3DPlaneSelectionChanged(self, plane_index: int) -> None:
         model = brain_model_from_other_data(getattr(self, "otherData", None))
@@ -362,8 +528,326 @@ class AnnotationLoadingMixin:
             model, int(plane_index), str(region_id), str(state)
         )
         self.otherData = store_brain_model_in_other_data(self.otherData, model)
-        self.setDirty()
-        self.regenerateBrain3DCoronalPlanes()
+        self._set_dirty_with_brain3d_internal_guard()
+        self.regenerateBrain3DCoronalPlanes(local_only=True)
+
+    def _onBrain3DHighlightModeChanged(self, mode: str) -> None:
+        normalized = str(mode or "").strip().lower()
+        if normalized not in {"region_only", "label_group"}:
+            normalized = "region_only"
+        if not isinstance(getattr(self, "otherData", None), dict):
+            self.otherData = {}
+        self.otherData[self._BRAIN3D_HIGHLIGHT_MODE_KEY] = normalized
+        dock = getattr(self, "brain3d_session_dock", None)
+        if isinstance(dock, Brain3DSessionDockWidget):
+            self._applyBrain3DRegionHighlight(dock.selected_region_id())
+            self._refreshBrain3DHighlightSummary()
+
+    def _onBrain3DRegionSelectionChanged(self, region_id: str) -> None:
+        target = str(region_id or "")
+        if not target:
+            self._clearBrain3DRegionHighlight()
+            return
+        if not self._focusBrain3DRegionOnNearestPlane(target):
+            self._clearBrain3DRegionHighlight()
+            return
+        canvas = getattr(self, "canvas", None)
+        matched = []
+        for shape in list(getattr(canvas, "shapes", []) or []):
+            if str(getattr(shape, "shape_type", "") or "").lower() != "polygon":
+                continue
+            other = dict(getattr(shape, "other_data", {}) or {})
+            region = str(other.get("region_id", "") or "")
+            if not region:
+                polygon_edit = dict(other.get("polygon_edit") or {})
+                region = str(polygon_edit.get("region_id", "") or "")
+            if region == target:
+                matched.append(shape)
+        self._applyBrain3DRegionHighlight(target)
+        if not matched:
+            return
+        setattr(self, self._BRAIN3D_PENDING_REGION_KEY, "")
+        try:
+            canvas.selectShapes(matched)
+        except Exception:
+            try:
+                canvas.selectedShapes = list(matched)
+            except Exception:
+                return
+        if hasattr(self, "shapeSelectionChanged"):
+            try:
+                self.shapeSelectionChanged(matched)
+            except Exception:
+                pass
+
+    def _brain3d_best_plane_for_region(self, model, region_id: str) -> int | None:
+        target = str(region_id or "")
+        if not target:
+            return None
+        planes = reslice_brain_model(
+            model,
+            orientation="coronal",
+            spacing=model.config.coronal_spacing,
+            plane_count=model.config.coronal_plane_count,
+        )
+        available_polygon: list[int] = []
+        available_state_only: list[int] = []
+        for plane in list(planes or []):
+            for region in list(getattr(plane, "regions", []) or []):
+                if str(getattr(region, "region_id", "") or "") != target:
+                    continue
+                state = str(getattr(region, "state", "present") or "present")
+                if state in {"hidden", "zero_area"}:
+                    continue
+                plane_index = int(getattr(plane, "plane_index", -1))
+                available_state_only.append(plane_index)
+                if len(list(getattr(region, "points", []) or [])) >= 3:
+                    available_polygon.append(plane_index)
+                break
+        available = available_polygon or available_state_only
+        if not available:
+            return None
+        current = int(getattr(self, "frame_number", 0) or 0)
+        return min(available, key=lambda idx: (abs(int(idx) - current), int(idx)))
+
+    def _focusBrain3DRegionOnNearestPlane(self, region_id: str) -> bool:
+        target = str(region_id or "")
+        if not target:
+            return False
+        model = brain_model_from_other_data(getattr(self, "otherData", None))
+        if model is None:
+            return False
+        desired_plane = self._brain3d_best_plane_for_region(model, target)
+        if desired_plane is None:
+            return False
+        current_plane = int(getattr(self, "frame_number", 0) or 0)
+        if int(desired_plane) == int(current_plane):
+            return True
+        if bool(getattr(self, "_has_large_image_page_navigation", lambda: False)()):
+            try:
+                self.setLargeImagePageNumber(int(desired_plane))
+                return True
+            except Exception:
+                return False
+        try:
+            planes = reslice_brain_model(
+                model,
+                orientation="coronal",
+                spacing=model.config.coronal_spacing,
+                plane_count=model.config.coronal_plane_count,
+            )
+            plane_by_index = {
+                int(getattr(plane, "plane_index", -1)): plane for plane in list(planes)
+            }
+            plane = plane_by_index.get(int(desired_plane))
+            if plane is None:
+                return False
+            self.loadShapes(
+                materialize_coronal_plane_shapes(plane, include_hidden=False),
+                replace=True,
+            )
+            self.frame_number = int(desired_plane)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _brain3d_region_id_from_shape(shape) -> str:
+        other = dict(getattr(shape, "other_data", {}) or {})
+        region = str(other.get("region_id", "") or "")
+        if region:
+            return region
+        polygon_edit = dict(other.get("polygon_edit") or {})
+        return str(polygon_edit.get("region_id", "") or "")
+
+    def _clearBrain3DRegionHighlight(self) -> None:
+        canvas = getattr(self, "canvas", None)
+        changed = False
+        for shape in list(getattr(canvas, "shapes", []) or []):
+            other = dict(getattr(shape, "other_data", {}) or {})
+            if (
+                self._BRAIN3D_HIGHLIGHT_FLAG_KEY in other
+                or self._BRAIN3D_HIGHLIGHT_STROKE_KEY in other
+                or self._BRAIN3D_HIGHLIGHT_FILL_KEY in other
+            ):
+                other.pop(self._BRAIN3D_HIGHLIGHT_FLAG_KEY, None)
+                other.pop(self._BRAIN3D_HIGHLIGHT_STROKE_KEY, None)
+                other.pop(self._BRAIN3D_HIGHLIGHT_FILL_KEY, None)
+                shape.other_data = other
+                changed = True
+        if changed:
+            try:
+                if canvas is not None:
+                    canvas.update()
+            except Exception:
+                pass
+            large_view = getattr(self, "large_image_view", None)
+            if large_view is not None:
+                try:
+                    large_view.viewport().update()
+                except Exception:
+                    pass
+        self._refreshBrain3DHighlightSummary()
+
+    def _applyBrain3DRegionHighlight(self, region_id: str) -> None:
+        target = str(region_id or "")
+        if not target:
+            self._clearBrain3DRegionHighlight()
+            return
+        mode = "region_only"
+        if isinstance(getattr(self, "otherData", None), dict):
+            mode = (
+                str(
+                    self.otherData.get(self._BRAIN3D_HIGHLIGHT_MODE_KEY)
+                    or "region_only"
+                )
+                .strip()
+                .lower()
+            )
+        target_label = target.split("|", 1)[0] if "|" in target else target
+        canvas = getattr(self, "canvas", None)
+        changed = False
+        for shape in list(getattr(canvas, "shapes", []) or []):
+            other = dict(getattr(shape, "other_data", {}) or {})
+            shape_region = self._brain3d_region_id_from_shape(shape)
+            shape_label = (
+                shape_region.split("|", 1)[0] if "|" in shape_region else shape_region
+            )
+            match = shape_region == target
+            if mode == "label_group" and target_label:
+                match = bool(shape_label and shape_label == target_label)
+            if match:
+                other[self._BRAIN3D_HIGHLIGHT_FLAG_KEY] = True
+                other[self._BRAIN3D_HIGHLIGHT_STROKE_KEY] = "#ffb300"
+                other[self._BRAIN3D_HIGHLIGHT_FILL_KEY] = "#ffb300"
+            else:
+                other.pop(self._BRAIN3D_HIGHLIGHT_FLAG_KEY, None)
+                other.pop(self._BRAIN3D_HIGHLIGHT_STROKE_KEY, None)
+                other.pop(self._BRAIN3D_HIGHLIGHT_FILL_KEY, None)
+            if dict(getattr(shape, "other_data", {}) or {}) != other:
+                shape.other_data = other
+                changed = True
+        if changed:
+            try:
+                if canvas is not None:
+                    canvas.update()
+            except Exception:
+                pass
+            large_view = getattr(self, "large_image_view", None)
+            if large_view is not None:
+                try:
+                    large_view.viewport().update()
+                except Exception:
+                    pass
+        self._refreshBrain3DHighlightSummary()
+
+    def _refreshBrain3DHighlightSummary(self) -> None:
+        dock = getattr(self, "brain3d_session_dock", None)
+        if not isinstance(dock, Brain3DSessionDockWidget):
+            return
+        canvas = getattr(self, "canvas", None)
+        shapes = [
+            shape
+            for shape in list(getattr(canvas, "shapes", []) or [])
+            if str(getattr(shape, "shape_type", "") or "").lower() == "polygon"
+        ]
+        highlighted = 0
+        for shape in shapes:
+            other = dict(getattr(shape, "other_data", {}) or {})
+            if bool(other.get(self._BRAIN3D_HIGHLIGHT_FLAG_KEY, False)):
+                highlighted += 1
+        mode = "region_only"
+        if isinstance(getattr(self, "otherData", None), dict):
+            mode = (
+                str(
+                    self.otherData.get(self._BRAIN3D_HIGHLIGHT_MODE_KEY)
+                    or "region_only"
+                )
+                .strip()
+                .lower()
+            )
+        dock.set_highlight_summary(
+            highlighted_count=highlighted,
+            total_polygons=len(shapes),
+            mode=mode,
+        )
+
+    def _syncBrain3DSelectionFromShapes(self, selected_shapes) -> None:
+        dock = getattr(self, "brain3d_session_dock", None)
+        if not isinstance(dock, Brain3DSessionDockWidget):
+            return
+        for shape in list(selected_shapes or []):
+            region = self._brain3d_region_id_from_shape(shape)
+            if not region:
+                continue
+            self._applyBrain3DRegionHighlight(region)
+            if dock.select_region(region, emit_signal=False):
+                setattr(self, self._BRAIN3D_PENDING_REGION_KEY, "")
+                return
+            setattr(self, self._BRAIN3D_PENDING_REGION_KEY, region)
+        self._clearBrain3DRegionHighlight()
+
+    def openBrain3DMeshPreview(self, _value=False) -> bool:
+        model = brain_model_from_other_data(getattr(self, "otherData", None))
+        if model is None:
+            post_window_status(
+                self, self.tr("No Brain 3D model found. Build the model first."), 5000
+            )
+            return False
+        manager = getattr(self, "threejs_manager", None)
+        if manager is None:
+            post_window_status(self, self.tr("Three.js viewer is not available."), 5000)
+            return False
+        try:
+            export_dir = Path(tempfile.gettempdir()) / "annolid_brain3d_preview"
+            export_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"brain3d_preview_{int(time.time() * 1000)}.obj"
+            mesh_path, object_region_map = export_brain_model_mesh_obj(
+                model,
+                export_dir / filename,
+            )
+        except Exception as exc:
+            post_window_status(
+                self,
+                self.tr("Failed to export Brain 3D mesh preview: %s") % str(exc),
+                5000,
+            )
+            return False
+        try:
+            opened = bool(
+                manager.show_model_in_viewer(
+                    str(mesh_path),
+                    pick_mode="brain3d_region",
+                    object_region_map=object_region_map,
+                )
+            )
+        except Exception:
+            opened = False
+        if not opened:
+            post_window_status(
+                self,
+                self.tr("Unable to open Brain 3D mesh preview in Three.js viewer."),
+                5000,
+            )
+            return False
+        post_window_status(
+            self,
+            self.tr("Opened Brain 3D mesh preview: %s") % str(mesh_path.name),
+            4000,
+        )
+        return True
+
+    def _onBrain3DMeshRegionPicked(self, region_id: str) -> None:
+        target = str(region_id or "")
+        if not target:
+            return
+        setattr(self, self._BRAIN3D_PENDING_REGION_KEY, target)
+        dock = getattr(self, "brain3d_session_dock", None)
+        if isinstance(dock, Brain3DSessionDockWidget):
+            if not dock.select_region(target, emit_signal=True):
+                self._onBrain3DRegionSelectionChanged(target)
+        else:
+            self._onBrain3DRegionSelectionChanged(target)
 
     def _collect_brain3d_sagittal_pages(self) -> list[dict[str, object]]:
         pages: list[dict[str, object]] = []
@@ -391,7 +875,265 @@ class AnnotationLoadingMixin:
             pages.append({"page_index": 0, "shapes": shapes})
         return pages
 
-    def buildBrain3DModelFromSagittalPages(self, _value=False) -> bool:
+    def _brain3d_config_from_overrides(
+        self,
+        overrides: dict[str, object] | None = None,
+    ) -> Brain3DConfig:
+        point_count = int(
+            (
+                (self._config or {}).get("brain3d_point_count")
+                if isinstance(getattr(self, "_config", None), dict)
+                else 64
+            )
+            or 64
+        )
+        interpolation_density = int(
+            (
+                (self._config or {}).get("brain3d_interpolation_density")
+                if isinstance(getattr(self, "_config", None), dict)
+                else 1
+            )
+            or 1
+        )
+        spacing = (
+            (self._config or {}).get("brain3d_coronal_spacing")
+            if isinstance(getattr(self, "_config", None), dict)
+            else 1.0
+        )
+        plane_count = (
+            (self._config or {}).get("brain3d_coronal_plane_count")
+            if isinstance(getattr(self, "_config", None), dict)
+            else None
+        )
+        smoothing_longitudinal = (
+            (self._config or {}).get("brain3d_smoothing_longitudinal")
+            if isinstance(getattr(self, "_config", None), dict)
+            else 0.0
+        )
+        smoothing_inplane = (
+            (self._config or {}).get("brain3d_smoothing_inplane")
+            if isinstance(getattr(self, "_config", None), dict)
+            else 0.0
+        )
+        snapping_enabled = bool(
+            (self._config or {}).get("brain3d_snapping_enabled", False)
+            if isinstance(getattr(self, "_config", None), dict)
+            else False
+        )
+        snapping_strength = (
+            (self._config or {}).get("brain3d_snapping_strength")
+            if isinstance(getattr(self, "_config", None), dict)
+            else 0.0
+        )
+        snapping_max_distance = (
+            (self._config or {}).get("brain3d_snapping_max_distance")
+            if isinstance(getattr(self, "_config", None), dict)
+            else 8.0
+        )
+        if isinstance(overrides, dict):
+            point_count = int(overrides.get("point_count", point_count) or point_count)
+            interpolation_density = int(
+                overrides.get("interpolation_density", interpolation_density)
+                or interpolation_density
+            )
+            spacing = overrides.get("coronal_spacing", spacing)
+            plane_count = overrides.get("coronal_plane_count", plane_count)
+            smoothing_longitudinal = overrides.get(
+                "smoothing_longitudinal", smoothing_longitudinal
+            )
+            smoothing_inplane = overrides.get("smoothing_inplane", smoothing_inplane)
+            snapping_enabled = bool(overrides.get("snapping_enabled", snapping_enabled))
+            snapping_strength = overrides.get("snapping_strength", snapping_strength)
+            snapping_max_distance = overrides.get(
+                "snapping_max_distance", snapping_max_distance
+            )
+        return Brain3DConfig(
+            point_count=max(3, int(point_count)),
+            interpolation_density=max(1, int(interpolation_density)),
+            coronal_spacing=(None if spacing is None else float(spacing)),
+            coronal_plane_count=(
+                None if plane_count in (None, "") else int(plane_count)
+            ),
+            smoothing_longitudinal=float(smoothing_longitudinal or 0.0),
+            smoothing_inplane=float(smoothing_inplane or 0.0),
+            snapping_enabled=bool(snapping_enabled),
+            snapping_strength=float(snapping_strength or 0.0),
+            snapping_max_distance=max(0.1, float(snapping_max_distance or 8.0)),
+        )
+
+    def _promptBrain3DReconstructionConfig(self) -> dict[str, object] | None:
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(self.tr("Build Brain 3D Reconstruction"))
+        form = QtWidgets.QFormLayout(dialog)
+
+        mode_combo = QtWidgets.QComboBox(dialog)
+        mode_combo.addItem(self.tr("By spacing"), "spacing")
+        mode_combo.addItem(self.tr("By plane count"), "count")
+
+        spacing_spin = QtWidgets.QDoubleSpinBox(dialog)
+        spacing_spin.setRange(0.1, 10000.0)
+        spacing_spin.setDecimals(3)
+        spacing_spin.setValue(
+            float(
+                ((self._config or {}).get("brain3d_coronal_spacing", 1.0))
+                if isinstance(getattr(self, "_config", None), dict)
+                else 1.0
+            )
+        )
+
+        plane_count_spin = QtWidgets.QSpinBox(dialog)
+        plane_count_spin.setRange(0, 20000)
+        plane_count_spin.setValue(
+            int(
+                ((self._config or {}).get("brain3d_coronal_plane_count", 0))
+                if isinstance(getattr(self, "_config", None), dict)
+                else 0
+            )
+        )
+
+        point_count_spin = QtWidgets.QSpinBox(dialog)
+        point_count_spin.setRange(3, 4096)
+        point_count_spin.setValue(
+            int(
+                ((self._config or {}).get("brain3d_point_count", 64))
+                if isinstance(getattr(self, "_config", None), dict)
+                else 64
+            )
+        )
+        interpolation_density_spin = QtWidgets.QSpinBox(dialog)
+        interpolation_density_spin.setRange(1, 32)
+        interpolation_density_spin.setValue(
+            int(
+                ((self._config or {}).get("brain3d_interpolation_density", 1))
+                if isinstance(getattr(self, "_config", None), dict)
+                else 1
+            )
+        )
+
+        smooth_long_spin = QtWidgets.QDoubleSpinBox(dialog)
+        smooth_long_spin.setRange(0.0, 1.0)
+        smooth_long_spin.setDecimals(3)
+        smooth_long_spin.setSingleStep(0.05)
+        smooth_long_spin.setValue(
+            float(
+                ((self._config or {}).get("brain3d_smoothing_longitudinal", 0.0))
+                if isinstance(getattr(self, "_config", None), dict)
+                else 0.0
+            )
+        )
+
+        smooth_plane_spin = QtWidgets.QDoubleSpinBox(dialog)
+        smooth_plane_spin.setRange(0.0, 1.0)
+        smooth_plane_spin.setDecimals(3)
+        smooth_plane_spin.setSingleStep(0.05)
+        smooth_plane_spin.setValue(
+            float(
+                ((self._config or {}).get("brain3d_smoothing_inplane", 0.0))
+                if isinstance(getattr(self, "_config", None), dict)
+                else 0.0
+            )
+        )
+        snapping_enabled_check = QtWidgets.QCheckBox(dialog)
+        snapping_enabled_check.setChecked(
+            bool(
+                ((self._config or {}).get("brain3d_snapping_enabled", False))
+                if isinstance(getattr(self, "_config", None), dict)
+                else False
+            )
+        )
+        snapping_strength_spin = QtWidgets.QDoubleSpinBox(dialog)
+        snapping_strength_spin.setRange(0.0, 1.0)
+        snapping_strength_spin.setDecimals(3)
+        snapping_strength_spin.setSingleStep(0.05)
+        snapping_strength_spin.setValue(
+            float(
+                ((self._config or {}).get("brain3d_snapping_strength", 0.0))
+                if isinstance(getattr(self, "_config", None), dict)
+                else 0.0
+            )
+        )
+        snapping_distance_spin = QtWidgets.QDoubleSpinBox(dialog)
+        snapping_distance_spin.setRange(0.1, 1000.0)
+        snapping_distance_spin.setDecimals(2)
+        snapping_distance_spin.setSingleStep(0.5)
+        snapping_distance_spin.setValue(
+            float(
+                ((self._config or {}).get("brain3d_snapping_max_distance", 8.0))
+                if isinstance(getattr(self, "_config", None), dict)
+                else 8.0
+            )
+        )
+
+        form.addRow(self.tr("Coronal output"), mode_combo)
+        form.addRow(self.tr("Coronal spacing"), spacing_spin)
+        form.addRow(self.tr("Coronal plane count"), plane_count_spin)
+        form.addRow(self.tr("Contour point count"), point_count_spin)
+        form.addRow(self.tr("Interpolation density"), interpolation_density_spin)
+        form.addRow(self.tr("Longitudinal smoothing"), smooth_long_spin)
+        form.addRow(self.tr("Coronal in-plane smoothing"), smooth_plane_spin)
+        form.addRow(self.tr("Enable reference snapping"), snapping_enabled_check)
+        form.addRow(self.tr("Snapping strength"), snapping_strength_spin)
+        form.addRow(self.tr("Snapping max distance"), snapping_distance_spin)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return None
+
+        mode = str(mode_combo.currentData() or "spacing")
+        return {
+            "point_count": int(point_count_spin.value()),
+            "interpolation_density": int(interpolation_density_spin.value()),
+            "coronal_spacing": float(spacing_spin.value())
+            if mode == "spacing"
+            else None,
+            "coronal_plane_count": (
+                int(plane_count_spin.value()) if mode == "count" else None
+            ),
+            "smoothing_longitudinal": float(smooth_long_spin.value()),
+            "smoothing_inplane": float(smooth_plane_spin.value()),
+            "snapping_enabled": bool(snapping_enabled_check.isChecked()),
+            "snapping_strength": float(snapping_strength_spin.value()),
+            "snapping_max_distance": float(snapping_distance_spin.value()),
+        }
+
+    def startBrain3DReconstructionWorkflow(self, _value=False) -> bool:
+        config_overrides = self._promptBrain3DReconstructionConfig()
+        if config_overrides is None:
+            return False
+        if not self.buildBrain3DModelFromSagittalPages(
+            _value=False, config_overrides=config_overrides
+        ):
+            return False
+        self.openBrain3DSession()
+        self.regenerateBrain3DCoronalPlanes()
+        self.openBrain3DMeshPreview()
+        detect_source = getattr(self, "_detect_existing_3d_source", None)
+        open_viewer = getattr(self, "_open_3d_volume_viewer", None)
+        if callable(detect_source) and callable(open_viewer):
+            try:
+                source_path = detect_source()
+            except Exception:
+                source_path = None
+            if source_path:
+                try:
+                    open_viewer(source_path)
+                except Exception:
+                    pass
+        return True
+
+    def buildBrain3DModelFromSagittalPages(
+        self,
+        _value=False,
+        *,
+        config_overrides: dict[str, object] | None = None,
+    ) -> bool:
         pages = self._collect_brain3d_sagittal_pages()
         if not pages:
             post_window_status(
@@ -401,25 +1143,12 @@ class AnnotationLoadingMixin:
             )
             return False
 
-        point_count = int(
-            (
-                (self._config or {}).get("brain3d_point_count")
-                if isinstance(getattr(self, "_config", None), dict)
-                else 64
-            )
-            or 64
-        )
-        spacing = (
-            (self._config or {}).get("brain3d_coronal_spacing")
-            if isinstance(getattr(self, "_config", None), dict)
-            else 1.0
-        )
-        config = Brain3DConfig(point_count=max(3, point_count), coronal_spacing=spacing)
+        config = self._brain3d_config_from_overrides(config_overrides)
         model = build_brain_3d_model(pages, config)
         if not isinstance(getattr(self, "otherData", None), dict):
             self.otherData = {}
         self.otherData = store_brain_model_in_other_data(self.otherData, model)
-        self.setDirty()
+        self._set_dirty_with_brain3d_internal_guard()
         post_window_status(
             self,
             self.tr("Built Brain 3D model from %d sagittal page(s).") % len(pages),
@@ -445,7 +1174,42 @@ class AnnotationLoadingMixin:
             **other,
         }
 
-    def regenerateBrain3DCoronalPlanes(self, _value=False) -> int:
+    def _brain3d_target_planes_for_local_regeneration(
+        self,
+        model,
+    ) -> set[int]:
+        requests = list(model.metadata.get("local_regeneration_requests") or [])
+        target_indices: set[int] = set()
+        for request in requests:
+            if not isinstance(request, dict):
+                continue
+            plane_index = int(request.get("plane_index", -1) or -1)
+            if plane_index < 0:
+                continue
+            radius = max(0, int(request.get("radius", 1) or 1))
+            for idx in range(plane_index - radius, plane_index + radius + 1):
+                if idx >= 0:
+                    target_indices.add(int(idx))
+        if not target_indices:
+            fallback_plane = int(getattr(self, "frame_number", 0) or 0)
+            target_indices.add(fallback_plane)
+        model.metadata["local_regeneration_requests"] = []
+        return target_indices
+
+    def _is_threejs_view_active_for_brain3d(self) -> bool:
+        try:
+            manager = getattr(self, "threejs_manager", None)
+            viewer_stack = getattr(self, "viewer_stack", None)
+            if manager is None or viewer_stack is None:
+                return False
+            viewer = manager.viewer_widget()
+            if viewer is None:
+                return False
+            return viewer_stack.currentWidget() is viewer
+        except Exception:
+            return False
+
+    def regenerateBrain3DCoronalPlanes(self, _value=False, *, local_only=False) -> int:
         model = brain_model_from_other_data(getattr(self, "otherData", None))
         if model is None and not self.buildBrain3DModelFromSagittalPages():
             return 0
@@ -470,8 +1234,18 @@ class AnnotationLoadingMixin:
         if model.image_shape is not None:
             image_width = max(image_width, int(model.image_shape[0] or 0))
             image_height = max(image_height, int(model.image_shape[1] or 0))
+        target_plane_indices = (
+            self._brain3d_target_planes_for_local_regeneration(model)
+            if bool(local_only)
+            else None
+        )
 
         for plane in planes:
+            if (
+                target_plane_indices is not None
+                and int(plane.plane_index) not in target_plane_indices
+            ):
+                continue
             shapes = materialize_coronal_plane_shapes(plane, include_hidden=False)
             shape_payload = [
                 self._brain3d_shape_to_labelme(shape) for shape in list(shapes or [])
@@ -511,12 +1285,17 @@ class AnnotationLoadingMixin:
         if not isinstance(getattr(self, "otherData", None), dict):
             self.otherData = {}
         self.otherData = store_brain_model_in_other_data(self.otherData, model)
-        self.setDirty()
+        self._set_dirty_with_brain3d_internal_guard()
         post_window_status(
             self,
             self.tr("Regenerated %d coronal plane annotation page(s).") % int(written),
             5000,
         )
+        if bool(local_only) and self._is_threejs_view_active_for_brain3d():
+            try:
+                self.openBrain3DMeshPreview()
+            except Exception:
+                pass
         self._refreshBrain3DSessionDock()
         return int(written)
 
@@ -540,20 +1319,58 @@ class AnnotationLoadingMixin:
             if not region_id:
                 label, group_id, description = polygon_identity_key(shape)
                 region_id = f"{label}|{group_id}|{description}"
-            apply_coronal_polygon_edit(model, plane_index, region_id, shape)
+            snap_strength = (
+                float(model.config.snapping_strength or 0.0)
+                if bool(getattr(model.config, "snapping_enabled", False))
+                else 0.0
+            )
+            apply_coronal_polygon_edit(
+                model,
+                plane_index,
+                region_id,
+                shape,
+                snapping_strength=snap_strength,
+                snapping_max_distance=float(
+                    getattr(model.config, "snapping_max_distance", 8.0) or 8.0
+                ),
+            )
             updated += 1
         if updated <= 0:
             post_window_status(self, self.tr("No polygon edits to apply."), 3000)
             return False
         self.otherData = store_brain_model_in_other_data(self.otherData, model)
-        self.setDirty()
+        self._set_dirty_with_brain3d_internal_guard()
+        regenerated = self.regenerateBrain3DCoronalPlanes(local_only=True)
         post_window_status(
             self,
-            self.tr("Applied %d coronal polygon edit(s) to Brain 3D model.") % updated,
+            self.tr(
+                "Applied %d coronal polygon edit(s) to Brain 3D model; regenerated %d nearby plane(s)."
+            )
+            % (updated, int(regenerated)),
             5000,
         )
         self._refreshBrain3DSessionDock()
         return True
+
+    def _applyBrain3DSelectedRegionState(self, state: str) -> bool:
+        dock = getattr(self, "brain3d_session_dock", None)
+        if not isinstance(dock, Brain3DSessionDockWidget):
+            return False
+        region_id = str(dock.selected_region_id() or "")
+        if not region_id:
+            return False
+        plane_index = int(dock.plane_spin.value())
+        self._onBrain3DRegionStateRequested(plane_index, region_id, str(state))
+        return True
+
+    def createBrain3DRegionOnPlane(self, _value=False) -> bool:
+        return self._applyBrain3DSelectedRegionState("created")
+
+    def hideBrain3DRegionOnPlane(self, _value=False) -> bool:
+        return self._applyBrain3DSelectedRegionState("hidden")
+
+    def restoreBrain3DRegionOnPlane(self, _value=False) -> bool:
+        return self._applyBrain3DSelectedRegionState("present")
 
     def _loadLargeImagePageAnnotations(
         self,

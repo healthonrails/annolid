@@ -784,7 +784,7 @@ class MenuController:
             {
                 "name": "build_brain_3d_model",
                 "text": w.tr("Build Brain 3D Model..."),
-                "slot": w.buildBrain3DModelFromSagittalPages,
+                "slot": w.startBrain3DReconstructionWorkflow,
                 "tip": w.tr(
                     "Reconstruct canonical 3D region tracks from sagittal polygon pages"
                 ),
@@ -807,11 +807,43 @@ class MenuController:
                 ),
             },
             {
+                "name": "brain_3d_create_region_on_plane",
+                "text": w.tr("Create Region On Plane"),
+                "slot": w.createBrain3DRegionOnPlane,
+                "tip": w.tr(
+                    "Create the selected Brain 3D region on the active coronal plane"
+                ),
+            },
+            {
+                "name": "brain_3d_hide_region_on_plane",
+                "text": w.tr("Hide Region On Plane"),
+                "slot": w.hideBrain3DRegionOnPlane,
+                "tip": w.tr(
+                    "Hide the selected Brain 3D region on the active coronal plane"
+                ),
+            },
+            {
+                "name": "brain_3d_restore_region_on_plane",
+                "text": w.tr("Restore Region On Plane"),
+                "slot": w.restoreBrain3DRegionOnPlane,
+                "tip": w.tr(
+                    "Restore the selected Brain 3D region on the active coronal plane"
+                ),
+            },
+            {
                 "name": "apply_coronal_edits_to_brain_3d",
                 "text": w.tr("Apply Current Coronal Edits to Brain 3D"),
                 "slot": w.applyCurrentCoronalEditsToBrain3DModel,
                 "tip": w.tr(
                     "Push current coronal polygon edits back into the canonical Brain 3D model"
+                ),
+            },
+            {
+                "name": "open_brain_3d_preview",
+                "text": w.tr("Open Brain 3D Preview"),
+                "slot": w.openBrain3DMeshPreview,
+                "tip": w.tr(
+                    "Export canonical Brain 3D mesh and open it in the Three.js viewer"
                 ),
             },
             {
@@ -1408,6 +1440,7 @@ class MenuController:
                 actions["build_brain_3d_model"],
                 actions["regenerate_brain_3d_coronal"],
                 actions["apply_coronal_edits_to_brain_3d"],
+                actions["open_brain_3d_preview"],
             ),
             (actions["glitter2"],),
         ]

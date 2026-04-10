@@ -127,6 +127,24 @@ class PersistenceLifecycleMixin:
         return pil_image
 
     def saveLabels(self, filename, save_image_data=True):
+        dirty_hook = getattr(self, "_onAnnotationDirty", None)
+        if callable(dirty_hook):
+            try:
+                dirty_hook()
+            except Exception:
+                logger.debug(
+                    "Annotation dirty hook failed before save.",
+                    exc_info=True,
+                )
+        prepare_brain3d_save = getattr(self, "_brain3d_prepare_save", None)
+        if callable(prepare_brain3d_save):
+            try:
+                prepare_brain3d_save(str(filename))
+            except Exception:
+                logger.debug(
+                    "Brain3D pre-save synchronization hook failed.",
+                    exc_info=True,
+                )
         lf = LabelFile()
         has_zone_shapes = False
 
@@ -203,12 +221,16 @@ class PersistenceLifecycleMixin:
             if hasattr(self, "_has_large_image_page_navigation") and bool(
                 self._has_large_image_page_navigation()
             ):
-                other_data["large_image_page"] = {
-                    "page_index": int(getattr(self, "frame_number", 0) or 0),
-                    "page_count": int(getattr(self, "num_frames", 1) or 1),
-                    "label_path": str(filename),
-                    "source_path": str(getattr(self, "imagePath", "") or ""),
-                }
+                page_meta = dict(other_data.get("large_image_page") or {})
+                page_meta.update(
+                    {
+                        "page_index": int(getattr(self, "frame_number", 0) or 0),
+                        "page_count": int(getattr(self, "num_frames", 1) or 1),
+                        "label_path": str(filename),
+                        "source_path": str(getattr(self, "imagePath", "") or ""),
+                    }
+                )
+                other_data["large_image_page"] = page_meta
 
             if osp.dirname(filename) and not osp.exists(osp.dirname(filename)):
                 os.makedirs(osp.dirname(filename))

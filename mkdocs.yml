@@ -91,6 +91,7 @@ nav:
       - Workflow Overview: workflows.md
       - Large TIFF and Atlas Overlays: atlas_overlay_workflow.md
       - Large Image Guide: large_image_guide.md
+      - Brain 3D Reconstruction: brain_3d_reconstruction.md
       - Simulation and FlyBody: simulation_flybody.md
       - COCO Data Flow: coco_data_flow.md
       - Tutorials Overview: tutorials.md

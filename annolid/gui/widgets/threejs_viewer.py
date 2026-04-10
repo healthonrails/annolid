@@ -41,6 +41,7 @@ if _WEBENGINE_AVAILABLE:
 
     class _ThreeJsWebEnginePage(QtWebEngineWidgets.QWebEnginePage):
         flybody_command_requested = QtCore.Signal(str, str)
+        region_picked = QtCore.Signal(str)
 
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
@@ -111,6 +112,12 @@ if _WEBENGINE_AVAILABLE:
                     action = parsed.path.strip("/") or "start"
                     self.flybody_command_requested.emit(action, behavior)
                     return False
+                if parsed.scheme == "annolid" and parsed.netloc == "brain3d-select":
+                    query = parse_qs(parsed.query or "")
+                    region_id = str(query.get("region_id", [""])[0] or "")
+                    if region_id:
+                        self.region_picked.emit(region_id)
+                    return False
             except Exception:
                 pass
             return super().acceptNavigationRequest(url, nav_type, is_main_frame)
@@ -146,6 +153,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
 
     status_changed = QtCore.Signal(str)
     flybody_command_requested = QtCore.Signal(str, str)
+    region_picked = QtCore.Signal(str)
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -164,10 +172,14 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         hints_text: str,
         enable_eye_control: bool = False,
         enable_hand_control: bool = False,
+        pick_mode: str = "",
+        object_region_map: dict[str, str] | None = None,
     ) -> str:
         escaped_title = json.dumps(title)
         escaped_url = json.dumps(model_url)
         escaped_ext = json.dumps(model_ext)
+        escaped_pick_mode = json.dumps(str(pick_mode or ""))
+        escaped_object_region_map = json.dumps(dict(object_region_map or {}))
         return f"""
 <!doctype html>
 <html>
@@ -183,6 +195,8 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
     window.__annolidThreeModelExt = {escaped_ext};
     window.__annolidEnableEyeControl = {str(enable_eye_control).lower()};
     window.__annolidEnableHandControl = {str(enable_hand_control).lower()};
+    window.__annolidThreePickMode = {escaped_pick_mode};
+    window.__annolidThreeObjectRegionMap = {escaped_object_region_map};
   </script>
 </head>
 <body>
@@ -273,6 +287,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
             else:
                 page = _ThreeJsWebEnginePage(self._web_view)
             page.flybody_command_requested.connect(self.flybody_command_requested.emit)
+            page.region_picked.connect(self.region_picked.emit)
             self._web_view.setPage(page)
         except Exception:
             pass
@@ -379,7 +394,13 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         js_code = f"window.__annolidEnableHandControl = {str(enabled).lower()};"
         self._web_view.page().runJavaScript(js_code)
 
-    def load_model(self, model_path: str | Path) -> None:
+    def load_model(
+        self,
+        model_path: str | Path,
+        *,
+        pick_mode: str = "",
+        object_region_map: dict[str, str] | None = None,
+    ) -> None:
         path = Path(model_path)
         if not path.exists():
             raise FileNotFoundError(f"3D model not found: {path}")
@@ -401,6 +422,8 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
             model_ext=path.suffix.lower(),
             status_text=f"Loading {path.name}…",
             hints_text="Drag: rotate | Wheel: zoom | Right-drag: pan",
+            pick_mode=pick_mode,
+            object_region_map=object_region_map,
         )
         self._web_view.setHtml(html, base_url)
         self.status_changed.emit(f"Loaded 3D model: {path.name}")

@@ -13,6 +13,12 @@ async function boot() {
   const modelUrl = window.__annolidThreeModelUrl || "";
   const modelExtHint = (window.__annolidThreeModelExt || "").toLowerCase();
   const title = window.__annolidThreeTitle || "3D";
+  const pickMode = String(window.__annolidThreePickMode || "");
+  const objectRegionMap = (() => {
+    const raw = window.__annolidThreeObjectRegionMap;
+    if (!raw || typeof raw !== "object") return {};
+    return raw;
+  })();
 
   const setStatus = (msg, level = "info") => {
     if (!statusEl) return;
@@ -270,6 +276,39 @@ async function boot() {
       setStatus(`Loaded ${title} (${ext.toUpperCase()}).`);
       document.body.setAttribute("data-threejs-ready", "1");
     };
+
+    const resolveRegionIdForObject = (obj) => {
+      if (!obj) return "";
+      const direct = String((obj.userData && obj.userData.regionId) || "").trim();
+      if (direct) return direct;
+      const candidateNames = [obj.name, obj.parent && obj.parent.name].filter(Boolean);
+      for (const key of candidateNames) {
+        const lookup = String(objectRegionMap[String(key)] || "").trim();
+        if (lookup) return lookup;
+      }
+      return "";
+    };
+
+    if (pickMode === "brain3d_region") {
+      const raycaster = new THREE.Raycaster();
+      const pointer = new THREE.Vector2();
+      canvas.addEventListener("click", (event) => {
+        if (!root || root.children.length === 0) return;
+        const rect = canvas.getBoundingClientRect();
+        const width = Math.max(1, rect.width);
+        const height = Math.max(1, rect.height);
+        pointer.x = ((event.clientX - rect.left) / width) * 2 - 1;
+        pointer.y = -(((event.clientY - rect.top) / height) * 2 - 1);
+        raycaster.setFromCamera(pointer, camera);
+        const intersections = raycaster.intersectObjects(root.children, true);
+        if (!Array.isArray(intersections) || intersections.length === 0) return;
+        const regionId = resolveRegionIdForObject(intersections[0].object);
+        if (!regionId) return;
+        const url = new URL("annolid://brain3d-select");
+        url.searchParams.set("region_id", regionId);
+        window.location.href = url.toString();
+      });
+    }
 
     // Gaussian Splats PLY detection and loading functions
     const detectGaussianSplatsPLY = (buffer) => {
@@ -1237,6 +1276,18 @@ async function boot() {
                   }
                 });
               }
+              obj.traverse((child) => {
+                if (!child || !child.isMesh) return;
+                const meshName = String(child.name || "");
+                const parentName = String((child.parent && child.parent.name) || "");
+                const regionId = String(
+                  objectRegionMap[meshName] || objectRegionMap[parentName] || ""
+                ).trim();
+                if (regionId) {
+                  child.userData = child.userData || {};
+                  child.userData.regionId = regionId;
+                }
+              });
               addLoadedObject(obj);
             },
             undefined,

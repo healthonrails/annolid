@@ -1320,6 +1320,46 @@ def test_open_file_single_large_tiff_prompts_add_layer_when_tiled(
         window.close()
 
 
+def test_import_raster_layers_posts_status_when_status_method_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_import_status.ome.tiff"
+    layer_path = tmp_path / "overlay_import_status.ome.tiff"
+    tifffile.imwrite(base_path, np.zeros((18, 18), dtype=np.uint16), ome=True)
+    tifffile.imwrite(layer_path, np.ones((18, 18), dtype=np.uint16), ome=True)
+
+    window = _ViewerLayerWindow()
+    try:
+        window.loadFile(str(base_path))
+        posted_status_messages: list[tuple[str, int]] = []
+        window.status = None  # type: ignore[assignment]
+        window.post_status_message = (  # type: ignore[assignment]
+            lambda message, timeout=4000: posted_status_messages.append(
+                (str(message), int(timeout))
+            )
+        )
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog,
+            "getOpenFileNames",
+            staticmethod(lambda *args, **kwargs: ([str(layer_path)], "")),
+        )
+
+        window.importRasterImageLayers()
+
+        state = window.large_image_view.raster_overlay_layers_state()
+        assert any(
+            str(item.get("source_path") or "") == str(layer_path.resolve())
+            for item in state
+        )
+        assert posted_status_messages
+        assert "Loaded 1 TIFF layer(s)" in posted_status_messages[-1][0]
+    finally:
+        window.close()
+
+
 def test_shape_adjoining_polygon_seed_reuses_edge_coordinates() -> None:
     shape = Shape(label="brain_region_a", shape_type="polygon")
     for point in [(1.0, 2.0), (6.0, 2.0), (6.0, 7.0), (1.0, 7.0)]:
@@ -2070,6 +2110,172 @@ def test_tiled_image_view_annotation_visibility_updates_items_without_rebuild() 
         window.close()
 
 
+def test_label_panel_visibility_apply_suppresses_tiled_selection_emission() -> None:
+    _ensure_qapp()
+
+    host = _CollapseHost()
+    try:
+        shape = Shape(label="brain_region_visibility", shape_type="polygon")
+        for point in [(4.0, 4.0), (14.0, 4.0), (14.0, 12.0), (4.0, 12.0)]:
+            shape.addPoint(QtCore.QPointF(*point))
+        shape.close()
+        host.canvas.shapes = [shape]
+        host._pending_shape_visibility = {shape: False}
+
+        host._apply_pending_shape_visibility_changes()
+
+        assert host.large_image_view.set_shape_visible_calls[-1] == (
+            shape,
+            False,
+            False,
+        )
+    finally:
+        host.labelList.close()
+
+
+def test_label_panel_tiled_hide_updates_canvas_selection_without_emitting() -> None:
+    _ensure_qapp()
+
+    host = _CollapseHost()
+    try:
+        host._active_image_view = "tiled"
+        shape_a = Shape(label="a", shape_type="polygon")
+        shape_b = Shape(label="b", shape_type="polygon")
+        for point in [(4.0, 4.0), (14.0, 4.0), (14.0, 12.0)]:
+            shape_a.addPoint(QtCore.QPointF(*point))
+            shape_b.addPoint(QtCore.QPointF(point[0] + 20.0, point[1] + 20.0))
+        shape_a.close()
+        shape_b.close()
+        host.canvas.shapes = [shape_a, shape_b]
+        host.canvas.selectedShapes = [shape_a, shape_b]
+
+        called = {"count": 0}
+
+        def _select_shapes(_shapes):
+            called["count"] += 1
+
+        host.canvas.selectShapes = _select_shapes  # type: ignore[method-assign]
+        host._pending_shape_visibility = {shape_a: False}
+
+        host._apply_pending_shape_visibility_changes()
+
+        assert called["count"] == 0
+        assert host.canvas.selectedShapes == [shape_b]
+    finally:
+        host.labelList.close()
+
+
+def test_label_panel_tiled_hide_skips_immediate_overlay_geometry_refresh() -> None:
+    _ensure_qapp()
+
+    host = _CollapseHost()
+    try:
+        host._active_image_view = "tiled"
+        shape = Shape(label="a", shape_type="polygon")
+        for point in [(4.0, 4.0), (14.0, 4.0), (14.0, 12.0)]:
+            shape.addPoint(QtCore.QPointF(*point))
+        shape.close()
+        host.canvas.shapes = [shape]
+        host._pending_shape_visibility = {shape: False}
+
+        calls = {"refresh": 0}
+
+        def _count_refresh():
+            calls["refresh"] += 1
+
+        host._refresh_shape_views = _count_refresh  # type: ignore[method-assign]
+
+        host._apply_pending_shape_visibility_changes()
+
+        assert calls["refresh"] == 0
+        assert getattr(host, "_shape_visibility_apply_in_progress", False) is False
+    finally:
+        host.labelList.close()
+
+
+def test_tiled_image_view_refresh_overlay_geometry_skips_hidden_items() -> None:
+    _ensure_qapp()
+
+    window = _ViewerLayerWindow()
+    try:
+        annotation_shape = _polygon(
+            "manual_region",
+            [(10.0, 10.0), (20.0, 10.0), (15.0, 20.0)],
+            overlay_id=None,
+        )
+        window.canvas.shapes = [annotation_shape]
+        window.large_image_view.set_shapes(window.canvas.shapes)
+        item = window.large_image_view._overlay_items[0]
+        calls = {"count": 0}
+
+        def _count_sync():
+            calls["count"] += 1
+
+        item.sync_shape_geometry = _count_sync  # type: ignore[method-assign]
+        item.setVisible(False)
+
+        window.large_image_view._refresh_overlay_geometry()
+
+        assert calls["count"] == 0
+    finally:
+        window.close()
+
+
+def test_tiled_image_view_defers_host_document_sync_when_hiding_shape() -> None:
+    _ensure_qapp()
+
+    window = _ViewerLayerWindow()
+    try:
+        shape = _polygon(
+            "manual_region",
+            [(10.0, 10.0), (20.0, 10.0), (15.0, 20.0)],
+            overlay_id=None,
+        )
+        window.canvas.shapes = [shape]
+        window.large_image_view.set_shapes(window.canvas.shapes)
+        sync_calls = {"count": 0}
+
+        def _sync():
+            sync_calls["count"] += 1
+
+        window._syncLargeImageDocument = _sync  # type: ignore[method-assign]
+
+        assert window.large_image_view.setShapeVisible(shape, False) is None
+        assert window.large_image_view._host_document_sync_pending is True
+
+        QtWidgets.QApplication.processEvents()
+
+        assert window.large_image_view._host_document_sync_pending is False
+        assert sync_calls["count"] >= 1
+    finally:
+        window.close()
+
+
+def test_tiled_image_view_hiding_shape_skips_immediate_overlay_geometry_sync() -> None:
+    _ensure_qapp()
+
+    window = _ViewerLayerWindow()
+    try:
+        shape = _polygon(
+            "manual_region",
+            [(10.0, 10.0), (20.0, 10.0), (15.0, 20.0)],
+            overlay_id=None,
+        )
+        window.canvas.shapes = [shape]
+        window.large_image_view.set_shapes(window.canvas.shapes)
+        calls = {"count": 0}
+
+        def _count_refresh():
+            calls["count"] += 1
+
+        window.large_image_view._refresh_overlay_geometry = _count_refresh  # type: ignore[method-assign]
+        window.large_image_view.setShapeVisible(shape, False)
+
+        assert calls["count"] == 0
+    finally:
+        window.close()
+
+
 def test_tiled_image_view_delete_key_resyncs_canvas_source_of_truth() -> None:
     _ensure_qapp()
 
@@ -2338,6 +2544,29 @@ def test_annotation_loading_preserves_shared_vertex_ids() -> None:
         "shared-c",
     ]
     assert materialized[0].shared_edge_ids == ["edge-a", "edge-b", "edge-c"]
+
+
+def test_annotation_loading_materialize_handles_none_flags_and_other_data() -> None:
+    loader = _LoadingStub()
+    shapes = [
+        {
+            "label": "region_b",
+            "points": [(10.0, 10.0), (30.0, 10.0), (20.0, 30.0)],
+            "shape_type": "polygon",
+            "flags": None,
+            "group_id": None,
+            "description": "",
+            "other_data": None,
+            "mask": None,
+            "visible": True,
+        }
+    ]
+
+    materialized = loader._materialize_label_shapes(shapes)
+
+    assert len(materialized) == 1
+    assert materialized[0].flags == {}
+    assert materialized[0].other_data == {}
 
 
 def test_canvas_bounded_move_vertex_propagates_shared_vertices() -> None:

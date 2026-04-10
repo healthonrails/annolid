@@ -717,6 +717,17 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
             return False
         if self.pixmap is None or self.pixmap.isNull():
             return False
+        if not force:
+            try:
+                current_key = int(self.pixmap.cacheKey())
+            except Exception:
+                current_key = None
+            if (
+                current_key is not None
+                and self._ai_model_pixmap_key is not None
+                and int(self._ai_model_pixmap_key) == int(current_key)
+            ):
+                return True
         source_signature = self._ai_model_image_signature_value()
         if not force and self._ai_model_image_signature == source_signature:
             return True
@@ -2729,10 +2740,31 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
                     shape
                 ):
                     shape.fill = shape.selected or shape == self.hShape
+                    original_line = getattr(shape, "line_color", None)
+                    original_fill = getattr(shape, "fill_color", None)
+                    original_fill_flag = bool(getattr(shape, "fill", False))
                     try:
+                        other = dict(getattr(shape, "other_data", {}) or {})
+                        stroke = QtGui.QColor(
+                            str(other.get("brain3d_overlay_stroke") or "")
+                        )
+                        fill = QtGui.QColor(
+                            str(other.get("brain3d_overlay_fill") or "")
+                        )
+                        if stroke.isValid():
+                            stroke.setAlpha(max(stroke.alpha(), 220))
+                            shape.line_color = stroke
+                        if fill.isValid():
+                            fill.setAlpha(max(fill.alpha(), 80))
+                            shape.fill_color = fill
+                            shape.fill = True
                         shape.paint(p, image_width, image_height)
                     except SystemError as e:
                         print(e)
+                    finally:
+                        shape.line_color = original_line
+                        shape.fill_color = original_fill
+                        shape.fill = original_fill_flag
             self._draw_selected_explicit_landmark_pair_points(p)
             if self.current:
                 self.current.paint(p)

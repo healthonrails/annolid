@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from annolid.gui.widgets.threejs_manager import ThreeJsManager
 
@@ -34,6 +34,7 @@ class _DummyWindow(QtWidgets.QWidget):
         super().__init__()
         self._status = _DummyStatusBar()
         self.actions = SimpleNamespace(close=None)
+        self.picked_regions: list[str] = []
 
     def statusBar(self):
         return self._status
@@ -44,6 +45,9 @@ class _DummyWindow(QtWidgets.QWidget):
     def _set_active_view(self, _view: str) -> None:
         return None
 
+    def _onBrain3DMeshRegionPicked(self, region_id: str) -> None:
+        self.picked_regions.append(str(region_id or ""))
+
 
 class _DummyViewer:
     def __init__(self) -> None:
@@ -53,6 +57,12 @@ class _DummyViewer:
         self, path: str | Path, title: str | None = None
     ) -> None:
         self.calls.append((Path(path), title))
+
+
+class _SignalViewer(QtWidgets.QWidget):
+    status_changed = QtCore.Signal(str)
+    flybody_command_requested = QtCore.Signal(str, str)
+    region_picked = QtCore.Signal(str)
 
 
 def test_show_simulation_in_viewer_accepts_prebuilt_payload(
@@ -97,3 +107,26 @@ def test_show_simulation_in_viewer_exports_non_payload_inputs(
 
     assert manager.show_simulation_in_viewer(source_path) is True
     assert viewer.calls == [(payload_path, "simulation")]
+
+
+def test_threejs_manager_region_pick_forwards_to_window_handler() -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+
+    manager._handle_region_picked("region_a||")
+    assert window.picked_regions == ["region_a||"]
+
+
+def test_threejs_manager_connects_viewer_region_picked_signal(monkeypatch) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+    monkeypatch.setattr(
+        "annolid.gui.widgets.threejs_manager.ThreeJsViewerWidget",
+        _SignalViewer,
+    )
+
+    viewer = manager.ensure_threejs_viewer()
+    viewer.region_picked.emit("region_b||")
+    assert window.picked_regions == ["region_b||"]

@@ -36,6 +36,7 @@ class ThreeJsManager(QtCore.QObject):
             viewer.flybody_command_requested.connect(
                 self._handle_flybody_viewer_command
             )
+            viewer.region_picked.connect(self._handle_region_picked)
             self.viewer_stack.addWidget(viewer)
             self.threejs_viewer = viewer
         return self.threejs_viewer
@@ -43,13 +44,23 @@ class ThreeJsManager(QtCore.QObject):
     def is_supported(self, path: str | Path) -> bool:
         return supports_threejs_canvas(path)
 
-    def show_model_in_viewer(self, model_path: str | Path) -> bool:
+    def show_model_in_viewer(
+        self,
+        model_path: str | Path,
+        *,
+        pick_mode: str = "",
+        object_region_map: dict[str, str] | None = None,
+    ) -> bool:
         path = Path(model_path)
         if not self.is_supported(path):
             return False
         viewer = self.ensure_threejs_viewer()
         try:
-            viewer.load_model(path)
+            viewer.load_model(
+                path,
+                pick_mode=pick_mode,
+                object_region_map=object_region_map,
+            )
         except Exception as exc:
             logger.warning("Failed to load model in Three.js viewer: %s", exc)
             QtWidgets.QMessageBox.warning(
@@ -186,3 +197,8 @@ class ThreeJsManager(QtCore.QObject):
         handler = getattr(self.window, "handle_flybody_viewer_command", None)
         if callable(handler):
             handler(action, behavior)
+
+    def _handle_region_picked(self, region_id: str) -> None:
+        handler = getattr(self.window, "_onBrain3DMeshRegionPicked", None)
+        if callable(handler):
+            handler(str(region_id or ""))
