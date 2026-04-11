@@ -6,6 +6,7 @@ import ast
 import json
 import functools
 import operator
+import re
 from pathlib import Path
 from annolid.utils import draw
 from annolid.data.videos import frame_from_video
@@ -256,6 +257,53 @@ class TrackingVisualizer:
         cv2.destroyAllWindows()
 
 
+def _normalize_label_names(values):
+    """Normalize label inputs into a stable list of names.
+
+    Accepts both legacy comma-separated strings and iterable inputs.
+    """
+    if values is None:
+        return []
+
+    if isinstance(values, str):
+        tokens = re.split(r"[,\s]+", values)
+        return [token for token in tokens if token]
+
+    if isinstance(values, (list, tuple, set)):
+        normalized = []
+        for value in values:
+            if value is None:
+                continue
+            value_str = str(value).strip()
+            if value_str:
+                normalized.extend(_normalize_label_names(value_str))
+        return normalized
+
+    value_str = str(values).strip()
+    return [value_str] if value_str else []
+
+
+def _extend_unique(base_values, extra_values):
+    """Append names from extra_values to base_values while preserving order."""
+    seen = {str(value).lower() for value in base_values}
+    for value in extra_values:
+        key = str(value).lower()
+        if key not in seen:
+            base_values.append(value)
+            seen.add(key)
+    return base_values
+
+
+def _label_in_collection(label, names):
+    """Case-insensitive exact label check."""
+    if label is None:
+        return False
+    label_str = str(label)
+    if label_str in names:
+        return True
+    return label_str.lower() in {str(name).lower() for name in names}
+
+
 def tracks2nix(
     video_file=None,
     tracking_results="tracking.csv",
@@ -289,6 +337,11 @@ def tracks2nix(
 
     Create a nix format csv file and annotated video
     """
+    if score_threshold is None:
+        score_threshold = 0.15
+    else:
+        score_threshold = float(score_threshold)
+
     print(f"Class or Instance score threshold is: {score_threshold}.")
     print("Please update the definitions of keypoints, instances, and events")
     keypoint_cfg_file = Path(__file__).parent.parent / "configs" / "keypoints.yaml"
@@ -302,14 +355,24 @@ def tracks2nix(
         zone_info = Path(__file__).parent / zone_info
 
     _class_meta_data = draw.get_keypoint_connection_rules()
-    keypoints_connection_rules, animal_names, behaviors, zones_names = _class_meta_data
+    (
+        keypoints_connection_rules,
+        animal_names_raw,
+        behaviors_raw,
+        zones_names_raw,
+    ) = _class_meta_data
+    animal_names = _normalize_label_names(animal_names_raw)
+    behaviors = _normalize_label_names(behaviors_raw)
+    zones_names = _normalize_label_names(zones_names_raw)
 
     if subject_names is not None:
-        animal_names = f"{animal_names} {' '.join(subject_names.split(','))}"
+        animal_names = _extend_unique(
+            animal_names, _normalize_label_names(subject_names)
+        )
     if behavior_names is not None:
-        behaviors = f"{behaviors} {' '.join(behavior_names.split(','))}"
+        behaviors = _extend_unique(behaviors, _normalize_label_names(behavior_names))
 
-    _animal_object_list = animal_names.split()
+    _animal_object_list = list(animal_names)
     subject_animal_name = (
         _animal_object_list[0] if len(_animal_object_list) > 0 else "subject_vole"
     )
@@ -356,10 +419,12 @@ def tracks2nix(
 
     instance_names = df["instance_name"].dropna().unique()
     for instance_name in instance_names:
-        if instance_name not in animal_names and (
-            instance_name not in behaviors or instance_name not in zones_names
+        if (
+            not _label_in_collection(instance_name, animal_names)
+            and not _label_in_collection(instance_name, behaviors)
+            and not _label_in_collection(instance_name, zones_names)
         ):
-            animal_names += " " + instance_name
+            animal_names = _extend_unique(animal_names, [instance_name])
 
     exporter = GlitterNixExporter(video_file, width, height, zone_info, df)
 
@@ -427,9 +492,9 @@ def tracks2nix(
             bbox = [[x1, y1, x2, y2]]
 
             if not pd.isnull(_mask) and overlay_mask:
-                if _class not in zones_names:
+                if not _label_in_collection(_class, zones_names):
                     if score >= score_threshold and (
-                        _class in animal_names or _class.lower() in animal_names
+                        _label_in_collection(_class, animal_names)
                     ):
                         _mask_parsed = ast.literal_eval(_mask)
                         for zm in zone_masks:
@@ -536,10 +601,10 @@ def tracks2nix(
 
                 if (
                     is_draw
-                    and _class in behaviors
+                    and _label_in_collection(_class, behaviors)
                     and score >= score_threshold
                     and _class not in body_parts
-                    and _class not in animal_names
+                    and not _label_in_collection(_class, animal_names)
                 ):
                     if _class == "grooming":
                         label = f"{_class}: {num_grooming} times"
@@ -575,11 +640,14 @@ def tracks2nix(
                     if (
                         is_keypoint_in_mask
                         or any(map(str.isdigit, _class))
-                        or _class in _animal_object_list
+                        or _label_in_collection(_class, _animal_object_list)
                     ):
                         if "zone" not in _class.lower():
                             cv2.circle(frame, (cx, cy), 6, color, -1)
-                        if _class in animal_names and "zone" not in _class.lower():
+                        if (
+                            _label_in_collection(_class, animal_names)
+                            and "zone" not in _class.lower()
+                        ):
                             mask_label = (
                                 f"-{_class}{tracking_id if tracking_id != 0 else ''}"
                                 if len(bbox_info) < 10
@@ -644,7 +712,7 @@ def tracks2nix(
                         points=visualizer.points,
                     )
 
-                if _class in behaviors and _class not in body_parts:
+                if _label_in_collection(_class, behaviors) and _class not in body_parts:
                     cv2.rectangle(frame, (5, 35), (5 + 140, 35 + 35), (0, 0, 0), -1)
                     cv2.putText(
                         frame,
@@ -656,7 +724,7 @@ def tracks2nix(
                         2,
                     )
 
-                if _class in zones_names:
+                if _label_in_collection(_class, zones_names):
                     draw.draw_boxes(
                         frame,
                         bbox,
