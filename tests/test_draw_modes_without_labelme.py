@@ -252,6 +252,32 @@ def test_ai_model_image_does_not_refresh_for_same_image_without_filename():
         w.close()
 
 
+def test_load_pixmap_clears_transient_ai_prompt_state_when_frame_changes() -> None:
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        first = QtGui.QImage(64, 64, QtGui.QImage.Format_RGB32)
+        first.fill(QtGui.QColor(10, 20, 30))
+        second = QtGui.QImage(64, 64, QtGui.QImage.Format_RGB32)
+        second.fill(QtGui.QColor(20, 30, 40))
+
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(first), clear_shapes=False)
+        canvas.current = SimpleNamespace()
+        canvas.sam_mask.logits = np.ones((4, 4), dtype=np.float32)
+        canvas.sam_image_scale = 0.5
+
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(second), clear_shapes=False)
+
+        assert canvas.current is None
+        assert canvas.sam_mask.logits is None
+        assert not hasattr(canvas, "sam_image_scale")
+    finally:
+        canvas.close()
+
+
 def test_switching_ai_models_closes_previous_instance(monkeypatch):
     _ensure_qapp()
 
@@ -521,6 +547,117 @@ def test_playback_scroll_request_accepts_raw_orientation_int() -> None:
     host.scrollRequest(5, 0)
 
     assert host.calls == [(QtCore.Qt.Horizontal, 9.0)]
+
+
+def test_canvas_context_menu_ai_polygon_uses_local_action_and_resets_prompt_state():
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        shared_ai_action = QtWidgets.QAction("AI Polygon", canvas)
+        shared_ai_action.setEnabled(True)
+
+        class _WindowStub:
+            def __init__(self):
+                self.actions = SimpleNamespace(createAiPolygonMode=shared_ai_action)
+                self.calls = []
+
+            def toggleDrawMode(self, edit=True, createMode="polygon"):
+                self.calls.append(
+                    (
+                        bool(edit),
+                        createMode,
+                        canvas.current is None,
+                        canvas.sam_mask.logits is None,
+                    )
+                )
+
+        canvas.current = SimpleNamespace(points=[QtCore.QPointF(10, 10)])
+        canvas.sam_mask.logits = np.ones((2, 2), dtype=np.float32)
+        window = _WindowStub()
+
+        menu = canvas._build_context_menu(window)
+        ai_action = next(
+            action for action in menu.actions() if action.text() == "AI Polygon"
+        )
+
+        assert ai_action is not shared_ai_action
+
+        ai_action.trigger()
+
+        assert window.calls == [(False, "ai_polygon", True, True)]
+    finally:
+        canvas.close()
+
+
+def test_toggle_draw_mode_initializes_ai_model_once_for_ai_modes() -> None:
+    from annolid.gui.mixins.playback_draw_mixin import PlaybackDrawMixin
+
+    class _DummyAction:
+        def __init__(self):
+            self.enabled = []
+            self.checked = False
+            self._signals_blocked = False
+
+        def setEnabled(self, value):
+            self.enabled.append(bool(value))
+
+        def isCheckable(self):
+            return True
+
+        def isChecked(self):
+            return self.checked
+
+        def setChecked(self, value):
+            self.checked = bool(value)
+
+        def blockSignals(self, value):
+            previous = self._signals_blocked
+            self._signals_blocked = bool(value)
+            return previous
+
+    class _DummyCanvas:
+        def __init__(self):
+            self.calls = []
+            self.editing = []
+            self.createMode = None
+            self.cancel_calls = []
+
+        def setEditing(self, value):
+            self.editing.append(bool(value))
+
+        def cancelCurrentDrawing(self, *, clear_sam_mask=False):
+            self.cancel_calls.append(bool(clear_sam_mask))
+
+        def initializeAiModel(self, name, _custom_ai_models=None):
+            self.calls.append((name, _custom_ai_models))
+
+    class _DummyHost(PlaybackDrawMixin):
+        def __init__(self):
+            self.actions = SimpleNamespace(
+                editMode=_DummyAction(),
+                createAiPolygonMode=_DummyAction(),
+            )
+            self.canvas = _DummyCanvas()
+            self._selectAiModelComboBox = SimpleNamespace(
+                currentText=lambda: "EfficientSam (speed)"
+            )
+            self.ai_model_manager = SimpleNamespace(
+                custom_model_names={"custom": "model"}
+            )
+            self._active_image_view = "canvas"
+            self.large_image_view = None
+
+        def tr(self, text):
+            return text
+
+    host = _DummyHost()
+    host.toggleDrawMode(False, createMode="ai_polygon")
+
+    assert host.canvas.calls == [("EfficientSam (speed)", {"custom": "model"})]
+    assert host.canvas.cancel_calls == [True]
 
 
 def test_canvas_key_release_accepts_qt_no_modifier() -> None:

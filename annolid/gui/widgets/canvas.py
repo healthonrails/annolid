@@ -668,11 +668,18 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         # Avoid rebuilding embeddings for the same frame/model pair.
         self._sync_ai_model_image(force=not reused_model)
         elapsed_ms = (time.perf_counter() - init_start) * 1000.0
-        logger.info(
-            "AI model '%s' initialized and synced in %.1fms.",
-            getattr(model_class, "name", name),
-            elapsed_ms,
-        )
+        if reused_model:
+            logger.info(
+                "AI model '%s' reused and synced in %.1fms.",
+                getattr(model_class, "name", name),
+                elapsed_ms,
+            )
+        else:
+            logger.info(
+                "AI model '%s' initialized and synced in %.1fms.",
+                getattr(model_class, "name", name),
+                elapsed_ms,
+            )
 
     def _resolve_ai_model_class(self, name: str, custom_model_names=None):
         model_class = None
@@ -1163,8 +1170,7 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         self.mode = self.EDIT if value else self.CREATE
         if self.mode == self.EDIT:
             # CREATE -> EDIT
-            self._clear_preview_line()
-            self._clear_adjoining_source()
+            self.cancelCurrentDrawing(clear_sam_mask=True)
             self._clearSharedBoundaryReshape()
             self.repaint()  # clear crosshair
         else:
@@ -1559,83 +1565,98 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
                 return True
             return False
 
-        def _add_ai_fallback_action(
-            text: str,
+        def _add_draw_mode_action(
             mode: str,
             *,
-            icon_filename: str = "ai_polygons.svg",
-        ) -> None:
-            action = QtWidgets.QAction(self._icon(icon_filename), text, menu)
-            if action.icon().isNull():
-                action.setIcon(
-                    self.style().standardIcon(QtWidgets.QStyle.SP_ComputerIcon)
-                )
+            source_action: QtWidgets.QAction | None = None,
+            text: str | None = None,
+            edit: bool = False,
+            icon_filename: str | None = None,
+            fallback_standard: QtWidgets.QStyle.StandardPixmap | None = None,
+        ) -> bool:
+            if source_action is None and text is None:
+                return False
+            action = QtWidgets.QAction(text or source_action.text(), menu)
+            if source_action is not None:
+                action.setEnabled(source_action.isEnabled())
+                action.setToolTip(source_action.toolTip())
+                if not source_action.icon().isNull():
+                    action.setIcon(source_action.icon())
+            self._ensure_action_icon(
+                action,
+                icon_filename=icon_filename,
+                fallback_standard=fallback_standard,
+            )
 
             def _trigger():
-                try:
-                    model_name = ""
-                    if hasattr(main_window, "_selectAiModelComboBox"):
-                        model_name = main_window._selectAiModelComboBox.currentText()
-                    custom_models = None
-                    if hasattr(main_window, "ai_model_manager"):
-                        custom_models = getattr(
-                            main_window.ai_model_manager, "custom_model_names", None
-                        )
-                    self.initializeAiModel(model_name, _custom_ai_models=custom_models)
-                except Exception:
-                    logger.debug("Failed to initialize AI model from context menu.")
+                self.cancelCurrentDrawing(clear_sam_mask=True)
                 if hasattr(main_window, "toggleDrawMode"):
-                    main_window.toggleDrawMode(False, createMode=mode)
+                    main_window.toggleDrawMode(
+                        bool(edit),
+                        createMode="polygon" if edit else mode,
+                    )
 
             action.triggered.connect(_trigger)
             menu.addAction(action)
+            return True
 
         # Flat, user-friendly context menu: edit first, then draw modes, then AI.
         actions = getattr(main_window, "actions", None)
         if actions is not None:
-            _add_existing_action(
-                getattr(actions, "editMode", None), icon_filename="edit_polygons.svg"
+            _add_draw_mode_action(
+                "polygon",
+                source_action=getattr(actions, "editMode", None),
+                edit=True,
+                icon_filename="edit_polygons.svg",
             )
             menu.addSeparator()
-            _add_existing_action(
-                getattr(actions, "createMode", None),
+            _add_draw_mode_action(
+                "polygon",
+                source_action=getattr(actions, "createMode", None),
                 icon_filename="create_polygons.svg",
             )
-            _add_existing_action(
-                getattr(actions, "createRectangleMode", None),
+            _add_draw_mode_action(
+                "rectangle",
+                source_action=getattr(actions, "createRectangleMode", None),
                 fallback_standard=QtWidgets.QStyle.SP_FileDialogDetailedView,
             )
-            _add_existing_action(
-                getattr(actions, "createCircleMode", None),
+            _add_draw_mode_action(
+                "circle",
+                source_action=getattr(actions, "createCircleMode", None),
                 fallback_standard=QtWidgets.QStyle.SP_BrowserReload,
             )
-            _add_existing_action(
-                getattr(actions, "createLineMode", None),
+            _add_draw_mode_action(
+                "line",
+                source_action=getattr(actions, "createLineMode", None),
                 fallback_standard=QtWidgets.QStyle.SP_ArrowRight,
             )
-            _add_existing_action(
-                getattr(actions, "createPointMode", None),
+            _add_draw_mode_action(
+                "point",
+                source_action=getattr(actions, "createPointMode", None),
                 fallback_standard=QtWidgets.QStyle.SP_DialogApplyButton,
             )
-            _add_existing_action(
-                getattr(actions, "createLineStripMode", None),
+            _add_draw_mode_action(
+                "linestrip",
+                source_action=getattr(actions, "createLineStripMode", None),
                 fallback_standard=QtWidgets.QStyle.SP_MediaSeekForward,
             )
             menu.addSeparator()
-            ai_polygon_added = _add_existing_action(
-                getattr(actions, "createAiPolygonMode", None),
+            _add_draw_mode_action(
+                "ai_polygon",
+                source_action=getattr(actions, "createAiPolygonMode", None),
+                text="AI Polygon",
                 icon_filename="ai_polygons.svg",
             )
-            if not ai_polygon_added:
-                _add_ai_fallback_action("AI Polygon", "ai_polygon")
-            ai_mask_added = _add_existing_action(
-                getattr(actions, "createAiMaskMode", None),
+            _add_draw_mode_action(
+                "ai_mask",
+                source_action=getattr(actions, "createAiMaskMode", None),
+                text="AI Mask",
                 icon_filename="ai_polygons.svg",
             )
-            if not ai_mask_added:
-                _add_ai_fallback_action("AI Mask", "ai_mask")
-            _add_existing_action(
-                getattr(actions, "createGroundingSAMMode", None),
+            _add_draw_mode_action(
+                "grounding_sam",
+                source_action=getattr(actions, "createGroundingSAMMode", None),
+                text="Grounding SAM",
                 fallback_standard=QtWidgets.QStyle.SP_ComputerIcon,
             )
 
@@ -2410,6 +2431,25 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
     def _clear_preview_line(self):
         self.line = Shape()
 
+    def cancelCurrentDrawing(self, *, clear_sam_mask: bool = False) -> None:
+        self.current = None
+        if clear_sam_mask:
+            self.sam_mask = MaskShape()
+        self._clear_preview_line()
+        self._clear_adjoining_source()
+        self._clearSharedBoundaryReshape()
+        self.setHiding(False)
+        self.drawingPolygon.emit(False)
+
+    def _clear_ai_prompt_state(self) -> None:
+        """Drop transient AI prompt state when the source image changes."""
+        self.cancelCurrentDrawing(clear_sam_mask=True)
+        try:
+            if hasattr(self, "sam_image_scale"):
+                delattr(self, "sam_image_scale")
+        except Exception:
+            pass
+
     @staticmethod
     def _collect_explicit_landmark_pairs_from_shapes(shapes):
         overlay_points = {}
@@ -3053,12 +3093,8 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         handled = False
         if self.drawing():
             if key == QtCore.Qt.Key_Escape and self.current:
-                self.current = None
-                self._clear_adjoining_source()
-                self._clear_preview_line()
-                self.drawingPolygon.emit(False)
+                self.cancelCurrentDrawing(clear_sam_mask=True)
                 self.update()
-                self._clearSharedBoundaryReshape()
                 handled = True
             elif key == QtCore.Qt.Key_Return and self.canCloseShape():
                 self.finalise()
@@ -3194,7 +3230,15 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         self.update()
 
     def loadPixmap(self, pixmap, clear_shapes=True):
+        previous_signature = self._ai_model_image_signature_value()
         self.pixmap = pixmap
+        current_signature = self._ai_model_image_signature_value()
+        if (
+            previous_signature is not None
+            and current_signature is not None
+            and previous_signature != current_signature
+        ):
+            self._clear_ai_prompt_state()
         if self._ai_model is not None and self.pixmap is not None:
             self._sync_ai_model_image(force=False)
         if clear_shapes:

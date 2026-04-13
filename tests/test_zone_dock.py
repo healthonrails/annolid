@@ -5,9 +5,11 @@ from types import SimpleNamespace
 from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.gui.mixins.tooling_dialogs_mixin import ToolingDialogsMixin
+from annolid.gui.shape import Shape
 from annolid.gui.widgets.label_dialog import AnnolidLabelDialog
 import annolid.gui.widgets.zone_dock as zone_dock_module
 from annolid.gui.widgets.zone_dock import ZoneDockWidget
+from annolid.gui.widgets.zone_panel import ZonePanelWidget
 
 
 def _ensure_qapp():
@@ -40,10 +42,16 @@ class _DummyCanvas(QtCore.QObject):
     def selectShapes(self, shapes) -> None:  # noqa: ARG002
         return None
 
+    def deleteSelected(self):
+        return []
+
     def storeShapes(self) -> None:
         return None
 
     def setFocus(self) -> None:
+        return None
+
+    def update(self) -> None:
         return None
 
 
@@ -148,3 +156,114 @@ def test_zone_popup_hides_flags_for_zone_authoring(monkeypatch) -> None:
     assert group_id is None
     assert dialog._flags_box.isVisible() is False
     assert flags["zone_kind"] is True
+
+
+def _build_zone_shape(label: str = "left_zone") -> Shape:
+    shape = Shape(
+        label=label,
+        shape_type="polygon",
+        flags={
+            "semantic_type": "zone",
+            "zone_kind": "chamber",
+            "phase": "phase_1",
+            "occupant_role": "rover",
+            "access_state": "open",
+            "tags": ["social"],
+        },
+        description="left chamber",
+    )
+    shape.addPoint(QtCore.QPointF(0, 0))
+    shape.addPoint(QtCore.QPointF(10, 0))
+    shape.addPoint(QtCore.QPointF(10, 8))
+    shape.addPoint(QtCore.QPointF(0, 8))
+    shape.close()
+    return shape
+
+
+def _build_test_panel(window: _DummyWindow) -> ZonePanelWidget:
+    original = ZonePanelWidget._create_metadata_combo
+
+    def _safe_combo(self, options):
+        combo = QtWidgets.QComboBox()
+        combo.addItems(options)
+        return combo
+
+    ZonePanelWidget._create_metadata_combo = _safe_combo
+    try:
+        return ZonePanelWidget(window)
+    finally:
+        ZonePanelWidget._create_metadata_combo = original
+
+
+def test_zone_panel_applies_selected_zone_metadata() -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    zone = _build_zone_shape()
+    window.canvas.shapes = [zone]
+
+    panel = _build_test_panel(window)
+    panel.refresh_from_current_canvas()
+    panel._selected_shape = zone
+    panel._sync_selected_fields()
+
+    panel.zone_label_edit.setText("social_left")
+    panel.zone_description_edit.setText("left social zone")
+    panel.zone_kind_combo.setCurrentText("interaction_zone")
+    panel.phase_combo.setCurrentText("phase_2")
+    panel.occupant_combo.setCurrentText("stim")
+    panel.access_combo.setCurrentText("blocked")
+    panel.tags_edit.setText("social, mesh")
+    panel.barrier_adjacent_checkbox.setChecked(True)
+    panel._apply_selected_zone_details()
+
+    assert zone.label == "social_left"
+    assert zone.description == "left social zone"
+    assert zone.flags["zone_kind"] == "interaction_zone"
+    assert zone.flags["phase"] == "phase_2"
+    assert zone.flags["occupant_role"] == "stim"
+    assert zone.flags["access_state"] == "blocked"
+    assert zone.flags["barrier_adjacent"] is True
+    assert zone.flags["tags"] == ["social", "mesh"]
+    assert panel.selected_zone_value.text() == "social_left"
+    assert (
+        "Barrier-adjacent summary is enabled." in panel.selected_metric_summary.text()
+    )
+
+
+def test_zone_panel_updates_area_and_default_preview() -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    zone = _build_zone_shape("arena_zone")
+    window.canvas.shapes = [zone]
+
+    panel = _build_test_panel(window)
+    panel.refresh_from_current_canvas()
+
+    assert panel.zone_count_value.text() == "1"
+    assert panel.metrics_ready_value.text() == "1"
+
+    panel._selected_shape = zone
+    panel._sync_selected_fields()
+
+    assert panel.selected_area_value.text() == "80.0 px²"
+    assert "arena_zone" in panel.selected_metric_summary.text()
+
+    panel._selected_shape = None
+    panel.default_zone_kind_combo.setCurrentText("doorway")
+    panel.default_phase_combo.setCurrentText("phase_2")
+    panel.default_occupant_combo.setCurrentText("stim")
+    panel.default_access_combo.setCurrentText("tethered")
+    panel._publish_zone_defaults()
+
+    assert "kind 'doorway'" in panel.selected_metric_summary.text()
+    assert window._zone_authoring_defaults["flags"]["zone_kind"] == "doorway"
+
+
+def test_zone_panel_uses_scroll_areas_for_compact_layout() -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    panel = _build_test_panel(window)
+
+    scroll_areas = panel.findChildren(QtWidgets.QScrollArea)
+    assert scroll_areas
+    assert all(area.widgetResizable() for area in scroll_areas)

@@ -102,6 +102,16 @@ Recommended naming:
 
 Annolid keeps the zone file in LabelMe-compatible JSON so it can be reloaded later and edited on the live canvas.
 
+The zone dock now separates authoring into three views:
+
+- **Define Zones**
+  - review the current frame, target JSON path, and every zone already on the canvas
+- **Zone Details**
+  - edit the selected zone label, description, kind, phase, occupant role, access state, tags, and barrier-adjacent flag
+  - reuse a tuned zone as the default template for the next zones you draw
+- **Metrics**
+  - preview zone area and see which downstream metrics the selected zone will affect before you run analysis
+
 ## Step 5: Run Zone Analysis
 
 Open **Video Tools → Zone Analysis**.
@@ -113,6 +123,8 @@ Pick the assay profile:
 - **Phase 2** when all chambers and passageways should be treated as available
 
 Then choose one of the outputs:
+
+- you can use **Output Mode** plus **Run Selected Export** for a guided single-action workflow, or use the dedicated quick buttons.
 
 - **Export Legacy CSV**
   - Historical format, one column per zone.

@@ -21,11 +21,11 @@ def mask_to_polygons(
     use_convex_hull=False,
     *,
     simplify: bool = True,
-    epsilon_ratio: float = 0.001,
+    epsilon_ratio: float = 0.0025,
     min_epsilon: float = 0.5,
-    max_epsilon: float = 2.0,
+    max_epsilon: float = 4.0,
     epsilon: float | None = None,
-    max_vertices: int | None = 5000,
+    max_vertices: int | None = 1000,
 ):
     """
     convert predicted mask to polygons

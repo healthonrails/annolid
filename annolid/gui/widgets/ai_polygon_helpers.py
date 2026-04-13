@@ -122,12 +122,16 @@ def simplify_ai_polygon_points(
     if not np.isfinite(perimeter) or perimeter <= 0:
         return normalize_ai_polygon_points(arr, pixmap)
 
-    epsilon = max(1.0, min(6.0, perimeter * 0.01))
+    # Use less aggressive simplification to preserve polygon quality
+    # epsilon_ratio of 0.005 provides good balance between detail and vertex count
+    epsilon = max(0.5, min(4.0, perimeter * 0.005))
     simplified = cv2.approxPolyDP(contour, epsilon, True)
     if simplified is None or simplified.shape[0] < 3:
         simplified = contour
 
     simplified_arr = simplified.reshape(-1, 2).astype(np.float32)
+
+    # Limit vertex count but ensure minimum quality
     if simplified_arr.shape[0] > 256:
         step = int(np.ceil(float(simplified_arr.shape[0]) / 256.0))
         simplified_arr = simplified_arr[:: max(step, 1)].copy()
@@ -140,7 +144,8 @@ def simplify_ai_polygon_points(
 
     simplified_area = abs(float(cv2.contourArea(simplified_arr.reshape(-1, 1, 2))))
     original_area = abs(float(cv2.contourArea(arr.reshape(-1, 1, 2))))
-    if original_area > 0 and simplified_area / original_area < 0.5:
+    # Only fall back if area loss is significant (>30%)
+    if original_area > 0 and simplified_area / original_area < 0.7:
         return normalize_ai_polygon_points(arr, pixmap)
     return normalized
 
@@ -329,14 +334,18 @@ def polygon_from_refined_mask(
 
     contour = best_polygon.reshape(-1, 1, 2)
     perimeter = float(cv2.arcLength(contour, True))
-    epsilon = max(1.0, min(4.0, perimeter * 0.005))
+    # Use less aggressive simplification to preserve polygon quality
+    epsilon = max(0.5, min(4.0, perimeter * 0.005))
     approx = cv2.approxPolyDP(contour, epsilon, True)
     if approx is None or approx.shape[0] < 3:
         approx = contour
 
-    if approx.shape[0] > 300:
-        step = int(np.ceil(float(approx.shape[0]) / 300.0))
+    # Limit vertex count but ensure minimum quality
+    if approx.shape[0] > 256:
+        step = int(np.ceil(float(approx.shape[0]) / 256.0))
         approx = approx[:: max(step, 1)].copy()
+        if approx.shape[0] < 3:
+            approx = contour
 
     arr_points = approx.reshape(-1, 2).astype(np.float32)
     return normalize_ai_polygon_points(arr_points, pixmap)

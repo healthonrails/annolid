@@ -95,5 +95,10 @@ You can still:
 
 - **Video Tools → Zones**
   - open the zone dock and draw/edit zones on the current frame
+  - use the **Define Zones** tab to review frame context and the current zone inventory
+  - use the **Zone Details** tab to edit the selected zone label, kind, phase, access state, and barrier-adjacent behavior
+  - use the **Metrics** tab to preview zone area plus the occupancy, dwell, entry, transition, and barrier metrics that the selected zone will influence
 - **Video Tools → Zone Analysis**
-  - export legacy CSV, generic metrics, assay summary, or social summary reports
+  - select session inputs (video, zone JSON, FPS, optional latency reference)
+  - choose an assay profile and output mode from one dialog
+  - run one-click export for legacy CSV, generic metrics, assay summary, or social summary reports

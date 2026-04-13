@@ -12,6 +12,7 @@ from annolid.gui.widgets.zone_manager_utils import (
     default_zone_label,
     generate_arena_layout_preset,
     is_zone_shape,
+    normalize_zone_flags,
     shape_to_zone_payload,
     zone_file_for_source,
     zone_kind_palette,
@@ -21,7 +22,7 @@ from annolid.postprocessing.zone_schema import load_zone_shapes
 
 
 class ZonePanelWidget(QtWidgets.QWidget):
-    """Generic zone authoring panel for frame-backed zone shapes."""
+    """User-facing zone authoring panel for frame-backed zone shapes."""
 
     def __init__(
         self,
@@ -45,6 +46,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
         self._syncing_selection = False
         self._selected_shape = None
         self._preset_available = False
+
         self.canvas.newShape.connect(self._handle_new_shape)
         self.canvas.selectionChanged.connect(self._handle_canvas_selection)
         self.canvas.shapeMoved.connect(self._mark_dirty_and_refresh)
@@ -57,21 +59,148 @@ class ZonePanelWidget(QtWidgets.QWidget):
     # UI
     # ------------------------------------------------------------------ #
     def _build_ui(self) -> None:
-        root = QtWidgets.QVBoxLayout(self)
+        self.setStyleSheet(
+            """
+            QWidget#zonePanel {
+                background: palette(window);
+                color: palette(window-text);
+            }
+            QFrame[card="true"],
+            QFrame#zoneHero,
+            QFrame#zoneCard {
+                background: palette(base);
+                border: 1px solid palette(mid);
+                border-radius: 12px;
+            }
+            QLabel[zoneCardTitle="true"] {
+                color: palette(mid);
+                font-size: 11px;
+                font-weight: 600;
+                text-transform: uppercase;
+            }
+            QLabel[zoneCardValue="true"] {
+                color: palette(text);
+                font-size: 20px;
+                font-weight: 700;
+            }
+            QLabel[zoneHeroTitle="true"] {
+                color: palette(text);
+                font-size: 22px;
+                font-weight: 700;
+            }
+            QLabel[zoneHeroSubtitle="true"] {
+                color: palette(mid);
+            }
+            QLabel[zoneHint="true"] {
+                color: palette(mid);
+            }
+            QListWidget {
+                border: 1px solid palette(mid);
+                border-radius: 10px;
+                background: palette(base);
+                padding: 4px;
+            }
+            QTabWidget::pane {
+                border: 1px solid palette(mid);
+                border-radius: 12px;
+                background: palette(base);
+                top: -1px;
+            }
+            QTabBar::tab {
+                padding: 8px 12px;
+                margin-right: 4px;
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                background: palette(button);
+                color: palette(window-text);
+            }
+            QTabBar::tab:selected {
+                background: palette(base);
+                color: palette(text);
+                font-weight: 600;
+            }
+            QGroupBox {
+                border: 1px solid palette(mid);
+                border-radius: 10px;
+                margin-top: 12px;
+                padding-top: 10px;
+                font-weight: 600;
+                background: palette(base);
+            }
+            QGroupBox::title {
+                left: 10px;
+                top: -2px;
+                padding: 0 4px;
+            }
+            QPushButton[primary="true"] {
+                font-weight: 700;
+            }
+            """
+        )
+
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(6, 6, 6, 6)
+        outer.setSpacing(0)
+
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setObjectName("zonePanelScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        outer.addWidget(scroll)
+
+        content = QtWidgets.QWidget(scroll)
+        scroll.setWidget(content)
+        content.setObjectName("zonePanelContent")
+        root = QtWidgets.QVBoxLayout(content)
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(8)
 
-        header = QtWidgets.QLabel(
-            "Draw zones on the current frame, tag them with semantics, recolor them, and export a dedicated zone JSON."
-        )
-        header.setWordWrap(True)
-        header.setStyleSheet("font-weight: 600; color: #2d5b88;")
-        root.addWidget(header)
+        container = content
 
-        preset_box = QtWidgets.QGroupBox("Arena Presets")
-        preset_layout = QtWidgets.QVBoxLayout(preset_box)
-        preset_layout.setSpacing(6)
-        preset_row = QtWidgets.QHBoxLayout()
+        hero = QtWidgets.QFrame(container)
+        hero.setObjectName("zoneHero")
+        hero.setProperty("card", True)
+        hero_layout = QtWidgets.QVBoxLayout(hero)
+        hero_layout.setContentsMargins(14, 14, 14, 14)
+        hero_layout.setSpacing(6)
+        title = QtWidgets.QLabel("Zone Studio")
+        title.setProperty("zoneHeroTitle", True)
+        subtitle = QtWidgets.QLabel(
+            "Draw on the live frame, label what each region means, and preview the zone metrics Annolid will export later."
+        )
+        subtitle.setWordWrap(True)
+        subtitle.setProperty("zoneHeroSubtitle", True)
+        hero_layout.addWidget(title)
+        hero_layout.addWidget(subtitle)
+        root.addWidget(hero)
+
+        summary_strip = QtWidgets.QFrame(container)
+        summary_strip.setProperty("card", True)
+        summary_layout = QtWidgets.QHBoxLayout(summary_strip)
+        summary_layout.setContentsMargins(10, 6, 10, 6)
+        summary_layout.setSpacing(10)
+        self.zone_count_value = self._create_inline_metric(summary_layout, "Zones", "0")
+        self.selected_zone_value = self._create_inline_metric(
+            summary_layout, "Selected", "None"
+        )
+        self.metrics_ready_value = self._create_inline_metric(
+            summary_layout, "Analysis-ready", "0"
+        )
+        root.addWidget(summary_strip)
+
+        quick_start = QtWidgets.QFrame(container)
+        quick_start.setObjectName("zoneCard")
+        quick_start.setProperty("card", True)
+        quick_layout = QtWidgets.QVBoxLayout(quick_start)
+        quick_layout.setContentsMargins(12, 8, 12, 8)
+        quick_layout.setSpacing(6)
+        quick_row = QtWidgets.QHBoxLayout()
+        quick_row.setSpacing(6)
+        quick_label = QtWidgets.QLabel("Quick Start")
+        quick_label.setProperty("zoneHeroSubtitle", True)
+        quick_row.addWidget(quick_label)
         self.preset_combo = QtWidgets.QComboBox()
         self._preset_definitions = available_arena_layout_presets()
         self._preset_available = bool(self._preset_definitions)
@@ -84,129 +213,274 @@ class ZonePanelWidget(QtWidgets.QWidget):
         else:
             self.preset_combo.addItem("No presets available", userData="")
             self.preset_combo.setEnabled(False)
-        self.preset_combo.currentIndexChanged.connect(
-            self._update_preset_description_label
-        )
         self.generate_preset_button = QtWidgets.QPushButton("Generate Preset")
         self.generate_preset_button.clicked.connect(self.generate_selected_preset)
         self.generate_preset_button.setEnabled(self._preset_available)
-        preset_row.addWidget(self.preset_combo, 1)
-        preset_row.addWidget(self.generate_preset_button)
-        self.preset_description_label = QtWidgets.QLabel("")
-        self.preset_description_label.setWordWrap(True)
-        self.preset_description_label.setStyleSheet("color: #5d6d7e;")
-        preset_layout.addLayout(preset_row)
-        preset_layout.addWidget(self.preset_description_label)
-        if not self._preset_available:
-            self.preset_description_label.setText(
-                "No preset generators are available. Draw zones manually on the live canvas."
-            )
-        root.addWidget(preset_box)
-
-        self.source_label = QtWidgets.QLabel("")
-        self.source_label.setWordWrap(True)
-        self.save_target_label = QtWidgets.QLabel("")
-        self.save_target_label.setWordWrap(True)
-
-        source_box = QtWidgets.QGroupBox("Source")
-        source_layout = QtWidgets.QFormLayout(source_box)
-        source_layout.addRow("Frame", self.source_label)
-        source_layout.addRow("Zone JSON", self.save_target_label)
-
-        self.refresh_current_button = QtWidgets.QPushButton("Refresh Current Canvas")
+        self.generate_preset_button.setProperty("primary", True)
+        self.refresh_current_button = QtWidgets.QPushButton("Refresh Canvas")
         self.refresh_current_button.clicked.connect(self.refresh_from_current_canvas)
         self.load_zone_button = QtWidgets.QPushButton("Load Zone JSON")
         self.load_zone_button.clicked.connect(self.open_zone_file)
         self.save_zone_button = QtWidgets.QPushButton("Save Zone JSON")
         self.save_zone_button.clicked.connect(self.save_zone_file_as)
+        quick_row.addWidget(self.preset_combo, 1)
+        quick_row.addWidget(self.generate_preset_button)
+        quick_row.addWidget(self.refresh_current_button)
+        quick_row.addWidget(self.load_zone_button)
+        quick_row.addWidget(self.save_zone_button)
+        quick_layout.addLayout(quick_row)
+        root.addWidget(quick_start)
 
-        source_buttons = QtWidgets.QHBoxLayout()
-        source_buttons.addWidget(self.refresh_current_button)
-        source_buttons.addWidget(self.load_zone_button)
-        source_buttons.addWidget(self.save_zone_button)
-        source_layout.addRow("Actions", source_buttons)
-        root.addWidget(source_box)
-
-        self.shape_list = QtWidgets.QListWidget(self)
-        self.shape_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self.shape_list.currentRowChanged.connect(self._on_shape_row_changed)
-        self.shape_list.itemSelectionChanged.connect(self._on_shape_selection_changed)
-
-        self.zone_kind_combo = QtWidgets.QComboBox()
-        self.zone_kind_combo.setEditable(True)
-        self.zone_kind_combo.addItems(
-            ["chamber", "doorway", "barrier_edge", "interaction_zone", "custom"]
-        )
-
-        self.phase_combo = QtWidgets.QComboBox()
-        self.phase_combo.setEditable(True)
-        self.phase_combo.addItems(["phase_1", "phase_2", "custom"])
-
-        self.occupant_combo = QtWidgets.QComboBox()
-        self.occupant_combo.setEditable(True)
-        self.occupant_combo.addItems(["rover", "stim", "neutral", "unknown"])
-
-        self.access_combo = QtWidgets.QComboBox()
-        self.access_combo.setEditable(True)
-        self.access_combo.addItems(["open", "blocked", "tethered", "unknown"])
-
-        self.tags_edit = QtWidgets.QLineEdit()
-        self.tags_edit.setPlaceholderText("comma,separated,tags")
-
-        self.stroke_button = QtWidgets.QPushButton("Recolor")
-        self.stroke_button.clicked.connect(self._recolor_selected_shape)
-        self.delete_button = QtWidgets.QPushButton("Delete Selected")
-        self.delete_button.clicked.connect(self._delete_selected_shape)
-
-        self.canvas_status = QtWidgets.QLabel(
-            "Use the main Annolid toolbar or canvas context menu to switch draw/edit mode."
-        )
-        self.canvas_status.setWordWrap(True)
-        self.canvas_status.setStyleSheet("color: #5d6d7e;")
-
-        props_box = QtWidgets.QGroupBox("Zone Defaults")
-        props_form = QtWidgets.QFormLayout(props_box)
-        props_form.addRow("Zone kind", self.zone_kind_combo)
-        props_form.addRow("Phase", self.phase_combo)
-        props_form.addRow("Occupant role", self.occupant_combo)
-        props_form.addRow("Access state", self.access_combo)
-        props_form.addRow("Tags", self.tags_edit)
-
-        editor_buttons = QtWidgets.QHBoxLayout()
-        editor_buttons.addWidget(self.stroke_button)
-        editor_buttons.addWidget(self.delete_button)
-        props_form.addRow("Actions", editor_buttons)
-
-        self.shape_list_label = QtWidgets.QLabel("Zones")
-        self.shape_list_label.setStyleSheet("font-weight: 600;")
-
-        root.addWidget(self.canvas_status)
-        root.addWidget(self.shape_list_label)
-        root.addWidget(self.shape_list, 1)
-        root.addWidget(props_box)
+        self.tabs = QtWidgets.QTabWidget(container)
+        self.tabs.addTab(self._build_define_tab(), "Define Zones")
+        self.tabs.addTab(self._build_details_tab(), "Zone Details")
+        self.tabs.addTab(self._build_metrics_tab(), "Metrics")
+        root.addWidget(self.tabs, 1)
 
         bottom_row = QtWidgets.QHBoxLayout()
-        self.status_label = QtWidgets.QLabel("")
+        self.status_label = QtWidgets.QLabel(container)
         self.status_label.setWordWrap(True)
-        self.close_button = QtWidgets.QPushButton("Close")
+        self.close_button = QtWidgets.QPushButton("Close", container)
         self.close_button.clicked.connect(self.close)
         bottom_row.addWidget(self.status_label, 1)
         bottom_row.addWidget(self.close_button)
         root.addLayout(bottom_row)
-        self._update_preset_description_label()
-        self.zone_kind_combo.currentTextChanged.connect(
+
+        self.default_zone_kind_combo.currentTextChanged.connect(
             lambda *_: self._publish_zone_defaults()
         )
-        self.phase_combo.currentTextChanged.connect(
+        self.default_phase_combo.currentTextChanged.connect(
             lambda *_: self._publish_zone_defaults()
         )
-        self.occupant_combo.currentTextChanged.connect(
+        self.default_occupant_combo.currentTextChanged.connect(
             lambda *_: self._publish_zone_defaults()
         )
-        self.access_combo.currentTextChanged.connect(
+        self.default_access_combo.currentTextChanged.connect(
             lambda *_: self._publish_zone_defaults()
         )
-        self.tags_edit.editingFinished.connect(self._publish_zone_defaults)
+        self.default_tags_edit.editingFinished.connect(self._publish_zone_defaults)
+        self.default_barrier_checkbox.toggled.connect(
+            lambda *_: self._publish_zone_defaults()
+        )
+
+    def _build_define_tab(self) -> QtWidgets.QWidget:
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        page = QtWidgets.QWidget(scroll)
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        source_box = QtWidgets.QGroupBox("Frame Context", page)
+        source_layout = QtWidgets.QFormLayout(source_box)
+        self.source_label = QtWidgets.QLabel("")
+        self.source_label.setWordWrap(True)
+        self.save_target_label = QtWidgets.QLabel("")
+        self.save_target_label.setWordWrap(True)
+        self.canvas_status = QtWidgets.QLabel(
+            "Use the main Annolid toolbar or the canvas context menu to switch between draw and edit modes."
+        )
+        self.canvas_status.setWordWrap(True)
+        self.canvas_status.setProperty("zoneHint", True)
+        source_layout.addRow("Current frame", self.source_label)
+        source_layout.addRow("Zone JSON", self.save_target_label)
+        source_layout.addRow("Canvas", self.canvas_status)
+        layout.addWidget(source_box)
+
+        list_box = QtWidgets.QGroupBox("Zone Inventory", page)
+        list_layout = QtWidgets.QVBoxLayout(list_box)
+        self.shape_list_label = QtWidgets.QLabel(
+            "Draw one or more shapes, then select a zone to define its semantics."
+        )
+        self.shape_list_label.setWordWrap(True)
+        self.shape_list_label.setProperty("zoneHint", True)
+        self.shape_list = QtWidgets.QListWidget(self)
+        self.shape_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.shape_list.currentRowChanged.connect(self._on_shape_row_changed)
+        self.shape_list.itemSelectionChanged.connect(self._on_shape_selection_changed)
+        list_layout.addWidget(self.shape_list_label)
+        list_layout.addWidget(self.shape_list, 1)
+        layout.addWidget(list_box, 1)
+
+        scroll.setWidget(page)
+        scroll.setMinimumHeight(260)
+        return scroll
+
+    def _build_details_tab(self) -> QtWidgets.QWidget:
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        page = QtWidgets.QWidget(scroll)
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        self.selected_summary_label = QtWidgets.QLabel(
+            "No zone selected. Pick a zone on the canvas or from the list."
+        )
+        self.selected_summary_label.setWordWrap(True)
+        self.selected_summary_label.setProperty("zoneHint", True)
+        layout.addWidget(self.selected_summary_label)
+
+        selected_box = QtWidgets.QGroupBox("Selected Zone", page)
+        selected_layout = QtWidgets.QFormLayout(selected_box)
+        self.zone_label_edit = QtWidgets.QLineEdit()
+        self.zone_label_edit.setPlaceholderText("zone label")
+        self.zone_description_edit = QtWidgets.QLineEdit()
+        self.zone_description_edit.setPlaceholderText("optional description")
+        self.zone_kind_combo = self._create_metadata_combo(
+            ["chamber", "doorway", "barrier_edge", "interaction_zone", "custom"]
+        )
+        self.phase_combo = self._create_metadata_combo(["phase_1", "phase_2", "custom"])
+        self.occupant_combo = self._create_metadata_combo(
+            ["rover", "stim", "neutral", "unknown"]
+        )
+        self.access_combo = self._create_metadata_combo(
+            ["open", "blocked", "tethered", "unknown"]
+        )
+        self.tags_edit = QtWidgets.QLineEdit()
+        self.tags_edit.setPlaceholderText("comma,separated,tags")
+        self.barrier_adjacent_checkbox = QtWidgets.QCheckBox(
+            "Force barrier-adjacent metric for this zone"
+        )
+
+        selected_layout.addRow("Label", self.zone_label_edit)
+        selected_layout.addRow("Description", self.zone_description_edit)
+        selected_layout.addRow("Zone kind", self.zone_kind_combo)
+        selected_layout.addRow("Phase", self.phase_combo)
+        selected_layout.addRow("Occupant role", self.occupant_combo)
+        selected_layout.addRow("Access state", self.access_combo)
+        selected_layout.addRow("Tags", self.tags_edit)
+        selected_layout.addRow("", self.barrier_adjacent_checkbox)
+
+        button_row = QtWidgets.QHBoxLayout()
+        self.apply_selected_button = QtWidgets.QPushButton("Apply to Selected Zone")
+        self.apply_selected_button.clicked.connect(self._apply_selected_zone_details)
+        self.use_as_defaults_button = QtWidgets.QPushButton("Use Selected as Defaults")
+        self.use_as_defaults_button.clicked.connect(self._use_selected_as_defaults)
+        self.stroke_button = QtWidgets.QPushButton("Recolor")
+        self.stroke_button.clicked.connect(self._recolor_selected_shape)
+        self.delete_button = QtWidgets.QPushButton("Delete Selected")
+        self.delete_button.clicked.connect(self._delete_selected_shape)
+        button_row.addWidget(self.apply_selected_button)
+        button_row.addWidget(self.use_as_defaults_button)
+        button_row.addWidget(self.stroke_button)
+        button_row.addWidget(self.delete_button)
+        selected_layout.addRow("Actions", button_row)
+        layout.addWidget(selected_box)
+
+        defaults_box = QtWidgets.QGroupBox("Defaults for New Zones", page)
+        defaults_layout = QtWidgets.QFormLayout(defaults_box)
+        self.default_zone_kind_combo = self._create_metadata_combo(
+            ["chamber", "doorway", "barrier_edge", "interaction_zone", "custom"]
+        )
+        self.default_phase_combo = self._create_metadata_combo(
+            ["phase_1", "phase_2", "custom"]
+        )
+        self.default_occupant_combo = self._create_metadata_combo(
+            ["rover", "stim", "neutral", "unknown"]
+        )
+        self.default_access_combo = self._create_metadata_combo(
+            ["open", "blocked", "tethered", "unknown"]
+        )
+        self.default_tags_edit = QtWidgets.QLineEdit()
+        self.default_tags_edit.setPlaceholderText("comma,separated,tags")
+        self.default_barrier_checkbox = QtWidgets.QCheckBox(
+            "Mark new zones as barrier-adjacent"
+        )
+        defaults_layout.addRow("Zone kind", self.default_zone_kind_combo)
+        defaults_layout.addRow("Phase", self.default_phase_combo)
+        defaults_layout.addRow("Occupant role", self.default_occupant_combo)
+        defaults_layout.addRow("Access state", self.default_access_combo)
+        defaults_layout.addRow("Tags", self.default_tags_edit)
+        defaults_layout.addRow("", self.default_barrier_checkbox)
+        layout.addWidget(defaults_box)
+
+        scroll.setWidget(page)
+        scroll.setMinimumHeight(300)
+        return scroll
+
+    def _build_metrics_tab(self) -> QtWidgets.QWidget:
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        page = QtWidgets.QWidget(scroll)
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        summary_box = QtWidgets.QGroupBox("Selected Zone Preview", page)
+        summary_layout = QtWidgets.QFormLayout(summary_box)
+        self.selected_area_value = QtWidgets.QLabel("0 px²")
+        self.selected_area_value.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse
+        )
+        self.selected_metric_summary = QtWidgets.QLabel(
+            "Select a zone to preview area and the metrics it will affect."
+        )
+        self.selected_metric_summary.setWordWrap(True)
+        self.selected_metric_summary.setProperty("zoneHint", True)
+        summary_layout.addRow("Area", self.selected_area_value)
+        summary_layout.addRow("Preview", self.selected_metric_summary)
+        layout.addWidget(summary_box)
+
+        self.metric_table = QtWidgets.QTableWidget(0, 3, page)
+        self.metric_table.setHorizontalHeaderLabels(
+            ["Metric", "How Annolid computes it", "Selected zone impact"]
+        )
+        self.metric_table.horizontalHeader().setStretchLastSection(True)
+        self.metric_table.horizontalHeader().setSectionResizeMode(
+            0, QtWidgets.QHeaderView.ResizeToContents
+        )
+        self.metric_table.horizontalHeader().setSectionResizeMode(
+            1, QtWidgets.QHeaderView.Stretch
+        )
+        self.metric_table.horizontalHeader().setSectionResizeMode(
+            2, QtWidgets.QHeaderView.Stretch
+        )
+        self.metric_table.verticalHeader().setVisible(False)
+        self.metric_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.metric_table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.metric_table.setAlternatingRowColors(True)
+        layout.addWidget(self.metric_table, 1)
+
+        self.metrics_footer_label = QtWidgets.QLabel(
+            "Phase, occupant role, access state, and barrier-adjacent flags influence which zones appear in assay-aware summaries."
+        )
+        self.metrics_footer_label.setWordWrap(True)
+        self.metrics_footer_label.setProperty("zoneHint", True)
+        layout.addWidget(self.metrics_footer_label)
+
+        scroll.setWidget(page)
+        scroll.setMinimumHeight(260)
+        return scroll
+
+    def _create_inline_metric(
+        self,
+        parent_layout: QtWidgets.QHBoxLayout,
+        title: str,
+        value: str,
+    ) -> QtWidgets.QLabel:
+        box = QtWidgets.QWidget(self)
+        box_layout = QtWidgets.QHBoxLayout(box)
+        box_layout.setContentsMargins(0, 0, 0, 0)
+        box_layout.setSpacing(6)
+        title_label = QtWidgets.QLabel(f"{title}:")
+        title_label.setProperty("zoneCardTitle", True)
+        value_label = QtWidgets.QLabel(value)
+        value_label.setProperty("zoneCardValue", True)
+        box_layout.addWidget(title_label)
+        box_layout.addWidget(value_label)
+        box_layout.addStretch(1)
+        parent_layout.addWidget(box)
+        return value_label
+
+    def _create_metadata_combo(self, options: list[str]) -> QtWidgets.QComboBox:
+        combo = QtWidgets.QComboBox()
+        combo.setEditable(True)
+        combo.addItems(options)
+        return combo
 
     # ------------------------------------------------------------------ #
     # Frame and zone loading
@@ -265,29 +539,26 @@ class ZonePanelWidget(QtWidgets.QWidget):
         parent = getattr(self, "_owner_window", None) or self.parent()
         if parent is None:
             return
+        extra_flags = {}
+        if self.default_barrier_checkbox.isChecked():
+            extra_flags["barrier_adjacent"] = True
         defaults = build_zone_popup_defaults(
             label=default_zone_label(
-                self.zone_kind_combo.currentText().strip(), self._existing_labels()
+                self.default_zone_kind_combo.currentText().strip(),
+                self._existing_labels(),
             ),
-            zone_kind=self.zone_kind_combo.currentText().strip() or "custom",
-            phase=self.phase_combo.currentText().strip() or "custom",
-            occupant_role=self.occupant_combo.currentText().strip() or "unknown",
-            access_state=self.access_combo.currentText().strip() or "unknown",
-            tags=self.tags_edit.text().strip(),
+            zone_kind=self.default_zone_kind_combo.currentText().strip() or "custom",
+            phase=self.default_phase_combo.currentText().strip() or "custom",
+            occupant_role=self.default_occupant_combo.currentText().strip()
+            or "unknown",
+            access_state=self.default_access_combo.currentText().strip() or "unknown",
+            tags=self.default_tags_edit.text().strip(),
             description="",
         )
+        if extra_flags:
+            defaults["flags"].update(extra_flags)
         setattr(parent, "_zone_authoring_defaults", defaults)
-
-    def _update_preset_description_label(self, *args) -> None:
-        _ = args
-        index = self.preset_combo.currentIndex()
-        preset = (
-            self._preset_definitions[index]
-            if 0 <= index < len(self._preset_definitions)
-            else {}
-        )
-        description = str(preset.get("description") or "").strip()
-        self.preset_description_label.setText(description)
+        self._update_metrics_preview()
 
     def _load_shapes_to_canvas(self, shapes: list, *, replace: bool = True) -> None:
         parent = getattr(self, "_owner_window", None) or self.parent()
@@ -373,6 +644,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
         self._publish_zone_defaults()
         self.canvas.setFocus()
         self._refresh_shape_list(select_shape=generated_shapes[0])
+        self.tabs.setCurrentIndex(1)
 
     def refresh_from_current_canvas(self) -> None:
         pixmap = self._current_canvas_pixmap()
@@ -383,6 +655,9 @@ class ZonePanelWidget(QtWidgets.QWidget):
             self._update_source_label()
             self._update_save_target_label()
             self.shape_list.clear()
+            self._selected_shape = None
+            self._sync_selected_fields()
+            self._update_stats()
             return
         if self._zone_file_path is None:
             self._zone_file_path = zone_file_for_source(self._current_source())
@@ -392,6 +667,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
         self._refresh_shape_list()
         self._set_status("Canvas ready for zone editing.")
         self._publish_zone_defaults()
+        self._update_stats()
 
     def open_zone_file(self) -> None:
         if not self._confirm_discard_changes():
@@ -436,7 +712,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
             self.canvas.loadShapes(current + shapes, replace=True)
         else:
             self.canvas.loadShapes(shapes, replace=False)
-        self._refresh_shape_list()
+        self._refresh_shape_list(select_shape=shapes[0] if shapes else None)
         self._set_status(f"Loaded {len(shapes)} zone(s) from {filename}.")
         self._dirty = False
         self._zone_file_path = Path(filename)
@@ -465,8 +741,23 @@ class ZonePanelWidget(QtWidgets.QWidget):
         shape = self.canvas.shapes[-1]
         if not getattr(shape, "label", "").strip():
             shape.label = default_zone_label(
-                self.zone_kind_combo.currentText().strip(), self._existing_labels()
+                self.default_zone_kind_combo.currentText().strip(),
+                self._existing_labels(),
             )
+        extra_flags = {}
+        if self.default_barrier_checkbox.isChecked():
+            extra_flags["barrier_adjacent"] = True
+        shape.flags = normalize_zone_flags(
+            shape,
+            label=shape.label,
+            zone_kind=self.default_zone_kind_combo.currentText().strip() or "custom",
+            phase=self.default_phase_combo.currentText().strip() or "custom",
+            occupant_role=self.default_occupant_combo.currentText().strip()
+            or "unknown",
+            access_state=self.default_access_combo.currentText().strip() or "unknown",
+            tags=self.default_tags_edit.text().strip(),
+            extra_flags=extra_flags,
+        )
         self._apply_shape_style(shape)
         self.canvas.storeShapes()
         self._refresh_shape_list(select_shape=shape)
@@ -527,6 +818,8 @@ class ZonePanelWidget(QtWidgets.QWidget):
                 self._set_status(f"Selected '{shape.label}'.")
         finally:
             self._syncing_selection = False
+        self._sync_selected_fields()
+        self._update_stats()
 
     def _on_shape_selection_changed(self) -> None:
         if self._syncing_selection:
@@ -535,6 +828,9 @@ class ZonePanelWidget(QtWidgets.QWidget):
         shape = item.data(QtCore.Qt.UserRole) if item is not None else None
         if shape is None:
             self.canvas.selectShapes([])
+            self._selected_shape = None
+            self._sync_selected_fields()
+            self._update_stats()
             return
         self._selected_shape = shape
         self._syncing_selection = True
@@ -543,6 +839,8 @@ class ZonePanelWidget(QtWidgets.QWidget):
             self._set_status(f"Selected '{shape.label}'.")
         finally:
             self._syncing_selection = False
+        self._sync_selected_fields()
+        self._update_stats()
 
     def _on_shape_row_changed(self, row: int) -> None:
         if row < 0:
@@ -559,6 +857,8 @@ class ZonePanelWidget(QtWidgets.QWidget):
             self.canvas.selectShapes([shape])
         finally:
             self._syncing_selection = False
+        self._sync_selected_fields()
+        self._update_stats()
 
     def _row_for_shape(self, shape) -> int | None:
         for row in range(self.shape_list.count()):
@@ -567,6 +867,276 @@ class ZonePanelWidget(QtWidgets.QWidget):
                 return row
         return None
 
+    def _zone_area_text(self, shape) -> str:
+        area = self._shape_area(shape)
+        return f"{area:.1f} px²"
+
+    def _shape_area(self, shape) -> float:
+        points = list(getattr(shape, "points", []) or [])
+        if len(points) < 2:
+            return 0.0
+        coords = []
+        for point in points:
+            x = point.x() if hasattr(point, "x") else point[0]
+            y = point.y() if hasattr(point, "y") else point[1]
+            coords.append((float(x), float(y)))
+        shape_type = str(getattr(shape, "shape_type", "polygon") or "polygon")
+        if shape_type == "rectangle" and len(coords) >= 2:
+            width = abs(coords[1][0] - coords[0][0])
+            height = abs(coords[1][1] - coords[0][1])
+            return float(width * height)
+        if len(coords) < 3:
+            return 0.0
+        area = 0.0
+        for index, (x1, y1) in enumerate(coords):
+            x2, y2 = coords[(index + 1) % len(coords)]
+            area += x1 * y2 - x2 * y1
+        return abs(area) / 2.0
+
+    def _metric_rows_for_shape(self, shape) -> list[tuple[str, str, str]]:
+        flags = dict(getattr(shape, "flags", {}) or {}) if shape is not None else {}
+        zone_kind = str(flags.get("zone_kind") or "custom").strip().lower()
+        phase = str(flags.get("phase") or "custom").strip() or "custom"
+        occupant_role = (
+            str(flags.get("occupant_role") or "unknown").strip() or "unknown"
+        )
+        access_state = str(flags.get("access_state") or "unknown").strip() or "unknown"
+        barrier_enabled = bool(flags.get("barrier_adjacent")) or zone_kind in {
+            "barrier_edge",
+            "barrier",
+            "doorway",
+            "passage",
+        }
+        if shape is None:
+            return [
+                (
+                    "Occupancy + dwell",
+                    "Counts how many frames a tracked point stays inside each zone.",
+                    "Select a zone to preview its contribution.",
+                ),
+                (
+                    "Entries + first entry",
+                    "Starts a new visit when a subject enters a zone from outside or from another zone.",
+                    "Select a zone to preview its contribution.",
+                ),
+                (
+                    "Transitions",
+                    "Counts moves between consecutive resolved zones.",
+                    "Select a zone to preview its contribution.",
+                ),
+                (
+                    "Barrier-adjacent",
+                    "Enabled for barrier-edge, doorway, or explicitly flagged zones.",
+                    "Select a zone to preview its contribution.",
+                ),
+            ]
+        barrier_text = (
+            "Enabled for this zone."
+            if barrier_enabled
+            else "Not enabled unless you mark it barrier-adjacent."
+        )
+        return [
+            (
+                "Occupancy + dwell",
+                "Counts per-zone presence over time and total dwell duration.",
+                f"Included as '{getattr(shape, 'label', '') or zone_kind}'.",
+            ),
+            (
+                "Entries + first entry",
+                "Tracks zone visits and latency to first arrival.",
+                f"Uses this zone boundary and label for visit segments in {phase}.",
+            ),
+            (
+                "Transitions",
+                "Counts movement from one zone label to the next resolved zone.",
+                f"Transitions into or out of this zone are tracked whenever access is '{access_state}'.",
+            ),
+            (
+                "Profile filters",
+                "Assay summaries can include or exclude zones by phase, role, and access state.",
+                f"Phase '{phase}', role '{occupant_role}', access '{access_state}'.",
+            ),
+            (
+                "Barrier-adjacent",
+                "Special summary for barrier-edge style regions.",
+                barrier_text,
+            ),
+        ]
+
+    def _update_metrics_table(self) -> None:
+        rows = self._metric_rows_for_shape(self._selected_shape)
+        self.metric_table.setRowCount(len(rows))
+        for row_index, (metric, meaning, impact) in enumerate(rows):
+            for column_index, value in enumerate((metric, meaning, impact)):
+                item = QtWidgets.QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
+                self.metric_table.setItem(row_index, column_index, item)
+
+    def _update_metrics_preview(self) -> None:
+        shape = self._selected_shape
+        if shape is None:
+            self.selected_area_value.setText("0 px²")
+            default_text = (
+                "New zones will default to "
+                f"kind '{self.default_zone_kind_combo.currentText().strip() or 'custom'}', "
+                f"phase '{self.default_phase_combo.currentText().strip() or 'custom'}', "
+                f"role '{self.default_occupant_combo.currentText().strip() or 'unknown'}', "
+                f"access '{self.default_access_combo.currentText().strip() or 'unknown'}'."
+            )
+            self.selected_metric_summary.setText(default_text)
+            self._update_metrics_table()
+            return
+        flags = dict(getattr(shape, "flags", {}) or {})
+        zone_kind = str(flags.get("zone_kind") or "custom").strip()
+        barrier_enabled = bool(flags.get("barrier_adjacent")) or zone_kind.lower() in {
+            "barrier_edge",
+            "barrier",
+            "doorway",
+            "passage",
+        }
+        preview = (
+            f"'{getattr(shape, 'label', '') or zone_kind}' contributes occupancy, dwell, entry, first-entry, and transition metrics. "
+            f"Barrier-adjacent summary is {'enabled' if barrier_enabled else 'disabled'}."
+        )
+        self.selected_area_value.setText(self._zone_area_text(shape))
+        self.selected_metric_summary.setText(preview)
+        self._update_metrics_table()
+
+    def _sync_selected_fields(self) -> None:
+        shape = self._selected_shape
+        widgets = [
+            self.zone_label_edit,
+            self.zone_description_edit,
+            self.tags_edit,
+            self.zone_kind_combo,
+            self.phase_combo,
+            self.occupant_combo,
+            self.access_combo,
+        ]
+        for widget in widgets:
+            widget.blockSignals(True)
+        self.barrier_adjacent_checkbox.blockSignals(True)
+        try:
+            if shape is None:
+                self.zone_label_edit.setText("")
+                self.zone_description_edit.setText("")
+                self.tags_edit.setText("")
+                self._set_combo_text(self.zone_kind_combo, "custom")
+                self._set_combo_text(self.phase_combo, "custom")
+                self._set_combo_text(self.occupant_combo, "unknown")
+                self._set_combo_text(self.access_combo, "unknown")
+                self.barrier_adjacent_checkbox.setChecked(False)
+                self.selected_summary_label.setText(
+                    "No zone selected. Pick a zone on the canvas or from the list."
+                )
+            else:
+                flags = dict(getattr(shape, "flags", {}) or {})
+                self.zone_label_edit.setText(str(getattr(shape, "label", "") or ""))
+                self.zone_description_edit.setText(
+                    str(getattr(shape, "description", "") or "")
+                )
+                self.tags_edit.setText(
+                    ", ".join(str(tag) for tag in flags.get("tags") or [])
+                )
+                self._set_combo_text(
+                    self.zone_kind_combo,
+                    str(flags.get("zone_kind") or "custom"),
+                )
+                self._set_combo_text(
+                    self.phase_combo, str(flags.get("phase") or "custom")
+                )
+                self._set_combo_text(
+                    self.occupant_combo, str(flags.get("occupant_role") or "unknown")
+                )
+                self._set_combo_text(
+                    self.access_combo, str(flags.get("access_state") or "unknown")
+                )
+                self.barrier_adjacent_checkbox.setChecked(
+                    bool(flags.get("barrier_adjacent"))
+                )
+                self.selected_summary_label.setText(
+                    f"Editing '{shape.label or '(unnamed)'}' | {self._zone_area_text(shape)} | "
+                    f"kind={flags.get('zone_kind', 'custom')} | phase={flags.get('phase', 'custom')}"
+                )
+        finally:
+            for widget in widgets:
+                widget.blockSignals(False)
+            self.barrier_adjacent_checkbox.blockSignals(False)
+        self._update_metrics_preview()
+
+    def _set_combo_text(self, combo: QtWidgets.QComboBox, value: str) -> None:
+        text = str(value or "").strip()
+        index = combo.findText(text)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        else:
+            combo.setEditText(text)
+
+    def _apply_selected_zone_details(self) -> None:
+        shape = self._selected_shape
+        if shape is None:
+            return
+        label = self.zone_label_edit.text().strip()
+        if not label:
+            label = default_zone_label(
+                self.zone_kind_combo.currentText().strip(), self._existing_labels()
+            )
+        extra_flags = dict(getattr(shape, "flags", {}) or {})
+        if self.barrier_adjacent_checkbox.isChecked():
+            extra_flags["barrier_adjacent"] = True
+        else:
+            extra_flags.pop("barrier_adjacent", None)
+        shape.label = label
+        shape.description = self.zone_description_edit.text().strip()
+        shape.flags = normalize_zone_flags(
+            shape,
+            label=label,
+            zone_kind=self.zone_kind_combo.currentText().strip() or "custom",
+            phase=self.phase_combo.currentText().strip() or "custom",
+            occupant_role=self.occupant_combo.currentText().strip() or "unknown",
+            access_state=self.access_combo.currentText().strip() or "unknown",
+            tags=self.tags_edit.text().strip(),
+            extra_flags=extra_flags,
+        )
+        self._apply_shape_style(shape)
+        self.canvas.storeShapes()
+        self.canvas.update()
+        self._refresh_shape_list(select_shape=shape)
+        self._mark_dirty()
+        self._set_status(f"Updated zone '{shape.label}'.")
+        self._sync_selected_fields()
+        self._publish_zone_defaults()
+
+    def _use_selected_as_defaults(self) -> None:
+        shape = self._selected_shape
+        if shape is None:
+            return
+        flags = dict(getattr(shape, "flags", {}) or {})
+        self._set_combo_text(
+            self.default_zone_kind_combo,
+            str(flags.get("zone_kind") or "custom"),
+        )
+        self._set_combo_text(
+            self.default_phase_combo,
+            str(flags.get("phase") or "custom"),
+        )
+        self._set_combo_text(
+            self.default_occupant_combo,
+            str(flags.get("occupant_role") or "unknown"),
+        )
+        self._set_combo_text(
+            self.default_access_combo,
+            str(flags.get("access_state") or "unknown"),
+        )
+        self.default_tags_edit.setText(
+            ", ".join(str(tag) for tag in flags.get("tags") or [])
+        )
+        self.default_barrier_checkbox.setChecked(bool(flags.get("barrier_adjacent")))
+        self._publish_zone_defaults()
+        self._set_status(
+            f"Using '{shape.label or '(unnamed)'}' semantics for newly drawn zones."
+        )
+
     def _refresh_shape_list(self, select_shape=None) -> None:
         current = select_shape or self._selected_shape
         shapes = [shape for shape in self.canvas.shapes if is_zone_shape(shape)]
@@ -574,14 +1144,14 @@ class ZonePanelWidget(QtWidgets.QWidget):
         try:
             self.shape_list.clear()
             for shape in shapes:
+                flags = getattr(shape, "flags", {}) or {}
                 item = QtWidgets.QListWidgetItem(
-                    f"{shape.label or '(unnamed)'}  |  {getattr(shape, 'flags', {}).get('zone_kind', 'custom')}"
+                    f"{shape.label or '(unnamed)'}  |  {flags.get('zone_kind', 'custom')}  |  {self._zone_area_text(shape)}"
                 )
                 item.setData(QtCore.Qt.UserRole, shape)
                 if getattr(shape, "line_color", None) is not None:
                     color = QtGui.QColor(shape.line_color)
-                    item.setBackground(color.darker(135))
-                    item.setForeground(QtGui.QColor(255, 255, 255))
+                    item.setBackground(color.lighter(165))
                 self.shape_list.addItem(item)
             if current is not None:
                 row = self._row_for_shape(current)
@@ -589,8 +1159,34 @@ class ZonePanelWidget(QtWidgets.QWidget):
                     self.shape_list.setCurrentRow(row)
         finally:
             self.shape_list.blockSignals(False)
+        self._sync_selected_fields()
+        self._update_stats()
 
     # ------------------------------------------------------------------ #
+    def _count_analysis_ready_zones(self) -> int:
+        count = 0
+        for shape in self.canvas.shapes:
+            if not is_zone_shape(shape):
+                continue
+            flags = dict(getattr(shape, "flags", {}) or {})
+            if all(
+                str(flags.get(key) or "").strip()
+                for key in ("zone_kind", "phase", "occupant_role", "access_state")
+            ):
+                count += 1
+        return count
+
+    def _update_stats(self) -> None:
+        zone_shapes = [shape for shape in self.canvas.shapes if is_zone_shape(shape)]
+        self.zone_count_value.setText(str(len(zone_shapes)))
+        selected_label = (
+            str(getattr(self._selected_shape, "label", "") or "").strip()
+            if self._selected_shape is not None
+            else ""
+        )
+        self.selected_zone_value.setText(selected_label or "None")
+        self.metrics_ready_value.setText(str(self._count_analysis_ready_zones()))
+
     def _mark_dirty(self) -> None:
         self._dirty = True
 
@@ -605,7 +1201,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
     def _default_save_path(self) -> Path | None:
         if self._zone_file_path is not None:
             return self._zone_file_path
-        source = self._source_path or self._source_image_path
+        source = self._current_source() or self._current_canvas_image_path()
         return zone_file_for_source(source)
 
     def save_zone_file_as(self) -> None:

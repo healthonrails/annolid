@@ -212,6 +212,19 @@ class PlaybackDrawMixin:
                     exc_info=True,
                 )
 
+        if (
+            getattr(self, "canvas", None) is not None
+            and hasattr(self.canvas, "cancelCurrentDrawing")
+            and (
+                bool(edit)
+                or (
+                    not bool(edit)
+                    and getattr(self.canvas, "createMode", None) != createMode
+                )
+            )
+        ):
+            self.canvas.cancelCurrentDrawing(clear_sam_mask=True)
+
         self.canvas.setEditing(bool(edit))
         if not edit:
             self.canvas.createMode = createMode
@@ -234,6 +247,27 @@ class PlaybackDrawMixin:
                 self.actions.editMode.setEnabled(True)
 
         self._sync_draw_mode_action_checks(edit=bool(edit), createMode=str(createMode))
+        if not edit and createMode in ("ai_polygon", "ai_mask"):
+            try:
+                model_name = ""
+                if hasattr(self, "_selectAiModelComboBox"):
+                    model_name = self._selectAiModelComboBox.currentText()
+                custom_models = None
+                if hasattr(self, "ai_model_manager"):
+                    custom_models = getattr(
+                        self.ai_model_manager, "custom_model_names", None
+                    )
+                if getattr(self, "canvas", None) is not None and hasattr(
+                    self.canvas, "initializeAiModel"
+                ):
+                    self.canvas.initializeAiModel(
+                        name=model_name,
+                        _custom_ai_models=custom_models,
+                    )
+            except Exception:
+                logger.debug(
+                    "Failed to initialize AI model for draw mode.", exc_info=True
+                )
 
     def _setup_drawing_mode_actions(self) -> None:
         if getattr(self, "_draw_mode_actions_initialized", False):
@@ -271,14 +305,6 @@ class PlaybackDrawMixin:
                 if mode == "polygonSAM":
                     self.segmentAnything()
                     return
-                if mode in ("ai_polygon", "ai_mask"):
-                    try:
-                        self.canvas.initializeAiModel(
-                            name=self._selectAiModelComboBox.currentText(),
-                            _custom_ai_models=self.ai_model_manager.custom_model_names,
-                        )
-                    except Exception:
-                        logger.debug("Failed to initialize AI model.", exc_info=True)
                 self.toggleDrawMode(False, createMode=mode)
 
             action.toggled.connect(_on_toggled)

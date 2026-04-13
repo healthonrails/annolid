@@ -235,7 +235,14 @@ def _compute_mask_from_points(
     mask = masks[0, mask_index]  # (1, N, H, W) -> (H, W)
     mask = mask > 0.0
 
-    MIN_SIZE_RATIO = 0.05
+    # Apply morphological operations to clean up mask edges
+    mask_u8 = mask.astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, kernel)
+    mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_OPEN, kernel)
+    mask = mask_u8.astype(bool)
+
+    MIN_SIZE_RATIO = 0.02
     min_size = int(mask.sum() * MIN_SIZE_RATIO)
     if min_size > 0:
         remove_small_objects_params = inspect.signature(
