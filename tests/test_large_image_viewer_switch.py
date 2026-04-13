@@ -728,7 +728,7 @@ def test_large_tiff_load_hides_unrelated_docks_and_keeps_annotation_docks(
         assert window.caption_dock.isHidden() is True
         assert window.video_dock.isHidden() is True
         assert window.file_dock.isHidden() is False
-        assert window.flag_dock.isHidden() is False
+        assert window.flag_dock.isHidden() is True
         assert window.label_dock.isHidden() is False
         assert window.shape_dock.isHidden() is False
 
@@ -769,6 +769,31 @@ def test_large_tiff_load_hides_keypoint_sequencer_dock_by_default(
 
         assert window._active_image_view == "tiled"
         assert window.keypoint_sequence_dock.isHidden() is True
+    finally:
+        window.close()
+
+
+def test_large_tiff_load_does_not_force_open_hidden_flag_dock(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    image_path = tmp_path / "atlas.ome.tiff"
+    data = np.arange(128 * 128, dtype=np.uint16).reshape(128, 128)
+    tifffile.imwrite(image_path, data, ome=True)
+
+    window = _WindowStub()
+    try:
+        window.flag_dock.hide()
+        assert window.flag_dock.isHidden() is True
+
+        window.loadFile(str(image_path))
+
+        assert window._active_image_view == "tiled"
+        assert window.flag_dock.isHidden() is True
+
+        window.setLargeImageDocksActive(False)
+        assert window.flag_dock.isHidden() is True
     finally:
         window.close()
 

@@ -2040,6 +2040,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             if related_states is None:
                 related_states = {}
                 self._large_image_related_docks_states = related_states
+            flag_dock = getattr(self, "flag_dock", None)
             for dock in self._large_image_irrelevant_docks():
                 try:
                     if dock not in self._large_image_hidden_docks_states:
@@ -2051,6 +2052,11 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 try:
                     if dock not in related_states:
                         related_states[dock] = dock.isHidden()
+                    if dock is flag_dock:
+                        # Large TIFF workflow: keep Flags dock closed to avoid
+                        # stealing focus/opening extra dock UI on image load.
+                        dock.hide()
+                        continue
                     dock.show()
                 except Exception:
                     continue
