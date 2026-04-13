@@ -18,6 +18,7 @@ from annolid.gui.keypoint_catalog import (
 )
 from annolid.gui.widgets import (
     BatchRelabelDialog,
+    IdentityGovernorDialog,
     LabelCollectionDialog,
     LogManagerDialog,
     SystemInfoDialog,
@@ -370,6 +371,40 @@ class ToolingDialogsMixin:
             logger.debug(
                 "Failed to refresh dashboard after batch relabel.", exc_info=True
             )
+
+    def open_identity_governor_dialog(self) -> None:
+        try:
+            dialog = getattr(self, "_identity_governor_dialog", None)
+            if dialog is None:
+                initial_root = None
+                if getattr(self, "video_results_folder", None):
+                    initial_root = Path(self.video_results_folder).resolve()
+                elif getattr(self, "annotation_dir", None):
+                    initial_root = Path(self.annotation_dir).resolve()
+                elif getattr(self, "lastOpenDir", None):
+                    initial_root = Path(str(self.lastOpenDir)).resolve()
+                else:
+                    initial_root = Path.cwd()
+
+                dialog = IdentityGovernorDialog(
+                    initial_annotation_dir=initial_root,
+                    parent=self,
+                )
+                dialog.finished.connect(
+                    lambda *_: setattr(self, "_identity_governor_dialog", None)
+                )
+                dialog.destroyed.connect(
+                    lambda *_: setattr(self, "_identity_governor_dialog", None)
+                )
+                self._identity_governor_dialog = dialog
+
+            dialog.show()
+            dialog.setWindowState(dialog.windowState() & ~QtCore.Qt.WindowMinimized)
+            dialog.raise_()
+            dialog.activateWindow()
+            QtWidgets.QApplication.processEvents()
+        except Exception as exc:
+            logger.debug("Could not open identity governor dialog: %s", exc)
 
     def open_pose_schema_dialog(self):
         point_labels = [

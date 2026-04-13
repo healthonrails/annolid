@@ -717,20 +717,26 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
             return False
         if self.pixmap is None or self.pixmap.isNull():
             return False
+        source_signature = self._ai_model_image_signature_value()
         if not force:
-            try:
-                current_key = int(self.pixmap.cacheKey())
-            except Exception:
-                current_key = None
+            # The semantic image/frame identity is the real cache key.
+            # `QPixmap.cacheKey()` is only a fallback when signature generation is unavailable.
             if (
-                current_key is not None
-                and self._ai_model_pixmap_key is not None
-                and int(self._ai_model_pixmap_key) == int(current_key)
+                source_signature is not None
+                and self._ai_model_image_signature == source_signature
             ):
                 return True
-        source_signature = self._ai_model_image_signature_value()
-        if not force and self._ai_model_image_signature == source_signature:
-            return True
+            if source_signature is None:
+                try:
+                    current_key = int(self.pixmap.cacheKey())
+                except Exception:
+                    current_key = None
+                if (
+                    current_key is not None
+                    and self._ai_model_pixmap_key is not None
+                    and int(self._ai_model_pixmap_key) == int(current_key)
+                ):
+                    return True
         try:
             self._ai_model.set_image(image=utils.img_qt_to_arr(self.pixmap.toImage()))
             self._ai_model_pixmap_key = int(self.pixmap.cacheKey())

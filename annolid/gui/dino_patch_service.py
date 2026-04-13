@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Literal, Optional, Tuple
+import hashlib
+import threading
 
 import numpy as np
 from PIL import Image
@@ -28,12 +30,94 @@ from annolid.features.dinov3_patch_similarity import DinoPatchSimilarity
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-_EXTRACTOR_CACHE: Dict[Tuple[str, int, Optional[str]], Dinov3FeatureExtractor] = {}
+
+class _CachedFeatureExtractor:
+    """Thread-safe single-frame feature cache over a Dinov3FeatureExtractor.
+
+    Each model configuration keeps exactly one cached image embedding. When the
+    frame/image changes, the previous cached tensor is dropped immediately.
+    """
+
+    def __init__(self, extractor: Dinov3FeatureExtractor) -> None:
+        self._extractor = extractor
+        self._lock = threading.Lock()
+        self._cached_signature: Optional[Tuple[object, ...]] = None
+        self._cached_features: object = None
+        self._cache_hits = 0
+        self._cache_misses = 0
+
+    def __getattr__(self, name: str):
+        return getattr(self._extractor, name)
+
+    def _image_signature(self, image: Image.Image | np.ndarray) -> Tuple[object, ...]:
+        if isinstance(image, Image.Image):
+            pil = image.convert("RGB")
+            digest = hashlib.sha1(pil.tobytes()).hexdigest()
+            return ("pil", pil.width, pil.height, digest)
+        arr = np.asarray(image)
+        if arr.ndim < 2:
+            return ("arr", "invalid")
+        digest = hashlib.sha1(np.ascontiguousarray(arr).tobytes()).hexdigest()
+        return ("arr", int(arr.shape[1]), int(arr.shape[0]), str(arr.dtype), digest)
+
+    def extract(
+        self,
+        image,
+        *,
+        color_space: Literal["RGB", "BGR"] = "RGB",
+        return_type: Literal["torch", "numpy"] = "torch",
+        return_layer: Optional[Literal["last", "all"]] = None,
+        normalize: bool = True,
+    ):
+        signature = (
+            self._image_signature(image),
+            str(color_space),
+            str(return_type),
+            str(return_layer or ""),
+            bool(normalize),
+        )
+        with self._lock:
+            if (
+                self._cached_signature == signature
+                and self._cached_features is not None
+            ):
+                self._cache_hits += 1
+                return self._cached_features
+
+        features = self._extractor.extract(
+            image,
+            color_space=color_space,
+            return_type=return_type,
+            return_layer=return_layer,
+            normalize=normalize,
+        )
+
+        with self._lock:
+            self._cached_signature = signature
+            self._cached_features = features
+            self._cache_misses += 1
+        return features
+
+    def clear_image_cache(self) -> None:
+        with self._lock:
+            self._cached_signature = None
+            self._cached_features = None
+
+    @property
+    def cache_stats(self) -> dict:
+        with self._lock:
+            return {"hits": int(self._cache_hits), "misses": int(self._cache_misses)}
+
+
+_EXTRACTOR_CACHE: Dict[
+    Tuple[str, int, Optional[str]],
+    _CachedFeatureExtractor,
+] = {}
 
 
 def _get_or_create_extractor(
     model_name: str, short_side: int, device: Optional[str]
-) -> Dinov3FeatureExtractor:
+) -> _CachedFeatureExtractor:
     """Load (and cache) a Dinov3FeatureExtractor for the given configuration."""
 
     key = (model_name, short_side, device)
@@ -43,8 +127,9 @@ def _get_or_create_extractor(
 
     cfg = Dinov3Config(model_name=model_name, short_side=short_side, device=device)
     extractor = Dinov3FeatureExtractor(cfg)
-    _EXTRACTOR_CACHE[key] = extractor
-    return extractor
+    cached = _CachedFeatureExtractor(extractor)
+    _EXTRACTOR_CACHE[key] = cached
+    return cached
 
 
 @dataclass

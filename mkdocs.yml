@@ -100,6 +100,7 @@ nav:
       - Video Processing with FFmpeg: tutorials/video_ffmpeg_processing.md
       - Segment-based Batch Tracking: tutorials/segment-based-batch-tracking.md
       - Zone Analysis Workflow: tutorials/zone_analysis_workflow.md
+      - Identity Governor Workflow: identity_governor.md
       - LabelMe to YOLO Class Map: tutorials/Labelme_to_YOLO_class_map.md
       - Sandboxed Shell: tutorials/sandboxed_shell.md
       - SAM3: sam3.md
@@ -124,5 +125,6 @@ nav:
   - Reference:
       - Reference: reference.md
       - Zone Analysis: zone_analysis.md
+      - Identity Governor: identity_governor.md
   - Developer Notes:
       - Model Plugin Help: model_plugin_help.md

@@ -83,6 +83,7 @@ annolid-run agent acp bridge --workspace /path/to/repo
 - [COCO Data Flow](coco_data_flow.md)
 - [Tutorials](tutorials.md)
 - [Zone Analysis](zone_analysis.md)
+- [Identity Governor](identity_governor.md)
 - [MCP](mcp.md)
 - [Model Plugin Help](model_plugin_help.md)
 - [Codex and ACP](codex_and_acp.md)

@@ -44,6 +44,7 @@ from annolid.gui.widgets.tracking_stats_dashboard_dialog import (
 from annolid.gui.widgets.agent_run_dialog import AgentRunDialog
 from annolid.gui.widgets.embedding_search_widget import EmbeddingSearchWidget
 from annolid.gui.widgets.batch_relabel_dialog import BatchRelabelDialog
+from annolid.gui.widgets.identity_governor_dialog import IdentityGovernorDialog
 from annolid.gui.widgets.keypoint_sequencer import KeypointSequencerWidget
 from annolid.gui.widgets.zone_dock import ZoneDockWidget
 
@@ -82,6 +83,7 @@ __all__ = [
     "AgentRunDialog",
     "EmbeddingSearchWidget",
     "BatchRelabelDialog",
+    "IdentityGovernorDialog",
     "KeypointSequencerWidget",
     "ZoneDockWidget",
     "ProjectWizard",

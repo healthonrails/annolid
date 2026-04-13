@@ -489,6 +489,14 @@ class MenuController:
                 "tip": w.tr("Generate tracking reports for the selected video"),
             },
             {
+                "name": "identity_governor",
+                "text": w.tr("&Identity Governor…"),
+                "slot": w.open_identity_governor_dialog,
+                "tip": w.tr(
+                    "Review and repair identity swaps using policy-based distance, zone, and area rules"
+                ),
+            },
+            {
                 "name": "sam3_reset_session",
                 "text": w.tr("Reset SAM3 &Session"),
                 "slot": w.reset_sam3_session,
@@ -1405,6 +1413,7 @@ class MenuController:
                 actions["labeling_progress_dashboard"],
                 actions["tracking_stats_dashboard"],
                 actions["tracking_reports"],
+                actions["identity_governor"],
                 actions["behavior_time_budget"],
                 actions["run_agent"],
                 actions["place_preference"],

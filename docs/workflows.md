@@ -101,6 +101,18 @@ python -m annolid.behavior.time_budget exported_events.csv \
     -o time_budget.csv
 ```
 
+## Identity Repair Workflow
+
+For difficult multi-animal sessions where identity can flip after overlap/occlusion:
+
+1. run tracking as usual,
+2. define a policy for your assay (distance/zone/area thresholds),
+3. run Identity Governor in dry-run mode,
+4. inspect the generated correction report,
+5. apply corrections and regenerate downstream summaries.
+
+See [Identity Governor](identity_governor.md).
+
 ## 5. Depth Workflow
 
 The current GUI includes Video Depth Anything integration.
