@@ -7,6 +7,9 @@ import json
 import functools
 import operator
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from annolid.utils import draw
 from annolid.data.videos import frame_from_video
@@ -304,6 +307,135 @@ def _label_in_collection(label, names):
     return label_str.lower() in {str(name).lower() for name in names}
 
 
+def _probe_sample_aspect_ratio(video_file):
+    """Return the source sample aspect ratio as a ``num:den`` string."""
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        return None
+
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=sample_aspect_ratio",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(video_file),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+
+    sar = result.stdout.strip()
+    if not sar or sar == "N/A":
+        return None
+    return sar
+
+
+def _parse_sample_aspect_ratio(sample_aspect_ratio):
+    """Parse a SAR string like ``29:18`` and return integer tuple."""
+    if not sample_aspect_ratio or sample_aspect_ratio in {"1:1", "N/A"}:
+        return None
+    try:
+        sar_num, sar_den = sample_aspect_ratio.split(":", 1)
+        sar_num = int(sar_num)
+        sar_den = int(sar_den)
+        if sar_num <= 0 or sar_den <= 0:
+            return None
+        return sar_num, sar_den
+    except Exception:
+        return None
+
+
+def _apply_sample_aspect_ratio_to_frame(frame, sample_aspect_ratio):
+    """Resize frame for display using SAR and output square pixels."""
+    parsed_sar = _parse_sample_aspect_ratio(sample_aspect_ratio)
+    if parsed_sar is None:
+        return frame
+
+    sar_num, sar_den = parsed_sar
+    height, width = frame.shape[:2]
+    scaled_width = int(width * sar_num / sar_den)
+    # Keep display width even and non-zero for stable rendering.
+    scaled_width = max(2, (scaled_width // 2) * 2)
+    if scaled_width == width:
+        return frame
+
+    return cv2.resize(frame, (scaled_width, height), interpolation=cv2.INTER_LINEAR)
+
+
+def _finalize_tracked_video(temp_video_file, final_video_file, sample_aspect_ratio):
+    """Write a square-pixel tracked video with the source display geometry."""
+    temp_video_file = Path(temp_video_file)
+    final_video_file = Path(final_video_file)
+
+    if not temp_video_file.exists():
+        raise FileNotFoundError(f"Tracked video was not written: {temp_video_file}")
+
+    if not sample_aspect_ratio or sample_aspect_ratio in {"1:1", "N/A"}:
+        temp_video_file.replace(final_video_file)
+        return final_video_file
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        temp_video_file.replace(final_video_file)
+        return final_video_file
+
+    parsed_sar = _parse_sample_aspect_ratio(sample_aspect_ratio)
+    if parsed_sar is None:
+        temp_video_file.replace(final_video_file)
+        return final_video_file
+    sar_num, sar_den = parsed_sar
+
+    # Bake display aspect into actual pixels so playback stays correct
+    # even in players that ignore non-square SAR metadata.
+    sar_scale_expr = f"{sar_num}/{sar_den}"
+    vf_filter = f"scale=trunc(iw*{sar_scale_expr}/2)*2:ih,setsar=1"
+
+    with tempfile.NamedTemporaryFile(
+        suffix=final_video_file.suffix or ".mp4",
+        delete=False,
+        dir=str(final_video_file.parent),
+    ) as tmp_out:
+        tmp_out_path = Path(tmp_out.name)
+
+    try:
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(temp_video_file),
+                "-vf",
+                vf_filter,
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-an",
+                str(tmp_out_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        tmp_out_path.replace(final_video_file)
+        temp_video_file.unlink(missing_ok=True)
+    except Exception:
+        if tmp_out_path.exists():
+            tmp_out_path.unlink(missing_ok=True)
+        temp_video_file.replace(final_video_file)
+    return final_video_file
+
+
 def tracks2nix(
     video_file=None,
     tracking_results="tracking.csv",
@@ -446,7 +578,9 @@ def tracks2nix(
     num_right_interact = 0
 
     out_video_file = f"{os.path.splitext(video_file)[0]}_tracked.mp4"
-    visualizer = TrackingVisualizer(out_video_file, target_fps, width, height)
+    temp_out_video_file = f"{os.path.splitext(out_video_file)[0]}_opencv_tmp.mp4"
+    source_sample_aspect_ratio = _probe_sample_aspect_ratio(video_file)
+    visualizer = TrackingVisualizer(temp_out_video_file, target_fps, width, height)
 
     for frame_number, frame in enumerate(frame_from_video(cap, num_frames)):
         frame_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
@@ -746,7 +880,10 @@ def tracks2nix(
             2,
         )
 
-        cv2.imshow("Frame", frame)
+        display_frame = _apply_sample_aspect_ratio_to_frame(
+            frame, source_sample_aspect_ratio
+        )
+        cv2.imshow("Frame", display_frame)
         visualizer.write_frame(frame)
         key = cv2.waitKey(1)
         if key == 27:
@@ -754,4 +891,7 @@ def tracks2nix(
 
     visualizer.release()
     cap.release()
+    _finalize_tracked_video(
+        temp_out_video_file, out_video_file, source_sample_aspect_ratio
+    )
     exporter.export(out_nix_csv_file)
