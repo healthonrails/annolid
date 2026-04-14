@@ -951,6 +951,272 @@ def test_viewer_layer_dock_keyboard_shortcuts_nudge_and_reset_raster_overlay(
         dock.close()
 
 
+def test_viewer_layer_dock_settings_panel_emits_open_apply_and_save_requests() -> None:
+    _ensure_qapp()
+
+    dock = ViewerLayerDockWidget()
+    try:
+        dock.set_layers(
+            [
+                {
+                    "id": "raster_overlay_settings",
+                    "name": "overlay settings",
+                    "visible": True,
+                    "opacity": 1.0,
+                    "supports_opacity": True,
+                    "supports_translate": True,
+                    "supports_settings": True,
+                    "supports_reorder": True,
+                    "checkable": True,
+                    "source_path": "/tmp/example_overlay.tif",
+                    "page_index": 2,
+                    "tx": 1.25,
+                    "ty": -0.5,
+                    "sx": 1.1,
+                    "sy": 0.9,
+                    "details": "Raster overlay image | page 3",
+                }
+            ]
+        )
+        dock.layer_list.setCurrentRow(0)
+
+        opened: list[str] = []
+        opened_parent: list[str] = []
+        applied: list[tuple[str, dict]] = []
+        saved: list[tuple[str, dict]] = []
+        dock.layerOpenSourceRequested.connect(lambda layer_id: opened.append(layer_id))
+        dock.layerOpenSourceFolderRequested.connect(
+            lambda layer_id: opened_parent.append(layer_id)
+        )
+        dock.layerApplySettingsRequested.connect(
+            lambda layer_id, payload: applied.append((layer_id, dict(payload)))
+        )
+        dock.layerSaveSettingsRequested.connect(
+            lambda layer_id, payload: saved.append((layer_id, dict(payload)))
+        )
+
+        dock.layer_name_edit.setText("renamed layer")
+        dock.page_spin.setValue(5)
+        dock.tx_spin.setValue(3.0)
+        dock.ty_spin.setValue(-4.0)
+        dock.sx_spin.setValue(1.25)
+        dock.sy_spin.setValue(0.75)
+
+        dock.open_source_button.click()
+        dock.reveal_source_button.click()
+        dock.apply_settings_button.click()
+        dock.save_settings_button.click()
+
+        assert opened == ["raster_overlay_settings"]
+        assert opened_parent == ["raster_overlay_settings"]
+        assert applied == [
+            (
+                "raster_overlay_settings",
+                {
+                    "name": "renamed layer",
+                    "page_index": 4,
+                    "tx": 3.0,
+                    "ty": -4.0,
+                    "sx": 1.25,
+                    "sy": 0.75,
+                },
+            )
+        ]
+        assert saved == applied
+    finally:
+        dock.close()
+
+
+def test_viewer_layer_dock_copy_paste_alignment_emits_apply_for_target_layer() -> None:
+    _ensure_qapp()
+
+    dock = ViewerLayerDockWidget()
+    try:
+        dock.set_layers(
+            [
+                {
+                    "id": "raster_overlay_src",
+                    "name": "source layer",
+                    "visible": True,
+                    "opacity": 1.0,
+                    "supports_opacity": True,
+                    "supports_translate": True,
+                    "supports_settings": True,
+                    "supports_reorder": True,
+                    "checkable": True,
+                    "source_path": "/tmp/source_overlay.tif",
+                    "page_index": 0,
+                    "tx": 11.0,
+                    "ty": -4.0,
+                    "sx": 1.15,
+                    "sy": 0.85,
+                    "details": "Raster overlay image | page 1",
+                },
+                {
+                    "id": "raster_overlay_dst",
+                    "name": "target layer",
+                    "visible": True,
+                    "opacity": 1.0,
+                    "supports_opacity": True,
+                    "supports_translate": True,
+                    "supports_settings": True,
+                    "supports_reorder": True,
+                    "checkable": True,
+                    "source_path": "/tmp/target_overlay.tif",
+                    "page_index": 0,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "sx": 1.0,
+                    "sy": 1.0,
+                    "details": "Raster overlay image | page 1",
+                },
+            ]
+        )
+
+        applied: list[tuple[str, dict]] = []
+        dock.layerApplySettingsRequested.connect(
+            lambda layer_id, payload: applied.append((layer_id, dict(payload)))
+        )
+
+        dock.layer_list.setCurrentRow(0)
+        dock.copy_alignment_button.click()
+        assert "source layer" in dock.alignment_copy_hint_label.text().lower()
+
+        dock.layer_list.setCurrentRow(1)
+        dock.paste_alignment_button.click()
+
+        assert applied == [
+            (
+                "raster_overlay_dst",
+                {
+                    "name": "target layer",
+                    "page_index": 0,
+                    "tx": 11.0,
+                    "ty": -4.0,
+                    "sx": 1.15,
+                    "sy": 0.85,
+                },
+            )
+        ]
+    finally:
+        dock.close()
+
+
+def test_viewer_layer_apply_settings_updates_raster_overlay_state(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_apply_settings.ome.tiff"
+    overlay_path = tmp_path / "overlay_apply_settings.ome.tiff"
+    tifffile.imwrite(base_path, np.zeros((24, 24), dtype=np.uint16), ome=True)
+    tifffile.imwrite(overlay_path, np.ones((3, 24, 24), dtype=np.uint16), ome=True)
+
+    window = _ViewerLayerWindow()
+    try:
+        window.imagePath = str(base_path)
+        window.large_image_backend = TiffFileBackend(base_path)
+        window.large_image_view._content_size = (24, 24)
+        window.large_image_view.set_backend(window.large_image_backend)
+        window.otherData = {
+            "raster_image_layers": [
+                {
+                    "id": "raster_overlay_apply",
+                    "name": "overlay apply",
+                    "source_path": str(overlay_path),
+                    "visible": True,
+                    "opacity": 1.0,
+                    "page_index": 0,
+                    "z_index": 10,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "sx": 1.0,
+                    "sy": 1.0,
+                }
+            ]
+        }
+        window._restoreRasterImageLayersFromState()
+        window._onViewerLayerApplySettingsRequested(
+            "raster_overlay_apply",
+            {
+                "name": "overlay updated",
+                "page_index": 2,
+                "tx": 7.0,
+                "ty": -5.0,
+                "sx": 1.2,
+                "sy": 0.8,
+            },
+        )
+
+        state = {
+            str(item["id"]): item
+            for item in window.large_image_view.raster_overlay_layers_state()
+        }
+        assert state["raster_overlay_apply"]["name"] == "overlay updated"
+        assert int(state["raster_overlay_apply"]["page_index"]) == 2
+        assert abs(float(state["raster_overlay_apply"]["tx"]) - 7.0) < 1e-6
+        assert abs(float(state["raster_overlay_apply"]["ty"]) - (-5.0)) < 1e-6
+        assert abs(float(state["raster_overlay_apply"]["sx"]) - 1.2) < 1e-6
+        assert abs(float(state["raster_overlay_apply"]["sy"]) - 0.8) < 1e-6
+
+        stored = {
+            str(item.get("id") or ""): item
+            for item in list(window.otherData.get("raster_image_layers") or [])
+        }
+        assert stored["raster_overlay_apply"]["name"] == "overlay updated"
+        assert int(stored["raster_overlay_apply"]["page_index"]) == 2
+        assert abs(float(stored["raster_overlay_apply"]["tx"]) - 7.0) < 1e-6
+        assert abs(float(stored["raster_overlay_apply"]["ty"]) - (-5.0)) < 1e-6
+        assert abs(float(stored["raster_overlay_apply"]["sx"]) - 1.2) < 1e-6
+        assert abs(float(stored["raster_overlay_apply"]["sy"]) - 0.8) < 1e-6
+    finally:
+        window.close()
+
+
+def test_viewer_layer_entries_prefer_saved_settings_json_path(tmp_path: Path) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_settings_path.ome.tiff"
+    overlay_path = tmp_path / "overlay_settings_path.ome.tiff"
+    settings_path = tmp_path / "base_settings_path.json"
+    tifffile.imwrite(base_path, np.zeros((24, 24), dtype=np.uint16), ome=True)
+    tifffile.imwrite(overlay_path, np.ones((24, 24), dtype=np.uint16), ome=True)
+    settings_path.write_text("{}", encoding="utf-8")
+
+    window = _ViewerLayerWindow()
+    try:
+        window.imagePath = str(base_path)
+        window.filename = str(settings_path)
+        window.large_image_backend = TiffFileBackend(base_path)
+        window.large_image_view._content_size = (24, 24)
+        window.large_image_view.set_backend(window.large_image_backend)
+        window.otherData = {
+            "raster_image_layers": [
+                {
+                    "id": "raster_overlay_path",
+                    "name": "overlay path",
+                    "source_path": str(overlay_path),
+                    "visible": True,
+                    "opacity": 1.0,
+                    "page_index": 0,
+                    "z_index": 10,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "sx": 1.0,
+                    "sy": 1.0,
+                }
+            ]
+        }
+        window._restoreRasterImageLayersFromState()
+
+        entries = {
+            str(item["id"]): item for item in list(window._viewerLayerEntries() or [])
+        }
+        assert entries["raster_overlay_path"]["source_path"] == str(settings_path)
+    finally:
+        window.close()
+
+
 def test_selected_raster_overlay_layer_can_be_dragged_in_tiled_view(
     tmp_path: Path,
 ) -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from qtpy import QtCore, QtGui, QtWidgets
 
 
@@ -14,12 +16,18 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
     layerRemoveRequested = QtCore.Signal(str)
     layerMoveToTopRequested = QtCore.Signal(str)
     layerMoveToBottomRequested = QtCore.Signal(str)
+    layerOpenSourceRequested = QtCore.Signal(str)
+    layerOpenSourceFolderRequested = QtCore.Signal(str)
+    layerApplySettingsRequested = QtCore.Signal(str, dict)
+    layerSaveSettingsRequested = QtCore.Signal(str, dict)
 
     def __init__(self, parent=None):
         super().__init__("Layers", parent)
         self.setObjectName("viewerLayerDock")
         self._layer_map: dict[str, dict] = {}
         self._shortcuts: list[QtWidgets.QShortcut] = []
+        self._settings_syncing = False
+        self._copied_alignment: dict | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -33,18 +41,62 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         self.layer_list.currentItemChanged.connect(self._on_current_item_changed)
         self.layer_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.layer_list.customContextMenuRequested.connect(self._on_context_menu)
-        layout.addWidget(self.layer_list)
+        layout.addWidget(self.layer_list, 2)
 
-        self.details_label = QtWidgets.QLabel("", container)
+        controls_scroll = QtWidgets.QScrollArea(container)
+        controls_scroll.setWidgetResizable(True)
+        controls_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        controls_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        controls_container = QtWidgets.QWidget(controls_scroll)
+        controls_layout = QtWidgets.QVBoxLayout(controls_container)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+        controls_scroll.setWidget(controls_container)
+        layout.addWidget(controls_scroll, 3)
+
+        self.details_label = QtWidgets.QLabel("", controls_container)
         self.details_label.setWordWrap(True)
-        layout.addWidget(self.details_label)
+        controls_layout.addWidget(self.details_label)
 
-        self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, container)
+        self.opacity_slider = QtWidgets.QSlider(
+            QtCore.Qt.Horizontal, controls_container
+        )
         self.opacity_slider.setRange(0, 100)
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
-        layout.addWidget(self.opacity_slider)
+        controls_layout.addWidget(self.opacity_slider)
 
-        translate_box = QtWidgets.QGroupBox("Align / Nudge", container)
+        def _build_collapsible_section(
+            parent: QtWidgets.QWidget,
+            title: str,
+            content: QtWidgets.QWidget,
+            *,
+            expanded: bool = True,
+        ) -> tuple[QtWidgets.QWidget, QtWidgets.QToolButton]:
+            wrapper = QtWidgets.QWidget(parent)
+            wrapper_layout = QtWidgets.QVBoxLayout(wrapper)
+            wrapper_layout.setContentsMargins(0, 0, 0, 0)
+            wrapper_layout.setSpacing(2)
+            toggle = QtWidgets.QToolButton(wrapper)
+            toggle.setText(str(title))
+            toggle.setCheckable(True)
+            toggle.setChecked(bool(expanded))
+            toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+            toggle.setArrowType(
+                QtCore.Qt.DownArrow if bool(expanded) else QtCore.Qt.RightArrow
+            )
+            toggle.setStyleSheet("QToolButton { font-weight: 600; padding: 4px 2px; }")
+            content.setVisible(bool(expanded))
+            toggle.toggled.connect(content.setVisible)
+            toggle.toggled.connect(
+                lambda checked, button=toggle: button.setArrowType(
+                    QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow
+                )
+            )
+            wrapper_layout.addWidget(toggle)
+            wrapper_layout.addWidget(content)
+            return wrapper, toggle
+
+        translate_box = QtWidgets.QGroupBox("", controls_container)
         translate_layout = QtWidgets.QVBoxLayout(translate_box)
         translate_layout.setContentsMargins(8, 8, 8, 8)
         translate_layout.setSpacing(6)
@@ -93,21 +145,141 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         self.alignment_hint_label.setProperty("class", "mutedHint")
         translate_layout.addWidget(self.alignment_hint_label)
 
-        layout.addWidget(translate_box)
+        translate_section, self.translate_section_toggle = _build_collapsible_section(
+            controls_container,
+            "Align / Nudge",
+            translate_box,
+            expanded=True,
+        )
+        controls_layout.addWidget(translate_section)
+
+        settings_box = QtWidgets.QGroupBox("", controls_container)
+        settings_layout = QtWidgets.QVBoxLayout(settings_box)
+        settings_layout.setContentsMargins(8, 8, 8, 8)
+        settings_layout.setSpacing(6)
+
+        source_row = QtWidgets.QHBoxLayout()
+        source_label = QtWidgets.QLabel("Settings File", settings_box)
+        self.source_path_edit = QtWidgets.QLineEdit(settings_box)
+        self.source_path_edit.setReadOnly(True)
+        self.open_source_button = QtWidgets.QToolButton(settings_box)
+        self.open_source_button.setText("Open")
+        self.open_source_button.clicked.connect(self._request_open_source)
+        self.reveal_source_button = QtWidgets.QToolButton(settings_box)
+        self.reveal_source_button.setText("Folder")
+        self.reveal_source_button.clicked.connect(self._request_open_source_folder)
+        source_row.addWidget(source_label)
+        source_row.addWidget(self.source_path_edit, 1)
+        source_row.addWidget(self.open_source_button)
+        source_row.addWidget(self.reveal_source_button)
+        settings_layout.addLayout(source_row)
+
+        self.source_state_label = QtWidgets.QLabel("", settings_box)
+        self.source_state_label.setWordWrap(True)
+        self.source_state_label.setProperty("class", "mutedHint")
+        settings_layout.addWidget(self.source_state_label)
+
+        name_row = QtWidgets.QHBoxLayout()
+        name_label = QtWidgets.QLabel("Name", settings_box)
+        self.layer_name_edit = QtWidgets.QLineEdit(settings_box)
+        name_row.addWidget(name_label)
+        name_row.addWidget(self.layer_name_edit, 1)
+        settings_layout.addLayout(name_row)
+
+        page_row = QtWidgets.QHBoxLayout()
+        page_label = QtWidgets.QLabel("Page", settings_box)
+        self.page_spin = QtWidgets.QSpinBox(settings_box)
+        self.page_spin.setRange(1, 1000000)
+        self.page_spin.setValue(1)
+        page_row.addWidget(page_label)
+        page_row.addWidget(self.page_spin, 1)
+        settings_layout.addLayout(page_row)
+
+        transform_grid = QtWidgets.QGridLayout()
+        tx_label = QtWidgets.QLabel("Offset X", settings_box)
+        ty_label = QtWidgets.QLabel("Offset Y", settings_box)
+        sx_label = QtWidgets.QLabel("Scale X", settings_box)
+        sy_label = QtWidgets.QLabel("Scale Y", settings_box)
+        self.tx_spin = QtWidgets.QDoubleSpinBox(settings_box)
+        self.ty_spin = QtWidgets.QDoubleSpinBox(settings_box)
+        self.sx_spin = QtWidgets.QDoubleSpinBox(settings_box)
+        self.sy_spin = QtWidgets.QDoubleSpinBox(settings_box)
+        for spin in (self.tx_spin, self.ty_spin):
+            spin.setRange(-1000000.0, 1000000.0)
+            spin.setDecimals(3)
+            spin.setSingleStep(1.0)
+            spin.setValue(0.0)
+            spin.setSuffix(" px")
+        for spin in (self.sx_spin, self.sy_spin):
+            spin.setRange(0.000001, 1000000.0)
+            spin.setDecimals(4)
+            spin.setSingleStep(0.01)
+            spin.setValue(1.0)
+        transform_grid.addWidget(tx_label, 0, 0)
+        transform_grid.addWidget(self.tx_spin, 0, 1)
+        transform_grid.addWidget(ty_label, 0, 2)
+        transform_grid.addWidget(self.ty_spin, 0, 3)
+        transform_grid.addWidget(sx_label, 1, 0)
+        transform_grid.addWidget(self.sx_spin, 1, 1)
+        transform_grid.addWidget(sy_label, 1, 2)
+        transform_grid.addWidget(self.sy_spin, 1, 3)
+        settings_layout.addLayout(transform_grid)
+
+        button_row = QtWidgets.QHBoxLayout()
+        self.reload_settings_button = QtWidgets.QPushButton("Reload", settings_box)
+        self.apply_settings_button = QtWidgets.QPushButton("Apply", settings_box)
+        self.save_settings_button = QtWidgets.QPushButton("Save Settings", settings_box)
+        self.reload_settings_button.clicked.connect(
+            self._reload_selected_layer_settings
+        )
+        self.apply_settings_button.clicked.connect(self._request_apply_settings)
+        self.save_settings_button.clicked.connect(self._request_save_settings)
+        button_row.addWidget(self.reload_settings_button)
+        button_row.addWidget(self.apply_settings_button)
+        button_row.addWidget(self.save_settings_button)
+        settings_layout.addLayout(button_row)
+
+        alignment_row = QtWidgets.QHBoxLayout()
+        self.copy_alignment_button = QtWidgets.QPushButton(
+            "Copy Alignment", settings_box
+        )
+        self.paste_alignment_button = QtWidgets.QPushButton(
+            "Paste Alignment", settings_box
+        )
+        self.copy_alignment_button.clicked.connect(self._copy_alignment)
+        self.paste_alignment_button.clicked.connect(self._paste_alignment)
+        alignment_row.addWidget(self.copy_alignment_button)
+        alignment_row.addWidget(self.paste_alignment_button)
+        settings_layout.addLayout(alignment_row)
+
+        self.alignment_copy_hint_label = QtWidgets.QLabel("", settings_box)
+        self.alignment_copy_hint_label.setWordWrap(True)
+        self.alignment_copy_hint_label.setProperty("class", "mutedHint")
+        settings_layout.addWidget(self.alignment_copy_hint_label)
+
+        settings_section, self.settings_section_toggle = _build_collapsible_section(
+            controls_container,
+            "Layer Settings",
+            settings_box,
+            expanded=False,
+        )
+        controls_layout.addWidget(settings_section)
 
         move_row = QtWidgets.QHBoxLayout()
-        self.move_up_button = QtWidgets.QPushButton("Move Up", container)
-        self.move_down_button = QtWidgets.QPushButton("Move Down", container)
+        self.move_up_button = QtWidgets.QPushButton("Move Up", controls_container)
+        self.move_down_button = QtWidgets.QPushButton("Move Down", controls_container)
         self.move_up_button.clicked.connect(lambda: self._request_move(-1))
         self.move_down_button.clicked.connect(lambda: self._request_move(1))
         move_row.addWidget(self.move_up_button)
         move_row.addWidget(self.move_down_button)
-        layout.addLayout(move_row)
+        controls_layout.addLayout(move_row)
+        controls_layout.addStretch(1)
 
         self.setWidget(container)
         self._set_opacity_enabled(False)
         self._set_reorder_enabled(False)
         self._set_translate_enabled(False)
+        self._set_settings_enabled(False)
         self._install_shortcuts()
 
     def _set_opacity_enabled(self, enabled: bool) -> None:
@@ -126,6 +298,147 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         self.nudge_up_button.setEnabled(enabled_flag)
         self.nudge_down_button.setEnabled(enabled_flag)
         self.reset_translate_button.setEnabled(enabled_flag)
+
+    def _set_settings_enabled(self, enabled: bool) -> None:
+        enabled_flag = bool(enabled)
+        self.source_path_edit.setEnabled(enabled_flag)
+        self.open_source_button.setEnabled(enabled_flag)
+        self.reveal_source_button.setEnabled(enabled_flag)
+        self.layer_name_edit.setEnabled(enabled_flag)
+        self.page_spin.setEnabled(enabled_flag)
+        self.tx_spin.setEnabled(enabled_flag)
+        self.ty_spin.setEnabled(enabled_flag)
+        self.sx_spin.setEnabled(enabled_flag)
+        self.sy_spin.setEnabled(enabled_flag)
+        self.reload_settings_button.setEnabled(enabled_flag)
+        self.apply_settings_button.setEnabled(enabled_flag)
+        self.save_settings_button.setEnabled(enabled_flag)
+        self.copy_alignment_button.setEnabled(enabled_flag)
+        self.paste_alignment_button.setEnabled(
+            enabled_flag and self._copied_alignment is not None
+        )
+
+    def _update_alignment_copy_hint(self) -> None:
+        if self._copied_alignment is None:
+            self.alignment_copy_hint_label.setText("No copied alignment.")
+            return
+        source = str(self._copied_alignment.get("source_name") or "Unknown")
+        self.alignment_copy_hint_label.setText(f"Copied from: {source}")
+
+    def _populate_settings_fields(self, layer: dict) -> None:
+        self._settings_syncing = True
+        try:
+            self.source_path_edit.setText(str(layer.get("source_path") or ""))
+            source_path = str(layer.get("source_path") or "").strip()
+            if source_path:
+                exists = Path(source_path).expanduser().exists()
+                self.source_state_label.setText(
+                    "Settings file found." if exists else "Settings file is missing."
+                )
+            else:
+                self.source_state_label.setText("")
+            self.layer_name_edit.setText(str(layer.get("name") or ""))
+            self.page_spin.setValue(max(1, int(layer.get("page_index", 0) or 0) + 1))
+            self.tx_spin.setValue(float(layer.get("tx", 0.0) or 0.0))
+            self.ty_spin.setValue(float(layer.get("ty", 0.0) or 0.0))
+            self.sx_spin.setValue(max(0.000001, float(layer.get("sx", 1.0) or 1.0)))
+            self.sy_spin.setValue(max(0.000001, float(layer.get("sy", 1.0) or 1.0)))
+        finally:
+            self._settings_syncing = False
+
+    def _settings_payload(self) -> dict:
+        return {
+            "name": str(self.layer_name_edit.text() or "").strip(),
+            "page_index": int(self.page_spin.value()) - 1,
+            "tx": float(self.tx_spin.value()),
+            "ty": float(self.ty_spin.value()),
+            "sx": float(self.sx_spin.value()),
+            "sy": float(self.sy_spin.value()),
+        }
+
+    def _copy_alignment(self) -> None:
+        layer_id = self._current_layer_id()
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        if not bool(layer.get("supports_settings", False)):
+            return
+        self._copied_alignment = {
+            "source_layer_id": layer_id,
+            "source_name": str(layer.get("name") or layer_id),
+            "tx": float(self.tx_spin.value()),
+            "ty": float(self.ty_spin.value()),
+            "sx": float(self.sx_spin.value()),
+            "sy": float(self.sy_spin.value()),
+        }
+        self._update_alignment_copy_hint()
+        self._set_settings_enabled(True)
+
+    def _paste_alignment(self) -> None:
+        if self._copied_alignment is None or self._settings_syncing:
+            return
+        layer_id = self._current_layer_id()
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        if not bool(layer.get("supports_settings", False)):
+            return
+        self.tx_spin.setValue(float(self._copied_alignment.get("tx", 0.0) or 0.0))
+        self.ty_spin.setValue(float(self._copied_alignment.get("ty", 0.0) or 0.0))
+        self.sx_spin.setValue(
+            max(0.000001, float(self._copied_alignment.get("sx", 1.0) or 1.0))
+        )
+        self.sy_spin.setValue(
+            max(0.000001, float(self._copied_alignment.get("sy", 1.0) or 1.0))
+        )
+        self._request_apply_settings()
+
+    def _reload_selected_layer_settings(self) -> None:
+        layer_id = self._current_layer_id()
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        self._populate_settings_fields(layer)
+
+    def _request_open_source(self) -> None:
+        layer_id = self._current_layer_id()
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        if not str(layer.get("source_path") or "").strip():
+            return
+        self.layerOpenSourceRequested.emit(layer_id)
+
+    def _request_open_source_folder(self) -> None:
+        layer_id = self._current_layer_id()
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        if not str(layer.get("source_path") or "").strip():
+            return
+        self.layerOpenSourceFolderRequested.emit(layer_id)
+
+    def _request_apply_settings(self) -> None:
+        if self._settings_syncing:
+            return
+        layer_id = self._current_layer_id()
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        if not bool(layer.get("supports_settings", False)):
+            return
+        self.layerApplySettingsRequested.emit(layer_id, self._settings_payload())
+
+    def _request_save_settings(self) -> None:
+        if self._settings_syncing:
+            return
+        layer_id = self._current_layer_id()
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        if not bool(layer.get("supports_settings", False)):
+            return
+        self.layerSaveSettingsRequested.emit(layer_id, self._settings_payload())
 
     def _current_layer_id(self) -> str | None:
         item = self.layer_list.currentItem()
@@ -147,6 +460,10 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         self._set_opacity_enabled(supports_opacity)
         self._set_reorder_enabled(bool(layer.get("supports_reorder", False)))
         self._set_translate_enabled(supports_translate)
+        supports_settings = bool(layer.get("supports_settings", False))
+        self._set_settings_enabled(supports_settings)
+        self._populate_settings_fields(layer if supports_settings else {})
+        self._update_alignment_copy_hint()
         self.details_label.setText(str(layer.get("details", "") or ""))
         if layer_id:
             self.layerSelected.emit(layer_id)
@@ -304,3 +621,9 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
             self.details_label.setText("")
             self._set_opacity_enabled(False)
             self._set_reorder_enabled(False)
+            self._set_translate_enabled(False)
+            self._set_settings_enabled(False)
+            self._populate_settings_fields({})
+            self._update_alignment_copy_hint()
+            return
+        self._on_current_item_changed(self.layer_list.currentItem(), None)

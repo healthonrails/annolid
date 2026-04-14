@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from qtpy import QtCore
+from qtpy import QtGui
 
 from annolid.gui.widgets.layer_dock import ViewerLayerDockWidget
 from annolid.gui.viewer_layers import (
@@ -13,6 +16,39 @@ from annolid.gui.viewer_layers import (
 
 
 class LayerDockMixin:
+    def _currentLayerSettingsFilePath(self) -> str:
+        candidates: list[str] = []
+        label_file = getattr(self, "labelFile", None)
+        for raw in (
+            getattr(label_file, "filename", ""),
+            getattr(self, "filename", ""),
+        ):
+            value = str(raw or "").strip()
+            if value.lower().endswith(".json"):
+                candidates.append(value)
+        image_path = str(getattr(self, "imagePath", "") or "").strip()
+        if image_path:
+            try:
+                candidates.append(
+                    str(Path(image_path).expanduser().with_suffix(".json"))
+                )
+            except Exception:
+                pass
+        for candidate in candidates:
+            path = Path(candidate).expanduser()
+            if path.exists():
+                return str(path)
+        return str(candidates[0]) if candidates else ""
+
+    def _rasterOverlaySettingsPath(self, record: dict | None) -> str:
+        settings_path = str((record or {}).get("settings_path") or "").strip()
+        if settings_path:
+            return settings_path
+        current_settings_path = self._currentLayerSettingsFilePath()
+        if current_settings_path:
+            return current_settings_path
+        return str((record or {}).get("source_path") or "").strip()
+
     def _is_raster_overlay_layer_id(self, layer_id: str) -> bool:
         target = str(layer_id or "")
         if not target or target == "raster_image":
@@ -45,6 +81,16 @@ class LayerDockMixin:
         dock.layerMoveToBottomRequested.connect(
             self._onViewerLayerMoveToBottomRequested
         )
+        dock.layerOpenSourceRequested.connect(self._onViewerLayerOpenSourceRequested)
+        dock.layerOpenSourceFolderRequested.connect(
+            self._onViewerLayerOpenSourceFolderRequested
+        )
+        dock.layerApplySettingsRequested.connect(
+            self._onViewerLayerApplySettingsRequested
+        )
+        dock.layerSaveSettingsRequested.connect(
+            self._onViewerLayerSaveSettingsRequested
+        )
         self.viewer_layer_dock = dock
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
         vector_dock = getattr(self, "vector_overlay_dock", None)
@@ -76,11 +122,23 @@ class LayerDockMixin:
                 or is_raster_overlay
             )
             if isinstance(layer, RasterImageLayer):
+                source_path = ""
+                page_index = int(layer.backend_page_index)
+                for record in list(
+                    getattr(self, "_raster_layer_records", lambda: [])() or []
+                ):
+                    if str((record or {}).get("id") or "") != str(layer.id):
+                        continue
+                    source_path = self._rasterOverlaySettingsPath(record)
+                    page_index = int(
+                        (record or {}).get("page_index", page_index) or page_index
+                    )
+                    break
                 if str(layer.id) == "raster_image":
                     details.append("Base raster image")
                 else:
                     details.append("Raster overlay image")
-                details.append(f"page {int(layer.backend_page_index) + 1}")
+                details.append(f"page {int(page_index) + 1}")
                 transform = getattr(layer, "transform", None)
                 if transform is not None:
                     try:
@@ -117,12 +175,36 @@ class LayerDockMixin:
                     "opacity": float(getattr(layer, "opacity", 1.0)),
                     "supports_opacity": supports_opacity,
                     "supports_translate": supports_translate,
+                    "supports_settings": is_raster_overlay,
                     "supports_reorder": is_raster_overlay,
                     "checkable": checkable,
+                    "source_path": source_path if is_raster_overlay else "",
+                    "page_index": int(page_index),
+                    "tx": float(
+                        getattr(getattr(layer, "transform", None), "tx", 0.0) or 0.0
+                    ),
+                    "ty": float(
+                        getattr(getattr(layer, "transform", None), "ty", 0.0) or 0.0
+                    ),
+                    "sx": float(
+                        getattr(getattr(layer, "transform", None), "sx", 1.0) or 1.0
+                    ),
+                    "sy": float(
+                        getattr(getattr(layer, "transform", None), "sy", 1.0) or 1.0
+                    ),
                     "details": " | ".join(details),
                 }
             )
         return entries
+
+    def _rasterOverlayLayerRecord(self, layer_id: str) -> dict | None:
+        target = str(layer_id or "")
+        if not target or not hasattr(self, "_raster_layer_records"):
+            return None
+        for record in list(self._raster_layer_records() or []):
+            if str((record or {}).get("id") or "") == target:
+                return dict(record or {})
+        return None
 
     def _refreshViewerLayerDock(self) -> None:
         dock = self._ensureViewerLayerDock()
@@ -367,3 +449,77 @@ class LayerDockMixin:
             and hasattr(vector_dock, "set_current_overlay")
         ):
             vector_dock.set_current_overlay(layer_id)
+
+    def _onViewerLayerOpenSourceRequested(self, layer_id: str) -> None:
+        layer_id = str(layer_id or "")
+        if not self._is_raster_overlay_layer_id(layer_id):
+            return
+        record = self._rasterOverlayLayerRecord(layer_id)
+        source_path = Path(self._rasterOverlaySettingsPath(record)).expanduser()
+        if not source_path.exists():
+            return
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(source_path)))
+
+    def _onViewerLayerOpenSourceFolderRequested(self, layer_id: str) -> None:
+        layer_id = str(layer_id or "")
+        if not self._is_raster_overlay_layer_id(layer_id):
+            return
+        record = self._rasterOverlayLayerRecord(layer_id)
+        source_path = Path(self._rasterOverlaySettingsPath(record)).expanduser()
+        if not source_path.exists():
+            return
+        QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl.fromLocalFile(str(source_path.parent))
+        )
+
+    def _applyViewerLayerSettings(self, layer_id: str, settings: dict) -> bool:
+        layer_id = str(layer_id or "")
+        if not self._is_raster_overlay_layer_id(layer_id):
+            return False
+        payload = dict(settings or {})
+        changed = False
+        if hasattr(self, "renameRasterImageLayer"):
+            changed = (
+                bool(
+                    self.renameRasterImageLayer(
+                        layer_id, str(payload.get("name") or "")
+                    )
+                )
+                or changed
+            )
+        if hasattr(self, "setRasterImageLayerPageIndex"):
+            changed = (
+                bool(
+                    self.setRasterImageLayerPageIndex(
+                        layer_id,
+                        int(payload.get("page_index", 0) or 0),
+                    )
+                )
+                or changed
+            )
+        if hasattr(self, "setRasterImageLayerTransform"):
+            changed = (
+                bool(
+                    self.setRasterImageLayerTransform(
+                        layer_id,
+                        tx=float(payload.get("tx", 0.0) or 0.0),
+                        ty=float(payload.get("ty", 0.0) or 0.0),
+                        sx=float(payload.get("sx", 1.0) or 1.0),
+                        sy=float(payload.get("sy", 1.0) or 1.0),
+                    )
+                )
+                or changed
+            )
+        if changed:
+            self._refreshViewerLayerDock()
+        return changed
+
+    def _onViewerLayerApplySettingsRequested(
+        self, layer_id: str, settings: dict
+    ) -> None:
+        self._applyViewerLayerSettings(layer_id, settings)
+
+    def _onViewerLayerSaveSettingsRequested(
+        self, layer_id: str, settings: dict
+    ) -> None:
+        self._applyViewerLayerSettings(layer_id, settings)

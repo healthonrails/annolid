@@ -329,6 +329,39 @@ class RasterLayerMixin:
             self._syncLargeImageDocument()
         return True
 
+    def setRasterImageLayerPageIndex(self, layer_id: str, page_index: int) -> bool:
+        layer_id = str(layer_id or "").strip()
+        if not layer_id:
+            return False
+        records = list(self._raster_layer_records())
+        target_record: dict | None = None
+        for record in records:
+            if str((record or {}).get("id") or "") != layer_id:
+                continue
+            target_record = record
+            break
+        if target_record is None:
+            return False
+        source_path = Path(str(target_record.get("source_path") or "")).expanduser()
+        if not source_path.exists():
+            return False
+        normalized_page = max(0, int(page_index))
+        try:
+            backend = open_large_image(source_path)
+            page_count = int(getattr(backend, "get_page_count", lambda: 1)() or 1)
+            normalized_page = max(0, min(normalized_page, max(0, page_count - 1)))
+        except Exception:
+            pass
+        current_page = int(target_record.get("page_index", 0) or 0)
+        if current_page == normalized_page:
+            return False
+        target_record["page_index"] = int(normalized_page)
+        self._set_raster_layer_records(records)
+        self._restoreRasterImageLayersFromState()
+        if hasattr(self, "_syncLargeImageDocument"):
+            self._syncLargeImageDocument()
+        return True
+
     def translateRasterImageLayer(
         self, layer_id: str, dx: float = 0.0, dy: float = 0.0
     ) -> bool:
