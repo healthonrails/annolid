@@ -20,6 +20,8 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
     layerOpenSourceFolderRequested = QtCore.Signal(str)
     layerApplySettingsRequested = QtCore.Signal(str, dict)
     layerSaveSettingsRequested = QtCore.Signal(str, dict)
+    layerQuickTransformRequested = QtCore.Signal(str, dict)
+    layerInteractiveResizeToggled = QtCore.Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__("Layers", parent)
@@ -37,6 +39,9 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         layout.setSpacing(6)
 
         self.layer_list = QtWidgets.QListWidget(container)
+        self.layer_list.setSizeAdjustPolicy(
+            QtWidgets.QAbstractScrollArea.AdjustToContents
+        )
         self.layer_list.itemChanged.connect(self._on_item_changed)
         self.layer_list.currentItemChanged.connect(self._on_current_item_changed)
         self.layer_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -137,6 +142,71 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         )
         self.reset_translate_button.clicked.connect(self._request_translate_reset)
         translate_layout.addWidget(self.reset_translate_button)
+
+        quick_scale_row = QtWidgets.QHBoxLayout()
+        self.scale_step_spin = QtWidgets.QDoubleSpinBox(translate_box)
+        self.scale_step_spin.setRange(0.1, 100.0)
+        self.scale_step_spin.setDecimals(1)
+        self.scale_step_spin.setSingleStep(0.5)
+        self.scale_step_spin.setValue(5.0)
+        self.scale_step_spin.setSuffix(" %")
+        self.shrink_button = QtWidgets.QPushButton("Shrink", translate_box)
+        self.expand_button = QtWidgets.QPushButton("Expand", translate_box)
+        self.shrink_button.clicked.connect(self._request_shrink)
+        self.expand_button.clicked.connect(self._request_expand)
+        quick_scale_row.addWidget(QtWidgets.QLabel("Scale Step", translate_box))
+        quick_scale_row.addWidget(self.scale_step_spin, 1)
+        quick_scale_row.addWidget(self.shrink_button)
+        quick_scale_row.addWidget(self.expand_button)
+        translate_layout.addLayout(quick_scale_row)
+
+        quick_align_grid = QtWidgets.QGridLayout()
+        self.align_left_button = QtWidgets.QToolButton(translate_box)
+        self.align_hcenter_button = QtWidgets.QToolButton(translate_box)
+        self.align_right_button = QtWidgets.QToolButton(translate_box)
+        self.align_top_button = QtWidgets.QToolButton(translate_box)
+        self.align_vcenter_button = QtWidgets.QToolButton(translate_box)
+        self.align_bottom_button = QtWidgets.QToolButton(translate_box)
+        self.align_left_button.setText("Left")
+        self.align_hcenter_button.setText("H-Center")
+        self.align_right_button.setText("Right")
+        self.align_top_button.setText("Top")
+        self.align_vcenter_button.setText("V-Center")
+        self.align_bottom_button.setText("Bottom")
+        self.align_left_button.clicked.connect(
+            lambda: self._request_align(horizontal="left")
+        )
+        self.align_hcenter_button.clicked.connect(
+            lambda: self._request_align(horizontal="center")
+        )
+        self.align_right_button.clicked.connect(
+            lambda: self._request_align(horizontal="right")
+        )
+        self.align_top_button.clicked.connect(
+            lambda: self._request_align(vertical="top")
+        )
+        self.align_vcenter_button.clicked.connect(
+            lambda: self._request_align(vertical="center")
+        )
+        self.align_bottom_button.clicked.connect(
+            lambda: self._request_align(vertical="bottom")
+        )
+        quick_align_grid.addWidget(self.align_left_button, 0, 0)
+        quick_align_grid.addWidget(self.align_hcenter_button, 0, 1)
+        quick_align_grid.addWidget(self.align_right_button, 0, 2)
+        quick_align_grid.addWidget(self.align_top_button, 1, 0)
+        quick_align_grid.addWidget(self.align_vcenter_button, 1, 1)
+        quick_align_grid.addWidget(self.align_bottom_button, 1, 2)
+        translate_layout.addLayout(quick_align_grid)
+
+        self.interactive_resize_button = QtWidgets.QPushButton(
+            "Interactive Resize", translate_box
+        )
+        self.interactive_resize_button.setCheckable(True)
+        self.interactive_resize_button.toggled.connect(
+            self.layerInteractiveResizeToggled.emit
+        )
+        translate_layout.addWidget(self.interactive_resize_button)
 
         self.alignment_hint_label = QtWidgets.QLabel(
             "Shortcut: Alt+Arrows nudge, Alt+0 resets", translate_box
@@ -281,6 +351,23 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         self._set_translate_enabled(False)
         self._set_settings_enabled(False)
         self._install_shortcuts()
+        self._update_layer_list_height()
+
+    def _update_layer_list_height(self) -> None:
+        count = int(self.layer_list.count())
+        row_hint = int(self.layer_list.sizeHintForRow(0))
+        if row_hint <= 0:
+            row_hint = max(22, self.layer_list.fontMetrics().height() + 10)
+        frame = int(self.layer_list.frameWidth() * 2)
+        list_margins = int(
+            self.layer_list.contentsMargins().top()
+            + self.layer_list.contentsMargins().bottom()
+        )
+        # Keep the list compact for small layer counts while still usable.
+        visible_rows = max(3, min(10, count if count > 0 else 3))
+        target_height = int((row_hint * visible_rows) + frame + list_margins)
+        self.layer_list.setMinimumHeight(target_height)
+        self.layer_list.setMaximumHeight(target_height)
 
     def _set_opacity_enabled(self, enabled: bool) -> None:
         self.opacity_slider.setEnabled(bool(enabled))
@@ -298,6 +385,20 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         self.nudge_up_button.setEnabled(enabled_flag)
         self.nudge_down_button.setEnabled(enabled_flag)
         self.reset_translate_button.setEnabled(enabled_flag)
+        self.scale_step_spin.setEnabled(enabled_flag)
+        self.shrink_button.setEnabled(enabled_flag)
+        self.expand_button.setEnabled(enabled_flag)
+        self.align_left_button.setEnabled(enabled_flag)
+        self.align_hcenter_button.setEnabled(enabled_flag)
+        self.align_right_button.setEnabled(enabled_flag)
+        self.align_top_button.setEnabled(enabled_flag)
+        self.align_vcenter_button.setEnabled(enabled_flag)
+        self.align_bottom_button.setEnabled(enabled_flag)
+        self.interactive_resize_button.setEnabled(enabled_flag)
+        if not enabled_flag and self.interactive_resize_button.isChecked():
+            with QtCore.QSignalBlocker(self.interactive_resize_button):
+                self.interactive_resize_button.setChecked(False)
+            self.layerInteractiveResizeToggled.emit(False)
 
     def _set_settings_enabled(self, enabled: bool) -> None:
         enabled_flag = bool(enabled)
@@ -523,6 +624,52 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
             return
         self.layerResetTransformRequested.emit(layer_id)
 
+    def _request_scale_relative(self, factor: float) -> None:
+        layer_id = self._current_layer_id()
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        if not bool(layer.get("supports_translate", False)):
+            return
+        normalized = max(1e-6, float(factor))
+        self.layerQuickTransformRequested.emit(
+            layer_id,
+            {
+                "action": "scale",
+                "factor": float(normalized),
+                "keep_center": True,
+            },
+        )
+
+    def _request_shrink(self) -> None:
+        step = max(0.001, float(self.scale_step_spin.value()))
+        self._request_scale_relative(max(1e-6, 1.0 - (step / 100.0)))
+
+    def _request_expand(self) -> None:
+        step = max(0.001, float(self.scale_step_spin.value()))
+        self._request_scale_relative(1.0 + (step / 100.0))
+
+    def _request_align(
+        self,
+        *,
+        horizontal: str | None = None,
+        vertical: str | None = None,
+    ) -> None:
+        layer_id = self._current_layer_id()
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        if not bool(layer.get("supports_translate", False)):
+            return
+        self.layerQuickTransformRequested.emit(
+            layer_id,
+            {
+                "action": "align",
+                "horizontal": str(horizontal or "").strip().lower() or None,
+                "vertical": str(vertical or "").strip().lower() or None,
+            },
+        )
+
     def _install_shortcuts(self) -> None:
         shortcuts = [
             (QtGui.QKeySequence("Alt+Left"), lambda: self._request_translate(-1, 0)),
@@ -617,6 +764,7 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
                         break
             if self.layer_list.currentItem() is None and self.layer_list.count() > 0:
                 self.layer_list.setCurrentRow(0)
+        self._update_layer_list_height()
         if self.layer_list.currentItem() is None:
             self.details_label.setText("")
             self._set_opacity_enabled(False)

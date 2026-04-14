@@ -91,6 +91,12 @@ class LayerDockMixin:
         dock.layerSaveSettingsRequested.connect(
             self._onViewerLayerSaveSettingsRequested
         )
+        dock.layerQuickTransformRequested.connect(
+            self._onViewerLayerQuickTransformRequested
+        )
+        dock.layerInteractiveResizeToggled.connect(
+            self._onViewerLayerInteractiveResizeToggled
+        )
         self.viewer_layer_dock = dock
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
         vector_dock = getattr(self, "vector_overlay_dock", None)
@@ -527,3 +533,42 @@ class LayerDockMixin:
         self, layer_id: str, settings: dict
     ) -> None:
         self._applyViewerLayerSettings(layer_id, settings)
+
+    def _onViewerLayerQuickTransformRequested(
+        self, layer_id: str, payload: dict
+    ) -> None:
+        layer_id = str(layer_id or "")
+        if not self._is_raster_overlay_layer_id(layer_id):
+            return
+        data = dict(payload or {})
+        action = str(data.get("action") or "").strip().lower()
+        changed = False
+        if action == "scale" and hasattr(self, "scaleRasterImageLayer"):
+            changed = bool(
+                self.scaleRasterImageLayer(
+                    layer_id,
+                    factor=float(data.get("factor", 1.0) or 1.0),
+                    keep_center=bool(data.get("keep_center", True)),
+                )
+            )
+        elif action == "align" and hasattr(self, "alignRasterImageLayer"):
+            changed = bool(
+                self.alignRasterImageLayer(
+                    layer_id,
+                    horizontal=data.get("horizontal"),
+                    vertical=data.get("vertical"),
+                )
+            )
+        if changed:
+            self._refreshViewerLayerDock()
+
+    def _onViewerLayerInteractiveResizeToggled(self, enabled: bool) -> None:
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is None or not hasattr(
+            large_view, "set_raster_overlay_arrow_mode"
+        ):
+            return
+        try:
+            large_view.set_raster_overlay_arrow_mode(bool(enabled))
+        except Exception:
+            return

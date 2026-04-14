@@ -329,6 +329,118 @@ class RasterLayerMixin:
             self._syncLargeImageDocument()
         return True
 
+    def _rasterContentSize(self) -> tuple[float, float]:
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is not None and hasattr(large_view, "content_size"):
+            try:
+                width, height = large_view.content_size()
+                if float(width) > 0.0 and float(height) > 0.0:
+                    return float(width), float(height)
+            except Exception:
+                pass
+        backend = getattr(self, "large_image_backend", None)
+        if backend is not None and hasattr(backend, "get_level_shape"):
+            try:
+                width, height = backend.get_level_shape(0)
+                if float(width) > 0.0 and float(height) > 0.0:
+                    return float(width), float(height)
+            except Exception:
+                pass
+        return (0.0, 0.0)
+
+    def scaleRasterImageLayer(
+        self,
+        layer_id: str,
+        *,
+        factor: float,
+        keep_center: bool = True,
+    ) -> bool:
+        layer_id = str(layer_id or "").strip()
+        if not layer_id:
+            return False
+        scale_factor = max(1e-6, float(factor))
+        if abs(scale_factor - 1.0) < 1e-9:
+            return False
+        records = list(self._raster_layer_records())
+        target_record: dict | None = None
+        for record in records:
+            if str((record or {}).get("id") or "") == layer_id:
+                target_record = record
+                break
+        if target_record is None:
+            return False
+        tx = float(target_record.get("tx", 0.0) or 0.0)
+        ty = float(target_record.get("ty", 0.0) or 0.0)
+        sx = max(1e-6, float(target_record.get("sx", 1.0) or 1.0))
+        sy = max(1e-6, float(target_record.get("sy", 1.0) or 1.0))
+        next_sx = max(1e-6, sx * scale_factor)
+        next_sy = max(1e-6, sy * scale_factor)
+        next_tx = tx
+        next_ty = ty
+        if bool(keep_center):
+            full_w, full_h = self._rasterContentSize()
+            if full_w > 0.0 and full_h > 0.0:
+                next_tx = tx + (full_w * (sx - next_sx) * 0.5)
+                next_ty = ty + (full_h * (sy - next_sy) * 0.5)
+        return bool(
+            self.setRasterImageLayerTransform(
+                layer_id,
+                tx=float(next_tx),
+                ty=float(next_ty),
+                sx=float(next_sx),
+                sy=float(next_sy),
+            )
+        )
+
+    def alignRasterImageLayer(
+        self,
+        layer_id: str,
+        *,
+        horizontal: str | None = None,
+        vertical: str | None = None,
+    ) -> bool:
+        layer_id = str(layer_id or "").strip()
+        if not layer_id:
+            return False
+        records = list(self._raster_layer_records())
+        target_record: dict | None = None
+        for record in records:
+            if str((record or {}).get("id") or "") == layer_id:
+                target_record = record
+                break
+        if target_record is None:
+            return False
+        full_w, full_h = self._rasterContentSize()
+        if full_w <= 0.0 or full_h <= 0.0:
+            return False
+        sx = max(1e-6, float(target_record.get("sx", 1.0) or 1.0))
+        sy = max(1e-6, float(target_record.get("sy", 1.0) or 1.0))
+        next_tx = float(target_record.get("tx", 0.0) or 0.0)
+        next_ty = float(target_record.get("ty", 0.0) or 0.0)
+        horizontal_mode = str(horizontal or "").strip().lower()
+        vertical_mode = str(vertical or "").strip().lower()
+        if horizontal_mode == "left":
+            next_tx = 0.0
+        elif horizontal_mode == "center":
+            next_tx = (full_w * (1.0 - sx)) * 0.5
+        elif horizontal_mode == "right":
+            next_tx = full_w * (1.0 - sx)
+        if vertical_mode == "top":
+            next_ty = 0.0
+        elif vertical_mode == "center":
+            next_ty = (full_h * (1.0 - sy)) * 0.5
+        elif vertical_mode == "bottom":
+            next_ty = full_h * (1.0 - sy)
+        return bool(
+            self.setRasterImageLayerTransform(
+                layer_id,
+                tx=float(next_tx),
+                ty=float(next_ty),
+                sx=float(sx),
+                sy=float(sy),
+            )
+        )
+
     def setRasterImageLayerPageIndex(self, layer_id: str, page_index: int) -> bool:
         layer_id = str(layer_id or "").strip()
         if not layer_id:

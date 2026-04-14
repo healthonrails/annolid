@@ -388,6 +388,15 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._raster_overlay_drag_start_pos: QtCore.QPointF | None = None
         self._raster_overlay_drag_start_tx: float = 0.0
         self._raster_overlay_drag_start_ty: float = 0.0
+        self._raster_overlay_arrow_mode: bool = False
+        self._raster_overlay_arrow_dragging: bool = False
+        self._raster_overlay_arrow_handle: str | None = None
+        self._raster_overlay_arrow_layer_id: str | None = None
+        self._raster_overlay_arrow_start_pos: QtCore.QPointF | None = None
+        self._raster_overlay_arrow_start_tx: float = 0.0
+        self._raster_overlay_arrow_start_ty: float = 0.0
+        self._raster_overlay_arrow_start_sx: float = 1.0
+        self._raster_overlay_arrow_start_sy: float = 1.0
         self._host_window = None
         self._content_size: tuple[int, int] = (0, 0)
         self._fit_mode: str = "fit_window"
@@ -1167,6 +1176,262 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
 
     def _raster_overlay_runtime(self, layer_id: str):
         return self._raster_overlay_layers.get(str(layer_id or ""))
+
+    def set_raster_overlay_arrow_mode(self, enabled: bool) -> None:
+        enabled_flag = bool(enabled)
+        if enabled_flag == bool(self._raster_overlay_arrow_mode):
+            return
+        self._raster_overlay_arrow_mode = enabled_flag
+        if not enabled_flag:
+            self._end_raster_overlay_arrow_drag()
+        self.viewport().update()
+
+    def _selected_raster_overlay_runtime(
+        self,
+    ) -> tuple[str, _RasterOverlayRuntime] | None:
+        layer_id = self._selected_raster_overlay_layer_id()
+        if not layer_id:
+            return None
+        runtime = self._raster_overlay_runtime(layer_id)
+        if runtime is None:
+            return None
+        return str(layer_id), runtime
+
+    def _raster_overlay_scene_bounds(
+        self, runtime: _RasterOverlayRuntime
+    ) -> QtCore.QRectF:
+        full_w = max(1.0, float(self._content_size[0] or 1))
+        full_h = max(1.0, float(self._content_size[1] or 1))
+        width = full_w * max(1e-6, float(runtime.sx))
+        height = full_h * max(1e-6, float(runtime.sy))
+        return QtCore.QRectF(float(runtime.tx), float(runtime.ty), width, height)
+
+    def _raster_overlay_arrow_handles(
+        self, runtime: _RasterOverlayRuntime
+    ) -> dict[str, dict]:
+        bounds = self._raster_overlay_scene_bounds(runtime)
+        # Keep handles visually stable across zoom levels by converting
+        # desired screen-space pixels into scene units.
+        scale = max(1e-6, float(self.current_scale() or 1.0))
+        scene_per_px = 1.0 / scale
+        margin = 14.0 * scene_per_px
+        size = 16.0 * scene_per_px
+        cx = float(bounds.center().x())
+        cy = float(bounds.center().y())
+        left_x = float(bounds.left()) - margin
+        right_x = float(bounds.right()) + margin
+        top_y = float(bounds.top()) - margin
+        bottom_y = float(bounds.bottom()) + margin
+        return {
+            "left": {
+                "center": QtCore.QPointF(left_x, cy),
+                "hit": QtCore.QRectF(left_x - size, cy - size, size * 2.0, size * 2.0),
+                "cursor": QtCore.Qt.SizeHorCursor,
+            },
+            "right": {
+                "center": QtCore.QPointF(right_x, cy),
+                "hit": QtCore.QRectF(right_x - size, cy - size, size * 2.0, size * 2.0),
+                "cursor": QtCore.Qt.SizeHorCursor,
+            },
+            "top": {
+                "center": QtCore.QPointF(cx, top_y),
+                "hit": QtCore.QRectF(cx - size, top_y - size, size * 2.0, size * 2.0),
+                "cursor": QtCore.Qt.SizeVerCursor,
+            },
+            "bottom": {
+                "center": QtCore.QPointF(cx, bottom_y),
+                "hit": QtCore.QRectF(
+                    cx - size, bottom_y - size, size * 2.0, size * 2.0
+                ),
+                "cursor": QtCore.Qt.SizeVerCursor,
+            },
+            "nw": {
+                "center": QtCore.QPointF(left_x, top_y),
+                "hit": QtCore.QRectF(
+                    left_x - size, top_y - size, size * 2.0, size * 2.0
+                ),
+                "cursor": QtCore.Qt.SizeFDiagCursor,
+            },
+            "ne": {
+                "center": QtCore.QPointF(right_x, top_y),
+                "hit": QtCore.QRectF(
+                    right_x - size, top_y - size, size * 2.0, size * 2.0
+                ),
+                "cursor": QtCore.Qt.SizeBDiagCursor,
+            },
+            "sw": {
+                "center": QtCore.QPointF(left_x, bottom_y),
+                "hit": QtCore.QRectF(
+                    left_x - size, bottom_y - size, size * 2.0, size * 2.0
+                ),
+                "cursor": QtCore.Qt.SizeBDiagCursor,
+            },
+            "se": {
+                "center": QtCore.QPointF(right_x, bottom_y),
+                "hit": QtCore.QRectF(
+                    right_x - size, bottom_y - size, size * 2.0, size * 2.0
+                ),
+                "cursor": QtCore.Qt.SizeFDiagCursor,
+            },
+        }
+
+    def _hit_raster_overlay_arrow_handle(self, scene_pos: QtCore.QPointF) -> str | None:
+        selected = self._selected_raster_overlay_runtime()
+        if selected is None:
+            return None
+        _layer_id, runtime = selected
+        handles = self._raster_overlay_arrow_handles(runtime)
+        for handle, payload in handles.items():
+            hit_rect = payload.get("hit")
+            if isinstance(hit_rect, QtCore.QRectF) and hit_rect.contains(scene_pos):
+                return str(handle)
+        return None
+
+    def _start_raster_overlay_arrow_drag(
+        self, handle: str, scene_pos: QtCore.QPointF
+    ) -> bool:
+        selected = self._selected_raster_overlay_runtime()
+        if selected is None:
+            return False
+        layer_id, runtime = selected
+        handle_name = str(handle or "").strip().lower()
+        if handle_name not in {
+            "left",
+            "right",
+            "top",
+            "bottom",
+            "nw",
+            "ne",
+            "sw",
+            "se",
+        }:
+            return False
+        self._raster_overlay_arrow_dragging = True
+        self._raster_overlay_arrow_handle = handle_name
+        self._raster_overlay_arrow_layer_id = str(layer_id)
+        self._raster_overlay_arrow_start_pos = QtCore.QPointF(scene_pos)
+        self._raster_overlay_arrow_start_tx = float(runtime.tx)
+        self._raster_overlay_arrow_start_ty = float(runtime.ty)
+        self._raster_overlay_arrow_start_sx = max(1e-6, float(runtime.sx))
+        self._raster_overlay_arrow_start_sy = max(1e-6, float(runtime.sy))
+        cursor = QtCore.Qt.SizeVerCursor
+        if handle_name in {"left", "right"}:
+            cursor = QtCore.Qt.SizeHorCursor
+        elif handle_name in {"nw", "se"}:
+            cursor = QtCore.Qt.SizeFDiagCursor
+        elif handle_name in {"ne", "sw"}:
+            cursor = QtCore.Qt.SizeBDiagCursor
+        self.overrideCursor(cursor)
+        self._set_hover_feedback(self.tr("Drag arrow to resize raster overlay"))
+        return True
+
+    def _apply_raster_overlay_arrow_drag(self, scene_pos: QtCore.QPointF) -> bool:
+        layer_id = str(self._raster_overlay_arrow_layer_id or "")
+        handle = str(self._raster_overlay_arrow_handle or "")
+        if (
+            not self._raster_overlay_arrow_dragging
+            or not layer_id
+            or handle not in {"left", "right", "top", "bottom", "nw", "ne", "sw", "se"}
+        ):
+            return False
+        host = getattr(self, "_host_window", None)
+        setter = getattr(host, "setRasterImageLayerTransform", None)
+        if not callable(setter):
+            return False
+        full_w = max(1.0, float(self._content_size[0] or 1))
+        full_h = max(1.0, float(self._content_size[1] or 1))
+        start_tx = float(self._raster_overlay_arrow_start_tx)
+        start_ty = float(self._raster_overlay_arrow_start_ty)
+        start_sx = max(1e-6, float(self._raster_overlay_arrow_start_sx))
+        start_sy = max(1e-6, float(self._raster_overlay_arrow_start_sy))
+        start_pos = self._raster_overlay_arrow_start_pos
+        if start_pos is None:
+            return False
+        delta_x = float(scene_pos.x()) - float(start_pos.x())
+        delta_y = float(scene_pos.y()) - float(start_pos.y())
+        next_tx = start_tx
+        next_ty = start_ty
+        next_sx = start_sx
+        next_sy = start_sy
+        min_scale = 1e-6
+        if handle == "left":
+            next_sx = max(min_scale, start_sx - (delta_x / full_w))
+            next_tx = start_tx + (full_w * (start_sx - next_sx))
+        elif handle == "right":
+            next_sx = max(min_scale, start_sx + (delta_x / full_w))
+            next_tx = start_tx
+        elif handle == "top":
+            next_sy = max(min_scale, start_sy - (delta_y / full_h))
+            next_ty = start_ty + (full_h * (start_sy - next_sy))
+        elif handle == "bottom":
+            next_sy = max(min_scale, start_sy + (delta_y / full_h))
+            next_ty = start_ty
+        else:
+            start_width = full_w * start_sx
+            start_height = full_h * start_sy
+            if start_width <= 0.0 or start_height <= 0.0:
+                return False
+            is_east = handle in {"ne", "se"}
+            is_south = handle in {"sw", "se"}
+            ratio_x = 1.0 + (
+                (delta_x / start_width) if is_east else (-delta_x / start_width)
+            )
+            ratio_y = 1.0 + (
+                (delta_y / start_height) if is_south else (-delta_y / start_height)
+            )
+            ratio = ratio_x if abs(ratio_x - 1.0) >= abs(ratio_y - 1.0) else ratio_y
+            ratio = max(min_scale, ratio)
+            next_sx = start_sx * ratio
+            next_sy = start_sy * ratio
+            if handle == "nw":
+                anchor_x = start_tx + start_width
+                anchor_y = start_ty + start_height
+                next_tx = anchor_x - (full_w * next_sx)
+                next_ty = anchor_y - (full_h * next_sy)
+            elif handle == "ne":
+                anchor_x = start_tx
+                anchor_y = start_ty + start_height
+                next_tx = anchor_x
+                next_ty = anchor_y - (full_h * next_sy)
+            elif handle == "sw":
+                anchor_x = start_tx + start_width
+                anchor_y = start_ty
+                next_tx = anchor_x - (full_w * next_sx)
+                next_ty = anchor_y
+            else:  # se
+                anchor_x = start_tx
+                anchor_y = start_ty
+                next_tx = anchor_x
+                next_ty = anchor_y
+        try:
+            changed = bool(
+                setter(
+                    layer_id,
+                    tx=float(next_tx),
+                    ty=float(next_ty),
+                    sx=float(next_sx),
+                    sy=float(next_sy),
+                )
+            )
+        except Exception:
+            changed = False
+        if changed:
+            self.viewport().update()
+        return changed
+
+    def _end_raster_overlay_arrow_drag(self) -> None:
+        if not self._raster_overlay_arrow_dragging:
+            return
+        self._raster_overlay_arrow_dragging = False
+        self._raster_overlay_arrow_handle = None
+        self._raster_overlay_arrow_layer_id = None
+        self._raster_overlay_arrow_start_pos = None
+        self._raster_overlay_arrow_start_tx = 0.0
+        self._raster_overlay_arrow_start_ty = 0.0
+        self._raster_overlay_arrow_start_sx = 1.0
+        self._raster_overlay_arrow_start_sy = 1.0
+        self._notify_host_large_image_document_changed()
+        self.viewport().update()
 
     def _start_raster_overlay_drag(
         self, layer_id: str, scene_pos: QtCore.QPointF
@@ -3017,6 +3282,60 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         if callable(post_status) and status:
             post_status(str(status), 1500)
 
+    def drawForeground(self, painter, rect):  # pragma: no cover - paint path
+        super().drawForeground(painter, rect)
+        if not bool(self._raster_overlay_arrow_mode):
+            return
+        selected = self._selected_raster_overlay_runtime()
+        if selected is None:
+            return
+        _layer_id, runtime = selected
+        if not bool(getattr(runtime, "visible", True)):
+            return
+        bounds = self._raster_overlay_scene_bounds(runtime)
+        handles = self._raster_overlay_arrow_handles(runtime)
+        pen = QtGui.QPen(QtGui.QColor("#2aa3ff"))
+        pen.setWidthF(1.5)
+        pen.setCosmetic(True)
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setPen(pen)
+        painter.setBrush(QtGui.QBrush(QtGui.QColor(42, 163, 255, 80)))
+        painter.drawRect(bounds)
+        for handle_name, payload in handles.items():
+            center = payload.get("center")
+            if not isinstance(center, QtCore.QPointF):
+                continue
+            scale = max(1e-6, float(self.current_scale() or 1.0))
+            arrow_size = 9.0 * (1.0 / scale)
+            path = QtGui.QPainterPath()
+            if handle_name == "left":
+                path.moveTo(center.x() - arrow_size, center.y())
+                path.lineTo(center.x() + arrow_size, center.y() - (arrow_size * 0.75))
+                path.lineTo(center.x() + arrow_size, center.y() + (arrow_size * 0.75))
+            elif handle_name == "right":
+                path.moveTo(center.x() + arrow_size, center.y())
+                path.lineTo(center.x() - arrow_size, center.y() - (arrow_size * 0.75))
+                path.lineTo(center.x() - arrow_size, center.y() + (arrow_size * 0.75))
+            elif handle_name == "top":
+                path.moveTo(center.x(), center.y() - arrow_size)
+                path.lineTo(center.x() - (arrow_size * 0.75), center.y() + arrow_size)
+                path.lineTo(center.x() + (arrow_size * 0.75), center.y() + arrow_size)
+            elif handle_name == "bottom":
+                path.moveTo(center.x(), center.y() + arrow_size)
+                path.lineTo(center.x() - (arrow_size * 0.75), center.y() - arrow_size)
+                path.lineTo(center.x() + (arrow_size * 0.75), center.y() - arrow_size)
+            else:
+                d = arrow_size * 0.85
+                path.moveTo(center.x(), center.y() - d)
+                path.lineTo(center.x() + d, center.y())
+                path.lineTo(center.x(), center.y() + d)
+                path.lineTo(center.x() - d, center.y())
+            path.closeSubpath()
+            painter.setBrush(QtGui.QBrush(QtGui.QColor("#2aa3ff")))
+            painter.drawPath(path)
+        painter.restore()
+
     def set_zoom_percent(self, percent: int) -> None:
         if not self._content_size[0] or not self._content_size[1]:
             return
@@ -3110,9 +3429,20 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             and not self.drawing()
             and self._selected_raster_overlay_layer_id() is not None
         ):
+            if bool(self._raster_overlay_arrow_mode):
+                handle = self._hit_raster_overlay_arrow_handle(scene_pos)
+                if handle and self._start_raster_overlay_arrow_drag(
+                    handle, self._clamp_scene_point(scene_pos)
+                ):
+                    event.accept()
+                    return
             layer_id = self._selected_raster_overlay_layer_id()
-            if layer_id and self._start_raster_overlay_drag(
-                layer_id, self._clamp_scene_point(scene_pos)
+            if (
+                not bool(self._raster_overlay_arrow_mode)
+                and layer_id
+                and self._start_raster_overlay_drag(
+                    layer_id, self._clamp_scene_point(scene_pos)
+                )
             ):
                 event.accept()
                 return
@@ -3283,6 +3613,16 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         pos = event.pos() if hasattr(event, "pos") else event.position().toPoint()
         scene_pos = self.mapToScene(pos)
         if (
+            self._raster_overlay_arrow_dragging
+            and self._raster_overlay_arrow_layer_id is not None
+            and (event.buttons() & QtCore.Qt.LeftButton)
+        ):
+            if self._apply_raster_overlay_arrow_drag(
+                self._clamp_scene_point(scene_pos)
+            ):
+                event.accept()
+                return
+        if (
             self._dragging_raster_overlay
             and self._raster_overlay_drag_layer_id is not None
             and (event.buttons() & QtCore.Qt.LeftButton)
@@ -3385,6 +3725,40 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 event.accept()
                 return
         if self.editing():
+            if bool(self._raster_overlay_arrow_mode):
+                handle = self._hit_raster_overlay_arrow_handle(scene_pos)
+                if handle in {"left", "right"}:
+                    self.overrideCursor(QtCore.Qt.SizeHorCursor)
+                    self._set_hover_feedback(
+                        self.tr("Drag arrow to resize left/right"),
+                        status=self._scene_xy_text(scene_pos),
+                    )
+                    event.accept()
+                    return
+                if handle in {"nw", "se"}:
+                    self.overrideCursor(QtCore.Qt.SizeFDiagCursor)
+                    self._set_hover_feedback(
+                        self.tr("Drag corner to resize proportionally"),
+                        status=self._scene_xy_text(scene_pos),
+                    )
+                    event.accept()
+                    return
+                if handle in {"ne", "sw"}:
+                    self.overrideCursor(QtCore.Qt.SizeBDiagCursor)
+                    self._set_hover_feedback(
+                        self.tr("Drag corner to resize proportionally"),
+                        status=self._scene_xy_text(scene_pos),
+                    )
+                    event.accept()
+                    return
+                if handle in {"top", "bottom"}:
+                    self.overrideCursor(QtCore.Qt.SizeVerCursor)
+                    self._set_hover_feedback(
+                        self.tr("Drag arrow to resize top/bottom"),
+                        status=self._scene_xy_text(scene_pos),
+                    )
+                    event.accept()
+                    return
             shape, vertex_index, hit_kind = self._shape_hit_test(scene_pos)
             if shape is not None:
                 label = str(getattr(shape, "label", "") or "")
@@ -3447,6 +3821,13 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 return
         if event.button() == QtCore.Qt.LeftButton and self._dragging_raster_overlay:
             self._end_raster_overlay_drag()
+            event.accept()
+            return
+        if (
+            event.button() == QtCore.Qt.LeftButton
+            and self._raster_overlay_arrow_dragging
+        ):
+            self._end_raster_overlay_arrow_drag()
             event.accept()
             return
         if event.button() == QtCore.Qt.LeftButton and self._dragging_shared_boundary:
