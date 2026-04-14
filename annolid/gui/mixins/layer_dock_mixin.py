@@ -105,6 +105,7 @@ class LayerDockMixin:
         entries = []
         for layer in list(getattr(self, "viewerLayerModels", lambda: [])() or []):
             details = []
+            page_index = 0
             is_base_raster = (
                 isinstance(layer, RasterImageLayer) and str(layer.id) == "raster_image"
             )
@@ -228,24 +229,27 @@ class LayerDockMixin:
         canvas = getattr(self, "canvas", None)
         if canvas is None:
             return False
+        visible_flag = bool(visible)
+        annotation_shapes = [
+            shape
+            for shape in list(getattr(canvas, "shapes", []) or [])
+            if "overlay_id" not in dict(getattr(shape, "other_data", {}) or {})
+        ]
         changed = False
-        for shape in list(getattr(canvas, "shapes", []) or []):
-            other = dict(getattr(shape, "other_data", {}) or {})
-            if "overlay_id" in other:
-                continue
-            if bool(getattr(shape, "visible", True)) == bool(visible):
+        for shape in annotation_shapes:
+            if bool(getattr(shape, "visible", True)) == visible_flag:
                 continue
             if hasattr(canvas, "setShapeVisible"):
-                canvas.setShapeVisible(shape, bool(visible))
+                canvas.setShapeVisible(shape, visible_flag)
             else:
-                shape.visible = bool(visible)
+                shape.visible = visible_flag
             changed = True
         large_view = getattr(self, "large_image_view", None)
         if large_view is not None:
-            for shape in list(getattr(canvas, "shapes", []) or []):
+            for shape in annotation_shapes:
                 if hasattr(large_view, "setShapeVisible"):
                     try:
-                        large_view.setShapeVisible(shape, bool(visible))
+                        large_view.setShapeVisible(shape, visible_flag)
                     except Exception:
                         pass
         if not changed:

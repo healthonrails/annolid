@@ -1373,10 +1373,15 @@ class VectorOverlayMixin:
             for shape in list(getattr(canvas, "shapes", []) or [])
             if "overlay_id" not in dict(getattr(shape, "other_data", {}) or {})
         ]
+        layer_visible = True
+        if shapes:
+            layer_visible = all(
+                bool(getattr(shape, "visible", True)) for shape in shapes
+            )
         return AnnotationLayer(
             id="annotations",
             name="Annotations",
-            visible=True,
+            visible=layer_visible,
             opacity=1.0,
             locked=False,
             z_index=100,

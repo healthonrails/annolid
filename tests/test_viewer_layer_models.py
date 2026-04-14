@@ -2376,6 +2376,41 @@ def test_tiled_image_view_annotation_visibility_updates_items_without_rebuild() 
         window.close()
 
 
+def test_annotation_layer_entry_visibility_tracks_hide_and_restore() -> None:
+    _ensure_qapp()
+
+    window = _ViewerLayerWindow()
+    try:
+        annotation_shape = _polygon(
+            "manual_region",
+            [(10.0, 10.0), (20.0, 10.0), (15.0, 20.0)],
+            overlay_id=None,
+        )
+        window.canvas.shapes = [annotation_shape]
+        window.large_image_view.set_shapes(window.canvas.shapes)
+
+        initial_entries = {
+            str(item["id"]): item for item in list(window._viewerLayerEntries() or [])
+        }
+        assert initial_entries["annotations"]["visible"] is True
+
+        window._onViewerLayerVisibilityChanged("annotations", False)
+        hidden_entries = {
+            str(item["id"]): item for item in list(window._viewerLayerEntries() or [])
+        }
+        assert annotation_shape.visible is False
+        assert hidden_entries["annotations"]["visible"] is False
+
+        window._onViewerLayerVisibilityChanged("annotations", True)
+        restored_entries = {
+            str(item["id"]): item for item in list(window._viewerLayerEntries() or [])
+        }
+        assert annotation_shape.visible is True
+        assert restored_entries["annotations"]["visible"] is True
+    finally:
+        window.close()
+
+
 def test_label_panel_visibility_apply_suppresses_tiled_selection_emission() -> None:
     _ensure_qapp()
 
