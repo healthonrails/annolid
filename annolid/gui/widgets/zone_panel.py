@@ -296,6 +296,16 @@ class ZonePanelWidget(QtWidgets.QWidget):
         source_layout.addRow("Current frame", self.source_label)
         source_layout.addRow("Zone JSON", self.save_target_label)
         source_layout.addRow("Canvas", self.canvas_status)
+        self.show_zones_all_frames_checkbox = QtWidgets.QCheckBox(
+            "Show saved zones on all frames"
+        )
+        self.show_zones_all_frames_checkbox.setToolTip(
+            "When enabled, Annolid overlays zones from the zone JSON on every frame."
+        )
+        self.show_zones_all_frames_checkbox.toggled.connect(
+            self._set_display_zones_on_all_frames
+        )
+        source_layout.addRow("", self.show_zones_all_frames_checkbox)
         layout.addWidget(source_box)
 
         list_box = QtWidgets.QGroupBox("Zone Inventory", page)
@@ -577,6 +587,34 @@ class ZonePanelWidget(QtWidgets.QWidget):
             return ""
         return str(getattr(parent, "filename", "") or "").strip()
 
+    def _display_zones_on_all_frames_enabled(self) -> bool:
+        parent = getattr(self, "_owner_window", None) or self.parent()
+        if parent is None:
+            return True
+        return bool(getattr(parent, "_display_zones_on_all_frames", True))
+
+    def _set_display_zones_on_all_frames(self, enabled: bool) -> None:
+        parent = getattr(self, "_owner_window", None) or self.parent()
+        if parent is None:
+            return
+        parent._display_zones_on_all_frames = bool(enabled)
+        settings = getattr(parent, "settings", None)
+        if settings is not None and hasattr(settings, "setValue"):
+            try:
+                settings.setValue("zones/display_on_all_frames", bool(enabled))
+            except Exception:
+                pass
+        current_frame = int(getattr(parent, "frame_number", 0) or 0)
+        frame_setter = getattr(parent, "set_frame_number", None)
+        if callable(frame_setter) and int(getattr(parent, "num_frames", 0) or 0) > 0:
+            frame_setter(current_frame)
+        status = (
+            "Showing saved zones on all frames."
+            if enabled
+            else "Showing zones only when present on the current frame."
+        )
+        self._set_status(status)
+
     def _publish_zone_defaults(self) -> None:
         parent = getattr(self, "_owner_window", None) or self.parent()
         if parent is None:
@@ -689,6 +727,11 @@ class ZonePanelWidget(QtWidgets.QWidget):
         self.tabs.setCurrentIndex(1)
 
     def refresh_from_current_canvas(self) -> None:
+        self.show_zones_all_frames_checkbox.blockSignals(True)
+        self.show_zones_all_frames_checkbox.setChecked(
+            self._display_zones_on_all_frames_enabled()
+        )
+        self.show_zones_all_frames_checkbox.blockSignals(False)
         pixmap = self._current_canvas_pixmap()
         if pixmap is None:
             self.canvas_status.setText(

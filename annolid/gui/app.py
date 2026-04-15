@@ -205,6 +205,9 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self._active_subject_name: Optional[str] = None
         self._behavior_modifier_state: Dict[str, Set[str]] = {}
         self.zone_path = None
+        self._display_zones_on_all_frames = bool(
+            self.settings.value("zones/display_on_all_frames", True, type=bool)
+        )
         # Initialize a flag to control thread termination
         self.stop_prediction_flag = False
         self.epsilon_for_polygon = 2.0

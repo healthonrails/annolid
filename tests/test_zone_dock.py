@@ -61,6 +61,11 @@ class _DummyWindow(QtWidgets.QWidget, ToolingDialogsMixin):
         self.canvas = _DummyCanvas()
         self.video_file = None
         self.filename = ""
+        self.frame_number = 0
+        self.num_frames = 10
+        self._display_zones_on_all_frames = True
+        self._set_frame_number_calls: list[int] = []
+        self.settings = SimpleNamespace(setValue=lambda *_args, **_kwargs: None)
         self._config = {
             "epsilon": 2.0,
             "canvas": {"double_click": "close", "num_backups": 10, "crosshair": False},
@@ -75,6 +80,9 @@ class _DummyWindow(QtWidgets.QWidget, ToolingDialogsMixin):
         self.actions = SimpleNamespace(
             editMode=SimpleNamespace(setEnabled=lambda *_: None)
         )
+
+    def set_frame_number(self, frame_number: int) -> None:
+        self._set_frame_number_calls.append(int(frame_number))
 
 
 class _DockStub:
@@ -380,3 +388,17 @@ def test_zone_panel_inventory_excludes_non_keyword_regular_shapes() -> None:
         panel.inventory_summary_label.text()
         == "Showing 2 of 2 zone candidates (1 explicit zones)"
     )
+
+
+def test_zone_panel_toggle_show_zones_all_frames_updates_owner_state() -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    panel = _build_test_panel(window)
+    panel.refresh_from_current_canvas()
+
+    assert panel.show_zones_all_frames_checkbox.isChecked() is True
+    panel.show_zones_all_frames_checkbox.setChecked(False)
+
+    assert window._display_zones_on_all_frames is False
+    assert window._set_frame_number_calls == [0]
+    assert "only when present on the current frame" in panel.status_label.text()

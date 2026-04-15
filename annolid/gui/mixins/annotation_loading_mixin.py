@@ -125,6 +125,9 @@ class AnnotationLoadingMixin:
             cloned.append(zone_payload_to_shape(payload))
         return cloned
 
+    def _display_zones_on_all_frames_enabled(self) -> bool:
+        return bool(getattr(self, "_display_zones_on_all_frames", True))
+
     def _zone_overlay_candidate_files(self, frame_path: Optional[Path]) -> list[Path]:
         candidates: list[Path] = []
 
@@ -183,6 +186,8 @@ class AnnotationLoadingMixin:
     def _persistent_zone_shapes_for_frame(
         self, frame_path: Optional[Path]
     ) -> list[Shape]:
+        if not self._display_zones_on_all_frames_enabled():
+            return []
         zone_shapes = self._clone_zone_shapes(getattr(self.canvas, "shapes", []) or [])
         for zone_file in self._zone_overlay_candidate_files(frame_path):
             for payload in self._load_zone_payloads_from_file(zone_file):
