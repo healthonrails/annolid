@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from importlib import metadata
 
-__version__ = "1.6.4"
+__version__ = "1.6.5"
 
 
 def get_version() -> str:
