@@ -153,6 +153,8 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         self._ai_model = None
         self._ai_model_pixmap_key = None
         self._ai_model_image_signature = None
+        self._ai_model_signature_cache_token = None
+        self._ai_model_signature_cache_value = None
         self._ai_model_rect = None
         self.sam_predictor = None
         self.sam_hq_model = None
@@ -756,6 +758,18 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
     def _ai_model_image_signature_value(self):
         if self.pixmap is None or self.pixmap.isNull():
             return None
+        source_hint = self._ai_model_source_hint()
+        cache_key = None
+        try:
+            cache_key = int(self.pixmap.cacheKey())
+        except Exception:
+            cache_key = None
+        signature_cache_token = (cache_key, source_hint)
+        if (
+            self._ai_model_signature_cache_token == signature_cache_token
+            and self._ai_model_signature_cache_value is not None
+        ):
+            return self._ai_model_signature_cache_value
         try:
             qimage = self.pixmap.toImage()
             if qimage.isNull():
@@ -764,39 +778,49 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
             digest = hashlib.sha1(
                 np.ascontiguousarray(image_data).tobytes()
             ).hexdigest()
-            return (
+            signature = (
                 "image",
                 digest,
                 int(self.pixmap.width()),
                 int(self.pixmap.height()),
+                source_hint,
             )
+            self._ai_model_signature_cache_token = signature_cache_token
+            self._ai_model_signature_cache_value = signature
+            return signature
         except Exception:
-            candidates = []
-            try:
-                candidates.append(self.window())
-            except Exception:
-                pass
-            candidates.append(self)
-            for owner in candidates:
-                if owner is None:
-                    continue
-                source_path = str(
-                    getattr(owner, "filename", "")
-                    or getattr(owner, "imagePath", "")
-                    or ""
-                ).strip()
-                frame_number = getattr(owner, "frame_number", None)
-                if source_path:
-                    if frame_number is not None:
-                        try:
-                            return (source_path, int(frame_number))
-                        except Exception:
-                            return (source_path, None)
-                    return (source_path, None)
-            try:
-                return ("pixmap", int(self.pixmap.cacheKey()))
-            except Exception:
-                return None
+            signature = source_hint
+            if signature is None:
+                try:
+                    signature = ("pixmap", int(self.pixmap.cacheKey()))
+                except Exception:
+                    signature = None
+            self._ai_model_signature_cache_token = signature_cache_token
+            self._ai_model_signature_cache_value = signature
+            return signature
+
+    def _ai_model_source_hint(self):
+        candidates = []
+        try:
+            candidates.append(self.window())
+        except Exception:
+            pass
+        candidates.append(self)
+        for owner in candidates:
+            if owner is None:
+                continue
+            source_path = str(
+                getattr(owner, "filename", "") or getattr(owner, "imagePath", "") or ""
+            ).strip()
+            frame_number = getattr(owner, "frame_number", None)
+            if source_path:
+                if frame_number is not None:
+                    try:
+                        return (source_path, int(frame_number))
+                    except Exception:
+                        return (source_path, None)
+                return (source_path, None)
+        return None
 
     def _ensure_ai_model_initialized(self, *, force_sync: bool = False) -> bool:
         if self._ai_model is not None:

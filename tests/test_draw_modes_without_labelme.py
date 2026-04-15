@@ -1418,6 +1418,70 @@ def test_sync_ai_model_image_refreshes_when_signature_changes_even_if_pixmap_key
         canvas.close()
 
 
+def test_ai_model_image_signature_value_caches_per_pixmap_and_source_hint(
+    monkeypatch,
+) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.widgets import canvas as canvas_module
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(64, 48, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(10, 20, 30))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.filename = "frame_001.png"
+        canvas.frame_number = 1
+
+        calls = {"count": 0}
+
+        def _fake_qt_to_arr(_qimage):
+            calls["count"] += 1
+            return np.zeros((48, 64, 3), dtype=np.uint8)
+
+        monkeypatch.setattr(canvas_module.utils, "img_qt_to_arr", _fake_qt_to_arr)
+
+        sig1 = canvas._ai_model_image_signature_value()
+        sig2 = canvas._ai_model_image_signature_value()
+
+        assert sig1 == sig2
+        assert calls["count"] == 1
+    finally:
+        canvas.close()
+
+
+def test_ai_model_image_signature_value_fallback_tracks_frame_hint(
+    monkeypatch,
+) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.widgets import canvas as canvas_module
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(64, 48, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(10, 20, 30))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.filename = "frame_001.png"
+        canvas.frame_number = 1
+
+        def _fail_qt_to_arr(_qimage):
+            raise RuntimeError("conversion failed")
+
+        monkeypatch.setattr(canvas_module.utils, "img_qt_to_arr", _fail_qt_to_arr)
+
+        sig1 = canvas._ai_model_image_signature_value()
+        canvas.frame_number = 2
+        sig2 = canvas._ai_model_image_signature_value()
+
+        assert sig1 == ("frame_001.png", 1)
+        assert sig2 == ("frame_001.png", 2)
+    finally:
+        canvas.close()
+
+
 def test_polygon_preview_line_uses_last_committed_point_not_stale_line_start() -> None:
     _ensure_qapp()
 
