@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import time
+from typing import Callable
 
 from qtpy import QtCore, QtWidgets
 
@@ -40,6 +41,19 @@ class VideoWorkflowMixin:
     ):
         """Open a video for annotation frame by frame."""
         start_ts = time.perf_counter()
+        step_ts = start_ts
+
+        def _log_step(name: str) -> None:
+            nonlocal step_ts
+            now = time.perf_counter()
+            logger.info(
+                "Lifecycle open step '%s' took %.1fms (total %.1fms).",
+                name,
+                (now - step_ts) * 1000.0,
+                (now - start_ts) * 1000.0,
+            )
+            step_ts = now
+
         logger.info(
             "Lifecycle open requested (from_list=%s, programmatic=%s, input=%s).",
             bool(from_video_list),
@@ -50,11 +64,13 @@ class VideoWorkflowMixin:
             elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
             logger.info("Lifecycle open cancelled by user in %.1fms.", elapsed_ms)
             return
+        _log_step("confirm_switch")
 
         video_filename = self._resolve_video_filename(
             from_video_list=from_video_list,
             video_path=video_path,
         )
+        _log_step("resolve_filename")
 
         video_filename = str(video_filename)
         if video_filename and is_large_tiff_path(video_filename):
@@ -71,6 +87,7 @@ class VideoWorkflowMixin:
 
         if video_filename:
             self._cleanup_audio_ui()
+            _log_step("cleanup_audio_ui")
             cur_video_folder = Path(video_filename).parent
             self.video_results_folder = Path(video_filename).with_suffix("")
 
@@ -89,10 +106,7 @@ class VideoWorkflowMixin:
                 self.video_results_folder
             )
             self._refresh_embedding_file_list()
-            if getattr(self, "depth_manager", None) is not None:
-                self.depth_manager.load_depth_ndjson_records()
-            if getattr(self, "optical_flow_manager", None) is not None:
-                self.optical_flow_manager.load_records(video_filename)
+            _log_step("setup_paths_and_embedding")
             try:
                 self.video_loader = self._create_video_loader(video_filename)
             except Exception as exc:
@@ -107,9 +121,11 @@ class VideoWorkflowMixin:
                 self.video_file = None
                 self.video_loader = None
                 return
+            _log_step("create_video_loader")
             self._configure_project_schema_for_video(video_filename)
             self.fps = self.video_loader.get_fps()
             self.num_frames = self.video_loader.total_frames()
+            _log_step("read_video_metadata")
             self.behavior_log_widget.set_fps(self.fps)
             if self.timeline_panel is not None:
                 self.timeline_panel.set_time_range(0, self.num_frames - 1)
@@ -128,7 +144,8 @@ class VideoWorkflowMixin:
                         )
                     except Exception:
                         pass
-            self._configure_audio_for_video(self.video_file, self.fps)
+            self._configure_audio_for_video(self.video_file, self.fps, eager=False)
+            _log_step("ui_timeline_caption_audio")
             if self.seekbar:
                 self.statusBar().removeWidget(self.seekbar)
             if self.playButton:
@@ -152,21 +169,6 @@ class VideoWorkflowMixin:
             self.seekbar.setEnabled(True)
             self.seekbar.resizeEvent()
             self.seekbar.setTooltipCallable(self.tooltip_callable)
-            try:
-                self._refresh_manual_seed_slider_marks(self.video_results_folder)
-            except Exception:
-                logger.debug(
-                    "Failed to refresh manual seed slider marks.", exc_info=True
-                )
-            try:
-                self._refresh_missing_instance_slider_marks_from_tracking_stats(
-                    self.video_results_folder
-                )
-            except Exception:
-                logger.debug(
-                    "Failed to refresh missing-instance slider marks from tracking stats.",
-                    exc_info=True,
-                )
             self.playButton = QtWidgets.QPushButton("Play", self)
             self.playButton.setIcon(
                 QtWidgets.QApplication.style().standardIcon(
@@ -179,22 +181,92 @@ class VideoWorkflowMixin:
             self.statusBar().addPermanentWidget(self.playButton)
             self.statusBar().addPermanentWidget(self.seekbar, stretch=1)
             self.statusBar().addPermanentWidget(self.saveButton)
+            _log_step("setup_seekbar_controls")
 
             self.frame_loader.video_loader = self.video_loader
             self.frame_loader.moveToThread(self.frame_worker)
             self.frame_loader.res_frame.connect(self._on_frame_loaded)
             if not self.frame_worker.isRunning():
                 self.frame_worker.start(priority=QtCore.QThread.IdlePriority)
+            _log_step("connect_frame_loader")
 
+            # Prioritize first-frame paint; defer expensive enrichment work so the
+            # canvas becomes interactive immediately after open.
+            setattr(self, "_defer_first_frame_enrichment", True)
             self.set_frame_number(self.frame_number)
             self._apply_timeline_caption_if_available(
                 self.frame_number, only_if_empty=True
             )
+            self._schedule_video_sidecar_preload(video_filename)
+            _log_step("load_first_frame_and_defer_sidecars")
 
             self.actions.openNextImg.setEnabled(True)
             self.actions.openPrevImg.setEnabled(True)
+            self._schedule_video_open_background_tasks(
+                open_started_ts=start_ts,
+                programmatic_call=programmatic_call,
+                cur_video_folder=cur_video_folder,
+                video_filename=video_filename,
+            )
+            foreground_elapsed = (time.perf_counter() - start_ts) * 1000.0
+            logger.info(
+                "Lifecycle open foreground ready in %.1fms. Remaining tasks running in background.",
+                foreground_elapsed,
+            )
+        else:
+            elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
+            logger.info(
+                "Lifecycle open ended without selecting a video (%.1fms).", elapsed_ms
+            )
+
+    def _schedule_video_open_background_tasks(
+        self,
+        *,
+        open_started_ts: float,
+        programmatic_call: bool,
+        cur_video_folder: Path,
+        video_filename: str,
+    ) -> None:
+        """Run non-critical open tasks after first-frame readiness."""
+        open_token = f"{video_filename}|{time.time_ns()}"
+        setattr(self, "_video_open_background_token", open_token)
+
+        task_queue: list[tuple[str, Callable[[], None]]] = []
+
+        def _refresh_seed_marks() -> None:
+            self._refresh_manual_seed_slider_marks(self.video_results_folder)
+
+        def _refresh_missing_marks() -> None:
+            self._refresh_missing_instance_slider_marks_from_tracking_stats(
+                self.video_results_folder
+            )
+
+        def _prefetch_neighbor_labels() -> None:
+            prefetch_fn = getattr(self, "_prefetch_label_for_frame", None)
+            if not callable(prefetch_fn):
+                return
+            total_frames = int(getattr(self, "num_frames", 0) or 0)
+            if total_frames <= 1:
+                return
+            current_frame = int(getattr(self, "frame_number", 0) or 0)
+            fallback_path = (
+                Path(self.filename) if getattr(self, "filename", None) else None
+            )
+            upper = min(total_frames, current_frame + 5)
+            for frame_idx in range(current_frame + 1, upper):
+                try:
+                    prefetch_fn(int(frame_idx), fallback_path)
+                except Exception:
+                    logger.debug(
+                        "Failed to prefetch annotation label for frame %s.",
+                        frame_idx,
+                        exc_info=True,
+                    )
+
+        def _load_tracking() -> None:
             self.load_tracking_results(cur_video_folder, video_filename)
 
+        def _finalize_segments() -> None:
             if self.filename:
                 self.open_segment_editor_action.setEnabled(True)
                 self._load_segments_for_active_video()
@@ -202,23 +274,104 @@ class VideoWorkflowMixin:
                     self.caption_widget.set_video_segments(
                         self._current_video_defined_segments
                     )
+                self._load_data_in_caption_widget(self.video_file)
                 if not programmatic_call:
                     self._emit_live_frame_update()
                 logger.info(
-                    f"Video '{self.filename}' loaded. Segment definition enabled."
+                    "Video '%s' loaded. Segment definition enabled.", self.filename
                 )
-                elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
-                logger.info("Lifecycle open completed in %.1fms.", elapsed_ms)
             else:
                 self.open_segment_editor_action.setEnabled(False)
                 self._current_video_defined_segments = []
                 if self.caption_widget is not None:
                     self.caption_widget.set_video_segments([])
-        else:
+
+        task_queue.append(("refresh_manual_seed_slider_marks", _refresh_seed_marks))
+        task_queue.append(
+            (
+                "refresh_missing_instance_slider_marks",
+                _refresh_missing_marks,
+            )
+        )
+        task_queue.append(("prefetch_neighbor_annotations", _prefetch_neighbor_labels))
+        task_queue.append(("load_tracking_results", _load_tracking))
+        task_queue.append(("finalize_segments", _finalize_segments))
+
+        def _drain(index: int = 0) -> None:
+            active_video = str(getattr(self, "video_file", "") or "")
+            active_token = str(getattr(self, "_video_open_background_token", "") or "")
+            if active_video != str(video_filename) or active_token != open_token:
+                return
+            if index >= len(task_queue):
+                total_ms = (time.perf_counter() - open_started_ts) * 1000.0
+                logger.info("Lifecycle open completed in %.1fms.", total_ms)
+                return
+            task_name, task_fn = task_queue[index]
+            task_start = time.perf_counter()
+            try:
+                task_fn()
+            except Exception:
+                logger.debug(
+                    "Background open task '%s' failed for %s.",
+                    task_name,
+                    active_video,
+                    exc_info=True,
+                )
+            task_ms = (time.perf_counter() - task_start) * 1000.0
+            total_ms = (time.perf_counter() - open_started_ts) * 1000.0
+            logger.info(
+                "Lifecycle background task '%s' finished in %.1fms (total %.1fms).",
+                task_name,
+                task_ms,
+                total_ms,
+            )
+            QtCore.QTimer.singleShot(0, lambda: _drain(index + 1))
+
+        QtCore.QTimer.singleShot(0, _drain)
+
+    def _schedule_video_sidecar_preload(self, video_filename: str) -> None:
+        """Preload optional sidecar records after initial frame/UI are ready."""
+        preload_token = str(video_filename or "")
+        setattr(self, "_pending_video_sidecar_preload", preload_token)
+
+        def _run_preload() -> None:
+            active_video = str(getattr(self, "video_file", "") or "")
+            pending_token = str(
+                getattr(self, "_pending_video_sidecar_preload", "") or ""
+            )
+            if (
+                not active_video
+                or active_video != preload_token
+                or pending_token != preload_token
+            ):
+                return
+            start_ts = time.perf_counter()
+            if getattr(self, "depth_manager", None) is not None:
+                try:
+                    self.depth_manager.load_depth_ndjson_records()
+                except Exception:
+                    logger.debug(
+                        "Deferred depth sidecar preload failed for %s.",
+                        active_video,
+                        exc_info=True,
+                    )
+            if getattr(self, "optical_flow_manager", None) is not None:
+                try:
+                    self.optical_flow_manager.load_records(active_video)
+                except Exception:
+                    logger.debug(
+                        "Deferred optical-flow sidecar preload failed for %s.",
+                        active_video,
+                        exc_info=True,
+                    )
             elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
             logger.info(
-                "Lifecycle open ended without selecting a video (%.1fms).", elapsed_ms
+                "Deferred sidecar preload completed in %.1fms for %s.",
+                elapsed_ms,
+                active_video,
             )
+
+        QtCore.QTimer.singleShot(0, _run_preload)
 
     def _confirm_video_switch(self, *, programmatic_call: bool) -> bool:
         if programmatic_call or not (self.dirty or self.video_loader is not None):

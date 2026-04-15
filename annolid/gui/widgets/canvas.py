@@ -1896,12 +1896,14 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
                         if ev.modifiers() == QtCore.Qt.ControlModifier:
                             self.finalise()
                     elif self.createMode in ["ai_polygon", "ai_mask"]:
-                        self.current.addPoint(
-                            self.line.points[1],
-                            label=self.line.point_labels[1],
-                        )
+                        # Use the current click position to avoid stale preview-point
+                        # drift when mouse-move and press events are interleaved.
+                        click_label = 0 if is_shift_pressed else 1
+                        self.current.addPoint(snapped_pos, label=click_label)
                         self.line.points[0] = self.current.points[-1]
                         self.line.point_labels[0] = self.current.point_labels[-1]
+                        self.line.points[1] = snapped_pos
+                        self.line.point_labels[1] = click_label
                         if ev.modifiers() & QtCore.Qt.ControlModifier:
                             self.finalise()
                     elif self.createMode == "polygonSAM":

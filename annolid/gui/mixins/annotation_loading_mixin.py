@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import OrderedDict, deque
 from numbers import Number
 import os
 import tempfile
@@ -54,6 +55,12 @@ class AnnotationLoadingMixin:
     _ZONE_OVERLAY_CACHE_PATH_KEY = "_zone_overlay_cache_path"
     _ZONE_OVERLAY_CACHE_MTIME_KEY = "_zone_overlay_cache_mtime_ns"
     _ZONE_OVERLAY_CACHE_PAYLOADS_KEY = "_zone_overlay_cache_payloads"
+    _FRAME_LABEL_CACHE_KEY = "_frame_label_cache"
+    _FRAME_LABEL_CACHE_MAX_ENTRIES = 48
+    _FRAME_LABEL_PREFETCH_QUEUE_KEY = "_frame_label_prefetch_queue"
+    _FRAME_LABEL_PREFETCH_ACTIVE_KEY = "_frame_label_prefetch_active"
+    _FRAME_LABEL_PREFETCH_WINDOW = 4
+    _FRAME_LABEL_PREFETCH_BUDGET = 2
 
     @staticmethod
     def _brain3d_polygon_signature(shapes) -> str:
@@ -1685,6 +1692,152 @@ class AnnotationLoadingMixin:
         except Exception:
             return False
 
+    def _label_candidate_cache_token(self, candidate: Path) -> tuple | None:
+        """Return a freshness token for on-demand frame label loading."""
+        try:
+            if candidate.exists() and candidate.is_file():
+                stat_result = candidate.stat()
+                return (
+                    "file",
+                    str(candidate),
+                    int(getattr(stat_result, "st_mtime_ns", 0)),
+                    int(getattr(stat_result, "st_size", 0)),
+                )
+        except Exception:
+            logger.debug("Failed to stat label candidate %s.", candidate, exc_info=True)
+
+        try:
+            if not self._annotation_store_has_frame(candidate):
+                return None
+            store = AnnotationStore.for_frame_path(candidate)
+            store_path = Path(store.store_path)
+            if store_path.exists():
+                stat_result = store_path.stat()
+                return (
+                    "store",
+                    str(candidate),
+                    str(store_path),
+                    int(getattr(stat_result, "st_mtime_ns", 0)),
+                    int(getattr(stat_result, "st_size", 0)),
+                )
+            return ("store", str(candidate), "unknown")
+        except Exception:
+            logger.debug(
+                "Failed to resolve annotation-store cache token for %s.",
+                candidate,
+                exc_info=True,
+            )
+        return None
+
+    def _label_file_cache_get(self, candidate: Path, token: tuple):
+        cache = getattr(self, self._FRAME_LABEL_CACHE_KEY, None)
+        if not isinstance(cache, OrderedDict):
+            return None
+        key = str(candidate)
+        cached = cache.get(key)
+        if not isinstance(cached, dict):
+            return None
+        if cached.get("token") != token:
+            return None
+        cache.move_to_end(key)
+        return cached.get("label_file")
+
+    def _label_file_cache_set(self, candidate: Path, token: tuple, label_file) -> None:
+        cache = getattr(self, self._FRAME_LABEL_CACHE_KEY, None)
+        if not isinstance(cache, OrderedDict):
+            cache = OrderedDict()
+            setattr(self, self._FRAME_LABEL_CACHE_KEY, cache)
+        key = str(candidate)
+        cache[key] = {"token": token, "label_file": label_file}
+        cache.move_to_end(key)
+        while len(cache) > int(self._FRAME_LABEL_CACHE_MAX_ENTRIES):
+            cache.popitem(last=False)
+
+    def _enqueue_neighbor_label_prefetch(
+        self, frame_number: int, frame_path: Optional[Path]
+    ) -> None:
+        if not getattr(self, "video_file", None):
+            return
+        total_frames = int(getattr(self, "num_frames", 0) or 0)
+        if total_frames <= 0:
+            return
+        queue = getattr(self, self._FRAME_LABEL_PREFETCH_QUEUE_KEY, None)
+        if not isinstance(queue, deque):
+            queue = deque()
+            setattr(self, self._FRAME_LABEL_PREFETCH_QUEUE_KEY, queue)
+        window = int(self._FRAME_LABEL_PREFETCH_WINDOW)
+        try:
+            frame_idx = int(frame_number)
+        except Exception:
+            return
+        for offset in range(1, max(window, 1) + 1):
+            neighbor = frame_idx + offset
+            if neighbor < 0 or neighbor >= total_frames:
+                continue
+            if neighbor not in queue:
+                queue.append(neighbor)
+        if not bool(getattr(self, self._FRAME_LABEL_PREFETCH_ACTIVE_KEY, False)):
+            setattr(self, self._FRAME_LABEL_PREFETCH_ACTIVE_KEY, True)
+            QtCore.QTimer.singleShot(
+                0, lambda: self._drain_label_prefetch_queue(frame_path)
+            )
+
+    def _frame_path_for_index(
+        self, frame_index: int, fallback_path: Optional[Path]
+    ) -> Optional[Path]:
+        if (
+            frame_index == int(getattr(self, "frame_number", 0) or 0)
+            and fallback_path is not None
+        ):
+            return fallback_path
+        resolver = getattr(self, "_frame_image_path", None)
+        if callable(resolver):
+            try:
+                return Path(resolver(int(frame_index)))
+            except Exception:
+                return fallback_path
+        return fallback_path
+
+    def _prefetch_label_for_frame(
+        self, frame_index: int, fallback_path: Optional[Path]
+    ) -> None:
+        frame_path = self._frame_path_for_index(frame_index, fallback_path)
+        candidates = self._iter_frame_label_candidates(int(frame_index), frame_path)
+        seen: set[Path] = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            token = self._label_candidate_cache_token(candidate)
+            if token is None:
+                continue
+            if self._label_file_cache_get(candidate, token) is not None:
+                continue
+            try:
+                label_file = LabelFile(str(candidate), is_video_frame=True)
+                self._label_file_cache_set(candidate, token, label_file)
+            except Exception:
+                continue
+            break
+
+    def _drain_label_prefetch_queue(self, fallback_path: Optional[Path]) -> None:
+        queue = getattr(self, self._FRAME_LABEL_PREFETCH_QUEUE_KEY, None)
+        if not isinstance(queue, deque):
+            setattr(self, self._FRAME_LABEL_PREFETCH_ACTIVE_KEY, False)
+            return
+        budget = int(self._FRAME_LABEL_PREFETCH_BUDGET)
+        processed = 0
+        while queue and processed < max(1, budget):
+            frame_index = queue.popleft()
+            self._prefetch_label_for_frame(int(frame_index), fallback_path)
+            processed += 1
+        if queue:
+            QtCore.QTimer.singleShot(
+                0, lambda: self._drain_label_prefetch_queue(fallback_path)
+            )
+            return
+        setattr(self, self._FRAME_LABEL_PREFETCH_ACTIVE_KEY, False)
+
     def _annotation_store_frame_count(self) -> int:
         """Return the number of frames currently stored in the annotation store."""
         if not self.video_results_folder:
@@ -1827,64 +1980,75 @@ class AnnotationLoadingMixin:
                 continue
             seen_candidates.add(candidate)
 
-            candidate_exists = candidate.exists()
-            candidate_in_store = self._annotation_store_has_frame(candidate)
-            if not candidate_exists and not candidate_in_store:
+            cache_token = self._label_candidate_cache_token(candidate)
+            if cache_token is None:
                 continue
+
+            label_file = self._label_file_cache_get(candidate, cache_token)
+            if label_file is None:
+                try:
+                    label_file = LabelFile(
+                        str(candidate),
+                        is_video_frame=True,
+                    )
+                except LabelFileError as exc:
+                    logger.error(
+                        "Failed to load label file %s: %s",
+                        candidate,
+                        exc,
+                    )
+                    continue
+                except Exception as exc:
+                    logger.error(
+                        "Unexpected error loading label file %s: %s",
+                        candidate,
+                        exc,
+                    )
+                    continue
+                self._label_file_cache_set(candidate, cache_token, label_file)
 
             try:
-                label_file = LabelFile(
-                    str(candidate),
-                    is_video_frame=True,
-                )
-            except LabelFileError as exc:
-                logger.error(
-                    "Failed to load label file %s: %s",
+                self.labelFile = label_file
+                self.canvas.setBehaviorText(None)
+                frame_shapes = self._materialize_label_shapes(label_file.shapes)
+                if persistent_zone_shapes:
+                    frame_shapes = self._merge_persistent_zones_into_shapes(
+                        frame_shapes,
+                        frame_path,
+                        persistent_zone_shapes=persistent_zone_shapes,
+                    )
+                self.loadShapes(frame_shapes)
+                self.update_flags_from_file(label_file)
+                if (
+                    len(self.canvas.current_behavior_text) > 1
+                    and "other" not in self.canvas.current_behavior_text.lower()
+                ):
+                    self.add_highlighted_mark(
+                        self.frame_number, mark_type=self.canvas.current_behavior_text
+                    )
+                caption = label_file.get_caption()
+                if caption is not None and len(caption) > 0:
+                    if self.caption_widget is None:
+                        self.openCaption()
+                    self.caption_widget.set_caption(caption)
+                elif self.caption_widget is not None:
+                    applied = self._apply_timeline_caption_if_available(
+                        frame_number, only_if_empty=False
+                    )
+                    if not applied:
+                        self.caption_widget.set_caption("")
+                label_loaded = True
+                break
+            except Exception:
+                logger.debug(
+                    "Failed to apply loaded label payload from %s.",
                     candidate,
-                    exc,
+                    exc_info=True,
                 )
                 continue
-            except Exception as exc:
-                logger.error(
-                    "Unexpected error loading label file %s: %s",
-                    candidate,
-                    exc,
-                )
-                continue
-
-            self.labelFile = label_file
-            self.canvas.setBehaviorText(None)
-            frame_shapes = self._materialize_label_shapes(label_file.shapes)
-            if persistent_zone_shapes:
-                frame_shapes = self._merge_persistent_zones_into_shapes(
-                    frame_shapes,
-                    frame_path,
-                    persistent_zone_shapes=persistent_zone_shapes,
-                )
-            self.loadShapes(frame_shapes)
-            self.update_flags_from_file(label_file)
-            if (
-                len(self.canvas.current_behavior_text) > 1
-                and "other" not in self.canvas.current_behavior_text.lower()
-            ):
-                self.add_highlighted_mark(
-                    self.frame_number, mark_type=self.canvas.current_behavior_text
-                )
-            caption = label_file.get_caption()
-            if caption is not None and len(caption) > 0:
-                if self.caption_widget is None:
-                    self.openCaption()
-                self.caption_widget.set_caption(caption)
-            elif self.caption_widget is not None:
-                applied = self._apply_timeline_caption_if_available(
-                    frame_number, only_if_empty=False
-                )
-                if not applied:
-                    self.caption_widget.set_caption("")
-            label_loaded = True
-            break
 
         if label_loaded:
+            self._enqueue_neighbor_label_prefetch(frame_number, frame_path)
             return
 
         if self._df is not None and (frame_path is None or not frame_path.exists()):
@@ -1925,6 +2089,7 @@ class AnnotationLoadingMixin:
                         persistent_zone_shapes=persistent_zone_shapes,
                     )
                 self.loadShapes(frame_label_list)
+                self._enqueue_neighbor_label_prefetch(frame_number, frame_path)
 
         if not label_loaded and self.caption_widget is not None:
             applied = self._apply_timeline_caption_if_available(

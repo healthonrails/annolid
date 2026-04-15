@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
 from annolid.gui.controllers.tracking_data import TrackingDataController
+from annolid.gui.mixins.frame_playback_mixin import FramePlaybackMixin
 
 
 class _DummyBehaviorController:
@@ -55,6 +57,23 @@ class _DummyWindow:
 
     def loadFlags(self, _flags: dict) -> None:
         return
+
+
+class _DispatchHost(FramePlaybackMixin):
+    def __init__(self) -> None:
+        self.sync_calls = 0
+        self.async_calls = 0
+
+        def _sync(_folder: Path, _video: str) -> None:
+            self.sync_calls += 1
+
+        def _async(_folder: Path, _video: str) -> None:
+            self.async_calls += 1
+
+        self.tracking_data_controller = SimpleNamespace(
+            load_tracking_results=_sync,
+            load_tracking_results_async=_async,
+        )
 
 
 def test_behavior_csv_filter_skips_tracking_sidecars(tmp_path: Path):
@@ -132,3 +151,45 @@ def test_tracking_csv_loads_lazily_on_first_lookup(tmp_path: Path):
     assert len(rows) == 1
     assert controller.tracking_dataframe is not None
     assert window._df is not None
+
+
+def test_frame_playback_dispatches_tracking_load_async_by_default(
+    tmp_path: Path,
+) -> None:
+    host = _DispatchHost()
+    host.load_tracking_results(tmp_path, "video.mp4")
+    assert host.async_calls == 1
+    assert host.sync_calls == 0
+
+
+def test_tracking_sidecar_payload_extracts_behavior_rows_and_labels(
+    tmp_path: Path,
+) -> None:
+    behavior_csv = tmp_path / "video_timestamps.csv"
+    pd.DataFrame(
+        [
+            {
+                "Recording time": 0.4,
+                "Trial time": 0.2,
+                "Event": "STATE start",
+                "Behavior": "contact",
+                "Subject": "animal_1",
+            }
+        ]
+    ).to_csv(behavior_csv, index=False)
+    labels_csv = tmp_path / "video_labels.csv"
+    pd.DataFrame([{"Unnamed: 0": 0, "class_name": "zone"}]).to_csv(
+        labels_csv, index=False
+    )
+
+    payload = TrackingDataController._build_sidecar_payload(
+        behavior_candidates=[behavior_csv],
+        labels_file_path=labels_csv,
+    )
+
+    assert isinstance(payload.get("behavior_rows"), list)
+    assert payload["behavior_rows"][0][1] == 0.4
+    assert payload["behavior_rows"][0][3] == "contact"
+    labels_df = payload.get("labels_df")
+    assert isinstance(labels_df, pd.DataFrame)
+    assert "frame_number" in labels_df.columns

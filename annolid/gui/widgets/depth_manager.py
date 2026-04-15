@@ -183,6 +183,12 @@ class DepthManager(QtCore.QObject):
         overlay = self._load_depth_overlay_from_record(record, frame_rgb)
         self.window.canvas.setDepthPreviewOverlay(overlay)
 
+    def has_overlay_for_frame(self, frame_number: int) -> bool:
+        try:
+            return int(frame_number) in self._depth_ndjson_records
+        except Exception:
+            return False
+
     # ------------------------------------------------------------------ internals
     def _handle_depth_preview(self, payload: object) -> None:
         try:

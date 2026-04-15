@@ -157,7 +157,7 @@ class PlaybackDrawMixin:
                 self.timer = timer
             if timer.isActive():
                 return
-            audio_loader = self._active_audio_loader()
+            audio_loader = self._active_audio_loader(ensure_ready=True)
             if audio_loader:
                 audio_loader.play(start_frame=self.frame_number)
             if self.fps is not None and self.fps > 0:

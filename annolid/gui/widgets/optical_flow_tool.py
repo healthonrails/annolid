@@ -211,6 +211,12 @@ class OpticalFlowTool(QtCore.QObject):
             overlay = np.concatenate([overlay, alpha], axis=2)
         w.canvas.setFlowPreviewOverlay(np.ascontiguousarray(overlay))
 
+    def has_overlay_for_frame(self, frame_number: int) -> bool:
+        try:
+            return int(frame_number) in self._records
+        except Exception:
+            return False
+
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #

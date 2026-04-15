@@ -1154,6 +1154,57 @@ def test_ai_polygon_ignores_full_width_strip_mask_artifacts(monkeypatch) -> None
         canvas.close()
 
 
+def test_ai_polygon_retries_with_normalized_prompt_coordinates(monkeypatch) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(420, 220, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
+
+        class _NormalizedPromptMaskModel:
+            """Model that expects points normalized to [0, 1]."""
+
+            def predict_mask_from_points(self, points, point_labels):
+                _ = point_labels
+                arr = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+                mask = np.zeros((220, 420), dtype=np.uint8)
+                if arr.size == 0:
+                    return mask
+                # If pixel-space points are passed by mistake, clip pushes to right edge.
+                px = int(round(float(np.clip(arr[0, 0], 0.0, 1.0)) * 419.0))
+                py = int(round(float(np.clip(arr[0, 1], 0.0, 1.0)) * 219.0))
+                x1 = max(0, px - 18)
+                x2 = min(420, px + 18)
+                y1 = max(0, py - 14)
+                y2 = min(220, py + 14)
+                mask[y1:y2, x1:x2] = 1
+                return mask
+
+        canvas._ai_model = _NormalizedPromptMaskModel()
+        polygon = canvas._predict_ai_polygon_points(
+            prompt_points=[[96.0, 118.0]],
+            point_labels=[1],
+        )
+
+        assert len(polygon) >= 3
+        xs = [point.x() for point in polygon]
+        ys = [point.y() for point in polygon]
+        # Should stay close to prompt location, not drift to right edge.
+        assert max(xs) < 180
+        assert min(xs) > 40
+        assert max(ys) < 170
+        assert min(ys) > 70
+    finally:
+        canvas.close()
+
+
 def test_ai_polygon_finalise_materializes_stable_polygon_shape(monkeypatch) -> None:
     _ensure_qapp()
 

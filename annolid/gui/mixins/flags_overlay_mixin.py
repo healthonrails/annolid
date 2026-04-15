@@ -41,6 +41,10 @@ class FlagsOverlayMixin:
     def _refresh_behavior_overlay(self) -> None:
         """Synchronize canvas label and flag widget with timeline behaviors."""
         active_behaviors = self.behavior_controller.active_behaviors(self.frame_number)
+        signature = tuple(sorted(str(name) for name in active_behaviors))
+        if signature == getattr(self, "_last_behavior_overlay_signature", None):
+            return
+        setattr(self, "_last_behavior_overlay_signature", signature)
 
         current_flags: Dict[str, bool] = {}
         table = self.flag_widget._table

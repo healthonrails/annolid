@@ -64,7 +64,7 @@ class MediaWorkflowMixin:
         self.audio_widget = None
 
         if self._audio_loader is None:
-            self._configure_audio_for_video(self.video_file, self.fps)
+            self._configure_audio_for_video(self.video_file, self.fps, eager=True)
 
         if self._audio_loader is None:
             QtWidgets.QMessageBox.information(
@@ -115,17 +115,28 @@ class MediaWorkflowMixin:
             self._cleaning_audio_ui = False
 
     def _configure_audio_for_video(
-        self, video_path: Optional[str], fps: Optional[float]
+        self, video_path: Optional[str], fps: Optional[float], *, eager: bool = True
     ) -> None:
-        """Prepare audio playback for the active video if an audio track exists."""
-        self._release_audio_loader()
+        """Prepare audio playback context for the active video.
+
+        When eager=False, defer expensive decode until playback/audio dock is used.
+        """
+        self._release_audio_loader(clear_pending=False)
 
         if not video_path:
+            setattr(self, "_pending_audio_video_path", None)
+            setattr(self, "_pending_audio_fps", None)
             return
 
         effective_fps = fps if fps and fps > 0 else 29.97
+        setattr(self, "_pending_audio_video_path", str(video_path))
+        setattr(self, "_pending_audio_fps", float(effective_fps))
+        if not eager:
+            return
         try:
             self._audio_loader = AudioLoader(video_path, fps=effective_fps)
+            setattr(self, "_pending_audio_video_path", None)
+            setattr(self, "_pending_audio_fps", None)
         except Exception as exc:
             logger.debug(
                 "Skipping audio playback for %s: %s",
@@ -134,19 +145,125 @@ class MediaWorkflowMixin:
             )
             self._audio_loader = None
 
-    def _release_audio_loader(self) -> None:
+    def _cancel_audio_loader_job(self) -> None:
+        worker = getattr(self, "_audio_loader_worker", None)
+        thread = getattr(self, "_audio_loader_thread", None)
+        setattr(self, "_audio_loader_worker", None)
+        setattr(self, "_audio_loader_thread", None)
+        with contextlib.suppress(Exception):
+            if thread is not None:
+                thread.quit()
+                thread.wait(200)
+        with contextlib.suppress(Exception):
+            if worker is not None:
+                worker.deleteLater()
+
+    def _ensure_audio_loader_async(self) -> None:
+        """Start lazy audio decoding without blocking the UI thread."""
+        if self._audio_loader is not None:
+            return
+        pending_video = str(
+            getattr(self, "_pending_audio_video_path", "") or ""
+        ).strip()
+        if not pending_video:
+            return
+        if getattr(self, "_audio_loader_thread", None) is not None:
+            return
+        pending_fps = float(getattr(self, "_pending_audio_fps", 29.97) or 29.97)
+        request_token = f"{pending_video}|{pending_fps:.6f}"
+        setattr(self, "_pending_audio_request_token", request_token)
+
+        class _AudioLoaderWorker(QtCore.QObject):
+            loaded = QtCore.Signal(object, str)
+            failed = QtCore.Signal(str, str)
+
+            def __init__(self, path: str, fps_value: float) -> None:
+                super().__init__()
+                self._path = path
+                self._fps = fps_value
+
+            @QtCore.Slot()
+            def run(self) -> None:
+                try:
+                    loader = AudioLoader(self._path, fps=self._fps)
+                except Exception as exc:
+                    self.failed.emit(str(exc), request_token)
+                    return
+                self.loaded.emit(loader, request_token)
+
+        thread = QtCore.QThread(self)
+        worker = _AudioLoaderWorker(pending_video, pending_fps)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.loaded.connect(self._on_audio_loader_async_ready)
+        worker.failed.connect(self._on_audio_loader_async_failed)
+        worker.loaded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        setattr(self, "_audio_loader_worker", worker)
+        setattr(self, "_audio_loader_thread", thread)
+        thread.start()
+
+    def _on_audio_loader_async_ready(self, loader, request_token: str) -> None:
+        pending_token = str(getattr(self, "_pending_audio_request_token", "") or "")
+        self._cancel_audio_loader_job()
+        if pending_token != str(request_token):
+            with contextlib.suppress(Exception):
+                loader.stop()
+            return
+        self._audio_loader = loader
+        setattr(self, "_pending_audio_video_path", None)
+        setattr(self, "_pending_audio_fps", None)
+        setattr(self, "_pending_audio_request_token", None)
+        if bool(getattr(self, "isPlaying", False)):
+            with contextlib.suppress(Exception):
+                self._audio_loader.play(
+                    start_frame=int(getattr(self, "frame_number", 0) or 0)
+                )
+
+    def _on_audio_loader_async_failed(self, message: str, request_token: str) -> None:
+        pending_token = str(getattr(self, "_pending_audio_request_token", "") or "")
+        self._cancel_audio_loader_job()
+        if pending_token != str(request_token):
+            return
+        logger.debug(
+            "Deferred audio loader failed for %s: %s",
+            str(getattr(self, "_pending_audio_video_path", "") or ""),
+            message,
+        )
+        setattr(self, "_pending_audio_request_token", None)
+
+    def _release_audio_loader(self, *, clear_pending: bool = True) -> None:
         """Stop and discard any cached audio loader."""
+        self._cancel_audio_loader_job()
         if self._audio_loader is None:
+            if clear_pending:
+                setattr(self, "_pending_audio_video_path", None)
+                setattr(self, "_pending_audio_fps", None)
+                setattr(self, "_pending_audio_request_token", None)
             return
 
         with contextlib.suppress(Exception):
             self._audio_loader.stop()
         self._audio_loader = None
+        if clear_pending:
+            setattr(self, "_pending_audio_video_path", None)
+            setattr(self, "_pending_audio_fps", None)
+            setattr(self, "_pending_audio_request_token", None)
 
-    def _active_audio_loader(self) -> Optional[AudioLoader]:
+    def _active_audio_loader(
+        self, *, ensure_ready: bool = False
+    ) -> Optional[AudioLoader]:
         """Return the audio loader currently associated with playback."""
         if self.audio_widget and self.audio_widget.audio_loader:
             return self.audio_widget.audio_loader
+        if (
+            ensure_ready
+            and self._audio_loader is None
+            and getattr(self, "_pending_audio_video_path", None)
+        ):
+            self._ensure_audio_loader_async()
         return self._audio_loader
 
     def _update_audio_playhead(self, frame_number: int) -> None:

@@ -46,6 +46,82 @@ def _pixmap_bounds(
     return None
 
 
+def _prompt_point_variants(
+    prompt_points: list[list[float]],
+    pixmap: QtGui.QPixmap | None,
+) -> list[list[list[float]]]:
+    """Return prompt-point coordinate variants (pixel first, then fallbacks)."""
+    variants: list[list[list[float]]] = []
+    try:
+        base = np.asarray(prompt_points, dtype=np.float32).reshape(-1, 2)
+    except Exception:
+        return variants
+    if base.size == 0:
+        return variants
+    variants.append(base.tolist())
+
+    bounds = _pixmap_bounds(pixmap)
+    if bounds is None:
+        return variants
+    max_x, max_y = bounds
+    width = max(1.0, float(max_x + 1.0))
+    height = max(1.0, float(max_y + 1.0))
+
+    normalized = np.empty_like(base, dtype=np.float32)
+    normalized[:, 0] = base[:, 0] / width
+    normalized[:, 1] = base[:, 1] / height
+    variants.append(normalized.tolist())
+
+    # Some backends implicitly operate in SAM's canonical 1024-side coordinates.
+    sam_scaled = np.empty_like(base, dtype=np.float32)
+    sam_scaled[:, 0] = base[:, 0] * (1024.0 / width)
+    sam_scaled[:, 1] = base[:, 1] * (1024.0 / height)
+    variants.append(sam_scaled.tolist())
+    return variants
+
+
+def _polygon_prompt_alignment_score(
+    polygon_points: list[QtCore.QPointF],
+    prompt_points: list[list[float]],
+    point_labels: list[int],
+) -> tuple[int, float]:
+    """Return (positive_hits_inside_polygon, mean_abs_distance_to_contour)."""
+    if len(polygon_points) < 3:
+        return (0, float("inf"))
+    try:
+        contour = np.asarray(
+            [[point.x(), point.y()] for point in polygon_points], dtype=np.float32
+        ).reshape(-1, 1, 2)
+    except Exception:
+        return (0, float("inf"))
+    if contour.shape[0] < 3:
+        return (0, float("inf"))
+
+    distances: list[float] = []
+    hits = 0
+    for idx, prompt in enumerate(prompt_points or []):
+        label = 1
+        if idx < len(point_labels or []):
+            label = int(point_labels[idx])
+        if label <= 0:
+            continue
+        try:
+            px = float(prompt[0])
+            py = float(prompt[1])
+            signed_dist = float(
+                cv2.pointPolygonTest(contour, (float(px), float(py)), measureDist=True)
+            )
+        except Exception:
+            continue
+        if signed_dist >= 0.0:
+            hits += 1
+        distances.append(abs(signed_dist))
+
+    if not distances:
+        return (0, float("inf"))
+    return (int(hits), float(np.mean(np.asarray(distances, dtype=np.float32))))
+
+
 def normalize_ai_polygon_points(
     points,
     pixmap: QtGui.QPixmap | None = None,
@@ -374,26 +450,54 @@ def predict_ai_polygon_points(
 
     mask_predictor = getattr(ai_model, "predict_mask_from_points", None)
     if callable(mask_predictor):
-        try:
-            mask = mask_predictor(points=prompt_points, point_labels=point_labels)
-        except Exception as exc:
-            logger.debug(
-                "AI polygon mask prediction failed; trying polygon fallback. Error: %s",
-                exc,
-                exc_info=True,
+        point_variants = _prompt_point_variants(prompt_points, pixmap)
+        if not point_variants:
+            point_variants = [list(prompt_points or [])]
+
+        best_points: list[QtCore.QPointF] = []
+        best_score: tuple[int, float] | None = None
+        for variant_idx, variant_points in enumerate(point_variants):
+            try:
+                mask = mask_predictor(points=variant_points, point_labels=point_labels)
+            except Exception as exc:
+                if variant_idx == 0:
+                    logger.debug(
+                        "AI polygon mask prediction failed; trying polygon fallback. Error: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    return []
+                continue
+
+            mask_points = polygon_from_refined_mask(
+                mask,
+                pixmap=pixmap,
+                prompt_points=prompt_points,
+                point_labels=point_labels,
             )
-            return []
-        mask_points = polygon_from_refined_mask(
-            mask,
-            pixmap=pixmap,
-            prompt_points=prompt_points,
-            point_labels=point_labels,
-        )
-        if len(mask_points) >= 3:
+            if len(mask_points) < 3:
+                continue
             simplified_points = simplify_ai_polygon_points(mask_points, pixmap)
-            if len(simplified_points) >= 3:
-                return simplified_points
-            return mask_points
+            candidate = (
+                simplified_points if len(simplified_points) >= 3 else mask_points
+            )
+            score = _polygon_prompt_alignment_score(
+                candidate,
+                prompt_points=prompt_points,
+                point_labels=point_labels,
+            )
+            if (
+                best_score is None
+                or score[0] > best_score[0]
+                or (score[0] == best_score[0] and score[1] < best_score[1])
+            ):
+                best_score = score
+                best_points = candidate
+                # Good alignment: at least one positive prompt lies inside.
+                if score[0] > 0:
+                    break
+        if len(best_points) >= 3:
+            return best_points
         return []
 
     polygon_predictor = getattr(ai_model, "predict_polygon_from_points", None)

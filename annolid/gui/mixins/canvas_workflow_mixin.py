@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 from pathlib import Path
+import time
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -20,7 +21,10 @@ from annolid.utils.qt2cv import (
 class CanvasWorkflowMixin:
     """Canvas rendering and brightness/contrast workflow mixin."""
 
+    _FIRST_FRAME_ENRICHMENT_DELAY_MS = 150
+
     def image_to_canvas(self, qimage, filename, frame_number):
+        render_started_ts = time.perf_counter()
         self.resetState()
         self.canvas.setEnabled(True)
         self._active_image_view = "canvas"
@@ -38,16 +42,6 @@ class CanvasWorkflowMixin:
             prev_shapes = self.canvas.shapes
         pixmap = QtGui.QPixmap.fromImage(qimage)
         self.canvas.loadPixmap(pixmap)
-        if getattr(self, "large_image_view", None) is not None:
-            self.large_image_view.clear()
-        try:
-            frame_rgb = convert_qt_image_to_rgb_cv_image(qimage).copy()
-        except Exception:
-            frame_rgb = None
-        if getattr(self, "depth_manager", None) is not None:
-            self.depth_manager.update_overlay_for_frame(frame_number, frame_rgb)
-        if getattr(self, "optical_flow_manager", None) is not None:
-            self.optical_flow_manager.update_overlay_for_frame(frame_number, frame_rgb)
         if self._config["keep_prev"] and self.noShapes():
             self.loadShapes(prev_shapes, replace=False)
             self.setDirty()
@@ -82,12 +76,154 @@ class CanvasWorkflowMixin:
                 self.setScroll(
                     orientation, self.scroll_values[orientation][self.filename]
                 )
+
+        should_defer_enrichment = bool(
+            getattr(self, "_defer_first_frame_enrichment", False)
+        ) and bool(getattr(self, "video_file", None))
+        if should_defer_enrichment:
+            setattr(self, "_defer_first_frame_enrichment", False)
+            self._run_fast_annotation_enrichment(
+                frame_number=int(frame_number),
+                filename=filename,
+            )
+            self._schedule_frame_enrichment(
+                frame_number=int(frame_number),
+                filename=filename,
+                qimage=qimage,
+                delay_ms=int(self._FIRST_FRAME_ENRICHMENT_DELAY_MS),
+            )
+            logger.info(
+                "Frame %s painted in %.1fms; deferred enrichment scheduled (%dms).",
+                frame_number,
+                (time.perf_counter() - render_started_ts) * 1000.0,
+                int(self._FIRST_FRAME_ENRICHMENT_DELAY_MS),
+            )
+            return
+        self._run_frame_enrichment(
+            frame_number=int(frame_number),
+            filename=filename,
+            qimage=qimage,
+        )
+
+    def _run_fast_annotation_enrichment(
+        self,
+        *,
+        frame_number: int,
+        filename: Path,
+    ) -> None:
         try:
             self.loadPredictShapes(frame_number, filename)
         except Exception:
             logger.debug(
                 "Failed to load shapes for frame %s", frame_number, exc_info=True
             )
+
+    def _schedule_frame_enrichment(
+        self,
+        *,
+        frame_number: int,
+        filename: Path,
+        qimage: QtGui.QImage,
+        delay_ms: int,
+    ) -> None:
+        token = f"{frame_number}|{filename}|{time.time_ns()}"
+        setattr(self, "_frame_enrichment_token", token)
+        QtCore.QTimer.singleShot(
+            max(0, int(delay_ms)),
+            lambda: self._run_scheduled_frame_enrichment(
+                token=token,
+                frame_number=frame_number,
+                filename=filename,
+                qimage=qimage,
+            ),
+        )
+
+    def _run_scheduled_frame_enrichment(
+        self,
+        *,
+        token: str,
+        frame_number: int,
+        filename: Path,
+        qimage: QtGui.QImage,
+    ) -> None:
+        active_token = str(getattr(self, "_frame_enrichment_token", "") or "")
+        if active_token != str(token):
+            return
+        current_frame = getattr(self, "frame_number", None)
+        try:
+            current_frame_int = int(current_frame) if current_frame is not None else -1
+        except Exception:
+            current_frame_int = -1
+        if current_frame_int != int(frame_number):
+            return
+        if str(getattr(self, "filename", "") or "") != str(filename):
+            return
+        self._run_visual_overlay_enrichment(
+            frame_number=int(frame_number),
+            qimage=qimage,
+        )
+
+    def _run_frame_enrichment(
+        self,
+        *,
+        frame_number: int,
+        filename: Path,
+        qimage: QtGui.QImage,
+    ) -> None:
+        enrich_started_ts = time.perf_counter()
+        self._run_fast_annotation_enrichment(
+            frame_number=int(frame_number),
+            filename=filename,
+        )
+        self._run_visual_overlay_enrichment(
+            frame_number=int(frame_number),
+            qimage=qimage,
+        )
+        logger.debug(
+            "Frame %s enrichment finished in %.1fms.",
+            frame_number,
+            (time.perf_counter() - enrich_started_ts) * 1000.0,
+        )
+
+    def _run_visual_overlay_enrichment(
+        self,
+        *,
+        frame_number: int,
+        qimage: QtGui.QImage,
+    ) -> None:
+        depth_manager = getattr(self, "depth_manager", None)
+        optical_flow_manager = getattr(self, "optical_flow_manager", None)
+        needs_depth_overlay = False
+        needs_flow_overlay = False
+        if depth_manager is not None:
+            has_depth_overlay = getattr(depth_manager, "has_overlay_for_frame", None)
+            needs_depth_overlay = (
+                bool(has_depth_overlay(frame_number))
+                if callable(has_depth_overlay)
+                else True
+            )
+        if optical_flow_manager is not None:
+            has_flow_overlay = getattr(
+                optical_flow_manager, "has_overlay_for_frame", None
+            )
+            needs_flow_overlay = (
+                bool(has_flow_overlay(frame_number))
+                if callable(has_flow_overlay)
+                else True
+            )
+
+        if getattr(self, "large_image_view", None) is not None:
+            self.large_image_view.clear()
+        frame_rgb = None
+        if needs_depth_overlay or needs_flow_overlay:
+            try:
+                frame_rgb = convert_qt_image_to_rgb_cv_image(qimage).copy()
+            except Exception:
+                frame_rgb = None
+        if needs_depth_overlay and depth_manager is not None:
+            depth_manager.update_overlay_for_frame(frame_number, frame_rgb)
+        if needs_flow_overlay and optical_flow_manager is not None:
+            optical_flow_manager.update_overlay_for_frame(frame_number, frame_rgb)
         self._refresh_behavior_overlay()
 
     @staticmethod

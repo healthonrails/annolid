@@ -68,6 +68,9 @@ class OpticalFlowManager(QtCore.QObject):
     ) -> None:
         self.optical_flow_tool.update_overlay_for_frame(frame_number, frame_rgb)
 
+    def has_overlay_for_frame(self, frame_number: int) -> bool:
+        return self.optical_flow_tool.has_overlay_for_frame(frame_number)
+
     # ------------------------------------------------------------------ settings
     def _apply_to_window(self) -> None:
         """Mirror current preferences onto the window for compatibility."""

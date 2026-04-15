@@ -65,10 +65,19 @@ class FramePlaybackMixin:
             self.caption_widget.set_image_path(self.filename)
         self._update_embedding_query_frame()
 
-    def load_tracking_results(self, cur_video_folder, video_filename):
-        self.tracking_data_controller.load_tracking_results(
-            Path(cur_video_folder), video_filename
-        )
+    def load_tracking_results(
+        self, cur_video_folder, video_filename, *, non_blocking=True
+    ):
+        controller = getattr(self, "tracking_data_controller", None)
+        if controller is None:
+            return
+        cur_video_folder_path = Path(cur_video_folder)
+        if non_blocking and hasattr(controller, "load_tracking_results_async"):
+            controller.load_tracking_results_async(
+                cur_video_folder_path, video_filename
+            )
+            return
+        controller.load_tracking_results(cur_video_folder_path, video_filename)
 
     def is_behavior_active(self, frame_number, behavior):
         """Checks if a behavior is active at a given frame."""

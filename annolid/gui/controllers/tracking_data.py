@@ -1,14 +1,47 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING, Optional
 
 import pandas as pd
+from qtpy import QtCore
 
 from annolid.utils.logger import logger
 
 if TYPE_CHECKING:
     from annolid.gui.app import AnnolidWindow
+
+
+class _TrackingSidecarWorker(QtCore.QObject):
+    """Load behavior/labels sidecars off the UI thread."""
+
+    finished = QtCore.Signal(object, str)
+    failed = QtCore.Signal(str, str)
+
+    def __init__(
+        self,
+        *,
+        request_token: str,
+        behavior_candidates: list[Path],
+        labels_file_path: Optional[Path],
+    ) -> None:
+        super().__init__()
+        self._request_token = str(request_token)
+        self._behavior_candidates = list(behavior_candidates or [])
+        self._labels_file_path = labels_file_path
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        try:
+            payload = TrackingDataController._build_sidecar_payload(
+                behavior_candidates=self._behavior_candidates,
+                labels_file_path=self._labels_file_path,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc), self._request_token)
+            return
+        self.finished.emit(payload, self._request_token)
 
 
 class TrackingDataController:
@@ -20,6 +53,9 @@ class TrackingDataController:
         self._tracking_frame_slices: dict[int, tuple[int, int]] | None = None
         self._tracking_frame_indices: dict[int, tuple[int, ...]] | None = None
         self._tracking_csv_path: Path | None = None
+        self._sidecar_thread: Optional[QtCore.QThread] = None
+        self._sidecar_worker: Optional[_TrackingSidecarWorker] = None
+        self._sidecar_request_token: str = ""
 
     @property
     def tracking_dataframe(self) -> pd.DataFrame | None:
@@ -70,6 +106,24 @@ class TrackingDataController:
         self._tracking_frame_slices = None
         self._tracking_frame_indices = None
         self._tracking_csv_path = None
+
+    def _cancel_sidecar_worker(self) -> None:
+        worker = self._sidecar_worker
+        thread = self._sidecar_thread
+        self._sidecar_worker = None
+        self._sidecar_thread = None
+        self._sidecar_request_token = ""
+        if thread is not None:
+            try:
+                thread.quit()
+                thread.wait(200)
+            except Exception:
+                pass
+        if worker is not None:
+            try:
+                worker.deleteLater()
+            except Exception:
+                pass
 
     def _ensure_tracking_loaded_for_lookup(self) -> None:
         """Lazy-load tracking CSV only if frame lookup explicitly needs it."""
@@ -127,6 +181,183 @@ class TrackingDataController:
             return candidate.stat().st_size <= 2 * 1024 * 1024
         except Exception:
             return False
+
+    def _reset_tracking_load_state(self) -> None:
+        w = self._window
+        w.behavior_controller.clear()
+        w.behavior_log_widget.clear()
+        w.pinned_flags = {}
+        w._df = None
+        self._clear_tracking_cache()
+
+    def _discover_behavior_files(
+        self, *, search_root: Path, video_name: str
+    ) -> list[Path]:
+        candidates: list[Path] = []
+        video_name_lower = video_name.lower()
+        for candidate in search_root.glob(f"{video_name}*.csv"):
+            name_lower = candidate.name.lower()
+            if name_lower == f"{video_name_lower}_tracking.csv":
+                continue
+            if name_lower == f"{video_name_lower}_labels.csv":
+                continue
+            if not self._is_likely_behavior_csv(candidate, video_name):
+                continue
+            candidates.append(candidate)
+        return sorted(candidates)
+
+    def _build_tracking_context(
+        self, cur_video_folder: Path, video_filename: str
+    ) -> tuple[str, list[Path], Path | None]:
+        self._reset_tracking_load_state()
+        video_name = Path(video_filename).stem
+        main_tracking_file = cur_video_folder / f"{video_name}_tracking.csv"
+        timestamps_file = cur_video_folder / f"{video_name}_timestamps.csv"
+        labels_file_path = cur_video_folder / f"{video_name}_labels.csv"
+
+        if main_tracking_file.is_file():
+            self._tracking_csv_path = main_tracking_file
+            logger.info(
+                "Deferring tracking CSV load until first frame lookup: %s",
+                main_tracking_file,
+            )
+
+        behavior_candidates: list[Path] = []
+        if timestamps_file.is_file():
+            behavior_candidates.append(timestamps_file)
+        else:
+            behavior_candidates.extend(
+                self._discover_behavior_files(
+                    search_root=cur_video_folder, video_name=video_name
+                )
+            )
+            results_dir = getattr(self._window, "video_results_folder", None)
+            if (
+                isinstance(results_dir, Path)
+                and results_dir.exists()
+                and results_dir != cur_video_folder
+            ):
+                behavior_candidates.extend(
+                    self._discover_behavior_files(
+                        search_root=results_dir,
+                        video_name=video_name,
+                    )
+                )
+
+        seen_paths: set[Path] = set()
+        deduped_behavior_candidates: list[Path] = []
+        for candidate in behavior_candidates:
+            if candidate in seen_paths:
+                continue
+            seen_paths.add(candidate)
+            deduped_behavior_candidates.append(candidate)
+
+        return (
+            video_name,
+            deduped_behavior_candidates,
+            labels_file_path if labels_file_path.is_file() else None,
+        )
+
+    @staticmethod
+    def _extract_behavior_rows_from_dataframe(
+        df_behaviors: pd.DataFrame,
+    ) -> list[tuple[Optional[float], float, Optional[str], str, str]]:
+        rows: list[tuple[Optional[float], float, Optional[str], str, str]] = []
+        for payload in df_behaviors.to_dict(orient="records"):
+            raw_timestamp = payload.get("Recording time")
+            event_label = str(payload.get("Event"))
+            behavior = str(payload.get("Behavior"))
+            raw_subject = payload.get("Subject")
+            raw_trial_time = payload.get("Trial time")
+
+            try:
+                timestamp_value = float(raw_timestamp)
+            except (TypeError, ValueError):
+                continue
+
+            trial_time_value: Optional[float]
+            try:
+                trial_time_value = (
+                    float(raw_trial_time)
+                    if raw_trial_time is not None and pd.notna(raw_trial_time)
+                    else None
+                )
+            except (TypeError, ValueError):
+                trial_time_value = None
+
+            subject_value = None
+            if raw_subject is not None and pd.notna(raw_subject):
+                subject_value = str(raw_subject)
+
+            rows.append(
+                (
+                    trial_time_value,
+                    timestamp_value,
+                    subject_value,
+                    behavior,
+                    event_label,
+                )
+            )
+        return rows
+
+    @classmethod
+    def _build_sidecar_payload(
+        cls, *, behavior_candidates: list[Path], labels_file_path: Optional[Path]
+    ) -> dict:
+        payload: dict = {
+            "loaded_behavior": False,
+            "behavior_source": None,
+            "behavior_rows": None,
+            "fallback_behavior_path": None,
+            "labels_df": None,
+        }
+        required_columns = {"Recording time", "Event", "Behavior"}
+        for candidate in list(behavior_candidates or []):
+            try:
+                if candidate.stat().st_size > 8 * 1024 * 1024:
+                    logger.info(
+                        "Skipping large CSV during behavior discovery: %s", candidate
+                    )
+                    continue
+            except Exception:
+                pass
+
+            try:
+                logger.info("Loading behavior data from: %s", candidate)
+                df_behaviors = pd.read_csv(candidate)
+            except Exception as exc:
+                logger.error("Failed to read behavior data from %s: %s", candidate, exc)
+                continue
+
+            if required_columns.issubset(df_behaviors.columns):
+                payload["behavior_rows"] = cls._extract_behavior_rows_from_dataframe(
+                    df_behaviors
+                )
+                payload["behavior_source"] = str(candidate)
+                payload["loaded_behavior"] = True
+                break
+
+            # Preserve compatibility for non-standard behavior CSVs (e.g. DLC).
+            payload["fallback_behavior_path"] = str(candidate)
+            break
+
+        if labels_file_path is not None and labels_file_path.is_file():
+            try:
+                labels_df = pd.read_csv(labels_file_path)
+                if (
+                    "frame_number" not in labels_df.columns
+                    and "Unnamed: 0" in labels_df.columns
+                ):
+                    labels_df.rename(
+                        columns={"Unnamed: 0": "frame_number"}, inplace=True
+                    )
+                payload["labels_df"] = labels_df
+            except Exception as exc:
+                logger.error(
+                    "Failed to load labels data from %s: %s", labels_file_path, exc
+                )
+
+        return payload
 
     def _build_tracking_frame_slices(
         self, df: pd.DataFrame
@@ -190,83 +421,191 @@ class TrackingDataController:
     def load_tracking_results(
         self, cur_video_folder: Path, video_filename: str
     ) -> None:
+        self._cancel_sidecar_worker()
+        video_name, behavior_candidates, labels_file_path = (
+            self._build_tracking_context(cur_video_folder, video_filename)
+        )
+        payload = self._build_sidecar_payload(
+            behavior_candidates=behavior_candidates,
+            labels_file_path=labels_file_path,
+        )
+        self._apply_sidecar_payload(
+            payload=payload,
+            video_name=video_name,
+            behavior_candidates=behavior_candidates,
+        )
+
+    def load_tracking_results_async(
+        self, cur_video_folder: Path, video_filename: str
+    ) -> None:
+        self._cancel_sidecar_worker()
+        video_name, behavior_candidates, labels_file_path = (
+            self._build_tracking_context(cur_video_folder, video_filename)
+        )
+        request_token = (
+            f"{Path(video_filename).resolve()}|{time.time_ns()}"
+            if video_filename
+            else str(time.time_ns())
+        )
+        self._sidecar_request_token = request_token
+
+        # If no sidecars exist, avoid spinning a thread and complete immediately.
+        if not behavior_candidates and labels_file_path is None:
+            self._apply_sidecar_payload(
+                payload={},
+                video_name=video_name,
+                behavior_candidates=behavior_candidates,
+            )
+            return
+
+        thread = QtCore.QThread(self._window)
+        worker = _TrackingSidecarWorker(
+            request_token=request_token,
+            behavior_candidates=behavior_candidates,
+            labels_file_path=labels_file_path,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(
+            lambda payload, token: self._on_sidecar_worker_finished(
+                payload=payload,
+                request_token=str(token),
+                video_name=video_name,
+                behavior_candidates=behavior_candidates,
+            )
+        )
+        worker.failed.connect(
+            lambda error_text, token: self._on_sidecar_worker_failed(
+                error_text=str(error_text),
+                request_token=str(token),
+                video_name=video_name,
+                behavior_candidates=behavior_candidates,
+            )
+        )
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._sidecar_worker = worker
+        self._sidecar_thread = thread
+        thread.start(priority=QtCore.QThread.LowPriority)
+
+    def _cleanup_sidecar_worker_handles(self) -> None:
+        self._sidecar_worker = None
+        self._sidecar_thread = None
+
+    def _on_sidecar_worker_finished(
+        self,
+        *,
+        payload: dict,
+        request_token: str,
+        video_name: str,
+        behavior_candidates: list[Path],
+    ) -> None:
+        self._cleanup_sidecar_worker_handles()
+        if str(request_token) != str(self._sidecar_request_token):
+            return
+        self._sidecar_request_token = ""
+        self._apply_sidecar_payload(
+            payload=payload,
+            video_name=video_name,
+            behavior_candidates=behavior_candidates,
+        )
+
+    def _on_sidecar_worker_failed(
+        self,
+        *,
+        error_text: str,
+        request_token: str,
+        video_name: str,
+        behavior_candidates: list[Path],
+    ) -> None:
+        logger.error("Background tracking sidecar load failed: %s", error_text)
+        self._cleanup_sidecar_worker_handles()
+        if str(request_token) != str(self._sidecar_request_token):
+            return
+        self._sidecar_request_token = ""
+        self._apply_sidecar_payload(
+            payload={},
+            video_name=video_name,
+            behavior_candidates=behavior_candidates,
+        )
+
+    def _apply_behavior_rows(
+        self,
+        rows: list[tuple[Optional[float], float, Optional[str], str, str]],
+    ) -> None:
         w = self._window
+        fps = w.fps if w.fps and w.fps > 0 else 29.97
 
-        w.behavior_controller.clear()
-        w.behavior_log_widget.clear()
-        w.pinned_flags = {}
-        w._df = None
-        self._clear_tracking_cache()
+        def time_to_frame(time_value: float) -> int:
+            return int(round(float(time_value) * float(fps)))
 
-        video_name = Path(video_filename).stem
-        main_tracking_file = cur_video_folder / f"{video_name}_tracking.csv"
-        timestamps_file = cur_video_folder / f"{video_name}_timestamps.csv"
-        labels_file_path = cur_video_folder / f"{video_name}_labels.csv"
+        w.behavior_controller.load_events_from_rows(rows, time_to_frame=time_to_frame)
+        w.behavior_controller.attach_slider(w.seekbar)
+        fps_for_log = w.fps if w.fps and w.fps > 0 else 29.97
+        w.behavior_log_widget.set_events(
+            list(w.behavior_controller.iter_events()),
+            fps=fps_for_log,
+        )
+        current_flags = dict(w.pinned_flags or {})
+        for behavior in w.behavior_controller.behavior_names:
+            current_flags[str(behavior)] = False
+        w.loadFlags(current_flags)
 
-        if main_tracking_file.is_file():
+    def _fallback_load_behavior_from_store(self) -> bool:
+        w = self._window
+        try:
+            w.behavior_controller.load_events_from_store()
+        except Exception as exc:
+            logger.debug(
+                "Failed to load behavior events from annotation store: %s", exc
+            )
+            return False
+
+        if not w.behavior_controller.events_count:
+            return False
+        w.behavior_controller.attach_slider(w.seekbar)
+        fps_for_log = w.fps if w.fps and w.fps > 0 else 29.97
+        w.behavior_log_widget.set_events(
+            list(w.behavior_controller.iter_events()),
+            fps=fps_for_log,
+        )
+        current_flags = dict(w.pinned_flags or {})
+        for behavior in w.behavior_controller.behavior_names:
+            current_flags[str(behavior)] = False
+        w.loadFlags(current_flags)
+        return True
+
+    def _apply_sidecar_payload(
+        self,
+        *,
+        payload: dict,
+        video_name: str,
+        behavior_candidates: list[Path],
+    ) -> None:
+        w = self._window
+        loaded_behavior = False
+        behavior_rows = payload.get("behavior_rows")
+        behavior_source = payload.get("behavior_source")
+        fallback_behavior_path = payload.get("fallback_behavior_path")
+
+        if isinstance(behavior_rows, list):
+            if behavior_source:
+                logger.info("Loaded behavior rows from: %s", behavior_source)
+            self._apply_behavior_rows(behavior_rows)
+            loaded_behavior = True
+        elif fallback_behavior_path:
             try:
-                self._tracking_csv_path = main_tracking_file
-                logger.info(
-                    "Deferring tracking CSV load until first frame lookup: %s",
-                    main_tracking_file,
-                )
+                logger.info("Loading behavior data from: %s", fallback_behavior_path)
+                w._load_behavior(str(fallback_behavior_path))
+                loaded_behavior = True
             except Exception as exc:
                 logger.error(
-                    "Error loading main tracking file %s: %s", main_tracking_file, exc
+                    "Failed to load behavior data from %s: %s",
+                    fallback_behavior_path,
+                    exc,
                 )
-
-        def _discover_behavior_files(search_root: Path) -> list[Path]:
-            candidates: list[Path] = []
-            video_name_lower = video_name.lower()
-            for candidate in search_root.glob(f"{video_name}*.csv"):
-                name_lower = candidate.name.lower()
-                if name_lower == f"{video_name_lower}_tracking.csv":
-                    continue
-                if name_lower == f"{video_name_lower}_labels.csv":
-                    continue
-                if not self._is_likely_behavior_csv(candidate, video_name):
-                    continue
-                candidates.append(candidate)
-            return sorted(candidates)
-
-        behavior_candidates: list[Path] = []
-        if timestamps_file.is_file():
-            behavior_candidates.append(timestamps_file)
-        else:
-            behavior_candidates.extend(_discover_behavior_files(cur_video_folder))
-            results_dir = getattr(w, "video_results_folder", None)
-            if (
-                isinstance(results_dir, Path)
-                and results_dir.exists()
-                and results_dir != cur_video_folder
-            ):
-                behavior_candidates.extend(_discover_behavior_files(results_dir))
-
-        seen_paths: set[Path] = set()
-        unique_candidates: list[Path] = []
-        for candidate in behavior_candidates:
-            if candidate not in seen_paths:
-                unique_candidates.append(candidate)
-                seen_paths.add(candidate)
-        behavior_candidates = unique_candidates
-
-        loaded_behavior = False
-        for candidate in behavior_candidates:
-            try:
-                if candidate.stat().st_size > 8 * 1024 * 1024:
-                    logger.info(
-                        "Skipping large CSV during behavior discovery: %s", candidate
-                    )
-                    continue
-            except Exception:
-                pass
-            try:
-                logger.info("Loading behavior data from: %s", candidate)
-                w._load_behavior(str(candidate))
-                loaded_behavior = True
-                break
-            except Exception as exc:
-                logger.error("Failed to load behavior data from %s: %s", candidate, exc)
 
         if not loaded_behavior and behavior_candidates:
             logger.warning(
@@ -279,27 +618,10 @@ class TrackingDataController:
                 video_name,
                 f"{video_name}_timestamps.csv",
             )
-        if not loaded_behavior:
-            try:
-                w.behavior_controller.load_events_from_store()
-            except Exception as exc:
-                logger.debug(
-                    "Failed to load behavior events from annotation store: %s", exc
-                )
-            else:
-                if w.behavior_controller.events_count:
-                    w.behavior_controller.attach_slider(w.seekbar)
-                    fps_for_log = w.fps if w.fps and w.fps > 0 else 29.97
-                    w.behavior_log_widget.set_events(
-                        list(w.behavior_controller.iter_events()),
-                        fps=fps_for_log,
-                    )
-                    current_flags = dict(w.pinned_flags or {})
-                    for behavior in w.behavior_controller.behavior_names:
-                        current_flags[str(behavior)] = False
-                    w.loadFlags(current_flags)
-                    loaded_behavior = True
 
-        if labels_file_path.is_file():
-            logger.info("Loading labels data from: %s", labels_file_path)
-            w._load_labels(labels_file_path)
+        if not loaded_behavior:
+            self._fallback_load_behavior_from_store()
+
+        labels_df = payload.get("labels_df")
+        if isinstance(labels_df, pd.DataFrame):
+            w._df = labels_df
