@@ -2,29 +2,106 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtWidgets import QApplication, QFileDialog, QDialog
 
 from annolid.data.videos import CV2Video
+from annolid.gui.widgets.zone_manager_utils import zone_file_for_source
 from annolid.postprocessing.tracking_results_analyzer import TrackingResultsAnalyzer
 from annolid.postprocessing.zone_assay_profiles import available_assay_profiles
 from annolid.utils.files import find_manual_labeled_json_files
 
 
-class TrackingAnalyzerDialog(QDialog):
-    def __init__(self):
+class _ZoneExportWorker(QtCore.QObject):
+    finished = QtCore.Signal(str)
+    failed = QtCore.Signal(str)
+    canceled = QtCore.Signal()
+
+    def __init__(
+        self,
+        *,
+        video_path: str,
+        zone_path: str | None,
+        fps: float | None,
+        assay_profile: str,
+        export_method_name: str,
+        latency_reference_frame: int | None,
+    ) -> None:
         super().__init__()
+        self._video_path = str(video_path)
+        self._zone_path = zone_path
+        self._fps = fps
+        self._assay_profile = str(assay_profile)
+        self._export_method_name = str(export_method_name)
+        self._latency_reference_frame = latency_reference_frame
+        self._cancel_requested = False
+
+    @QtCore.Slot()
+    def request_cancel(self) -> None:
+        self._cancel_requested = True
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        if self._cancel_requested:
+            self.canceled.emit()
+            return
+        try:
+            analyzer = TrackingResultsAnalyzer(
+                self._video_path,
+                zone_file=self._zone_path,
+                fps=self._fps,
+                assay_profile=self._assay_profile,
+            )
+            if self._cancel_requested:
+                self.canceled.emit()
+                return
+            export_method = getattr(analyzer, self._export_method_name)
+            if self._latency_reference_frame is None:
+                output_path = export_method()
+            else:
+                output_path = export_method(
+                    latency_reference_frame=self._latency_reference_frame
+                )
+            if self._cancel_requested:
+                self.canceled.emit()
+                return
+            self.finished.emit(str(output_path))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class TrackingAnalyzerDialog(QDialog):
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None = None,
+        *,
+        video_path: str | None = None,
+        zone_path: str | None = None,
+        fps: float | None = None,
+    ):
+        super().__init__(parent)
         self.setWindowTitle("Zone Analysis")
         self.resize(640, 520)
 
         self._assay_profiles = available_assay_profiles()
         self._mode_specs = self._build_mode_specs()
+        self._owner_window = parent
+        self._export_thread: QtCore.QThread | None = None
+        self._export_worker: _ZoneExportWorker | None = None
+        self._active_status_prefix: str | None = None
+        self._active_export_started: float | None = None
+        self._cancel_requested = False
 
         self._build_ui()
+        self._bind_live_updates()
+        self._prefill_from_context(video_path=video_path, zone_path=zone_path, fps=fps)
         self._update_profile_hint()
         self._update_mode_hint()
+        self._update_mode_button_state()
+        self._update_latency_requirement()
 
     @staticmethod
     def _build_mode_specs() -> list[dict[str, object]]:
@@ -214,17 +291,23 @@ class TrackingAnalyzerDialog(QDialog):
         self.video_path_edit.setPlaceholderText("Select a video path")
         self.video_path_button = QtWidgets.QPushButton("Browse")
         self.video_path_button.clicked.connect(self.browse_video)
+        self.use_session_button = QtWidgets.QPushButton("Use Open Video")
+        self.use_session_button.clicked.connect(self.apply_session_context)
         video_row = QtWidgets.QHBoxLayout()
         video_row.addWidget(self.video_path_edit, 1)
         video_row.addWidget(self.video_path_button)
+        video_row.addWidget(self.use_session_button)
 
         self.zone_path_edit = QtWidgets.QLineEdit()
         self.zone_path_edit.setPlaceholderText("Optional: select a zone JSON path")
         self.zone_path_button = QtWidgets.QPushButton("Browse")
         self.zone_path_button.clicked.connect(self.browse_zone)
+        self.autodetect_zone_button = QtWidgets.QPushButton("Auto")
+        self.autodetect_zone_button.clicked.connect(self.autodetect_zone_file)
         zone_row = QtWidgets.QHBoxLayout()
         zone_row.addWidget(self.zone_path_edit, 1)
         zone_row.addWidget(self.zone_path_button)
+        zone_row.addWidget(self.autodetect_zone_button)
 
         self.fps_edit = QtWidgets.QLineEdit()
         self.fps_edit.setPlaceholderText("Optional FPS (default 30)")
@@ -284,20 +367,27 @@ class TrackingAnalyzerDialog(QDialog):
         self.run_export_button = QtWidgets.QPushButton("Run Selected Export")
         self.run_export_button.clicked.connect(self._run_selected_export)
         self.run_export_button.setProperty("primary", True)
-        self.legacy_export_button = QtWidgets.QPushButton("Legacy CSV")
-        self.legacy_export_button.clicked.connect(self.export_legacy_csv)
-        self.generic_export_button = QtWidgets.QPushButton("Zone Metrics")
-        self.generic_export_button.clicked.connect(self.export_zone_metrics_csv)
-        self.assay_summary_button = QtWidgets.QPushButton("Assay Summary")
-        self.assay_summary_button.clicked.connect(self.export_assay_summary)
-        self.social_summary_button = QtWidgets.QPushButton("Social Summary")
-        self.social_summary_button.clicked.connect(self.export_social_summary)
+        self.cancel_export_button = QtWidgets.QPushButton("Cancel Export")
+        self.cancel_export_button.clicked.connect(self._cancel_running_export)
+        self.cancel_export_button.setEnabled(False)
+        self.mode_shortcut_button = QtWidgets.QPushButton("Set Mode")
+        self.mode_shortcut_menu = QtWidgets.QMenu(self.mode_shortcut_button)
+        for spec in self._mode_specs:
+            action = self.mode_shortcut_menu.addAction(str(spec["title"]))
+            action.triggered.connect(
+                lambda _checked=False, key=str(spec["key"]): self._set_output_mode(key)
+            )
+        self.mode_shortcut_button.setMenu(self.mode_shortcut_menu)
         action_row.addWidget(self.run_export_button, 1)
-        action_row.addWidget(self.legacy_export_button)
-        action_row.addWidget(self.generic_export_button)
-        action_row.addWidget(self.assay_summary_button)
-        action_row.addWidget(self.social_summary_button)
+        action_row.addWidget(self.cancel_export_button)
+        action_row.addWidget(self.mode_shortcut_button)
         content_layout.addLayout(action_row)
+
+        self.progress = QtWidgets.QProgressBar(container)
+        self.progress.setRange(0, 1)
+        self.progress.setTextVisible(False)
+        self.progress.setVisible(False)
+        content_layout.addWidget(self.progress)
 
         self.status_label = QtWidgets.QLabel(container)
         self.status_label.setWordWrap(True)
@@ -330,11 +420,8 @@ class TrackingAnalyzerDialog(QDialog):
         )
         if filename:
             self.video_path_edit.setText(filename)
-            fps, zone_file = self.extract_fps_and_find_zone_file(filename)
-            if fps:
-                self.fps_edit.setText(str(fps))
-            if zone_file:
-                self.zone_path_edit.setText(zone_file)
+            self._refresh_input_defaults_from_video()
+            self._set_status("Video selected. Updated FPS and suggested zone file.")
 
     def browse_zone(self):
         filename, _ = QFileDialog.getOpenFileName(
@@ -342,6 +429,141 @@ class TrackingAnalyzerDialog(QDialog):
         )
         if filename:
             self.zone_path_edit.setText(filename)
+            self._set_status(f"Using zone file: {filename}")
+
+    def _bind_live_updates(self) -> None:
+        self.video_path_edit.textChanged.connect(self._update_mode_button_state)
+        self.video_path_edit.textChanged.connect(
+            lambda *_: self._set_status(
+                "Video path changed. Click Auto to refresh zone."
+            )
+        )
+        self.zone_path_edit.textChanged.connect(self._update_mode_button_state)
+
+    def _set_status(self, message: str, *, busy: bool = False) -> None:
+        self.status_label.setText(str(message or ""))
+        self.progress.setVisible(bool(busy))
+        if busy:
+            self.progress.setRange(0, 0)
+        else:
+            self.progress.setRange(0, 1)
+            self.progress.setValue(0)
+        QApplication.processEvents()
+
+    def _set_output_mode(self, mode_key: str) -> None:
+        for index in range(self.output_mode_combo.count()):
+            if str(self.output_mode_combo.itemData(index) or "") == str(mode_key):
+                self.output_mode_combo.setCurrentIndex(index)
+                break
+
+    def _owner_session_context(self) -> tuple[str | None, str | None, float | None]:
+        owner = self._owner_window
+        if owner is None:
+            return (None, None, None)
+        video_path = str(getattr(owner, "video_file", "") or "").strip() or None
+        zone_path = str(getattr(owner, "zone_path", "") or "").strip() or None
+        fps_value = getattr(owner, "fps", None)
+        try:
+            fps = float(fps_value) if fps_value else None
+        except Exception:
+            fps = None
+        return (video_path, zone_path, fps)
+
+    def _prefill_from_context(
+        self,
+        *,
+        video_path: str | None,
+        zone_path: str | None,
+        fps: float | None,
+    ) -> None:
+        resolved_video = str(video_path or "").strip() or None
+        resolved_zone = str(zone_path or "").strip() or None
+        resolved_fps = fps
+        if not resolved_video or not resolved_zone or not resolved_fps:
+            owner_video, owner_zone, owner_fps = self._owner_session_context()
+            if not resolved_video:
+                resolved_video = owner_video
+            if not resolved_zone:
+                resolved_zone = owner_zone
+            if not resolved_fps:
+                resolved_fps = owner_fps
+        if resolved_video:
+            self.video_path_edit.setText(resolved_video)
+            self._refresh_input_defaults_from_video(
+                preferred_zone_file=resolved_zone, preferred_fps=resolved_fps
+            )
+            self._set_status("Loaded open session context for zone analysis.")
+        else:
+            self._set_status("Select a video to begin zone analysis.")
+        if not resolved_video:
+            self.use_session_button.setEnabled(bool(self._owner_window is not None))
+
+    def apply_session_context(self) -> None:
+        video_path, zone_path, fps = self._owner_session_context()
+        if not video_path:
+            self._set_status("No open video in the main window.", busy=False)
+            return
+        self.video_path_edit.setText(video_path)
+        self._refresh_input_defaults_from_video(
+            preferred_zone_file=zone_path, preferred_fps=fps
+        )
+        self._set_status("Applied open video/session zone settings.")
+
+    def _update_mode_button_state(self, *args) -> None:
+        _ = args
+        has_video = bool(self.video_path_edit.text().strip())
+        running = self._export_thread is not None
+        self.run_export_button.setEnabled(has_video and not running)
+        self.cancel_export_button.setEnabled(running and not self._cancel_requested)
+        self.cancel_export_button.setText(
+            "Canceling…" if self._cancel_requested and running else "Cancel Export"
+        )
+        self.mode_shortcut_button.setEnabled(not running)
+        self.video_path_button.setEnabled(not running)
+        self.use_session_button.setEnabled(not running)
+        self.zone_path_button.setEnabled(not running)
+        self.autodetect_zone_button.setEnabled(not running)
+        self.video_path_edit.setEnabled(not running)
+        self.zone_path_edit.setEnabled(not running)
+        self.fps_edit.setEnabled(not running)
+        self.profile_combo.setEnabled(not running)
+        self.output_mode_combo.setEnabled(not running)
+        self.latency_reference_edit.setEnabled(
+            (not running) and bool(self._selected_mode_spec().get("requires_latency"))
+        )
+
+    def _refresh_input_defaults_from_video(
+        self,
+        *,
+        preferred_zone_file: str | None = None,
+        preferred_fps: float | None = None,
+    ) -> None:
+        video_path = self.video_path_edit.text().strip()
+        if not video_path:
+            return
+        fps, zone_file = self.extract_fps_and_find_zone_file(
+            video_path, preferred_zone_file=preferred_zone_file
+        )
+        if preferred_fps:
+            fps = preferred_fps
+        if fps:
+            self.fps_edit.setText(str(fps))
+        if preferred_zone_file and str(preferred_zone_file).strip():
+            self.zone_path_edit.setText(str(preferred_zone_file).strip())
+        elif zone_file:
+            self.zone_path_edit.setText(zone_file)
+
+    def autodetect_zone_file(self) -> None:
+        video_path = self.video_path_edit.text().strip()
+        if not video_path:
+            self._set_status("Select a video first to auto-detect zone files.")
+            return
+        _, zone_file = self.extract_fps_and_find_zone_file(video_path)
+        if zone_file:
+            self.zone_path_edit.setText(zone_file)
+            self._set_status(f"Detected zone file: {zone_file}")
+        else:
+            self._set_status("No zone JSON was auto-detected for this video.")
 
     def _selected_assay_profile(self) -> str:
         return self.profile_combo.currentData() or self.profile_combo.currentText()
@@ -424,6 +646,29 @@ class TrackingAnalyzerDialog(QDialog):
             assay_profile=selected_profile,
         )
 
+    def _build_export_job(
+        self,
+        *,
+        export_method_name: str,
+        assay_profile: str | None = None,
+        latency_reference_frame: int | None = None,
+    ) -> dict[str, object]:
+        video_path = self.video_path_edit.text().strip()
+        zone_path = self.zone_path_edit.text().strip() or None
+        fps_text = self.fps_edit.text().strip()
+        fps = float(fps_text) if fps_text else None
+        if not video_path:
+            raise ValueError("A video path is required.")
+        profile = assay_profile or self._selected_assay_profile()
+        return {
+            "video_path": video_path,
+            "zone_path": zone_path,
+            "fps": fps,
+            "assay_profile": str(profile),
+            "export_method_name": str(export_method_name),
+            "latency_reference_frame": latency_reference_frame,
+        }
+
     @staticmethod
     def _parse_integer_frame_text(text: str) -> int | None:
         value = str(text or "").strip()
@@ -443,18 +688,67 @@ class TrackingAnalyzerDialog(QDialog):
             raise ValueError("Latency reference frame must be an integer frame number.")
         return frame
 
-    def extract_fps_and_find_zone_file(self, video_path):
+    def extract_fps_and_find_zone_file(
+        self, video_path, *, preferred_zone_file: str | None = None
+    ):
         fps = None
         zone_file = None
         if os.path.exists(video_path):
-            fps = CV2Video(video_path).get_fps()
-            video_dir = Path(video_path).with_suffix("")
-            json_files = find_manual_labeled_json_files(video_dir)
-            if json_files:
-                zone_file = video_dir / sorted(json_files)[0]
-        return fps, str(zone_file)
+            try:
+                fps = CV2Video(video_path).get_fps()
+            except Exception:
+                fps = None
+            zone_file = self._infer_zone_file_for_video(
+                video_path, preferred_zone_file=preferred_zone_file
+            )
+        return fps, (str(zone_file) if zone_file else None)
 
-    def _run_export(
+    @staticmethod
+    def _is_valid_zone_file(path_value: str | Path | None) -> bool:
+        if not path_value:
+            return False
+        try:
+            path = Path(path_value).expanduser()
+        except Exception:
+            return False
+        return path.exists() and path.is_file() and path.suffix.lower() == ".json"
+
+    def _infer_zone_file_for_video(
+        self, video_path: str, *, preferred_zone_file: str | None = None
+    ) -> Path | None:
+        candidates: list[Path] = []
+
+        def _append(path_value: str | Path | None) -> None:
+            if not path_value:
+                return
+            path = Path(path_value).expanduser()
+            if path not in candidates:
+                candidates.append(path)
+
+        if self._is_valid_zone_file(preferred_zone_file):
+            _append(preferred_zone_file)
+        current_zone = self.zone_path_edit.text().strip()
+        if self._is_valid_zone_file(current_zone):
+            _append(current_zone)
+        _append(zone_file_for_source(video_path))
+        video_file = Path(video_path)
+        _append(video_file.with_name(f"{video_file.stem}_zones.json"))
+
+        video_dir = video_file.with_suffix("")
+        if video_dir.exists():
+            _append(zone_file_for_source(video_dir / f"{video_dir.name}_000000000.png"))
+            for path in sorted(video_dir.glob("*_zones.json")):
+                _append(path)
+            json_files = find_manual_labeled_json_files(str(video_dir))
+            for filename in json_files:
+                _append(video_dir / filename)
+
+        for candidate in candidates:
+            if self._is_valid_zone_file(candidate):
+                return candidate
+        return None
+
+    def _run_export_sync(
         self,
         export_method_name: str,
         *,
@@ -462,21 +756,150 @@ class TrackingAnalyzerDialog(QDialog):
         assay_profile=None,
         latency_reference_frame=None,
     ) -> str | None:
+        start = time.monotonic()
         try:
-            analyzer = self._build_analyzer(assay_profile=assay_profile)
-            export_method = getattr(analyzer, export_method_name)
-            if latency_reference_frame is None:
+            self._set_status(
+                f"{status_prefix}: preparing analyzer and inputs…",
+                busy=True,
+            )
+            job = self._build_export_job(
+                export_method_name=export_method_name,
+                assay_profile=assay_profile,
+                latency_reference_frame=latency_reference_frame,
+            )
+            analyzer = TrackingResultsAnalyzer(
+                str(job["video_path"]),
+                zone_file=job["zone_path"],
+                fps=job["fps"],
+                assay_profile=str(job["assay_profile"]),
+            )
+            export_method = getattr(analyzer, str(job["export_method_name"]))
+            self._set_status(f"{status_prefix}: running export…", busy=True)
+            if job["latency_reference_frame"] is None:
                 output_path = export_method()
             else:
                 output_path = export_method(
-                    latency_reference_frame=latency_reference_frame
+                    latency_reference_frame=int(job["latency_reference_frame"])
                 )
         except Exception as exc:
-            self.status_label.setText(f"{status_prefix} failed: {exc}")
+            self._set_status(f"{status_prefix} failed: {exc}", busy=False)
             QtWidgets.QMessageBox.warning(self, f"{status_prefix} failed", str(exc))
             return None
-        self.status_label.setText(f"{status_prefix} saved to {output_path}")
+        elapsed = time.monotonic() - start
+        self._set_status(
+            f"{status_prefix} saved to {output_path} ({elapsed:.1f}s).", busy=False
+        )
         return output_path
+
+    def _cleanup_export_worker(self) -> None:
+        self._export_thread = None
+        self._export_worker = None
+        self._active_status_prefix = None
+        self._active_export_started = None
+        self._cancel_requested = False
+        self._update_mode_button_state()
+
+    def _on_export_finished(self, output_path: str) -> None:
+        status_prefix = self._active_status_prefix or "Zone analysis export"
+        started = self._active_export_started
+        elapsed = (time.monotonic() - started) if started is not None else None
+        elapsed_suffix = f" ({elapsed:.1f}s)" if elapsed is not None else ""
+        if self._cancel_requested:
+            self._set_status(
+                f"{status_prefix}: cancellation requested, but current step completed and saved {output_path}{elapsed_suffix}.",
+                busy=False,
+            )
+        else:
+            self._set_status(
+                f"{status_prefix} saved to {output_path}{elapsed_suffix}.",
+                busy=False,
+            )
+        self._cleanup_export_worker()
+
+    def _on_export_failed(self, message: str) -> None:
+        status_prefix = self._active_status_prefix or "Zone analysis export"
+        self._set_status(f"{status_prefix} failed: {message}", busy=False)
+        self._cleanup_export_worker()
+        QtWidgets.QMessageBox.warning(self, f"{status_prefix} failed", str(message))
+
+    def _on_export_canceled(self) -> None:
+        status_prefix = self._active_status_prefix or "Zone analysis export"
+        self._set_status(f"{status_prefix} canceled.", busy=False)
+        self._cleanup_export_worker()
+
+    def _cancel_running_export(self) -> None:
+        if self._export_worker is None or self._export_thread is None:
+            self._set_status("No active export to cancel.")
+            return
+        self._cancel_requested = True
+        self._update_mode_button_state()
+        self._set_status(
+            "Cancellation requested. Waiting for the current export step to stop…",
+            busy=True,
+        )
+        try:
+            QtCore.QMetaObject.invokeMethod(
+                self._export_worker,
+                "request_cancel",
+                QtCore.Qt.QueuedConnection,
+            )
+        except Exception:
+            self._set_status(
+                "Cancellation request could not be delivered. Export is still running.",
+                busy=True,
+            )
+
+    def _run_export_async(
+        self,
+        export_method_name: str,
+        *,
+        status_prefix: str,
+        assay_profile=None,
+        latency_reference_frame=None,
+    ) -> None:
+        if self._export_thread is not None:
+            self._set_status("An export is already running. Please wait.", busy=True)
+            return
+        try:
+            job = self._build_export_job(
+                export_method_name=export_method_name,
+                assay_profile=assay_profile,
+                latency_reference_frame=latency_reference_frame,
+            )
+        except Exception as exc:
+            self._set_status(f"{status_prefix} failed: {exc}", busy=False)
+            QtWidgets.QMessageBox.warning(self, f"{status_prefix} failed", str(exc))
+            return
+
+        thread = QtCore.QThread(self)
+        worker = _ZoneExportWorker(
+            video_path=str(job["video_path"]),
+            zone_path=job["zone_path"],
+            fps=job["fps"],
+            assay_profile=str(job["assay_profile"]),
+            export_method_name=str(job["export_method_name"]),
+            latency_reference_frame=job["latency_reference_frame"],
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_export_finished)
+        worker.failed.connect(self._on_export_failed)
+        worker.canceled.connect(self._on_export_canceled)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.canceled.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        self._export_thread = thread
+        self._export_worker = worker
+        self._active_status_prefix = status_prefix
+        self._active_export_started = time.monotonic()
+        self._cancel_requested = False
+        self._set_status(f"{status_prefix}: preparing analyzer and inputs…", busy=True)
+        self._update_mode_button_state()
+        self._set_status(f"{status_prefix}: running export…", busy=True)
+        thread.start()
 
     def _run_selected_export(self):
         spec = self._selected_mode_spec()
@@ -489,7 +912,7 @@ class TrackingAnalyzerDialog(QDialog):
             if bool(spec.get("requires_latency"))
             else None
         )
-        self._run_export(
+        self._run_export_async(
             str(spec["method"]),
             status_prefix=str(spec["status_prefix"]),
             assay_profile=assay_profile,
@@ -497,28 +920,28 @@ class TrackingAnalyzerDialog(QDialog):
         )
 
     def export_legacy_csv(self):
-        self._run_export(
+        self._run_export_sync(
             "save_all_instances_zone_time_to_csv",
             status_prefix="Legacy place-preference export",
             assay_profile="generic",
         )
 
     def export_zone_metrics_csv(self):
-        self._run_export(
+        self._run_export_sync(
             "save_zone_metrics_to_csv",
             status_prefix="Generic zone metrics export",
             assay_profile=self._selected_assay_profile(),
         )
 
     def export_assay_summary(self):
-        self._run_export(
+        self._run_export_sync(
             "save_assay_summary_report",
             status_prefix="Assay summary export",
             assay_profile=self._selected_assay_profile(),
         )
 
     def export_social_summary(self):
-        self._run_export(
+        self._run_export_sync(
             "save_social_summary_report",
             status_prefix="Social summary export",
             assay_profile=self._selected_assay_profile(),
@@ -527,13 +950,27 @@ class TrackingAnalyzerDialog(QDialog):
 
     def run_analysis_without_gui(self, video_path, zone_path=None, fps=None):
         self.video_path_edit.setText(video_path)
-        if zone_path is None:
-            fps, zone_path = self.extract_fps_and_find_zone_file(video_path)
+        resolved_fps, resolved_zone = self.extract_fps_and_find_zone_file(
+            video_path, preferred_zone_file=zone_path
+        )
         if zone_path:
-            self.zone_path_edit.setText(zone_path)
+            resolved_zone = zone_path
         if fps:
-            self.fps_edit.setText(str(fps))
+            resolved_fps = fps
+        if resolved_zone:
+            self.zone_path_edit.setText(str(resolved_zone))
+        if resolved_fps:
+            self.fps_edit.setText(str(resolved_fps))
         self.export_zone_metrics_csv()
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        if self._export_thread is not None:
+            self._set_status(
+                "Zone analysis export is still running. Wait for it to complete."
+            )
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":

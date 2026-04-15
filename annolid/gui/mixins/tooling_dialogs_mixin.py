@@ -518,8 +518,30 @@ class ToolingDialogsMixin:
         extract_shape_keypoints_dialog.exec_()
 
     def place_preference_analyze(self):
-        place_preference_analyze_widget = TrackingAnalyzerDialog()
-        place_preference_analyze_widget.exec_()
+        existing_dialog = getattr(self, "_zone_analysis_dialog", None)
+        if isinstance(existing_dialog, TrackingAnalyzerDialog):
+            existing_dialog.apply_session_context()
+            existing_dialog.show()
+            existing_dialog.raise_()
+            existing_dialog.activateWindow()
+            return
+
+        place_preference_analyze_widget = TrackingAnalyzerDialog(
+            parent=self,
+            video_path=str(getattr(self, "video_file", "") or "").strip() or None,
+            zone_path=str(getattr(self, "zone_path", "") or "").strip() or None,
+            fps=getattr(self, "fps", None),
+        )
+        place_preference_analyze_widget.setModal(False)
+        place_preference_analyze_widget.setWindowModality(QtCore.Qt.NonModal)
+        place_preference_analyze_widget.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        self._zone_analysis_dialog = place_preference_analyze_widget
+        place_preference_analyze_widget.destroyed.connect(
+            lambda *_: setattr(self, "_zone_analysis_dialog", None)
+        )
+        place_preference_analyze_widget.show()
+        place_preference_analyze_widget.raise_()
+        place_preference_analyze_widget.activateWindow()
 
     def place_preference_analyze_auto(self):
         if self.video_file is not None:

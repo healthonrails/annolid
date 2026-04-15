@@ -116,6 +116,7 @@ The zone dock now separates authoring into three views:
 ## Step 5: Run Zone Analysis
 
 Open **Video Tools → Zone Analysis**.
+If a video is already open in Annolid, the dialog now pre-fills the current video path, FPS, and a best-match zone JSON candidate.
 
 Pick the assay profile:
 
@@ -125,7 +126,10 @@ Pick the assay profile:
 
 Then choose one of the outputs:
 
-- you can use **Output Mode** plus **Run Selected Export** for a guided single-action workflow, or use the dedicated quick buttons.
+- use **Output Mode** plus **Run Selected Export** for a guided single-action workflow.
+- use **Set Mode** to jump quickly between export types.
+- use **Use Open Video** or **Auto** (next to Zone JSON) when you want to re-sync paths from the current session.
+- watch the status line and busy progress indicator for run state (`preparing`, `running`, `saved`, or `failed`).
 
 - **Export Legacy CSV**
   - Historical format, one column per zone.
