@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from numbers import Number
 import os
@@ -30,7 +31,13 @@ from annolid.gui.polygon_tools import is_inferable_polygon
 from annolid.gui.polygon_tools import polygon_identity_key
 from annolid.gui.status import post_window_status
 from annolid.gui.widgets.brain_3d_dock import Brain3DSessionDockWidget
+from annolid.gui.widgets.zone_manager_utils import (
+    is_zone_shape,
+    zone_file_for_source,
+    zone_payload_to_shape,
+)
 from annolid.infrastructure import AnnotationStore
+from annolid.postprocessing.zone_schema import load_zone_shapes
 from annolid.postprocessing.quality_control import pred_dict_to_labelme
 from annolid.utils.logger import logger
 
@@ -44,6 +51,9 @@ class AnnotationLoadingMixin:
     _BRAIN3D_HIGHLIGHT_MODE_KEY = "brain3d_highlight_mode"
     _BRAIN3D_PENDING_REGION_KEY = "_brain3d_pending_region_id"
     _BRAIN3D_INTERNAL_MUTATION_KEY = "_brain3d_internal_mutation_in_progress"
+    _ZONE_OVERLAY_CACHE_PATH_KEY = "_zone_overlay_cache_path"
+    _ZONE_OVERLAY_CACHE_MTIME_KEY = "_zone_overlay_cache_mtime_ns"
+    _ZONE_OVERLAY_CACHE_PAYLOADS_KEY = "_zone_overlay_cache_payloads"
 
     @staticmethod
     def _brain3d_polygon_signature(shapes) -> str:
@@ -72,6 +82,152 @@ class AnnotationLoadingMixin:
         entries.sort(key=lambda value: (value[0], value[1], value[2], len(value[3])))
         payload = repr(entries).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _zone_shape_signature(shape: Shape) -> tuple:
+        points = []
+        for point in list(getattr(shape, "points", []) or []):
+            x = point.x() if hasattr(point, "x") else point[0]
+            y = point.y() if hasattr(point, "y") else point[1]
+            points.append((round(float(x), 3), round(float(y), 3)))
+        return (
+            str(getattr(shape, "label", "") or ""),
+            str(getattr(shape, "shape_type", "") or ""),
+            tuple(points),
+        )
+
+    @staticmethod
+    def _clone_zone_shapes(shapes) -> list[Shape]:
+        cloned: list[Shape] = []
+        for shape in list(shapes or []):
+            if not is_zone_shape(shape):
+                continue
+            payload = {
+                "label": str(getattr(shape, "label", "") or ""),
+                "description": str(getattr(shape, "description", "") or ""),
+                "shape_type": str(getattr(shape, "shape_type", "polygon") or "polygon"),
+                "points": [
+                    [float(point.x()), float(point.y())]
+                    for point in list(getattr(shape, "points", []) or [])
+                ],
+                "flags": dict(getattr(shape, "flags", {}) or {}),
+                "group_id": getattr(shape, "group_id", None),
+                "visible": bool(getattr(shape, "visible", True)),
+            }
+            cloned.append(zone_payload_to_shape(payload))
+        return cloned
+
+    def _zone_overlay_candidate_files(self, frame_path: Optional[Path]) -> list[Path]:
+        candidates: list[Path] = []
+
+        def _append(path_value) -> None:
+            if not path_value:
+                return
+            path = Path(path_value).expanduser()
+            if path not in candidates:
+                candidates.append(path)
+
+        zone_path = getattr(self, "zone_path", None)
+        if zone_path:
+            _append(zone_path)
+        _append(zone_file_for_source(getattr(self, "video_file", None)))
+        _append(zone_file_for_source(getattr(self, "filename", None)))
+        if frame_path is not None:
+            _append(zone_file_for_source(frame_path))
+        return [path for path in candidates if path.exists() and path.is_file()]
+
+    def _load_zone_payloads_from_file(self, zone_file: Path) -> list[dict]:
+        try:
+            stat_result = zone_file.stat()
+            mtime_ns = int(getattr(stat_result, "st_mtime_ns", 0))
+        except OSError:
+            return []
+
+        cached_path = getattr(self, self._ZONE_OVERLAY_CACHE_PATH_KEY, None)
+        cached_mtime = getattr(self, self._ZONE_OVERLAY_CACHE_MTIME_KEY, None)
+        cached_payloads = getattr(self, self._ZONE_OVERLAY_CACHE_PAYLOADS_KEY, None)
+        if (
+            cached_path == str(zone_file)
+            and cached_mtime == mtime_ns
+            and isinstance(cached_payloads, list)
+        ):
+            return [dict(payload) for payload in cached_payloads]
+
+        try:
+            payload = json.loads(zone_file.read_text(encoding="utf-8"))
+            specs = load_zone_shapes(payload)
+            normalized = [spec.to_shape_dict() for spec in specs]
+        except Exception:
+            logger.debug(
+                "Failed to load zone overlay file: %s", zone_file, exc_info=True
+            )
+            normalized = []
+
+        setattr(self, self._ZONE_OVERLAY_CACHE_PATH_KEY, str(zone_file))
+        setattr(self, self._ZONE_OVERLAY_CACHE_MTIME_KEY, mtime_ns)
+        setattr(
+            self,
+            self._ZONE_OVERLAY_CACHE_PAYLOADS_KEY,
+            [dict(item) for item in normalized],
+        )
+        return [dict(payload) for payload in normalized]
+
+    def _persistent_zone_shapes_for_frame(
+        self, frame_path: Optional[Path]
+    ) -> list[Shape]:
+        zone_shapes = self._clone_zone_shapes(getattr(self.canvas, "shapes", []) or [])
+        for zone_file in self._zone_overlay_candidate_files(frame_path):
+            for payload in self._load_zone_payloads_from_file(zone_file):
+                try:
+                    zone_shapes.append(zone_payload_to_shape(payload))
+                except Exception:
+                    logger.debug(
+                        "Failed to materialize zone payload from %s",
+                        zone_file,
+                        exc_info=True,
+                    )
+        if not zone_shapes:
+            return []
+        deduped: list[Shape] = []
+        seen: set[tuple] = set()
+        for shape in zone_shapes:
+            signature = self._zone_shape_signature(shape)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            deduped.append(shape)
+        return deduped
+
+    def _merge_persistent_zones_into_shapes(
+        self,
+        shapes,
+        frame_path: Optional[Path],
+        *,
+        persistent_zone_shapes: Optional[list[Shape]] = None,
+    ) -> list[Shape]:
+        merged: list[Shape] = []
+        for shape in list(shapes or []):
+            if isinstance(shape, Shape):
+                merged.append(shape)
+            else:
+                merged.extend(self._materialize_label_shapes([shape]))
+        existing = {
+            self._zone_shape_signature(shape)
+            for shape in merged
+            if is_zone_shape(shape)
+        }
+        zone_shapes = (
+            list(persistent_zone_shapes or [])
+            if persistent_zone_shapes is not None
+            else self._persistent_zone_shapes_for_frame(frame_path)
+        )
+        for zone_shape in zone_shapes:
+            signature = self._zone_shape_signature(zone_shape)
+            if signature in existing:
+                continue
+            existing.add(signature)
+            merged.append(zone_shape)
+        return merged
 
     def _brain3d_current_page_index(self) -> int:
         return int(getattr(self, "frame_number", 0) or 0)
@@ -1662,6 +1818,7 @@ class AnnotationLoadingMixin:
 
         frame_path = Path(filename) if filename else None
         label_candidates = self._iter_frame_label_candidates(frame_number, frame_path)
+        persistent_zone_shapes = self._persistent_zone_shapes_for_frame(frame_path)
 
         seen_candidates: set[Path] = set()
         label_loaded = False
@@ -1697,7 +1854,14 @@ class AnnotationLoadingMixin:
 
             self.labelFile = label_file
             self.canvas.setBehaviorText(None)
-            self.loadLabels(label_file.shapes)
+            frame_shapes = self._materialize_label_shapes(label_file.shapes)
+            if persistent_zone_shapes:
+                frame_shapes = self._merge_persistent_zones_into_shapes(
+                    frame_shapes,
+                    frame_path,
+                    persistent_zone_shapes=persistent_zone_shapes,
+                )
+            self.loadShapes(frame_shapes)
             self.update_flags_from_file(label_file)
             if (
                 len(self.canvas.current_behavior_text) > 1
@@ -1754,6 +1918,12 @@ class AnnotationLoadingMixin:
                     pred_label_list = pred_dict_to_labelme(row)
                     frame_label_list += pred_label_list
 
+                if persistent_zone_shapes:
+                    frame_label_list = self._merge_persistent_zones_into_shapes(
+                        frame_label_list,
+                        frame_path,
+                        persistent_zone_shapes=persistent_zone_shapes,
+                    )
                 self.loadShapes(frame_label_list)
 
         if not label_loaded and self.caption_widget is not None:

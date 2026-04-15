@@ -159,6 +159,12 @@ From the loaded zone file:
 
 - `zone.inside.<zone_name>` (boolean)
 - `zone.distance.<zone_name>` (float pixels)
+- `zone.inside_kind.<zone_kind>` (boolean; inside any zone of that kind)
+- `zone.distance_kind.<zone_kind>` (float pixels; min distance to that kind)
+- `zone.inside_role.<occupant_role>` (boolean; inside any zone with that role)
+- `zone.distance_role.<occupant_role>` (float pixels; min distance to that role)
+- `zone.inside.stim_chamber` / `zone.distance.stim_chamber` (aggregate stim chamber metric)
+- `zone.inside.neutral_transit` / `zone.distance.neutral_transit` (aggregate neutral tube/transit metric)
 
 Example:
 

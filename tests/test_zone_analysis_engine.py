@@ -111,6 +111,64 @@ def test_generic_zone_engine_ignores_frames_outside_any_zone():
     assert result.total_transitions() == 0
 
 
+def test_generic_zone_engine_reports_stim_and_neutral_aggregate_metrics():
+    zone_data = {
+        "shapes": [
+            build_zone_shape(
+                "left_stim_chamber",
+                [[0, 0], [40, 100]],
+                shape_type="rectangle",
+                zone_kind="chamber",
+                phase="phase_1",
+                occupant_role="stim",
+                access_state="open",
+            ),
+            build_zone_shape(
+                "connector_tube",
+                [[40, 0], [60, 100]],
+                shape_type="rectangle",
+                zone_kind="connector_tube",
+                phase="phase_1",
+                occupant_role="neutral",
+                access_state="open",
+                extra_flags={"neutral_zone": True},
+            ),
+            build_zone_shape(
+                "right_stim_chamber",
+                [[60, 0], [100, 100]],
+                shape_type="rectangle",
+                zone_kind="chamber",
+                phase="phase_1",
+                occupant_role="stim",
+                access_state="open",
+            ),
+        ]
+    }
+    engine = GenericZoneEngine(load_zone_shapes(zone_data), fps=10)
+    dataframe = pd.DataFrame(
+        [
+            {"frame_number": 0, "instance_name": "mouse", "cx": 10, "cy": 50},
+            {"frame_number": 1, "instance_name": "mouse", "cx": 20, "cy": 50},
+            {"frame_number": 2, "instance_name": "mouse", "cx": 50, "cy": 50},
+            {"frame_number": 3, "instance_name": "mouse", "cx": 80, "cy": 50},
+            {"frame_number": 4, "instance_name": "mouse", "cx": 90, "cy": 50},
+            {"frame_number": 5, "instance_name": "mouse", "cx": 50, "cy": 50},
+            {"frame_number": 6, "instance_name": "mouse", "cx": 20, "cy": 50},
+        ]
+    )
+
+    result = engine.analyze_instance(dataframe, "mouse")
+    summary = result.to_summary_row(fps=10, include_transition_columns=True)
+
+    assert summary["aggregate_occupancy_frames__all_chambers"] == 5
+    assert summary["aggregate_entry_count__all_chambers"] == 3
+    assert summary["aggregate_occupancy_frames__stim_chambers"] == 5
+    assert summary["aggregate_entry_count__stim_chambers"] == 3
+    assert summary["aggregate_occupancy_frames__neutral_transit_zones"] == 2
+    assert summary["aggregate_entry_count__neutral_transit_zones"] == 2
+    assert summary["entry_count__connector_tube"] == 2
+
+
 def test_tracking_results_analyzer_exports_generic_zone_metrics(tmp_path):
     video_path = tmp_path / "session.mp4"
     video_path.write_bytes(b"fake video container")

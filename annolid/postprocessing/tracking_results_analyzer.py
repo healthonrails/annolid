@@ -364,21 +364,64 @@ class TrackingResultsAnalyzer:
         social_specs: list[ZoneShapeSpec] = []
         for spec in profiled_specs:
             flags = dict(spec.flags or {})
-            tags = flags.get("tags")
-            tag_text = []
-            if isinstance(tags, (list, tuple, set)):
-                tag_text = [str(item or "").strip().lower() for item in tags]
-            elif isinstance(tags, str):
-                tag_text = [part.strip().lower() for part in tags.split(",")]
+            tag_text = self._zone_tag_tokens(spec)
             label = str(spec.display_label or spec.label or "").strip().lower()
             description = str(spec.description or "").strip().lower()
-            if spec.zone_kind in {"doorway", "interaction_zone"}:
+            zone_kind = str(spec.zone_kind or "").strip().lower()
+            include_in_social = str(
+                flags.get("include_in_social") or ""
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if self._is_neutral_zone_spec(spec) and not include_in_social:
+                if not ({"social_zone", "social", "door_social"} & tag_text):
+                    continue
+            if zone_kind in {"interaction_zone"}:
                 social_specs.append(spec)
+            elif zone_kind in {"doorway", "passage", "connector_tube"}:
+                if (
+                    not self._is_neutral_zone_spec(spec)
+                    or include_in_social
+                    or ({"social_zone", "social"} & tag_text)
+                ):
+                    social_specs.append(spec)
             elif {"social_zone", "social", "door_social"} & set(tag_text):
                 social_specs.append(spec)
             elif "social" in label or "social" in description:
                 social_specs.append(spec)
         return social_specs
+
+    @staticmethod
+    def _zone_tag_tokens(spec: ZoneShapeSpec) -> set[str]:
+        flags = dict(spec.flags or {})
+        tags = flags.get("tags")
+        if isinstance(tags, str):
+            return {part.strip().lower() for part in tags.split(",") if part.strip()}
+        if isinstance(tags, (list, tuple, set)):
+            return {
+                str(item or "").strip().lower()
+                for item in tags
+                if str(item or "").strip()
+            }
+        return set()
+
+    @staticmethod
+    def _is_neutral_zone_spec(spec: ZoneShapeSpec) -> bool:
+        kind = str(spec.zone_kind or "").strip().lower()
+        role = str(spec.occupant_role or "").strip().lower()
+        flags = dict(spec.flags or {})
+        tags = TrackingResultsAnalyzer._zone_tag_tokens(spec)
+        neutral_flag = str(flags.get("neutral_zone") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if neutral_flag:
+            return True
+        if role == "neutral":
+            return True
+        if kind in {"connector_tube", "tube", "tunnel", "passage"}:
+            return True
+        return bool({"neutral", "tube", "connector_tube", "transit"} & tags)
 
     def _load_pose_keypoint_dataframe(self) -> pd.DataFrame:
         try:

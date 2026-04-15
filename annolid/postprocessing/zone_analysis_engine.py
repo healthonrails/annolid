@@ -17,10 +17,14 @@ from annolid.postprocessing.zone_schema import (
 OUTSIDE_ZONE_LABEL = "__outside__"
 
 
+def _normalize_token(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
 def _is_truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
-    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+    return _normalize_token(value) in {"1", "true", "yes", "on"}
 
 
 def _safe_float(value: Any) -> float:
@@ -51,7 +55,7 @@ def _zone_area(spec: ZoneShapeSpec) -> float:
 
 
 def _is_barrier_adjacent_zone(spec: ZoneShapeSpec) -> bool:
-    kind = str(spec.zone_kind or "").strip().lower()
+    kind = _normalize_token(spec.zone_kind)
     flags = dict(spec.flags or {})
     if _is_truthy(flags.get("barrier_adjacent")):
         return True
@@ -60,6 +64,33 @@ def _is_barrier_adjacent_zone(spec: ZoneShapeSpec) -> bool:
     if _is_truthy(flags.get("mesh_adjacent")):
         return True
     return kind in {"barrier_edge", "barrier", "doorway", "passage"}
+
+
+def _is_chamber_zone(spec: ZoneShapeSpec) -> bool:
+    return _normalize_token(spec.zone_kind) == "chamber"
+
+
+def _is_stim_chamber_zone(spec: ZoneShapeSpec) -> bool:
+    return _is_chamber_zone(spec) and _normalize_token(spec.occupant_role) == "stim"
+
+
+def _is_neutral_transit_zone(spec: ZoneShapeSpec) -> bool:
+    kind = _normalize_token(spec.zone_kind)
+    role = _normalize_token(spec.occupant_role)
+    flags = dict(spec.flags or {})
+    tags = flags.get("tags")
+    tag_tokens: set[str] = set()
+    if isinstance(tags, str):
+        tag_tokens = {part.strip().lower() for part in tags.split(",") if part.strip()}
+    elif isinstance(tags, (list, tuple, set)):
+        tag_tokens = {_normalize_token(tag) for tag in tags if _normalize_token(tag)}
+    if _is_truthy(flags.get("neutral_zone")):
+        return True
+    if role == "neutral":
+        return True
+    if kind in {"connector_tube", "tube", "tunnel", "passage"}:
+        return True
+    return bool({"neutral", "tube", "connector_tube", "transit"} & tag_tokens)
 
 
 def _frame_column(dataframe: pd.DataFrame) -> str | None:
@@ -106,6 +137,8 @@ class ZoneAnalysisResult:
     transition_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     segments: list[ZoneVisit] = field(default_factory=list)
     outside_frames: int = 0
+    aggregate_occupancy_frames: dict[str, int] = field(default_factory=dict)
+    aggregate_entry_counts: dict[str, int] = field(default_factory=dict)
 
     def _seconds(self, fps: float | None, frames: int) -> float:
         if fps and fps > 0:
@@ -175,6 +208,18 @@ class ZoneAnalysisResult:
                 if first_entry_frame is not None and first_entry_frame >= 0
                 else None
             )
+        for aggregate_key in sorted(
+            set(self.aggregate_occupancy_frames) | set(self.aggregate_entry_counts)
+        ):
+            row[f"aggregate_occupancy_frames__{aggregate_key}"] = (
+                self.aggregate_occupancy_frames.get(aggregate_key, 0)
+            )
+            row[f"aggregate_occupancy_seconds__{aggregate_key}"] = self._seconds(
+                fps, self.aggregate_occupancy_frames.get(aggregate_key, 0)
+            )
+            row[f"aggregate_entry_count__{aggregate_key}"] = (
+                self.aggregate_entry_counts.get(aggregate_key, 0)
+            )
 
         if include_transition_columns:
             for source_label in sorted(self.transition_counts.keys()):
@@ -207,6 +252,21 @@ class GenericZoneEngine:
             spec.display_label
             for spec in self.zone_specs
             if _is_barrier_adjacent_zone(spec)
+        }
+        self._aggregate_zone_groups: dict[str, set[str]] = {
+            "all_chambers": {
+                spec.display_label for spec in self.zone_specs if _is_chamber_zone(spec)
+            },
+            "stim_chambers": {
+                spec.display_label
+                for spec in self.zone_specs
+                if _is_stim_chamber_zone(spec)
+            },
+            "neutral_transit_zones": {
+                spec.display_label
+                for spec in self.zone_specs
+                if _is_neutral_transit_zone(spec)
+            },
         }
 
     def _resolve_zone_label(self, x: Any, y: Any) -> str | None:
@@ -272,6 +332,8 @@ class GenericZoneEngine:
         segments: list[ZoneVisit] = []
         barrier_adjacent_frames = 0
         outside_frames = 0
+        aggregate_occupancy_frames: Counter[str] = Counter()
+        aggregate_entry_counts: Counter[str] = Counter()
 
         current_zone: str | None = None
         current_start_frame: int | None = None
@@ -312,6 +374,9 @@ class GenericZoneEngine:
                 occupancy_frames[zone_label] += 1
                 if zone_label in self._barrier_zone_labels:
                     barrier_adjacent_frames += 1
+                for key, labels in self._aggregate_zone_groups.items():
+                    if zone_label in labels:
+                        aggregate_occupancy_frames[key] += 1
 
             gap_break = prev_frame is not None and frame - prev_frame > 1
 
@@ -322,6 +387,9 @@ class GenericZoneEngine:
                     current_end_frame = frame
                     current_frame_count = 1
                     entry_counts[zone_label] += 1
+                    for key, labels in self._aggregate_zone_groups.items():
+                        if zone_label in labels:
+                            aggregate_entry_counts[key] += 1
                     if zone_label not in first_entry_frames:
                         first_entry_frames[zone_label] = frame
                 prev_frame = frame
@@ -338,6 +406,9 @@ class GenericZoneEngine:
                     current_end_frame = frame
                     current_frame_count = 1
                     entry_counts[zone_label] += 1
+                    for key, labels in self._aggregate_zone_groups.items():
+                        if zone_label in labels:
+                            aggregate_entry_counts[key] += 1
                     if zone_label not in first_entry_frames:
                         first_entry_frames[zone_label] = frame
             else:
@@ -362,6 +433,8 @@ class GenericZoneEngine:
             },
             segments=segments,
             outside_frames=outside_frames,
+            aggregate_occupancy_frames=dict(aggregate_occupancy_frames),
+            aggregate_entry_counts=dict(aggregate_entry_counts),
         )
 
     def analyze_dataframe(

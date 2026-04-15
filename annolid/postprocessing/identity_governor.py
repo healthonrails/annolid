@@ -19,6 +19,10 @@ def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _is_truthy(value: Any) -> bool:
+    return _normalize_text(value).lower() in {"1", "true", "yes", "on"}
+
+
 def _frame_number_from_name(path: Path) -> int | None:
     match = re.search(r"(\d+)(?=\.json$)", path.name)
     if match is None:
@@ -76,6 +80,48 @@ def _shape_instance_label(shape: Mapping[str, Any]) -> str:
     if ":" in label:
         return label.split(":", 1)[0].strip()
     return label
+
+
+def _zone_kind_token(zone: ZoneShapeSpec) -> str:
+    token = _normalize_text(zone.zone_kind).lower()
+    return token or "custom"
+
+
+def _zone_role_token(zone: ZoneShapeSpec) -> str:
+    token = _normalize_text(zone.occupant_role).lower()
+    return token or "unknown"
+
+
+def _zone_tags(zone: ZoneShapeSpec) -> set[str]:
+    flags = dict(zone.flags or {})
+    tags = flags.get("tags")
+    if isinstance(tags, str):
+        return {part.strip().lower() for part in tags.split(",") if part.strip()}
+    if isinstance(tags, (list, tuple, set)):
+        return {
+            _normalize_text(item).lower()
+            for item in tags
+            if _normalize_text(item).strip()
+        }
+    return set()
+
+
+def _zone_is_neutral_transit(zone: ZoneShapeSpec) -> bool:
+    flags = dict(zone.flags or {})
+    if _is_truthy(flags.get("neutral_zone")):
+        return True
+    kind = _zone_kind_token(zone)
+    role = _zone_role_token(zone)
+    tags = _zone_tags(zone)
+    if role == "neutral":
+        return True
+    if kind in {"connector_tube", "tube", "tunnel", "passage"}:
+        return True
+    return bool({"neutral", "tube", "connector_tube", "transit"} & tags)
+
+
+def _zone_is_stim_chamber(zone: ZoneShapeSpec) -> bool:
+    return _zone_kind_token(zone) == "chamber" and _zone_role_token(zone) == "stim"
 
 
 def _polygon_area(points: Sequence[Sequence[Any]]) -> float:
@@ -393,6 +439,8 @@ class IdentityGovernor:
         return by_frame, payloads, count
 
     def _populate_features(self, by_frame: dict[int, list[_Observation]]) -> None:
+        zone_kind_tokens = sorted({_zone_kind_token(zone) for zone in self.zone_specs})
+        zone_role_tokens = sorted({_zone_role_token(zone) for zone in self.zone_specs})
         for frame_rows in by_frame.values():
             for row in frame_rows:
                 row.features["area"] = float(row.area)
@@ -402,6 +450,14 @@ class IdentityGovernor:
                 if row.centroid is not None:
                     row.features["x"] = float(row.centroid[0])
                     row.features["y"] = float(row.centroid[1])
+                inside_by_kind = {kind: False for kind in zone_kind_tokens}
+                inside_by_role = {role: False for role in zone_role_tokens}
+                distance_by_kind: dict[str, float] = {}
+                distance_by_role: dict[str, float] = {}
+                inside_neutral_transit = False
+                distance_neutral_transit: float | None = None
+                inside_stim_chamber = False
+                distance_stim_chamber: float | None = None
                 for zone in self.zone_specs:
                     name = zone.display_label
                     inside = False
@@ -412,6 +468,64 @@ class IdentityGovernor:
                     row.features[f"zone.inside.{name}"] = inside
                     if distance is not None:
                         row.features[f"zone.distance.{name}"] = float(distance)
+                    kind = _zone_kind_token(zone)
+                    role = _zone_role_token(zone)
+                    if inside:
+                        inside_by_kind[kind] = True
+                        inside_by_role[role] = True
+                    if distance is not None:
+                        current_kind_distance = distance_by_kind.get(kind)
+                        if (
+                            current_kind_distance is None
+                            or float(distance) < current_kind_distance
+                        ):
+                            distance_by_kind[kind] = float(distance)
+                        current_role_distance = distance_by_role.get(role)
+                        if (
+                            current_role_distance is None
+                            or float(distance) < current_role_distance
+                        ):
+                            distance_by_role[role] = float(distance)
+                    if _zone_is_neutral_transit(zone):
+                        if inside:
+                            inside_neutral_transit = True
+                        if distance is not None and (
+                            distance_neutral_transit is None
+                            or float(distance) < distance_neutral_transit
+                        ):
+                            distance_neutral_transit = float(distance)
+                    if _zone_is_stim_chamber(zone):
+                        if inside:
+                            inside_stim_chamber = True
+                        if distance is not None and (
+                            distance_stim_chamber is None
+                            or float(distance) < distance_stim_chamber
+                        ):
+                            distance_stim_chamber = float(distance)
+                for kind in zone_kind_tokens:
+                    row.features[f"zone.inside_kind.{kind}"] = inside_by_kind.get(
+                        kind, False
+                    )
+                    if kind in distance_by_kind:
+                        row.features[f"zone.distance_kind.{kind}"] = distance_by_kind[
+                            kind
+                        ]
+                for role in zone_role_tokens:
+                    row.features[f"zone.inside_role.{role}"] = inside_by_role.get(
+                        role, False
+                    )
+                    if role in distance_by_role:
+                        row.features[f"zone.distance_role.{role}"] = distance_by_role[
+                            role
+                        ]
+                row.features["zone.inside.neutral_transit"] = inside_neutral_transit
+                if distance_neutral_transit is not None:
+                    row.features["zone.distance.neutral_transit"] = (
+                        distance_neutral_transit
+                    )
+                row.features["zone.inside.stim_chamber"] = inside_stim_chamber
+                if distance_stim_chamber is not None:
+                    row.features["zone.distance.stim_chamber"] = distance_stim_chamber
 
             for row in frame_rows:
                 nearest: float | None = None

@@ -12,6 +12,12 @@ New zone shapes should include explicit metadata:
 - `occupant_role`
 - `access_state`
 
+For three-chamber social setups, mark connecting tubes as neutral transit with either:
+
+- `zone_kind=connector_tube`, or
+- `occupant_role=neutral`, or
+- `flags.neutral_zone=true`.
+
 Legacy zone JSON files are still accepted when they use bounded compatibility hints, but explicit metadata is the preferred contract for new projects.
 
 ## Supported Outputs
@@ -27,6 +33,8 @@ This output adds:
 - occupancy frames and seconds
 - dwell frames and seconds
 - entry counts
+- aggregate chamber occupancy/entries (`all_chambers`, `stim_chambers`)
+- aggregate neutral-transit occupancy/entries (`neutral_transit_zones`)
 - transition counts
 - barrier-adjacent frames and seconds
 - outside-zone counts
@@ -50,6 +58,8 @@ This output is intended for social-approach assays and adds:
 - door proximity based on the selected anchor point
 - pairwise centroid proximity across tracked voles
 - the anchor source used for each instance
+
+Neutral connector/tube zones are excluded from social scoring by default unless you explicitly opt in with social tags or `include_in_social=true`.
 
 Latency is measured from the first analyzed frame unless you supply an explicit reference frame in the Zone Analysis dialog.
 

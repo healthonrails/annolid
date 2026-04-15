@@ -191,3 +191,68 @@ def test_social_summary_export_uses_nose_anchor_and_latency_reference(tmp_path):
     assert summary_df.loc["rover", "first_entry_seconds__left_social_zone"] == 0.0
     assert summary_df.loc["rover", "latency_frame__left_social_zone"] == 0
     assert "mean_nearest_neighbor_distance_px" in summary_df.columns
+
+
+def test_social_summary_excludes_neutral_connector_tubes_by_default(tmp_path):
+    video_path = tmp_path / "session.mp4"
+    video_path.write_bytes(b"fake video")
+    tracking_csv = tmp_path / "session_tracking.csv"
+    tracked_csv = tmp_path / "session_tracked.csv"
+
+    pd.DataFrame(
+        [
+            {"frame_number": 0, "instance_name": "rover", "cx": 50, "cy": 50},
+            {"frame_number": 1, "instance_name": "rover", "cx": 10, "cy": 50},
+            {"frame_number": 0, "instance_name": "stim", "cx": 90, "cy": 50},
+            {"frame_number": 1, "instance_name": "stim", "cx": 90, "cy": 50},
+        ]
+    ).to_csv(tracking_csv, index=False)
+    pd.DataFrame(
+        [
+            {"frame_number": 0, "instance_name": "rover", "cx": 50, "cy": 50},
+            {"frame_number": 1, "instance_name": "rover", "cx": 10, "cy": 50},
+            {"frame_number": 0, "instance_name": "stim", "cx": 90, "cy": 50},
+            {"frame_number": 1, "instance_name": "stim", "cx": 90, "cy": 50},
+        ]
+    ).to_csv(tracked_csv, index=False)
+
+    zone_path = tmp_path / "session_zones.json"
+    write_zone_json(
+        zone_path,
+        shapes=[
+            build_zone_shape(
+                "center_connector_tube",
+                [[40, 25], [60, 75]],
+                shape_type="rectangle",
+                zone_kind="connector_tube",
+                phase="social",
+                occupant_role="neutral",
+                access_state="open",
+                extra_flags={"neutral_zone": True},
+                description="neutral connector tube",
+            ),
+            build_zone_shape(
+                "left_social_zone",
+                [[0, 25], [20, 75]],
+                shape_type="rectangle",
+                zone_kind="interaction_zone",
+                phase="social",
+                occupant_role="rover",
+                access_state="open",
+                description="rover-side social zone",
+            ),
+        ],
+        image_path=str(video_path),
+        image_width=100,
+        image_height=100,
+    )
+
+    analyzer = TrackingResultsAnalyzer(video_path, zone_file=zone_path, fps=10)
+    analyzer.save_social_metrics_to_csv(tmp_path / "session_social_metrics.csv")
+    summary_df = pd.read_csv(tmp_path / "session_social_metrics.csv", index_col=0)
+
+    assert "occupancy_frames__left_social_zone" in summary_df.columns
+    assert "occupancy_frames__center_connector_tube" not in summary_df.columns
+    assert "center_connector_tube" not in str(
+        summary_df.loc["rover", "social_zone_labels"]
+    )

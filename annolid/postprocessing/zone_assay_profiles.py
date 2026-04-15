@@ -71,6 +71,8 @@ PROFILE_PHASE_1 = ZoneAssayProfile(
         {
             "chamber",
             "doorway",
+            "passage",
+            "connector_tube",
             "barrier_edge",
             "interaction_zone",
             "custom",
@@ -88,6 +90,8 @@ PROFILE_PHASE_2 = ZoneAssayProfile(
         {
             "chamber",
             "doorway",
+            "passage",
+            "connector_tube",
             "barrier_edge",
             "interaction_zone",
             "custom",

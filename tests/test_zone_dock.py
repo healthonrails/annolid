@@ -180,6 +180,21 @@ def _build_zone_shape(label: str = "left_zone") -> Shape:
     return shape
 
 
+def _build_plain_shape(label: str = "free_shape") -> Shape:
+    shape = Shape(
+        label=label,
+        shape_type="polygon",
+        flags={},
+        description="freeform annotation",
+    )
+    shape.addPoint(QtCore.QPointF(0, 0))
+    shape.addPoint(QtCore.QPointF(12, 0))
+    shape.addPoint(QtCore.QPointF(12, 10))
+    shape.addPoint(QtCore.QPointF(0, 10))
+    shape.close()
+    return shape
+
+
 def _build_test_panel(window: _DummyWindow) -> ZonePanelWidget:
     original = ZonePanelWidget._create_metadata_combo
 
@@ -267,3 +282,101 @@ def test_zone_panel_uses_scroll_areas_for_compact_layout() -> None:
     scroll_areas = panel.findChildren(QtWidgets.QScrollArea)
     assert scroll_areas
     assert all(area.widgetResizable() for area in scroll_areas)
+
+
+def test_zone_panel_classifies_regular_shape_as_zone() -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    raw_shape = _build_plain_shape("raw_poly")
+    window.canvas.shapes = [raw_shape]
+
+    panel = _build_test_panel(window)
+    panel.refresh_from_current_canvas()
+    panel._selected_shape = raw_shape
+    panel._sync_selected_fields()
+
+    assert "regular annotation shape" in panel.selected_metric_summary.text()
+    panel.zone_kind_combo.setCurrentText("doorway")
+    panel.phase_combo.setCurrentText("phase_2")
+    panel.occupant_combo.setCurrentText("rover")
+    panel.access_combo.setCurrentText("open")
+    assert panel.classify_selected_button.text() == "Use as Zone"
+    panel._classify_selected_shape_as_zone()
+
+    assert raw_shape.flags["semantic_type"] == "zone"
+    assert raw_shape.flags["zone_kind"] == "doorway"
+    assert raw_shape.flags["phase"] == "phase_2"
+    assert "contributes occupancy" in panel.selected_metric_summary.text()
+
+
+def test_zone_panel_recognizes_zone_keywords_from_label_and_description() -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    keyword_shape = _build_plain_shape("left_chamber")
+    keyword_shape.description = "neutral connector tube"
+    window.canvas.shapes = [keyword_shape]
+
+    panel = _build_test_panel(window)
+    panel.refresh_from_current_canvas()
+    panel._selected_shape = keyword_shape
+    panel._sync_selected_fields()
+    panel._refresh_shape_list()
+
+    first_item_text = panel.shape_list.item(0).text()
+    assert "zone (keyword)" in first_item_text
+    assert panel.zone_kind_combo.currentText() in {
+        "chamber",
+        "connector_tube",
+        "custom",
+    }
+
+
+def test_zone_panel_inventory_filter_and_duplicate() -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    left = _build_zone_shape("left_zone")
+    right = _build_zone_shape("right_zone")
+    window.canvas.shapes = [left, right]
+
+    panel = _build_test_panel(window)
+    panel.refresh_from_current_canvas()
+    panel._selected_shape = left
+    panel._sync_selected_fields()
+
+    panel._duplicate_selected_shape()
+    assert len(window.canvas.shapes) == 3
+    assert any(
+        str(shape.label).startswith("chamber_") for shape in window.canvas.shapes
+    )
+
+    panel.zone_filter_edit.setText("right_zone")
+    panel._refresh_shape_list()
+    assert panel.shape_list.count() == 1
+    assert (
+        "Showing 1 of 3 zone candidates (3 explicit zones)"
+        == panel.inventory_summary_label.text()
+    )
+
+
+def test_zone_panel_inventory_excludes_non_keyword_regular_shapes() -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    zone_shape = _build_zone_shape("zone_a")
+    keyword_shape = _build_plain_shape("free_poly")
+    keyword_shape.description = "arena zone marker"
+    regular_shape = _build_plain_shape("free_poly_2")
+    regular_shape.description = "manual annotation"
+    window.canvas.shapes = [zone_shape, keyword_shape, regular_shape]
+
+    panel = _build_test_panel(window)
+    panel.refresh_from_current_canvas()
+
+    items = [panel.shape_list.item(i).text() for i in range(panel.shape_list.count())]
+    joined = "\n".join(items)
+    assert "zone_a" in joined
+    assert "free_poly" in joined
+    assert "free_poly_2" not in joined
+    assert (
+        panel.inventory_summary_label.text()
+        == "Showing 2 of 2 zone candidates (1 explicit zones)"
+    )

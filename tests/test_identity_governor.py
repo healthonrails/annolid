@@ -191,3 +191,79 @@ def test_identity_governor_apply_repairs_labels_and_ids(tmp_path: Path):
         assert str(by_track["2"]["group_id"]) == "2"
         assert by_track["1"]["flags"]["instance_label"] == "alpha"
         assert by_track["2"]["flags"]["instance_label"] == "beta"
+
+
+def test_identity_governor_supports_aggregate_zone_metrics(tmp_path: Path):
+    annotation_dir = tmp_path / "session"
+    annotation_dir.mkdir()
+    for frame_number in (0, 1):
+        payload = {
+            "version": "5.0.1",
+            "shapes": [
+                _shape("beta", 1, 10 + frame_number, 50),
+                _shape("alpha", 2, 80, 50),
+            ],
+            "imagePath": "",
+            "imageData": None,
+        }
+        (annotation_dir / f"session_{frame_number:09d}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+    zone_path = tmp_path / "zones.json"
+    zone_payload = {
+        "shapes": [
+            build_zone_shape(
+                "left_stim_chamber",
+                [[0, 0], [30, 100]],
+                shape_type="rectangle",
+                zone_kind="chamber",
+                occupant_role="stim",
+                access_state="open",
+            ),
+            build_zone_shape(
+                "connector_tube",
+                [[40, 0], [60, 100]],
+                shape_type="rectangle",
+                zone_kind="connector_tube",
+                occupant_role="neutral",
+                access_state="open",
+                extra_flags={"neutral_zone": True},
+            ),
+        ]
+    }
+    zone_path.write_text(
+        json.dumps(zone_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    policy = {
+        "metric_aliases": {
+            "in_stim_chamber": "zone.inside.stim_chamber",
+            "in_neutral_transit": "zone.inside.neutral_transit",
+        },
+        "rules": [
+            {
+                "name": "alpha_when_in_stim_chamber",
+                "assign_label": "alpha",
+                "conditions": [
+                    {"metric": "in_stim_chamber", "op": "eq", "value": True},
+                    {"metric": "in_neutral_transit", "op": "eq", "value": False},
+                ],
+                "apply_to_track_ids": ["1"],
+            }
+        ],
+        "interesting_track_ids": ["1"],
+    }
+
+    result = run_identity_governor(
+        annotation_dir=annotation_dir,
+        policy=policy,
+        zone_file=zone_path,
+        apply_changes=False,
+    )
+
+    assert len(result.proposed_corrections) == 1
+    correction = result.proposed_corrections[0]
+    assert correction.track_id == "1"
+    assert correction.corrected_label == "alpha"

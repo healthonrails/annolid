@@ -89,8 +89,9 @@ For example:
 - blocked areas: `access_state=blocked`
 - open areas: `access_state=open`
 - phase-specific layouts: `phase=phase_1` or `phase=phase_2`
+- connecting tubes (neutral transit): `zone_kind=connector_tube` and/or `occupant_role=neutral`
 
-The dialog pre-fills these fields for new zones so you do not need to hand-edit JSON.
+Use the Zone Details defaults to prefill classification metadata, then classify selected canvas shapes as zones so you do not need to hand-edit JSON.
 
 ## Step 4: Save the Zone File
 
@@ -129,7 +130,7 @@ Then choose one of the outputs:
 - **Export Legacy CSV**
   - Historical format, one column per zone.
 - **Export Zone Metrics**
-  - Generic metrics CSV with occupancy, dwell, entries, transitions, and barrier-adjacent counts.
+  - Generic metrics CSV with occupancy, dwell, entries, transitions, barrier-adjacent counts, and aggregate chamber/stim/neutral-transit metrics.
 - **Export Assay Summary**
   - Markdown report plus CSV metrics that explain the zones, phase rules, and metrics in plain language.
 
@@ -157,6 +158,8 @@ flowchart TD
 - **Transition count**: how many times the instance moved from one zone to another
 - **Barrier-adjacent time**: frames spent in zones marked as barrier-edge or similar access-control regions
 - **Latency**: the first frame or timestamp at which a vole enters a zone; if you do not set a reference frame, the social summary uses the first analyzed frame as the reference point
+
+For tube-heavy arenas, social summaries exclude neutral connector/tube zones by default. If you want one included, tag it as social or set `include_in_social=true` in the zone flags.
 
 ## Phase 1 vs Phase 2
 

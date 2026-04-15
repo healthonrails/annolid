@@ -14,6 +14,12 @@ LEGACY_ZONE_HINTS = frozenset(
         "zones",
         "chamber",
         "chambers",
+        "tube",
+        "tubes",
+        "connector",
+        "connectors",
+        "tunnel",
+        "tunnels",
         "door",
         "doors",
         "doorway",
@@ -62,6 +68,8 @@ def _infer_zone_kind(label: str, description: str, flags: Mapping[str, Any]) -> 
     tokens = _tokenize_text(f"{label} {description}")
     if "chamber" in tokens:
         return "chamber"
+    if {"tube", "tunnel"} & tokens:
+        return "connector_tube"
     if {"door", "doorway", "passage", "opening"} & tokens:
         return "doorway"
     if {"barrier", "mesh"} & tokens:

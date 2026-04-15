@@ -13,6 +13,7 @@ This page points to the practical tutorial material that exists in the repositor
 - [GUI video downsample workflow (single video + batch overrides)](tutorials/video_downsample_workflow.md)
 - [Behavior labeling with Timeline, Flags, and Annolid Bot](tutorials/behavior_timeline_flags_bot.md)
 - [Segment-based batch tracking](tutorials/segment-based-batch-tracking.md)
+- [Draw zones quickstart (GUI)](tutorials/draw_zones_quickstart.md)
 - [Zone analysis workflow](tutorials/zone_analysis_workflow.md)
 - [LabelMe to YOLO class mapping](tutorials/Labelme_to_YOLO_class_map.md)
 - [Sandboxed shell for Annolid Bot](tutorials/sandboxed_shell.md)
