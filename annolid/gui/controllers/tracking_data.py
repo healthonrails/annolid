@@ -125,6 +125,11 @@ class TrackingDataController:
             except Exception:
                 pass
 
+    def shutdown(self) -> None:
+        """Stop in-flight sidecar loading and clear transient tracking state."""
+        self._cancel_sidecar_worker()
+        self._clear_tracking_cache()
+
     def _ensure_tracking_loaded_for_lookup(self) -> None:
         """Lazy-load tracking CSV only if frame lookup explicitly needs it."""
         csv_path = self._tracking_csv_path

@@ -94,6 +94,22 @@ class LifecycleMixin:
                 except RuntimeError:
                     logger.info(message)
 
+        tracking_controller = getattr(self, "tracking_data_controller", None)
+        if tracking_controller is not None:
+            try:
+                tracking_controller.shutdown()
+            except (AttributeError, RuntimeError, TypeError) as exc:
+                logger.debug(
+                    "Failed stopping tracking sidecar worker during cleanup: %s", exc
+                )
+
+        release_audio_loader = getattr(self, "_release_audio_loader", None)
+        if callable(release_audio_loader):
+            try:
+                release_audio_loader()
+            except (AttributeError, RuntimeError, TypeError) as exc:
+                logger.debug("Failed releasing audio loader during cleanup: %s", exc)
+
         self._stop_frame_loader()
         self._stop_csv_worker()
         if hasattr(self, "realtime_manager") and self.realtime_manager:

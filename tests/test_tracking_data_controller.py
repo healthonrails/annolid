@@ -90,3 +90,21 @@ def test_load_tracking_results_builds_frame_index(tmp_path: Path) -> None:
         {"frame_number": 1, "instance_name": "c", "score": 0.6},
     ]
     assert window._df is not None
+
+
+def test_tracking_controller_shutdown_clears_cached_state() -> None:
+    window = _DummyWindow()
+    controller = TrackingDataController(window)
+    controller._tracking_df = pd.DataFrame([{"frame_number": 1}])
+    controller._tracking_frame_slices = {1: (0, 1)}
+    controller._tracking_frame_indices = {1: (0,)}
+    controller._tracking_csv_path = Path("/tmp/example_tracking.csv")
+    controller._sidecar_request_token = "token-1"
+
+    controller.shutdown()
+
+    assert controller.tracking_dataframe is None
+    assert controller._tracking_frame_slices is None
+    assert controller._tracking_frame_indices is None
+    assert controller._tracking_csv_path is None
+    assert controller._sidecar_request_token == ""

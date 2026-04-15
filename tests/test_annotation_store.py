@@ -1,6 +1,6 @@
 import json
 
-from annolid.utils.annotation_store import AnnotationStore
+from annolid.utils.annotation_store import AnnotationStore, load_labelme_json
 
 
 def _append_dummy_record(store: AnnotationStore, frame: int) -> None:
@@ -187,3 +187,22 @@ def test_legacy_store_migration_falls_back_to_memory_on_permission_error(
     assert record is not None
     assert record["frame"] == 0
     assert record["shapes"][0]["label"] == "mouse"
+
+
+def test_load_labelme_json_prefers_fast_single_frame_lookup(tmp_path, monkeypatch):
+    frame_path = tmp_path / "video" / "video_000000007.json"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    store = AnnotationStore.for_frame_path(frame_path)
+    for frame in range(20):
+        _append_dummy_record(store, frame)
+
+    def _fail_full_parse(_frame):
+        raise AssertionError("Full-store get_frame should not be required here.")
+
+    monkeypatch.setattr(AnnotationStore, "get_frame", _fail_full_parse)
+
+    payload = load_labelme_json(frame_path)
+    assert isinstance(payload, dict)
+    assert payload.get("shapes") == []
+    assert payload.get("imageHeight") == 1
+    assert payload.get("imageWidth") == 1

@@ -1,4 +1,5 @@
 import json
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Set, Union
@@ -19,6 +20,7 @@ class AnnotationStore:
     STORE_SUFFIX = "_annotations.ndjson"
     STUB_VERSION = 1
     _CACHE: Dict[Path, Dict[str, Any]] = {}
+    _FRAME_PATTERN = re.compile(r'"frame"\s*:\s*(-?\d+)')
 
     def __init__(self, store_path: Path):
         self.store_path = store_path
@@ -360,6 +362,52 @@ class AnnotationStore:
             frame_key = frame
         return records.get(frame_key)
 
+    def get_frame_fast(self, frame: int) -> Optional[Dict[str, Any]]:
+        """Best-effort fast retrieval for a single frame without full-store parse.
+
+        This path is optimized for UI-time lookups when the annotation store can be
+        very large. It first checks cache, then line-scans for the matching frame
+        row and only parses that one JSON line.
+        """
+        cached_records = self._cached_records_or_empty()
+        try:
+            frame_key = int(frame)
+        except (TypeError, ValueError):
+            return None
+        if frame_key in cached_records:
+            return cached_records.get(frame_key)
+        if not self.store_path.exists():
+            return None
+
+        frame_text = str(frame_key)
+        try:
+            with self.store_path.open("r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    if '"frame"' not in raw_line:
+                        continue
+                    if frame_text not in raw_line:
+                        continue
+                    match = self._FRAME_PATTERN.search(raw_line)
+                    if not match:
+                        continue
+                    try:
+                        line_frame = int(match.group(1))
+                    except (TypeError, ValueError):
+                        continue
+                    if line_frame != frame_key:
+                        continue
+                    try:
+                        data = json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        continue
+                    explicit = self._explicit_frame_for_record(data)
+                    if explicit != frame_key:
+                        continue
+                    return data
+        except OSError:
+            return None
+        return None
+
     def iter_frames(self) -> Iterable[int]:
         records = self._load_records()
         return records.keys()
@@ -675,7 +723,9 @@ def _load_from_store(path: Path) -> Dict[str, Any]:
     if frame is None:
         raise AnnotationStoreError(f"Cannot infer frame number from path {path}")
     store = AnnotationStore.for_frame_path(path)
-    record = store.get_frame(frame)
+    record = store.get_frame_fast(frame)
+    if record is None:
+        record = store.get_frame(frame)
     if record is None:
         raise AnnotationStoreError(
             f"Frame {frame} not present in store {store.store_path}"

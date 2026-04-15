@@ -57,6 +57,7 @@ class AnnotationLoadingMixin:
     _ZONE_OVERLAY_CACHE_PAYLOADS_KEY = "_zone_overlay_cache_payloads"
     _FRAME_LABEL_CACHE_KEY = "_frame_label_cache"
     _FRAME_LABEL_CACHE_MAX_ENTRIES = 48
+    _FRAME_STORE_HAS_FRAME_CACHE_KEY = "_frame_store_has_frame_cache"
     _FRAME_LABEL_PREFETCH_QUEUE_KEY = "_frame_label_prefetch_queue"
     _FRAME_LABEL_PREFETCH_ACTIVE_KEY = "_frame_label_prefetch_active"
     _FRAME_LABEL_PREFETCH_WINDOW = 4
@@ -1688,7 +1689,20 @@ class AnnotationLoadingMixin:
             store = AnnotationStore.for_frame_path(path)
             if not store.store_path.exists():
                 return False
-            return store.get_frame(frame_number) is not None
+            cache = getattr(self, self._FRAME_STORE_HAS_FRAME_CACHE_KEY, None)
+            if not isinstance(cache, dict):
+                cache = {}
+                setattr(self, self._FRAME_STORE_HAS_FRAME_CACHE_KEY, cache)
+            cache_key = (
+                str(store.store_path),
+                int(frame_number),
+            )
+            cached_value = cache.get(cache_key)
+            if isinstance(cached_value, bool):
+                return cached_value
+            has_frame = bool(store.get_frame_fast(frame_number))
+            cache[cache_key] = has_frame
+            return has_frame
         except Exception:
             return False
 
