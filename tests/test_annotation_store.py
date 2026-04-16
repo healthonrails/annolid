@@ -206,3 +206,17 @@ def test_load_labelme_json_prefers_fast_single_frame_lookup(tmp_path, monkeypatc
     assert payload.get("shapes") == []
     assert payload.get("imageHeight") == 1
     assert payload.get("imageWidth") == 1
+
+
+def test_append_frame_handles_fast_scan_only_cache_state(tmp_path):
+    frame_path = tmp_path / "video" / "video_000000000.json"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    store = AnnotationStore.for_frame_path(frame_path)
+    _append_dummy_record(store, 0)
+
+    # Prime fast-scan cache without building full `records` cache.
+    assert store.get_frame_fast(0) is not None
+
+    # Appending should not fail even when cache entry lacks a `records` dict.
+    _append_dummy_record(store, 1)
+    assert store.get_frame_fast(1) is not None

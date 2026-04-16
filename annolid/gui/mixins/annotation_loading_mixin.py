@@ -1697,6 +1697,14 @@ class AnnotationLoadingMixin:
             store = AnnotationStore.for_frame_path(path)
             if not store.store_path.exists():
                 return False
+            try:
+                stat_result = store.store_path.stat()
+                store_signature = (
+                    int(getattr(stat_result, "st_mtime_ns", 0)),
+                    int(getattr(stat_result, "st_size", 0)),
+                )
+            except OSError:
+                store_signature = (-1, -1)
             cache = getattr(self, self._FRAME_STORE_HAS_FRAME_CACHE_KEY, None)
             if not isinstance(cache, dict):
                 cache = {}
@@ -1707,13 +1715,23 @@ class AnnotationLoadingMixin:
             )
             cached_value = cache.get(cache_key)
             if isinstance(cached_value, bool):
-                # Never trust cached negatives across prediction runs; records are
-                # appended over time and stale False would hide newly predicted
-                # frame annotations (for example when bot tracking finishes).
-                if cached_value is True:
-                    return True
+                # Backward-compatible migration for old cache entries.
+                cached_value = {
+                    "has_frame": bool(cached_value),
+                    "signature": None,
+                }
+            if isinstance(cached_value, dict):
+                cached_has_frame = cached_value.get("has_frame")
+                cached_signature = cached_value.get("signature")
+                if isinstance(cached_has_frame, bool):
+                    if cached_signature == store_signature:
+                        return cached_has_frame
+                    # Store changed since cached result. Re-check once.
             has_frame = bool(store.get_frame_fast(frame_number))
-            cache[cache_key] = has_frame
+            cache[cache_key] = {
+                "has_frame": bool(has_frame),
+                "signature": store_signature,
+            }
             return has_frame
         except Exception:
             return False

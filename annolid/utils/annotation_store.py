@@ -264,18 +264,22 @@ class AnnotationStore:
                 frame_key = int(frame)
             except (TypeError, ValueError):
                 frame_key = frame
-            records = dict(cached["records"])
+            records = dict(cached.get("records") or {})
             records[frame_key] = record
             try:
                 stat = self.store_path.stat()
             except OSError:
                 AnnotationStore._CACHE.pop(self.store_path, None)
             else:
-                AnnotationStore._CACHE[self.store_path] = {
-                    "mtime": stat.st_mtime,
-                    "size": stat.st_size,
-                    "records": records,
-                }
+                updated_cache = dict(cached)
+                updated_cache.update(
+                    {
+                        "mtime": stat.st_mtime,
+                        "size": stat.st_size,
+                        "records": records,
+                    }
+                )
+                AnnotationStore._CACHE[self.store_path] = updated_cache
 
     def update_frame(
         self,
@@ -379,13 +383,65 @@ class AnnotationStore:
         if not self.store_path.exists():
             return None
 
+        try:
+            stat = self.store_path.stat()
+        except OSError:
+            return None
+        signature = (float(stat.st_mtime), int(stat.st_size))
+        cache_entry = AnnotationStore._CACHE.get(self.store_path)
+        if not isinstance(cache_entry, dict):
+            cache_entry = {}
+        if cache_entry.get("fast_scan_signature") != signature:
+            cache_entry["fast_scan_signature"] = signature
+            cache_entry["fast_scan_pos"] = 0
+            cache_entry["fast_scan_last_frame"] = -1
+            cache_entry["fast_scan_complete"] = False
+            cache_entry["fast_scan_frame_cache"] = {}
+
+        fast_frame_cache = cache_entry.get("fast_scan_frame_cache")
+        if not isinstance(fast_frame_cache, dict):
+            fast_frame_cache = {}
+            cache_entry["fast_scan_frame_cache"] = fast_frame_cache
+        cached_fast = fast_frame_cache.get(frame_key)
+        if isinstance(cached_fast, dict):
+            AnnotationStore._CACHE[self.store_path] = cache_entry
+            return cached_fast
+
+        start_pos = 0
+        fast_complete = bool(cache_entry.get("fast_scan_complete", False))
+        last_frame = cache_entry.get("fast_scan_last_frame")
+        if (
+            not fast_complete
+            and isinstance(last_frame, int)
+            and int(last_frame) >= 0
+            and int(frame_key) >= int(last_frame)
+        ):
+            try:
+                start_pos = max(0, int(cache_entry.get("fast_scan_pos", 0)))
+            except Exception:
+                start_pos = 0
+        max_seen_frame = int(last_frame) if isinstance(last_frame, int) else -1
+
         frame_text = str(frame_key)
         try:
             with self.store_path.open("r", encoding="utf-8") as fh:
-                for raw_line in fh:
+                if start_pos > 0:
+                    fh.seek(start_pos)
+                while True:
+                    raw_line = fh.readline()
+                    if raw_line == "":
+                        break
                     if '"frame"' not in raw_line:
                         continue
                     if frame_text not in raw_line:
+                        frame_match = self._FRAME_PATTERN.search(raw_line)
+                        if frame_match:
+                            try:
+                                max_seen_frame = max(
+                                    int(max_seen_frame), int(frame_match.group(1))
+                                )
+                            except (TypeError, ValueError):
+                                pass
                         continue
                     match = self._FRAME_PATTERN.search(raw_line)
                     if not match:
@@ -394,6 +450,7 @@ class AnnotationStore:
                         line_frame = int(match.group(1))
                     except (TypeError, ValueError):
                         continue
+                    max_seen_frame = max(int(max_seen_frame), int(line_frame))
                     if line_frame != frame_key:
                         continue
                     try:
@@ -403,7 +460,16 @@ class AnnotationStore:
                     explicit = self._explicit_frame_for_record(data)
                     if explicit != frame_key:
                         continue
+                    cache_entry["fast_scan_pos"] = int(fh.tell())
+                    cache_entry["fast_scan_last_frame"] = int(max_seen_frame)
+                    cache_entry["fast_scan_complete"] = False
+                    fast_frame_cache[frame_key] = data
+                    AnnotationStore._CACHE[self.store_path] = cache_entry
                     return data
+                cache_entry["fast_scan_pos"] = int(fh.tell())
+                cache_entry["fast_scan_last_frame"] = int(max_seen_frame)
+                cache_entry["fast_scan_complete"] = True
+                AnnotationStore._CACHE[self.store_path] = cache_entry
         except OSError:
             return None
         return None

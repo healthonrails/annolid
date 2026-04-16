@@ -139,9 +139,16 @@ class NavigationWorkflowMixin:
                 self._set_seekbar_value_without_signal(self.frame_number)
             finally:
                 self._suppress_audio_seek = False
-            self.uniqLabelList.itemSelectionChanged.connect(
-                self.handle_uniq_label_list_selection_change
-            )
+            if not bool(
+                getattr(self, "_uniq_label_selection_connected", False)
+            ) and hasattr(self, "uniqLabelList"):
+                try:
+                    self.uniqLabelList.itemSelectionChanged.connect(
+                        self.handle_uniq_label_list_selection_change
+                    )
+                    self._uniq_label_selection_connected = True
+                except Exception:
+                    pass
 
         else:
             visible_files = self._checked_file_paths()

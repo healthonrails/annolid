@@ -491,3 +491,60 @@ def test_annotation_store_has_frame_rechecks_stale_negative_cache(
 
     # Must not be stuck on the stale negative cache.
     assert host._annotation_store_has_frame(str(candidate)) is True
+
+
+def test_annotation_store_has_frame_avoids_repeat_probe_until_store_changes(
+    monkeypatch, tmp_path: Path
+) -> None:
+    host = _PredictHost()
+    folder = tmp_path / "mouse"
+    folder.mkdir(parents=True, exist_ok=True)
+    candidate = folder / "mouse_000000099.json"
+
+    store = AnnotationStore.for_frame_path(candidate)
+    store.append_frame(
+        {
+            "frame": 1,
+            "version": "1.6.4",
+            "imagePath": None,
+            "imageHeight": 10,
+            "imageWidth": 10,
+            "shapes": [],
+            "flags": {},
+            "caption": None,
+            "otherData": {},
+        }
+    )
+
+    calls = {"count": 0}
+    original_get_frame_fast = AnnotationStore.get_frame_fast
+
+    def _counting_get_frame_fast(self, frame):  # noqa: ANN001
+        calls["count"] += 1
+        return original_get_frame_fast(self, frame)
+
+    monkeypatch.setattr(
+        AnnotationStore, "get_frame_fast", _counting_get_frame_fast, raising=True
+    )
+
+    assert host._annotation_store_has_frame(str(candidate)) is False
+    assert host._annotation_store_has_frame(str(candidate)) is False
+    assert calls["count"] == 1
+
+    # Touch store (append different frame) to force signature change and recheck.
+    store.append_frame(
+        {
+            "frame": 2,
+            "version": "1.6.4",
+            "imagePath": None,
+            "imageHeight": 10,
+            "imageWidth": 10,
+            "shapes": [],
+            "flags": {},
+            "caption": None,
+            "otherData": {},
+        }
+    )
+
+    assert host._annotation_store_has_frame(str(candidate)) is False
+    assert calls["count"] == 2
