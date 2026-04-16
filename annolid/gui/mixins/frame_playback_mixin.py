@@ -13,6 +13,8 @@ from annolid.utils.logger import logger
 class FramePlaybackMixin:
     """Frame playback, loading, and DeepLabCut frame parsing helpers."""
 
+    _PLAYBACK_EMBEDDING_SYNC_STRIDE = 5
+
     def togglePlay(self):
         if self.isPlaying:
             self.stopPlaying()
@@ -63,7 +65,13 @@ class FramePlaybackMixin:
             self.frame_loader.request(frame_number)
         if self.caption_widget is not None:
             self.caption_widget.set_image_path(self.filename)
-        self._update_embedding_query_frame()
+        should_refresh_embedding = True
+        if bool(getattr(self, "isPlaying", False)):
+            stride = int(getattr(self, "_PLAYBACK_EMBEDDING_SYNC_STRIDE", 5) or 5)
+            stride = max(1, stride)
+            should_refresh_embedding = (int(frame_number) % stride) == 0
+        if should_refresh_embedding:
+            self._update_embedding_query_frame()
 
     def load_tracking_results(
         self, cur_video_folder, video_filename, *, non_blocking=True

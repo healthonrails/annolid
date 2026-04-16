@@ -62,6 +62,9 @@ class AnnotationLoadingMixin:
     _FRAME_LABEL_PREFETCH_ACTIVE_KEY = "_frame_label_prefetch_active"
     _FRAME_LABEL_PREFETCH_WINDOW = 4
     _FRAME_LABEL_PREFETCH_BUDGET = 2
+    _TRACKING_SHAPE_CACHE_KEY = "_tracking_shape_cache"
+    _TRACKING_SHAPE_CACHE_MAX_ENTRIES = 128
+    _PREFER_TRACKING_OVER_LABEL_IO_DURING_PLAYBACK = True
 
     @staticmethod
     def _brain3d_polygon_signature(shapes) -> str:
@@ -1917,6 +1920,107 @@ class AnnotationLoadingMixin:
             )
             return []
 
+    def _tracking_shape_cache_token(self):
+        controller = getattr(self, "tracking_data_controller", None)
+        csv_path = getattr(controller, "_tracking_csv_path", None)
+        if csv_path:
+            return str(csv_path)
+        video_file = getattr(self, "video_file", None)
+        if video_file:
+            return f"video:{video_file}"
+        df = getattr(self, "_df", None)
+        if df is not None:
+            return f"df:{id(df)}"
+        return "none"
+
+    def _tracking_shape_cache_get(
+        self, frame_number: int, *, decode_segmentation: bool
+    ) -> Optional[list[Shape]]:
+        cache = getattr(self, self._TRACKING_SHAPE_CACHE_KEY, None)
+        if not isinstance(cache, OrderedDict):
+            return None
+        key = (
+            self._tracking_shape_cache_token(),
+            int(frame_number),
+            bool(decode_segmentation),
+        )
+        cached = cache.get(key)
+        if not isinstance(cached, list):
+            return None
+        cache.move_to_end(key)
+        return [
+            shape.copy() if hasattr(shape, "copy") else shape for shape in list(cached)
+        ]
+
+    def _tracking_shape_cache_set(
+        self, frame_number: int, *, decode_segmentation: bool, shapes: list[Shape]
+    ) -> None:
+        cache = getattr(self, self._TRACKING_SHAPE_CACHE_KEY, None)
+        if not isinstance(cache, OrderedDict):
+            cache = OrderedDict()
+            setattr(self, self._TRACKING_SHAPE_CACHE_KEY, cache)
+        key = (
+            self._tracking_shape_cache_token(),
+            int(frame_number),
+            bool(decode_segmentation),
+        )
+        cache[key] = [
+            shape.copy() if hasattr(shape, "copy") else shape
+            for shape in list(shapes or [])
+        ]
+        cache.move_to_end(key)
+        while len(cache) > int(self._TRACKING_SHAPE_CACHE_MAX_ENTRIES):
+            cache.popitem(last=False)
+
+    def _tracking_shapes_for_frame(
+        self, frame_number: int, *, decode_segmentation: bool
+    ) -> list[Shape]:
+        cached = self._tracking_shape_cache_get(
+            frame_number, decode_segmentation=decode_segmentation
+        )
+        if cached is not None:
+            return cached
+
+        frame_rows = self._tracking_rows_for_frame(frame_number)
+        if not frame_rows:
+            self._tracking_shape_cache_set(
+                frame_number, decode_segmentation=decode_segmentation, shapes=[]
+            )
+            return []
+
+        frame_label_list: list[Shape] = []
+        for row in frame_rows:
+            row = dict(row)
+            if "x1" not in row:
+                row["x1"] = 2
+                row["y1"] = 2
+                row["x2"] = 4
+                row["y2"] = 4
+                row["class_score"] = 1
+                try:
+                    instance_names = [
+                        col
+                        for col, value in row.items()
+                        if col != "frame_number"
+                        and isinstance(value, Number)
+                        and value > 0
+                    ]
+                    row["instance_name"] = (
+                        "_".join(instance_names) if instance_names else "unknown"
+                    )
+                except Exception:
+                    row["instance_name"] = "unknown"
+                row["segmentation"] = None
+            frame_label_list.extend(
+                pred_dict_to_labelme(row, decode_segmentation=decode_segmentation)
+            )
+        self._tracking_shape_cache_set(
+            frame_number,
+            decode_segmentation=decode_segmentation,
+            shapes=frame_label_list,
+        )
+        return frame_label_list
+
     def _iter_frame_label_candidates(
         self, frame_number: int, frame_path: Optional[Path]
     ) -> list[Path]:
@@ -1989,8 +2093,40 @@ class AnnotationLoadingMixin:
             self.caption_widget.set_image_path(filename)
 
         frame_path = Path(filename) if filename else None
-        label_candidates = self._iter_frame_label_candidates(frame_number, frame_path)
         persistent_zone_shapes = self._persistent_zone_shapes_for_frame(frame_path)
+
+        playback_tracking_fastpath = (
+            bool(getattr(self, "isPlaying", False))
+            and bool(getattr(self, "_df", None) is not None)
+            and bool(
+                getattr(self, "_PREFER_TRACKING_OVER_LABEL_IO_DURING_PLAYBACK", True)
+            )
+        )
+        if playback_tracking_fastpath:
+            # During active playback, avoid expensive per-frame label candidate and
+            # annotation-store probing. Use tracking-derived overlays for smooth
+            # scrubbing/playing and restore full label discovery on pause.
+            decode_segmentation = False
+            tracking_shapes = self._tracking_shapes_for_frame(
+                int(frame_number), decode_segmentation=decode_segmentation
+            )
+            fallback_shapes = list(tracking_shapes)
+            if persistent_zone_shapes:
+                fallback_shapes = self._merge_persistent_zones_into_shapes(
+                    fallback_shapes,
+                    frame_path,
+                    persistent_zone_shapes=persistent_zone_shapes,
+                )
+            self.loadShapes(fallback_shapes)
+            if self.caption_widget is not None:
+                applied = self._apply_timeline_caption_if_available(
+                    frame_number, only_if_empty=False
+                )
+                if not applied:
+                    self.caption_widget.set_caption("")
+            return
+
+        label_candidates = self._iter_frame_label_candidates(frame_number, frame_path)
 
         seen_candidates: set[Path] = set()
         label_loaded = False
@@ -2070,45 +2206,24 @@ class AnnotationLoadingMixin:
             self._enqueue_neighbor_label_prefetch(frame_number, frame_path)
             return
 
+        tracking_shapes: list[Shape] = []
         if self._df is not None and (frame_path is None or not frame_path.exists()):
-            frame_rows = self._tracking_rows_for_frame(frame_number)
-            if frame_rows:
-                frame_label_list = []
-                for row in frame_rows:
-                    row = dict(row)
-                    if "x1" not in row:
-                        row["x1"] = 2
-                        row["y1"] = 2
-                        row["x2"] = 4
-                        row["y2"] = 4
-                        row["class_score"] = 1
-                        try:
-                            instance_names = [
-                                col
-                                for col, value in row.items()
-                                if col != "frame_number"
-                                and isinstance(value, Number)
-                                and value > 0
-                            ]
-                            row["instance_name"] = (
-                                "_".join(instance_names)
-                                if instance_names
-                                else "unknown"
-                            )
-                        except Exception:
-                            row["instance_name"] = "unknown"
-                        row["segmentation"] = None
-                    pred_label_list = pred_dict_to_labelme(row)
-                    frame_label_list += pred_label_list
-
-                if persistent_zone_shapes:
-                    frame_label_list = self._merge_persistent_zones_into_shapes(
-                        frame_label_list,
-                        frame_path,
-                        persistent_zone_shapes=persistent_zone_shapes,
-                    )
-                self.loadShapes(frame_label_list)
+            decode_segmentation = not bool(getattr(self, "isPlaying", False))
+            tracking_shapes = self._tracking_shapes_for_frame(
+                int(frame_number), decode_segmentation=decode_segmentation
+            )
+            if tracking_shapes:
                 self._enqueue_neighbor_label_prefetch(frame_number, frame_path)
+
+        if not label_loaded:
+            fallback_shapes = list(tracking_shapes)
+            if persistent_zone_shapes:
+                fallback_shapes = self._merge_persistent_zones_into_shapes(
+                    fallback_shapes,
+                    frame_path,
+                    persistent_zone_shapes=persistent_zone_shapes,
+                )
+            self.loadShapes(fallback_shapes)
 
         if not label_loaded and self.caption_widget is not None:
             applied = self._apply_timeline_caption_if_available(

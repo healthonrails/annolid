@@ -4,7 +4,7 @@ from typing import Dict
 
 from qtpy import QtWidgets
 
-from annolid.gui.widgets import FlagTableWidget
+from annolid.gui.widgets.flags import FlagTableWidget
 
 
 class FlagsOverlayMixin:

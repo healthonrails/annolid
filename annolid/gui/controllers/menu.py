@@ -17,7 +17,7 @@ from annolid.gui.window_base import utils
 from annolid.gui.window_base import newAction, format_tool_button_text
 
 from annolid.gui.widgets.text_prompt import AiRectangleWidget
-from annolid.gui.widgets import RecordingWidget
+from annolid.gui.widgets.video_recording import RecordingWidget
 from annolid.services.agent_update import check_gui_agent_update, run_agent_update
 
 
@@ -2031,6 +2031,15 @@ class MenuController:
     def _toggle_web_view(self, checked: bool) -> None:
         """Show/hide web view without closing the loaded web session."""
         web_manager = getattr(self._window, "web_manager", None)
+        if (
+            checked
+            and web_manager is None
+            and hasattr(self._window, "ensure_web_manager")
+        ):
+            try:
+                web_manager = self._window.ensure_web_manager()
+            except Exception:
+                web_manager = None
         if web_manager is None:
             self._set_checked_safely("toggle_web_view_action", False)
             return
@@ -2065,6 +2074,15 @@ class MenuController:
     def _toggle_threejs_view(self, checked: bool) -> None:
         """Show/hide Three.js view without closing the loaded 3D session."""
         threejs_manager = getattr(self._window, "threejs_manager", None)
+        if (
+            checked
+            and threejs_manager is None
+            and hasattr(self._window, "ensure_threejs_manager")
+        ):
+            try:
+                threejs_manager = self._window.ensure_threejs_manager()
+            except Exception:
+                threejs_manager = None
         if threejs_manager is None:
             self._set_checked_safely("toggle_threejs_view_action", False)
             return
@@ -2090,6 +2108,15 @@ class MenuController:
     def _toggle_pdf_view(self, checked: bool) -> None:
         """Show/hide PDF view without closing the loaded PDF session."""
         pdf_manager = getattr(self._window, "pdf_manager", None)
+        if (
+            checked
+            and pdf_manager is None
+            and hasattr(self._window, "ensure_pdf_manager")
+        ):
+            try:
+                pdf_manager = self._window.ensure_pdf_manager()
+            except Exception:
+                pdf_manager = None
         if pdf_manager is None:
             return
         pdf_widget = pdf_manager.pdf_widget()
@@ -2139,10 +2166,13 @@ class MenuController:
 
     def _open_3d_file(self) -> None:
         """Open a 3D model file dialog and load it in the Three.js viewer."""
-        if (
-            not hasattr(self._window, "threejs_manager")
-            or self._window.threejs_manager is None
-        ):
+        manager = getattr(self._window, "threejs_manager", None)
+        if manager is None and hasattr(self._window, "ensure_threejs_manager"):
+            try:
+                manager = self._window.ensure_threejs_manager()
+            except Exception:
+                manager = None
+        if manager is None:
             QtWidgets.QMessageBox.warning(
                 self._window,
                 self._window.tr("3D Viewer Not Available"),
@@ -2169,7 +2199,7 @@ class MenuController:
         self._window.lastOpenDir = str(Path(filename).parent)
 
         # Load the 3D model
-        success = self._window.threejs_manager.show_model_in_viewer(filename)
+        success = manager.show_model_in_viewer(filename)
         if not success:
             QtWidgets.QMessageBox.warning(
                 self._window,

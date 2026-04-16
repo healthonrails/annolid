@@ -17,7 +17,17 @@ import numpy as np
 from pycocotools import mask as maskUtils  # type: ignore
 from qtpy import QtCore, QtGui, QtWidgets
 
-from annolid.gui.widgets import RealtimeControlWidget
+try:
+    from annolid.gui.widgets.realtime_control_widget import RealtimeControlWidget
+except ModuleNotFoundError:  # pragma: no cover - optional dependency guard
+
+    class RealtimeControlWidget:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs) -> None:
+            raise ModuleNotFoundError(
+                "RealtimeControlWidget requires optional dependency 'pyzmq'."
+            )
+
+
 from annolid.gui.widgets.bot_explain import _resolve_chat_widget
 from annolid.gui.workers import PerceptionProcessWorker, RealtimeSubscriberWorker
 from annolid.gui.shape import Shape, MaskShape

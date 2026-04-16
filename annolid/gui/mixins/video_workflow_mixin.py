@@ -399,8 +399,9 @@ class VideoWorkflowMixin:
         video_path,
     ):
         if from_video_list:
+            self._remember_last_video_open_dir(video_path)
             return video_path
-        start_dir = Path(self.filename).parent if self.filename else "."
+        start_dir = self._preferred_video_open_dir()
         formats = ["*.*"]
         filters = self.tr(f"Video files {formats[0]}")
         video_filename = QtWidgets.QFileDialog.getOpenFileName(
@@ -411,7 +412,48 @@ class VideoWorkflowMixin:
         )
         if QT5:
             video_filename, _ = video_filename
+        self._remember_last_video_open_dir(video_filename)
         return video_filename
+
+    def _preferred_video_open_dir(self) -> Path:
+        """Return a stable directory for the open-video dialog.
+
+        Prefer real video directories over frame-export folders that can contain
+        hundreds of thousands of images and slow down dialog initialization.
+        """
+        current_video = str(getattr(self, "video_file", "") or "").strip()
+        if current_video:
+            return Path(current_video).expanduser().parent
+
+        remembered = str(getattr(self, "_last_video_open_dir", "") or "").strip()
+        if remembered:
+            return Path(remembered).expanduser()
+
+        results_dir = getattr(self, "video_results_folder", None)
+        if isinstance(results_dir, Path):
+            return results_dir.parent
+
+        current_filename = str(getattr(self, "filename", "") or "").strip()
+        if current_filename:
+            path = Path(current_filename).expanduser()
+            image_like_suffixes = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+            if path.suffix.lower() in image_like_suffixes and path.parent.parent:
+                return path.parent.parent
+            return path.parent
+
+        return Path(".")
+
+    def _remember_last_video_open_dir(self, video_filename) -> None:
+        candidate = str(video_filename or "").strip()
+        if not candidate:
+            return
+        try:
+            path = Path(candidate).expanduser()
+            parent = path.parent
+            if str(parent):
+                setattr(self, "_last_video_open_dir", str(parent))
+        except Exception:
+            pass
 
     @staticmethod
     def _create_video_loader(video_filename: str):

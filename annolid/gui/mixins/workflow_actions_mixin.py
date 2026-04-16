@@ -8,11 +8,12 @@ from qtpy import QtCore, QtWidgets
 
 from annolid.annotation import coco2labelme, labelme2coco
 from annolid.gui.tensorboard import VisualizationWindow, ensure_tensorboard
-from annolid.gui.widgets import ProgressingWindow, TrainingDashboardDialog
-from annolid.gui.widgets import QualityControlDialog
-from annolid.gui.widgets import ConvertCOODialog
-from annolid.gui.widgets import ConvertCOCO2LabelMeDialog
-from annolid.gui.widgets import Glitter2Dialog
+from annolid.gui.widgets.progressing_dialog import ProgressingWindow
+from annolid.gui.widgets.training_dashboard import TrainingDashboardDialog
+from annolid.gui.widgets.quality_control_dialog import QualityControlDialog
+from annolid.gui.widgets.convert_coco_dialog import ConvertCOODialog
+from annolid.gui.widgets.convert_coco2labelme_dialog import ConvertCOCO2LabelMeDialog
+from annolid.gui.widgets.glitter2_dialog import Glitter2Dialog
 from annolid.postprocessing.glitter import tracks2nix
 from annolid.postprocessing.quality_control import TracksResults
 from annolid.utils.runs import shared_runs_root
@@ -141,9 +142,21 @@ class WorkflowActionsMixin:
         """Auto-open the training dashboard window when training starts."""
         dialog = getattr(self, "_training_dashboard_dialog", None)
         if dialog is None:
+            yolo_manager = (
+                self.ensure_yolo_training_manager()
+                if hasattr(self, "ensure_yolo_training_manager")
+                else getattr(self, "yolo_training_manager", None)
+            )
+            dino_manager = (
+                self.ensure_dino_kpseg_training_manager()
+                if hasattr(self, "ensure_dino_kpseg_training_manager")
+                else getattr(self, "dino_kpseg_training_manager", None)
+            )
             dialog = TrainingDashboardDialog(settings=self.settings, parent=None)
-            dialog.dashboard.register_training_manager(self.yolo_training_manager)
-            dialog.dashboard.register_training_manager(self.dino_kpseg_training_manager)
+            if yolo_manager is not None:
+                dialog.dashboard.register_training_manager(yolo_manager)
+            if dino_manager is not None:
+                dialog.dashboard.register_training_manager(dino_manager)
             dialog.finished.connect(
                 lambda *_: setattr(self, "_training_dashboard_dialog", None)
             )
@@ -264,5 +277,11 @@ class WorkflowActionsMixin:
         )
 
     def run_sam3d_reconstruction(self):
-        if getattr(self, "sam3d_manager", None) is not None:
-            self.sam3d_manager.run_sam3d_reconstruction()
+        manager = getattr(self, "sam3d_manager", None)
+        if manager is None and hasattr(self, "ensure_sam3d_manager"):
+            try:
+                manager = self.ensure_sam3d_manager()
+            except Exception:
+                manager = None
+        if manager is not None:
+            manager.run_sam3d_reconstruction()

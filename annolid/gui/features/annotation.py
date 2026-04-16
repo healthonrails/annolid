@@ -9,7 +9,7 @@ from qtpy import QtWidgets
 
 from annolid.gui.controllers import FlagsController
 from annolid.gui.features.container import GuiFeatureDeps
-from annolid.gui.widgets import FlagTableWidget
+from annolid.gui.widgets.flags import FlagTableWidget
 from annolid.gui.widgets.keypoint_sequencer import KeypointSequencerWidget
 
 

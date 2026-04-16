@@ -3,11 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-try:
-    import torch
-except ImportError:
-    torch = None
-
 from annolid.jobs.tracking_jobs import TrackingSegment
 from annolid.utils.logger import logger
 
@@ -61,6 +56,10 @@ class TrackingSegmentMixin:
             self.caption_widget.set_video_segments(self._current_video_defined_segments)
 
     def _get_tracking_device(self):
+        try:
+            import torch
+        except ImportError:
+            torch = None
         if self.config.get("use_cpu_only", False) or torch is None:
             return "cpu" if torch is None else torch.device("cpu")
         if torch.cuda.is_available():

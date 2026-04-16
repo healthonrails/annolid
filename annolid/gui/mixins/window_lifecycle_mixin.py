@@ -94,8 +94,10 @@ class WindowLifecycleMixin:
     def _closefile_reset_view_and_core_state(self) -> None:
         self._set_active_view("canvas")
         self.resetState()
-        self.dino_controller.deactivate_patch_similarity()
-        self.dino_controller.deactivate_pca_map()
+        controller = getattr(self, "dino_controller", None)
+        if controller is not None:
+            controller.deactivate_patch_similarity()
+            controller.deactivate_pca_map()
         self.setClean()
         self.toggleActions(False)
         self.canvas.setEnabled(False)
@@ -234,22 +236,38 @@ class WindowLifecycleMixin:
         self._emit_live_frame_update()
 
     def _show_realtime_control_dialog(self):
-        if getattr(self, "realtime_manager", None) is not None:
-            self.realtime_manager.show_control_dialog()
+        manager = getattr(self, "realtime_manager", None)
+        if manager is None and hasattr(self, "ensure_realtime_manager"):
+            try:
+                manager = self.ensure_realtime_manager()
+            except Exception:
+                manager = None
+        if manager is not None:
+            manager.show_control_dialog()
 
     def _handle_realtime_start_request(
         self, realtime_config: RealtimeConfig, extras: Dict[str, Any]
     ):
-        if getattr(self, "realtime_manager", None) is not None:
-            self.realtime_manager._handle_realtime_start_request(
-                realtime_config, extras
-            )
+        manager = getattr(self, "realtime_manager", None)
+        if manager is None and hasattr(self, "ensure_realtime_manager"):
+            try:
+                manager = self.ensure_realtime_manager()
+            except Exception:
+                manager = None
+        if manager is not None:
+            manager._handle_realtime_start_request(realtime_config, extras)
 
     def start_realtime_inference(
         self, realtime_config: RealtimeConfig, extras: Dict[str, Any]
     ):
-        if getattr(self, "realtime_manager", None) is not None:
-            self.realtime_manager.start_realtime_inference(realtime_config, extras)
+        manager = getattr(self, "realtime_manager", None)
+        if manager is None and hasattr(self, "ensure_realtime_manager"):
+            try:
+                manager = self.ensure_realtime_manager()
+            except Exception:
+                manager = None
+        if manager is not None:
+            manager.start_realtime_inference(realtime_config, extras)
 
     def stop_realtime_inference(self):
         if getattr(self, "realtime_manager", None) is not None:

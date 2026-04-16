@@ -62,6 +62,14 @@ class LabelPanelMixin:
         manager = getattr(self, "pdf_manager", None)
         if manager is not None:
             return manager
+        ensure = getattr(self, "ensure_pdf_manager", None)
+        if callable(ensure):
+            try:
+                manager = ensure()
+            except Exception:
+                manager = None
+            if manager is not None:
+                return manager
         return getattr(self, "_pdf_manager", None)
 
     def _select_shape_row_in_propagation_dialog(self, dialog, selected_shape) -> bool:

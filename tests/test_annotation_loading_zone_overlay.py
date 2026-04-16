@@ -4,6 +4,7 @@ import json
 import time
 from pathlib import Path
 
+from pandas import DataFrame
 from qtpy import QtCore
 
 import annolid.gui.mixins.annotation_loading_mixin as annotation_loading_module
@@ -197,3 +198,186 @@ def test_load_predict_shapes_cache_invalidates_when_json_changes(
     host.loadPredictShapes(1, str(frame_png))
 
     assert _FakeLabelFile.calls == 2
+
+
+def test_load_predict_shapes_tracking_fallback_uses_fast_mode_while_playing(
+    monkeypatch,
+) -> None:
+    call_flags: list[bool] = []
+
+    def _fake_pred_dict_to_labelme(row, **kwargs):  # noqa: ANN001
+        call_flags.append(bool(kwargs.get("decode_segmentation", True)))
+        shape = Shape(
+            label=str(row.get("instance_name", "subject")),
+            shape_type="point",
+        )
+        shape.addPoint(QtCore.QPointF(3.0, 4.0))
+        return [shape]
+
+    monkeypatch.setattr(
+        annotation_loading_module, "pred_dict_to_labelme", _fake_pred_dict_to_labelme
+    )
+
+    host = _PredictHost()
+    host._df = DataFrame([{"frame_number": 0, "instance_name": "animal_1"}])
+    host.isPlaying = True
+    host.loadPredictShapes(0, "")
+
+    assert call_flags == [False]
+    assert len(host.loaded_shapes) == 1
+
+
+def test_load_predict_shapes_tracking_fallback_caches_per_frame_and_mode(
+    monkeypatch,
+) -> None:
+    call_flags: list[bool] = []
+
+    def _fake_pred_dict_to_labelme(row, **kwargs):  # noqa: ANN001
+        call_flags.append(bool(kwargs.get("decode_segmentation", True)))
+        shape = Shape(
+            label=str(row.get("instance_name", "subject")),
+            shape_type="point",
+        )
+        shape.addPoint(QtCore.QPointF(3.0, 4.0))
+        return [shape]
+
+    monkeypatch.setattr(
+        annotation_loading_module, "pred_dict_to_labelme", _fake_pred_dict_to_labelme
+    )
+
+    host = _PredictHost()
+    host._df = DataFrame([{"frame_number": 0, "instance_name": "animal_1"}])
+
+    host.isPlaying = True
+    host.loadPredictShapes(0, "")
+    host.loadPredictShapes(0, "")
+    host.isPlaying = False
+    host.loadPredictShapes(0, "")
+    host.loadPredictShapes(0, "")
+
+    assert call_flags == [False, True]
+
+
+def test_load_predict_shapes_clears_stale_shapes_when_frame_has_no_annotations() -> (
+    None
+):
+    host = _PredictHost()
+    host.loaded_shapes = [_animal_shape("stale")]
+    host.loadPredictShapes(0, "")
+    assert host.loaded_shapes == []
+
+
+def test_load_predict_shapes_shows_persistent_zones_without_frame_annotations() -> None:
+    host = _PredictHost()
+    host._persistent_zone_shapes_for_frame = lambda _frame_path: [_zone_shape("zone_a")]
+    host._merge_persistent_zones_into_shapes = (
+        lambda shapes, _frame_path, **kwargs: list(shapes or [])
+        + list(kwargs.get("persistent_zone_shapes") or [])
+    )
+    host.loadPredictShapes(0, "")
+    assert len(host.loaded_shapes) == 1
+    assert host.loaded_shapes[0].label == "zone_a"
+
+
+def test_tracking_shape_cache_returns_copied_shapes_to_avoid_mutation_leak(
+    monkeypatch,
+) -> None:
+    call_count = 0
+
+    def _fake_pred_dict_to_labelme(row, **kwargs):  # noqa: ANN001, ARG001
+        nonlocal call_count
+        call_count += 1
+        shape = Shape(label=str(row.get("instance_name", "animal")), shape_type="point")
+        shape.addPoint(QtCore.QPointF(5.0, 6.0))
+        return [shape]
+
+    monkeypatch.setattr(
+        annotation_loading_module, "pred_dict_to_labelme", _fake_pred_dict_to_labelme
+    )
+
+    host = _PredictHost()
+    host._df = DataFrame(
+        [
+            {
+                "frame_number": 0,
+                "instance_name": "animal_1",
+                "x1": 1,
+                "y1": 2,
+                "x2": 3,
+                "y2": 4,
+                "class_score": 0.9,
+                "segmentation": None,
+            }
+        ]
+    )
+    host.isPlaying = True
+
+    host.loadPredictShapes(0, "")
+    assert host.loaded_shapes[0].label == "animal_1"
+    host.loaded_shapes[0].label = "mutated"
+
+    host.loadPredictShapes(0, "")
+    assert call_count == 1
+    assert host.loaded_shapes[0].label == "animal_1"
+
+
+def test_playback_tracking_fastpath_skips_label_candidate_probe(monkeypatch) -> None:
+    host = _PredictHost()
+    host._df = DataFrame(
+        [
+            {
+                "frame_number": 0,
+                "instance_name": "animal_1",
+                "x1": 1,
+                "y1": 2,
+                "x2": 3,
+                "y2": 4,
+                "class_score": 0.9,
+                "segmentation": None,
+            }
+        ]
+    )
+    host.isPlaying = True
+    host._iter_frame_label_candidates = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("Playback fast path should skip label candidate probing.")
+    )
+
+    monkeypatch.setattr(
+        annotation_loading_module,
+        "pred_dict_to_labelme",
+        lambda row, **kwargs: [
+            Shape(label=str(row.get("instance_name")), shape_type="point")
+        ],
+    )
+    host.loadPredictShapes(0, "")
+    assert host.loaded_shapes
+
+
+def test_paused_mode_still_uses_label_candidate_probe(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class _FakeLabelFile:
+        calls = 0
+
+        def __init__(self, _path, is_video_frame=True):  # noqa: ARG002
+            type(self).calls += 1
+            self.shapes = [_fake_shape_payload()]
+            self.flags = {}
+            self.caption = ""
+
+        def get_caption(self):
+            return ""
+
+    monkeypatch.setattr(annotation_loading_module, "LabelFile", _FakeLabelFile)
+
+    host = _PredictHost()
+    host.isPlaying = False
+    host._df = DataFrame([{"frame_number": 0, "instance_name": "animal_1"}])
+    frame_png = tmp_path / "session_000000000.png"
+    frame_png.write_bytes(b"")
+    frame_json = frame_png.with_suffix(".json")
+    frame_json.write_text("{}", encoding="utf-8")
+
+    host.loadPredictShapes(0, str(frame_png))
+
+    assert _FakeLabelFile.calls == 1

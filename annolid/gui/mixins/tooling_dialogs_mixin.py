@@ -16,22 +16,6 @@ from annolid.gui.keypoint_catalog import (
     extract_labels_from_uniq_label_list,
     merge_keypoint_lists,
 )
-from annolid.gui.widgets import (
-    BatchRelabelDialog,
-    IdentityGovernorDialog,
-    LabelCollectionDialog,
-    LogManagerDialog,
-    SystemInfoDialog,
-)
-from annolid.gui.widgets.tracking_stats_dashboard_dialog import (
-    TrackingStatsDashboardDialog,
-)
-from annolid.gui.widgets.convert_deeplabcut_dialog import ConvertDLCDialog
-from annolid.gui.widgets.convert_labelme2csv_dialog import LabelmeJsonToCsvDialog
-from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
-from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
-from annolid.gui.widgets.extract_keypoints_dialog import ExtractShapeKeyPointsDialog
-from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
 from annolid.gui.cursor_utils import set_widget_busy_cursor
 from annolid.gui.window_base import newAction
 from annolid.postprocessing.video_timestamp_annotator import process_directory
@@ -106,10 +90,14 @@ class ToolingDialogsMixin:
             file_menu.addAction(self.manage_logs_action)
 
     def _open_label_collection_dialog(self) -> None:
+        from annolid.gui.widgets.label_collection_dialog import LabelCollectionDialog
+
         dlg = LabelCollectionDialog(settings=self.settings, parent=self)
         dlg.exec_()
 
     def _open_log_manager_dialog(self) -> None:
+        from annolid.gui.widgets.log_manager_dialog import LogManagerDialog
+
         dlg = LogManagerDialog(parent=self)
         dlg.exec_()
 
@@ -131,6 +119,11 @@ class ToolingDialogsMixin:
 
         if mode == "pdf":
             pdf_manager = getattr(self, "pdf_manager", None)
+            if pdf_manager is None and hasattr(self, "ensure_pdf_manager"):
+                try:
+                    pdf_manager = self.ensure_pdf_manager()
+                except Exception:
+                    pdf_manager = None
             if pdf_manager is not None:
                 self.set_unrelated_docks_visible(False)
                 viewer = pdf_manager.pdf_widget()
@@ -145,6 +138,11 @@ class ToolingDialogsMixin:
 
         if mode == "web":
             web_manager = getattr(self, "web_manager", None)
+            if web_manager is None and hasattr(self, "ensure_web_manager"):
+                try:
+                    web_manager = self.ensure_web_manager()
+                except Exception:
+                    web_manager = None
             if web_manager is not None:
                 self.set_unrelated_docks_visible(False)
                 viewer = web_manager.viewer_widget()
@@ -157,6 +155,11 @@ class ToolingDialogsMixin:
 
         if mode == "threejs":
             threejs_manager = getattr(self, "threejs_manager", None)
+            if threejs_manager is None and hasattr(self, "ensure_threejs_manager"):
+                try:
+                    threejs_manager = self.ensure_threejs_manager()
+                except Exception:
+                    threejs_manager = None
             if threejs_manager is not None:
                 self.set_unrelated_docks_visible(False)
                 viewer = threejs_manager.viewer_widget()
@@ -173,12 +176,24 @@ class ToolingDialogsMixin:
         stack.setCurrentIndex(0)
 
     def show_pdf_in_viewer(self, pdf_path: str) -> None:
-        if self.pdf_manager is not None:
-            self.pdf_manager.show_pdf_in_viewer(pdf_path)
+        manager = getattr(self, "pdf_manager", None)
+        if manager is None and hasattr(self, "ensure_pdf_manager"):
+            try:
+                manager = self.ensure_pdf_manager()
+            except Exception:
+                manager = None
+        if manager is not None:
+            manager.show_pdf_in_viewer(pdf_path)
 
     def show_web_in_viewer(self, url: str) -> bool:
-        if self.web_manager is not None:
-            return bool(self.web_manager.show_url_in_viewer(url))
+        manager = getattr(self, "web_manager", None)
+        if manager is None and hasattr(self, "ensure_web_manager"):
+            try:
+                manager = self.ensure_web_manager()
+            except Exception:
+                manager = None
+        if manager is not None:
+            return bool(manager.show_url_in_viewer(url))
         return False
 
     @QtCore.Slot(str)
@@ -195,6 +210,8 @@ class ToolingDialogsMixin:
         self.canvas_screenshot_widget.save_canvas_screenshot(filename=self.filename)
 
     def downsample_videos(self):
+        from annolid.gui.widgets.downsample_videos_dialog import VideoRescaleWidget
+
         video_downsample_widget = VideoRescaleWidget(
             initial_video_path=getattr(self, "video_file", None)
         )
@@ -287,6 +304,10 @@ class ToolingDialogsMixin:
     def open_tracking_stats_dashboard(self) -> None:
         """Open cross-video tracking stats analysis/visualization dashboard."""
         try:
+            from annolid.gui.widgets.tracking_stats_dashboard_dialog import (
+                TrackingStatsDashboardDialog,
+            )
+
             dialog = getattr(self, "_tracking_stats_dashboard_dialog", None)
             if dialog is None:
                 initial_root = None
@@ -339,10 +360,14 @@ class ToolingDialogsMixin:
             )
 
     def convert_sleap_h5_to_labelme(self):
+        from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
+
         convert_sleap_h5_widget = ConvertSleapDialog()
         convert_sleap_h5_widget.exec_()
 
     def convert_deeplabcut_csv_to_labelme(self):
+        from annolid.gui.widgets.convert_deeplabcut_dialog import ConvertDLCDialog
+
         convert_deeplabcut_widget = ConvertDLCDialog()
         convert_deeplabcut_widget.exec_()
 
@@ -353,6 +378,8 @@ class ToolingDialogsMixin:
         convert_labelme2yolo_widget.exec_()
 
     def batch_rename_shape_labels(self) -> None:
+        from annolid.gui.widgets.batch_relabel_dialog import BatchRelabelDialog
+
         start_dir = (
             getattr(self, "annotation_dir", None)
             or getattr(self, "lastOpenDir", None)
@@ -373,6 +400,10 @@ class ToolingDialogsMixin:
             )
 
     def open_identity_governor_dialog(self) -> None:
+        from annolid.gui.widgets.identity_governor_dialog import (
+            IdentityGovernorDialog,
+        )
+
         try:
             dialog = getattr(self, "_identity_governor_dialog", None)
             if dialog is None:
@@ -514,10 +545,16 @@ class ToolingDialogsMixin:
             )
 
     def extract_and_save_shape_keypoints(self):
+        from annolid.gui.widgets.extract_keypoints_dialog import (
+            ExtractShapeKeyPointsDialog,
+        )
+
         extract_shape_keypoints_dialog = ExtractShapeKeyPointsDialog()
         extract_shape_keypoints_dialog.exec_()
 
     def place_preference_analyze(self):
+        from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
+
         existing_dialog = getattr(self, "_zone_analysis_dialog", None)
         if isinstance(existing_dialog, TrackingAnalyzerDialog):
             existing_dialog.apply_session_context()
@@ -544,6 +581,8 @@ class ToolingDialogsMixin:
         place_preference_analyze_widget.activateWindow()
 
     def place_preference_analyze_auto(self):
+        from annolid.gui.widgets.place_preference_dialog import TrackingAnalyzerDialog
+
         if self.video_file is not None:
             analyzer_dialog = TrackingAnalyzerDialog()
             analyzer_dialog.run_analysis_without_gui(
@@ -551,10 +590,16 @@ class ToolingDialogsMixin:
             )
 
     def convert_labelme_json_to_csv(self):
+        from annolid.gui.widgets.convert_labelme2csv_dialog import (
+            LabelmeJsonToCsvDialog,
+        )
+
         convert_labelme_json_to_csv_widget = LabelmeJsonToCsvDialog()
         convert_labelme_json_to_csv_widget.exec_()
 
     def about_annolid_and_system_info(self):
+        from annolid.gui.widgets.about_dialog import SystemInfoDialog
+
         about_annolid_dialog = SystemInfoDialog()
         about_annolid_dialog.exec_()
 

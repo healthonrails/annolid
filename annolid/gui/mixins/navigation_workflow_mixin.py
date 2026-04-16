@@ -10,6 +10,17 @@ from annolid.utils.logger import logger
 class NavigationWorkflowMixin:
     """Frame and file navigation helpers."""
 
+    def _set_seekbar_value_without_signal(self, value: int) -> None:
+        seekbar = getattr(self, "seekbar", None)
+        if seekbar is None:
+            return
+        try:
+            blocker = QtWidgets.QSignalBlocker(seekbar)
+            seekbar.setValue(int(value))
+            del blocker
+        except Exception:
+            seekbar.setValue(int(value))
+
     def _using_large_image_page_navigation(self) -> bool:
         return bool(
             hasattr(self, "_has_large_image_page_navigation")
@@ -125,7 +136,7 @@ class NavigationWorkflowMixin:
             self._suppress_audio_seek = True
             try:
                 self.set_frame_number(self.frame_number)
-                self.seekbar.setValue(self.frame_number)
+                self._set_seekbar_value_without_signal(self.frame_number)
             finally:
                 self._suppress_audio_seek = False
             self.uniqLabelList.itemSelectionChanged.connect(
@@ -204,7 +215,7 @@ class NavigationWorkflowMixin:
             else:
                 self.frame_number = 0
             self.set_frame_number(self.frame_number)
-            self.seekbar.setValue(self.frame_number)
+            self._set_seekbar_value_without_signal(self.frame_number)
 
         else:
             visible_files = self._checked_file_paths()

@@ -10,10 +10,6 @@ from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
 from annolid.data.audios import AudioLoader
-from annolid.services.paper_writer import build_paper_swarm_prompt
-from annolid.gui.widgets.caption import CaptionWidget
-from annolid.gui.widgets.florence2_widget import Florence2DockWidget
-from annolid.gui.widgets.image_editing_widget import ImageEditingDockWidget
 from annolid.utils.logger import logger
 
 
@@ -296,6 +292,8 @@ class MediaWorkflowMixin:
                 )
 
     def openCaption(self):
+        from annolid.gui.widgets.caption import CaptionWidget
+
         dock = getattr(self, "caption_dock", None)
         widget = getattr(self, "caption_widget", None)
         if dock is None or widget is None:
@@ -357,6 +355,11 @@ class MediaWorkflowMixin:
     def open_mini_cpm_chat_dock(self) -> None:
         """Open the dedicated AI chat dock preconfigured for MiniCPM-o."""
         manager = getattr(self, "ai_chat_manager", None)
+        if manager is None and hasattr(self, "ensure_ai_chat_manager"):
+            try:
+                manager = self.ensure_ai_chat_manager()
+            except Exception:
+                manager = None
         if manager is None:
             self.openCaption()
             widget = getattr(self, "caption_widget", None)
@@ -385,6 +388,11 @@ class MediaWorkflowMixin:
     def open_annolid_bot_dock(self) -> None:
         """Open the dedicated right-side Annolid Bot dock."""
         manager = getattr(self, "ai_chat_manager", None)
+        if manager is None and hasattr(self, "ensure_ai_chat_manager"):
+            try:
+                manager = self.ensure_ai_chat_manager()
+            except Exception:
+                manager = None
         if manager is not None:
             manager.show_chat_dock()
             widget = getattr(manager, "ai_chat_widget", None)
@@ -401,6 +409,8 @@ class MediaWorkflowMixin:
 
     def open_research_paper_swarm(self) -> None:
         """Seed Annolid Bot with a paper-drafting swarm prompt."""
+        from annolid.services.paper_writer import build_paper_swarm_prompt
+
         topic_default = ""
         pdf_state: dict[str, object] = {}
         pdf_manager = getattr(self, "pdf_manager", None)
@@ -428,6 +438,11 @@ class MediaWorkflowMixin:
 
         self.open_annolid_bot_dock()
         manager = getattr(self, "ai_chat_manager", None)
+        if manager is None and hasattr(self, "ensure_ai_chat_manager"):
+            try:
+                manager = self.ensure_ai_chat_manager()
+            except Exception:
+                manager = None
         widget = getattr(manager, "ai_chat_widget", None) if manager else None
         if widget is None:
             QtWidgets.QMessageBox.warning(
@@ -464,6 +479,8 @@ class MediaWorkflowMixin:
 
     def openFlorence2(self):
         """Open or show the Florence-2 dock widget."""
+        from annolid.gui.widgets.florence2_widget import Florence2DockWidget
+
         dock = getattr(self, "florence_dock", None)
         if dock is None:
             dock = Florence2DockWidget(self)
@@ -480,6 +497,8 @@ class MediaWorkflowMixin:
 
     def openImageEditing(self):
         """Open or show the Image Editing dock widget."""
+        from annolid.gui.widgets.image_editing_widget import ImageEditingDockWidget
+
         dock = getattr(self, "image_editing_dock", None)
         if dock is None:
             dock = ImageEditingDockWidget(self)

@@ -257,7 +257,10 @@ class FlagTableWidget(QtWidgets.QWidget):
         self._table.setHorizontalHeaderLabels(["Behavior", "Active", "Start", "End"])
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.verticalHeader().setVisible(False)
-        self._table.setEditTriggers(QtWidgets.QTableWidget.AllEditTriggers)
+        # Row cells are rendered with explicit widgets (QLineEdit/QCheckBox/etc.),
+        # so delegate-based table editing is unnecessary and can emit noisy editor
+        # warnings during rapid model updates.
+        self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self._table.clicked.connect(self._handle_table_clicked)

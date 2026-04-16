@@ -21,7 +21,6 @@ from annolid.annotation.pose_schema import PoseSchema
 from annolid.gui.shape import Shape, MaskShape, MultipoinstShape
 from annolid.gui.shared_vertices import SharedTopologyRegistry
 from annolid.gui.window_base import QT5
-from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 from annolid.utils.annotation_compat import AI_MODELS
 from annolid.utils.annotation_compat import utils
 from annolid.utils.devices import clear_device_cache
@@ -924,6 +923,8 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         # Initialize SAM HQ model if not already initialized
         if self.sam_hq_model is None:
             try:
+                from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
+
                 self.sam_hq_model = SamHQSegmenter()
             except ModuleNotFoundError as exc:
                 QtWidgets.QMessageBox.about(

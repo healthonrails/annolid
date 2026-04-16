@@ -148,16 +148,34 @@ class DepthSamProxyMixin:
             )
 
     def configure_sam3d_settings(self):
-        if getattr(self, "sam3d_manager", None) is not None:
-            self.sam3d_manager.configure_sam3d_settings()
+        manager = getattr(self, "sam3d_manager", None)
+        if manager is None and hasattr(self, "ensure_sam3d_manager"):
+            try:
+                manager = self.ensure_sam3d_manager()
+            except Exception:
+                manager = None
+        if manager is not None:
+            manager.configure_sam3d_settings()
 
     def run_video_depth_anything(self):
-        if getattr(self, "depth_manager", None) is not None:
-            self.depth_manager.run_video_depth_anything()
+        manager = getattr(self, "depth_manager", None)
+        if manager is None and hasattr(self, "ensure_depth_manager"):
+            try:
+                manager = self.ensure_depth_manager()
+            except Exception:
+                manager = None
+        if manager is not None:
+            manager.run_video_depth_anything()
 
     def configure_video_depth_settings(self):
-        if getattr(self, "depth_manager", None) is not None:
-            self.depth_manager.configure_video_depth_settings()
+        manager = getattr(self, "depth_manager", None)
+        if manager is None and hasattr(self, "ensure_depth_manager"):
+            try:
+                manager = self.ensure_depth_manager()
+            except Exception:
+                manager = None
+        if manager is not None:
+            manager.configure_video_depth_settings()
 
     def _handle_depth_preview(self, payload: object) -> None:
         if getattr(self, "depth_manager", None) is not None:

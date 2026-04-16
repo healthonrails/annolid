@@ -12,7 +12,6 @@ from .video_controller import VideoController
 from .tracking import TrackingController
 from .menu import MenuController
 from .flags import FlagsController
-from .dino import DinoController
 from .tracking_data import TrackingDataController
 
 __all__ = [
@@ -26,3 +25,11 @@ __all__ = [
     "DinoController",
     "TrackingDataController",
 ]
+
+
+def __getattr__(name: str):
+    if name == "DinoController":
+        from .dino import DinoController
+
+        return DinoController
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

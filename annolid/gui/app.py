@@ -38,13 +38,20 @@ from annolid.gui.workers import (
 from annolid.utils.logger import configure_logging, logger
 from annolid.gui.widgets.canvas import Canvas
 from annolid.domain import ProjectSchema
-from annolid.gui.widgets import AnnolidLabelDialog
+from annolid.gui.widgets.label_dialog import AnnolidLabelDialog
 import atexit
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
-from annolid.gui.widgets import CanvasScreenshotWidget
+from annolid.gui.widgets.screen_shot import CanvasScreenshotWidget
 from annolid.gui.widgets.pdf_import_widget import PdfImportWidget
 from annolid.gui.features import (
     GuiFeatureDeps,
+    ensure_ai_chat_manager,
+    ensure_depth_manager,
+    ensure_pdf_manager,
+    ensure_realtime_manager,
+    ensure_sam3d_manager,
+    ensure_threejs_manager,
+    ensure_web_manager,
     setup_annotation_feature,
     setup_search_feature,
     setup_timeline_feature,
@@ -65,20 +72,15 @@ from annolid.jobs.tracking_jobs import TrackingSegment
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.gui.behavior_controller import BehaviorController
 from annolid.gui.keypoint_catalog import extract_labels_from_uniq_label_list
-from annolid.gui.yolo_training_manager import YOLOTrainingManager
-from annolid.gui.dino_kpseg_training_manager import DinoKPSEGTrainingManager
 from annolid.gui.cli import parse_cli
 from annolid.infrastructure.runtime import create_qapp, sanitize_qt_plugin_env
-from annolid.gui.controllers import (
-    AnnotationController,
-    DinoController,
-    InferenceController,
-    MenuController,
-    ProjectController,
-    TrackingController,
-    TrackingDataController,
-    VideoController,
-)
+from annolid.gui.controllers.annotation_controller import AnnotationController
+from annolid.gui.controllers.inference_controller import InferenceController
+from annolid.gui.controllers.menu import MenuController
+from annolid.gui.controllers.project_controller import ProjectController
+from annolid.gui.controllers.tracking import TrackingController
+from annolid.gui.controllers.tracking_data import TrackingDataController
+from annolid.gui.controllers.video_controller import VideoController
 from annolid.gui.managers import SettingsManager
 from annolid.gui.mixins import (
     AnnolidWindowMixinBundle,
@@ -174,15 +176,9 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
             canvas_getter=lambda: getattr(self, "canvas", None),
         )
         self._validate_model_registry_startup()
-        self.yolo_training_manager = YOLOTrainingManager(self)
-        self.dino_kpseg_training_manager = DinoKPSEGTrainingManager(self)
+        self.yolo_training_manager = None
+        self.dino_kpseg_training_manager = None
         self._training_dashboard_dialog = None
-        self.yolo_training_manager.training_started.connect(
-            self._show_training_dashboard_for_training
-        )
-        self.dino_kpseg_training_manager.training_started.connect(
-            self._show_training_dashboard_for_training
-        )
         self.frame_number = 0
         self.video_loader = None
         self.video_file = None
@@ -293,8 +289,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         # Ensure all drawing/edit mode actions work without relying on LabelMe.
         self._setup_drawing_mode_actions()
 
-        self.dino_controller = DinoController(self)
-        self.dino_controller.initialize()
+        self.dino_controller = None
 
         self.tracking_data_controller = TrackingDataController(self)
 
@@ -361,7 +356,8 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
 
         self.populateModeActions()
         QtCore.QTimer.singleShot(0, self._restore_last_worked_file_if_available)
-        QtCore.QTimer.singleShot(0, self._startup_annolid_bot)
+        # Defer bot runtime boot to keep first paint and first interaction snappy.
+        QtCore.QTimer.singleShot(2500, self._startup_annolid_bot)
         QtCore.QTimer.singleShot(
             0,
             lambda dock=self.shape_dock: (dock.show(), dock.raise_()),
@@ -484,16 +480,68 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         except Exception as exc:
             logger.warning("Model registry startup validation failed: %s", exc)
 
+    def ensure_pdf_manager(self):
+        return ensure_pdf_manager(self)
+
+    def ensure_web_manager(self):
+        return ensure_web_manager(self)
+
+    def ensure_threejs_manager(self):
+        return ensure_threejs_manager(self)
+
+    def ensure_depth_manager(self):
+        return ensure_depth_manager(self)
+
+    def ensure_sam3d_manager(self):
+        return ensure_sam3d_manager(self)
+
+    def ensure_realtime_manager(self):
+        return ensure_realtime_manager(self)
+
+    def ensure_ai_chat_manager(self):
+        return ensure_ai_chat_manager(self)
+
+    def ensure_dino_controller(self):
+        controller = getattr(self, "dino_controller", None)
+        if controller is not None:
+            return controller
+        from annolid.gui.controllers.dino import DinoController
+
+        controller = DinoController(self)
+        controller.initialize()
+        self.dino_controller = controller
+        return controller
+
+    def ensure_yolo_training_manager(self):
+        manager = getattr(self, "yolo_training_manager", None)
+        if manager is not None:
+            return manager
+        from annolid.gui.yolo_training_manager import YOLOTrainingManager
+
+        manager = YOLOTrainingManager(self)
+        manager.training_started.connect(self._show_training_dashboard_for_training)
+        self.yolo_training_manager = manager
+        return manager
+
+    def ensure_dino_kpseg_training_manager(self):
+        manager = getattr(self, "dino_kpseg_training_manager", None)
+        if manager is not None:
+            return manager
+        from annolid.gui.dino_kpseg_training_manager import DinoKPSEGTrainingManager
+
+        manager = DinoKPSEGTrainingManager(self)
+        manager.training_started.connect(self._show_training_dashboard_for_training)
+        self.dino_kpseg_training_manager = manager
+        return manager
+
     def _startup_annolid_bot(self) -> None:
         """Start Annolid Bot when the main window opens."""
         if os.environ.get("ANNOLID_DISABLE_BOT_AUTOSTART"):
             return
         if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("CI"):
             return
-        manager = getattr(self, "ai_chat_manager", None)
-        if manager is None:
-            return
         try:
+            manager = self.ensure_ai_chat_manager()
             manager.initialize_annolid_bot(start_visible=False)
             self.statusBar().showMessage(self.tr("Annolid Bot ready."), 3000)
         except Exception as exc:

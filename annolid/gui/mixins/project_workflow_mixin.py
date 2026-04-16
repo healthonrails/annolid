@@ -19,11 +19,6 @@ from annolid.core.behavior.catalog import (
     update_behavior_definition,
     upsert_behavior_definition,
 )
-from annolid.segmentation.dino_kpseg import defaults as dino_defaults
-from annolid.gui.widgets import (
-    LabelingProgressDashboardDialog,
-    TrainingDashboardDialog,
-)
 from annolid.utils.logger import logger
 
 
@@ -441,7 +436,14 @@ class ProjectWorkflowMixin:
     def _start_yolo_training_from_wizard(self, config: dict) -> None:
         """Start YOLO training with wizard configuration."""
         try:
-            self.yolo_training_manager.start_training(
+            manager = (
+                self.ensure_yolo_training_manager()
+                if hasattr(self, "ensure_yolo_training_manager")
+                else getattr(self, "yolo_training_manager", None)
+            )
+            if manager is None:
+                return
+            manager.start_training(
                 yolo_model_file=config.get("model", "yolo11n-seg.pt"),
                 model_path=None,
                 data_config_path=config.get("dataset_path"),
@@ -464,7 +466,16 @@ class ProjectWorkflowMixin:
     def _start_dino_training_from_wizard(self, config: dict) -> None:
         """Start DINO KPSEG training with wizard configuration."""
         try:
-            self.dino_kpseg_training_manager.start_training(
+            from annolid.segmentation.dino_kpseg import defaults as dino_defaults
+
+            manager = (
+                self.ensure_dino_kpseg_training_manager()
+                if hasattr(self, "ensure_dino_kpseg_training_manager")
+                else getattr(self, "dino_kpseg_training_manager", None)
+            )
+            if manager is None:
+                return
+            manager.start_training(
                 data_config_path=config.get("dataset_path"),
                 data_format=str(config.get("data_format", "auto") or "auto"),
                 out_dir=config.get("output_dir"),
@@ -517,13 +528,25 @@ class ProjectWorkflowMixin:
     def _open_training_dashboard(self) -> None:
         """Open the training dashboard for monitoring."""
         try:
+            from annolid.gui.widgets.training_dashboard import TrainingDashboardDialog
+
             dialog = getattr(self, "_training_dashboard_dialog", None)
             if dialog is None:
-                dialog = TrainingDashboardDialog(settings=self.settings, parent=self)
-                dialog.dashboard.register_training_manager(self.yolo_training_manager)
-                dialog.dashboard.register_training_manager(
-                    self.dino_kpseg_training_manager
+                yolo_manager = (
+                    self.ensure_yolo_training_manager()
+                    if hasattr(self, "ensure_yolo_training_manager")
+                    else getattr(self, "yolo_training_manager", None)
                 )
+                dino_manager = (
+                    self.ensure_dino_kpseg_training_manager()
+                    if hasattr(self, "ensure_dino_kpseg_training_manager")
+                    else getattr(self, "dino_kpseg_training_manager", None)
+                )
+                dialog = TrainingDashboardDialog(settings=self.settings, parent=self)
+                if yolo_manager is not None:
+                    dialog.dashboard.register_training_manager(yolo_manager)
+                if dino_manager is not None:
+                    dialog.dashboard.register_training_manager(dino_manager)
                 dialog.finished.connect(
                     lambda *_: setattr(self, "_training_dashboard_dialog", None)
                 )
@@ -543,6 +566,10 @@ class ProjectWorkflowMixin:
     def open_labeling_progress_dashboard(self) -> None:
         """Open the labeling progress dashboard (project stats + gamification)."""
         try:
+            from annolid.gui.widgets.labeling_progress_dashboard import (
+                LabelingProgressDashboardDialog,
+            )
+
             dialog = getattr(self, "_labeling_progress_dashboard_dialog", None)
             if dialog is None:
                 project_root = self.project_controller.get_current_project_path()
@@ -602,16 +629,46 @@ class ProjectWorkflowMixin:
         self._df.rename(columns={"Unnamed: 0": "frame_number"}, inplace=True)
 
     def _toggle_patch_similarity_tool(self, checked=False):
-        self.dino_controller.toggle_patch_similarity(checked)
+        controller = getattr(self, "dino_controller", None)
+        if controller is None and hasattr(self, "ensure_dino_controller"):
+            try:
+                controller = self.ensure_dino_controller()
+            except Exception:
+                controller = None
+        if controller is not None:
+            controller.toggle_patch_similarity(checked)
 
     def _toggle_pca_map_tool(self, checked=False):
-        self.dino_controller.toggle_pca_map(checked)
+        controller = getattr(self, "dino_controller", None)
+        if controller is None and hasattr(self, "ensure_dino_controller"):
+            try:
+                controller = self.ensure_dino_controller()
+            except Exception:
+                controller = None
+        if controller is not None:
+            controller.toggle_pca_map(checked)
 
     def _deactivate_pca_map(self):
-        self.dino_controller.deactivate_pca_map()
+        controller = getattr(self, "dino_controller", None)
+        if controller is not None:
+            controller.deactivate_pca_map()
 
     def _request_pca_map(self) -> None:
-        self.dino_controller.request_pca_map()
+        controller = getattr(self, "dino_controller", None)
+        if controller is None and hasattr(self, "ensure_dino_controller"):
+            try:
+                controller = self.ensure_dino_controller()
+            except Exception:
+                controller = None
+        if controller is not None:
+            controller.request_pca_map()
 
     def _open_patch_similarity_settings(self):
-        self.dino_controller.open_patch_similarity_settings()
+        controller = getattr(self, "dino_controller", None)
+        if controller is None and hasattr(self, "ensure_dino_controller"):
+            try:
+                controller = self.ensure_dino_controller()
+            except Exception:
+                controller = None
+        if controller is not None:
+            controller.open_patch_similarity_settings()

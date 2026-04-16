@@ -671,6 +671,8 @@ class LoadFrameThread(QtCore.QObject):
         self._cache_size = 3
         self._last_frame = None  # Keep last frame for error recovery
         self._shutting_down = False
+        self._is_processing = False
+        self._active_frame_number = None
 
         # Ensure frame processing runs on the worker thread event loop
         self.process.connect(self._optimized_load, type=QtCore.Qt.QueuedConnection)
@@ -689,6 +691,8 @@ class LoadFrameThread(QtCore.QObject):
             if not self.frame_queue:
                 return
             frame_number = self.frame_queue.pop()
+            self._is_processing = True
+            self._active_frame_number = int(frame_number)
 
         # Check cache first
         with self.working_lock:
@@ -721,6 +725,10 @@ class LoadFrameThread(QtCore.QObject):
         except Exception as e:
             logger.error(f"Unexpected error loading frame {frame_number}: {e}")
             self._handle_error(frame_number)
+        finally:
+            with self.working_lock:
+                self._active_frame_number = None
+                self._is_processing = False
 
         # Schedule next frame if pending
         with self.working_lock:
@@ -760,11 +768,31 @@ class LoadFrameThread(QtCore.QObject):
                 self._frame_cache.move_to_end(frame_number)
                 should_trigger = False
             else:
-                # Keep only the newest queued request.
-                was_empty = len(self.frame_queue) == 0
-                self.frame_queue.clear()
-                self.frame_queue.append(frame_number)
-                should_trigger = was_empty
+                is_processing = bool(self._is_processing)
+                active_frame = (
+                    int(self._active_frame_number)
+                    if self._active_frame_number is not None
+                    else None
+                )
+                is_sequential_playback = (
+                    is_processing
+                    and active_frame is not None
+                    and frame_number >= active_frame
+                    and frame_number - active_frame <= 2
+                )
+
+                # During sequential playback, keep near-future requests so decode
+                # can continue smoothly after seeks. For scrubbing/non-sequential
+                # jumps, keep only the latest request.
+                if is_sequential_playback:
+                    if frame_number not in self.frame_queue:
+                        self.frame_queue.append(frame_number)
+                    should_trigger = False
+                else:
+                    was_empty = len(self.frame_queue) == 0
+                    self.frame_queue.clear()
+                    self.frame_queue.append(frame_number)
+                    should_trigger = (not is_processing) and was_empty
 
         if cached_frame is not None:
             self.res_frame.emit(frame_number, cached_frame)
@@ -780,6 +808,8 @@ class LoadFrameThread(QtCore.QObject):
         with self.working_lock:
             self.frame_queue.clear()
             self._frame_cache.clear()
+            self._active_frame_number = None
+            self._is_processing = False
             video_loader = self.video_loader
             self.video_loader = None
         if video_loader is not None and hasattr(video_loader, "release"):

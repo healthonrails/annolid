@@ -6,17 +6,8 @@ from pathlib import Path
 from qtpy import QtWidgets
 
 from annolid.data import videos
-from annolid.gui.widgets import ExtractFrameDialog
-from annolid.gui.widgets import ProgressingWindow
-from annolid.gui.widgets import TrainModelDialog
 
-from annolid.segmentation.dino_kpseg import defaults as dino_defaults
 from annolid.utils.runs import shared_runs_root
-
-try:
-    import torch
-except ImportError:
-    torch = None
 
 
 class TrainingWorkflowMixin:
@@ -24,6 +15,9 @@ class TrainingWorkflowMixin:
 
     def frames(self):
         """Extract frames based on the selected algos."""
+        from annolid.gui.widgets.extract_frame_dialog import ExtractFrameDialog
+        from annolid.gui.widgets.progressing_dialog import ProgressingWindow
+
         dlg = ExtractFrameDialog(self.video_file)
         video_file = None
         out_dir = None
@@ -87,6 +81,10 @@ class TrainingWorkflowMixin:
 
     def models(self):
         """Train a model with the provided dataset and selected params."""
+        from annolid.gui.widgets.train_model_dialog import TrainModelDialog
+
+        from annolid.segmentation.dino_kpseg import defaults as dino_defaults
+
         dlg = TrainModelDialog()
         config_file = None
         out_dir = None
@@ -269,18 +267,30 @@ class TrainingWorkflowMixin:
 
         if config_file is None:
             return
+        yolo_manager = (
+            self.ensure_yolo_training_manager()
+            if hasattr(self, "ensure_yolo_training_manager")
+            else getattr(self, "yolo_training_manager", None)
+        )
+        dino_manager = (
+            self.ensure_dino_kpseg_training_manager()
+            if hasattr(self, "ensure_dino_kpseg_training_manager")
+            else getattr(self, "dino_kpseg_training_manager", None)
+        )
         if algo == "YOLO":
-            expected_task = self.yolo_training_manager._infer_expected_task(
+            if yolo_manager is None:
+                return
+            expected_task = yolo_manager._infer_expected_task(
                 yolo_model_file,
                 model_path=model_path,
             )
-            data_config = self.yolo_training_manager.prepare_data_config(
+            data_config = yolo_manager.prepare_data_config(
                 config_file,
                 expected_task=expected_task,
             )
             if data_config is None:
                 return
-            self.yolo_training_manager.start_training(
+            yolo_manager.start_training(
                 yolo_model_file=yolo_model_file,
                 model_path=model_path,
                 data_config_path=data_config,
@@ -294,13 +304,15 @@ class TrainingWorkflowMixin:
             )
 
         elif algo == "DINO KPSEG":
+            if dino_manager is None:
+                return
             dino_data_format = getattr(dlg, "dino_data_format", "auto")
-            data_config = self.dino_kpseg_training_manager.prepare_data_config(
+            data_config = dino_manager.prepare_data_config(
                 config_file, data_format=str(dino_data_format or "auto")
             )
             if data_config is None:
                 return
-            self.dino_kpseg_training_manager.start_training(
+            dino_manager.start_training(
                 data_config_path=data_config,
                 data_format=str(dino_data_format or "auto"),
                 out_dir=out_dir,
@@ -387,6 +399,10 @@ class TrainingWorkflowMixin:
             )
 
         elif algo == "YOLACT":
+            try:
+                import torch
+            except ImportError:
+                torch = None
             if torch is None or not torch.cuda.is_available():
                 QtWidgets.QMessageBox.about(
                     self,

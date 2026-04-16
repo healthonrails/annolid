@@ -12,7 +12,12 @@ import numpy as np
 from annolid.utils.annotation_compat import img_pil_to_data
 
 
-def pred_dict_to_labelme(pred_row, keypoint_area_threshold=512, score_threshold=0.01):
+def pred_dict_to_labelme(
+    pred_row,
+    keypoint_area_threshold=512,
+    score_threshold=0.01,
+    decode_segmentation=True,
+):
     """Converted predict instance to labelme json format.
 
     Args:
@@ -21,6 +26,8 @@ def pred_dict_to_labelme(pred_row, keypoint_area_threshold=512, score_threshold=
         [area less than the threshold will be treated as keypoints ].
         Defaults to 512.
         score_threshold (float): class score threshold, default 0.01
+        decode_segmentation (bool): decode segmentation masks into polygon shapes.
+            Disable for interactive playback to reduce per-frame CPU cost.
 
     Returns:
         [List]: [A list of labeme shapes]
@@ -42,7 +49,7 @@ def pred_dict_to_labelme(pred_row, keypoint_area_threshold=512, score_threshold=
     except ValueError:
         return
 
-    if (
+    if decode_segmentation and (
         segmentation
         and segmentation != "None"
         and segmentation != "nan"
