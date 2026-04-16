@@ -121,6 +121,7 @@ class AIChatManager(QtCore.QObject):
         self._channel_start_task: Optional[asyncio.Task[None]] = None
         self._cron_service: Optional[CronService] = None
         self._task_scheduler: Optional[TaskScheduler] = None
+        self._background_start_lock = threading.Lock()
 
     def _on_dock_visibility_changed(self, visible: bool) -> None:
         if not visible:
@@ -183,268 +184,285 @@ class AIChatManager(QtCore.QObject):
 
     def initialize_annolid_bot(self, *, start_visible: bool = True) -> None:
         """Start bot session resources when the app launches."""
-        dock, widget = self._ensure_dock()
-        self.window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
-        widget.set_canvas(getattr(self.window, "canvas", None))
-        widget.set_host_window(self.window)
         if start_visible:
+            dock, widget = self._ensure_dock()
+            self.window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+            widget.set_canvas(getattr(self.window, "canvas", None))
+            widget.set_host_window(self.window)
             if not dock.isVisible():
                 self.show_chat_dock(hide_other_docks=False)
         else:
-            # Some Qt setups briefly show dock widgets after addDockWidget.
-            # Hide immediately and once again on the next event-loop tick.
-            dock.hide()
-            QtCore.QTimer.singleShot(0, dock.hide)
+            # Keep startup responsive: defer heavy dock/widget creation until
+            # user explicitly opens the chat panel.
+            dock = getattr(self, "ai_chat_dock", None)
+            if dock is not None:
+                dock.hide()
+                QtCore.QTimer.singleShot(0, dock.hide)
 
         # Start background automation services (Email polling, etc.)
         self._start_background_services()
 
     def _start_background_services(self) -> None:
         """Initialize and start background messaging services in a separate thread."""
+        with self._background_start_lock:
+            existing = self._background_thread
+            if existing is not None and existing.is_alive():
+                return
 
-        def _run_background_loop():
-            # Create a new event loop for this thread
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            self._background_loop = loop
+            def _run_background_loop():
+                # Create a new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                self._background_loop = loop
 
-            async def _async_start():
-                try:
-                    config = load_config()
-                    whatsapp_enabled = bool(config.tools.whatsapp.enabled)
-                    whatsapp_auto_start = bool(config.tools.whatsapp.auto_start)
-                    whatsapp_start_runtime = whatsapp_enabled and whatsapp_auto_start
-                    zulip_cfg = config.tools.zulip.to_dict()
-                    zulip_enabled = bool(config.tools.zulip.enabled)
-                    zulip_start_runtime, zulip_missing = (
-                        _resolve_zulip_background_runtime(zulip_cfg)
-                    )
-                    logger.info(
-                        "Background services config: email_enabled=%s whatsapp_enabled=%s whatsapp_auto_start=%s zulip_enabled=%s zulip_start_runtime=%s bridge_mode=%s webhook_enabled=%s max_parallel_sessions=%s max_pending_messages=%s collapse_superseded_pending=%s transient_retry_attempts=%s",
-                        bool(config.tools.email.enabled),
-                        whatsapp_enabled,
-                        whatsapp_auto_start,
-                        zulip_enabled,
-                        zulip_start_runtime,
-                        str(config.tools.whatsapp.bridge_mode or "python"),
-                        bool(config.tools.whatsapp.webhook_enabled),
-                        int(
-                            getattr(config.agents.defaults, "max_parallel_sessions", 1)
-                        ),
-                        int(
-                            getattr(
-                                config.agents.defaults, "max_pending_messages", 2048
-                            )
-                        ),
-                        bool(
-                            getattr(
-                                config.agents.defaults,
-                                "collapse_superseded_pending",
-                                True,
-                            )
-                        ),
-                        int(
-                            getattr(
-                                config.agents.defaults, "transient_retry_attempts", 2
-                            )
-                        ),
-                    )
-                    if zulip_enabled and zulip_missing:
-                        logger.info(
-                            "Zulip background polling disabled until config is complete. Missing: %s",
-                            ", ".join(zulip_missing),
+                async def _async_start():
+                    try:
+                        config = load_config()
+                        whatsapp_enabled = bool(config.tools.whatsapp.enabled)
+                        whatsapp_auto_start = bool(config.tools.whatsapp.auto_start)
+                        whatsapp_start_runtime = (
+                            whatsapp_enabled and whatsapp_auto_start
                         )
-                    if not (
-                        config.tools.email.enabled
-                        or whatsapp_start_runtime
-                        or zulip_start_runtime
-                    ):
-                        logger.info(
-                            "Email/WhatsApp/Zulip channels disabled by config; starting core bot services for local automation scheduler."
+                        zulip_cfg = config.tools.zulip.to_dict()
+                        zulip_enabled = bool(config.tools.zulip.enabled)
+                        zulip_start_runtime, zulip_missing = (
+                            _resolve_zulip_background_runtime(zulip_cfg)
                         )
+                        logger.info(
+                            "Background services config: email_enabled=%s whatsapp_enabled=%s whatsapp_auto_start=%s zulip_enabled=%s zulip_start_runtime=%s bridge_mode=%s webhook_enabled=%s max_parallel_sessions=%s max_pending_messages=%s collapse_superseded_pending=%s transient_retry_attempts=%s",
+                            bool(config.tools.email.enabled),
+                            whatsapp_enabled,
+                            whatsapp_auto_start,
+                            zulip_enabled,
+                            zulip_start_runtime,
+                            str(config.tools.whatsapp.bridge_mode or "python"),
+                            bool(config.tools.whatsapp.webhook_enabled),
+                            int(
+                                getattr(
+                                    config.agents.defaults, "max_parallel_sessions", 1
+                                )
+                            ),
+                            int(
+                                getattr(
+                                    config.agents.defaults, "max_pending_messages", 2048
+                                )
+                            ),
+                            bool(
+                                getattr(
+                                    config.agents.defaults,
+                                    "collapse_superseded_pending",
+                                    True,
+                                )
+                            ),
+                            int(
+                                getattr(
+                                    config.agents.defaults,
+                                    "transient_retry_attempts",
+                                    2,
+                                )
+                            ),
+                        )
+                        if zulip_enabled and zulip_missing:
+                            logger.info(
+                                "Zulip background polling disabled until config is complete. Missing: %s",
+                                ", ".join(zulip_missing),
+                            )
+                        if not (
+                            config.tools.email.enabled
+                            or whatsapp_start_runtime
+                            or zulip_start_runtime
+                        ):
+                            logger.info(
+                                "Email/WhatsApp/Zulip channels disabled by config; starting core bot services for local automation scheduler."
+                            )
 
-                    self._background_bus = MessageBus()
-                    whatsapp_cfg = config.tools.whatsapp.to_dict()
-                    whatsapp_cfg["enabled"] = bool(whatsapp_start_runtime)
-                    bridge_mode = (
-                        str(config.tools.whatsapp.bridge_mode or "python")
-                        .strip()
-                        .lower()
-                    )
-                    if whatsapp_start_runtime and bridge_mode == "python":
-                        missing_deps = _missing_whatsapp_python_bridge_deps()
-                        if missing_deps:
-                            whatsapp_start_runtime = False
-                            whatsapp_cfg["enabled"] = False
-                            logger.warning(
-                                "WhatsApp auto-start disabled: missing optional dependencies (%s). "
-                                'Install with: pip install "annolid[whatsapp]"',
-                                ", ".join(missing_deps),
-                            )
-                        else:
-                            bridge = WhatsAppPythonBridge(
-                                host=config.tools.whatsapp.bridge_host,
-                                port=int(config.tools.whatsapp.bridge_port),
-                                token=config.tools.whatsapp.bridge_token,
-                                session_dir=config.tools.whatsapp.bridge_session_dir,
-                                headless=bool(config.tools.whatsapp.bridge_headless),
-                            )
-                            try:
-                                await bridge.start()
-                            except RuntimeError as exc:
+                        self._background_bus = MessageBus()
+                        whatsapp_cfg = config.tools.whatsapp.to_dict()
+                        whatsapp_cfg["enabled"] = bool(whatsapp_start_runtime)
+                        bridge_mode = (
+                            str(config.tools.whatsapp.bridge_mode or "python")
+                            .strip()
+                            .lower()
+                        )
+                        if whatsapp_start_runtime and bridge_mode == "python":
+                            missing_deps = _missing_whatsapp_python_bridge_deps()
+                            if missing_deps:
                                 whatsapp_start_runtime = False
                                 whatsapp_cfg["enabled"] = False
                                 logger.warning(
-                                    "WhatsApp Python bridge failed to start (%s). "
-                                    "Continuing without WhatsApp bridge.",
-                                    exc,
+                                    "WhatsApp auto-start disabled: missing optional dependencies (%s). "
+                                    'Install with: pip install "annolid[whatsapp]"',
+                                    ", ".join(missing_deps),
                                 )
                             else:
-                                self._whatsapp_python_bridge = bridge
-                                whatsapp_cfg["bridge_url"] = bridge.bridge_url
-                                logger.info(
-                                    "Embedded WhatsApp Python bridge started at %s",
-                                    bridge.bridge_url,
+                                bridge = WhatsAppPythonBridge(
+                                    host=config.tools.whatsapp.bridge_host,
+                                    port=int(config.tools.whatsapp.bridge_port),
+                                    token=config.tools.whatsapp.bridge_token,
+                                    session_dir=config.tools.whatsapp.bridge_session_dir,
+                                    headless=bool(
+                                        config.tools.whatsapp.bridge_headless
+                                    ),
                                 )
+                                try:
+                                    await bridge.start()
+                                except RuntimeError as exc:
+                                    whatsapp_start_runtime = False
+                                    whatsapp_cfg["enabled"] = False
+                                    logger.warning(
+                                        "WhatsApp Python bridge failed to start (%s). "
+                                        "Continuing without WhatsApp bridge.",
+                                        exc,
+                                    )
+                                else:
+                                    self._whatsapp_python_bridge = bridge
+                                    whatsapp_cfg["bridge_url"] = bridge.bridge_url
+                                    logger.info(
+                                        "Embedded WhatsApp Python bridge started at %s",
+                                        bridge.bridge_url,
+                                    )
 
-                    # Setup Agent Loop for background replies
-                    tools = FunctionToolRegistry()
-                    calendar_cfg = getattr(config.tools, "calendar", None)
-                    box_cfg = getattr(config.tools, "box", None)
-                    self._task_scheduler = TaskScheduler(
-                        on_run=self._on_automation_task_run,
-                        tick_seconds=0.25,
-                    )
-                    await self._task_scheduler.start()
-                    workspace = get_agent_workspace_path()
-                    cron_store_path = default_cron_store_path()
-                    await register_nanobot_style_tools(
-                        tools,
-                        allowed_dir=workspace,
-                        cron_store_path=cron_store_path,
-                        email_cfg=config.tools.email,
-                        calendar_cfg=calendar_cfg,
-                        box_cfg=box_cfg,
-                        task_scheduler=self._task_scheduler,
-                    )
+                        # Setup Agent Loop for background replies
+                        tools = FunctionToolRegistry()
+                        calendar_cfg = getattr(config.tools, "calendar", None)
+                        box_cfg = getattr(config.tools, "box", None)
+                        self._task_scheduler = TaskScheduler(
+                            on_run=self._on_automation_task_run,
+                            tick_seconds=0.25,
+                        )
+                        await self._task_scheduler.start()
+                        workspace = get_agent_workspace_path()
+                        cron_store_path = default_cron_store_path()
+                        await register_nanobot_style_tools(
+                            tools,
+                            allowed_dir=workspace,
+                            cron_store_path=cron_store_path,
+                            email_cfg=config.tools.email,
+                            calendar_cfg=calendar_cfg,
+                            box_cfg=box_cfg,
+                            task_scheduler=self._task_scheduler,
+                        )
 
-                    # In background mode, we use a standard loop.
-                    loop_instance = AgentLoop(
-                        tools=tools,
-                        workspace=workspace,
-                        strict_runtime_tool_guard=bool(
-                            getattr(
-                                config.agents.defaults,
-                                "strict_runtime_tool_guard",
-                                True,
-                            )
-                        ),
-                    )
-                    logger.info("AgentLoop initialized with workspace: %s", workspace)
-
-                    self._bus_service = AgentBusService.from_agent_config(
-                        bus=self._background_bus,
-                        loop=loop_instance,
-                        agent_config=config,
-                    )
-
-                    self._channel_manager = ChannelManager(
-                        bus=self._background_bus,
-                        channels_config={
-                            "email": config.tools.email.to_dict(),
-                            "whatsapp": whatsapp_cfg,
-                            "zulip": {
-                                **zulip_cfg,
-                                "enabled": bool(zulip_start_runtime),
-                            },
-                        },
-                    )
-
-                    async def _on_cron_job(job: CronJob) -> Optional[str]:
-                        return await _execute_cron_job_payload(
-                            job,
+                        # In background mode, we use a standard loop.
+                        loop_instance = AgentLoop(
                             tools=tools,
-                            background_bus=self._background_bus,
-                        )
-
-                    self._cron_service = CronService(
-                        store_path=cron_store_path,
-                        on_job=_on_cron_job,
-                        logger=logger,
-                    )
-
-                    await self._bus_service.start()
-                    await self._cron_service.start()
-                    if (
-                        config.tools.whatsapp.webhook_enabled
-                        and whatsapp_start_runtime
-                        and bridge_mode != "python"
-                        and not str(whatsapp_cfg.get("bridge_url", "")).strip()
-                    ):
-                        channel = self._channel_manager.get_channel("whatsapp")
-                        if isinstance(channel, WhatsAppChannel):
-                            self._whatsapp_webhook_server = WhatsAppWebhookServer(
-                                channel=channel,
-                                host=config.tools.whatsapp.webhook_host,
-                                port=int(config.tools.whatsapp.webhook_port),
-                                webhook_path=config.tools.whatsapp.webhook_path,
-                                ingest_loop=loop,
-                            )
-                            webhook_url = self._whatsapp_webhook_server.start()
-                            logger.info(
-                                "WhatsApp webhook server enabled at %s", webhook_url
-                            )
-                            host = (
-                                str(config.tools.whatsapp.webhook_host or "")
-                                .strip()
-                                .lower()
-                            )
-                            if host in {"127.0.0.1", "localhost", "0.0.0.0"}:
-                                logger.warning(
-                                    "WhatsApp webhook server is bound to %s. Meta cannot reach localhost directly. Use a public HTTPS URL/tunnel that forwards to %s",
-                                    host or "localhost",
-                                    webhook_url,
+                            workspace=workspace,
+                            strict_runtime_tool_guard=bool(
+                                getattr(
+                                    config.agents.defaults,
+                                    "strict_runtime_tool_guard",
+                                    True,
                                 )
-                        else:
-                            logger.warning(
-                                "WhatsApp webhook requested but whatsapp channel is not initialized"
+                            ),
+                        )
+                        logger.info(
+                            "AgentLoop initialized with workspace: %s", workspace
+                        )
+
+                        self._bus_service = AgentBusService.from_agent_config(
+                            bus=self._background_bus,
+                            loop=loop_instance,
+                            agent_config=config,
+                        )
+
+                        self._channel_manager = ChannelManager(
+                            bus=self._background_bus,
+                            channels_config={
+                                "email": config.tools.email.to_dict(),
+                                "whatsapp": whatsapp_cfg,
+                                "zulip": {
+                                    **zulip_cfg,
+                                    "enabled": bool(zulip_start_runtime),
+                                },
+                            },
+                        )
+
+                        async def _on_cron_job(job: CronJob) -> Optional[str]:
+                            return await _execute_cron_job_payload(
+                                job,
+                                tools=tools,
+                                background_bus=self._background_bus,
                             )
-                    elif whatsapp_start_runtime and bridge_mode != "python":
-                        logger.info(
-                            "WhatsApp webhook server not started (webhook_enabled=%s bridge_url=%s)",
-                            bool(config.tools.whatsapp.webhook_enabled),
-                            str(whatsapp_cfg.get("bridge_url", "")),
-                        )
-                    elif whatsapp_enabled and not whatsapp_auto_start:
-                        logger.info(
-                            "WhatsApp is configured but auto_start=false; skipping WhatsApp startup"
+
+                        self._cron_service = CronService(
+                            store_path=cron_store_path,
+                            on_job=_on_cron_job,
+                            logger=logger,
                         )
 
-                    self._channel_start_task = asyncio.create_task(
-                        self._channel_manager.start_all()
-                    )
+                        await self._bus_service.start()
+                        await self._cron_service.start()
+                        if (
+                            config.tools.whatsapp.webhook_enabled
+                            and whatsapp_start_runtime
+                            and bridge_mode != "python"
+                            and not str(whatsapp_cfg.get("bridge_url", "")).strip()
+                        ):
+                            channel = self._channel_manager.get_channel("whatsapp")
+                            if isinstance(channel, WhatsAppChannel):
+                                self._whatsapp_webhook_server = WhatsAppWebhookServer(
+                                    channel=channel,
+                                    host=config.tools.whatsapp.webhook_host,
+                                    port=int(config.tools.whatsapp.webhook_port),
+                                    webhook_path=config.tools.whatsapp.webhook_path,
+                                    ingest_loop=loop,
+                                )
+                                webhook_url = self._whatsapp_webhook_server.start()
+                                logger.info(
+                                    "WhatsApp webhook server enabled at %s", webhook_url
+                                )
+                                host = (
+                                    str(config.tools.whatsapp.webhook_host or "")
+                                    .strip()
+                                    .lower()
+                                )
+                                if host in {"127.0.0.1", "localhost", "0.0.0.0"}:
+                                    logger.warning(
+                                        "WhatsApp webhook server is bound to %s. Meta cannot reach localhost directly. Use a public HTTPS URL/tunnel that forwards to %s",
+                                        host or "localhost",
+                                        webhook_url,
+                                    )
+                            else:
+                                logger.warning(
+                                    "WhatsApp webhook requested but whatsapp channel is not initialized"
+                                )
+                        elif whatsapp_start_runtime and bridge_mode != "python":
+                            logger.info(
+                                "WhatsApp webhook server not started (webhook_enabled=%s bridge_url=%s)",
+                                bool(config.tools.whatsapp.webhook_enabled),
+                                str(whatsapp_cfg.get("bridge_url", "")),
+                            )
+                        elif whatsapp_enabled and not whatsapp_auto_start:
+                            logger.info(
+                                "WhatsApp is configured but auto_start=false; skipping WhatsApp startup"
+                            )
 
-                    logger.info(
-                        "Annolid Bot background services started (%s)",
-                        ", ".join(self._channel_manager.enabled_channels) or "none",
-                    )
-                except Exception as exc:
-                    logger.exception("Failed to start background services: %s", exc)
+                        self._channel_start_task = asyncio.create_task(
+                            self._channel_manager.start_all()
+                        )
 
-            # Schedule the start coroutine
-            loop.create_task(_async_start())
+                        logger.info(
+                            "Annolid Bot background services started (%s)",
+                            ", ".join(self._channel_manager.enabled_channels) or "none",
+                        )
+                    except Exception as exc:
+                        logger.exception("Failed to start background services: %s", exc)
 
-            # Run the loop forever until stopped
-            try:
-                loop.run_forever()
-            finally:
-                loop.close()
-                self._background_loop = None
+                # Schedule the start coroutine
+                loop.create_task(_async_start())
 
-        self._background_thread = threading.Thread(
-            target=_run_background_loop, name="AnnolidBotBackground", daemon=True
-        )
-        self._background_thread.start()
+                # Run the loop forever until stopped
+                try:
+                    loop.run_forever()
+                finally:
+                    loop.close()
+                    self._background_loop = None
+                    self._background_thread = None
+
+            self._background_thread = threading.Thread(
+                target=_run_background_loop, name="AnnolidBotBackground", daemon=True
+            )
+            self._background_thread.start()
 
     def cleanup(self) -> None:
         """Stop background services and the event loop."""

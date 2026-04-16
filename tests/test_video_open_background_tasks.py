@@ -102,10 +102,12 @@ def test_video_open_background_tasks_skip_when_video_changes(monkeypatch) -> Non
     assert host.calls == []
 
 
-def test_resolve_video_filename_prefers_video_dir(monkeypatch) -> None:
+def test_resolve_video_filename_prefers_video_dir(monkeypatch, tmp_path: Path) -> None:
     host = _VideoOpenHost()
-    host.video_file = "/data/session/eVLS47.mp4"
-    host.filename = "/data/session/eVLS47/eVLS47_000000001.png"
+    session_dir = tmp_path / "session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    host.video_file = str(session_dir / "eVLS47.mp4")
+    host.filename = str((session_dir / "eVLS47" / "eVLS47_000000001.png"))
 
     captured = {}
 
@@ -122,14 +124,16 @@ def test_resolve_video_filename_prefers_video_dir(monkeypatch) -> None:
     result = host._resolve_video_filename(from_video_list=False, video_path=None)
 
     assert result == ""
-    assert captured["start_dir"] == "/data/session"
+    assert captured["start_dir"] == str(session_dir)
 
 
-def test_resolve_video_filename_uses_last_open_dir(monkeypatch) -> None:
+def test_resolve_video_filename_uses_last_open_dir(monkeypatch, tmp_path: Path) -> None:
     host = _VideoOpenHost()
     host.video_file = ""
     host.filename = "/tmp/frames/session_000000001.png"
-    host._last_video_open_dir = "/mnt/videos"
+    videos_dir = tmp_path / "videos"
+    videos_dir.mkdir(parents=True, exist_ok=True)
+    host._last_video_open_dir = str(videos_dir)
 
     captured = {}
 
@@ -145,7 +149,7 @@ def test_resolve_video_filename_uses_last_open_dir(monkeypatch) -> None:
 
     host._resolve_video_filename(from_video_list=False, video_path=None)
 
-    assert captured["start_dir"] == "/mnt/videos"
+    assert captured["start_dir"] == str(videos_dir)
 
 
 def test_resolve_video_filename_remembers_dir_for_video_list() -> None:
@@ -156,3 +160,19 @@ def test_resolve_video_filename_remembers_dir_for_video_list() -> None:
 
     assert resolved == selected
     assert host._last_video_open_dir == "/Users/demo/videos"
+
+
+def test_preferred_video_open_dir_avoids_heavy_frame_directory(tmp_path: Path) -> None:
+    host = _VideoOpenHost()
+    host.video_file = ""
+    host.filename = ""
+
+    heavy_dir = tmp_path / "session_frames"
+    heavy_dir.mkdir(parents=True, exist_ok=True)
+    for idx in range(140):
+        (heavy_dir / f"session_{idx:09d}.png").write_bytes(b"")
+
+    host._last_video_open_dir = str(heavy_dir)
+    preferred = host._preferred_video_open_dir()
+
+    assert preferred == heavy_dir.parent

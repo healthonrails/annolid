@@ -543,7 +543,9 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         try:
             manager = self.ensure_ai_chat_manager()
             manager.initialize_annolid_bot(start_visible=False)
-            self.statusBar().showMessage(self.tr("Annolid Bot ready."), 3000)
+            self.statusBar().showMessage(
+                self.tr("Annolid Bot initializing in background."), 3000
+            )
         except Exception as exc:
             logger.warning("Failed to auto-start Annolid Bot: %s", exc)
 

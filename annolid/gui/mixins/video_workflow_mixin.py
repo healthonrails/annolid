@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import time
 from typing import Callable
+import os
 
 from qtpy import QtCore, QtWidgets
 
@@ -423,25 +424,98 @@ class VideoWorkflowMixin:
         """
         current_video = str(getattr(self, "video_file", "") or "").strip()
         if current_video:
-            return Path(current_video).expanduser().parent
+            return self._sanitize_video_dialog_dir(
+                Path(current_video).expanduser().parent
+            )
 
         remembered = str(getattr(self, "_last_video_open_dir", "") or "").strip()
         if remembered:
-            return Path(remembered).expanduser()
+            return self._sanitize_video_dialog_dir(Path(remembered).expanduser())
 
         results_dir = getattr(self, "video_results_folder", None)
         if isinstance(results_dir, Path):
-            return results_dir.parent
+            return self._sanitize_video_dialog_dir(results_dir.parent)
 
         current_filename = str(getattr(self, "filename", "") or "").strip()
         if current_filename:
             path = Path(current_filename).expanduser()
             image_like_suffixes = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
             if path.suffix.lower() in image_like_suffixes and path.parent.parent:
-                return path.parent.parent
-            return path.parent
+                return self._sanitize_video_dialog_dir(path.parent.parent)
+            return self._sanitize_video_dialog_dir(path.parent)
 
-        return Path(".")
+        return self._sanitize_video_dialog_dir(Path("."))
+
+    def _sanitize_video_dialog_dir(self, candidate: Path) -> Path:
+        """Return a responsive directory for QFileDialog initialization.
+
+        Native file dialogs can stall for seconds when opening very large
+        frame-export/result folders. For such directories, use the parent.
+        """
+        path = Path(candidate).expanduser()
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+
+        if not resolved.exists() or not resolved.is_dir():
+            return Path.home()
+
+        if self._looks_like_heavy_frame_directory(resolved):
+            parent = resolved.parent
+            if parent.exists() and parent.is_dir():
+                logger.info(
+                    "Using parent directory for video picker to avoid heavy frame folder startup: %s -> %s",
+                    resolved,
+                    parent,
+                )
+                return parent
+        return resolved
+
+    @staticmethod
+    def _looks_like_heavy_frame_directory(directory: Path) -> bool:
+        """Heuristic: detect large frame/result folders that slow file dialogs."""
+        image_suffixes = {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".bmp",
+            ".tif",
+            ".tiff",
+            ".webp",
+        }
+        max_probe = 256
+        min_total_for_heavy = 120
+        min_images_for_heavy = 80
+        image_count = 0
+        entry_count = 0
+        has_store_marker = False
+
+        try:
+            with os.scandir(directory) as it:
+                for entry in it:
+                    entry_count += 1
+                    if entry.is_file():
+                        name_lower = entry.name.lower()
+                        suffix = Path(name_lower).suffix
+                        if suffix in image_suffixes:
+                            image_count += 1
+                        if name_lower.endswith("_annotations.ndjson") or (
+                            name_lower.endswith(".json")
+                            and "_" in name_lower
+                            and name_lower.rsplit("_", 1)[-1]
+                            .replace(".json", "")
+                            .isdigit()
+                        ):
+                            has_store_marker = True
+                    if entry_count >= max_probe:
+                        break
+        except OSError:
+            return False
+
+        if entry_count < min_total_for_heavy:
+            return bool(has_store_marker and image_count >= 20)
+        return bool(image_count >= min_images_for_heavy or has_store_marker)
 
     def _remember_last_video_open_dir(self, video_filename) -> None:
         candidate = str(video_filename or "").strip()
