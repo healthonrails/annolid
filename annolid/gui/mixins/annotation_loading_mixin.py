@@ -1707,7 +1707,11 @@ class AnnotationLoadingMixin:
             )
             cached_value = cache.get(cache_key)
             if isinstance(cached_value, bool):
-                return cached_value
+                # Never trust cached negatives across prediction runs; records are
+                # appended over time and stale False would hide newly predicted
+                # frame annotations (for example when bot tracking finishes).
+                if cached_value is True:
+                    return True
             has_frame = bool(store.get_frame_fast(frame_number))
             cache[cache_key] = has_frame
             return has_frame
@@ -2094,6 +2098,7 @@ class AnnotationLoadingMixin:
 
         frame_path = Path(filename) if filename else None
         persistent_zone_shapes = self._persistent_zone_shapes_for_frame(frame_path)
+        preloaded_tracking_shapes: list[Shape] | None = None
 
         playback_tracking_fastpath = (
             bool(getattr(self, "isPlaying", False))
@@ -2110,21 +2115,23 @@ class AnnotationLoadingMixin:
             tracking_shapes = self._tracking_shapes_for_frame(
                 int(frame_number), decode_segmentation=decode_segmentation
             )
-            fallback_shapes = list(tracking_shapes)
-            if persistent_zone_shapes:
-                fallback_shapes = self._merge_persistent_zones_into_shapes(
-                    fallback_shapes,
-                    frame_path,
-                    persistent_zone_shapes=persistent_zone_shapes,
-                )
-            self.loadShapes(fallback_shapes)
-            if self.caption_widget is not None:
-                applied = self._apply_timeline_caption_if_available(
-                    frame_number, only_if_empty=False
-                )
-                if not applied:
-                    self.caption_widget.set_caption("")
-            return
+            preloaded_tracking_shapes = list(tracking_shapes)
+            if preloaded_tracking_shapes:
+                fallback_shapes = list(preloaded_tracking_shapes)
+                if persistent_zone_shapes:
+                    fallback_shapes = self._merge_persistent_zones_into_shapes(
+                        fallback_shapes,
+                        frame_path,
+                        persistent_zone_shapes=persistent_zone_shapes,
+                    )
+                self.loadShapes(fallback_shapes)
+                if self.caption_widget is not None:
+                    applied = self._apply_timeline_caption_if_available(
+                        frame_number, only_if_empty=False
+                    )
+                    if not applied:
+                        self.caption_widget.set_caption("")
+                return
 
         label_candidates = self._iter_frame_label_candidates(frame_number, frame_path)
 
@@ -2206,8 +2213,12 @@ class AnnotationLoadingMixin:
             self._enqueue_neighbor_label_prefetch(frame_number, frame_path)
             return
 
-        tracking_shapes: list[Shape] = []
-        if self._df is not None and (frame_path is None or not frame_path.exists()):
+        tracking_shapes: list[Shape] = (
+            list(preloaded_tracking_shapes)
+            if preloaded_tracking_shapes is not None
+            else []
+        )
+        if self._df is not None and not tracking_shapes:
             decode_segmentation = not bool(getattr(self, "isPlaying", False))
             tracking_shapes = self._tracking_shapes_for_frame(
                 int(frame_number), decode_segmentation=decode_segmentation

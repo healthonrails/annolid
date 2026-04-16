@@ -1148,6 +1148,101 @@ def test_gui_label_behavior_segments_does_not_fallback_after_json_semantic_error
     assert slot_calls == [("bot_label_behavior_segments_json", 1)]
 
 
+def test_gui_label_behavior_segments_json_payload_includes_context_fields(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    video_file = tmp_path / "mouse.mp4"
+    video_file.write_bytes(b"fake")
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    class _Widget:
+        host_window_widget = None
+
+        def get_bot_action_result(self, action_name: str):
+            assert action_name == "label_behavior_segments"
+            return {"ok": True, "mode": "uniform", "labeled_segments": 1}
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+    captured_kwargs: dict[str, object] = {}
+    monkeypatch.setattr(
+        backend,
+        "label_chat_behavior_segments_tool",
+        lambda **kwargs: (captured_kwargs.update(kwargs) or {"ok": True}),
+    )
+
+    task = StreamingChatTask("hi", widget=_Widget())
+
+    payload = task._tool_gui_label_behavior_segments(
+        path=str(video_file),
+        behavior_labels=["aggression_bout"],
+        segment_mode="uniform",
+        segment_frames=30,
+        video_description="Two mice in open field.",
+        instance_count=2,
+        experiment_context="Resident intruder assay.",
+        behavior_definitions="Aggression bout includes slap in face and run away.",
+        focus_points="Count bouts and initiator.",
+    )
+    assert payload["ok"] is True
+    assert captured_kwargs["video_description"] == "Two mice in open field."
+    assert captured_kwargs["instance_count"] == 2
+    assert captured_kwargs["experiment_context"] == "Resident intruder assay."
+    assert "slap in face" in str(captured_kwargs["behavior_definitions"])
+    assert "Count bouts" in str(captured_kwargs["focus_points"])
+
+
+def test_gui_process_video_behaviors_forwards_to_service(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("hi", widget=None)
+    captured: dict[str, object] = {}
+
+    def _fake_process_chat_video_behaviors_tool(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "kind": "process_video_behaviors"}
+
+    monkeypatch.setattr(
+        backend,
+        "process_chat_video_behaviors_tool",
+        _fake_process_chat_video_behaviors_tool,
+    )
+
+    payload = task._tool_gui_process_video_behaviors(
+        path="/tmp/mouse.mp4",
+        text_prompt="mouse",
+        model_name="Cutie",
+        run_tracking=True,
+        run_behavior_labeling=True,
+        behavior_labels=["run_away"],
+        video_description="Two mice in open field.",
+        instance_count=2,
+        experiment_context="Resident-intruder assay.",
+        behavior_definitions="Aggression bout: slap in face, run away, fight initiation.",
+        focus_points="Count bouts and identify initiator.",
+    )
+
+    assert payload["ok"] is True
+    assert payload["kind"] == "process_video_behaviors"
+    assert captured["path"] == "/tmp/mouse.mp4"
+    assert captured["text_prompt"] == "mouse"
+    assert captured["model_name"] == "Cutie"
+    assert captured["run_tracking"] is True
+    assert captured["run_behavior_labeling"] is True
+    assert captured["video_description"] == "Two mice in open field."
+    assert captured["instance_count"] == 2
+    assert captured["experiment_context"] == "Resident-intruder assay."
+    assert "Aggression bout" in str(captured["behavior_definitions"])
+    assert "identify initiator" in str(captured["focus_points"])
+
+
 def test_check_stream_source_snapshot_opens_image_on_canvas(monkeypatch) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
 
@@ -3179,6 +3274,61 @@ def test_parse_direct_gui_command_variants() -> None:
     ]
     assert parsed_label_colon["args"]["segment_seconds"] == 1.0
 
+    parsed_label_with_context = task._parse_direct_gui_command(
+        "label behavior in mouse.mp4 with labels aggression_bout every 1s "
+        "video description: Two mice in resident-intruder arena; "
+        "instances: 2; experiment context: resident intruder assay; "
+        "behavior definitions: aggression bout includes slap in face and run away; "
+        "focus points: count bouts and identify initiator"
+    )
+    assert parsed_label_with_context["name"] == "label_behavior_segments"
+    assert parsed_label_with_context["args"]["video_description"].startswith("Two mice")
+    assert parsed_label_with_context["args"]["instance_count"] == 2
+    assert (
+        "resident intruder"
+        in parsed_label_with_context["args"]["experiment_context"].lower()
+    )
+    assert "slap in face" in parsed_label_with_context["args"]["behavior_definitions"]
+    assert "identify initiator" in parsed_label_with_context["args"]["focus_points"]
+
+    parsed_process = task._parse_direct_gui_command(
+        "process video behaviors in mouse.mp4 behaviors: walking, rearing "
+        "video description: two mice open field, instances: 2"
+    )
+    assert parsed_process["name"] == "process_video_behaviors"
+    assert parsed_process["args"]["path"] == "mouse.mp4"
+    assert parsed_process["args"]["run_tracking"] is True
+    assert parsed_process["args"]["run_behavior_labeling"] is True
+    assert parsed_process["args"]["behavior_labels"] == ["walking", "rearing"]
+    assert parsed_process["args"]["instance_count"] == 2
+
+    parsed_label_prose = task._parse_direct_gui_command(
+        "label behavior in mouse.mp4 with labels aggression_bout every 1s "
+        "aggression bout counts of slap in the face, run away, and initiation of bigger fights; "
+        "count bouts and identify initiator"
+    )
+    assert parsed_label_prose["name"] == "label_behavior_segments"
+    assert (
+        "aggression bout counts of slap in the face"
+        in parsed_label_prose["args"]["behavior_definitions"].lower()
+    )
+    assert (
+        "count bouts and identify initiator"
+        in parsed_label_prose["args"]["focus_points"].lower()
+    )
+
+    parsed_process_prose = task._parse_direct_gui_command(
+        "process video behaviors in mouse.mp4 with labels aggression_bout "
+        "aggression bout includes slap in the face and run away; "
+        "track bouts and identify responder"
+    )
+    assert parsed_process_prose["name"] == "process_video_behaviors"
+    assert (
+        "aggression bout includes slap in the face"
+        in parsed_process_prose["args"]["behavior_definitions"].lower()
+    )
+    assert "identify responder" in parsed_process_prose["args"]["focus_points"].lower()
+
     parsed_behavior_list = task._parse_direct_gui_command("list behaviors")
     assert parsed_behavior_list["name"] == "behavior_catalog"
     assert parsed_behavior_list["args"]["action"] == "list"
@@ -3778,6 +3928,13 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         "queued": True,
         "path": str(pdf_file),
     }
+    task._tool_gui_process_video_behaviors = (  # type: ignore[method-assign]
+        lambda **kwargs: {
+            "ok": True,
+            "basename": Path(str(kwargs.get("path") or "")).name,
+            "path": str(kwargs.get("path") or ""),
+        }
+    )
     task._tool_gui_pdf_summarize = lambda **kwargs: {  # type: ignore[method-assign]
         "ok": True,
         "summary": "Summary of the open PDF (paper.pdf): key points",
@@ -3985,6 +4142,14 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
 
     out_track = asyncio.run(task._execute_direct_gui_command("track to frame 60"))
     assert "Started tracking to frame 60." == out_track
+
+    out_process = asyncio.run(
+        task._execute_direct_gui_command(
+            "process video behaviors in /tmp/mouse.mp4 "
+            "video description: two mice, instances: 2"
+        )
+    )
+    assert "Processed video behaviors for mouse.mp4." == out_process
 
     task._tool_sam3_agent_video_track = lambda **kwargs: {  # type: ignore[method-assign]
         "ok": True,

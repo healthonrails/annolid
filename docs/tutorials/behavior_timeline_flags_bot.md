@@ -95,6 +95,85 @@ Prompting behavior used by Annolid Bot labeling:
 - It must classify each segment to exactly one label from your defined behavior list.
 - Output is constrained to strict JSON (`label`, `confidence`, `description`) before Annolid writes timeline/log outputs.
 
+## Prompt Cookbook (Copy/Paste)
+
+Use these prompts in **Annolid Bot**.
+
+### 1. Basic: use behavior names already defined in schema/flags/timeline
+
+```text
+Label behavior in /path/to/video.mp4 from defined list every 1s
+```
+
+### 2. Basic: explicit label list
+
+```text
+Label behavior in /path/to/video.mp4 with labels grooming, rearing, walking every 1s
+```
+
+### 3. Advanced: explicit structured context fields
+
+Use this when you want to provide experiment metadata and clear behavior definitions.
+
+```text
+Label behavior in /path/to/video.mp4 with labels aggression_bout every 1s
+video description: Two mice in resident-intruder arena;
+instances: 2;
+experiment context: Resident intruder social interaction trial;
+behavior definitions: Aggression bout includes slap in the face, run away, and initiation of bigger fights;
+focus points: Count bouts, identify initiator/responder, and note transition points.
+```
+
+### 4. Advanced: full workflow (tracking + behavior labeling together)
+
+This runs end-to-end processing from one prompt.
+
+```text
+Process video behaviors in /path/to/video.mp4 with labels aggression_bout
+video description: Two mice open field;
+instances: 2;
+experiment context: Resident intruder assay;
+behavior definitions: Aggression bout includes slap in the face, run away, and fight initiation;
+focus points: Count bouts and identify initiator and responder.
+```
+
+### 5. Free-form prose (no `definitions:` key required)
+
+Annolid Bot can infer definitions and focus from plain language:
+
+```text
+Label behavior in /path/to/video.mp4 with labels aggression_bout every 1s
+Aggression bout counts of slap in the face, run away, and initiation of bigger fights.
+Count bouts and identify initiator.
+```
+
+### 6. Uniform windows instead of timeline-derived windows
+
+```text
+Label behavior in /path/to/video.mp4 with labels walking, rearing every 1s
+```
+
+Tip: when you include `every 1s`, Annolid uses fixed-duration windows (`uniform` mode) with 1-second segments.
+
+## Choosing a Prompt Style
+
+- Use **from defined list** when your team already standardized behavior names.
+- Use **explicit labels** for quick experiments on a subset of behaviors.
+- Add **structured context fields** for higher consistency across long videos or complex social assays.
+- Use **free-form prose** if that is faster; Annolid Bot will still try to infer definitions/focus.
+- Prefer short, concrete definitions over broad descriptions.
+
+## Example: Aggression-Bout Study Template
+
+```text
+Process video behaviors in /path/to/video.mp4 with labels aggression_bout
+video description: Two adult mice in resident-intruder arena;
+instances: 2;
+experiment context: 10-minute resident-intruder assay, treatment group A;
+behavior definitions: Aggression bout includes slap in the face, run away, and initiation of bigger fights;
+focus points: Count aggression bouts, identify initiator/responder, and mark uncertain cases due to occlusion.
+```
+
 ## Caption Widget: Describe Behavior Timeline (Background)
 
 You can also run per-step behavior description directly from the caption panel:
@@ -111,6 +190,11 @@ Outputs written next to the video:
 - `<video_stem>_timestamps.csv`
 - `<video_stem>_behavior_segment_labels.json`
 - `<video_filename>.behavior_timeline.json`
+
+For bot labeling and process workflow outputs, Annolid also writes:
+
+- `<video_stem>_timestamps.csv`
+- `<video_stem>_behavior_segment_labels.json`
 
 ## Recommended Operating Loop
 

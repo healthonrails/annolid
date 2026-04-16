@@ -5,6 +5,7 @@ from pathlib import Path
 from annolid.services.chat_video import (
     label_chat_behavior_segments_tool,
     open_chat_video_tool,
+    process_chat_video_behaviors_tool,
     resolve_chat_video_path_for_gui_tool,
     segment_track_chat_video_tool,
 )
@@ -33,6 +34,11 @@ def test_chat_video_wrappers(monkeypatch) -> None:
         "gui_label_behavior_segments_tool",
         lambda **kwargs: {"ok": True, "kind": "label_behavior", **kwargs},
     )
+    monkeypatch.setattr(
+        video_mod,
+        "gui_process_video_behaviors_tool",
+        lambda **kwargs: {"ok": True, "kind": "process_video_behaviors", **kwargs},
+    )
 
     assert open_chat_video_tool("clip.mp4") == {
         "ok": True,
@@ -49,4 +55,13 @@ def test_chat_video_wrappers(monkeypatch) -> None:
             "kind"
         ]
         == "label_behavior"
+    )
+    assert (
+        process_chat_video_behaviors_tool(
+            path="clip.mp4",
+            text_prompt="mouse",
+            run_tracking=True,
+            run_behavior_labeling=True,
+        )["kind"]
+        == "process_video_behaviors"
     )

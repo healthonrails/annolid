@@ -58,6 +58,7 @@ async def execute_direct_gui_command(
     track_next_frames: Callable[[int], Any],
     segment_track_video: Callable[..., Any],
     label_behavior_segments: Callable[..., Any],
+    process_video_behaviors: Callable[..., Any],
     sam3_agent_video_track: Callable[..., Any],
     behavior_catalog: Callable[..., Any],
     start_realtime_stream: Callable[..., Any],
@@ -254,6 +255,15 @@ async def execute_direct_gui_command(
             llm_profile=str(args.get("llm_profile") or ""),
             llm_provider=str(args.get("llm_provider") or ""),
             llm_model=str(args.get("llm_model") or ""),
+            video_description=str(args.get("video_description") or ""),
+            instance_count=(
+                int(args.get("instance_count"))
+                if args.get("instance_count") not in (None, "")
+                else None
+            ),
+            experiment_context=str(args.get("experiment_context") or ""),
+            behavior_definitions=str(args.get("behavior_definitions") or ""),
+            focus_points=str(args.get("focus_points") or ""),
         )
         if payload.get("ok"):
             summary = (
@@ -268,6 +278,53 @@ async def execute_direct_gui_command(
                 summary += f" Segment log saved to {log_path}."
             return summary
         return str(payload.get("error") or "Failed to label behavior segments.")
+
+    if name == "process_video_behaviors":
+        payload = await _run(
+            process_video_behaviors,
+            path=str(args.get("path") or ""),
+            text_prompt=str(args.get("text_prompt") or "animal"),
+            mode=str(args.get("mode") or "track"),
+            use_countgd=bool(args.get("use_countgd", False)),
+            model_name=str(args.get("model_name") or ""),
+            to_frame=(
+                int(args.get("to_frame"))
+                if args.get("to_frame") not in (None, "")
+                else None
+            ),
+            behavior_labels=args.get("behavior_labels"),
+            use_defined_behavior_list=bool(args.get("use_defined_behavior_list", True)),
+            segment_mode=str(args.get("segment_mode") or "timeline"),
+            segment_frames=int(args.get("segment_frames") or 60),
+            segment_seconds=(
+                float(args.get("segment_seconds"))
+                if args.get("segment_seconds") not in (None, "")
+                else None
+            ),
+            sample_frames_per_segment=int(args.get("sample_frames_per_segment") or 3),
+            max_segments=int(args.get("max_segments") or 120),
+            subject=str(args.get("subject") or "Agent"),
+            overwrite_existing=bool(args.get("overwrite_existing", False)),
+            llm_profile=str(args.get("llm_profile") or ""),
+            llm_provider=str(args.get("llm_provider") or ""),
+            llm_model=str(args.get("llm_model") or ""),
+            video_description=str(args.get("video_description") or ""),
+            instance_count=(
+                int(args.get("instance_count"))
+                if args.get("instance_count") not in (None, "")
+                else None
+            ),
+            experiment_context=str(args.get("experiment_context") or ""),
+            behavior_definitions=str(args.get("behavior_definitions") or ""),
+            focus_points=str(args.get("focus_points") or ""),
+            run_tracking=bool(args.get("run_tracking", True)),
+            run_behavior_labeling=bool(args.get("run_behavior_labeling", True)),
+        )
+        if payload.get("ok"):
+            path = str(payload.get("basename") or payload.get("path") or "").strip()
+            label = Path(path).name if path else "selected video"
+            return f"Processed video behaviors for {label}."
+        return str(payload.get("error") or "Failed to process video behaviors.")
 
     if name == "behavior_catalog":
         payload = await _run(

@@ -142,10 +142,157 @@ def _mentions_defined_behavior_list(text: str) -> bool:
     return any(hint in lowered for hint in hints)
 
 
+def _extract_instance_count(text: str) -> int | None:
+    raw = str(text or "")
+    if not raw:
+        return None
+    patterns = (
+        r"\binstances?\s*(?::|=)\s*(\d+)\b",
+        r"\b(\d+)\s+(?:instances?|subjects?|animals?|mice|mice\s+instances?)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, raw, flags=re.IGNORECASE)
+        if match is None:
+            continue
+        try:
+            count = int(match.group(1))
+        except Exception:
+            continue
+        if count > 0:
+            return count
+    return None
+
+
+def _extract_context_value(text: str, keys: list[str]) -> str:
+    raw = str(text or "")
+    if not raw:
+        return ""
+    key_expr = "|".join(re.escape(k) for k in keys)
+    stop_tokens = (
+        r"video(?:\s+description)?",
+        r"instances?",
+        r"experiment(?:s|al)?(?:\s+context)?",
+        r"(?:behavior|behaviour)\s+definitions?",
+        r"definitions?",
+        r"focus(?:\s+points?)?",
+        r"segment(?:_|\s+)?mode",
+        r"segment(?:_|\s+)?seconds?",
+        r"segment(?:_|\s+)?frames?",
+        r"sample(?:_|\s+)?frames?",
+        r"max(?:_|\s+)?segments?",
+        r"subject",
+        r"overwrite(?:_|\s+)?existing",
+        r"llm(?:_|\s+)?profile",
+        r"llm(?:_|\s+)?provider",
+        r"llm(?:_|\s+)?model",
+    )
+    stop_expr = "|".join(stop_tokens)
+    pattern = (
+        rf"(?:^|[\s,;])(?:{key_expr})\s*(?::|=)\s*(?P<value>.+?)"
+        rf"(?=(?:[\s,;]+(?:{stop_expr})\s*(?::|=))|$)"
+    )
+    match = re.search(pattern, raw, flags=re.IGNORECASE | re.DOTALL)
+    if match is None:
+        return ""
+    return _strip_wrapping_quotes(
+        _strip_trailing_punctuation(str(match.group("value") or "").strip())
+    )
+
+
+def _extract_behavior_definitions_fallback(text: str) -> str:
+    raw = str(text or "")
+    if not raw:
+        return ""
+    patterns = (
+        r"\b(?:behavior|behaviour)\s+[a-z0-9 _-]{1,40}\s+(?:is|means|defined\s+as|includes?|counts?\s+of)\b[^.;\n]*",
+        r"\baggression\s+bout\b[^.;\n]*(?:defined\s+as|means|includes?|counts?\s+of)\b[^.;\n]*",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, raw, flags=re.IGNORECASE)
+        if match is None:
+            continue
+        value = _strip_wrapping_quotes(_strip_trailing_punctuation(match.group(0)))
+        if value:
+            return value
+    return ""
+
+
+def _extract_focus_points_fallback(text: str) -> str:
+    raw = str(text or "")
+    if not raw:
+        return ""
+    focus_match = re.search(
+        r"\bfocus\s+on\s+(?P<value>[^.;\n]+)",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if focus_match is not None:
+        value = _strip_wrapping_quotes(
+            _strip_trailing_punctuation(str(focus_match.group("value") or "").strip())
+        )
+        if value:
+            return value
+    action_match = re.search(
+        r"\b(?:count|track|identify|monitor)\b[^.;\n]*(?:bouts?|initiator|responder|fight|aggression|slap|run\s+away)[^.;\n]*",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if action_match is not None:
+        value = _strip_wrapping_quotes(
+            _strip_trailing_punctuation(action_match.group(0))
+        )
+        if value:
+            return value
+    return ""
+
+
+def _extract_behavior_context_args(text: str) -> Dict[str, Any]:
+    video_description = _extract_context_value(
+        text,
+        keys=["video description", "video context", "video"],
+    )
+    experiment_context = _extract_context_value(
+        text,
+        keys=["experiment context", "experiment", "experiments"],
+    )
+    behavior_definitions = _extract_context_value(
+        text,
+        keys=["behavior definitions", "behaviour definitions", "definitions"],
+    )
+    focus_points = _extract_context_value(
+        text,
+        keys=["focus points", "focus", "things to focus", "focus on"],
+    )
+    if not behavior_definitions:
+        behavior_definitions = _extract_behavior_definitions_fallback(text)
+    if not focus_points:
+        focus_points = _extract_focus_points_fallback(text)
+    payload: Dict[str, Any] = {}
+    if video_description:
+        payload["video_description"] = video_description
+    instance_count = _extract_instance_count(text)
+    if instance_count is not None:
+        payload["instance_count"] = instance_count
+    if experiment_context:
+        payload["experiment_context"] = experiment_context
+    if behavior_definitions:
+        payload["behavior_definitions"] = behavior_definitions
+    if focus_points:
+        payload["focus_points"] = focus_points
+    return payload
+
+
 def _split_behavior_labels(text: str) -> list[str]:
+    labels_text = str(text or "").strip()
+    labels_text = re.split(
+        r"\b(?:every|timeline|uniform|overwrite|replace|from\s+defined\s+list|from\s+schema|from\s+flags|video(?:\s+description)?|instances?|experiment(?:s|al)?(?:\s+context)?|(?:behavior|behaviour)\s+definitions?|definitions?|focus(?:\s+points?)?)\b",
+        labels_text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip()
     return [
         p.strip().strip("\"'`").strip(" .")
-        for p in re.split(r",|;|\band\b", str(text or ""), flags=re.IGNORECASE)
+        for p in re.split(r",|;|\band\b", labels_text, flags=re.IGNORECASE)
         if p.strip().strip("\"'`").strip(" .")
     ]
 
@@ -554,11 +701,12 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                     "segment_mode": "uniform",
                     "segment_seconds": segment_seconds,
                     "overwrite_existing": False,
+                    **_extract_behavior_context_args(text),
                 },
             }
 
     label_match = re.search(
-        r"\blabel\s+behaviors?\b.*\b(?:in|for)\b\s+(?P<path>.+)",
+        r"\blabel\s+behaviors?\b.*?\b(?:in|for)\b\s+(?P<path>.+)",
         text,
         flags=re.IGNORECASE,
     )
@@ -599,6 +747,40 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                     "segment_mode": mode,
                     "segment_seconds": segment_seconds,
                     "overwrite_existing": overwrite,
+                    **_extract_behavior_context_args(text),
+                },
+            }
+
+    process_match = re.search(
+        r"\b(?:process|analy[sz]e|run)\b.*?\bvideo\b.*?\bbehaviors?\b.*?\b(?:in|for|on)\b\s+(?P<path>.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if process_match:
+        path_text = _trim_video_path_to_extension(process_match.group("path").strip())
+        if path_text.lower().startswith("video "):
+            path_text = path_text[6:].strip()
+        if re.search(
+            r"\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b",
+            path_text,
+            flags=re.IGNORECASE,
+        ):
+            labels = _extract_behavior_labels_clause(text)
+            segment_seconds = _extract_segment_seconds(text)
+            mode = "timeline" if "timeline" in lower else "uniform"
+            return {
+                "name": "process_video_behaviors",
+                "args": {
+                    "path": path_text,
+                    "text_prompt": "animal",
+                    "behavior_labels": labels if labels else None,
+                    "use_defined_behavior_list": _mentions_defined_behavior_list(text),
+                    "segment_mode": mode,
+                    "segment_seconds": segment_seconds,
+                    "run_tracking": True,
+                    "run_behavior_labeling": True,
+                    "overwrite_existing": ("overwrite" in lower or "replace" in lower),
+                    **_extract_behavior_context_args(text),
                 },
             }
 

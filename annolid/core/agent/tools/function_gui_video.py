@@ -205,6 +205,11 @@ class GuiLabelBehaviorSegmentsTool(FunctionTool):
                 "llm_profile": {"type": "string"},
                 "llm_provider": {"type": "string"},
                 "llm_model": {"type": "string"},
+                "video_description": {"type": "string"},
+                "instance_count": {"type": "integer", "minimum": 1},
+                "experiment_context": {"type": "string"},
+                "behavior_definitions": {"type": "string"},
+                "focus_points": {"type": "string"},
             },
             "required": [],
         }
@@ -258,6 +263,64 @@ class GuiBehaviorCatalogTool(FunctionTool):
 
     async def execute(self, **kwargs: Any) -> str:
         return await _run_callback(self._behavior_catalog_callback, **kwargs)
+
+
+class GuiProcessVideoBehaviorsTool(FunctionTool):
+    def __init__(
+        self, process_video_behaviors_callback: Optional[ActionCallback] = None
+    ):
+        self._process_video_behaviors_callback = process_video_behaviors_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_process_video_behaviors"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Run an end-to-end video behavior workflow in Annolid GUI: "
+            "track/segment with a selected model and auto-label behavior segments."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "text_prompt": {"type": "string", "minLength": 1},
+                "mode": {"type": "string", "enum": ["segment", "track"]},
+                "use_countgd": {"type": "boolean"},
+                "model_name": {"type": "string"},
+                "to_frame": {"type": "integer", "minimum": 1},
+                "behavior_labels": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                },
+                "use_defined_behavior_list": {"type": "boolean"},
+                "segment_mode": {"type": "string", "enum": ["timeline", "uniform"]},
+                "segment_frames": {"type": "integer", "minimum": 1},
+                "segment_seconds": {"type": "number", "minimum": 0.0},
+                "sample_frames_per_segment": {"type": "integer", "minimum": 1},
+                "max_segments": {"type": "integer", "minimum": 1},
+                "subject": {"type": "string"},
+                "overwrite_existing": {"type": "boolean"},
+                "llm_profile": {"type": "string"},
+                "llm_provider": {"type": "string"},
+                "llm_model": {"type": "string"},
+                "video_description": {"type": "string"},
+                "instance_count": {"type": "integer", "minimum": 1},
+                "experiment_context": {"type": "string"},
+                "behavior_definitions": {"type": "string"},
+                "focus_points": {"type": "string"},
+                "run_tracking": {"type": "boolean"},
+                "run_behavior_labeling": {"type": "boolean"},
+            },
+            "required": ["path"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._process_video_behaviors_callback, **kwargs)
 
 
 class GuiAnalyzeTrackingStatsTool(FunctionTool):

@@ -3991,6 +3991,11 @@ class AIChatWidget(QtWidgets.QWidget):
         llm_profile: str,
         llm_provider: str,
         llm_model: str,
+        video_description: str = "",
+        instance_count: Optional[int] = None,
+        experiment_context: str = "",
+        behavior_definitions: str = "",
+        focus_points: str = "",
         stop_event=None,
         pred_worker=None,
     ) -> Dict[str, Any]:
@@ -4053,6 +4058,11 @@ class AIChatWidget(QtWidgets.QWidget):
                                 prompt = behavior_prompting.build_behavior_classification_prompt(
                                     behavior_labels=labels,
                                     segment_label=segment_text,
+                                    video_description=video_description,
+                                    instance_count=instance_count,
+                                    experiment_context=experiment_context,
+                                    behavior_definitions=behavior_definitions,
+                                    focus_points=focus_points,
                                 )
                                 resp = adapter.predict(
                                     ModelRequest(
@@ -4392,6 +4402,11 @@ class AIChatWidget(QtWidgets.QWidget):
                     context.get("use_defined_behavior_list", True)
                 ),
                 "labels_used": list(context.get("labels") or []),
+                "video_description": str(context.get("video_description") or ""),
+                "instance_count": context.get("instance_count"),
+                "experiment_context": str(context.get("experiment_context") or ""),
+                "behavior_definitions": str(context.get("behavior_definitions") or ""),
+                "focus_points": str(context.get("focus_points") or ""),
                 "behavior_log_json": str(behavior_log_result.get("path") or ""),
                 "behavior_log_rows": int(behavior_log_result.get("rows") or 0),
             },
@@ -4498,6 +4513,11 @@ class AIChatWidget(QtWidgets.QWidget):
                     context.get("use_defined_behavior_list", True)
                 ),
                 "labels_used": list(context.get("labels") or []),
+                "video_description": str(context.get("video_description") or ""),
+                "instance_count": context.get("instance_count"),
+                "experiment_context": str(context.get("experiment_context") or ""),
+                "behavior_definitions": str(context.get("behavior_definitions") or ""),
+                "focus_points": str(context.get("focus_points") or ""),
                 "timestamps_csv": str(timestamp_result.get("path") or ""),
                 "timestamps_rows": int(timestamp_result.get("rows") or 0),
                 "behavior_log_json": str(behavior_log_result.get("path") or ""),
@@ -5700,6 +5720,11 @@ class AIChatWidget(QtWidgets.QWidget):
         llm_profile: str = "",
         llm_provider: str = "",
         llm_model: str = "",
+        video_description: str = "",
+        instance_count: int = 0,
+        experiment_context: str = "",
+        behavior_definitions: str = "",
+        focus_points: str = "",
     ) -> None:
         host = self.host_window_widget or self.window()
         open_video = getattr(host, "openVideo", None)
@@ -5781,6 +5806,13 @@ class AIChatWidget(QtWidgets.QWidget):
             max_segments = max(1, int(max_segments))
             segment_frames = max(1, int(segment_frames))
             segment_seconds = max(0.0, float(segment_seconds or 0.0))
+            try:
+                instance_count_value = int(instance_count or 0)
+            except Exception:
+                instance_count_value = 0
+            normalized_instance_count = (
+                instance_count_value if instance_count_value > 0 else None
+            )
             if mode == "uniform" and segment_seconds > 0.0 and fps > 0.0:
                 segment_frames = max(1, int(round(segment_seconds * fps)))
             sample_frames_per_segment = max(1, int(sample_frames_per_segment))
@@ -5824,6 +5856,11 @@ class AIChatWidget(QtWidgets.QWidget):
                     "sample_frames_per_segment": int(sample_frames_per_segment),
                     "use_defined_behavior_list": bool(use_defined_behavior_list),
                     "labels_used": labels,
+                    "video_description": str(video_description or "").strip(),
+                    "instance_count": normalized_instance_count,
+                    "experiment_context": str(experiment_context or "").strip(),
+                    "behavior_definitions": str(behavior_definitions or "").strip(),
+                    "focus_points": str(focus_points or "").strip(),
                 },
             )
             self.status_label.setText(
@@ -5845,6 +5882,11 @@ class AIChatWidget(QtWidgets.QWidget):
                 "use_defined_behavior_list": bool(use_defined_behavior_list),
                 "default_subject": str(subject or "").strip() or None,
                 "timestamp_provider": self._behavior_label_timestamp_provider(host),
+                "video_description": str(video_description or "").strip(),
+                "instance_count": normalized_instance_count,
+                "experiment_context": str(experiment_context or "").strip(),
+                "behavior_definitions": str(behavior_definitions or "").strip(),
+                "focus_points": str(focus_points or "").strip(),
             }
 
             thread = QtCore.QThread(self)
@@ -5857,6 +5899,11 @@ class AIChatWidget(QtWidgets.QWidget):
                 llm_profile=str(llm_profile or ""),
                 llm_provider=str(llm_provider or ""),
                 llm_model=str(llm_model or ""),
+                video_description=str(video_description or "").strip(),
+                instance_count=normalized_instance_count,
+                experiment_context=str(experiment_context or "").strip(),
+                behavior_definitions=str(behavior_definitions or "").strip(),
+                focus_points=str(focus_points or "").strip(),
             )
             worker.moveToThread(thread)
             thread.started.connect(worker.run, QtCore.Qt.QueuedConnection)
@@ -5905,6 +5952,11 @@ class AIChatWidget(QtWidgets.QWidget):
             self.status_label.setText("Bot action failed: invalid labeling payload.")
             return
 
+        try:
+            parsed_instance_count = int(payload.get("instance_count") or 0)
+        except Exception:
+            parsed_instance_count = 0
+
         self.bot_label_behavior_segments(
             video_path=str(payload.get("video_path") or ""),
             behavior_labels_csv=str(payload.get("behavior_labels_csv") or ""),
@@ -5923,6 +5975,11 @@ class AIChatWidget(QtWidgets.QWidget):
             llm_profile=str(payload.get("llm_profile") or ""),
             llm_provider=str(payload.get("llm_provider") or ""),
             llm_model=str(payload.get("llm_model") or ""),
+            video_description=str(payload.get("video_description") or ""),
+            instance_count=parsed_instance_count,
+            experiment_context=str(payload.get("experiment_context") or ""),
+            behavior_definitions=str(payload.get("behavior_definitions") or ""),
+            focus_points=str(payload.get("focus_points") or ""),
         )
 
     @QtCore.Slot(

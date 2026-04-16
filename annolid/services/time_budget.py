@@ -6,11 +6,17 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from annolid.behavior.time_budget import (
+    BoutDefinition,
+    BoutSummaryRow,
     TimeBudgetComputationError,
     TimeBudgetRow,
+    compute_bout_summary,
     compute_time_budget,
+    extract_behavior_intervals,
+    format_bout_summary_table,
     format_time_budget_table,
     summarize_by_category,
+    write_bout_summary_csv,
     write_time_budget_csv,
 )
 from annolid.core.behavior.spec import ProjectSchema
@@ -22,12 +28,15 @@ class BehaviorTimeBudgetReport:
     warnings: Sequence[str]
     category_summary: Sequence[Tuple[str, float, int]]
     table_text: str
+    bout_summary: Sequence[BoutSummaryRow] = ()
+    bout_table_text: str = ""
 
 
 def compute_behavior_time_budget_report(
     rows: Iterable[Tuple[object, object, object, object, object]],
     *,
     schema: Optional[ProjectSchema] = None,
+    bout_definition: Optional[BoutDefinition] = None,
 ) -> BehaviorTimeBudgetReport:
     """Compute a reusable time-budget report from exported behavior rows."""
     data_rows = []
@@ -55,6 +64,8 @@ def compute_behavior_time_budget_report(
             warnings=tuple(local_warnings),
             category_summary=(),
             table_text="No timestamped events remain after filtering.",
+            bout_summary=(),
+            bout_table_text="",
         )
 
     summary, compute_warnings = compute_time_budget(data_rows)
@@ -63,11 +74,27 @@ def compute_behavior_time_budget_report(
     if schema is not None and summary:
         category_summary = summarize_by_category(summary, schema)
 
+    bout_summary: Sequence[BoutSummaryRow] = ()
+    bout_table_text = ""
+    if bout_definition is not None:
+        interval_rows, _ = extract_behavior_intervals(data_rows)
+        computed_bouts = compute_bout_summary(
+            interval_rows,
+            definition=bout_definition,
+        )
+        bout_summary = tuple(computed_bouts)
+        bout_table_text = format_bout_summary_table(
+            computed_bouts,
+            behavior_order=bout_definition.behaviors,
+        )
+
     return BehaviorTimeBudgetReport(
         summary=tuple(summary),
         warnings=tuple(warnings),
         category_summary=tuple(category_summary),
         table_text=format_time_budget_table(summary, schema=schema),
+        bout_summary=bout_summary,
+        bout_table_text=bout_table_text,
     )
 
 
@@ -76,21 +103,30 @@ def write_behavior_time_budget_report_csv(
     output_path: Path,
     *,
     schema: Optional[ProjectSchema] = None,
+    bout_definition: Optional[BoutDefinition] = None,
 ) -> Optional[Path]:
     """Write the primary CSV and optional category summary CSV."""
     output_path = Path(output_path)
     write_time_budget_csv(report.summary, output_path, schema=schema)
-    if schema is None or not report.category_summary:
-        return None
-
-    category_path = output_path.with_name(
-        output_path.stem + "_categories" + output_path.suffix
-    )
-    with category_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["Category", "TotalSeconds", "Occurrences"])
-        for name, total, occurrences in report.category_summary:
-            writer.writerow([name, f"{total:.6f}", int(occurrences)])
+    category_path: Optional[Path] = None
+    if schema is not None and report.category_summary:
+        category_path = output_path.with_name(
+            output_path.stem + "_categories" + output_path.suffix
+        )
+        with category_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["Category", "TotalSeconds", "Occurrences"])
+            for name, total, occurrences in report.category_summary:
+                writer.writerow([name, f"{total:.6f}", int(occurrences)])
+    if report.bout_summary:
+        bout_path = output_path.with_name(
+            output_path.stem + "_bouts" + output_path.suffix
+        )
+        write_bout_summary_csv(
+            report.bout_summary,
+            bout_path,
+            behavior_order=bout_definition.behaviors if bout_definition else None,
+        )
     return category_path
 
 

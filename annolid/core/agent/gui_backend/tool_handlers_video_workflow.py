@@ -137,9 +137,34 @@ def label_behavior_segments_tool(
     llm_profile: str,
     llm_provider: str,
     llm_model: str,
+    video_description: str = "",
+    instance_count: Optional[int] = None,
+    experiment_context: str = "",
+    behavior_definitions: str = "",
+    focus_points: str = "",
     resolve_video_path: Callable[[str], Optional[Path]],
     invoke_label_behavior: Callable[
-        [str, str, bool, str, int, float, int, int, str, bool, str, str, str], bool
+        [
+            str,
+            str,
+            bool,
+            str,
+            int,
+            float,
+            int,
+            int,
+            str,
+            bool,
+            str,
+            str,
+            str,
+            str,
+            Optional[int],
+            str,
+            str,
+            str,
+        ],
+        bool,
     ],
     get_action_result: Callable[[str], Dict[str, Any]],
 ) -> Dict[str, Any]:
@@ -166,6 +191,14 @@ def label_behavior_segments_tool(
     seconds = float(segment_seconds) if segment_seconds is not None else 0.0
     if seconds < 0.0:
         seconds = 0.0
+    try:
+        instance_count_value = (
+            int(instance_count) if instance_count is not None else None
+        )
+    except Exception:
+        instance_count_value = None
+    if instance_count_value is not None and instance_count_value <= 0:
+        instance_count_value = None
     sample_frames = max(1, int(sample_frames_per_segment))
     max_seg = max(1, int(max_segments))
     if mode_norm == "uniform" and resolved_path is not None:
@@ -198,6 +231,11 @@ def label_behavior_segments_tool(
         str(llm_profile or ""),
         str(llm_provider or ""),
         str(llm_model or ""),
+        str(video_description or ""),
+        instance_count_value,
+        str(experiment_context or ""),
+        str(behavior_definitions or ""),
+        str(focus_points or ""),
     )
     if not ok:
         return {"ok": False, "error": "Failed to queue behavior labeling action"}
@@ -229,6 +267,23 @@ def label_behavior_segments_tool(
                 )
             ),
             "labels_used": list(widget_result.get("labels_used") or labels),
+            "video_description": str(
+                widget_result.get("video_description") or video_description or ""
+            ),
+            "instance_count": (
+                widget_result.get("instance_count")
+                if widget_result.get("instance_count") is not None
+                else instance_count_value
+            ),
+            "experiment_context": str(
+                widget_result.get("experiment_context") or experiment_context or ""
+            ),
+            "behavior_definitions": str(
+                widget_result.get("behavior_definitions") or behavior_definitions or ""
+            ),
+            "focus_points": str(
+                widget_result.get("focus_points") or focus_points or ""
+            ),
             "timestamps_csv": str(widget_result.get("timestamps_csv") or ""),
             "timestamps_rows": int(widget_result.get("timestamps_rows") or 0),
             "behavior_log_json": str(widget_result.get("behavior_log_json") or ""),
@@ -243,6 +298,162 @@ def label_behavior_segments_tool(
         "segment_seconds": float(seconds),
         "sample_frames_per_segment": int(sample_frames),
         "use_defined_behavior_list": bool(use_defined_behavior_list),
+        "video_description": str(video_description or ""),
+        "instance_count": instance_count_value,
+        "experiment_context": str(experiment_context or ""),
+        "behavior_definitions": str(behavior_definitions or ""),
+        "focus_points": str(focus_points or ""),
+    }
+
+
+def process_video_behaviors_tool(
+    *,
+    path: str,
+    text_prompt: str,
+    mode: str,
+    use_countgd: bool,
+    model_name: str,
+    to_frame: Optional[int],
+    behavior_labels: Any,
+    use_defined_behavior_list: bool,
+    segment_mode: str,
+    segment_frames: int,
+    segment_seconds: Optional[float],
+    sample_frames_per_segment: int,
+    max_segments: int,
+    subject: str,
+    overwrite_existing: bool,
+    llm_profile: str,
+    llm_provider: str,
+    llm_model: str,
+    video_description: str = "",
+    instance_count: Optional[int] = None,
+    experiment_context: str = "",
+    behavior_definitions: str = "",
+    focus_points: str = "",
+    run_tracking: bool,
+    run_behavior_labeling: bool,
+    resolve_video_path: Callable[[str], Optional[Path]],
+    invoke_segment_track: Callable[[str, str, str, bool, str, int], bool],
+    invoke_label_behavior: Callable[
+        [
+            str,
+            str,
+            bool,
+            str,
+            int,
+            float,
+            int,
+            int,
+            str,
+            bool,
+            str,
+            str,
+            str,
+            str,
+            Optional[int],
+            str,
+            str,
+            str,
+        ],
+        bool,
+    ],
+    get_action_result: Callable[[str], Dict[str, Any]],
+) -> Dict[str, Any]:
+    resolved = resolve_video_path(path)
+    if resolved is None:
+        return {
+            "ok": False,
+            "error": "Video not found from provided path/text.",
+            "input": str(path or "").strip(),
+        }
+
+    do_tracking = bool(run_tracking)
+    do_labeling = bool(run_behavior_labeling)
+    if not do_tracking and not do_labeling:
+        return {
+            "ok": False,
+            "error": (
+                "At least one stage must be enabled "
+                "(run_tracking or run_behavior_labeling)."
+            ),
+        }
+
+    resolved_path_str = str(resolved)
+    stage_results: Dict[str, Dict[str, Any]] = {}
+    resolve_once = lambda _raw: resolved  # noqa: E731
+
+    if do_tracking:
+        tracking_payload = segment_track_video_tool(
+            path=resolved_path_str,
+            text_prompt=text_prompt,
+            mode=mode,
+            use_countgd=use_countgd,
+            model_name=model_name,
+            to_frame=to_frame,
+            resolve_video_path=resolve_once,
+            invoke_segment_track=invoke_segment_track,
+            get_action_result=get_action_result,
+        )
+        stage_results["tracking"] = dict(tracking_payload)
+        if not bool(tracking_payload.get("ok", False)):
+            return {
+                "ok": False,
+                "stage": "tracking",
+                "error": str(
+                    tracking_payload.get("error")
+                    or "Video tracking stage failed in GUI workflow."
+                ),
+                "path": resolved_path_str,
+                "basename": Path(resolved_path_str).name,
+                "stages": stage_results,
+            }
+
+    if do_labeling:
+        labeling_payload = label_behavior_segments_tool(
+            path=resolved_path_str,
+            behavior_labels=behavior_labels,
+            use_defined_behavior_list=use_defined_behavior_list,
+            segment_mode=segment_mode,
+            segment_frames=segment_frames,
+            segment_seconds=segment_seconds,
+            sample_frames_per_segment=sample_frames_per_segment,
+            max_segments=max_segments,
+            subject=subject,
+            overwrite_existing=overwrite_existing,
+            llm_profile=llm_profile,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            video_description=video_description,
+            instance_count=instance_count,
+            experiment_context=experiment_context,
+            behavior_definitions=behavior_definitions,
+            focus_points=focus_points,
+            resolve_video_path=resolve_once,
+            invoke_label_behavior=invoke_label_behavior,
+            get_action_result=get_action_result,
+        )
+        stage_results["behavior_labeling"] = dict(labeling_payload)
+        if not bool(labeling_payload.get("ok", False)):
+            return {
+                "ok": False,
+                "stage": "behavior_labeling",
+                "error": str(
+                    labeling_payload.get("error")
+                    or "Behavior labeling stage failed in GUI workflow."
+                ),
+                "path": resolved_path_str,
+                "basename": Path(resolved_path_str).name,
+                "stages": stage_results,
+            }
+
+    return {
+        "ok": True,
+        "path": resolved_path_str,
+        "basename": Path(resolved_path_str).name,
+        "tracking_executed": do_tracking,
+        "behavior_labeling_executed": do_labeling,
+        "stages": stage_results,
     }
 
 

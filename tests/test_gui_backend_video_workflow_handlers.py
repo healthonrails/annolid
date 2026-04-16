@@ -141,6 +141,54 @@ def test_label_behavior_segments_tool_uses_seconds_from_fps(monkeypatch) -> None
     assert int(captured["samples"]) == 4
 
 
+def test_label_behavior_segments_tool_forwards_behavior_context(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    payload = workflow.label_behavior_segments_tool(
+        path="mouse.mp4",
+        behavior_labels=["aggression_bout"],
+        use_defined_behavior_list=False,
+        segment_mode="uniform",
+        segment_frames=30,
+        segment_seconds=1.0,
+        sample_frames_per_segment=3,
+        max_segments=10,
+        subject="Mouse-1",
+        overwrite_existing=False,
+        llm_profile="",
+        llm_provider="",
+        llm_model="",
+        video_description="Two mice in arena.",
+        instance_count=2,
+        experiment_context="Resident intruder protocol.",
+        behavior_definitions="Aggression bout includes slap in face and run away.",
+        focus_points="Count bouts and fight initiation.",
+        resolve_video_path=lambda _path: Path("/tmp/mouse.mp4"),
+        invoke_label_behavior=lambda *_args: (
+            captured.update(
+                {
+                    "video_description": _args[13],
+                    "instance_count": _args[14],
+                    "experiment_context": _args[15],
+                    "behavior_definitions": _args[16],
+                    "focus_points": _args[17],
+                }
+            )
+            or True
+        ),
+        get_action_result=lambda _name: {},
+    )
+
+    assert payload["ok"] is True
+    assert payload["video_description"] == "Two mice in arena."
+    assert payload["instance_count"] == 2
+    assert payload["experiment_context"] == "Resident intruder protocol."
+    assert "slap in face" in payload["behavior_definitions"]
+    assert "fight initiation" in payload["focus_points"]
+    assert captured["video_description"] == "Two mice in arena."
+    assert captured["instance_count"] == 2
+
+
 def test_behavior_catalog_tool_returns_widget_result(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -179,3 +227,79 @@ def test_behavior_catalog_tool_returns_widget_result(monkeypatch) -> None:
     assert payload["behavior"]["code"] == "grooming"
     assert payload["saved"] is True
     assert captured["payload_json"]
+
+
+def test_process_video_behaviors_tool_runs_tracking_and_labeling(monkeypatch) -> None:
+    calls: dict[str, int] = {"track": 0, "label": 0}
+
+    payload = workflow.process_video_behaviors_tool(
+        path="mouse.mp4",
+        text_prompt="mouse",
+        mode="track",
+        use_countgd=False,
+        model_name="Cutie",
+        to_frame=120,
+        behavior_labels=["run_away", "fight_initiation"],
+        use_defined_behavior_list=False,
+        segment_mode="uniform",
+        segment_frames=30,
+        segment_seconds=None,
+        sample_frames_per_segment=3,
+        max_segments=10,
+        subject="Mouse-1",
+        overwrite_existing=False,
+        llm_profile="",
+        llm_provider="",
+        llm_model="",
+        run_tracking=True,
+        run_behavior_labeling=True,
+        resolve_video_path=lambda _path: Path("/tmp/mouse.mp4"),
+        invoke_segment_track=lambda *_args: (
+            calls.__setitem__("track", calls["track"] + 1) or True
+        ),
+        invoke_label_behavior=lambda *_args: (
+            calls.__setitem__("label", calls["label"] + 1) or True
+        ),
+        get_action_result=lambda _name: {},
+    )
+
+    assert payload["ok"] is True
+    assert payload["tracking_executed"] is True
+    assert payload["behavior_labeling_executed"] is True
+    assert calls["track"] == 1
+    assert calls["label"] == 1
+    assert payload["stages"]["tracking"]["ok"] is True
+    assert payload["stages"]["behavior_labeling"]["ok"] is True
+
+
+def test_process_video_behaviors_tool_returns_stage_failure(monkeypatch) -> None:
+    payload = workflow.process_video_behaviors_tool(
+        path="mouse.mp4",
+        text_prompt="mouse",
+        mode="track",
+        use_countgd=False,
+        model_name="Cutie",
+        to_frame=120,
+        behavior_labels=["run_away"],
+        use_defined_behavior_list=True,
+        segment_mode="timeline",
+        segment_frames=60,
+        segment_seconds=None,
+        sample_frames_per_segment=3,
+        max_segments=10,
+        subject="Agent",
+        overwrite_existing=False,
+        llm_profile="",
+        llm_provider="",
+        llm_model="",
+        run_tracking=True,
+        run_behavior_labeling=True,
+        resolve_video_path=lambda _path: Path("/tmp/mouse.mp4"),
+        invoke_segment_track=lambda *_args: False,
+        invoke_label_behavior=lambda *_args: True,
+        get_action_result=lambda _name: {},
+    )
+
+    assert payload["ok"] is False
+    assert payload["stage"] == "tracking"
+    assert payload["stages"]["tracking"]["ok"] is False

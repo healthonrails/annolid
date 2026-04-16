@@ -27,11 +27,60 @@ class FramePlaybackMixin:
                 self._set_play_button_state(True)
 
     def _on_frame_loaded(self, frame_idx: int, qimage: QtGui.QImage) -> None:
-        """Render a frame only if it matches the latest requested index."""
+        """Render frame updates with a bounded-lag tolerance during playback.
+
+        In active playback/tracking runs, decoder throughput can lag behind
+        timer-driven frame requests. Strict matching can drop every emitted frame
+        and visually freeze the canvas. We keep strict matching when paused/seeking,
+        allow bounded lag during normal playback, and allow any non-future frame
+        while a prediction session is active.
+        """
         current = getattr(self, "frame_number", None)
-        if current is not None and frame_idx != current:
-            logger.debug("Dropping stale frame %s (current=%s)", frame_idx, current)
-            return
+        if current is not None:
+            try:
+                current_idx = int(current)
+                loaded_idx = int(frame_idx)
+            except Exception:
+                current_idx = current
+                loaded_idx = frame_idx
+            if loaded_idx != current_idx:
+                is_playing = bool(getattr(self, "isPlaying", False))
+                if not is_playing:
+                    logger.debug(
+                        "Dropping stale frame %s while paused (current=%s)",
+                        loaded_idx,
+                        current_idx,
+                    )
+                    return
+                prediction_active = bool(
+                    getattr(self, "_prediction_session_is_active", lambda: False)()
+                )
+                if prediction_active:
+                    # Tracking can heavily load decode/render paths; keep playback
+                    # visually advancing by accepting any non-future decoded frame.
+                    if int(loaded_idx) > int(current_idx):
+                        logger.debug(
+                            "Dropping future frame %s during prediction playback (current=%s)",
+                            loaded_idx,
+                            current_idx,
+                        )
+                        return
+                    frame_path = self._frame_image_path(frame_idx)
+                    self.image_to_canvas(qimage, frame_path, frame_idx)
+                    return
+                step = max(1, int(getattr(self, "step_size", 1) or 1))
+                max_lag = max(2, step * 2)
+                lag = int(current_idx) - int(loaded_idx)
+                # Reject old/future frames outside a small playback lag window.
+                if lag < 0 or lag > max_lag:
+                    logger.debug(
+                        "Dropping out-of-window frame %s (current=%s lag=%s max_lag=%s)",
+                        loaded_idx,
+                        current_idx,
+                        lag,
+                        max_lag,
+                    )
+                    return
         frame_path = self._frame_image_path(frame_idx)
         self.image_to_canvas(qimage, frame_path, frame_idx)
 

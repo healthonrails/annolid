@@ -188,6 +188,11 @@ def build_behavior_classification_prompt(
     segment_label: Optional[str] = None,
     multi_view: bool = False,
     include_roi_notes: bool = False,
+    video_description: Optional[str] = None,
+    instance_count: Optional[int] = None,
+    experiment_context: Optional[str] = None,
+    behavior_definitions: Optional[str] = None,
+    focus_points: Optional[str] = None,
 ) -> str:
     """
     Prompt for behavior classification with an observation-first narrative.
@@ -236,7 +241,37 @@ def build_behavior_classification_prompt(
         rendered = template.format_map(context)
     except KeyError:
         rendered = template
-    return "\n".join(line for line in rendered.splitlines() if line.strip())
+    prompt_lines = [line for line in rendered.splitlines() if line.strip()]
+
+    extra_lines: List[str] = []
+    if str(video_description or "").strip():
+        extra_lines.append(f"Video context: {str(video_description).strip()}")
+    if instance_count is not None:
+        try:
+            count = int(instance_count)
+        except Exception:
+            count = 0
+        if count > 0:
+            extra_lines.append(
+                f"Track {count} instance(s) and keep identities distinct when possible."
+            )
+    if str(experiment_context or "").strip():
+        extra_lines.append(f"Experiment context: {str(experiment_context).strip()}")
+    if str(behavior_definitions or "").strip():
+        extra_lines.append("Behavior definitions to apply:")
+        extra_lines.append(str(behavior_definitions).strip())
+    if str(focus_points or "").strip():
+        extra_lines.append(f"Focus specifically on: {str(focus_points).strip()}")
+    if extra_lines:
+        extra_lines.extend(
+            [
+                "When possible, identify initiator/responder and behavior transitions.",
+                "If uncertain due to occlusion or blur, state that uncertainty.",
+            ]
+        )
+        prompt_lines.extend(extra_lines)
+
+    return "\n".join(prompt_lines)
 
 
 def qwen_messages(images: Sequence[str], text: str) -> List[dict]:

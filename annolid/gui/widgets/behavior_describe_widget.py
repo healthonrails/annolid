@@ -69,6 +69,11 @@ class BehaviorDescribeRequest:
     mode: str  # "summary" | "timeline"
     descriptor: str
     prompt: str
+    video_description: str
+    instance_count: Optional[int]
+    experiment_context: str
+    behavior_definitions: str
+    focus_points: str
     start_time: QtCore.QTime
     end_time: QtCore.QTime
     start_frame: Optional[int]
@@ -86,6 +91,11 @@ class BehaviorDescribeWidget(QtWidgets.QWidget):
         self._caption = caption_widget
         self._behavior_buffer: str = ""
         self._behavior_segment_notes: str = ""
+        self._behavior_video_description: str = ""
+        self._behavior_instance_count: Optional[int] = None
+        self._behavior_experiment_context: str = ""
+        self._behavior_definitions: str = ""
+        self._behavior_focus_points: str = ""
         self._segment_snapshot_paths: List[str] = []
         self._segment_snapshot_dirs: List[str] = []
         self._segment_snapshots: Dict[int, List[str]] = {}
@@ -1075,6 +1085,11 @@ class BehaviorDescribeWidget(QtWidgets.QWidget):
             start_time=start_time,
             end_time=end_time,
             notes=self._behavior_segment_notes,
+            video_description=self._behavior_video_description,
+            instance_count=self._behavior_instance_count,
+            experiment_context=self._behavior_experiment_context,
+            behavior_definitions=self._behavior_definitions,
+            focus_points=self._behavior_focus_points,
             prompt_text=default_prompt,
             segment_presets=segment_presets,
             video_fps=self._video_fps,
@@ -1088,6 +1103,11 @@ class BehaviorDescribeWidget(QtWidgets.QWidget):
         if dialog.exec() != QtWidgets.QDialog.Accepted:
             return None
         self._behavior_segment_notes = dialog.notes()
+        self._behavior_video_description = dialog.video_description()
+        self._behavior_instance_count = dialog.instance_count()
+        self._behavior_experiment_context = dialog.experiment_context()
+        self._behavior_definitions = dialog.behavior_definitions()
+        self._behavior_focus_points = dialog.focus_points()
         if segment_presets:
             selected_preset = dialog.selected_preset_index()
             if selected_preset is not None:
@@ -1102,6 +1122,11 @@ class BehaviorDescribeWidget(QtWidgets.QWidget):
             mode=dialog.run_mode(),
             descriptor=descriptor,
             prompt=prompt_text,
+            video_description=dialog.video_description(),
+            instance_count=dialog.instance_count(),
+            experiment_context=dialog.experiment_context(),
+            behavior_definitions=dialog.behavior_definitions(),
+            focus_points=dialog.focus_points(),
             start_time=dialog.start_time(),
             end_time=dialog.end_time(),
             start_frame=dialog.start_frame_value(),
@@ -1575,6 +1600,11 @@ class BehaviorSegmentDialog(QDialog):
         start_time: QtCore.QTime,
         end_time: QtCore.QTime,
         notes: Optional[str],
+        video_description: Optional[str] = None,
+        instance_count: Optional[int] = None,
+        experiment_context: Optional[str] = None,
+        behavior_definitions: Optional[str] = None,
+        focus_points: Optional[str] = None,
         prompt_text: str,
         segment_presets: Optional[Sequence[Dict[str, Any]]] = None,
         video_fps: Optional[float] = None,
@@ -1718,6 +1748,52 @@ class BehaviorSegmentDialog(QDialog):
         self.notes_edit.setText(notes or "")
         layout.addWidget(self.notes_edit)
 
+        context_form = QFormLayout()
+        self.instance_count_spin = QSpinBox()
+        self.instance_count_spin.setRange(0, 999)
+        self.instance_count_spin.setSpecialValueText("Auto")
+        try:
+            count_default = int(instance_count) if instance_count is not None else 0
+        except Exception:
+            count_default = 0
+        self.instance_count_spin.setValue(max(0, count_default))
+        context_form.addRow("Instances in video:", self.instance_count_spin)
+
+        self.video_description_edit = QPlainTextEdit()
+        self.video_description_edit.setPlaceholderText(
+            "Describe what this video shows (setup, subjects, expected context)."
+        )
+        self.video_description_edit.setPlainText(str(video_description or "").strip())
+        self.video_description_edit.setMaximumHeight(72)
+        context_form.addRow("Video description:", self.video_description_edit)
+
+        self.experiment_context_edit = QPlainTextEdit()
+        self.experiment_context_edit.setPlaceholderText(
+            "Experiment details (condition, phase, protocol, treatment, trial info)."
+        )
+        self.experiment_context_edit.setPlainText(str(experiment_context or "").strip())
+        self.experiment_context_edit.setMaximumHeight(72)
+        context_form.addRow("Experiment context:", self.experiment_context_edit)
+
+        self.behavior_definitions_edit = QPlainTextEdit()
+        self.behavior_definitions_edit.setPlaceholderText(
+            "Behavior descriptions/definitions (e.g., aggression bout, slap in face, run away, fight initiation)."
+        )
+        self.behavior_definitions_edit.setPlainText(
+            str(behavior_definitions or "").strip()
+        )
+        self.behavior_definitions_edit.setMaximumHeight(90)
+        context_form.addRow("Behavior definitions:", self.behavior_definitions_edit)
+
+        self.focus_points_edit = QPlainTextEdit()
+        self.focus_points_edit.setPlaceholderText(
+            "Things to focus on (e.g., starts/stops, initiator, responder, counts, intensity)."
+        )
+        self.focus_points_edit.setPlainText(str(focus_points or "").strip())
+        self.focus_points_edit.setMaximumHeight(72)
+        context_form.addRow("Focus points:", self.focus_points_edit)
+        layout.addLayout(context_form)
+
         layout.addWidget(QtWidgets.QLabel("Prompt sent to the model (edit as needed):"))
         self.prompt_edit = QPlainTextEdit()
         self.prompt_edit.setPlaceholderText("Describe the behavior here…")
@@ -1741,6 +1817,13 @@ class BehaviorSegmentDialog(QDialog):
         self.start_edit.timeChanged.connect(lambda _: self._handle_time_changed(True))
         self.end_edit.timeChanged.connect(lambda _: self._handle_time_changed(False))
         self.notes_edit.textChanged.connect(self._maybe_autofill_prompt)
+        self.instance_count_spin.valueChanged.connect(
+            lambda _: self._maybe_autofill_prompt()
+        )
+        self.video_description_edit.textChanged.connect(self._maybe_autofill_prompt)
+        self.experiment_context_edit.textChanged.connect(self._maybe_autofill_prompt)
+        self.behavior_definitions_edit.textChanged.connect(self._maybe_autofill_prompt)
+        self.focus_points_edit.textChanged.connect(self._maybe_autofill_prompt)
         self.prompt_edit.textChanged.connect(self._on_prompt_changed)
         self.run_mode_combo.currentIndexChanged.connect(
             lambda _: self._update_mode_visibility()
@@ -1893,9 +1976,43 @@ class BehaviorSegmentDialog(QDialog):
         return base
 
     def _render_template(self) -> str:
-        return behavior_prompting.build_behavior_narrative_prompt(
+        base_prompt = behavior_prompting.build_behavior_narrative_prompt(
             segment_label=self.segment_descriptor()
         )
+        context_block = self._render_behavior_context_block()
+        if not context_block:
+            return base_prompt
+        return f"{base_prompt}\n{context_block}"
+
+    def _render_behavior_context_block(self) -> str:
+        lines: List[str] = []
+        video_description = self.video_description()
+        if video_description:
+            lines.append(f"Video context: {video_description}")
+        instance_count = self.instance_count()
+        if instance_count is not None:
+            lines.append(
+                f"Track {instance_count} instance(s) and keep individuals distinct when possible."
+            )
+        experiment_context = self.experiment_context()
+        if experiment_context:
+            lines.append(f"Experiment context: {experiment_context}")
+        behavior_definitions = self.behavior_definitions()
+        if behavior_definitions:
+            lines.append("Behavior definitions to apply:")
+            lines.append(behavior_definitions)
+        focus_points = self.focus_points()
+        if focus_points:
+            lines.append(f"Focus specifically on: {focus_points}")
+        if not lines:
+            return ""
+        lines.extend(
+            [
+                "When possible, identify initiator/responder and transitions between behaviors.",
+                "If an observation is uncertain due to occlusion or blur, state that uncertainty explicitly.",
+            ]
+        )
+        return "\n".join(lines)
 
     def _set_prompt_text(self, text: str) -> None:
         self._prompt_updating = True
@@ -1981,6 +2098,22 @@ class BehaviorSegmentDialog(QDialog):
 
     def notes(self) -> str:
         return self.notes_edit.text().strip()
+
+    def video_description(self) -> str:
+        return self.video_description_edit.toPlainText().strip()
+
+    def instance_count(self) -> Optional[int]:
+        value = int(self.instance_count_spin.value())
+        return value if value > 0 else None
+
+    def experiment_context(self) -> str:
+        return self.experiment_context_edit.toPlainText().strip()
+
+    def behavior_definitions(self) -> str:
+        return self.behavior_definitions_edit.toPlainText().strip()
+
+    def focus_points(self) -> str:
+        return self.focus_points_edit.toPlainText().strip()
 
     def prompt_text(self) -> str:
         return self.prompt_edit.toPlainText().strip()

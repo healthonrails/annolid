@@ -694,30 +694,30 @@ class LoadFrameThread(QtCore.QObject):
             self._is_processing = True
             self._active_frame_number = int(frame_number)
 
-        # Check cache first
-        with self.working_lock:
-            cached_frame = self._frame_cache.get(frame_number)
-            if cached_frame is not None:
-                self._frame_cache.move_to_end(frame_number)
-        if cached_frame is not None:
-            self.res_frame.emit(frame_number, cached_frame)
-            return
-
         try:
-            # Load frame
-            frame = self.video_loader.load_frame(frame_number)
+            # Check cache first
+            with self.working_lock:
+                cached_frame = self._frame_cache.get(frame_number)
+                if cached_frame is not None:
+                    self._frame_cache.move_to_end(frame_number)
 
-            # Convert frame to QImage
-            qimage = _array_to_qimage(frame)
+            if cached_frame is not None:
+                self.res_frame.emit(frame_number, cached_frame)
+            else:
+                # Load frame
+                frame = self.video_loader.load_frame(frame_number)
 
-            # Update cache
-            self._update_cache(frame_number, qimage)
+                # Convert frame to QImage
+                qimage = _array_to_qimage(frame)
 
-            # Keep last successful frame
-            self._last_frame = qimage
+                # Update cache
+                self._update_cache(frame_number, qimage)
 
-            # Emit the frame
-            self.res_frame.emit(frame_number, qimage)
+                # Keep last successful frame
+                self._last_frame = qimage
+
+                # Emit the frame
+                self.res_frame.emit(frame_number, qimage)
 
         except KeyError as e:
             logger.error(f"Error loading frame {frame_number}: {e}")

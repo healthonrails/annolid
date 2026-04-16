@@ -280,6 +280,7 @@ from annolid.services.chat_video import (
     behavior_catalog_tool as gui_behavior_catalog_tool,
     label_chat_behavior_segments_tool,
     open_chat_video_tool,
+    process_chat_video_behaviors_tool,
     resolve_chat_video_path_for_gui_tool,
     segment_track_chat_video_tool,
     sam3_agent_video_track_tool,
@@ -1315,6 +1316,7 @@ class StreamingChatTask(QRunnable):
                 "segment_track_video": self._tool_gui_segment_track_video,
                 "sam3_agent_video_track": self._tool_gui_sam3_agent_video_track,
                 "label_behavior_segments": self._tool_gui_label_behavior_segments,
+                "process_video_behaviors": self._tool_gui_process_video_behaviors,
                 "behavior_catalog": self._tool_gui_behavior_catalog,
                 "analyze_tracking_stats": self._tool_gui_analyze_tracking_stats,
                 "start_realtime_stream": self._tool_gui_start_realtime_stream,
@@ -2096,6 +2098,7 @@ class StreamingChatTask(QRunnable):
             "segment_track_video": self._tool_gui_segment_track_video,
             "sam3_agent_video_track": self._tool_gui_sam3_agent_video_track,
             "label_behavior_segments": self._tool_gui_label_behavior_segments,
+            "process_video_behaviors": self._tool_gui_process_video_behaviors,
             "behavior_catalog": self._tool_gui_behavior_catalog,
             "start_realtime_stream": self._tool_gui_start_realtime_stream,
             "stop_realtime_stream": self._tool_gui_stop_realtime_stream,
@@ -2807,7 +2810,19 @@ class StreamingChatTask(QRunnable):
         llm_profile: str = "",
         llm_provider: str = "",
         llm_model: str = "",
+        video_description: str = "",
+        instance_count: Optional[int] = None,
+        experiment_context: str = "",
+        behavior_definitions: str = "",
+        focus_points: str = "",
     ) -> Dict[str, Any]:
+        def _normalize_instance_count(value: Any) -> Optional[int]:
+            try:
+                parsed = int(value)
+            except Exception:
+                return None
+            return parsed if parsed > 0 else None
+
         def _invoke_label_behavior_slot(
             resolved_path: str,
             labels: str,
@@ -2822,6 +2837,11 @@ class StreamingChatTask(QRunnable):
             profile: str,
             provider: str,
             model: str,
+            video_description_text: str,
+            instance_count_value: Optional[int],
+            experiment_context_text: str,
+            behavior_definitions_text: str,
+            focus_points_text: str,
         ) -> bool:
             json_payload = json.dumps(
                 {
@@ -2838,6 +2858,18 @@ class StreamingChatTask(QRunnable):
                     "llm_profile": str(profile),
                     "llm_provider": str(provider),
                     "llm_model": str(model),
+                    "video_description": str(video_description_text or "").strip(),
+                    "instance_count": (
+                        int(instance_count_value)
+                        if instance_count_value is not None
+                        and int(instance_count_value) > 0
+                        else 0
+                    ),
+                    "experiment_context": str(experiment_context_text or "").strip(),
+                    "behavior_definitions": str(
+                        behavior_definitions_text or ""
+                    ).strip(),
+                    "focus_points": str(focus_points_text or "").strip(),
                 }
             )
             json_result = self._invoke_widget_json_slot(
@@ -2903,6 +2935,11 @@ class StreamingChatTask(QRunnable):
             llm_profile=llm_profile,
             llm_provider=llm_provider,
             llm_model=llm_model,
+            video_description=video_description,
+            instance_count=instance_count,
+            experiment_context=experiment_context,
+            behavior_definitions=behavior_definitions,
+            focus_points=focus_points,
             resolve_video_path=self._resolve_video_path_for_gui_tool,
             invoke_label_behavior=lambda resolved_path,
             labels,
@@ -2916,7 +2953,12 @@ class StreamingChatTask(QRunnable):
             overwrite,
             profile,
             provider,
-            model: _invoke_label_behavior_slot(
+            model,
+            video_description_text,
+            instance_count_value,
+            experiment_context_text,
+            behavior_definitions_text,
+            focus_points_text: _invoke_label_behavior_slot(
                 resolved_path=resolved_path,
                 labels=labels,
                 use_defined=bool(use_defined),
@@ -2930,6 +2972,219 @@ class StreamingChatTask(QRunnable):
                 profile=str(profile),
                 provider=str(provider),
                 model=str(model),
+                video_description_text=str(video_description_text or ""),
+                instance_count_value=_normalize_instance_count(instance_count_value),
+                experiment_context_text=str(experiment_context_text or ""),
+                behavior_definitions_text=str(behavior_definitions_text or ""),
+                focus_points_text=str(focus_points_text or ""),
+            ),
+            get_action_result=self._get_widget_action_result,
+        )
+
+    def _tool_gui_process_video_behaviors(
+        self,
+        *,
+        path: str,
+        text_prompt: str = "animal",
+        mode: str = "track",
+        use_countgd: bool = False,
+        model_name: str = "",
+        to_frame: Optional[int] = None,
+        behavior_labels: Any = None,
+        use_defined_behavior_list: bool = True,
+        segment_mode: str = "timeline",
+        segment_frames: int = 60,
+        segment_seconds: Optional[float] = None,
+        sample_frames_per_segment: int = 3,
+        max_segments: int = 120,
+        subject: str = "Agent",
+        overwrite_existing: bool = False,
+        llm_profile: str = "",
+        llm_provider: str = "",
+        llm_model: str = "",
+        video_description: str = "",
+        instance_count: Optional[int] = None,
+        experiment_context: str = "",
+        behavior_definitions: str = "",
+        focus_points: str = "",
+        run_tracking: bool = True,
+        run_behavior_labeling: bool = True,
+    ) -> Dict[str, Any]:
+        def _normalize_instance_count(value: Any) -> Optional[int]:
+            try:
+                parsed = int(value)
+            except Exception:
+                return None
+            return parsed if parsed > 0 else None
+
+        def _invoke_label_behavior_slot(
+            resolved_path: str,
+            labels: str,
+            use_defined: bool,
+            mode_norm: str,
+            frames: int,
+            seconds: float,
+            sample_frames: int,
+            max_seg: int,
+            subj: str,
+            overwrite: bool,
+            profile: str,
+            provider: str,
+            model: str,
+            video_description_text: str,
+            instance_count_value: Optional[int],
+            experiment_context_text: str,
+            behavior_definitions_text: str,
+            focus_points_text: str,
+        ) -> bool:
+            json_payload = json.dumps(
+                {
+                    "video_path": str(resolved_path),
+                    "behavior_labels_csv": str(labels),
+                    "use_defined_behavior_list": bool(use_defined),
+                    "segment_mode": str(mode_norm),
+                    "segment_frames": int(frames),
+                    "segment_seconds": float(seconds),
+                    "sample_frames_per_segment": int(sample_frames),
+                    "max_segments": int(max_seg),
+                    "subject": str(subj),
+                    "overwrite_existing": bool(overwrite),
+                    "llm_profile": str(profile),
+                    "llm_provider": str(provider),
+                    "llm_model": str(model),
+                    "video_description": str(video_description_text or "").strip(),
+                    "instance_count": (
+                        int(instance_count_value)
+                        if instance_count_value is not None
+                        and int(instance_count_value) > 0
+                        else 0
+                    ),
+                    "experiment_context": str(experiment_context_text or "").strip(),
+                    "behavior_definitions": str(
+                        behavior_definitions_text or ""
+                    ).strip(),
+                    "focus_points": str(focus_points_text or "").strip(),
+                }
+            )
+            json_result = self._invoke_widget_json_slot(
+                "bot_label_behavior_segments_json",
+                QtCore.Q_ARG(str, json_payload),
+            )
+            if bool(json_result.get("ok", False)):
+                return True
+            if not bool(json_result.get("transport_error", False)):
+                return True
+            ok = self._invoke_widget_slot(
+                "bot_label_behavior_segments",
+                QtCore.Q_ARG(str, resolved_path),
+                QtCore.Q_ARG(str, labels),
+                QtCore.Q_ARG(bool, bool(use_defined)),
+                QtCore.Q_ARG(str, mode_norm),
+                QtCore.Q_ARG(int, frames),
+                QtCore.Q_ARG(float, float(seconds)),
+                QtCore.Q_ARG(int, int(sample_frames)),
+                QtCore.Q_ARG(int, max_seg),
+                QtCore.Q_ARG(str, subj),
+                QtCore.Q_ARG(bool, overwrite),
+                QtCore.Q_ARG(str, profile),
+                QtCore.Q_ARG(str, provider),
+                QtCore.Q_ARG(str, model),
+            )
+            if ok:
+                return True
+            return self._invoke_widget_slot(
+                "bot_label_behavior_segments",
+                QtCore.Q_ARG(str, resolved_path),
+                QtCore.Q_ARG(str, labels),
+                QtCore.Q_ARG(str, mode_norm),
+                QtCore.Q_ARG(int, frames),
+                QtCore.Q_ARG(float, float(seconds)),
+                QtCore.Q_ARG(int, int(sample_frames)),
+                QtCore.Q_ARG(int, max_seg),
+                QtCore.Q_ARG(str, subj),
+                QtCore.Q_ARG(bool, overwrite),
+                QtCore.Q_ARG(str, profile),
+                QtCore.Q_ARG(str, provider),
+                QtCore.Q_ARG(str, model),
+            )
+
+        return process_chat_video_behaviors_tool(
+            path=path,
+            text_prompt=text_prompt,
+            mode=mode,
+            use_countgd=use_countgd,
+            model_name=model_name,
+            to_frame=to_frame,
+            behavior_labels=behavior_labels,
+            use_defined_behavior_list=use_defined_behavior_list,
+            segment_mode=segment_mode,
+            segment_frames=segment_frames,
+            segment_seconds=segment_seconds,
+            sample_frames_per_segment=sample_frames_per_segment,
+            max_segments=max_segments,
+            subject=subject,
+            overwrite_existing=overwrite_existing,
+            llm_profile=llm_profile,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            video_description=video_description,
+            instance_count=instance_count,
+            experiment_context=experiment_context,
+            behavior_definitions=behavior_definitions,
+            focus_points=focus_points,
+            run_tracking=run_tracking,
+            run_behavior_labeling=run_behavior_labeling,
+            resolve_video_path=self._resolve_video_path_for_gui_tool,
+            invoke_segment_track=lambda vpath,
+            prompt,
+            mode_norm,
+            countgd,
+            model,
+            frame: self._invoke_widget_slot(
+                "bot_segment_track_video",
+                QtCore.Q_ARG(str, vpath),
+                QtCore.Q_ARG(str, prompt),
+                QtCore.Q_ARG(str, mode_norm),
+                QtCore.Q_ARG(bool, countgd),
+                QtCore.Q_ARG(str, model),
+                QtCore.Q_ARG(int, frame),
+            ),
+            invoke_label_behavior=lambda resolved_path,
+            labels,
+            use_defined,
+            mode_norm,
+            frames,
+            seconds,
+            sample_frames,
+            max_seg,
+            subj,
+            overwrite,
+            profile,
+            provider,
+            model,
+            video_description_text,
+            instance_count_value,
+            experiment_context_text,
+            behavior_definitions_text,
+            focus_points_text: _invoke_label_behavior_slot(
+                resolved_path=resolved_path,
+                labels=labels,
+                use_defined=bool(use_defined),
+                mode_norm=mode_norm,
+                frames=int(frames),
+                seconds=float(seconds),
+                sample_frames=int(sample_frames),
+                max_seg=int(max_seg),
+                subj=str(subj),
+                overwrite=bool(overwrite),
+                profile=str(profile),
+                provider=str(provider),
+                model=str(model),
+                video_description_text=str(video_description_text or ""),
+                instance_count_value=_normalize_instance_count(instance_count_value),
+                experiment_context_text=str(experiment_context_text or ""),
+                behavior_definitions_text=str(behavior_definitions_text or ""),
+                focus_points_text=str(focus_points_text or ""),
             ),
             get_action_result=self._get_widget_action_result,
         )

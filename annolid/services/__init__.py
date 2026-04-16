@@ -131,6 +131,7 @@ _EXPORTS = {
     "open_chat_pdf_tool": "annolid.services.chat_web_pdf",
     "open_chat_url_tool": "annolid.services.chat_web_pdf",
     "open_chat_video_tool": "annolid.services.chat_video",
+    "process_chat_video_behaviors_tool": "annolid.services.chat_video",
     "refresh_agent_skills": "annolid.services.agent_workspace",
     "run_agent_meta_learning_maintenance": "annolid.services.agent_workspace",
     "load_chat_history_messages": "annolid.services.chat_session",

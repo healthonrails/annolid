@@ -78,6 +78,29 @@ def test_frame_loader_shutdown_releases_video_loader():
     assert video_loader.released is True
 
 
+def test_frame_loader_cache_hit_clears_processing_state():
+    _ensure_qapp()
+
+    class _DummyVideoLoader:
+        def load_frame(self, _frame_number: int):
+            return np.zeros((4, 4, 3), dtype=np.uint8)
+
+    worker = LoadFrameThread()
+    worker.video_loader = _DummyVideoLoader()
+
+    cached = QtGui.QImage(2, 2, QtGui.QImage.Format_RGB32)
+    worker._frame_cache[0] = cached
+    worker.frame_queue.append(0)
+
+    emitted: list[int] = []
+    worker.res_frame.connect(lambda idx, _img: emitted.append(int(idx)))
+    worker.load()
+
+    assert emitted == [0]
+    assert worker._is_processing is False
+    assert worker._active_frame_number is None
+
+
 def test_array_to_qimage_detaches_source_buffer_when_accelerated(monkeypatch):
     _ensure_qapp()
 

@@ -24,13 +24,19 @@ __all__ = [
     "BehaviorInterval",
     "TimeBudgetRow",
     "BinnedTimeBudgetRow",
+    "BoutDefinition",
+    "BoutSummaryRow",
+    "aggression_bout_definition",
     "extract_behavior_intervals",
     "summarize_intervals",
     "compute_time_budget",
     "compute_binned_time_budget",
+    "compute_bout_summary",
     "format_time_budget_table",
     "format_binned_time_budget_table",
+    "format_bout_summary_table",
     "write_time_budget_csv",
+    "write_bout_summary_csv",
     "TimeBudgetComputationError",
 ]
 
@@ -80,6 +86,46 @@ class BinnedTimeBudgetRow:
     bin_start: float
     bin_end: float
     duration: float
+
+
+@dataclass(frozen=True)
+class BoutDefinition:
+    """Describe how event intervals should be grouped into bouts."""
+
+    name: str
+    behaviors: Tuple[str, ...]
+    max_gap_seconds: float = 0.0
+    initiation_behaviors: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BoutSummaryRow:
+    """Per-subject bout-level summary with behavior counts."""
+
+    subject: str
+    bout_name: str
+    bout_count: int
+    total_duration: float
+    mean_duration: float
+    median_duration: float
+    min_duration: float
+    max_duration: float
+    behavior_counts: Dict[str, int]
+    initiation_count: int
+
+
+def aggression_bout_definition(
+    *,
+    max_gap_seconds: float = 2.0,
+) -> BoutDefinition:
+    """Default aggression-bout grouping used for social-conflict analysis."""
+
+    return BoutDefinition(
+        name="aggression_bout",
+        behaviors=("slap_in_face", "run_away", "fight_initiation"),
+        max_gap_seconds=float(max_gap_seconds),
+        initiation_behaviors=("fight_initiation",),
+    )
 
 
 def _safe_float(value: Optional[str]) -> Optional[float]:
@@ -311,6 +357,95 @@ def compute_binned_time_budget(
     return rows
 
 
+def compute_bout_summary(
+    intervals: Iterable[BehaviorInterval],
+    *,
+    definition: BoutDefinition,
+) -> List[BoutSummaryRow]:
+    """Group selected behavior intervals into bouts and summarise counts."""
+
+    behavior_filter = {
+        str(name).strip() for name in definition.behaviors if str(name).strip()
+    }
+    if not behavior_filter:
+        return []
+
+    max_gap = max(0.0, float(definition.max_gap_seconds))
+    initiation_filter = {
+        str(name).strip()
+        for name in definition.initiation_behaviors
+        if str(name).strip()
+    }
+
+    per_subject: Dict[str, List[BehaviorInterval]] = defaultdict(list)
+    for interval in intervals:
+        if interval.behavior in behavior_filter:
+            per_subject[interval.subject].append(interval)
+
+    summary_rows: List[BoutSummaryRow] = []
+    for subject, subject_intervals in sorted(per_subject.items()):
+        if not subject_intervals:
+            continue
+        ordered = sorted(
+            subject_intervals, key=lambda item: (item.start, item.end, item.behavior)
+        )
+
+        bouts: List[List[BehaviorInterval]] = []
+        current: List[BehaviorInterval] = []
+        current_end = 0.0
+        for interval in ordered:
+            if not current:
+                current = [interval]
+                current_end = interval.end
+                continue
+            if interval.start <= current_end + max_gap:
+                current.append(interval)
+                current_end = max(current_end, interval.end)
+            else:
+                bouts.append(current)
+                current = [interval]
+                current_end = interval.end
+        if current:
+            bouts.append(current)
+
+        if not bouts:
+            continue
+
+        durations = [
+            max(0.0, max(item.end for item in bout) - min(item.start for item in bout))
+            for bout in bouts
+        ]
+        behavior_counts: Dict[str, int] = {name: 0 for name in definition.behaviors}
+        initiation_count = 0
+        for bout in bouts:
+            in_this_bout = set()
+            for item in bout:
+                if item.behavior in behavior_counts:
+                    behavior_counts[item.behavior] += 1
+                in_this_bout.add(item.behavior)
+            if initiation_filter and any(
+                name in in_this_bout for name in initiation_filter
+            ):
+                initiation_count += 1
+
+        summary_rows.append(
+            BoutSummaryRow(
+                subject=subject,
+                bout_name=definition.name,
+                bout_count=len(bouts),
+                total_duration=sum(durations),
+                mean_duration=mean(durations),
+                median_duration=median(durations),
+                min_duration=min(durations),
+                max_duration=max(durations),
+                behavior_counts=behavior_counts,
+                initiation_count=initiation_count,
+            )
+        )
+
+    return summary_rows
+
+
 def format_time_budget_table(
     rows: Sequence[TimeBudgetRow], schema: Optional[ProjectSchema] = None
 ) -> str:
@@ -410,6 +545,70 @@ def format_binned_time_budget_table(rows: Sequence[BinnedTimeBudgetRow]) -> str:
     return "\n".join(lines)
 
 
+def format_bout_summary_table(
+    rows: Sequence[BoutSummaryRow],
+    *,
+    behavior_order: Optional[Sequence[str]] = None,
+) -> str:
+    if not rows:
+        return "No bouts were detected for the requested behavior set."
+
+    if behavior_order:
+        behavior_columns = [str(name) for name in behavior_order if str(name).strip()]
+    else:
+        seen: List[str] = []
+        for row in rows:
+            for name in row.behavior_counts.keys():
+                if name not in seen:
+                    seen.append(name)
+        behavior_columns = seen
+
+    headers = [
+        "Subject",
+        "Bout",
+        "Bouts",
+        "Total (s)",
+        "Mean (s)",
+        "Median (s)",
+        "Min (s)",
+        "Max (s)",
+    ]
+    headers.extend(f"{name} Count" for name in behavior_columns)
+    headers.append("Initiation Bouts")
+
+    str_rows: List[List[str]] = []
+    for row in rows:
+        values = [
+            row.subject,
+            row.bout_name,
+            str(row.bout_count),
+            f"{row.total_duration:.2f}",
+            f"{row.mean_duration:.2f}",
+            f"{row.median_duration:.2f}",
+            f"{row.min_duration:.2f}",
+            f"{row.max_duration:.2f}",
+        ]
+        values.extend(
+            str(int(row.behavior_counts.get(name, 0))) for name in behavior_columns
+        )
+        values.append(str(int(row.initiation_count)))
+        str_rows.append(values)
+
+    col_widths = [len(header) for header in headers]
+    for row in str_rows:
+        for idx, value in enumerate(row):
+            col_widths[idx] = max(col_widths[idx], len(value))
+
+    def fmt_row(values: Sequence[str]) -> str:
+        return "  ".join(
+            value.ljust(col_widths[idx]) for idx, value in enumerate(values)
+        )
+
+    lines = [fmt_row(headers), fmt_row(["-" * len(h) for h in headers])]
+    lines.extend(fmt_row(row) for row in str_rows)
+    return "\n".join(lines)
+
+
 def format_category_summary(rows: Sequence[Tuple[str, float, int]]) -> str:
     if not rows:
         return "No category assignments were found."
@@ -476,6 +675,56 @@ def write_time_budget_csv(
             writer.writerow(item)
 
 
+def write_bout_summary_csv(
+    rows: Sequence[BoutSummaryRow],
+    path: Path,
+    *,
+    behavior_order: Optional[Sequence[str]] = None,
+) -> None:
+    if behavior_order:
+        behavior_columns = [str(name) for name in behavior_order if str(name).strip()]
+    else:
+        seen: List[str] = []
+        for row in rows:
+            for name in row.behavior_counts.keys():
+                if name not in seen:
+                    seen.append(name)
+        behavior_columns = seen
+
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        headers = [
+            "Subject",
+            "Bout",
+            "Bouts",
+            "TotalSeconds",
+            "MeanSeconds",
+            "MedianSeconds",
+            "MinSeconds",
+            "MaxSeconds",
+        ]
+        headers.extend(f"{name}Count" for name in behavior_columns)
+        headers.append("InitiationBouts")
+        writer.writerow(headers)
+
+        for row in rows:
+            values: List[object] = [
+                row.subject,
+                row.bout_name,
+                int(row.bout_count),
+                f"{row.total_duration:.6f}",
+                f"{row.mean_duration:.6f}",
+                f"{row.median_duration:.6f}",
+                f"{row.min_duration:.6f}",
+                f"{row.max_duration:.6f}",
+            ]
+            values.extend(
+                int(row.behavior_counts.get(name, 0)) for name in behavior_columns
+            )
+            values.append(int(row.initiation_count))
+            writer.writerow(values)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Compute time-budget summaries from Annolid behavior event CSV exports."
@@ -505,6 +754,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--schema",
         type=Path,
         help="Optional project schema file used to enrich summaries (JSON or YAML).",
+    )
+    parser.add_argument(
+        "--bout-profile",
+        choices=("aggression",),
+        help="Optional bout preset. 'aggression' groups slap/run-away/fight-initiation intervals into bouts.",
+    )
+    parser.add_argument(
+        "--bout-name",
+        default="custom_bout",
+        help="Name for a custom bout definition (used with --bout-behaviors).",
+    )
+    parser.add_argument(
+        "--bout-behaviors",
+        help="Comma-separated behaviors to include in bout grouping (for example: slap_in_face,run_away,fight_initiation).",
+    )
+    parser.add_argument(
+        "--bout-initiation-behaviors",
+        help="Comma-separated behaviors that count as bout initiations.",
+    )
+    parser.add_argument(
+        "--bout-gap-seconds",
+        type=float,
+        default=None,
+        help="Maximum allowed gap between selected behavior intervals within the same bout.",
     )
     return parser
 
@@ -545,6 +818,46 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parser.error(str(exc))
         return 2
 
+    bout_definition: Optional[BoutDefinition] = None
+    if args.bout_profile == "aggression":
+        profile_gap = (
+            2.0 if args.bout_gap_seconds is None else float(args.bout_gap_seconds)
+        )
+        profile_gap = max(0.0, profile_gap)
+        bout_definition = aggression_bout_definition(max_gap_seconds=profile_gap)
+    elif args.bout_behaviors:
+        behavior_names = tuple(
+            item.strip() for item in str(args.bout_behaviors).split(",") if item.strip()
+        )
+        if not behavior_names:
+            parser.error(
+                "--bout-behaviors must contain at least one non-empty behavior."
+            )
+            return 2
+        initiation_names = tuple(
+            item.strip()
+            for item in str(args.bout_initiation_behaviors or "").split(",")
+            if item.strip()
+        )
+        bout_definition = BoutDefinition(
+            name=str(args.bout_name).strip() or "custom_bout",
+            behaviors=behavior_names,
+            max_gap_seconds=max(
+                0.0,
+                0.0 if args.bout_gap_seconds is None else float(args.bout_gap_seconds),
+            ),
+            initiation_behaviors=initiation_names,
+        )
+    elif args.bout_initiation_behaviors:
+        parser.error(
+            "--bout-initiation-behaviors requires --bout-behaviors or --bout-profile."
+        )
+        return 2
+
+    bout_rows: Optional[List[BoutSummaryRow]] = None
+    if bout_definition is not None:
+        bout_rows = compute_bout_summary(intervals, definition=bout_definition)
+
     for warning in warnings:
         print(f"[warning] {warning}", file=sys.stderr)
 
@@ -577,6 +890,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print()
         print(f"Binned time-budget (bin size = {args.bin_size:.2f}s)")
         print(format_binned_time_budget_table(binned_rows))
+
+    if bout_rows is not None:
+        if args.output:
+            bout_path = args.output.with_name(
+                args.output.stem + "_bouts" + args.output.suffix
+            )
+            write_bout_summary_csv(
+                bout_rows,
+                bout_path,
+                behavior_order=bout_definition.behaviors,
+            )
+        else:
+            print()
+            print(
+                f"Bout summary ({bout_definition.name}, gap <= {bout_definition.max_gap_seconds:.2f}s)"
+            )
+            print(
+                format_bout_summary_table(
+                    bout_rows,
+                    behavior_order=bout_definition.behaviors,
+                )
+            )
 
     return 0
 

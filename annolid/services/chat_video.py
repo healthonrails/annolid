@@ -12,6 +12,7 @@ from annolid.core.agent.gui_backend.tool_handlers_video import (
 from annolid.core.agent.gui_backend.tool_handlers_video_workflow import (
     behavior_catalog_tool as gui_behavior_catalog_tool,
     label_behavior_segments_tool as gui_label_behavior_segments_tool,
+    process_video_behaviors_tool as gui_process_video_behaviors_tool,
     segment_track_video_tool as gui_segment_track_video_tool,
 )
 from annolid.core.agent.gui_backend.direct_commands import run_awaitable_sync
@@ -58,11 +59,16 @@ def behavior_catalog_tool(**kwargs: Any) -> dict[str, Any]:
     return gui_behavior_catalog_tool(**kwargs)
 
 
+def process_chat_video_behaviors_tool(**kwargs: Any) -> dict[str, Any]:
+    return gui_process_video_behaviors_tool(**kwargs)
+
+
 __all__ = [
     "behavior_catalog_tool",
     "label_chat_behavior_segments_tool",
     "open_chat_video_tool",
+    "process_chat_video_behaviors_tool",
     "resolve_chat_video_path_for_gui_tool",
-    "segment_track_chat_video_tool",
     "sam3_agent_video_track_tool",
+    "segment_track_chat_video_tool",
 ]

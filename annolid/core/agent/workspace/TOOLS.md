@@ -114,12 +114,13 @@ Safety notes:
 - `gui_segment_track_video(path, text_prompt, mode?, use_countgd?, model_name?, to_frame?)`
   - Uses the legacy GroundingDINO+SAM workflow for non-SAM3 models.
   - When `model_name` is `SAM3` and `mode="track"`, the GUI backend routes to `sam3_agent_video_track` instead.
-- `gui_label_behavior_segments(path?, behavior_labels?, use_defined_behavior_list?, segment_mode?, segment_frames?, segment_seconds?, sample_frames_per_segment?, max_segments?, subject?, overwrite_existing?, llm_profile?, llm_provider?, llm_model?)`
+- `gui_label_behavior_segments(path?, behavior_labels?, use_defined_behavior_list?, segment_mode?, segment_frames?, segment_seconds?, sample_frames_per_segment?, max_segments?, subject?, overwrite_existing?, llm_profile?, llm_provider?, llm_model?, video_description?, instance_count?, experiment_context?, behavior_definitions?, focus_points?)`
   - Saves timeline labels and exports `<video_stem>_timestamps.csv` automatically.
   - Writes a segment-level labeling log to `<video_stem>_behavior_segment_labels.json`.
   - Set `use_defined_behavior_list=true` to force model outputs to your schema/flags behavior list.
   - For fixed-duration windows, set `segment_mode="uniform"` and pass `segment_seconds` (for example `1.0` for 1-second segments).
   - `sample_frames_per_segment` controls how many frames are sampled per segment for VLM label voting.
+  - Use `video_description`, `instance_count`, `experiment_context`, `behavior_definitions`, and `focus_points` to guide model labeling behavior for specific experimental protocols.
 - `gui_start_realtime_stream(camera_source?, model_name?, target_behaviors?, confidence_threshold?, viewer_type?, classify_eye_blinks?, blink_ear_threshold?, blink_min_consecutive_frames?)`
 - `gui_stop_realtime_stream()`
 

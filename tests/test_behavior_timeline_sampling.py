@@ -51,6 +51,27 @@ def test_build_behavior_classification_prompt_requires_defined_labels_and_json()
     assert '"description":"2-4 sentence observable description"' in prompt
 
 
+def test_build_behavior_classification_prompt_includes_optional_context():
+    prompt = behavior_prompting.build_behavior_classification_prompt(
+        behavior_labels=["walking", "grooming"],
+        segment_label="00:00:00-00:00:01",
+        video_description="Two mice in a resident-intruder arena.",
+        instance_count=2,
+        experiment_context="Resident intruder social assay.",
+        behavior_definitions="Aggression bout includes slap in face, run away, and fight initiation.",
+        focus_points="Count bouts and identify initiator/responder.",
+    )
+    assert "Video context: Two mice in a resident-intruder arena." in prompt
+    assert "Track 2 instance(s)" in prompt
+    assert "Experiment context: Resident intruder social assay." in prompt
+    assert "Behavior definitions to apply:" in prompt
+    assert "Aggression bout includes slap in face" in prompt
+    assert (
+        "Focus specifically on: Count bouts and identify initiator/responder." in prompt
+    )
+    assert "initiator/responder" in prompt
+
+
 def test_timeline_intervals_to_timestamp_rows_merges_adjacent_intervals():
     intervals = [
         {"start_frame": 0, "end_frame": 29, "description": "walking"},

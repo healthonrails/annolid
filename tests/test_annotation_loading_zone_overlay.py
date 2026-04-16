@@ -10,6 +10,7 @@ from qtpy import QtCore
 import annolid.gui.mixins.annotation_loading_mixin as annotation_loading_module
 from annolid.gui.mixins.annotation_loading_mixin import AnnotationLoadingMixin
 from annolid.gui.shape import Shape
+from annolid.infrastructure import AnnotationStore
 from annolid.postprocessing.zone_schema import build_zone_shape
 
 
@@ -372,7 +373,20 @@ def test_paused_mode_still_uses_label_candidate_probe(
 
     host = _PredictHost()
     host.isPlaying = False
-    host._df = DataFrame([{"frame_number": 0, "instance_name": "animal_1"}])
+    host._df = DataFrame(
+        [
+            {
+                "frame_number": 0,
+                "instance_name": "animal_1",
+                "x1": 1,
+                "y1": 2,
+                "x2": 3,
+                "y2": 4,
+                "class_score": 0.9,
+                "segmentation": None,
+            }
+        ]
+    )
     frame_png = tmp_path / "session_000000000.png"
     frame_png.write_bytes(b"")
     frame_json = frame_png.with_suffix(".json")
@@ -381,3 +395,99 @@ def test_paused_mode_still_uses_label_candidate_probe(
     host.loadPredictShapes(0, str(frame_png))
 
     assert _FakeLabelFile.calls == 1
+
+
+def test_playback_fastpath_falls_back_to_label_probe_when_tracking_empty(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class _FakeLabelFile:
+        calls = 0
+
+        def __init__(self, _path, is_video_frame=True):  # noqa: ARG002
+            type(self).calls += 1
+            self.shapes = [_fake_shape_payload(label="from_label")]
+            self.flags = {}
+            self.caption = ""
+
+        def get_caption(self):
+            return ""
+
+    monkeypatch.setattr(annotation_loading_module, "LabelFile", _FakeLabelFile)
+
+    host = _PredictHost()
+    host.isPlaying = True
+    host._df = DataFrame([{"frame_number": 999, "instance_name": "animal_1"}])
+    frame_png = tmp_path / "session_000000000.png"
+    frame_png.write_bytes(b"")
+    frame_json = frame_png.with_suffix(".json")
+    frame_json.write_text("{}", encoding="utf-8")
+
+    host.loadPredictShapes(0, str(frame_png))
+
+    assert _FakeLabelFile.calls == 1
+    assert len(host.loaded_shapes) == 1
+    assert host.loaded_shapes[0].label == "from_label"
+
+
+def test_tracking_fallback_applies_even_when_frame_image_exists_without_json(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        annotation_loading_module,
+        "pred_dict_to_labelme",
+        lambda row, **kwargs: [  # noqa: ARG005
+            Shape(label=str(row.get("instance_name", "animal")), shape_type="point")
+        ],
+    )
+
+    host = _PredictHost()
+    host.isPlaying = False
+    host._df = DataFrame([{"frame_number": 0, "instance_name": "animal_1"}])
+    frame_png = tmp_path / "session_000000000.png"
+    frame_png.write_bytes(b"")
+    # No JSON file on purpose; fallback should still use tracking rows.
+
+    host.loadPredictShapes(0, str(frame_png))
+
+    assert len(host.loaded_shapes) == 1
+
+
+def test_annotation_store_has_frame_rechecks_stale_negative_cache(
+    tmp_path: Path,
+) -> None:
+    host = _PredictHost()
+    folder = tmp_path / "mouse"
+    folder.mkdir(parents=True, exist_ok=True)
+    candidate = folder / "mouse_000000014.json"
+
+    # Initial probe caches a negative before tracking writes frame 14.
+    assert host._annotation_store_has_frame(str(candidate)) is False
+
+    store = AnnotationStore.for_frame_path(candidate)
+    store.append_frame(
+        {
+            "frame": 14,
+            "version": "1.6.4",
+            "imagePath": None,
+            "imageHeight": 300,
+            "imageWidth": 480,
+            "shapes": [
+                {
+                    "label": "mouse_0",
+                    "points": [[1.0, 1.0], [2.0, 2.0], [3.0, 1.0]],
+                    "group_id": None,
+                    "shape_type": "polygon",
+                    "flags": {},
+                    "description": "",
+                    "visible": True,
+                    "mask": None,
+                }
+            ],
+            "flags": {},
+            "caption": None,
+            "otherData": {},
+        }
+    )
+
+    # Must not be stuck on the stale negative cache.
+    assert host._annotation_store_has_frame(str(candidate)) is True

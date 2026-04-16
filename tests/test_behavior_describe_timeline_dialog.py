@@ -47,6 +47,54 @@ def test_behavior_segment_dialog_timeline_window_count():
     assert dialog._timeline_window_count() == 6
 
 
+def test_behavior_segment_dialog_prompt_includes_behavior_context():
+    _ensure_qapp()
+
+    dialog = BehaviorSegmentDialog(
+        parent=None,
+        start_time=QtCore.QTime(0, 0, 0),
+        end_time=QtCore.QTime(0, 0, 5),
+        notes="trial segment",
+        video_description="Two mice in an open field arena.",
+        instance_count=2,
+        experiment_context="Resident-intruder social interaction trial.",
+        behavior_definitions="Aggression bout: any slap in the face, run away, or fight initiation.",
+        focus_points="Count aggression bouts and identify initiator.",
+        prompt_text="",
+        video_fps=30.0,
+        total_frames=300,
+    )
+
+    prompt = dialog._render_template()
+    assert "Video context: Two mice in an open field arena." in prompt
+    assert "Track 2 instance(s)" in prompt
+    assert "Experiment context: Resident-intruder social interaction trial." in prompt
+    assert "Behavior definitions to apply:" in prompt
+    assert "Aggression bout: any slap in the face" in prompt
+    assert (
+        "Focus specifically on: Count aggression bouts and identify initiator."
+        in prompt
+    )
+    assert "initiator/responder" in prompt
+
+
+def test_behavior_segment_dialog_instance_count_auto_means_none():
+    _ensure_qapp()
+
+    dialog = BehaviorSegmentDialog(
+        parent=None,
+        start_time=QtCore.QTime(0, 0, 0),
+        end_time=QtCore.QTime(0, 0, 1),
+        notes=None,
+        prompt_text="",
+        video_fps=30.0,
+        total_frames=300,
+    )
+
+    dialog.instance_count_spin.setValue(0)
+    assert dialog.instance_count() is None
+
+
 class _DummyCaption(QtWidgets.QWidget):
     def __init__(self) -> None:
         super().__init__()
