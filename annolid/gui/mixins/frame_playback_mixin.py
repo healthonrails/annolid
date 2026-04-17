@@ -30,10 +30,9 @@ class FramePlaybackMixin:
         """Render frame updates with a bounded-lag tolerance during playback.
 
         In active playback/tracking runs, decoder throughput can lag behind
-        timer-driven frame requests. Strict matching can drop every emitted frame
-        and visually freeze the canvas. We keep strict matching when paused/seeking,
-        allow bounded lag during normal playback, and allow any non-future frame
-        while a prediction session is active.
+        timer-driven frame requests. Strict matching can drop emitted frames and
+        make per-frame predictions appear missing. We keep strict matching when
+        paused/seeking, and allow any non-future decoded frame while playing.
         """
         current = getattr(self, "frame_number", None)
         if current is not None:
@@ -52,33 +51,11 @@ class FramePlaybackMixin:
                         current_idx,
                     )
                     return
-                prediction_active = bool(
-                    getattr(self, "_prediction_session_is_active", lambda: False)()
-                )
-                if prediction_active:
-                    # Tracking can heavily load decode/render paths; keep playback
-                    # visually advancing by accepting any non-future decoded frame.
-                    if int(loaded_idx) > int(current_idx):
-                        logger.debug(
-                            "Dropping future frame %s during prediction playback (current=%s)",
-                            loaded_idx,
-                            current_idx,
-                        )
-                        return
-                    frame_path = self._frame_image_path(frame_idx)
-                    self.image_to_canvas(qimage, frame_path, frame_idx)
-                    return
-                step = max(1, int(getattr(self, "step_size", 1) or 1))
-                max_lag = max(2, step * 2)
-                lag = int(current_idx) - int(loaded_idx)
-                # Reject old/future frames outside a small playback lag window.
-                if lag < 0 or lag > max_lag:
+                if int(loaded_idx) > int(current_idx):
                     logger.debug(
-                        "Dropping out-of-window frame %s (current=%s lag=%s max_lag=%s)",
+                        "Dropping future frame %s while playing (current=%s)",
                         loaded_idx,
                         current_idx,
-                        lag,
-                        max_lag,
                     )
                     return
         frame_path = self._frame_image_path(frame_idx)

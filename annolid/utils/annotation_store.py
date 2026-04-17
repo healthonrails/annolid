@@ -148,6 +148,7 @@ class AnnotationStore:
                 "mtime": stat.st_mtime,
                 "size": stat.st_size,
                 "records": dict(cache_records),
+                "records_complete": True,
                 "migration_in_memory": True,
             }
 
@@ -264,21 +265,23 @@ class AnnotationStore:
                 frame_key = int(frame)
             except (TypeError, ValueError):
                 frame_key = frame
-            records = dict(cached.get("records") or {})
-            records[frame_key] = record
+            records_complete = bool(cached.get("records_complete", False))
+            records = dict(cached.get("records") or {}) if records_complete else None
+            if isinstance(records, dict):
+                records[frame_key] = record
             try:
                 stat = self.store_path.stat()
             except OSError:
                 AnnotationStore._CACHE.pop(self.store_path, None)
             else:
                 updated_cache = dict(cached)
-                updated_cache.update(
-                    {
-                        "mtime": stat.st_mtime,
-                        "size": stat.st_size,
-                        "records": records,
-                    }
-                )
+                updated_cache["mtime"] = stat.st_mtime
+                updated_cache["size"] = stat.st_size
+                updated_cache["records_complete"] = bool(records_complete)
+                if isinstance(records, dict):
+                    updated_cache["records"] = records
+                else:
+                    updated_cache.pop("records", None)
                 AnnotationStore._CACHE[self.store_path] = updated_cache
 
     def update_frame(
@@ -480,7 +483,14 @@ class AnnotationStore:
 
     def _cached_records_or_empty(self) -> Dict[int, Dict[str, Any]]:
         cached = AnnotationStore._CACHE.get(self.store_path)
-        if cached and isinstance(cached.get("records"), dict):
+        if (
+            cached
+            and isinstance(cached.get("records"), dict)
+            and (
+                bool(cached.get("migration_in_memory", False))
+                or bool(cached.get("records_complete", False))
+            )
+        ):
             return cached["records"]
         return {}
 
@@ -498,22 +508,47 @@ class AnnotationStore:
                 return self._cached_records_or_empty()
 
             cached = AnnotationStore._CACHE.get(self.store_path)
-            if cached and cached.get("migration_in_memory"):
-                return cached["records"]
+            cached_records = (
+                cached.get("records")
+                if isinstance(cached, dict) and isinstance(cached.get("records"), dict)
+                else None
+            )
+            cached_complete = (
+                bool(cached.get("records_complete", False))
+                if isinstance(cached, dict)
+                else False
+            )
+            if (
+                cached
+                and cached.get("migration_in_memory")
+                and cached_records is not None
+            ):
+                return cached_records
             if (
                 not force_reload
                 and cached
-                and cached["mtime"] == stat.st_mtime
-                and cached["size"] == stat.st_size
+                and cached_records is not None
+                and cached_complete
+                and cached.get("mtime") == stat.st_mtime
+                and cached.get("size") == stat.st_size
             ):
-                return cached["records"]
+                return cached_records
 
             # Only pay the migration cost when the cache is stale or missing.
             # This avoids re-reading large NDJSON stores on every frame render.
             self._ensure_explicit_frame_metadata()
             cached = AnnotationStore._CACHE.get(self.store_path)
-            if cached and cached.get("migration_in_memory"):
-                return cached["records"]
+            cached_records = (
+                cached.get("records")
+                if isinstance(cached, dict) and isinstance(cached.get("records"), dict)
+                else None
+            )
+            if (
+                cached
+                and cached.get("migration_in_memory")
+                and cached_records is not None
+            ):
+                return cached_records
             try:
                 stat = self.store_path.stat()
             except FileNotFoundError:
@@ -556,6 +591,7 @@ class AnnotationStore:
                 "mtime": stat.st_mtime,
                 "size": stat.st_size,
                 "records": records,
+                "records_complete": True,
             }
             return records
 

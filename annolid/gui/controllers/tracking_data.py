@@ -44,6 +44,29 @@ class _TrackingSidecarWorker(QtCore.QObject):
         self.finished.emit(payload, self._request_token)
 
 
+class _TrackingSidecarCallbacks(QtCore.QObject):
+    """Ensure sidecar worker callbacks run on the GUI thread."""
+
+    def __init__(self, controller: "TrackingDataController", parent=None) -> None:
+        super().__init__(parent)
+        self._controller = controller
+
+    @QtCore.Slot(object, str)
+    def on_finished(self, payload: object, request_token: str) -> None:
+        payload_dict = payload if isinstance(payload, dict) else {}
+        self._controller._handle_sidecar_worker_finished(
+            payload=payload_dict,
+            request_token=str(request_token),
+        )
+
+    @QtCore.Slot(str, str)
+    def on_failed(self, error_text: str, request_token: str) -> None:
+        self._controller._handle_sidecar_worker_failed(
+            error_text=str(error_text),
+            request_token=str(request_token),
+        )
+
+
 class TrackingDataController:
     """Handle loading of tracking/behavior CSV data for the active video."""
 
@@ -56,6 +79,13 @@ class TrackingDataController:
         self._sidecar_thread: Optional[QtCore.QThread] = None
         self._sidecar_worker: Optional[_TrackingSidecarWorker] = None
         self._sidecar_request_token: str = ""
+        self._sidecar_video_name: str = ""
+        self._sidecar_behavior_candidates: list[Path] = []
+        callback_parent = window if isinstance(window, QtCore.QObject) else None
+        self._sidecar_callbacks = _TrackingSidecarCallbacks(
+            self,
+            parent=callback_parent,
+        )
 
     @property
     def tracking_dataframe(self) -> pd.DataFrame | None:
@@ -113,6 +143,8 @@ class TrackingDataController:
         self._sidecar_worker = None
         self._sidecar_thread = None
         self._sidecar_request_token = ""
+        self._sidecar_video_name = ""
+        self._sidecar_behavior_candidates = []
         if thread is not None:
             try:
                 thread.quit()
@@ -453,6 +485,8 @@ class TrackingDataController:
             else str(time.time_ns())
         )
         self._sidecar_request_token = request_token
+        self._sidecar_video_name = video_name
+        self._sidecar_behavior_candidates = list(behavior_candidates)
 
         # If no sidecars exist, avoid spinning a thread and complete immediately.
         if not behavior_candidates and labels_file_path is None:
@@ -463,29 +497,24 @@ class TrackingDataController:
             )
             return
 
-        thread = QtCore.QThread(self._window)
+        thread_parent = (
+            self._window if isinstance(self._window, QtCore.QObject) else None
+        )
+        thread = QtCore.QThread(thread_parent)
         worker = _TrackingSidecarWorker(
             request_token=request_token,
             behavior_candidates=behavior_candidates,
             labels_file_path=labels_file_path,
         )
         worker.moveToThread(thread)
-        thread.started.connect(worker.run)
+        thread.started.connect(worker.run, QtCore.Qt.QueuedConnection)
         worker.finished.connect(
-            lambda payload, token: self._on_sidecar_worker_finished(
-                payload=payload,
-                request_token=str(token),
-                video_name=video_name,
-                behavior_candidates=behavior_candidates,
-            )
+            self._sidecar_callbacks.on_finished,
+            QtCore.Qt.QueuedConnection,
         )
         worker.failed.connect(
-            lambda error_text, token: self._on_sidecar_worker_failed(
-                error_text=str(error_text),
-                request_token=str(token),
-                video_name=video_name,
-                behavior_candidates=behavior_candidates,
-            )
+            self._sidecar_callbacks.on_failed,
+            QtCore.Qt.QueuedConnection,
         )
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
@@ -499,37 +528,41 @@ class TrackingDataController:
         self._sidecar_worker = None
         self._sidecar_thread = None
 
-    def _on_sidecar_worker_finished(
+    def _handle_sidecar_worker_finished(
         self,
         *,
         payload: dict,
         request_token: str,
-        video_name: str,
-        behavior_candidates: list[Path],
     ) -> None:
-        self._cleanup_sidecar_worker_handles()
         if str(request_token) != str(self._sidecar_request_token):
             return
+        self._cleanup_sidecar_worker_handles()
         self._sidecar_request_token = ""
+        video_name = str(self._sidecar_video_name or "")
+        behavior_candidates = list(self._sidecar_behavior_candidates or [])
+        self._sidecar_video_name = ""
+        self._sidecar_behavior_candidates = []
         self._apply_sidecar_payload(
             payload=payload,
             video_name=video_name,
             behavior_candidates=behavior_candidates,
         )
 
-    def _on_sidecar_worker_failed(
+    def _handle_sidecar_worker_failed(
         self,
         *,
         error_text: str,
         request_token: str,
-        video_name: str,
-        behavior_candidates: list[Path],
     ) -> None:
-        logger.error("Background tracking sidecar load failed: %s", error_text)
-        self._cleanup_sidecar_worker_handles()
         if str(request_token) != str(self._sidecar_request_token):
             return
+        logger.error("Background tracking sidecar load failed: %s", error_text)
+        self._cleanup_sidecar_worker_handles()
         self._sidecar_request_token = ""
+        video_name = str(self._sidecar_video_name or "")
+        behavior_candidates = list(self._sidecar_behavior_candidates or [])
+        self._sidecar_video_name = ""
+        self._sidecar_behavior_candidates = []
         self._apply_sidecar_payload(
             payload={},
             video_name=video_name,

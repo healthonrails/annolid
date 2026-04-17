@@ -196,6 +196,16 @@ For bot labeling and process workflow outputs, Annolid also writes:
 - `<video_stem>_timestamps.csv`
 - `<video_stem>_behavior_segment_labels.json`
 
+When the segment label is `aggression_bout`, the JSON log now includes additive
+metadata for scoring:
+
+- `event_schema`: canonical sub-event schema (`slap_in_face`, `run_away`,
+  `fight_initiation`)
+- `aggression_bout_summary`: stable aggregate counts (`bout_count`,
+  `sub_event_counts`, `sub_event_bout_counts`, `bouts_with_initiation`)
+
+Existing CSV exports (`_timestamps.csv`) remain unchanged.
+
 ## Recommended Operating Loop
 
 1. Define behavior names first (Flags or Timeline).

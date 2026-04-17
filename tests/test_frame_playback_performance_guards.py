@@ -94,14 +94,14 @@ def test_on_frame_loaded_drops_stale_frame_when_paused() -> None:
     assert host.rendered_frames == []
 
 
-def test_on_frame_loaded_drops_far_behind_frame_even_when_playing() -> None:
+def test_on_frame_loaded_allows_far_behind_frame_even_when_playing() -> None:
     host = _PlaybackHost()
     host.isPlaying = True
     host.frame_number = 20
     host.step_size = 1
 
     host._on_frame_loaded(10, object())
-    assert host.rendered_frames == []
+    assert host.rendered_frames == [10]
 
 
 def test_on_frame_loaded_allows_far_behind_frame_during_prediction_playback() -> None:

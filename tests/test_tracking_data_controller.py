@@ -108,3 +108,36 @@ def test_tracking_controller_shutdown_clears_cached_state() -> None:
     assert controller._tracking_frame_indices is None
     assert controller._tracking_csv_path is None
     assert controller._sidecar_request_token == ""
+
+
+def test_sidecar_finished_ignores_stale_token_without_mutating_active_context() -> None:
+    window = _DummyWindow()
+    controller = TrackingDataController(window)
+    controller._sidecar_request_token = "active-token"
+    controller._sidecar_video_name = "sample_video"
+    controller._sidecar_behavior_candidates = [Path("/tmp/sample_timestamps.csv")]
+
+    calls: list[dict] = []
+
+    def _capture_apply(*, payload, video_name, behavior_candidates) -> None:
+        calls.append(
+            {
+                "payload": payload,
+                "video_name": video_name,
+                "behavior_candidates": list(behavior_candidates),
+            }
+        )
+
+    controller._apply_sidecar_payload = _capture_apply  # type: ignore[method-assign]
+
+    controller._handle_sidecar_worker_finished(
+        payload={"loaded_behavior": True},
+        request_token="stale-token",
+    )
+
+    assert calls == []
+    assert controller._sidecar_request_token == "active-token"
+    assert controller._sidecar_video_name == "sample_video"
+    assert controller._sidecar_behavior_candidates == [
+        Path("/tmp/sample_timestamps.csv")
+    ]

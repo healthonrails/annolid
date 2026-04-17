@@ -227,6 +227,39 @@ def test_extract_label_from_model_text_accepts_prediction_alias_key() -> None:
     assert confidence == 0.4
 
 
+def test_extract_prediction_from_model_text_parses_aggression_sub_events() -> None:
+    labels = ["aggression_bout", "grooming"]
+    parsed = AIChatWidget._extract_prediction_from_model_text(
+        (
+            '{"label":"aggression_bout","confidence":0.9,'
+            '"description":"slap in the face then run away",'
+            '"sub_events":{"slap in face":1,"run_away":1}}'
+        ),
+        labels,
+    )
+    assert parsed["label"] == "aggression_bout"
+    assert parsed["confidence"] == 0.9
+    assert parsed["aggression_sub_events"] == {
+        "slap_in_face": 1,
+        "run_away": 1,
+    }
+
+
+def test_extract_prediction_from_model_text_infers_aggression_sub_events_from_text() -> (
+    None
+):
+    labels = ["aggression_bout", "grooming"]
+    parsed = AIChatWidget._extract_prediction_from_model_text(
+        "Aggression bout with initiation of bigger fights then run away.",
+        labels,
+    )
+    assert parsed["label"] == "aggression_bout"
+    assert parsed["aggression_sub_events"] == {
+        "run_away": 1,
+        "fight_initiation": 1,
+    }
+
+
 def test_capability_chips_and_shortcuts_route_actions(monkeypatch) -> None:
     _ensure_qapp()
     monkeypatch.setattr(

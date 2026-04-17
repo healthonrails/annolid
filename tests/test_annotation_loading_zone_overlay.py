@@ -322,7 +322,15 @@ def test_tracking_shape_cache_returns_copied_shapes_to_avoid_mutation_leak(
     assert host.loaded_shapes[0].label == "animal_1"
 
 
-def test_playback_tracking_fastpath_skips_label_candidate_probe(monkeypatch) -> None:
+def test_playback_tracking_fastpath_prefers_tracking_when_no_frame_labels(
+    monkeypatch,
+) -> None:
+    class _FailLabelFile:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("Label file probing should be skipped in this path.")
+
+    monkeypatch.setattr(annotation_loading_module, "LabelFile", _FailLabelFile)
+
     host = _PredictHost()
     host._df = DataFrame(
         [
@@ -339,9 +347,10 @@ def test_playback_tracking_fastpath_skips_label_candidate_probe(monkeypatch) -> 
         ]
     )
     host.isPlaying = True
-    host._iter_frame_label_candidates = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-        AssertionError("Playback fast path should skip label candidate probing.")
-    )
+    host._iter_frame_label_candidates = lambda *_args, **_kwargs: [
+        Path("/tmp/fake_000000000.json")
+    ]
+    host._label_candidate_cache_token = lambda *_args, **_kwargs: None
 
     monkeypatch.setattr(
         annotation_loading_module,
@@ -352,6 +361,103 @@ def test_playback_tracking_fastpath_skips_label_candidate_probe(monkeypatch) -> 
     )
     host.loadPredictShapes(0, "")
     assert host.loaded_shapes
+
+
+def test_playback_fastpath_uses_frame_label_when_available(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class _FakeLabelFile:
+        calls = 0
+
+        def __init__(self, _path, is_video_frame=True):  # noqa: ARG002
+            type(self).calls += 1
+            self.shapes = [_fake_shape_payload(label="from_label")]
+            self.flags = {}
+            self.caption = ""
+
+        def get_caption(self):
+            return ""
+
+    monkeypatch.setattr(annotation_loading_module, "LabelFile", _FakeLabelFile)
+    monkeypatch.setattr(
+        annotation_loading_module,
+        "pred_dict_to_labelme",
+        lambda row, **kwargs: [  # noqa: ARG005
+            Shape(
+                label=str(row.get("instance_name", "from_tracking")), shape_type="point"
+            )
+        ],
+    )
+
+    host = _PredictHost()
+    host.isPlaying = True
+    host._df = DataFrame([{"frame_number": 0, "instance_name": "from_tracking"}])
+    frame_png = tmp_path / "session_000000000.png"
+    frame_png.write_bytes(b"")
+    frame_json = frame_png.with_suffix(".json")
+    frame_json.write_text("{}", encoding="utf-8")
+
+    host.loadPredictShapes(0, str(frame_png))
+
+    assert _FakeLabelFile.calls == 1
+    assert len(host.loaded_shapes) == 1
+    assert host.loaded_shapes[0].label == "from_label"
+
+
+def test_playback_fastpath_uses_annotation_store_frame_when_available(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class _FakeLabelFile:
+        calls = 0
+
+        def __init__(self, _path, is_video_frame=True):  # noqa: ARG002
+            type(self).calls += 1
+            self.shapes = [_fake_shape_payload(label="from_store")]
+            self.flags = {}
+            self.caption = ""
+
+        def get_caption(self):
+            return ""
+
+    monkeypatch.setattr(annotation_loading_module, "LabelFile", _FakeLabelFile)
+    monkeypatch.setattr(
+        annotation_loading_module,
+        "pred_dict_to_labelme",
+        lambda row, **kwargs: [  # noqa: ARG005
+            Shape(
+                label=str(row.get("instance_name", "from_tracking")), shape_type="point"
+            )
+        ],
+    )
+
+    host = _PredictHost()
+    host.isPlaying = True
+    host._df = DataFrame([{"frame_number": 0, "instance_name": "from_tracking"}])
+    frame_png = tmp_path / "session_000000000.png"
+    frame_png.write_bytes(b"")
+    frame_json = frame_png.with_suffix(".json")
+    # Intentionally do not create frame_json. Use annotation store only.
+
+    store = AnnotationStore.for_frame_path(frame_json)
+    store.append_frame(
+        {
+            "frame": 0,
+            "version": "annolid",
+            "flags": {},
+            "shapes": [_fake_shape_payload(label="from_store")],
+            "imagePath": "",
+            "imageHeight": 1,
+            "imageWidth": 1,
+        }
+    )
+
+    host.loadPredictShapes(0, str(frame_png))
+
+    assert _FakeLabelFile.calls == 1
+    assert len(host.loaded_shapes) == 1
+    assert host.loaded_shapes[0].label == "from_store"
 
 
 def test_paused_mode_still_uses_label_candidate_probe(

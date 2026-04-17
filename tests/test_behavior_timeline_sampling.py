@@ -49,6 +49,7 @@ def test_build_behavior_classification_prompt_requires_defined_labels_and_json()
     assert '"label":"<one label from list>"' in prompt
     assert '"confidence":0.0' in prompt
     assert '"description":"2-4 sentence observable description"' in prompt
+    assert '"sub_events":{"slap_in_face":0,"run_away":0,"fight_initiation":0}' in prompt
 
 
 def test_build_behavior_classification_prompt_includes_optional_context():

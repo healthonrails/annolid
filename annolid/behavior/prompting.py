@@ -44,7 +44,8 @@ DEFAULT_BEHAVIOR_CLASSIFICATION_PROMPT_TEMPLATE = textwrap.dedent(
     {behavior_list}
 
     Return strict JSON only (no prose or markdown) with this schema:
-    {{"label":"<one label from list>","confidence":0.0,"description":"2-4 sentence observable description"}}
+    {{"label":"<one label from list>","confidence":0.0,"description":"2-4 sentence observable description","sub_events":{{"slap_in_face":0,"run_away":0,"fight_initiation":0}}}}
+    If sub-events are not visible/relevant, set "sub_events" to {{}}.
     """
 ).strip()
 

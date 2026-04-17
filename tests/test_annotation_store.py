@@ -220,3 +220,39 @@ def test_append_frame_handles_fast_scan_only_cache_state(tmp_path):
     # Appending should not fail even when cache entry lacks a `records` dict.
     _append_dummy_record(store, 1)
     assert store.get_frame_fast(1) is not None
+
+
+def test_get_frame_handles_fast_scan_only_cache_state(tmp_path):
+    frame_path = tmp_path / "video" / "video_000000000.json"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    store = AnnotationStore.for_frame_path(frame_path)
+    _append_dummy_record(store, 0)
+
+    # Prime fast-scan cache without building full `records` cache.
+    assert store.get_frame_fast(0) is not None
+    cached = AnnotationStore._CACHE.get(store.store_path) or {}
+    assert "records" not in cached
+
+    # Full lookup should gracefully treat this as stale cache and reload records.
+    loaded = store.get_frame(0)
+    assert loaded is not None
+    assert loaded.get("frame") == 0
+
+
+def test_append_after_fast_scan_keeps_full_get_frame_consistent(tmp_path):
+    frame_path = tmp_path / "video" / "video_000000000.json"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    store = AnnotationStore.for_frame_path(frame_path)
+    _append_dummy_record(store, 0)
+
+    # Prime the fast-scan cache shape first.
+    assert store.get_frame_fast(0) is not None
+
+    # Append another frame after fast-scan cache has been created.
+    _append_dummy_record(store, 1)
+
+    # Full get_frame path must still return both frames, not just the appended one.
+    frame0 = store.get_frame(0)
+    frame1 = store.get_frame(1)
+    assert frame0 is not None and int(frame0.get("frame")) == 0
+    assert frame1 is not None and int(frame1.get("frame")) == 1

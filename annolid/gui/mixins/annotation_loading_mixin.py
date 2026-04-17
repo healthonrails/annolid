@@ -64,7 +64,10 @@ class AnnotationLoadingMixin:
     _FRAME_LABEL_PREFETCH_BUDGET = 2
     _TRACKING_SHAPE_CACHE_KEY = "_tracking_shape_cache"
     _TRACKING_SHAPE_CACHE_MAX_ENTRIES = 128
-    _PREFER_TRACKING_OVER_LABEL_IO_DURING_PLAYBACK = True
+    # Correctness-first default: keep label/store probing during playback so
+    # frame-specific predictions are not skipped. The tracking fast path remains
+    # available as an explicit opt-in for constrained environments.
+    _PREFER_TRACKING_OVER_LABEL_IO_DURING_PLAYBACK = False
 
     @staticmethod
     def _brain3d_polygon_signature(shapes) -> str:
@@ -2117,6 +2120,7 @@ class AnnotationLoadingMixin:
         frame_path = Path(filename) if filename else None
         persistent_zone_shapes = self._persistent_zone_shapes_for_frame(frame_path)
         preloaded_tracking_shapes: list[Shape] | None = None
+        label_candidates = self._iter_frame_label_candidates(frame_number, frame_path)
 
         playback_tracking_fastpath = (
             bool(getattr(self, "isPlaying", False))
@@ -2135,23 +2139,32 @@ class AnnotationLoadingMixin:
             )
             preloaded_tracking_shapes = list(tracking_shapes)
             if preloaded_tracking_shapes:
-                fallback_shapes = list(preloaded_tracking_shapes)
-                if persistent_zone_shapes:
-                    fallback_shapes = self._merge_persistent_zones_into_shapes(
-                        fallback_shapes,
-                        frame_path,
-                        persistent_zone_shapes=persistent_zone_shapes,
-                    )
-                self.loadShapes(fallback_shapes)
-                if self.caption_widget is not None:
-                    applied = self._apply_timeline_caption_if_available(
-                        frame_number, only_if_empty=False
-                    )
-                    if not applied:
-                        self.caption_widget.set_caption("")
-                return
-
-        label_candidates = self._iter_frame_label_candidates(frame_number, frame_path)
+                has_frame_specific_labels = False
+                for candidate in label_candidates:
+                    cache_token = self._label_candidate_cache_token(candidate)
+                    if cache_token is not None:
+                        has_frame_specific_labels = True
+                        break
+                if has_frame_specific_labels:
+                    # Keep smooth playback but prefer frame-specific predictions
+                    # (json/annotation-store-backed) when present.
+                    preloaded_tracking_shapes = list(preloaded_tracking_shapes)
+                else:
+                    fallback_shapes = list(preloaded_tracking_shapes)
+                    if persistent_zone_shapes:
+                        fallback_shapes = self._merge_persistent_zones_into_shapes(
+                            fallback_shapes,
+                            frame_path,
+                            persistent_zone_shapes=persistent_zone_shapes,
+                        )
+                    self.loadShapes(fallback_shapes)
+                    if self.caption_widget is not None:
+                        applied = self._apply_timeline_caption_if_available(
+                            frame_number, only_if_empty=False
+                        )
+                        if not applied:
+                            self.caption_widget.set_caption("")
+                    return
 
         seen_candidates: set[Path] = set()
         label_loaded = False

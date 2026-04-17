@@ -48,6 +48,12 @@ from annolid.services import (
     matches_slash_completion_search,
 )
 from annolid.behavior import prompting as behavior_prompting
+from annolid.behavior.event_utils import (
+    aggregate_aggression_bout_summary,
+    aggression_sub_event_schema,
+    infer_aggression_sub_event_counts_from_text,
+    parse_aggression_sub_event_counts,
+)
 from annolid.datasets.labelme_collection import default_label_index_path
 from annolid.gui.realtime_launch import (
     build_realtime_launch_payload,
@@ -3848,9 +3854,19 @@ class AIChatWidget(QtWidgets.QWidget):
     def _extract_label_from_model_text(
         text: str, labels: List[str]
     ) -> tuple[str, float]:
+        prediction = AIChatWidget._extract_prediction_from_model_text(text, labels)
+        return str(prediction.get("label") or ""), float(
+            prediction.get("confidence") or 0.0
+        )
+
+    @staticmethod
+    def _extract_prediction_from_model_text(
+        text: str,
+        labels: List[str],
+    ) -> Dict[str, Any]:
         raw = str(text or "").strip()
         if not labels:
-            return ("", 0.0)
+            return {"label": "", "confidence": 0.0}
 
         # Prefer structured JSON responses if present, including fenced blocks.
         json_candidate = ""
@@ -3889,13 +3905,43 @@ class AIChatWidget(QtWidgets.QWidget):
                 if label_val:
                     for candidate in labels:
                         if candidate.lower() == label_val.lower():
-                            return candidate, max(0.0, min(1.0, conf))
+                            parsed_sub_events = parse_aggression_sub_event_counts(
+                                payload.get("sub_events")
+                                or payload.get("subevents")
+                                or payload.get("aggression_sub_events")
+                            )
+                            if not parsed_sub_events:
+                                parsed_sub_events = (
+                                    infer_aggression_sub_event_counts_from_text(
+                                        str(payload.get("description") or "")
+                                    )
+                                )
+                            parsed: Dict[str, Any] = {
+                                "label": candidate,
+                                "confidence": max(0.0, min(1.0, conf)),
+                            }
+                            description = str(payload.get("description") or "").strip()
+                            if description:
+                                parsed["description"] = description
+                            if parsed_sub_events:
+                                parsed["aggression_sub_events"] = parsed_sub_events
+                            return parsed
 
         lowered = raw.lower()
         for candidate in labels:
             if candidate.lower() in lowered:
-                return candidate, 0.6
-        return labels[0], 0.2
+                return {
+                    "label": candidate,
+                    "confidence": 0.6,
+                    "aggression_sub_events": infer_aggression_sub_event_counts_from_text(
+                        raw
+                    ),
+                }
+        return {
+            "label": labels[0],
+            "confidence": 0.2,
+            "aggression_sub_events": infer_aggression_sub_event_counts_from_text(raw),
+        }
 
     @staticmethod
     def _uniform_segment_frame_indices(
@@ -3960,6 +4006,7 @@ class AIChatWidget(QtWidgets.QWidget):
             output_path = video_path.with_name(
                 f"{video_path.stem}_behavior_segment_labels.json"
             )
+            aggression_summary = aggregate_aggression_bout_summary(predictions)
             payload: Dict[str, Any] = {
                 "video_path": str(video_path),
                 "mode": str(mode or "uniform"),
@@ -3971,6 +4018,8 @@ class AIChatWidget(QtWidgets.QWidget):
                 "labeled_segments": int(len(predictions)),
                 "skipped_segments": int(skipped_segments),
                 "predictions": list(predictions),
+                "event_schema": aggression_sub_event_schema(),
+                "aggression_bout_summary": aggression_summary,
                 "generated_at": datetime.now().isoformat(),
             }
             output_path.write_text(
@@ -4009,7 +4058,7 @@ class AIChatWidget(QtWidgets.QWidget):
             raise RuntimeError(
                 f"Unable to open video for segment labeling: {video_path}"
             )
-        inference_cache: Dict[int, tuple[str, float]] = {}
+        inference_cache: Dict[int, Dict[str, Any]] = {}
         predictions: List[Dict[str, Any]] = []
         skipped_segments = 0
 
@@ -4037,6 +4086,8 @@ class AIChatWidget(QtWidgets.QWidget):
                     )
                     frame_votes: Dict[str, int] = {}
                     frame_confidences: Dict[str, float] = {}
+                    frame_sub_event_counts: Dict[str, Dict[str, int]] = {}
+                    frame_descriptions: Dict[str, str] = {}
                     successful_samples = 0
                     for probe_frame in probe_frames:
                         cached = inference_cache.get(probe_frame)
@@ -4075,7 +4126,7 @@ class AIChatWidget(QtWidgets.QWidget):
                                 raw = str(
                                     resp.text or (resp.output or {}).get("text") or ""
                                 ).strip()
-                                cached = self._extract_label_from_model_text(
+                                cached = self._extract_prediction_from_model_text(
                                     raw, labels
                                 )
                                 inference_cache[probe_frame] = cached
@@ -4087,13 +4138,29 @@ class AIChatWidget(QtWidgets.QWidget):
                                         os.remove(image_path)
                                 except OSError:
                                     pass
-                        label, confidence = cached
+                        label = str(cached.get("label") or "").strip()
+                        confidence = float(cached.get("confidence") or 0.0)
                         if not str(label or "").strip():
                             continue
                         frame_votes[label] = int(frame_votes.get(label, 0)) + 1
                         frame_confidences[label] = float(
                             frame_confidences.get(label, 0.0)
                         ) + float(confidence)
+                        parsed_sub_events = parse_aggression_sub_event_counts(
+                            cached.get("aggression_sub_events")
+                            or cached.get("sub_events")
+                            or cached.get("subevents")
+                        )
+                        if parsed_sub_events:
+                            bucket = frame_sub_event_counts.setdefault(label, {})
+                            for code, count in parsed_sub_events.items():
+                                bucket[code] = max(
+                                    int(bucket.get(code, 0)),
+                                    int(count),
+                                )
+                        description = str(cached.get("description") or "").strip()
+                        if description and label not in frame_descriptions:
+                            frame_descriptions[label] = description
                         successful_samples += 1
 
                     if successful_samples <= 0 or not frame_votes:
@@ -4132,6 +4199,12 @@ class AIChatWidget(QtWidgets.QWidget):
                             "subject": item.get("subject"),
                             "label": best_label,
                             "confidence": best_conf,
+                            "description": str(
+                                frame_descriptions.get(best_label) or ""
+                            ).strip(),
+                            "aggression_sub_events": parse_aggression_sub_event_counts(
+                                frame_sub_event_counts.get(best_label, {})
+                            ),
                         }
                     )
                     progress_value = int((idx * 100) / total)
@@ -4215,6 +4288,12 @@ class AIChatWidget(QtWidgets.QWidget):
             "subject": resolved_subject,
             "label": label,
             "confidence": float(prediction.get("confidence") or 0.0),
+            "description": str(prediction.get("description") or "").strip(),
+            "aggression_sub_events": parse_aggression_sub_event_counts(
+                prediction.get("aggression_sub_events")
+                or prediction.get("sub_events")
+                or prediction.get("subevents")
+            ),
         }
         context_predictions = list(context.get("predictions") or [])
         context_predictions.append(normalized_prediction)
