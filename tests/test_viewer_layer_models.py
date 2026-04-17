@@ -452,6 +452,45 @@ def test_viewer_layer_dock_controls_label_vector_and_annotation_layers(
         window.close()
 
 
+def test_tiled_image_view_set_backend_reuses_preloaded_preview() -> None:
+    _ensure_qapp()
+
+    class _Backend:
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.thumbnail_calls = 0
+            self.shape_calls = 0
+
+        def get_thumbnail(self, max_size: int = 2048):
+            _ = max_size
+            self.thumbnail_calls += 1
+            return np.zeros((10, 20), dtype=np.uint8)
+
+        def get_level_shape(self, level: int) -> tuple[int, int]:
+            _ = level
+            self.shape_calls += 1
+            return (200, 100)
+
+    backend = _Backend()
+    view = TiledImageView()
+    try:
+        view._refresh_visible_tiles_now = lambda: None  # type: ignore[assignment]
+        preview = QtGui.QImage(20, 10, QtGui.QImage.Format_RGB32)
+        preview.fill(QtGui.QColor("black"))
+        view.set_backend(
+            backend,
+            initial_thumbnail=preview,
+            initial_content_size=(200, 100),
+        )
+        assert backend.thumbnail_calls == 0
+        assert backend.shape_calls == 0
+        assert tuple(view.content_size()) == (200, 100)
+        assert not view._pixmap_item.pixmap().isNull()
+    finally:
+        view.close()
+
+
 def test_viewer_layer_dock_controls_raster_overlay_layer_visibility(
     tmp_path: Path,
 ) -> None:

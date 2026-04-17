@@ -485,6 +485,10 @@ Check:
 - whether `pyvips` is available
 - whether an optimized TIFF cache has been built
 
+Annolid now reuses the first large-image preview when switching into tiled
+view, so it avoids rebuilding the same thumbnail twice during open. On very
+large TIFFs this should noticeably reduce startup latency.
+
 ### The viewer changed unexpectedly
 
 If you selected an AI/SAM tool, that is expected. Those tools still use the canvas fallback path.

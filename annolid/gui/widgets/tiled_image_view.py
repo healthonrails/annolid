@@ -4,6 +4,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 import math
 from pathlib import Path
+from time import perf_counter
 from typing import Iterable
 
 import numpy as np
@@ -21,6 +22,7 @@ from annolid.gui.shared_vertices import SharedTopologyRegistry
 from annolid.gui.tile_scheduler import TileRenderPlan, TileRequestScheduler
 from annolid.io.large_image import LargeImageBackend
 from annolid.io.large_image.common import array_to_qimage
+from annolid.utils.logger import logger
 
 CURSOR_DEFAULT = QtCore.Qt.ArrowCursor
 CURSOR_POINT = QtCore.Qt.PointingHandCursor
@@ -565,7 +567,18 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             self._queue_visible_tiles_refresh()
         self._notify_host_large_image_document_changed()
 
-    def set_backend(self, backend: LargeImageBackend) -> None:
+    def set_backend(
+        self,
+        backend: LargeImageBackend,
+        *,
+        initial_thumbnail: QtGui.QImage | np.ndarray | None = None,
+        initial_content_size: tuple[int, int] | None = None,
+    ) -> None:
+        started_at = perf_counter()
+        thumbnail_ms = 0.0
+        convert_ms = 0.0
+        shape_ms = 0.0
+        tiles_ms = 0.0
         try:
             self._tile_scheduler.shutdown()
         except Exception:
@@ -582,12 +595,28 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._pixmap_item.setVisible(True)
         self._clear_tile_items()
         self._clear_label_value_cache()
-        thumbnail = backend.get_thumbnail(max_size=2048)
+        thumbnail_started = perf_counter()
+        thumbnail = initial_thumbnail
+        if thumbnail is None:
+            thumbnail = backend.get_thumbnail(max_size=2048)
+        thumbnail_ms = (perf_counter() - thumbnail_started) * 1000.0
+        convert_started = perf_counter()
         if isinstance(thumbnail, QtGui.QImage):
             image = thumbnail
         else:
             image = array_to_qimage(thumbnail)
-        full_w, full_h = backend.get_level_shape(0)
+        convert_ms = (perf_counter() - convert_started) * 1000.0
+        shape_started = perf_counter()
+        if (
+            isinstance(initial_content_size, tuple)
+            and len(initial_content_size) == 2
+            and int(initial_content_size[0]) > 0
+            and int(initial_content_size[1]) > 0
+        ):
+            full_w, full_h = int(initial_content_size[0]), int(initial_content_size[1])
+        else:
+            full_w, full_h = backend.get_level_shape(0)
+        shape_ms = (perf_counter() - shape_started) * 1000.0
         self._content_size = (int(full_w), int(full_h))
         pixmap = QtGui.QPixmap.fromImage(image)
         self._pixmap_item.setPixmap(pixmap)
@@ -596,10 +625,26 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             self._pixmap_item.setScale(full_w / pixmap.width())
         self._pixmap_item.setZValue(-100.0)
         self._scene.setSceneRect(0.0, 0.0, float(full_w), float(full_h))
+        tiles_started = perf_counter()
         self.fit_to_window()
         self._refresh_visible_tiles_now()
+        tiles_ms = (perf_counter() - tiles_started) * 1000.0
         self._refresh_status_overlay()
         self._notify_host_large_image_document_changed()
+        total_ms = (perf_counter() - started_at) * 1000.0
+        logger.info(
+            "tiled_image_view:set_backend: backend=%s size=%dx%d thumbnail=%0.1fms "
+            "convert=%0.1fms shape=%0.1fms tiles=%0.1fms total=%0.1fms reused_preview=%s",
+            str(getattr(backend, "name", "unknown") or "unknown"),
+            int(full_w),
+            int(full_h),
+            float(thumbnail_ms),
+            float(convert_ms),
+            float(shape_ms),
+            float(tiles_ms),
+            float(total_ms),
+            "yes" if initial_thumbnail is not None else "no",
+        )
 
     def set_label_layer(
         self,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os.path as osp
 from pathlib import Path
+from time import perf_counter
 from types import SimpleNamespace
 from typing import Iterable, Optional
 
@@ -1274,7 +1275,14 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         if hasattr(self, "importDirImages"):
             self.importDirImages(directory, load=True)
 
-    def _activate_tiled_image_view(self, image_path: Path, backend=None) -> bool:
+    def _activate_tiled_image_view(
+        self,
+        image_path: Path,
+        backend=None,
+        *,
+        preview_image: QtGui.QImage | None = None,
+        content_size: tuple[int, int] | None = None,
+    ) -> bool:
         if not hasattr(self, "canvas") or self.canvas is None:
             return False
         if not bool(is_large_tiff_path(image_path)) or not hasattr(
@@ -1284,7 +1292,11 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.large_image_backend = (
             backend if backend is not None else open_large_image(image_path)
         )
-        self.large_image_view.set_backend(self.large_image_backend)
+        self.large_image_view.set_backend(
+            self.large_image_backend,
+            initial_thumbnail=preview_image,
+            initial_content_size=content_size,
+        )
         if hasattr(self, "_viewer_stack") and self._viewer_stack is not None:
             self._viewer_stack.setCurrentWidget(self.large_image_view)
         self._active_image_view = "tiled"
@@ -2495,6 +2507,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         return True
 
     def loadFile(self, filename: str) -> None:
+        file_started_at = perf_counter()
         path = Path(filename)
         if not path.exists():
             self.errorMessage(
@@ -2504,6 +2517,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
 
         image_path = path
         shapes = []
+        deferred_sidecar_label_path: Path | None = None
 
         initial_large_image_page = None
         if path.suffix.lower() == ".json":
@@ -2529,13 +2543,18 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         else:
             candidate = path.with_suffix(".json")
             if candidate.exists():
-                try:
-                    label_file = LabelFile(str(candidate))
-                    self.labelFile = label_file
-                    self.otherData = dict(getattr(label_file, "otherData", {}) or {})
-                    shapes = label_file.shapes
-                except Exception:
-                    shapes = []
+                if bool(is_large_tiff_path(path)):
+                    deferred_sidecar_label_path = candidate
+                else:
+                    try:
+                        label_file = LabelFile(str(candidate))
+                        self.labelFile = label_file
+                        self.otherData = dict(
+                            getattr(label_file, "otherData", {}) or {}
+                        )
+                        shapes = label_file.shapes
+                    except Exception:
+                        shapes = []
             if not isinstance(getattr(self, "otherData", None), dict):
                 self.otherData = {}
 
@@ -2544,23 +2563,34 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             cached_large_image = resolve_fresh_optimized_large_image_path(image_path)
             if cached_large_image is not None:
                 backend_image_path = cached_large_image
+        is_large_tiff = bool(is_large_tiff_path(backend_image_path))
 
         image_result = None
         probed_large_image = None
         large_backend = None
-        if bool(is_large_tiff_path(backend_image_path)) and hasattr(
-            self, "large_image_view"
-        ):
+        open_backend_ms = 0.0
+        backend_load_ms = 0.0
+        fallback_load_ms = 0.0
+        activate_tiled_ms = 0.0
+        sidecar_json_ms = 0.0
+        shape_apply_ms = 0.0
+        if is_large_tiff and hasattr(self, "large_image_view"):
             try:
+                phase_started = perf_counter()
                 large_backend = open_large_image(backend_image_path)
+                open_backend_ms = (perf_counter() - phase_started) * 1000.0
+                phase_started = perf_counter()
                 image_result = large_backend.load()
+                backend_load_ms = (perf_counter() - phase_started) * 1000.0
                 probed_large_image = image_result.metadata
             except Exception:
                 image_result = None
                 large_backend = None
         if image_result is None:
             try:
+                phase_started = perf_counter()
                 image_result = load_image_with_backends(backend_image_path)
+                fallback_load_ms = (perf_counter() - phase_started) * 1000.0
             except Exception:
                 image_result = None
 
@@ -2598,13 +2628,28 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         if hasattr(self, "canvas") and self.canvas is not None:
             use_tiled_view = False
             handled_page_shapes = False
-            if bool(is_large_tiff_path(backend_image_path)) and hasattr(
-                self, "large_image_view"
-            ):
+            if is_large_tiff and hasattr(self, "large_image_view"):
                 try:
+                    preview_image = image if isinstance(image, QtGui.QImage) else None
+                    preview_size: tuple[int, int] | None = None
+                    if (
+                        image_result is not None
+                        and image_result.metadata is not None
+                        and int(image_result.metadata.width or 0) > 0
+                        and int(image_result.metadata.height or 0) > 0
+                    ):
+                        preview_size = (
+                            int(image_result.metadata.width),
+                            int(image_result.metadata.height),
+                        )
+                    phase_started = perf_counter()
                     use_tiled_view = self._activate_tiled_image_view(
-                        image_path, backend=large_backend
+                        image_path,
+                        backend=large_backend,
+                        preview_image=preview_image,
+                        content_size=preview_size,
                     )
+                    activate_tiled_ms = (perf_counter() - phase_started) * 1000.0
                 except Exception:
                     self.large_image_backend = None
                     use_tiled_view = False
@@ -2653,14 +2698,36 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                     self._restoreBaseRasterImageVisibilityFromState()
                 if hasattr(self, "_restoreRasterImageLayersFromState"):
                     self._restoreRasterImageLayersFromState()
+            if (
+                deferred_sidecar_label_path is not None
+                and deferred_sidecar_label_path.exists()
+                and not handled_page_shapes
+            ):
+                try:
+                    phase_started = perf_counter()
+                    label_file = LabelFile(str(deferred_sidecar_label_path))
+                    sidecar_json_ms = (perf_counter() - phase_started) * 1000.0
+                    self.labelFile = label_file
+                    merged_other_data = dict(getattr(self, "otherData", {}) or {})
+                    merged_other_data.update(
+                        dict(getattr(label_file, "otherData", {}) or {})
+                    )
+                    self.otherData = merged_other_data
+                    shapes = list(getattr(label_file, "shapes", []) or [])
+                except Exception:
+                    shapes = []
             # AnnolidWindow.loadLabels expects LabelFile JSON dict payloads and
             # materializes Shape objects before forwarding to loadShapes.
             if handled_page_shapes:
                 pass
             elif shapes and isinstance(shapes[0], dict) and hasattr(self, "loadLabels"):
+                phase_started = perf_counter()
                 self.loadLabels(shapes)
+                shape_apply_ms = (perf_counter() - phase_started) * 1000.0
             elif hasattr(self, "loadShapes"):
+                phase_started = perf_counter()
                 self.loadShapes(shapes, replace=True)
+                shape_apply_ms = (perf_counter() - phase_started) * 1000.0
             self._syncLargeImageDocument()
 
         # Ensure image workflows (Open / Open Dir) activate toolbar actions.
@@ -2679,6 +2746,23 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             if hint:
                 message = f"{message}. {hint}"
             self.status(message)
+        if is_large_tiff:
+            total_ms = (perf_counter() - file_started_at) * 1000.0
+            logger.info(
+                "window_base:loadFile: large_tiff path=%s backend_path=%s "
+                "open_backend=%0.1fms backend_load=%0.1fms fallback_load=%0.1fms "
+                "activate_tiled=%0.1fms sidecar_json=%0.1fms shape_apply=%0.1fms "
+                "total=%0.1fms",
+                str(image_path),
+                str(backend_image_path),
+                float(open_backend_ms),
+                float(backend_load_ms),
+                float(fallback_load_ms),
+                float(activate_tiled_ms),
+                float(sidecar_json_ms),
+                float(shape_apply_ms),
+                float(total_ms),
+            )
 
         self.setWindowTitle(f"Annolid - {osp.basename(self.filename)}")
         try:
