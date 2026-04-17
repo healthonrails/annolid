@@ -75,6 +75,7 @@ class _RasterOverlayRuntime:
     ty: float = 0.0
     sx: float = 1.0
     sy: float = 1.0
+    rotation_deg: float = 0.0
     tile_cache: TileCache = field(default_factory=TileCache)
     tile_scheduler: TileRequestScheduler | None = None
     tile_items: dict[TileKey, QtWidgets.QGraphicsPixmapItem] = field(
@@ -397,6 +398,8 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._raster_overlay_arrow_start_ty: float = 0.0
         self._raster_overlay_arrow_start_sx: float = 1.0
         self._raster_overlay_arrow_start_sy: float = 1.0
+        self._raster_overlay_arrow_start_rotation: float = 0.0
+        self._raster_overlay_arrow_start_angle_deg: float | None = None
         self._host_window = None
         self._content_size: tuple[int, int] = (0, 0)
         self._fit_mode: str = "fit_window"
@@ -727,6 +730,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 ty=float(layer.get("ty", 0.0) or 0.0),
                 sx=max(1e-6, float(layer.get("sx", 1.0) or 1.0)),
                 sy=max(1e-6, float(layer.get("sy", 1.0) or 1.0)),
+                rotation_deg=float(layer.get("rotation_deg", 0.0) or 0.0),
             )
             runtime.tile_scheduler = TileRequestScheduler(
                 cache_get=runtime.tile_cache.get,
@@ -810,6 +814,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             ty=float(runtime.ty),
             sx=float(runtime.sx),
             sy=float(runtime.sy),
+            rotation_deg=float(runtime.rotation_deg),
             item_opacity=runtime.opacity,
         )
         self.viewport().update()
@@ -854,6 +859,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         ty: float | None = None,
         sx: float | None = None,
         sy: float | None = None,
+        rotation_deg: float | None = None,
     ) -> bool:
         runtime = self._raster_overlay_layers.get(str(layer_id or ""))
         if runtime is None:
@@ -862,17 +868,22 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         next_ty = float(runtime.ty if ty is None else ty)
         next_sx = max(1e-6, float(runtime.sx if sx is None else sx))
         next_sy = max(1e-6, float(runtime.sy if sy is None else sy))
+        next_rotation = float(
+            runtime.rotation_deg if rotation_deg is None else rotation_deg
+        )
         if (
             abs(float(runtime.tx) - next_tx) < 1e-9
             and abs(float(runtime.ty) - next_ty) < 1e-9
             and abs(float(runtime.sx) - next_sx) < 1e-9
             and abs(float(runtime.sy) - next_sy) < 1e-9
+            and abs(float(runtime.rotation_deg) - next_rotation) < 1e-9
         ):
             return False
         runtime.tx = next_tx
         runtime.ty = next_ty
         runtime.sx = next_sx
         runtime.sy = next_sy
+        runtime.rotation_deg = next_rotation
         self._update_existing_tile_items(
             backend=runtime.backend,
             item_map=runtime.tile_items,
@@ -882,6 +893,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             ty=float(runtime.ty),
             sx=float(runtime.sx),
             sy=float(runtime.sy),
+            rotation_deg=float(runtime.rotation_deg),
             item_opacity=runtime.opacity,
         )
         self.viewport().update()
@@ -930,6 +942,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                     "ty": float(runtime.ty),
                     "sx": float(runtime.sx),
                     "sy": float(runtime.sy),
+                    "rotation_deg": float(runtime.rotation_deg),
                 }
             )
         return state
@@ -1206,74 +1219,266 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         height = full_h * max(1e-6, float(runtime.sy))
         return QtCore.QRectF(float(runtime.tx), float(runtime.ty), width, height)
 
+    def _raster_overlay_scene_center(
+        self, runtime: _RasterOverlayRuntime
+    ) -> QtCore.QPointF:
+        full_w = max(1.0, float(self._content_size[0] or 1))
+        full_h = max(1.0, float(self._content_size[1] or 1))
+        return QtCore.QPointF(
+            float(runtime.tx) + ((full_w * max(1e-6, float(runtime.sx))) * 0.5),
+            float(runtime.ty) + ((full_h * max(1e-6, float(runtime.sy))) * 0.5),
+        )
+
+    @staticmethod
+    def _overlay_affine_matrix(
+        *, sx: float, sy: float, rotation_deg: float
+    ) -> tuple[float, float, float, float]:
+        theta = math.radians(float(rotation_deg))
+        cos_t = math.cos(theta)
+        sin_t = math.sin(theta)
+        m11 = float(sx) * cos_t
+        m12 = float(sx) * sin_t
+        m21 = -float(sy) * sin_t
+        m22 = float(sy) * cos_t
+        return m11, m12, m21, m22
+
+    def _overlay_scene_from_local(
+        self,
+        *,
+        local_x: float,
+        local_y: float,
+        tx: float,
+        ty: float,
+        sx: float,
+        sy: float,
+        rotation_deg: float,
+    ) -> QtCore.QPointF:
+        full_w = max(1.0, float(self._content_size[0] or 1))
+        full_h = max(1.0, float(self._content_size[1] or 1))
+        center_local_x = full_w * 0.5
+        center_local_y = full_h * 0.5
+        center_scene_x = float(tx) + ((full_w * float(sx)) * 0.5)
+        center_scene_y = float(ty) + ((full_h * float(sy)) * 0.5)
+        m11, m12, m21, m22 = self._overlay_affine_matrix(
+            sx=float(sx),
+            sy=float(sy),
+            rotation_deg=float(rotation_deg),
+        )
+        dx = float(local_x) - center_local_x
+        dy = float(local_y) - center_local_y
+        return QtCore.QPointF(
+            center_scene_x + (m11 * dx) + (m21 * dy),
+            center_scene_y + (m12 * dx) + (m22 * dy),
+        )
+
+    def _raster_overlay_scene_corners(
+        self, runtime: _RasterOverlayRuntime
+    ) -> dict[str, QtCore.QPointF]:
+        full_w = max(1.0, float(self._content_size[0] or 1))
+        full_h = max(1.0, float(self._content_size[1] or 1))
+        params = {
+            "tx": float(runtime.tx),
+            "ty": float(runtime.ty),
+            "sx": max(1e-6, float(runtime.sx)),
+            "sy": max(1e-6, float(runtime.sy)),
+            "rotation_deg": float(runtime.rotation_deg),
+        }
+        return {
+            "nw": self._overlay_scene_from_local(local_x=0.0, local_y=0.0, **params),
+            "ne": self._overlay_scene_from_local(local_x=full_w, local_y=0.0, **params),
+            "se": self._overlay_scene_from_local(
+                local_x=full_w, local_y=full_h, **params
+            ),
+            "sw": self._overlay_scene_from_local(local_x=0.0, local_y=full_h, **params),
+        }
+
+    def _raster_overlay_axis_scene_vectors(
+        self, runtime: _RasterOverlayRuntime
+    ) -> tuple[QtCore.QPointF, QtCore.QPointF]:
+        m11, m12, m21, m22 = self._overlay_affine_matrix(
+            sx=max(1e-6, float(runtime.sx)),
+            sy=max(1e-6, float(runtime.sy)),
+            rotation_deg=float(runtime.rotation_deg),
+        )
+        return QtCore.QPointF(m11, m12), QtCore.QPointF(m21, m22)
+
     def _raster_overlay_arrow_handles(
         self, runtime: _RasterOverlayRuntime
     ) -> dict[str, dict]:
-        bounds = self._raster_overlay_scene_bounds(runtime)
+        corners = self._raster_overlay_scene_corners(runtime)
+        nw = corners["nw"]
+        ne = corners["ne"]
+        se = corners["se"]
+        sw = corners["sw"]
+        center = self._raster_overlay_scene_center(runtime)
+        top_center = QtCore.QPointF(
+            (float(nw.x()) + float(ne.x())) * 0.5,
+            (float(nw.y()) + float(ne.y())) * 0.5,
+        )
+        right_center = QtCore.QPointF(
+            (float(ne.x()) + float(se.x())) * 0.5,
+            (float(ne.y()) + float(se.y())) * 0.5,
+        )
+        bottom_center = QtCore.QPointF(
+            (float(sw.x()) + float(se.x())) * 0.5,
+            (float(sw.y()) + float(se.y())) * 0.5,
+        )
+        left_center = QtCore.QPointF(
+            (float(nw.x()) + float(sw.x())) * 0.5,
+            (float(nw.y()) + float(sw.y())) * 0.5,
+        )
         # Keep handles visually stable across zoom levels by converting
         # desired screen-space pixels into scene units.
         scale = max(1e-6, float(self.current_scale() or 1.0))
         scene_per_px = 1.0 / scale
         margin = 14.0 * scene_per_px
         size = 16.0 * scene_per_px
-        cx = float(bounds.center().x())
-        cy = float(bounds.center().y())
-        left_x = float(bounds.left()) - margin
-        right_x = float(bounds.right()) + margin
-        top_y = float(bounds.top()) - margin
-        bottom_y = float(bounds.bottom()) + margin
+        top_dir_x = float(top_center.x()) - float(center.x())
+        top_dir_y = float(top_center.y()) - float(center.y())
+        top_dir_norm = math.hypot(top_dir_x, top_dir_y)
+        if top_dir_norm <= 1e-9:
+            top_unit_x, top_unit_y = 0.0, -1.0
+        else:
+            top_unit_x = top_dir_x / top_dir_norm
+            top_unit_y = top_dir_y / top_dir_norm
+        rotate_center = QtCore.QPointF(
+            float(top_center.x()) + (top_unit_x * (margin + size * 1.6)),
+            float(top_center.y()) + (top_unit_y * (margin + size * 1.6)),
+        )
+        offset_x = top_unit_x * margin
+        offset_y = top_unit_y * margin
         return {
             "left": {
-                "center": QtCore.QPointF(left_x, cy),
-                "hit": QtCore.QRectF(left_x - size, cy - size, size * 2.0, size * 2.0),
+                "center": QtCore.QPointF(
+                    float(left_center.x()) + offset_x,
+                    float(left_center.y()) + offset_y,
+                ),
+                "hit": QtCore.QRectF(
+                    float(left_center.x()) + offset_x - size,
+                    float(left_center.y()) + offset_y - size,
+                    size * 2.0,
+                    size * 2.0,
+                ),
                 "cursor": QtCore.Qt.SizeHorCursor,
             },
             "right": {
-                "center": QtCore.QPointF(right_x, cy),
-                "hit": QtCore.QRectF(right_x - size, cy - size, size * 2.0, size * 2.0),
+                "center": QtCore.QPointF(
+                    float(right_center.x()) - offset_x,
+                    float(right_center.y()) - offset_y,
+                ),
+                "hit": QtCore.QRectF(
+                    float(right_center.x()) - offset_x - size,
+                    float(right_center.y()) - offset_y - size,
+                    size * 2.0,
+                    size * 2.0,
+                ),
                 "cursor": QtCore.Qt.SizeHorCursor,
             },
             "top": {
-                "center": QtCore.QPointF(cx, top_y),
-                "hit": QtCore.QRectF(cx - size, top_y - size, size * 2.0, size * 2.0),
+                "center": QtCore.QPointF(
+                    float(top_center.x()) + offset_x,
+                    float(top_center.y()) + offset_y,
+                ),
+                "hit": QtCore.QRectF(
+                    float(top_center.x()) + offset_x - size,
+                    float(top_center.y()) + offset_y - size,
+                    size * 2.0,
+                    size * 2.0,
+                ),
                 "cursor": QtCore.Qt.SizeVerCursor,
             },
             "bottom": {
-                "center": QtCore.QPointF(cx, bottom_y),
+                "center": QtCore.QPointF(
+                    float(bottom_center.x()) - offset_x,
+                    float(bottom_center.y()) - offset_y,
+                ),
                 "hit": QtCore.QRectF(
-                    cx - size, bottom_y - size, size * 2.0, size * 2.0
+                    float(bottom_center.x()) - offset_x - size,
+                    float(bottom_center.y()) - offset_y - size,
+                    size * 2.0,
+                    size * 2.0,
                 ),
                 "cursor": QtCore.Qt.SizeVerCursor,
             },
             "nw": {
-                "center": QtCore.QPointF(left_x, top_y),
+                "center": QtCore.QPointF(
+                    float(nw.x()) + (offset_x * 0.9),
+                    float(nw.y()) + (offset_y * 0.9),
+                ),
                 "hit": QtCore.QRectF(
-                    left_x - size, top_y - size, size * 2.0, size * 2.0
+                    float(nw.x()) + (offset_x * 0.9) - size,
+                    float(nw.y()) + (offset_y * 0.9) - size,
+                    size * 2.0,
+                    size * 2.0,
                 ),
                 "cursor": QtCore.Qt.SizeFDiagCursor,
             },
             "ne": {
-                "center": QtCore.QPointF(right_x, top_y),
+                "center": QtCore.QPointF(
+                    float(ne.x()) + (offset_x * 0.9),
+                    float(ne.y()) + (offset_y * 0.9),
+                ),
                 "hit": QtCore.QRectF(
-                    right_x - size, top_y - size, size * 2.0, size * 2.0
+                    float(ne.x()) + (offset_x * 0.9) - size,
+                    float(ne.y()) + (offset_y * 0.9) - size,
+                    size * 2.0,
+                    size * 2.0,
                 ),
                 "cursor": QtCore.Qt.SizeBDiagCursor,
             },
             "sw": {
-                "center": QtCore.QPointF(left_x, bottom_y),
+                "center": QtCore.QPointF(
+                    float(sw.x()) - (offset_x * 0.9),
+                    float(sw.y()) - (offset_y * 0.9),
+                ),
                 "hit": QtCore.QRectF(
-                    left_x - size, bottom_y - size, size * 2.0, size * 2.0
+                    float(sw.x()) - (offset_x * 0.9) - size,
+                    float(sw.y()) - (offset_y * 0.9) - size,
+                    size * 2.0,
+                    size * 2.0,
                 ),
                 "cursor": QtCore.Qt.SizeBDiagCursor,
             },
             "se": {
-                "center": QtCore.QPointF(right_x, bottom_y),
+                "center": QtCore.QPointF(
+                    float(se.x()) - (offset_x * 0.9),
+                    float(se.y()) - (offset_y * 0.9),
+                ),
                 "hit": QtCore.QRectF(
-                    right_x - size, bottom_y - size, size * 2.0, size * 2.0
+                    float(se.x()) - (offset_x * 0.9) - size,
+                    float(se.y()) - (offset_y * 0.9) - size,
+                    size * 2.0,
+                    size * 2.0,
                 ),
                 "cursor": QtCore.Qt.SizeFDiagCursor,
             },
+            "rotate": {
+                "center": rotate_center,
+                "hit": QtCore.QRectF(
+                    float(rotate_center.x()) - size,
+                    float(rotate_center.y()) - size,
+                    size * 2.0,
+                    size * 2.0,
+                ),
+                "cursor": QtCore.Qt.OpenHandCursor,
+            },
         }
+
+    def _rotation_angle_deg(
+        self, *, center: QtCore.QPointF, target: QtCore.QPointF
+    ) -> float:
+        dx = float(target.x()) - float(center.x())
+        dy = float(target.y()) - float(center.y())
+        return math.degrees(math.atan2(dy, dx))
+
+    @staticmethod
+    def _normalize_angle_deg(value: float) -> float:
+        angle = float(value)
+        while angle > 180.0:
+            angle -= 360.0
+        while angle <= -180.0:
+            angle += 360.0
+        return angle
 
     def _hit_raster_overlay_arrow_handle(self, scene_pos: QtCore.QPointF) -> str | None:
         selected = self._selected_raster_overlay_runtime()
@@ -1304,6 +1509,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             "ne",
             "sw",
             "se",
+            "rotate",
         }:
             return False
         self._raster_overlay_arrow_dragging = True
@@ -1314,6 +1520,13 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._raster_overlay_arrow_start_ty = float(runtime.ty)
         self._raster_overlay_arrow_start_sx = max(1e-6, float(runtime.sx))
         self._raster_overlay_arrow_start_sy = max(1e-6, float(runtime.sy))
+        self._raster_overlay_arrow_start_rotation = float(runtime.rotation_deg)
+        self._raster_overlay_arrow_start_angle_deg = None
+        if handle_name == "rotate":
+            center = self._raster_overlay_scene_center(runtime)
+            self._raster_overlay_arrow_start_angle_deg = self._rotation_angle_deg(
+                center=center, target=scene_pos
+            )
         cursor = QtCore.Qt.SizeVerCursor
         if handle_name in {"left", "right"}:
             cursor = QtCore.Qt.SizeHorCursor
@@ -1321,8 +1534,13 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             cursor = QtCore.Qt.SizeFDiagCursor
         elif handle_name in {"ne", "sw"}:
             cursor = QtCore.Qt.SizeBDiagCursor
+        elif handle_name == "rotate":
+            cursor = QtCore.Qt.ClosedHandCursor
         self.overrideCursor(cursor)
-        self._set_hover_feedback(self.tr("Drag arrow to resize raster overlay"))
+        if handle_name == "rotate":
+            self._set_hover_feedback(self.tr("Drag handle to rotate raster overlay"))
+        else:
+            self._set_hover_feedback(self.tr("Drag arrow to resize raster overlay"))
         return True
 
     def _apply_raster_overlay_arrow_drag(self, scene_pos: QtCore.QPointF) -> bool:
@@ -1331,7 +1549,8 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         if (
             not self._raster_overlay_arrow_dragging
             or not layer_id
-            or handle not in {"left", "right", "top", "bottom", "nw", "ne", "sw", "se"}
+            or handle
+            not in {"left", "right", "top", "bottom", "nw", "ne", "sw", "se", "rotate"}
         ):
             return False
         host = getattr(self, "_host_window", None)
@@ -1353,56 +1572,115 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         next_ty = start_ty
         next_sx = start_sx
         next_sy = start_sy
+        next_rotation = float(self._raster_overlay_arrow_start_rotation)
         min_scale = 1e-6
-        if handle == "left":
-            next_sx = max(min_scale, start_sx - (delta_x / full_w))
-            next_tx = start_tx + (full_w * (start_sx - next_sx))
-        elif handle == "right":
-            next_sx = max(min_scale, start_sx + (delta_x / full_w))
-            next_tx = start_tx
-        elif handle == "top":
-            next_sy = max(min_scale, start_sy - (delta_y / full_h))
-            next_ty = start_ty + (full_h * (start_sy - next_sy))
-        elif handle == "bottom":
-            next_sy = max(min_scale, start_sy + (delta_y / full_h))
-            next_ty = start_ty
+        if handle == "rotate":
+            center = QtCore.QPointF(
+                start_tx + ((full_w * start_sx) * 0.5),
+                start_ty + ((full_h * start_sy) * 0.5),
+            )
+            start_angle = self._raster_overlay_arrow_start_angle_deg
+            if start_angle is None:
+                start_angle = self._rotation_angle_deg(center=center, target=start_pos)
+                self._raster_overlay_arrow_start_angle_deg = float(start_angle)
+            current_angle = self._rotation_angle_deg(center=center, target=scene_pos)
+            delta_angle = self._normalize_angle_deg(current_angle - float(start_angle))
+            next_rotation = self._normalize_angle_deg(
+                float(self._raster_overlay_arrow_start_rotation) + delta_angle
+            )
         else:
-            start_width = full_w * start_sx
-            start_height = full_h * start_sy
+            m11, m12, m21, m22 = self._overlay_affine_matrix(
+                sx=start_sx,
+                sy=start_sy,
+                rotation_deg=float(self._raster_overlay_arrow_start_rotation),
+            )
+            ux_len = max(1e-12, math.hypot(m11, m12))
+            uy_len = max(1e-12, math.hypot(m21, m22))
+            ux_x = m11 / ux_len
+            ux_y = m12 / ux_len
+            uy_x = m21 / uy_len
+            uy_y = m22 / uy_len
+            proj_x = (delta_x * ux_x) + (delta_y * ux_y)
+            proj_y = (delta_x * uy_x) + (delta_y * uy_y)
+            start_width = full_w * ux_len
+            start_height = full_h * uy_len
             if start_width <= 0.0 or start_height <= 0.0:
                 return False
-            is_east = handle in {"ne", "se"}
-            is_south = handle in {"sw", "se"}
-            ratio_x = 1.0 + (
-                (delta_x / start_width) if is_east else (-delta_x / start_width)
-            )
-            ratio_y = 1.0 + (
-                (delta_y / start_height) if is_south else (-delta_y / start_height)
-            )
-            ratio = ratio_x if abs(ratio_x - 1.0) >= abs(ratio_y - 1.0) else ratio_y
-            ratio = max(min_scale, ratio)
-            next_sx = start_sx * ratio
-            next_sy = start_sy * ratio
-            if handle == "nw":
-                anchor_x = start_tx + start_width
-                anchor_y = start_ty + start_height
-                next_tx = anchor_x - (full_w * next_sx)
-                next_ty = anchor_y - (full_h * next_sy)
+            if handle == "left":
+                next_sx = max(min_scale, start_sx - (proj_x / full_w))
+            elif handle == "right":
+                next_sx = max(min_scale, start_sx + (proj_x / full_w))
+            elif handle == "top":
+                next_sy = max(min_scale, start_sy - (proj_y / full_h))
+            elif handle == "bottom":
+                next_sy = max(min_scale, start_sy + (proj_y / full_h))
+            else:
+                is_east = handle in {"ne", "se"}
+                is_south = handle in {"sw", "se"}
+                ratio_x = 1.0 + (
+                    (proj_x / start_width) if is_east else (-proj_x / start_width)
+                )
+                ratio_y = 1.0 + (
+                    (proj_y / start_height) if is_south else (-proj_y / start_height)
+                )
+                ratio = ratio_x if abs(ratio_x - 1.0) >= abs(ratio_y - 1.0) else ratio_y
+                ratio = max(min_scale, ratio)
+                next_sx = start_sx * ratio
+                next_sy = start_sy * ratio
+
+            anchor_local_x = 0.0
+            anchor_local_y = 0.0
+            if handle == "left":
+                anchor_local_x = full_w
+                anchor_local_y = full_h * 0.5
+            elif handle == "right":
+                anchor_local_x = 0.0
+                anchor_local_y = full_h * 0.5
+            elif handle == "top":
+                anchor_local_x = full_w * 0.5
+                anchor_local_y = full_h
+            elif handle == "bottom":
+                anchor_local_x = full_w * 0.5
+                anchor_local_y = 0.0
+            elif handle == "nw":
+                anchor_local_x = full_w
+                anchor_local_y = full_h
             elif handle == "ne":
-                anchor_x = start_tx
-                anchor_y = start_ty + start_height
-                next_tx = anchor_x
-                next_ty = anchor_y - (full_h * next_sy)
+                anchor_local_x = 0.0
+                anchor_local_y = full_h
             elif handle == "sw":
-                anchor_x = start_tx + start_width
-                anchor_y = start_ty
-                next_tx = anchor_x - (full_w * next_sx)
-                next_ty = anchor_y
-            else:  # se
-                anchor_x = start_tx
-                anchor_y = start_ty
-                next_tx = anchor_x
-                next_ty = anchor_y
+                anchor_local_x = full_w
+                anchor_local_y = 0.0
+            elif handle == "se":
+                anchor_local_x = 0.0
+                anchor_local_y = 0.0
+
+            anchor_scene = self._overlay_scene_from_local(
+                local_x=anchor_local_x,
+                local_y=anchor_local_y,
+                tx=start_tx,
+                ty=start_ty,
+                sx=start_sx,
+                sy=start_sy,
+                rotation_deg=float(self._raster_overlay_arrow_start_rotation),
+            )
+            n11, n12, n21, n22 = self._overlay_affine_matrix(
+                sx=next_sx,
+                sy=next_sy,
+                rotation_deg=float(self._raster_overlay_arrow_start_rotation),
+            )
+            center_local_x = full_w * 0.5
+            center_local_y = full_h * 0.5
+            anchor_dx = anchor_local_x - center_local_x
+            anchor_dy = anchor_local_y - center_local_y
+            center_scene_x = float(anchor_scene.x()) - (
+                (n11 * anchor_dx) + (n21 * anchor_dy)
+            )
+            center_scene_y = float(anchor_scene.y()) - (
+                (n12 * anchor_dx) + (n22 * anchor_dy)
+            )
+            next_tx = center_scene_x - ((full_w * next_sx) * 0.5)
+            next_ty = center_scene_y - ((full_h * next_sy) * 0.5)
         try:
             changed = bool(
                 setter(
@@ -1411,6 +1689,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                     ty=float(next_ty),
                     sx=float(next_sx),
                     sy=float(next_sy),
+                    rotation_deg=float(next_rotation),
                 )
             )
         except Exception:
@@ -1430,6 +1709,8 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._raster_overlay_arrow_start_ty = 0.0
         self._raster_overlay_arrow_start_sx = 1.0
         self._raster_overlay_arrow_start_sy = 1.0
+        self._raster_overlay_arrow_start_rotation = 0.0
+        self._raster_overlay_arrow_start_angle_deg = None
         self._notify_host_large_image_document_changed()
         self.viewport().update()
 
@@ -2462,6 +2743,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         ty: float = 0.0,
         sx: float = 1.0,
         sy: float = 1.0,
+        rotation_deg: float = 0.0,
     ) -> TileRenderPlan[TileKey]:
         visible_keys = tuple(
             self._visible_tile_keys_for_backend(
@@ -2471,6 +2753,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 ty=float(ty),
                 sx=float(sx),
                 sy=float(sy),
+                rotation_deg=float(rotation_deg),
             )
         )
         visible_key_set = set(visible_keys)
@@ -2514,16 +2797,34 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         ty: float = 0.0,
         sx: float = 1.0,
         sy: float = 1.0,
+        rotation_deg: float = 0.0,
     ) -> tuple[QtCore.QPointF, QtGui.QTransform]:
         full_w, full_h = self._content_size
         level_w, level_h = backend.get_level_shape(key.level)
-        scale_x = full_w / max(1, level_w)
-        scale_y = full_h / max(1, level_h)
+        base_scale_x = full_w / max(1, level_w)
+        base_scale_y = full_h / max(1, level_h)
+        scale_x = float(base_scale_x) * float(sx)
+        scale_y = float(base_scale_y) * float(sy)
+        theta = math.radians(float(rotation_deg))
+        cos_t = math.cos(theta)
+        sin_t = math.sin(theta)
+        m11 = scale_x * cos_t
+        m12 = scale_x * sin_t
+        m21 = -scale_y * sin_t
+        m22 = scale_y * cos_t
+        center_scene_x = float(tx) + (float(full_w) * float(sx) * 0.5)
+        center_scene_y = float(ty) + (float(full_h) * float(sy) * 0.5)
+        center_level_x = float(level_w) * 0.5
+        center_level_y = float(level_h) * 0.5
+        t_x = center_scene_x - ((m11 * center_level_x) + (m21 * center_level_y))
+        t_y = center_scene_y - ((m12 * center_level_x) + (m22 * center_level_y))
+        tile_origin_x = float(key.tx * self.tile_size)
+        tile_origin_y = float(key.ty * self.tile_size)
         position = QtCore.QPointF(
-            tx + (key.tx * self.tile_size * scale_x * sx),
-            ty + (key.ty * self.tile_size * scale_y * sy),
+            t_x + (m11 * tile_origin_x) + (m21 * tile_origin_y),
+            t_y + (m12 * tile_origin_x) + (m22 * tile_origin_y),
         )
-        transform = QtGui.QTransform.fromScale(scale_x * sx, scale_y * sy)
+        transform = QtGui.QTransform(m11, m12, m21, m22, 0.0, 0.0)
         return position, transform
 
     def _update_existing_tile_items(
@@ -2536,11 +2837,18 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         ty: float = 0.0,
         sx: float = 1.0,
         sy: float = 1.0,
+        rotation_deg: float = 0.0,
         item_opacity: float | None = None,
     ) -> None:
         for key, item in list(item_map.items()):
             position, transform = self._tile_scene_metrics(
-                backend, key, tx=tx, ty=ty, sx=sx, sy=sy
+                backend,
+                key,
+                tx=tx,
+                ty=ty,
+                sx=sx,
+                sy=sy,
+                rotation_deg=rotation_deg,
             )
             item.setPos(position)
             item.setTransform(transform)
@@ -2560,6 +2868,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         ty: float = 0.0,
         sx: float = 1.0,
         sy: float = 1.0,
+        rotation_deg: float = 0.0,
         item_opacity: float | None = None,
     ) -> None:
         for key in visible_keys:
@@ -2570,7 +2879,13 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 continue
             item = QtWidgets.QGraphicsPixmapItem(QtGui.QPixmap.fromImage(cached))
             position, transform = self._tile_scene_metrics(
-                backend, key, tx=tx, ty=ty, sx=sx, sy=sy
+                backend,
+                key,
+                tx=tx,
+                ty=ty,
+                sx=sx,
+                sy=sy,
+                rotation_deg=rotation_deg,
             )
             item.setPos(position)
             item.setTransform(transform)
@@ -2589,6 +2904,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         ty: float = 0.0,
         sx: float = 1.0,
         sy: float = 1.0,
+        rotation_deg: float = 0.0,
     ) -> list[TileKey]:
         if backend is None:
             return []
@@ -2601,6 +2917,55 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         scale_y = full_h / max(1, level_h)
         scene_scale_x = max(1e-12, float(scale_x) * float(sx))
         scene_scale_y = max(1e-12, float(scale_y) * float(sy))
+        if abs(float(rotation_deg)) > 1e-9:
+            theta = math.radians(float(rotation_deg))
+            cos_t = math.cos(theta)
+            sin_t = math.sin(theta)
+            m11 = scene_scale_x * cos_t
+            m12 = scene_scale_x * sin_t
+            m21 = -scene_scale_y * sin_t
+            m22 = scene_scale_y * cos_t
+            center_scene_x = float(tx) + (float(full_w) * float(sx) * 0.5)
+            center_scene_y = float(ty) + (float(full_h) * float(sy) * 0.5)
+            center_level_x = float(level_w) * 0.5
+            center_level_y = float(level_h) * 0.5
+            t_x = center_scene_x - ((m11 * center_level_x) + (m21 * center_level_y))
+            t_y = center_scene_y - ((m12 * center_level_x) + (m22 * center_level_y))
+            det = (m11 * m22) - (m12 * m21)
+            if abs(det) < 1e-12:
+                return []
+            inv11 = m22 / det
+            inv12 = -m12 / det
+            inv21 = -m21 / det
+            inv22 = m11 / det
+            corners = [
+                rect.topLeft(),
+                rect.topRight(),
+                rect.bottomLeft(),
+                rect.bottomRight(),
+            ]
+            level_points: list[QtCore.QPointF] = []
+            for corner in corners:
+                qx = float(corner.x()) - t_x
+                qy = float(corner.y()) - t_y
+                px = (inv11 * qx) + (inv21 * qy)
+                py = (inv12 * qx) + (inv22 * qy)
+                level_points.append(QtCore.QPointF(px, py))
+            min_x = min(point.x() for point in level_points)
+            max_x = max(point.x() for point in level_points)
+            min_y = min(point.y() for point in level_points)
+            max_y = max(point.y() for point in level_points)
+            max_tx = max(0, (level_w - 1) // self.tile_size)
+            max_ty = max(0, (level_h - 1) // self.tile_size)
+            left = max(0, int(math.floor(min_x / self.tile_size)))
+            top = max(0, int(math.floor(min_y / self.tile_size)))
+            right = min(max_tx, max(0, int(math.floor(max_x / self.tile_size))))
+            bottom = min(max_ty, max(0, int(math.floor(max_y / self.tile_size))))
+            return [
+                TileKey(level=level, tx=tx_idx, ty=ty_idx)
+                for ty_idx in range(top, bottom + 1)
+                for tx_idx in range(left, right + 1)
+            ]
         max_tx = max(0, (level_w - 1) // self.tile_size)
         max_ty = max(0, (level_h - 1) // self.tile_size)
         left = max(0, int((rect.left() - float(tx)) / scene_scale_x) // self.tile_size)
@@ -2679,6 +3044,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                     visible_keys=visible,
                     item_map=self._tile_items,
                     z_value_for_key=lambda key: -10.0 - key.level,
+                    rotation_deg=0.0,
                 )
                 updated = True
         for runtime in self._raster_overlay_layers.values():
@@ -2704,6 +3070,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 ty=float(runtime.ty),
                 sx=float(runtime.sx),
                 sy=float(runtime.sy),
+                rotation_deg=float(runtime.rotation_deg),
                 item_opacity=runtime.opacity,
             )
             updated = True
@@ -2723,6 +3090,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                     ty=float(self._label_transform["ty"]),
                     sx=float(self._label_transform["sx"]),
                     sy=float(self._label_transform["sy"]),
+                    rotation_deg=0.0,
                 )
                 updated = True
         if updated:
@@ -2765,6 +3133,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             backend=self.backend,
             level=level,
             current_items=self._tile_items,
+            rotation_deg=0.0,
         )
         self._last_raster_level = int(level)
         self._last_visible_tile_count = len(plan.visible_keys)
@@ -2791,6 +3160,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             visible_keys=ordered_visible,
             item_map=self._tile_items,
             z_value_for_key=lambda key: -10.0 - key.level,
+            rotation_deg=0.0,
         )
         if (
             int(self.tile_scheduler_stats()["raster"].get("outstanding_requests", 0))
@@ -2832,6 +3202,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 ty=float(runtime.ty),
                 sx=float(runtime.sx),
                 sy=float(runtime.sy),
+                rotation_deg=float(runtime.rotation_deg),
             )
             runtime.last_level = int(level)
             runtime.last_visible_tile_count = len(plan.visible_keys)
@@ -2866,6 +3237,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 ty=float(runtime.ty),
                 sx=float(runtime.sx),
                 sy=float(runtime.sy),
+                rotation_deg=float(runtime.rotation_deg),
                 item_opacity=runtime.opacity,
             )
             if int(scheduler.stats().outstanding_requests) > 0:
@@ -2897,6 +3269,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             ty=float(self._label_transform["ty"]),
             sx=float(self._label_transform["sx"]),
             sy=float(self._label_transform["sy"]),
+            rotation_deg=0.0,
         )
         self._last_label_level = int(level)
         self._last_label_visible_tile_count = len(plan.visible_keys)
@@ -2927,6 +3300,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             ty=float(self._label_transform["ty"]),
             sx=float(self._label_transform["sx"]),
             sy=float(self._label_transform["sy"]),
+            rotation_deg=0.0,
         )
         if int(self.tile_scheduler_stats()["label"].get("outstanding_requests", 0)) > 0:
             self._tile_result_timer.start()
@@ -3292,7 +3666,11 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         _layer_id, runtime = selected
         if not bool(getattr(runtime, "visible", True)):
             return
-        bounds = self._raster_overlay_scene_bounds(runtime)
+        corners = self._raster_overlay_scene_corners(runtime)
+        nw = corners["nw"]
+        ne = corners["ne"]
+        se = corners["se"]
+        sw = corners["sw"]
         handles = self._raster_overlay_arrow_handles(runtime)
         pen = QtGui.QPen(QtGui.QColor("#2aa3ff"))
         pen.setWidthF(1.5)
@@ -3301,7 +3679,14 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
         painter.setPen(pen)
         painter.setBrush(QtGui.QBrush(QtGui.QColor(42, 163, 255, 80)))
-        painter.drawRect(bounds)
+        outline = QtGui.QPolygonF([nw, ne, se, sw])
+        painter.drawPolygon(outline)
+        top_center = handles.get("top", {}).get("center")
+        rotate_center = handles.get("rotate", {}).get("center")
+        if isinstance(top_center, QtCore.QPointF) and isinstance(
+            rotate_center, QtCore.QPointF
+        ):
+            painter.drawLine(top_center, rotate_center)
         for handle_name, payload in handles.items():
             center = payload.get("center")
             if not isinstance(center, QtCore.QPointF):
@@ -3325,6 +3710,10 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 path.moveTo(center.x(), center.y() + arrow_size)
                 path.lineTo(center.x() - (arrow_size * 0.75), center.y() - arrow_size)
                 path.lineTo(center.x() + (arrow_size * 0.75), center.y() - arrow_size)
+            elif handle_name == "rotate":
+                painter.setBrush(QtGui.QBrush(QtGui.QColor("#0f87e8")))
+                painter.drawEllipse(center, arrow_size * 0.7, arrow_size * 0.7)
+                continue
             else:
                 d = arrow_size * 0.85
                 path.moveTo(center.x(), center.y() - d)
@@ -3755,6 +4144,14 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                     self.overrideCursor(QtCore.Qt.SizeVerCursor)
                     self._set_hover_feedback(
                         self.tr("Drag arrow to resize top/bottom"),
+                        status=self._scene_xy_text(scene_pos),
+                    )
+                    event.accept()
+                    return
+                if handle == "rotate":
+                    self.overrideCursor(QtCore.Qt.OpenHandCursor)
+                    self._set_hover_feedback(
+                        self.tr("Drag handle to rotate raster overlay"),
                         status=self._scene_xy_text(scene_pos),
                     )
                     event.accept()

@@ -222,8 +222,11 @@ single place to inspect and control the current layer stack, including:
 - hiding/showing manual annotation layers
 - adjusting opacity for label-image and vector-overlay layers
 - manually aligning imported raster overlay layers with drag or the dock's
-  `Align / Nudge` controls, which persist `tx/ty/sx/sy` transform values in
-  the project state
+  `Align / Nudge` controls, which persist `tx/ty/sx/sy/rotation_deg`
+  transform values in the project state
+- rotating imported raster overlay layers with:
+  - quick `Rotate -` / `Rotate +` controls in `Align / Nudge`
+  - exact `Rotation` value in `Layer Settings` for reproducible alignment
 - resetting a raster overlay layer back to identity alignment from the dock
 - keyboard shortcuts in the Layers dock:
   - `Alt+Left` / `Alt+Right` / `Alt+Up` / `Alt+Down` for nudging the selected
@@ -234,6 +237,20 @@ single place to inspect and control the current layer stack, including:
 When you align a raster overlay by lowering its opacity or dragging it in the
 tiled viewer, Annolid now keeps the selected overlay and the reference raster
 layer beneath it visible so the comparison stays usable during alignment.
+
+For cross-modality section alignment (for example slightly angled myelin and
+Nissl overlays), use this sequence:
+
+1. Select the overlay layer in `Layers`.
+2. Lower opacity so you can see the reference raster beneath it.
+3. Use `Rotate -` / `Rotate +` to match angle first.
+4. Use nudge + scale (or direct drag in tiled view) to finish registration.
+5. Save layer settings so the transform can be reapplied later.
+
+In `Interactive Resize` mode, Annolid draws a transform box that follows the
+current overlay rotation plus a rotate handle above the top edge. Drag the
+rotate handle directly on-canvas, then use edge/corner handles to resize along
+the rotated axes.
 
 Selecting a vector-overlay or landmark layer in the `Layers` dock also keeps
 the vector overlay dock aligned with that overlay, so the layer list and the

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -974,6 +975,7 @@ def test_viewer_layer_dock_settings_panel_emits_open_apply_and_save_requests() -
                     "ty": -0.5,
                     "sx": 1.1,
                     "sy": 0.9,
+                    "rotation_deg": 2.5,
                     "details": "Raster overlay image | page 3",
                 }
             ]
@@ -1019,6 +1021,7 @@ def test_viewer_layer_dock_settings_panel_emits_open_apply_and_save_requests() -
                     "ty": -4.0,
                     "sx": 1.25,
                     "sy": 0.75,
+                    "rotation_deg": 2.5,
                 },
             )
         ]
@@ -1089,6 +1092,7 @@ def test_viewer_layer_dock_copy_paste_alignment_emits_apply_for_target_layer() -
                     "ty": -4.0,
                     "sx": 1.15,
                     "sy": 0.85,
+                    "rotation_deg": -3.0,
                     "details": "Raster overlay image | page 1",
                 },
                 {
@@ -1107,6 +1111,7 @@ def test_viewer_layer_dock_copy_paste_alignment_emits_apply_for_target_layer() -
                     "ty": 0.0,
                     "sx": 1.0,
                     "sy": 1.0,
+                    "rotation_deg": 0.0,
                     "details": "Raster overlay image | page 1",
                 },
             ]
@@ -1134,6 +1139,7 @@ def test_viewer_layer_dock_copy_paste_alignment_emits_apply_for_target_layer() -
                     "ty": -4.0,
                     "sx": 1.15,
                     "sy": 0.85,
+                    "rotation_deg": -3.0,
                 },
             )
         ]
@@ -1336,6 +1342,149 @@ def test_tiled_image_view_corner_drag_resizes_selected_raster_overlay_proportion
         window.close()
 
 
+def test_tiled_image_view_rotate_handle_drags_selected_raster_overlay(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_rotate_drag.ome.tiff"
+    overlay_path = tmp_path / "overlay_rotate_drag.ome.tiff"
+    tifffile.imwrite(base_path, np.zeros((100, 200), dtype=np.uint16), ome=True)
+    tifffile.imwrite(overlay_path, np.ones((100, 200), dtype=np.uint16), ome=True)
+
+    window = _ViewerLayerWindow()
+    try:
+        window.imagePath = str(base_path)
+        window.large_image_backend = TiffFileBackend(base_path)
+        window.large_image_view._content_size = (200, 100)
+        window.large_image_view.set_backend(window.large_image_backend)
+        window.otherData = {
+            "raster_image_layers": [
+                {
+                    "id": "raster_overlay_rotate_drag",
+                    "name": "overlay rotate drag",
+                    "source_path": str(overlay_path),
+                    "visible": True,
+                    "opacity": 1.0,
+                    "page_index": 0,
+                    "z_index": 10,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "sx": 1.0,
+                    "sy": 1.0,
+                    "rotation_deg": 0.0,
+                }
+            ]
+        }
+        window._restoreRasterImageLayersFromState()
+        window._onViewerLayerSelected("raster_overlay_rotate_drag")
+        window.large_image_view.set_raster_overlay_arrow_mode(True)
+
+        runtime = window.large_image_view._raster_overlay_runtime(
+            "raster_overlay_rotate_drag"
+        )
+        assert runtime is not None
+        handles = window.large_image_view._raster_overlay_arrow_handles(runtime)
+        rotate_center = handles["rotate"]["center"]
+        assert isinstance(rotate_center, QtCore.QPointF)
+
+        assert window.large_image_view._start_raster_overlay_arrow_drag(
+            "rotate", rotate_center
+        )
+        center = window.large_image_view._raster_overlay_scene_center(runtime)
+        moved = QtCore.QPointF(float(center.x()) + 100.0, float(center.y()))
+        assert window.large_image_view._apply_raster_overlay_arrow_drag(moved)
+        window.large_image_view._end_raster_overlay_arrow_drag()
+
+        state = {
+            str(item["id"]): item
+            for item in window.large_image_view.raster_overlay_layers_state()
+        }
+        assert (
+            abs(float(state["raster_overlay_rotate_drag"]["rotation_deg"]) - 90.0)
+            < 1e-3
+        )
+    finally:
+        window.close()
+
+
+def test_tiled_image_view_right_handle_resizes_rotated_raster_overlay(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_rotated_resize.ome.tiff"
+    overlay_path = tmp_path / "overlay_rotated_resize.ome.tiff"
+    tifffile.imwrite(base_path, np.zeros((100, 200), dtype=np.uint16), ome=True)
+    tifffile.imwrite(overlay_path, np.ones((100, 200), dtype=np.uint16), ome=True)
+
+    window = _ViewerLayerWindow()
+    try:
+        window.imagePath = str(base_path)
+        window.large_image_backend = TiffFileBackend(base_path)
+        window.large_image_view._content_size = (200, 100)
+        window.large_image_view.set_backend(window.large_image_backend)
+        window.otherData = {
+            "raster_image_layers": [
+                {
+                    "id": "raster_overlay_rotated_resize",
+                    "name": "overlay rotated resize",
+                    "source_path": str(overlay_path),
+                    "visible": True,
+                    "opacity": 1.0,
+                    "page_index": 0,
+                    "z_index": 10,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "sx": 1.0,
+                    "sy": 1.0,
+                    "rotation_deg": 90.0,
+                }
+            ]
+        }
+        window._restoreRasterImageLayersFromState()
+        window._onViewerLayerSelected("raster_overlay_rotated_resize")
+        window.large_image_view.set_raster_overlay_arrow_mode(True)
+
+        runtime = window.large_image_view._raster_overlay_runtime(
+            "raster_overlay_rotated_resize"
+        )
+        assert runtime is not None
+        handles = window.large_image_view._raster_overlay_arrow_handles(runtime)
+        right_center = handles["right"]["center"]
+        assert isinstance(right_center, QtCore.QPointF)
+
+        axis_x, _axis_y = window.large_image_view._raster_overlay_axis_scene_vectors(
+            runtime
+        )
+        axis_len = math.hypot(float(axis_x.x()), float(axis_x.y()))
+        assert axis_len > 0.0
+        ux = float(axis_x.x()) / axis_len
+        uy = float(axis_x.y()) / axis_len
+
+        assert window.large_image_view._start_raster_overlay_arrow_drag(
+            "right", right_center
+        )
+        moved = QtCore.QPointF(
+            float(right_center.x()) + (ux * 20.0),
+            float(right_center.y()) + (uy * 20.0),
+        )
+        assert window.large_image_view._apply_raster_overlay_arrow_drag(moved)
+        window.large_image_view._end_raster_overlay_arrow_drag()
+
+        state = {
+            str(item["id"]): item
+            for item in window.large_image_view.raster_overlay_layers_state()
+        }
+        assert float(state["raster_overlay_rotated_resize"]["sx"]) > 1.05
+        assert (
+            abs(float(state["raster_overlay_rotated_resize"]["rotation_deg"]) - 90.0)
+            < 1e-6
+        )
+    finally:
+        window.close()
+
+
 def test_viewer_layer_quick_scale_keeps_center_for_raster_overlay(
     tmp_path: Path,
 ) -> None:
@@ -1432,6 +1581,54 @@ def test_viewer_layer_quick_align_right_bottom_for_raster_overlay(
         assert abs(float(state["raster_overlay_align"]["ty"]) - 50.0) < 1e-6
         assert abs(float(state["raster_overlay_align"]["sx"]) - 0.8) < 1e-6
         assert abs(float(state["raster_overlay_align"]["sy"]) - 0.5) < 1e-6
+    finally:
+        window.close()
+
+
+def test_viewer_layer_quick_rotate_updates_raster_overlay_rotation(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+
+    base_path = tmp_path / "base_quick_rotate.ome.tiff"
+    overlay_path = tmp_path / "overlay_quick_rotate.ome.tiff"
+    tifffile.imwrite(base_path, np.zeros((100, 200), dtype=np.uint16), ome=True)
+    tifffile.imwrite(overlay_path, np.ones((100, 200), dtype=np.uint16), ome=True)
+
+    window = _ViewerLayerWindow()
+    try:
+        window.imagePath = str(base_path)
+        window.large_image_backend = TiffFileBackend(base_path)
+        window.large_image_view._content_size = (200, 100)
+        window.large_image_view.set_backend(window.large_image_backend)
+        window.otherData = {
+            "raster_image_layers": [
+                {
+                    "id": "raster_overlay_rotate",
+                    "name": "overlay rotate",
+                    "source_path": str(overlay_path),
+                    "visible": True,
+                    "opacity": 1.0,
+                    "page_index": 0,
+                    "z_index": 10,
+                    "tx": 0.0,
+                    "ty": 0.0,
+                    "sx": 1.0,
+                    "sy": 1.0,
+                    "rotation_deg": 0.0,
+                }
+            ]
+        }
+        window._restoreRasterImageLayersFromState()
+        window._onViewerLayerQuickTransformRequested(
+            "raster_overlay_rotate",
+            {"action": "rotate", "delta_deg": 7.5},
+        )
+        state = {
+            str(item["id"]): item
+            for item in window.large_image_view.raster_overlay_layers_state()
+        }
+        assert abs(float(state["raster_overlay_rotate"]["rotation_deg"]) - 7.5) < 1e-6
     finally:
         window.close()
 

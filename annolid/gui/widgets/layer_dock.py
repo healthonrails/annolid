@@ -160,6 +160,23 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         quick_scale_row.addWidget(self.expand_button)
         translate_layout.addLayout(quick_scale_row)
 
+        quick_rotate_row = QtWidgets.QHBoxLayout()
+        self.rotate_step_spin = QtWidgets.QDoubleSpinBox(translate_box)
+        self.rotate_step_spin.setRange(0.1, 180.0)
+        self.rotate_step_spin.setDecimals(1)
+        self.rotate_step_spin.setSingleStep(0.5)
+        self.rotate_step_spin.setValue(1.0)
+        self.rotate_step_spin.setSuffix(" deg")
+        self.rotate_ccw_button = QtWidgets.QPushButton("Rotate -", translate_box)
+        self.rotate_cw_button = QtWidgets.QPushButton("Rotate +", translate_box)
+        self.rotate_ccw_button.clicked.connect(lambda: self._request_rotate(-1.0))
+        self.rotate_cw_button.clicked.connect(lambda: self._request_rotate(1.0))
+        quick_rotate_row.addWidget(QtWidgets.QLabel("Rotate Step", translate_box))
+        quick_rotate_row.addWidget(self.rotate_step_spin, 1)
+        quick_rotate_row.addWidget(self.rotate_ccw_button)
+        quick_rotate_row.addWidget(self.rotate_cw_button)
+        translate_layout.addLayout(quick_rotate_row)
+
         quick_align_grid = QtWidgets.QGridLayout()
         self.align_left_button = QtWidgets.QToolButton(translate_box)
         self.align_hcenter_button = QtWidgets.QToolButton(translate_box)
@@ -274,6 +291,7 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         self.ty_spin = QtWidgets.QDoubleSpinBox(settings_box)
         self.sx_spin = QtWidgets.QDoubleSpinBox(settings_box)
         self.sy_spin = QtWidgets.QDoubleSpinBox(settings_box)
+        self.rotation_spin = QtWidgets.QDoubleSpinBox(settings_box)
         for spin in (self.tx_spin, self.ty_spin):
             spin.setRange(-1000000.0, 1000000.0)
             spin.setDecimals(3)
@@ -293,6 +311,15 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         transform_grid.addWidget(self.sx_spin, 1, 1)
         transform_grid.addWidget(sy_label, 1, 2)
         transform_grid.addWidget(self.sy_spin, 1, 3)
+        rotation_label = QtWidgets.QLabel("Rotation", settings_box)
+        self.rotation_spin.setRange(-180.0, 180.0)
+        self.rotation_spin.setDecimals(2)
+        self.rotation_spin.setSingleStep(0.5)
+        self.rotation_spin.setWrapping(True)
+        self.rotation_spin.setValue(0.0)
+        self.rotation_spin.setSuffix(" deg")
+        transform_grid.addWidget(rotation_label, 2, 0)
+        transform_grid.addWidget(self.rotation_spin, 2, 1, 1, 3)
         settings_layout.addLayout(transform_grid)
 
         button_row = QtWidgets.QHBoxLayout()
@@ -388,6 +415,9 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         self.scale_step_spin.setEnabled(enabled_flag)
         self.shrink_button.setEnabled(enabled_flag)
         self.expand_button.setEnabled(enabled_flag)
+        self.rotate_step_spin.setEnabled(enabled_flag)
+        self.rotate_ccw_button.setEnabled(enabled_flag)
+        self.rotate_cw_button.setEnabled(enabled_flag)
         self.align_left_button.setEnabled(enabled_flag)
         self.align_hcenter_button.setEnabled(enabled_flag)
         self.align_right_button.setEnabled(enabled_flag)
@@ -411,6 +441,7 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         self.ty_spin.setEnabled(enabled_flag)
         self.sx_spin.setEnabled(enabled_flag)
         self.sy_spin.setEnabled(enabled_flag)
+        self.rotation_spin.setEnabled(enabled_flag)
         self.reload_settings_button.setEnabled(enabled_flag)
         self.apply_settings_button.setEnabled(enabled_flag)
         self.save_settings_button.setEnabled(enabled_flag)
@@ -444,6 +475,7 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
             self.ty_spin.setValue(float(layer.get("ty", 0.0) or 0.0))
             self.sx_spin.setValue(max(0.000001, float(layer.get("sx", 1.0) or 1.0)))
             self.sy_spin.setValue(max(0.000001, float(layer.get("sy", 1.0) or 1.0)))
+            self.rotation_spin.setValue(float(layer.get("rotation_deg", 0.0) or 0.0))
         finally:
             self._settings_syncing = False
 
@@ -455,6 +487,7 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
             "ty": float(self.ty_spin.value()),
             "sx": float(self.sx_spin.value()),
             "sy": float(self.sy_spin.value()),
+            "rotation_deg": float(self.rotation_spin.value()),
         }
 
     def _copy_alignment(self) -> None:
@@ -471,6 +504,7 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
             "ty": float(self.ty_spin.value()),
             "sx": float(self.sx_spin.value()),
             "sy": float(self.sy_spin.value()),
+            "rotation_deg": float(self.rotation_spin.value()),
         }
         self._update_alignment_copy_hint()
         self._set_settings_enabled(True)
@@ -491,6 +525,9 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
         )
         self.sy_spin.setValue(
             max(0.000001, float(self._copied_alignment.get("sy", 1.0) or 1.0))
+        )
+        self.rotation_spin.setValue(
+            float(self._copied_alignment.get("rotation_deg", 0.0) or 0.0)
         )
         self._request_apply_settings()
 
@@ -667,6 +704,22 @@ class ViewerLayerDockWidget(QtWidgets.QDockWidget):
                 "action": "align",
                 "horizontal": str(horizontal or "").strip().lower() or None,
                 "vertical": str(vertical or "").strip().lower() or None,
+            },
+        )
+
+    def _request_rotate(self, direction: float) -> None:
+        layer_id = self._current_layer_id()
+        if not layer_id:
+            return
+        layer = self._layer_map.get(layer_id, {})
+        if not bool(layer.get("supports_translate", False)):
+            return
+        step = max(0.001, float(self.rotate_step_spin.value()))
+        self.layerQuickTransformRequested.emit(
+            layer_id,
+            {
+                "action": "rotate",
+                "delta_deg": float(direction) * step,
             },
         )
 

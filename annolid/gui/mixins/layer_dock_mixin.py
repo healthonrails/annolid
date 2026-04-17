@@ -131,6 +131,7 @@ class LayerDockMixin:
             if isinstance(layer, RasterImageLayer):
                 source_path = ""
                 page_index = int(layer.backend_page_index)
+                rotation_deg = 0.0
                 for record in list(
                     getattr(self, "_raster_layer_records", lambda: [])() or []
                 ):
@@ -140,6 +141,7 @@ class LayerDockMixin:
                     page_index = int(
                         (record or {}).get("page_index", page_index) or page_index
                     )
+                    rotation_deg = float((record or {}).get("rotation_deg", 0.0) or 0.0)
                     break
                 if str(layer.id) == "raster_image":
                     details.append("Base raster image")
@@ -162,6 +164,8 @@ class LayerDockMixin:
                             details.append(
                                 f"offset=({tx:.1f}, {ty:.1f}) scale=({sx:.3f}, {sy:.3f})"
                             )
+                        if abs(float(rotation_deg)) > 1e-6:
+                            details.append(f"rotation={float(rotation_deg):.2f} deg")
                     except Exception:
                         pass
             elif isinstance(layer, RasterLabelLayer):
@@ -199,6 +203,7 @@ class LayerDockMixin:
                     "sy": float(
                         getattr(getattr(layer, "transform", None), "sy", 1.0) or 1.0
                     ),
+                    "rotation_deg": float(rotation_deg) if is_raster_overlay else 0.0,
                     "details": " | ".join(details),
                 }
             )
@@ -516,6 +521,7 @@ class LayerDockMixin:
                         ty=float(payload.get("ty", 0.0) or 0.0),
                         sx=float(payload.get("sx", 1.0) or 1.0),
                         sy=float(payload.get("sy", 1.0) or 1.0),
+                        rotation_deg=float(payload.get("rotation_deg", 0.0) or 0.0),
                     )
                 )
                 or changed
@@ -557,6 +563,13 @@ class LayerDockMixin:
                     layer_id,
                     horizontal=data.get("horizontal"),
                     vertical=data.get("vertical"),
+                )
+            )
+        elif action == "rotate" and hasattr(self, "rotateRasterImageLayer"):
+            changed = bool(
+                self.rotateRasterImageLayer(
+                    layer_id,
+                    delta_deg=float(data.get("delta_deg", 0.0) or 0.0),
                 )
             )
         if changed:

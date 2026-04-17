@@ -128,6 +128,7 @@ class RasterLayerMixin:
                     "ty": 0.0,
                     "sx": 1.0,
                     "sy": 1.0,
+                    "rotation_deg": 0.0,
                 }
             )
             added += 1
@@ -276,6 +277,7 @@ class RasterLayerMixin:
         ty: float | None = None,
         sx: float | None = None,
         sy: float | None = None,
+        rotation_deg: float | None = None,
     ) -> bool:
         layer_id = str(layer_id or "").strip()
         if not layer_id:
@@ -295,11 +297,20 @@ class RasterLayerMixin:
         next_ty = float(target_record.get("ty", 0.0) if ty is None else ty)
         next_sx = max(1e-6, float(target_record.get("sx", 1.0) if sx is None else sx))
         next_sy = max(1e-6, float(target_record.get("sy", 1.0) if sy is None else sy))
+        next_rotation = float(
+            target_record.get("rotation_deg", 0.0)
+            if rotation_deg is None
+            else rotation_deg
+        )
         if (
             abs(float(target_record.get("tx", 0.0) or 0.0) - next_tx) < 1e-9
             and abs(float(target_record.get("ty", 0.0) or 0.0) - next_ty) < 1e-9
             and abs(float(target_record.get("sx", 1.0) or 1.0) - next_sx) < 1e-9
             and abs(float(target_record.get("sy", 1.0) or 1.0) - next_sy) < 1e-9
+            and abs(
+                float(target_record.get("rotation_deg", 0.0) or 0.0) - next_rotation
+            )
+            < 1e-9
         ):
             return False
 
@@ -307,6 +318,7 @@ class RasterLayerMixin:
         target_record["ty"] = float(next_ty)
         target_record["sx"] = float(next_sx)
         target_record["sy"] = float(next_sy)
+        target_record["rotation_deg"] = float(next_rotation)
 
         large_view = getattr(self, "large_image_view", None)
         if large_view is not None and hasattr(
@@ -319,6 +331,7 @@ class RasterLayerMixin:
                     ty=float(next_ty),
                     sx=float(next_sx),
                     sy=float(next_sy),
+                    rotation_deg=float(next_rotation),
                 )
             )
             if not changed:
@@ -389,6 +402,7 @@ class RasterLayerMixin:
                 ty=float(next_ty),
                 sx=float(next_sx),
                 sy=float(next_sy),
+                rotation_deg=float(target_record.get("rotation_deg", 0.0) or 0.0),
             )
         )
 
@@ -438,6 +452,36 @@ class RasterLayerMixin:
                 ty=float(next_ty),
                 sx=float(sx),
                 sy=float(sy),
+                rotation_deg=float(target_record.get("rotation_deg", 0.0) or 0.0),
+            )
+        )
+
+    def rotateRasterImageLayer(self, layer_id: str, *, delta_deg: float) -> bool:
+        layer_id = str(layer_id or "").strip()
+        if not layer_id:
+            return False
+        records = list(self._raster_layer_records())
+        target_record: dict | None = None
+        for record in records:
+            if str((record or {}).get("id") or "") == layer_id:
+                target_record = record
+                break
+        if target_record is None:
+            return False
+        current_rotation = float(target_record.get("rotation_deg", 0.0) or 0.0)
+        next_rotation = current_rotation + float(delta_deg)
+        while next_rotation > 180.0:
+            next_rotation -= 360.0
+        while next_rotation <= -180.0:
+            next_rotation += 360.0
+        return bool(
+            self.setRasterImageLayerTransform(
+                layer_id,
+                tx=float(target_record.get("tx", 0.0) or 0.0),
+                ty=float(target_record.get("ty", 0.0) or 0.0),
+                sx=float(target_record.get("sx", 1.0) or 1.0),
+                sy=float(target_record.get("sy", 1.0) or 1.0),
+                rotation_deg=float(next_rotation),
             )
         )
 
@@ -744,6 +788,7 @@ class RasterLayerMixin:
                     "ty": float(record.get("ty", 0.0) or 0.0),
                     "sx": max(1e-6, float(record.get("sx", 1.0) or 1.0)),
                     "sy": max(1e-6, float(record.get("sy", 1.0) or 1.0)),
+                    "rotation_deg": float(record.get("rotation_deg", 0.0) or 0.0),
                 }
             )
             valid_records.append(
@@ -759,6 +804,7 @@ class RasterLayerMixin:
                     "ty": float(record.get("ty", 0.0) or 0.0),
                     "sx": max(1e-6, float(record.get("sx", 1.0) or 1.0)),
                     "sy": max(1e-6, float(record.get("sy", 1.0) or 1.0)),
+                    "rotation_deg": float(record.get("rotation_deg", 0.0) or 0.0),
                 }
             )
         if hasattr(large_view, "set_raster_overlay_layers"):
