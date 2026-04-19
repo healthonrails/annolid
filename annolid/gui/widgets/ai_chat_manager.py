@@ -12,11 +12,14 @@ from qtpy import QtCore, QtWidgets
 from annolid.infrastructure.agent_config import load_agent_config as load_config
 from annolid.infrastructure.agent_workspace import get_agent_workspace_path
 from annolid.services.chat_bus import InboundMessage, MessageBus
+from annolid.services.chat_dreaming import run_chat_dream_run_for_workspace
 from annolid.services.chat_manager_runtime import (
     AgentBusService,
     AgentLoop,
     ChannelManager,
     CronJob,
+    CronPayload,
+    CronSchedule,
     CronService,
     FunctionToolRegistry,
     ScheduledTask,
@@ -62,6 +65,9 @@ async def _execute_cron_job_payload(
     *,
     tools: FunctionToolRegistry | None,
     background_bus: Optional[MessageBus],
+    dream_workspace: Optional[str] = None,
+    dream_max_batch_entries: int = 50,
+    dream_initialize_cursor_to_end: bool = True,
 ) -> Optional[str]:
     if str(job.payload.kind or "") == "send_email":
         if tools is None:
@@ -79,6 +85,15 @@ async def _execute_cron_job_payload(
                 "content": email_content,
                 "attachment_paths": list(job.payload.attachment_paths or []),
             },
+        )
+    if str(job.payload.kind or "") == "dream_run":
+        workspace_text = str(dream_workspace or "").strip()
+        if not workspace_text:
+            return "Error: dream workspace unavailable"
+        return run_chat_dream_run_for_workspace(
+            workspace=workspace_text,
+            max_batch_entries=max(1, int(dream_max_batch_entries)),
+            initialize_cursor_to_end=bool(dream_initialize_cursor_to_end),
         )
     if background_bus is None:
         return "Error: background bus unavailable"
@@ -101,6 +116,48 @@ async def _execute_cron_job_payload(
             )
         )
     return "Inbound generated"
+
+
+def _sync_dream_cron_job(
+    *,
+    cron_service: CronService,
+    enabled: bool,
+    interval_hours: int,
+    channel: str = "gui",
+    chat_id: str = "annolid_bot",
+) -> Optional[str]:
+    jobs = cron_service.list_jobs(include_disabled=True)
+    dream_jobs = [
+        job
+        for job in jobs
+        if str(job.payload.kind or "") == "dream_run"
+        or str(job.name or "").strip().lower() == "dream"
+    ]
+    if not enabled:
+        for job in dream_jobs:
+            if bool(job.enabled):
+                cron_service.enable_job(job.id, enabled=False)
+        return None
+
+    if dream_jobs:
+        first = dream_jobs[0]
+        if not bool(first.enabled):
+            cron_service.enable_job(first.id, enabled=True)
+        return str(first.id)
+
+    every_ms = max(1, int(interval_hours)) * 3600 * 1000
+    job = cron_service.add_job(
+        name="dream",
+        schedule=CronSchedule(kind="every", every_ms=every_ms),
+        payload=CronPayload(
+            kind="dream_run",
+            message="dream",
+            deliver=False,
+            channel=channel,
+            to=chat_id,
+        ),
+    )
+    return str(job.id)
 
 
 class AIChatManager(QtCore.QObject):
@@ -262,6 +319,7 @@ class AIChatManager(QtCore.QObject):
                                 )
                             ),
                         )
+                        dream_cfg = getattr(config.agents.defaults, "dream", None)
                         if zulip_enabled and zulip_missing:
                             logger.info(
                                 "Zulip background polling disabled until config is complete. Missing: %s",
@@ -382,6 +440,26 @@ class AIChatManager(QtCore.QObject):
                                 job,
                                 tools=tools,
                                 background_bus=self._background_bus,
+                                dream_workspace=str(workspace),
+                                dream_max_batch_entries=int(
+                                    max(
+                                        1,
+                                        int(
+                                            getattr(
+                                                dream_cfg,
+                                                "max_batch_entries",
+                                                50,
+                                            )
+                                        ),
+                                    )
+                                ),
+                                dream_initialize_cursor_to_end=bool(
+                                    getattr(
+                                        dream_cfg,
+                                        "initialize_cursor_to_end",
+                                        True,
+                                    )
+                                ),
                             )
 
                         self._cron_service = CronService(
@@ -392,6 +470,23 @@ class AIChatManager(QtCore.QObject):
 
                         await self._bus_service.start()
                         await self._cron_service.start()
+                        if dream_cfg is not None:
+                            dream_job_id = _sync_dream_cron_job(
+                                cron_service=self._cron_service,
+                                enabled=bool(getattr(dream_cfg, "enabled", False)),
+                                interval_hours=max(
+                                    1,
+                                    int(getattr(dream_cfg, "interval_hours", 6)),
+                                ),
+                            )
+                            if dream_job_id:
+                                logger.info(
+                                    "Dream cron enabled id=%s interval_hours=%s",
+                                    dream_job_id,
+                                    int(getattr(dream_cfg, "interval_hours", 6)),
+                                )
+                            else:
+                                logger.info("Dream cron disabled")
                         if (
                             config.tools.whatsapp.webhook_enabled
                             and whatsapp_start_runtime

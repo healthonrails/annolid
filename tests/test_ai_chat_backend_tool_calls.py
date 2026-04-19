@@ -3457,6 +3457,24 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_cron_check["args"]["action"] == "check"
     assert parsed_cron_check["args"]["job_id"] == "abc123def"
 
+    parsed_dream_run = task._parse_direct_gui_command("run dream now")
+    assert parsed_dream_run["name"] == "dream_memory"
+    assert parsed_dream_run["args"]["action"] == "run"
+
+    parsed_dream_status = task._parse_direct_gui_command("/dreaming status")
+    assert parsed_dream_status["name"] == "dream_memory"
+    assert parsed_dream_status["args"]["action"] == "status"
+
+    parsed_dream_log = task._parse_direct_gui_command("/dream-log abc123def")
+    assert parsed_dream_log["name"] == "dream_memory"
+    assert parsed_dream_log["args"]["action"] == "log"
+    assert parsed_dream_log["args"]["run_id"] == "abc123def"
+
+    parsed_dream_restore = task._parse_direct_gui_command("/dream-restore abc123def")
+    assert parsed_dream_restore["name"] == "dream_memory"
+    assert parsed_dream_restore["args"]["action"] == "restore"
+    assert parsed_dream_restore["args"]["run_id"] == "abc123def"
+
     parsed_schedule_run = task._parse_direct_gui_command(
         "run automation task task_abc123"
     )
@@ -4042,6 +4060,26 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
             )
         ),
     }
+    task._tool_gui_dream_memory = lambda **kwargs: {  # type: ignore[method-assign]
+        "ok": True,
+        "result": (
+            "Dream completed: processed 4 entries (cursor 10->14)."
+            if str(kwargs.get("action") or "") == "run"
+            else (
+                "## Dreaming Status\n\n- Cursor: 14"
+                if str(kwargs.get("action") or "") == "status"
+                else (
+                    "## Dreaming Help\n\n- `/dream`"
+                    if str(kwargs.get("action") or "") == "help"
+                    else (
+                        "## Dream Run\n\n- Run: `abc123def456`\n- Status: ok"
+                        if str(kwargs.get("action") or "") == "log"
+                        else "Dream restored memory state from run `abc123def456`."
+                    )
+                )
+            )
+        ),
+    }
     task._tool_gui_generate_annolid_tutorial = lambda **kwargs: {  # type: ignore[method-assign]
         "ok": True,
         "tutorial": (
@@ -4279,6 +4317,24 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
         task._execute_direct_gui_command("/cron check abc123def")
     )
     assert "Cron job: id=abc123def" in out_slash_cron_check
+
+    out_dream_run = asyncio.run(task._execute_direct_gui_command("/dream"))
+    assert "Dream completed: processed 4 entries" in out_dream_run
+
+    out_dreaming_status = asyncio.run(
+        task._execute_direct_gui_command("/dreaming status")
+    )
+    assert "## Dreaming Status" in out_dreaming_status
+
+    out_dream_log = asyncio.run(
+        task._execute_direct_gui_command("/dream-log abc123def456")
+    )
+    assert "## Dream Run" in out_dream_log
+
+    out_dream_restore = asyncio.run(
+        task._execute_direct_gui_command("/dream-restore abc123def456")
+    )
+    assert "Dream restored memory state from run `abc123def456`." in out_dream_restore
 
     out_slash_automation_list = asyncio.run(
         task._execute_direct_gui_command("/automation list")

@@ -19,7 +19,9 @@ class CronSchedule:
 class CronPayload:
     """Payload executed by cron runner."""
 
-    kind: Literal["agent_turn", "system_event", "send_email"] = "agent_turn"
+    kind: Literal["agent_turn", "system_event", "send_email", "dream_run"] = (
+        "agent_turn"
+    )
     message: str = ""
     deliver: bool = False
     channel: Optional[str] = None

@@ -56,6 +56,43 @@ or running repeatable workflows through the agent stack.
 - memory-backed agent behavior,
 - security and operational guardrails.
 
+## Dream Memory Runs
+
+Annolid Bot now supports phase-based Dreaming memory maintenance commands in chat:
+
+- `/dream` runs one full dreaming sweep over new `memory/HISTORY.md` entries (`light -> REM -> deep`).
+- `/dreaming status` shows cursor + latest run/phase status.
+- `/dreaming help` shows direct command help.
+- `/dream-log` shows the latest Dream run.
+- `/dream-log <run_id>` shows a specific run.
+- `/dream-restore` lists recent Dream runs.
+- `/dream-restore <run_id>` restores the pre-run memory snapshot.
+
+Runtime artifacts:
+
+- Cursor: `memory/.dream_cursor`
+- Machine state: `memory/.dreams/ingestion.json`, `memory/.dreams/recall-store.json`, `memory/.dreams/phase-signals.json`
+- Run log: `memory/dream_runs.jsonl`
+- Snapshots: `memory/.dream_snapshots/<run_id>/`
+- Dream diary/report output: `memory/DREAMS.md` (or existing `memory/dreams.md`) and `memory/dreaming/deep/YYYY-MM-DD.md`
+- Long-term promotions: `memory/MEMORY.md` (deep phase only)
+
+Behavior notes:
+
+- Light and REM phases do not write to `MEMORY.md`.
+- Deep phase promotions use internal threshold gates (`min score`, `min recall count`, `min unique query contexts`) and skip duplicates already present in `MEMORY.md`.
+- Existing `/dream`, `/dream-log`, `/dream-restore`, and cron wiring remain backward compatible; `/dream` now executes the full phase pipeline.
+
+Background scheduling is optional and config-driven under:
+
+- `agents.defaults.dream.enabled`
+- `agents.defaults.dream.interval_hours`
+- `agents.defaults.dream.max_batch_entries`
+- `agents.defaults.dream.initialize_cursor_to_end`
+
+When enabled, Annolid Bot registers a protected system cron job (`dream`) that
+executes Dream runs directly (no model guesswork).
+
 ## Bot Training Workflows
 
 Annolid Bot now exposes typed training tools for model discovery and launch:

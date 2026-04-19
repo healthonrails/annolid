@@ -474,6 +474,53 @@ class ProviderConfig:
 
 
 @dataclass
+class DreamConfig:
+    enabled: bool = False
+    interval_hours: int = 6
+    max_batch_entries: int = 50
+    initialize_cursor_to_end: bool = True
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "DreamConfig":
+        payload = data or {}
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            interval_hours=max(
+                1,
+                int(
+                    payload.get(
+                        "interval_hours",
+                        payload.get("intervalHours", payload.get("intervalH", 6)),
+                    )
+                ),
+            ),
+            max_batch_entries=max(
+                1,
+                int(
+                    payload.get(
+                        "max_batch_entries",
+                        payload.get("maxBatchEntries", payload.get("maxBatchSize", 50)),
+                    )
+                ),
+            ),
+            initialize_cursor_to_end=bool(
+                payload.get(
+                    "initialize_cursor_to_end",
+                    payload.get("initializeCursorToEnd", True),
+                )
+            ),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "interval_hours": self.interval_hours,
+            "max_batch_entries": self.max_batch_entries,
+            "initialize_cursor_to_end": self.initialize_cursor_to_end,
+        }
+
+
+@dataclass
 class AgentDefaults:
     workspace: str = "~/.annolid/workspace"
     model: str = "qwen3-vl"
@@ -489,6 +536,7 @@ class AgentDefaults:
     transient_retry_initial_backoff_s: float = 0.5
     transient_retry_max_backoff_s: float = 4.0
     strict_runtime_tool_guard: bool = True
+    dream: DreamConfig = field(default_factory=DreamConfig)
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "AgentDefaults":
@@ -580,6 +628,7 @@ class AgentDefaults:
                     payload.get("strictRuntimeToolGuard", True),
                 )
             ),
+            dream=DreamConfig.from_dict(payload.get("dream")),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -598,6 +647,7 @@ class AgentDefaults:
             "transient_retry_initial_backoff_s": self.transient_retry_initial_backoff_s,
             "transient_retry_max_backoff_s": self.transient_retry_max_backoff_s,
             "strict_runtime_tool_guard": self.strict_runtime_tool_guard,
+            "dream": self.dream.to_dict(),
         }
 
 

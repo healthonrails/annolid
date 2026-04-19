@@ -338,7 +338,111 @@ def _parse_capabilities_command(text: str) -> Dict[str, Any]:
     return {}
 
 
+def _parse_dream_command(text: str) -> Dict[str, Any]:
+    dream = _parse_slash_command_action_args(text, "/dream")
+    if dream["kind"] not in {"empty", "parsed"}:
+        return {}
+    return {"name": "dream_memory", "args": {"action": "run"}}
+
+
+def _parse_dreaming_command(text: str) -> Dict[str, Any]:
+    dreaming = _parse_slash_command_action_args(text, "/dreaming")
+    if dreaming["kind"] not in {"empty", "parsed"}:
+        return {}
+    if dreaming["kind"] == "empty":
+        return {"name": "dream_memory", "args": {"action": "status"}}
+    action = str(dreaming["action"] or "").strip().lower()
+    args_text = str(dreaming["args"] or "").strip()
+    if action in {"status", "state"}:
+        return {"name": "dream_memory", "args": {"action": "status"}}
+    if action in {"help"}:
+        return {"name": "dream_memory", "args": {"action": "help"}}
+    if action in {"run", "start", "sweep"}:
+        return {"name": "dream_memory", "args": {"action": "run"}}
+    if action in {"log", "history"}:
+        run_id = _extract_command_identifier(args_text)
+        return {"name": "dream_memory", "args": {"action": "log", "run_id": run_id}}
+    if action in {"restore", "rollback", "revert"}:
+        run_id = _extract_command_identifier(args_text)
+        return {"name": "dream_memory", "args": {"action": "restore", "run_id": run_id}}
+    return {}
+
+
+def _parse_dream_log_command(text: str) -> Dict[str, Any]:
+    dream_log = _parse_slash_command_action_args(text, "/dream-log")
+    if dream_log["kind"] not in {"empty", "parsed"}:
+        return {}
+    run_id = ""
+    if dream_log["kind"] == "parsed":
+        run_id = _extract_command_identifier(
+            dream_log["action"] + " " + dream_log["args"]
+        )
+    return {"name": "dream_memory", "args": {"action": "log", "run_id": run_id}}
+
+
+def _parse_dream_restore_command(text: str) -> Dict[str, Any]:
+    dream_restore = _parse_slash_command_action_args(text, "/dream-restore")
+    if dream_restore["kind"] not in {"empty", "parsed"}:
+        return {}
+    run_id = ""
+    if dream_restore["kind"] == "parsed":
+        run_id = _extract_command_identifier(
+            dream_restore["action"] + " " + dream_restore["args"]
+        )
+    return {"name": "dream_memory", "args": {"action": "restore", "run_id": run_id}}
+
+
 DIRECT_SLASH_COMMAND_SPECS: Tuple[SlashCommandSpec, ...] = (
+    SlashCommandSpec(
+        name="dreaming",
+        aliases=("dreaming",),
+        display="/dreaming",
+        description="Check Dreaming status, help, or run a sweep",
+        insert="/dreaming ",
+        required_tools=("dream_memory",),
+        examples=(
+            "'/dreaming status'",
+            "'/dreaming run'",
+            "'/dreaming help'",
+        ),
+        parser=_parse_dreaming_command,
+    ),
+    SlashCommandSpec(
+        name="dream-log",
+        aliases=("dream-log",),
+        display="/dream-log",
+        description="Show latest Dream run or a specific run",
+        insert="/dream-log ",
+        required_tools=("dream_memory",),
+        examples=(
+            "'/dream-log'",
+            "'/dream-log <run_id>'",
+        ),
+        parser=_parse_dream_log_command,
+    ),
+    SlashCommandSpec(
+        name="dream-restore",
+        aliases=("dream-restore",),
+        display="/dream-restore",
+        description="List Dream runs or restore one snapshot",
+        insert="/dream-restore ",
+        required_tools=("dream_memory",),
+        examples=(
+            "'/dream-restore'",
+            "'/dream-restore <run_id>'",
+        ),
+        parser=_parse_dream_restore_command,
+    ),
+    SlashCommandSpec(
+        name="dream",
+        aliases=("dream",),
+        display="/dream",
+        description="Run Dream memory consolidation now",
+        insert="/dream",
+        required_tools=("dream_memory",),
+        examples=("'/dream'",),
+        parser=_parse_dream_command,
+    ),
     SlashCommandSpec(
         name="track",
         aliases=("track",),

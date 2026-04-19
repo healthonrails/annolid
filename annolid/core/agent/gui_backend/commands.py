@@ -987,6 +987,58 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             "args": {"action": "check", "job_id": cron_check_match.group(1).strip()},
         }
 
+    dream_restore_match = re.search(
+        r"\b(?:restore|rollback|revert)\b[\s\S]*\bdream\b[\s\S]*\b(?:run|id)?\s*([a-zA-Z0-9]{8,32})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if dream_restore_match:
+        return {
+            "name": "dream_memory",
+            "args": {
+                "action": "restore",
+                "run_id": str(dream_restore_match.group(1) or "").strip(),
+            },
+        }
+
+    dream_status_match = re.search(
+        r"\b(?:dream|dreaming)\b[\s\S]*\b(?:status|state|health)\b|\b(?:status|state|health)\b[\s\S]*\b(?:dream|dreaming)\b",
+        lower,
+    )
+    if dream_status_match:
+        return {"name": "dream_memory", "args": {"action": "status"}}
+
+    dream_help_match = re.search(
+        r"\b(?:dream|dreaming)\b[\s\S]*\bhelp\b|\bhelp\b[\s\S]*\b(?:dream|dreaming)\b",
+        lower,
+    )
+    if dream_help_match:
+        return {"name": "dream_memory", "args": {"action": "help"}}
+
+    dream_log_match = re.search(
+        r"\b(?:show|check|inspect|view|list)\b[\s\S]*\b(?:dream|dreaming)\b[\s\S]*\b(?:log|run|history)\b(?:[\s#:=-]*([a-zA-Z0-9]{8,32}))?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if dream_log_match:
+        return {
+            "name": "dream_memory",
+            "args": {
+                "action": "log",
+                "run_id": str(dream_log_match.group(1) or "").strip(),
+            },
+        }
+
+    dream_run_match = re.search(
+        r"\b(?:run|start|trigger)\b[\s\S]*\b(?:dream|dreaming)\b",
+        lower,
+    ) or re.search(
+        r"\b(?:dream|dreaming)\b[\s\S]*\b(?:now|memory)\b",
+        lower,
+    )
+    if dream_run_match:
+        return {"name": "dream_memory", "args": {"action": "run"}}
+
     cron_list_match = re.search(
         r"\b(?:list|show)\b[\s\S]*\b(?:cron|scheduled)\b[\s\S]*\bjobs?\b",
         lower,

@@ -99,6 +99,7 @@ async def execute_direct_gui_command(
     exec_start: Callable[..., Any],
     exec_process: Callable[..., Any],
     self_update: Callable[..., Any] | None = None,
+    dream_memory: Callable[..., Any] | None = None,
 ) -> Dict[str, Any]:
     if not command:
         return {"message": "", "payload": {}}
@@ -951,6 +952,19 @@ async def execute_direct_gui_command(
             result = str(payload.get("result") or "").strip()
             return result or "Cron command completed."
         return str(payload.get("error") or "Failed to execute cron command.")
+
+    if name == "dream_memory":
+        if dream_memory is None:
+            return "Dream memory commands are unavailable."
+        payload = await _run(
+            dream_memory,
+            action=str(args.get("action") or "run"),
+            run_id=str(args.get("run_id") or ""),
+        )
+        if payload.get("ok"):
+            result = str(payload.get("result") or "").strip()
+            return result or "Dream command completed."
+        return str(payload.get("error") or "Failed to execute Dream command.")
 
     if name == "open_track_dialog":
         payload = await _run(open_track_dialog) if open_track_dialog else {}

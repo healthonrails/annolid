@@ -17,6 +17,22 @@ def test_direct_slash_parser_handles_registry_aliases() -> None:
         "name": "open_agent_capabilities",
         "args": {},
     }
+    assert parse_direct_slash_command("/dream") == {
+        "name": "dream_memory",
+        "args": {"action": "run"},
+    }
+    assert parse_direct_slash_command("/dreaming status") == {
+        "name": "dream_memory",
+        "args": {"action": "status"},
+    }
+    assert parse_direct_slash_command("/dream-log abc123def456") == {
+        "name": "dream_memory",
+        "args": {"action": "log", "run_id": "abc123def456"},
+    }
+    assert parse_direct_slash_command("/dream-restore abc123def456") == {
+        "name": "dream_memory",
+        "args": {"action": "restore", "run_id": "abc123def456"},
+    }
     assert parse_direct_slash_command("/track") == {
         "name": "open_track_dialog",
         "args": {},
@@ -51,6 +67,10 @@ def test_root_slash_completion_entries_include_registry_commands() -> None:
     actions = {str(row.get("action") or "") for row in entries}
 
     assert "/cron" in searches
+    assert "/dream" in searches
+    assert "/dreaming" in searches
+    assert "/dream-log" in searches
+    assert "/dream-restore" in searches
     assert "/automation" in searches
     assert "/session" in searches
     assert "/track" in searches

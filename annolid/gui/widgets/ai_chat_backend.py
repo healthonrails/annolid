@@ -276,6 +276,7 @@ from annolid.services.chat_devtools import (
     chat_list_dir,
     chat_read_file,
 )
+from annolid.services.chat_dreaming import run_chat_dream_action
 from annolid.services.chat_video import (
     behavior_catalog_tool as gui_behavior_catalog_tool,
     label_chat_behavior_segments_tool,
@@ -2129,6 +2130,7 @@ class StreamingChatTask(QRunnable):
             "generate_annolid_tutorial": self._tool_gui_generate_annolid_tutorial,
             "automation_schedule": self._tool_gui_automation_schedule,
             "cron": self._tool_gui_cron,
+            "dream_memory": self._tool_gui_dream_memory,
             "open_track_dialog": self._tool_gui_open_track_dialog,
             "list_dir": self._tool_gui_list_dir,
             "read_file": self._tool_gui_read_file,
@@ -3787,6 +3789,14 @@ class StreamingChatTask(QRunnable):
         if str(result or "").startswith("Error:"):
             return {"ok": False, "error": str(result)}
         return {"ok": True, "result": str(result)}
+
+    async def _tool_gui_dream_memory(
+        self,
+        *,
+        action: str = "run",
+        run_id: str = "",
+    ) -> Dict[str, Any]:
+        return run_chat_dream_action(action=action, run_id=run_id)
 
     @staticmethod
     def _annolid_project_root() -> Path:
