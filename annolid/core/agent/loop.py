@@ -109,6 +109,13 @@ class AgentMemoryConfig:
 
 
 @dataclass(frozen=True)
+class ContextCompactionDecision:
+    messages: Sequence[Dict[str, Any]]
+    trimmed_count: int = 0
+    skipped_due_to_active_tasks: bool = False
+
+
+@dataclass(frozen=True)
 class _ToolSchemaIndex:
     schema: Dict[str, Any]
     name: str
@@ -394,6 +401,7 @@ class AgentLoop:
         loop_result: Optional[AgentLoopResult] = None
         context_compaction_runs = 0
         context_messages_trimmed = 0
+        context_compaction_skipped_active_tasks = 0
         memory_enabled = (
             self._memory_config.enabled if use_memory is None else bool(use_memory)
         )
@@ -437,6 +445,68 @@ class AgentLoop:
                 turn_seq=turn_seq,
             )
             message_build_ms = (time.perf_counter() - build_started) * 1000.0
+            user_persisted_early = False
+            if memory_enabled and user_message_text.strip():
+                try:
+                    self._memory_store.append_history(
+                        session_id,
+                        [{"role": "user", "content": user_message_text}],
+                        max_messages=self._history_persist_limit(),
+                    )
+                    user_persisted_early = True
+                    self._sync_memory_layers(
+                        session_id=session_id,
+                        reason="append_user_early",
+                        turn_id=turn_id,
+                    )
+                except Exception as exc:
+                    self._logger.warning(
+                        "annolid-bot early user persistence failed session=%s turn=%s err=%s",
+                        session_id,
+                        turn_id,
+                        exc,
+                    )
+
+            def _rollback_early_user_only_turn_if_needed(
+                *,
+                final_text: str,
+                tool_runs_for_turn: Sequence[AgentToolRun],
+            ) -> None:
+                if not (memory_enabled and user_persisted_early):
+                    return
+                if str(final_text or "").strip():
+                    return
+                if tool_runs_for_turn:
+                    return
+                try:
+                    history_rows = list(self._memory_store.get_history(session_id))
+                    if not history_rows:
+                        return
+                    last = dict(history_rows[-1] or {})
+                    if str(last.get("role") or "") != "user":
+                        return
+                    if str(last.get("content") or "") != user_message_text:
+                        return
+                    remaining = [dict(row) for row in history_rows[:-1]]
+                    self._memory_store.clear_history(session_id)
+                    if remaining:
+                        self._memory_store.append_history(
+                            session_id,
+                            remaining,
+                            max_messages=self._history_persist_limit(),
+                        )
+                    self._sync_memory_layers(
+                        session_id=session_id,
+                        reason="rollback_user_early_empty",
+                        turn_id=turn_id,
+                    )
+                except Exception as exc:
+                    self._logger.warning(
+                        "annolid-bot early user rollback failed session=%s turn=%s err=%s",
+                        session_id,
+                        turn_id,
+                        exc,
+                    )
 
             tool_runs: List[AgentToolRun] = []
             messages_media: List[str] = list(media or [])
@@ -535,13 +605,21 @@ class AgentLoop:
                         except Exception:
                             pass
 
-                compacted_messages, trimmed_count = self._compact_context_messages(
-                    messages
-                )
+                compaction = self._plan_context_compaction(messages)
+                if compaction.skipped_due_to_active_tasks:
+                    context_compaction_skipped_active_tasks += 1
+                compacted_messages = list(compaction.messages)
+                trimmed_count = int(compaction.trimmed_count)
                 if trimmed_count > 0:
+                    messages = compacted_messages
                     context_compaction_runs += 1
                     context_messages_trimmed += trimmed_count
+                elif (
+                    not compaction.skipped_due_to_active_tasks
+                    and compacted_messages != messages
+                ):
                     messages = compacted_messages
+                    context_compaction_runs += 1
 
                 response, llm_elapsed_ms = await self._execute_llm_cycle(
                     session_id=session_id,
@@ -767,16 +845,21 @@ class AgentLoop:
                             )
                 if memory_enabled and str(final_content).strip():
                     tools_used = self._extract_tools_used(tool_runs)
+                    turn_messages: List[Dict[str, Any]] = []
+                    if not user_persisted_early:
+                        turn_messages.append(
+                            {"role": "user", "content": user_message_text}
+                        )
+                    turn_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": str(final_content),
+                            "tools_used": tools_used,
+                        }
+                    )
                     self._memory_store.append_history(
                         session_id,
-                        [
-                            {"role": "user", "content": user_message_text},
-                            {
-                                "role": "assistant",
-                                "content": str(final_content),
-                                "tools_used": tools_used,
-                            },
-                        ],
+                        turn_messages,
                         max_messages=self._history_persist_limit(),
                     )
                     self._sync_memory_layers(
@@ -790,6 +873,10 @@ class AgentLoop:
                     kind="assistant",
                     turn_id=turn_id,
                     payload={"text": str(final_content or "")},
+                )
+                _rollback_early_user_only_turn_if_needed(
+                    final_text=str(final_content or ""),
+                    tool_runs_for_turn=tool_runs,
                 )
                 result = AgentLoopResult(
                     content=final_content,
@@ -835,16 +922,19 @@ class AgentLoop:
                         )
             if memory_enabled:
                 tools_used = self._extract_tools_used(tool_runs)
+                turn_messages: List[Dict[str, Any]] = []
+                if not user_persisted_early:
+                    turn_messages.append({"role": "user", "content": user_message_text})
+                turn_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": str(final_content),
+                        "tools_used": tools_used,
+                    }
+                )
                 self._memory_store.append_history(
                     session_id,
-                    [
-                        {"role": "user", "content": user_message_text},
-                        {
-                            "role": "assistant",
-                            "content": str(final_content),
-                            "tools_used": tools_used,
-                        },
-                    ],
+                    turn_messages,
                     max_messages=self._history_persist_limit(),
                 )
                 self._sync_memory_layers(
@@ -897,6 +987,10 @@ class AgentLoop:
                 kind="assistant",
                 turn_id=turn_id,
                 payload={"text": str(final_content or "")},
+            )
+            _rollback_early_user_only_turn_if_needed(
+                final_text=str(final_content or ""),
+                tool_runs_for_turn=tool_runs,
             )
             self._capture_anonymized_run_trace(
                 session_id=session_id,
@@ -968,6 +1062,7 @@ class AgentLoop:
                 other_ms=other_ms,
                 context_compaction_runs=context_compaction_runs,
                 context_messages_trimmed=context_messages_trimmed,
+                context_compaction_skipped_active_tasks=context_compaction_skipped_active_tasks,
             )
             await self._disconnect_mcp()
 
@@ -1422,10 +1517,24 @@ class AgentLoop:
     def _compact_context_messages(
         cls, messages: Sequence[Mapping[str, Any]]
     ) -> tuple[List[Dict[str, Any]], int]:
+        decision = cls._plan_context_compaction(messages)
+        return list(decision.messages), int(decision.trimmed_count)
+
+    @classmethod
+    def _plan_context_compaction(
+        cls, messages: Sequence[Mapping[str, Any]]
+    ) -> ContextCompactionDecision:
         materialized = [dict(msg) for msg in messages]
         total_count = len(materialized)
         if total_count <= cls._CONTEXT_COMPACT_MAX_MESSAGES:
-            return materialized, 0
+            return ContextCompactionDecision(messages=materialized, trimmed_count=0)
+        if cls._has_unresolved_tool_tasks(materialized):
+            # Do not compact while there are unresolved assistant->tool links.
+            return ContextCompactionDecision(
+                messages=materialized,
+                trimmed_count=0,
+                skipped_due_to_active_tasks=True,
+            )
 
         system_indices = [
             idx
@@ -1463,7 +1572,37 @@ class AgentLoop:
         kept_indices = sorted(set(kept_system + kept_non_system))
         compacted = [materialized[idx] for idx in kept_indices][-max_total:]
         trimmed = max(0, total_count - len(compacted))
-        return compacted, trimmed
+        return ContextCompactionDecision(
+            messages=compacted,
+            trimmed_count=trimmed,
+            skipped_due_to_active_tasks=False,
+        )
+
+    @classmethod
+    def _has_unresolved_tool_tasks(cls, messages: Sequence[Mapping[str, Any]]) -> bool:
+        del cls
+        pending_ids: set[str] = set()
+        saw_idless_tool_call = False
+        for message in messages:
+            role = str(message.get("role") or "").strip().lower()
+            if role == "assistant":
+                tool_calls = message.get("tool_calls")
+                if isinstance(tool_calls, Sequence):
+                    for call in tool_calls:
+                        if not isinstance(call, Mapping):
+                            continue
+                        call_id = str(call.get("id") or "").strip()
+                        if call_id:
+                            pending_ids.add(call_id)
+                        else:
+                            # Conservative fallback for malformed/raw tool call records.
+                            saw_idless_tool_call = True
+                continue
+            if role == "tool":
+                tool_call_id = str(message.get("tool_call_id") or "").strip()
+                if tool_call_id:
+                    pending_ids.discard(tool_call_id)
+        return bool(pending_ids) or saw_idless_tool_call
 
     async def _build_initial_messages(
         self,
@@ -2192,6 +2331,7 @@ class AgentLoop:
         other_ms: float,
         context_compaction_runs: int,
         context_messages_trimmed: int,
+        context_compaction_skipped_active_tasks: int = 0,
     ) -> None:
         recorder = getattr(self._memory_store, "record_turn_snapshot", None)
         if not callable(recorder):
@@ -2244,6 +2384,9 @@ class AgentLoop:
             "context_compaction": {
                 "runs": int(max(0, int(context_compaction_runs))),
                 "messages_trimmed": int(max(0, int(context_messages_trimmed))),
+                "skipped_active_tasks": int(
+                    max(0, int(context_compaction_skipped_active_tasks))
+                ),
             },
             "final_content_preview": content_preview,
         }

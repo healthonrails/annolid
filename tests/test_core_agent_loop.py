@@ -371,6 +371,60 @@ def test_agent_loop_compacts_context_messages_with_stable_limits() -> None:
     assert compacted[-1]["content"] == "message-59"
 
 
+def test_agent_loop_compaction_skips_unresolved_tool_tasks() -> None:
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "base instructions"},
+    ]
+    for idx in range(60):
+        role = "user" if idx % 2 == 0 else "assistant"
+        messages.append({"role": role, "content": f"message-{idx}"})
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_active_1",
+                    "type": "function",
+                    "function": {"name": "echo", "arguments": '{"text":"x"}'},
+                }
+            ],
+        }
+    )
+
+    compacted, trimmed = AgentLoop._compact_context_messages(messages)
+
+    assert trimmed == 0
+    assert compacted == messages
+
+
+def test_agent_loop_compaction_skips_idless_tool_tasks() -> None:
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "base instructions"},
+    ]
+    for idx in range(60):
+        role = "user" if idx % 2 == 0 else "assistant"
+        messages.append({"role": role, "content": f"message-{idx}"})
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {"name": "echo", "arguments": '{"text":"x"}'},
+                }
+            ],
+        }
+    )
+
+    decision = AgentLoop._plan_context_compaction(messages)
+
+    assert decision.skipped_due_to_active_tasks is True
+    assert decision.trimmed_count == 0
+    assert list(decision.messages) == messages
+
+
 def test_agent_loop_blocks_high_risk_tool_combo_without_explicit_intent() -> None:
     registry = FunctionToolRegistry()
     registry.register(_ExecTool())
@@ -869,6 +923,28 @@ def test_agent_loop_timeout_raises_explicit_message() -> None:
         assert False, "Expected timeout"
     except TimeoutError as exc:
         assert "LLM timed out after" in str(exc)
+
+
+def test_agent_loop_persists_user_message_before_model_failure() -> None:
+    registry = FunctionToolRegistry()
+
+    async def failing_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        raise RuntimeError("provider exploded")
+
+    loop = AgentLoop(tools=registry, llm_callable=failing_llm, model="fake")
+    with pytest.raises(RuntimeError):
+        _ = asyncio.run(loop.run("please persist me", session_id="persist-early"))
+
+    history = loop.get_session_history("persist-early")
+    assert history
+    assert history[-1]["role"] == "user"
+    assert history[-1]["content"] == "please persist me"
 
 
 def test_agent_loop_tool_timeout_returns_error_result() -> None:
