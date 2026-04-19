@@ -19,6 +19,7 @@ _WRAPPED_GUI_TOOL_SPECS: Tuple[Tuple[str, str], ...] = (
     ("web_type_callback", "web_type"),
     ("web_scroll_callback", "web_scroll"),
     ("web_find_forms_callback", "web_find_forms"),
+    ("web_save_current_callback", "web_save_current"),
     ("web_run_steps_callback", "web_run_steps"),
     ("open_pdf_callback", "open_pdf"),
     ("pdf_get_state_callback", "pdf_get_state"),

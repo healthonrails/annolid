@@ -234,6 +234,13 @@ def web_find_forms(
     return invoke_widget_json_slot("bot_web_find_forms")
 
 
+def web_save_current(
+    *,
+    invoke_widget_json_slot: Callable[..., Dict[str, Any]],
+) -> Dict[str, Any]:
+    return invoke_widget_json_slot("bot_web_save_current")
+
+
 async def web_run_steps(
     *,
     steps: Any,

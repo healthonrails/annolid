@@ -95,8 +95,25 @@ class WebManager(QtCore.QObject):
                 "has_page": False,
                 "url": "",
                 "title": "",
+                "save_in_progress": False,
+                "last_saved_path": "",
+                "last_saved_kind": "",
+                "can_save": False,
             }
         return viewer.get_state()
+
+    def save_current_page(self) -> dict:
+        viewer = self.web_viewer
+        if viewer is None:
+            return {
+                "ok": False,
+                "error": "No active embedded web page to save.",
+            }
+        try:
+            payload = viewer.save_current_page()
+        except Exception as exc:
+            return {"ok": False, "error": f"Failed to trigger save: {exc}"}
+        return dict(payload or {"ok": False, "error": "Save did not return payload."})
 
     def close_web(self) -> None:
         """Close embedded web view and return to canvas."""

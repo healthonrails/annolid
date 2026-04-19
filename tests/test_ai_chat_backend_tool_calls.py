@@ -521,6 +521,8 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
     assert web_scroll_payload["ok"] is True
     web_forms_payload = task._tool_gui_web_find_forms()
     assert web_forms_payload["ok"] is True
+    web_save_payload = task._tool_gui_web_save_current()
+    assert web_save_payload["ok"] is True
     pdf_state_payload = task._tool_gui_pdf_get_state()
     assert pdf_state_payload["ok"] is True
     pdf_text_payload = task._tool_gui_pdf_get_text(max_chars=900, pages=2)
@@ -623,6 +625,7 @@ def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> N
         "bot_web_type",
         "bot_web_scroll",
         "bot_web_find_forms",
+        "bot_web_save_current",
         "bot_pdf_get_state",
         "bot_pdf_get_text",
         "bot_pdf_find_sections",

@@ -3956,6 +3956,100 @@ def test_download_pdf_tool_prefers_pmc_oa_before_direct_pdf_urls(
     assert attempts and attempts[0].startswith("https://ftp.ncbi.nlm.nih.gov/")
 
 
+def test_download_pdf_tool_solves_pmc_pow_challenge(
+    tmp_path: Path, monkeypatch
+) -> None:
+    challenge = "abc123:token"
+
+    class _TextHtmlResponse:
+        status_code = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+        url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC12139829/pdf/file.pdf"
+        text = (
+            '<script>const POW_CHALLENGE = "abc123:token";'
+            'const POW_DIFFICULTY = "1";'
+            'const POW_COOKIE_NAME = "cloudpmc-viewer-pow";'
+            'const POW_COOKIE_PATH = "/";</script>'
+        )
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield b"<html>Preparing to download</html>"
+
+    class _PdfResponse:
+        status_code = 200
+        headers = {"content-type": "application/pdf"}
+        url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC12139829/pdf/file.pdf"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield b"%PDF-1.4 fake"
+
+    class _FakeCookies:
+        def __init__(self) -> None:
+            self.values: dict[str, str] = {}
+
+        def set(self, name, value, domain=None, path=None):
+            del domain, path
+            self.values[str(name)] = str(value)
+
+    class _FakeStreamContext:
+        def __init__(self, response):
+            self._response = response
+
+        async def __aenter__(self):
+            return self._response
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+            self.cookies = _FakeCookies()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        async def get(self, url, headers=None):
+            del headers
+            if "pmc.ncbi.nlm.nih.gov" in str(url):
+                return _TextHtmlResponse()
+            raise RuntimeError("unexpected url")
+
+        def stream(self, method, url, headers=None):
+            del method, headers
+            if "pmc.ncbi.nlm.nih.gov" in str(url):
+                cookie = self.cookies.values.get("cloudpmc-viewer-pow", "")
+                if cookie.startswith(challenge + ","):
+                    return _FakeStreamContext(_PdfResponse())
+                return _FakeStreamContext(_TextHtmlResponse())
+            raise RuntimeError("unexpected url")
+
+    fake_httpx = types.SimpleNamespace(AsyncClient=_FakeClient)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    tool = DownloadPdfTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(
+            url="https://pmc.ncbi.nlm.nih.gov/articles/PMC12139829/pdf/file.pdf"
+        )
+    )
+    payload = json.loads(result)
+    assert payload["is_pdf"] is True
+    assert payload.get("pmc_pow_solved") is True
+    assert Path(str(payload["output_path"])).exists()
+
+
 def test_register_annolid_gui_tools_and_context_payload() -> None:
     calls: list[tuple[str, object]] = []
 
@@ -3993,6 +4087,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         ),
         web_scroll_callback=lambda delta_y=800: _mark("web_scroll", delta_y),
         web_find_forms_callback=lambda: _mark("web_find_forms"),
+        web_save_current_callback=lambda: _mark("web_save_current"),
         web_run_steps_callback=lambda steps, stop_on_error=True, max_steps=12: _mark(
             "web_run_steps",
             {
@@ -4125,6 +4220,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_web_type")
     assert registry.has("gui_web_scroll")
     assert registry.has("gui_web_find_forms")
+    assert registry.has("gui_web_save_current")
     assert registry.has("gui_web_run_steps")
     assert registry.has("gui_open_pdf")
     assert registry.has("gui_pdf_get_state")
@@ -4226,6 +4322,8 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert json.loads(web_scroll)["ok"] is True
     web_find_forms = asyncio.run(registry.execute("gui_web_find_forms", {}))
     assert json.loads(web_find_forms)["ok"] is True
+    web_save_current = asyncio.run(registry.execute("gui_web_save_current", {}))
+    assert json.loads(web_save_current)["ok"] is True
     web_run_steps = asyncio.run(
         registry.execute(
             "gui_web_run_steps",
@@ -4449,6 +4547,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         ),
         ("web_scroll", 600),
         ("web_find_forms", None),
+        ("web_save_current", None),
         (
             "web_run_steps",
             {

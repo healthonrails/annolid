@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import contextlib
+import hashlib
 import html
 import json
 import mimetypes
@@ -615,6 +616,167 @@ class _SavePdfTask(QtCore.QRunnable):
                 candidates.append(fallback)
         return candidates
 
+    @staticmethod
+    def _looks_like_pdf_file(path: Path, content_type: str) -> bool:
+        try:
+            with path.open("rb") as handle:
+                header_bytes = handle.read(5)
+                if header_bytes == b"%PDF-":
+                    return True
+                preview = header_bytes + handle.read(251)
+        except Exception:
+            return False
+        ctype = str(content_type or "").lower()
+        return "application/pdf" in ctype and b"%PDF-" in preview
+
+    @staticmethod
+    def _extract_pmc_pow_params(html_text: str) -> dict[str, object]:
+        text = str(html_text or "")
+        challenge_match = re.search(
+            r'POW_CHALLENGE\s*=\s*"([^"]+)"',
+            text,
+            flags=re.IGNORECASE,
+        )
+        difficulty_match = re.search(
+            r'POW_DIFFICULTY\s*=\s*"([^"]+)"',
+            text,
+            flags=re.IGNORECASE,
+        )
+        cookie_match = re.search(
+            r'POW_COOKIE_NAME\s*=\s*"([^"]+)"',
+            text,
+            flags=re.IGNORECASE,
+        )
+        path_match = re.search(
+            r'POW_COOKIE_PATH\s*=\s*"([^"]+)"',
+            text,
+            flags=re.IGNORECASE,
+        )
+        if challenge_match is None or difficulty_match is None or cookie_match is None:
+            return {}
+        challenge = str(challenge_match.group(1) or "").strip()
+        cookie_name = str(cookie_match.group(1) or "").strip()
+        cookie_path = str(path_match.group(1) or "/").strip() or "/"
+        if not challenge or not cookie_name:
+            return {}
+        try:
+            difficulty = max(1, int(float(str(difficulty_match.group(1) or "4"))))
+        except ValueError:
+            difficulty = 4
+        return {
+            "challenge": challenge,
+            "difficulty": difficulty,
+            "cookie_name": cookie_name,
+            "cookie_path": cookie_path,
+        }
+
+    @staticmethod
+    def _solve_pmc_pow_nonce(challenge: str, difficulty: int) -> int:
+        target = "0" * max(1, int(difficulty))
+        nonce = 0
+        while True:
+            digest = hashlib.sha256(f"{challenge}{nonce}".encode("utf-8")).hexdigest()
+            if digest.startswith(target):
+                return nonce
+            nonce += 1
+
+    def _download_with_pmc_pow(
+        self,
+        *,
+        candidate_url: str,
+        source_url: str,
+        output_path: Path,
+    ) -> tuple[bool, str]:
+        try:
+            import httpx
+        except Exception as exc:
+            return False, f"Failed to save PDF: {exc}"
+
+        parsed = urllib.parse.urlparse(candidate_url)
+        host = str(parsed.netloc or "").strip().lower()
+        if "pmc.ncbi.nlm.nih.gov" not in host:
+            return False, "Failed to save PDF: unsupported PMC host."
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/pdf,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": source_url,
+        }
+        try:
+            with httpx.Client(
+                follow_redirects=True,
+                max_redirects=8,
+                timeout=60.0,
+            ) as client:
+                initial = client.get(candidate_url, headers=headers)
+                content_type = str(initial.headers.get("content-type") or "").lower()
+                if content_type.startswith("application/pdf"):
+                    payload = bytes(initial.content or b"")
+                    if not payload.startswith(b"%PDF-"):
+                        return (
+                            False,
+                            "Failed to save PDF: initial PDF response is invalid.",
+                        )
+                    if len(payload) > self.max_bytes:
+                        raise ValueError(
+                            f"PDF is too large ({len(payload)} bytes). Max is {self.max_bytes} bytes."
+                        )
+                    with output_path.open("wb") as handle:
+                        handle.write(payload)
+                    return True, ""
+                params = self._extract_pmc_pow_params(str(initial.text or ""))
+                if not params:
+                    return (
+                        False,
+                        "Failed to save PDF: no PMC challenge parameters found.",
+                    )
+                challenge = str(params.get("challenge") or "").strip()
+                difficulty = int(params.get("difficulty") or 4)
+                cookie_name = str(params.get("cookie_name") or "").strip()
+                cookie_path = str(params.get("cookie_path") or "/").strip() or "/"
+                if not challenge or not cookie_name:
+                    return (
+                        False,
+                        "Failed to save PDF: invalid PMC challenge parameters.",
+                    )
+                nonce = self._solve_pmc_pow_nonce(challenge, difficulty)
+                client.cookies.set(
+                    cookie_name,
+                    f"{challenge},{nonce}",
+                    domain=host,
+                    path=cookie_path,
+                )
+                size = 0
+                with client.stream("GET", candidate_url, headers=headers) as response:
+                    response.raise_for_status()
+                    ctype = str(response.headers.get("content-type") or "").lower()
+                    if not ctype.startswith("application/pdf"):
+                        return (
+                            False,
+                            f"Failed to save PDF: content-type '{ctype or 'unknown'}' not allowed",
+                        )
+                    with output_path.open("wb") as handle:
+                        for chunk in response.iter_bytes():
+                            if not chunk:
+                                continue
+                            size += len(chunk)
+                            if size > self.max_bytes:
+                                raise ValueError(
+                                    f"PDF is too large ({size} bytes). Max is {self.max_bytes} bytes."
+                                )
+                            handle.write(chunk)
+        except Exception as exc:
+            with contextlib.suppress(OSError):
+                if output_path.exists():
+                    output_path.unlink()
+            return False, f"Failed to save PDF: {exc}"
+        return True, ""
+
     def run(self) -> None:  # pragma: no cover - network + filesystem
         saved_path = ""
         message = ""
@@ -673,9 +835,35 @@ class _SavePdfTask(QtCore.QRunnable):
                                         f"PDF is too large ({size} bytes). Max is {self.max_bytes} bytes."
                                     )
                                 handle.write(chunk)
+                    if output_path is None or not self._looks_like_pdf_file(
+                        output_path, content_type
+                    ):
+                        raise ValueError("Downloaded file is not a valid PDF.")
                     break
                 except Exception as exc:
                     last_exc = exc
+                    parsed_candidate = urllib.parse.urlparse(str(candidate_url or ""))
+                    host_candidate = str(parsed_candidate.netloc or "").strip().lower()
+                    if "pmc.ncbi.nlm.nih.gov" in host_candidate:
+                        if output_path is None:
+                            file_name = (
+                                self._filename_from_url(candidate_url)
+                                or self._filename_from_url(self.source_url)
+                                or "download.pdf"
+                            )
+                            file_name = self._safe_name(file_name)
+                            if not file_name.lower().endswith(".pdf"):
+                                file_name = f"{Path(file_name).stem}.pdf"
+                            output_path = self._unique_path(self.output_dir / file_name)
+                        solved, pow_error = self._download_with_pmc_pow(
+                            candidate_url=candidate_url,
+                            source_url=self.source_url,
+                            output_path=output_path,
+                        )
+                        if solved:
+                            break
+                        if pow_error:
+                            last_exc = RuntimeError(pow_error)
                     with contextlib.suppress(OSError):
                         if output_path is not None and output_path.exists():
                             output_path.unlink()
@@ -687,14 +875,9 @@ class _SavePdfTask(QtCore.QRunnable):
                     raise last_exc
                 raise ValueError("No valid download URL resolved.")
 
-            with output_path.open("rb") as handle:
-                header_bytes = handle.read(5)
-            if header_bytes != b"%PDF-":
-                with output_path.open("rb") as handle:
-                    preview = handle.read(256)
-                if "application/pdf" not in content_type and b"%PDF-" not in preview:
-                    output_path.unlink(missing_ok=True)
-                    raise ValueError("Downloaded file is not a valid PDF.")
+            if not self._looks_like_pdf_file(output_path, content_type):
+                output_path.unlink(missing_ok=True)
+                raise ValueError("Downloaded file is not a valid PDF.")
 
             saved_path = str(output_path)
             message = f"Saved PDF: {output_path.name}"
@@ -997,7 +1180,10 @@ class WebViewerWidget(QtWidgets.QWidget):
         self._current_url = ""
         self._source_url = ""
         self._thread_pool = QtCore.QThreadPool.globalInstance()
-        self._pdf_save_in_progress = False
+        self._save_in_progress = False
+        self._saved_pdf_by_url: dict[str, str] = {}
+        self._last_saved_path = ""
+        self._last_saved_kind = ""
         self._speaking = False
         self._active_speak_token: Optional[_SpeakToken] = None
         self._dictionary_lookup_id = ""
@@ -1035,10 +1221,11 @@ class WebViewerWidget(QtWidgets.QWidget):
             self.back_button.setEnabled(self._web_view.history().canGoBack())
             self.forward_button.setEnabled(self._web_view.history().canGoForward())
 
-        url = self._current_url
-        is_pdf = self._is_saveable_pdf_url(url) if url else False
+        url = str(self._current_url or "").strip()
+        has_page = bool(url) and url.lower() != "about:blank"
         if hasattr(self, "save_pdf_button"):
-            self.save_pdf_button.setVisible(is_pdf)
+            self.save_pdf_button.setVisible(has_page)
+            self.save_pdf_button.setEnabled(has_page and (not self._save_in_progress))
 
     def _build_ui(self) -> None:
         root = QtWidgets.QVBoxLayout(self)
@@ -1148,9 +1335,7 @@ class WebViewerWidget(QtWidgets.QWidget):
 
         # Save PDF button
         self.save_pdf_button = QtWidgets.QToolButton(toolbar)
-        self.save_pdf_button.setToolTip(
-            "Save this PDF and open it in Annolid PDF Viewer"
-        )
+        self.save_pdf_button.setToolTip("Save current PDF/HTML content to workspace")
         self._apply_nav_icon(self.save_pdf_button, "document-save", "📥")
         self.save_pdf_button.setStyleSheet(nav_button_style)
         self.save_pdf_button.setVisible(False)
@@ -1207,7 +1392,7 @@ class WebViewerWidget(QtWidgets.QWidget):
         self.reload_button.clicked.connect(self._reload_page)
         self.url_edit.returnPressed.connect(self._on_url_entered)
         self.open_in_browser_button.clicked.connect(self.open_current_in_browser)
-        self.save_pdf_button.clicked.connect(self._on_save_pdf_clicked)
+        self.save_pdf_button.clicked.connect(self._on_save_current_clicked)
         self.close_button.clicked.connect(self.close_requested.emit)
         self._web_view.urlChanged.connect(self._on_url_changed)
         self._web_view.loadFinished.connect(self._on_load_finished)
@@ -1381,28 +1566,66 @@ class WebViewerWidget(QtWidgets.QWidget):
         QtGui.QDesktopServices.openUrl(parsed)
         self.status_changed.emit(f"Opened in system browser: {parsed.toString()}")
 
-    def _on_save_pdf_clicked(self) -> None:
-        target = (
+    def _current_target_url(self) -> str:
+        return (
             str(self.url_edit.text() or "").strip()
-            or self._source_url
-            or self._current_url
+            or str(self._source_url or "").strip()
+            or str(self._current_url or "").strip()
         )
-        if self._pdf_save_in_progress:
-            self.status_changed.emit("PDF download already in progress.")
-            return
-        parsed = self._normalize_url(target)
-        if not parsed.isValid() or parsed.isEmpty():
-            self.status_changed.emit("Invalid URL.")
-            return
 
-        source_url = parsed.toString()
-        download_url = self._resolve_pdf_download_url(source_url)
-        if not self._is_saveable_pdf_url(download_url):
-            self.status_changed.emit("Current page is not a PDF URL.")
-            return
+    def _build_html_output_path(self, source_url: str) -> Path:
+        output_dir = get_agent_workspace_path() / "downloads" / "web_pages"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        parsed = urllib.parse.urlparse(str(source_url or "").strip())
+        name = Path(urllib.parse.unquote(parsed.path or "")).name
+        stem = Path(name).stem if name else ""
+        safe_stem = "".join(
+            ch if (ch.isalnum() or ch in {"-", "_"}) else "_"
+            for ch in str(stem or "page")
+        ).strip("._")
+        if not safe_stem:
+            safe_stem = "page"
+        file_name = f"{safe_stem}.html"
+        path = output_dir / file_name
+        if not path.exists():
+            return path
+        for idx in range(2, 1000):
+            candidate = output_dir / f"{safe_stem}_{idx}.html"
+            if not candidate.exists():
+                return candidate
+        return path
 
+    def _build_pdf_output_path(self, source_url: str) -> Path:
         output_dir = get_agent_workspace_path() / "downloads"
-        self._pdf_save_in_progress = True
+        output_dir.mkdir(parents=True, exist_ok=True)
+        parsed = urllib.parse.urlparse(str(source_url or "").strip())
+        name = Path(urllib.parse.unquote(parsed.path or "")).name
+        stem = Path(name).stem if name else ""
+        if not stem:
+            page = self._web_view.page() if self._web_view is not None else None
+            title = ""
+            if page is not None:
+                with contextlib.suppress(Exception):
+                    title = str(page.title() or "").strip()
+            stem = title or "download"
+        safe_stem = "".join(
+            ch if (ch.isalnum() or ch in {"-", "_"}) else "_"
+            for ch in str(stem or "download")
+        ).strip("._")
+        if not safe_stem:
+            safe_stem = "download"
+        path = output_dir / f"{safe_stem}.pdf"
+        if not path.exists():
+            return path
+        for idx in range(2, 1000):
+            candidate = output_dir / f"{safe_stem}_{idx}.pdf"
+            if not candidate.exists():
+                return candidate
+        return path
+
+    def _start_pdf_download(self, *, source_url: str, download_url: str) -> dict:
+        output_dir = get_agent_workspace_path() / "downloads"
+        self._save_in_progress = True
         self.save_pdf_button.setEnabled(False)
         self.status_changed.emit("Downloading PDF…")
         self._thread_pool.start(
@@ -1413,10 +1636,219 @@ class WebViewerWidget(QtWidgets.QWidget):
                 output_dir=output_dir,
             )
         )
+        return {
+            "ok": True,
+            "queued": True,
+            "kind": "pdf",
+            "mode": "download",
+            "source_url": source_url,
+            "download_url": download_url,
+        }
+
+    def _try_save_pdf_from_viewer(
+        self, *, source_url: str, download_url: str
+    ) -> dict | None:
+        if not self._is_inline_pdf_context() or self._web_view is None:
+            return None
+        page = self._web_view.page()
+        if page is None or not hasattr(page, "printToPdf"):
+            return None
+
+        output_path = self._build_pdf_output_path(download_url or source_url)
+        output_text = str(output_path)
+        self._save_in_progress = True
+        self.save_pdf_button.setEnabled(False)
+        self.status_changed.emit("Saving rendered PDF from viewer…")
+
+        signal = getattr(page, "pdfPrintingFinished", None)
+        disconnected = False
+
+        def _disconnect_finished() -> None:
+            nonlocal disconnected
+            if disconnected:
+                return
+            disconnected = True
+            if signal is not None and hasattr(signal, "disconnect"):
+                with contextlib.suppress(Exception):
+                    signal.disconnect(_on_finished)
+
+        def _on_finished(file_path: str, success: bool) -> None:
+            _disconnect_finished()
+            saved = str(file_path or output_text).strip()
+            if success and saved and Path(saved).exists():
+                self._on_pdf_saved_from_web(
+                    saved,
+                    f"Saved PDF: {Path(saved).name}",
+                    "",
+                )
+                return
+            self._save_in_progress = False
+            if hasattr(self, "save_pdf_button"):
+                self.save_pdf_button.setEnabled(True)
+            self.status_changed.emit(
+                "Viewer save failed; falling back to direct download."
+            )
+            self._start_pdf_download(source_url=source_url, download_url=download_url)
+
+        try:
+            if signal is not None and hasattr(signal, "connect"):
+                signal.connect(_on_finished)
+            page.printToPdf(output_text)
+        except Exception:
+            _disconnect_finished()
+            self._save_in_progress = False
+            if hasattr(self, "save_pdf_button"):
+                self.save_pdf_button.setEnabled(True)
+            return None
+        return {
+            "ok": True,
+            "queued": True,
+            "kind": "pdf",
+            "mode": "viewer",
+            "source_url": source_url,
+            "download_url": download_url,
+            "output_path": output_text,
+        }
+
+    def _export_current_html(self, timeout_ms: int = 6000) -> tuple[str, str]:
+        if self._web_view is None:
+            return "", "Embedded web view is unavailable."
+        page = self._web_view.page()
+        if page is None:
+            return "", "Web page object is unavailable."
+        loop = QtCore.QEventLoop(self)
+        timer = QtCore.QTimer(self)
+        timer.setSingleShot(True)
+        state: dict[str, object] = {"done": False, "html": "", "error": ""}
+
+        def _finish(html_text: object) -> None:
+            if bool(state.get("done")):
+                return
+            state["done"] = True
+            state["html"] = str(html_text or "")
+            loop.quit()
+
+        def _timeout() -> None:
+            if bool(state.get("done")):
+                return
+            state["done"] = True
+            state["error"] = "Timed out while extracting HTML."
+            loop.quit()
+
+        timer.timeout.connect(_timeout)
+        try:
+            page.toHtml(_finish)
+            timer.start(max(250, int(timeout_ms)))
+            loop.exec_()
+        finally:
+            timer.stop()
+        error = str(state.get("error") or "").strip()
+        html_text = str(state.get("html") or "")
+        if error:
+            return "", error
+        if not html_text.strip():
+            return "", "Current page has no HTML content to save."
+        return html_text, ""
+
+    def _save_current_html_snapshot(self, source_url: str) -> dict:
+        html_text, error = self._export_current_html()
+        if error:
+            return {"ok": False, "error": error}
+        output_path = self._build_html_output_path(source_url)
+        try:
+            output_path.write_text(html_text, encoding="utf-8")
+        except Exception as exc:
+            return {"ok": False, "error": f"Failed to save HTML: {exc}"}
+        self._last_saved_path = str(output_path)
+        self._last_saved_kind = "html"
+        return {
+            "ok": True,
+            "saved_path": str(output_path),
+            "kind": "html",
+            "message": f"Saved HTML: {output_path.name}",
+        }
+
+    def _on_save_current_clicked(self) -> dict:
+        target = (
+            str(self.url_edit.text() or "").strip()
+            or str(self._source_url or "").strip()
+            or str(self._current_url or "").strip()
+        )
+        if self._save_in_progress:
+            self.status_changed.emit("Save already in progress.")
+            return {"ok": False, "error": "Save already in progress."}
+        parsed = self._normalize_url(target)
+        if not parsed.isValid() or parsed.isEmpty():
+            self.status_changed.emit("Invalid URL.")
+            return {"ok": False, "error": "Invalid URL."}
+
+        source_url = parsed.toString()
+        download_url = self._resolve_pdf_download_url(source_url)
+        if not self._is_saveable_pdf_url(download_url):
+            html_payload = self._save_current_html_snapshot(source_url)
+            if not bool(html_payload.get("ok")):
+                self.status_changed.emit(
+                    str(html_payload.get("error") or "Failed to save HTML.")
+                )
+                return dict(html_payload)
+            self.status_changed.emit(str(html_payload.get("message") or "Saved HTML."))
+            return dict(html_payload)
+
+        cached_path = str(self._saved_pdf_by_url.get(download_url) or "").strip()
+        if cached_path and Path(cached_path).exists():
+            self._last_saved_path = cached_path
+            self._last_saved_kind = "pdf"
+            host = self.window()
+            open_pdf = getattr(host, "show_pdf_in_viewer", None)
+            if callable(open_pdf):
+                try:
+                    open_pdf(cached_path)
+                except Exception:
+                    pass
+            self.status_changed.emit(f"Saved PDF: {Path(cached_path).name}")
+            return {
+                "ok": True,
+                "queued": False,
+                "saved_path": cached_path,
+                "kind": "pdf",
+                "message": f"Saved PDF: {Path(cached_path).name}",
+            }
+
+        viewer_payload = self._try_save_pdf_from_viewer(
+            source_url=source_url,
+            download_url=download_url,
+        )
+        if isinstance(viewer_payload, dict) and bool(viewer_payload.get("ok")):
+            return viewer_payload
+
+        return self._start_pdf_download(
+            source_url=source_url,
+            download_url=download_url,
+        )
+
+    def save_current_page(self) -> dict:
+        payload = self._on_save_current_clicked()
+        if not isinstance(payload, dict):
+            return {"ok": False, "error": "Save action returned invalid payload."}
+        result = dict(payload)
+        state = self.get_state()
+        if "last_saved_path" not in result:
+            result["last_saved_path"] = str(state.get("last_saved_path") or "")
+        if "last_saved_kind" not in result:
+            result["last_saved_kind"] = str(state.get("last_saved_kind") or "")
+        if "queued" not in result:
+            result["queued"] = bool(state.get("save_in_progress"))
+        if "url" not in result:
+            result["url"] = str(state.get("url") or "")
+        return result
+
+    # Backward-compatible alias for existing signal tests/callers.
+    def _on_save_pdf_clicked(self) -> None:
+        self._on_save_current_clicked()
 
     @QtCore.Slot(str, str, str)
     def _on_pdf_saved_from_web(self, saved_path: str, message: str, error: str) -> None:
-        self._pdf_save_in_progress = False
+        self._save_in_progress = False
         if hasattr(self, "save_pdf_button"):
             self.save_pdf_button.setEnabled(True)
         if error:
@@ -1425,6 +1857,11 @@ class WebViewerWidget(QtWidgets.QWidget):
         if not saved_path:
             self.status_changed.emit("Failed to save PDF.")
             return
+        resolved_source = self._resolve_pdf_download_url(self._current_target_url())
+        if resolved_source:
+            self._saved_pdf_by_url[resolved_source] = str(saved_path)
+        self._last_saved_path = str(saved_path)
+        self._last_saved_kind = "pdf"
 
         host = self.window()
         open_pdf = getattr(host, "show_pdf_in_viewer", None)
@@ -1487,6 +1924,10 @@ class WebViewerWidget(QtWidgets.QWidget):
             "has_page": bool(has_page),
             "url": str(self._source_url or current_url),
             "title": title,
+            "save_in_progress": bool(self._save_in_progress),
+            "last_saved_path": str(self._last_saved_path or ""),
+            "last_saved_kind": str(self._last_saved_kind or ""),
+            "can_save": bool(has_page),
         }
 
     @staticmethod
@@ -1875,9 +2316,13 @@ class WebViewerWidget(QtWidgets.QWidget):
         url_lower = str(url or "").strip().lower()
         if not url_lower:
             return False
+        parsed = urllib.parse.urlparse(url_lower)
+        host = str(parsed.netloc or "").strip().lower()
+        path = str(parsed.path or "").strip().lower()
         return (
             WebViewerWidget._is_pdf_url(None, url_lower)
             or "arxiv.org/pdf/" in url_lower
+            or ("pmc.ncbi.nlm.nih.gov" in host and "/pdf/" in path)
         )
 
     @staticmethod
@@ -1887,10 +2332,30 @@ class WebViewerWidget(QtWidgets.QWidget):
             return text
         parsed = urllib.parse.urlparse(text)
         host = str(parsed.netloc or "").lower()
+        path = str(parsed.path or "").strip()
+
+        if "pmc.ncbi.nlm.nih.gov" in host:
+            article_match = re.search(
+                r"^/articles/(PMC\d+)(?:/)?$",
+                path,
+                re.IGNORECASE,
+            )
+            if article_match:
+                pmcid = str(article_match.group(1) or "").strip().upper()
+                return urllib.parse.urlunparse(
+                    (
+                        parsed.scheme or "https",
+                        parsed.netloc,
+                        f"/articles/{pmcid}/pdf/",
+                        "",
+                        "",
+                        "",
+                    )
+                )
+
         if "arxiv.org" not in host:
             return text
 
-        path = str(parsed.path or "").strip()
         abs_match = re.search(
             r"^/abs/(\d{4}\.\d{4,5}(?:v\d+)?)$",
             path,

@@ -20,6 +20,7 @@ from annolid.core.agent.gui_backend.tool_handlers_web_pdf import (
     web_extract_structured as gui_web_extract_structured,
     web_find_forms as gui_web_find_forms,
     web_get_dom_text as gui_web_get_dom_text,
+    web_save_current as gui_web_save_current,
     web_get_state as gui_web_get_state,
     web_run_steps as gui_web_run_steps,
     web_scroll as gui_web_scroll,
@@ -79,6 +80,10 @@ def find_chat_web_forms(**kwargs: Any) -> dict[str, Any]:
     return gui_web_find_forms(**kwargs)
 
 
+def save_chat_web_current(**kwargs: Any) -> dict[str, Any]:
+    return gui_web_save_current(**kwargs)
+
+
 async def run_chat_web_steps(**kwargs: Any) -> dict[str, Any]:
     return await gui_web_run_steps(**kwargs)
 
@@ -111,6 +116,7 @@ __all__ = [
     "open_chat_pdf_tool",
     "open_chat_url_tool",
     "run_chat_web_steps",
+    "save_chat_web_current",
     "scroll_chat_web",
     "type_chat_web",
 ]

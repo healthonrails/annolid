@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -385,6 +386,164 @@ class DownloadPdfTool(FunctionTool):
             return f"https:{text}"
         return text
 
+    @staticmethod
+    def _extract_pmc_pow_params(html_text: str) -> dict[str, Any]:
+        text = str(html_text or "")
+        challenge_match = re.search(
+            r'POW_CHALLENGE\s*=\s*"([^"]+)"',
+            text,
+            flags=re.IGNORECASE,
+        )
+        difficulty_match = re.search(
+            r'POW_DIFFICULTY\s*=\s*"([^"]+)"',
+            text,
+            flags=re.IGNORECASE,
+        )
+        cookie_match = re.search(
+            r'POW_COOKIE_NAME\s*=\s*"([^"]+)"',
+            text,
+            flags=re.IGNORECASE,
+        )
+        path_match = re.search(
+            r'POW_COOKIE_PATH\s*=\s*"([^"]+)"',
+            text,
+            flags=re.IGNORECASE,
+        )
+        if challenge_match is None or difficulty_match is None or cookie_match is None:
+            return {}
+        challenge = str(challenge_match.group(1) or "").strip()
+        difficulty_text = str(difficulty_match.group(1) or "").strip()
+        cookie_name = str(cookie_match.group(1) or "").strip()
+        cookie_path = str(path_match.group(1) or "/").strip() or "/"
+        if not challenge or not cookie_name:
+            return {}
+        try:
+            difficulty = max(1, int(float(difficulty_text)))
+        except ValueError:
+            difficulty = 4
+        return {
+            "challenge": challenge,
+            "difficulty": difficulty,
+            "cookie_name": cookie_name,
+            "cookie_path": cookie_path,
+        }
+
+    @staticmethod
+    def _solve_pmc_pow_nonce(challenge: str, difficulty: int) -> int:
+        target = "0" * max(1, int(difficulty))
+        nonce = 0
+        while True:
+            digest = hashlib.sha256(f"{challenge}{nonce}".encode("utf-8")).hexdigest()
+            if digest.startswith(target):
+                return nonce
+            nonce += 1
+
+    async def _download_pmc_pow_pdf(
+        self,
+        *,
+        url: str,
+        output_path: str,
+        max_bytes: int,
+        overwrite: bool,
+        referer: str,
+    ) -> dict[str, Any] | None:
+        try:
+            import httpx
+
+            dst = _resolve_write_path(output_path, allowed_dir=self._allowed_dir)
+        except Exception:
+            return None
+        if dst.exists() and not overwrite:
+            return {
+                "error": "Destination file exists; set overwrite=true to replace.",
+                "url": url,
+                "output_path": str(dst),
+            }
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        parsed = urlparse(url)
+        host = str(parsed.netloc or "").strip().lower()
+        if "pmc.ncbi.nlm.nih.gov" not in host:
+            return None
+
+        headers = {
+            "User-Agent": DownloadUrlTool.USER_AGENT,
+            "Accept": "application/pdf,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": str(referer or "").strip(),
+        }
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                max_redirects=8,
+                timeout=60.0,
+            ) as client:
+                initial = await client.get(url, headers=headers)
+                if (
+                    str(initial.headers.get("content-type", ""))
+                    .lower()
+                    .startswith("application/pdf")
+                ):
+                    return None
+                params = self._extract_pmc_pow_params(str(initial.text or ""))
+                if not params:
+                    return None
+                challenge = str(params.get("challenge") or "").strip()
+                difficulty = int(params.get("difficulty") or 4)
+                cookie_name = str(params.get("cookie_name") or "").strip()
+                cookie_path = str(params.get("cookie_path") or "/").strip() or "/"
+                if not challenge or not cookie_name:
+                    return None
+                nonce = self._solve_pmc_pow_nonce(challenge, difficulty)
+                client.cookies.set(
+                    cookie_name,
+                    f"{challenge},{nonce}",
+                    domain=host,
+                    path=cookie_path,
+                )
+
+                bytes_written = 0
+                status_code = 0
+                final_url = url
+                async with client.stream("GET", url, headers=headers) as response:
+                    response.raise_for_status()
+                    status_code = int(response.status_code)
+                    final_url = str(response.url)
+                    content_type = str(response.headers.get("content-type", "")).lower()
+                    if not content_type.startswith("application/pdf"):
+                        return {
+                            "error": (
+                                f"content-type '{content_type or 'unknown'}' "
+                                "not allowed"
+                            ),
+                            "url": url,
+                            "finalUrl": str(response.url),
+                            "status": int(response.status_code),
+                        }
+                    with dst.open("wb") as handle:
+                        async for chunk in response.aiter_bytes():
+                            if not chunk:
+                                continue
+                            bytes_written += len(chunk)
+                            if bytes_written > int(max_bytes):
+                                raise ValueError(
+                                    f"Download exceeds max_bytes ({int(max_bytes)})"
+                                )
+                            handle.write(chunk)
+                return {
+                    "url": url,
+                    "finalUrl": final_url,
+                    "status": int(status_code or 200),
+                    "output_path": str(dst),
+                    "bytes": int(bytes_written),
+                    "content_type": "application/pdf",
+                    "pmc_pow_solved": True,
+                }
+        except Exception as exc:
+            with contextlib.suppress(OSError):
+                if dst.exists():
+                    dst.unlink()
+            return {"error": str(exc), "url": url, "output_path": str(dst)}
+
     async def _fetch_pmc_oa_pdf_urls(self, pmcid: str) -> list[str]:
         identifier = str(pmcid or "").strip().upper()
         if not identifier.startswith("PMC"):
@@ -597,6 +756,26 @@ class DownloadPdfTool(FunctionTool):
                 .startswith("Destination file exists")
             ):
                 break
+            error_text = str(payload_try.get("error") or "").strip().lower()
+            parsed_candidate = urlparse(candidate_url)
+            host_candidate = str(parsed_candidate.netloc or "").strip().lower()
+            if (
+                "pmc.ncbi.nlm.nih.gov" in host_candidate
+                and "content-type" in error_text
+            ):
+                pow_payload = await self._download_pmc_pow_pdf(
+                    url=candidate_url,
+                    output_path=destination,
+                    max_bytes=max_bytes or self._max_bytes,
+                    overwrite=overwrite,
+                    referer=str(url or "").strip(),
+                )
+                if isinstance(pow_payload, dict):
+                    if not pow_payload.get("error"):
+                        pow_payload["requested_url"] = str(url or "").strip()
+                        result = json.dumps(pow_payload)
+                        break
+                    last_error_payload = pow_payload
             if (
                 idx >= len(candidates)
                 and not oa_resolved

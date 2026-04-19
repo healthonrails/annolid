@@ -102,6 +102,7 @@ from .function_gui_web import (
     GuiWebFindFormsTool,
     GuiWebGetDomTextTool,
     GuiWebRunStepsTool,
+    GuiWebSaveCurrentTool,
     GuiWebScrollTool,
     GuiWebTypeTool,
 )
@@ -259,6 +260,7 @@ __all__ = [
     "GuiWebTypeTool",
     "GuiWebScrollTool",
     "GuiWebFindFormsTool",
+    "GuiWebSaveCurrentTool",
     "GuiWebRunStepsTool",
     "GuiOpenPdfTool",
     "GuiPdfGetStateTool",

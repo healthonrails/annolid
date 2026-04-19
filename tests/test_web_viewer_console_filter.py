@@ -272,11 +272,29 @@ def test_resolve_pdf_download_url_non_arxiv_unchanged() -> None:
     assert resolve(url) == url
 
 
+def test_resolve_pdf_download_url_for_pmc_article_page() -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    resolve = WebViewerWidget._resolve_pdf_download_url
+    assert (
+        resolve("https://pmc.ncbi.nlm.nih.gov/articles/PMC12139829/")
+        == "https://pmc.ncbi.nlm.nih.gov/articles/PMC12139829/pdf/"
+    )
+
+
 def test_pmc_pdf_url_is_saveable() -> None:
     from annolid.gui.widgets.web_viewer import WebViewerWidget
 
     _is_saveable = WebViewerWidget._is_saveable_pdf_url
     url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC8219259/pdf/nihms-1556781.pdf"
+    assert _is_saveable(None, url) is True
+
+
+def test_pmc_pdf_route_without_filename_is_saveable() -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    _is_saveable = WebViewerWidget._is_saveable_pdf_url
+    url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC12139829/pdf/"
     assert _is_saveable(None, url) is True
 
 
@@ -290,6 +308,178 @@ def test_save_pdf_task_adds_pmc_download_fallback() -> None:
     )
     assert candidates[1] == url
     assert candidates[2].endswith("nihms-1556781.pdf?download=1")
+
+
+def test_save_pdf_task_pdf_signature_detection(tmp_path: Path) -> None:
+    from annolid.gui.widgets.web_viewer import _SavePdfTask
+
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    html_path = tmp_path / "sample.html"
+    html_path.write_text("<html>not-pdf</html>", encoding="utf-8")
+
+    assert _SavePdfTask._looks_like_pdf_file(pdf_path, "application/pdf") is True
+    assert _SavePdfTask._looks_like_pdf_file(html_path, "text/html") is False
+
+
+def test_on_save_current_clicked_prefers_viewer_export_for_inline_pdf() -> None:
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    class _Parsed:
+        def isValid(self) -> bool:
+            return True
+
+        def isEmpty(self) -> bool:
+            return False
+
+        def toString(self) -> str:
+            return "https://pmc.ncbi.nlm.nih.gov/articles/PMC12139829/pdf/"
+
+    class _UrlEdit:
+        @staticmethod
+        def text() -> str:
+            return "https://pmc.ncbi.nlm.nih.gov/articles/PMC12139829/pdf/"
+
+    class _Signal:
+        @staticmethod
+        def emit(_value: str) -> None:
+            return None
+
+    class _Button:
+        @staticmethod
+        def setEnabled(_enabled: bool) -> None:
+            return None
+
+    class _FakeWidget:
+        url_edit = _UrlEdit()
+        status_changed = _Signal()
+        save_pdf_button = _Button()
+        _source_url = ""
+        _current_url = ""
+        _save_in_progress = False
+        _saved_pdf_by_url: dict[str, str] = {}
+
+        @staticmethod
+        def _normalize_url(_target: str) -> _Parsed:
+            return _Parsed()
+
+        @staticmethod
+        def _resolve_pdf_download_url(url: str) -> str:
+            return url
+
+        @staticmethod
+        def _is_saveable_pdf_url(_url: str) -> bool:
+            return True
+
+        @staticmethod
+        def _try_save_pdf_from_viewer(*, source_url: str, download_url: str) -> dict:
+            assert source_url
+            assert download_url
+            return {"ok": True, "queued": True, "kind": "pdf", "mode": "viewer"}
+
+        @staticmethod
+        def _start_pdf_download(*, source_url: str, download_url: str) -> dict:
+            del source_url, download_url
+            raise AssertionError("download fallback should not run")
+
+    payload = WebViewerWidget._on_save_current_clicked(_FakeWidget())
+    assert payload["ok"] is True
+    assert payload["mode"] == "viewer"
+
+
+def test_on_save_current_clicked_falls_back_to_download_when_viewer_unavailable() -> (
+    None
+):
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    class _Parsed:
+        def isValid(self) -> bool:
+            return True
+
+        def isEmpty(self) -> bool:
+            return False
+
+        def toString(self) -> str:
+            return "https://pmc.ncbi.nlm.nih.gov/articles/PMC12139829/pdf/"
+
+    class _UrlEdit:
+        @staticmethod
+        def text() -> str:
+            return "https://pmc.ncbi.nlm.nih.gov/articles/PMC12139829/pdf/"
+
+    class _Signal:
+        @staticmethod
+        def emit(_value: str) -> None:
+            return None
+
+    class _Button:
+        @staticmethod
+        def setEnabled(_enabled: bool) -> None:
+            return None
+
+    class _FakeWidget:
+        url_edit = _UrlEdit()
+        status_changed = _Signal()
+        save_pdf_button = _Button()
+        _source_url = ""
+        _current_url = ""
+        _save_in_progress = False
+        _saved_pdf_by_url: dict[str, str] = {}
+
+        @staticmethod
+        def _normalize_url(_target: str) -> _Parsed:
+            return _Parsed()
+
+        @staticmethod
+        def _resolve_pdf_download_url(url: str) -> str:
+            return url
+
+        @staticmethod
+        def _is_saveable_pdf_url(_url: str) -> bool:
+            return True
+
+        @staticmethod
+        def _try_save_pdf_from_viewer(*, source_url: str, download_url: str) -> None:
+            del source_url, download_url
+            return None
+
+        @staticmethod
+        def _start_pdf_download(*, source_url: str, download_url: str) -> dict:
+            assert source_url
+            assert download_url
+            return {"ok": True, "queued": True, "kind": "pdf", "mode": "download"}
+
+    payload = WebViewerWidget._on_save_current_clicked(_FakeWidget())
+    assert payload["ok"] is True
+    assert payload["mode"] == "download"
+
+
+def test_save_pdf_task_extracts_pmc_pow_params() -> None:
+    from annolid.gui.widgets.web_viewer import _SavePdfTask
+
+    html_text = """
+    <script>
+    window.POW_CHALLENGE = "abc123";
+    window.POW_DIFFICULTY = "4";
+    window.POW_COOKIE_NAME = "ncbi-pow";
+    window.POW_COOKIE_PATH = "/";
+    </script>
+    """
+    payload = _SavePdfTask._extract_pmc_pow_params(html_text)
+    assert payload["challenge"] == "abc123"
+    assert payload["difficulty"] == 4
+    assert payload["cookie_name"] == "ncbi-pow"
+    assert payload["cookie_path"] == "/"
+
+
+def test_save_pdf_task_solve_pmc_pow_nonce() -> None:
+    from annolid.gui.widgets.web_viewer import _SavePdfTask
+
+    nonce = _SavePdfTask._solve_pmc_pow_nonce("pow-test", 2)
+    import hashlib
+
+    digest = hashlib.sha256(f"pow-test{nonce}".encode("utf-8")).hexdigest()
+    assert digest.startswith("00")
 
 
 def test_web_viewer_context_menu_slot_registered() -> None:

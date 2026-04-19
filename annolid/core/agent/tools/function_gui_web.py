@@ -248,6 +248,30 @@ class GuiWebFindFormsTool(FunctionTool):
         return await _run_callback(self._web_find_forms_callback)
 
 
+class GuiWebSaveCurrentTool(FunctionTool):
+    def __init__(self, web_save_current_callback: Optional[ActionCallback] = None):
+        self._web_save_current_callback = web_save_current_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_web_save_current"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Save the active embedded web viewer page into the Annolid workspace. "
+            "For PDF pages, downloads the PDF; for normal pages, saves HTML."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs: Any) -> str:
+        del kwargs
+        return await _run_callback(self._web_save_current_callback)
+
+
 class GuiWebRunStepsTool(FunctionTool):
     def __init__(self, web_run_steps_callback: Optional[ActionCallback] = None):
         self._web_run_steps_callback = web_run_steps_callback

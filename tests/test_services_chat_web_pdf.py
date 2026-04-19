@@ -18,6 +18,7 @@ from annolid.services.chat_web_pdf import (
     open_chat_pdf_tool,
     open_chat_url_tool,
     run_chat_web_steps,
+    save_chat_web_current,
     scroll_chat_web,
     type_chat_web,
 )
@@ -83,6 +84,11 @@ def test_chat_web_pdf_wrappers(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         web_pdf_mod,
+        "gui_web_save_current",
+        lambda **kwargs: {"ok": True, "kind": "save", **kwargs},
+    )
+    monkeypatch.setattr(
+        web_pdf_mod,
         "gui_pdf_get_state",
         lambda **kwargs: {"ok": True, "kind": "pdf_state", **kwargs},
     )
@@ -138,6 +144,7 @@ def test_chat_web_pdf_wrappers(monkeypatch) -> None:
         scroll_chat_web(invoke_widget_json_slot="slot", delta_y=10)["kind"] == "scroll"
     )
     assert find_chat_web_forms(invoke_widget_json_slot="slot")["kind"] == "forms"
+    assert save_chat_web_current(invoke_widget_json_slot="slot")["kind"] == "save"
     assert get_chat_pdf_state(invoke_widget_json_slot="slot")["kind"] == "pdf_state"
     assert get_chat_pdf_text(invoke_widget_json_slot="slot")["kind"] == "pdf_text"
     assert (

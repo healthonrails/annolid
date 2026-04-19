@@ -260,6 +260,7 @@ from annolid.services.chat_web_pdf import (
     open_chat_pdf_tool,
     open_chat_url_tool,
     run_chat_web_steps,
+    save_chat_web_current,
     scroll_chat_web,
     type_chat_web,
 )
@@ -1300,6 +1301,7 @@ class StreamingChatTask(QRunnable):
                 "web_type": self._tool_gui_web_type,
                 "web_scroll": self._tool_gui_web_scroll,
                 "web_find_forms": self._tool_gui_web_find_forms,
+                "web_save_current": self._tool_gui_web_save_current,
                 "web_run_steps": self._tool_gui_web_run_steps,
                 "open_pdf": self._tool_gui_open_pdf,
                 "pdf_get_state": self._tool_gui_pdf_get_state,
@@ -1750,6 +1752,11 @@ class StreamingChatTask(QRunnable):
 
     def _tool_gui_web_find_forms(self) -> Dict[str, Any]:
         return find_chat_web_forms(
+            invoke_widget_json_slot=self._invoke_widget_json_slot
+        )
+
+    def _tool_gui_web_save_current(self) -> Dict[str, Any]:
+        return save_chat_web_current(
             invoke_widget_json_slot=self._invoke_widget_json_slot
         )
 

@@ -5183,6 +5183,32 @@ class AIChatWidget(QtWidgets.QWidget):
             "Inspected forms." if payload.get("ok") else "Bot action failed."
         )
 
+    @QtCore.Slot()
+    def bot_web_save_current(self) -> None:
+        manager = self._resolve_web_manager()
+        if manager is None:
+            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
+            self._set_bot_action_result("web_save_current", payload)
+            self.status_label.setText("Bot action failed: web manager unavailable.")
+            return
+        try:
+            payload = manager.save_current_page()
+        except Exception as exc:
+            payload = {"ok": False, "error": str(exc)}
+        self._set_bot_action_result("web_save_current", payload)
+        if payload.get("ok"):
+            if payload.get("queued"):
+                self.status_label.setText("Saving web content in background...")
+            else:
+                saved_path = str(payload.get("last_saved_path") or "").strip()
+                self.status_label.setText(
+                    f"Saved web content: {os.path.basename(saved_path)}"
+                    if saved_path
+                    else "Saved web content."
+                )
+            return
+        self.status_label.setText("Bot action failed.")
+
     @QtCore.Slot(int)
     def bot_set_frame(self, frame_index: int) -> None:
         host = self.host_window_widget or self.window()

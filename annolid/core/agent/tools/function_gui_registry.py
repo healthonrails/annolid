@@ -28,6 +28,7 @@ from .function_gui_web import (
     GuiWebTypeTool,
     GuiWebScrollTool,
     GuiWebFindFormsTool,
+    GuiWebSaveCurrentTool,
     GuiWebRunStepsTool,
 )
 from .function_gui_threejs import (
@@ -96,6 +97,7 @@ def register_annolid_gui_tools(
     web_type_callback: Optional[ActionCallback] = None,
     web_scroll_callback: Optional[ActionCallback] = None,
     web_find_forms_callback: Optional[ActionCallback] = None,
+    web_save_current_callback: Optional[ActionCallback] = None,
     web_run_steps_callback: Optional[ActionCallback] = None,
     open_pdf_callback: Optional[ActionCallback] = None,
     pdf_get_state_callback: Optional[ActionCallback] = None,
@@ -176,6 +178,9 @@ def register_annolid_gui_tools(
     registry.register(GuiWebScrollTool(web_scroll_callback=web_scroll_callback))
     registry.register(
         GuiWebFindFormsTool(web_find_forms_callback=web_find_forms_callback)
+    )
+    registry.register(
+        GuiWebSaveCurrentTool(web_save_current_callback=web_save_current_callback)
     )
     registry.register(GuiWebRunStepsTool(web_run_steps_callback=web_run_steps_callback))
     registry.register(GuiOpenPdfTool(open_pdf_callback=open_pdf_callback))
