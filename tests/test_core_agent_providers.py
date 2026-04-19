@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from pathlib import Path
 import subprocess
 
+import annolid.core.agent.providers.background_chat as background_chat_mod
 from annolid.core.agent.providers.openai_compat import (
     OpenAICompatProvider,
     resolve_openai_compat,
@@ -251,6 +252,44 @@ def test_unified_provider_configures_runtime_logging() -> None:
     assert _FakeRuntime.suppress_debug_info is True
     assert _FakeRuntime.drop_params is True
     assert _FakeRuntime.set_verbose is False
+
+
+def test_run_openai_compat_chat_closes_provider_on_timeout(monkeypatch) -> None:
+    closed = {"value": False}
+
+    class _FakeProvider:
+        async def chat(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            await __import__("asyncio").sleep(0.2)
+            return SimpleNamespace(content="")
+
+        async def close(self) -> None:
+            await __import__("asyncio").sleep(0.01)
+            closed["value"] = True
+
+    monkeypatch.setattr(
+        background_chat_mod, "resolve_openai_compat", lambda _cfg: object()
+    )
+    monkeypatch.setattr(
+        background_chat_mod, "OpenAICompatProvider", lambda resolved: _FakeProvider()
+    )
+
+    try:
+        background_chat_mod.run_openai_compat_chat(
+            prompt="hello",
+            image_path="",
+            model="fake-model",
+            provider_name="openai",
+            settings={"openai": {"api_key": "x", "base_url": "https://example.com/v1"}},
+            load_history_messages=lambda: [],
+            timeout_s=0.01,
+        )
+    except TimeoutError:
+        pass
+    else:
+        raise AssertionError("Expected timeout")
+
+    assert closed["value"] is True
 
 
 def test_provider_registry_matches_openai_codex_explicit_prefix() -> None:

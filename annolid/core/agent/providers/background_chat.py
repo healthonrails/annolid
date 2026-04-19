@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import importlib
 import mimetypes
@@ -21,6 +22,28 @@ from .openai_compat import OpenAICompatProvider, resolve_openai_compat
 OLLAMA_PLAIN_MODE_COOLDOWN_TURNS = 2
 _OLLAMA_TOOL_SUPPORT_CACHE: Dict[str, bool] = {}
 _OLLAMA_FORCE_PLAIN_CACHE: Dict[str, int] = {}
+
+
+async def _await_provider_close(provider: Any) -> None:
+    close_fn = getattr(provider, "close", None)
+    if not callable(close_fn):
+        return
+    close_result = close_fn()
+    if not hasattr(close_result, "__await__"):
+        return
+    close_task = asyncio.create_task(close_result)
+    try:
+        await asyncio.shield(close_task)
+    except asyncio.CancelledError:
+        # Ensure transport cleanup finishes before propagating cancellation.
+        with contextlib.suppress(Exception):
+            await close_task
+        raise
+    except RuntimeError as exc:
+        if "event loop is closed" not in str(exc).lower():
+            raise
+    except Exception:
+        pass
 
 
 def dependency_error_for_kind(kind: str) -> Optional[str]:
@@ -225,7 +248,7 @@ def run_openai_compat_chat(
                 resp = await coro
             return str(resp.content or "")
         finally:
-            await provider.close()
+            await _await_provider_close(provider)
 
     try:
         text = asyncio.run(_chat_once())
@@ -287,7 +310,7 @@ def run_openai_codex_chat(
                 raise RuntimeError(detail)
             return str(resp.content or "")
         finally:
-            await provider.close()
+            await _await_provider_close(provider)
 
     try:
         text = asyncio.run(_chat_once())
