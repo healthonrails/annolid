@@ -44,7 +44,6 @@ from .fallbacks import (
     extract_page_text_from_web_steps,
     try_browser_search_fallback,
     try_open_page_content_fallback,
-    try_open_pdf_content_fallback,
     try_web_fetch_fallback,
     try_web_search_fallback,
 )
@@ -221,7 +220,6 @@ __all__ = [
     "extract_page_text_from_web_steps",
     "try_browser_search_fallback",
     "try_open_page_content_fallback",
-    "try_open_pdf_content_fallback",
     "EMBEDDED_SEARCH_URL_TEMPLATE",
     "EMBEDDED_SEARCH_SOURCE",
     "build_live_web_context_prompt_block",

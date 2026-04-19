@@ -12,7 +12,11 @@ def extract_pdf_path_candidates(raw: str) -> List[str]:
         return []
 
     candidates: List[str] = []
-    if re.search(r"\.pdf\b", text, flags=re.IGNORECASE):
+    if (
+        "\n" not in text
+        and len(text) <= 1200
+        and re.search(r"\.pdf\b", text, flags=re.IGNORECASE)
+    ):
         candidates.append(text)
     for line in (ln.strip() for ln in text.splitlines() if ln.strip()):
         if re.search(r"\.pdf\b", line, flags=re.IGNORECASE):
@@ -139,23 +143,44 @@ def resolve_pdf_path_for_roots(raw_path: str, roots: List[Path]) -> Optional[Pat
         return None
 
     for candidate in candidates:
-        path_obj = Path(candidate).expanduser()
-        if path_obj.exists() and path_obj.is_file():
-            return path_obj
+        try:
+            path_obj = Path(candidate).expanduser()
+        except Exception:
+            continue
+        try:
+            if path_obj.exists() and path_obj.is_file():
+                return path_obj
+        except (OSError, ValueError):
+            continue
         if not path_obj.is_absolute():
             for root in roots:
-                joined = (root / path_obj).expanduser()
-                if joined.exists() and joined.is_file():
-                    return joined
+                try:
+                    joined = (root / path_obj).expanduser()
+                except Exception:
+                    continue
+                try:
+                    if joined.exists() and joined.is_file():
+                        return joined
+                except (OSError, ValueError):
+                    continue
 
     for candidate in candidates:
-        basename = Path(candidate).name
+        try:
+            basename = Path(candidate).name
+        except Exception:
+            continue
         if not basename:
             continue
         for root in roots:
-            joined = (root / basename).expanduser()
-            if joined.exists() and joined.is_file():
-                return joined
+            try:
+                joined = (root / basename).expanduser()
+            except Exception:
+                continue
+            try:
+                if joined.exists() and joined.is_file():
+                    return joined
+            except (OSError, ValueError):
+                continue
     return None
 
 

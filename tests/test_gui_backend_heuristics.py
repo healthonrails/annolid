@@ -17,7 +17,11 @@ def test_web_lookup_promise_is_bounded_and_keyword_gated() -> None:
 
 def test_pdf_heuristics_use_shared_phrase_matching() -> None:
     assert looks_like_pdf_read_promise("Let me read the PDF page.")
+    assert looks_like_pdf_read_promise("I'll read the full paper content first.")
     assert looks_like_pdf_summary_request("Please summarize this pdf document.")
+    assert looks_like_pdf_summary_request(
+        "Review and explain the content of this paper."
+    )
     assert not looks_like_pdf_read_promise("Let me read this." * 50)
     assert not looks_like_pdf_summary_request("Please summarize this note.")
 

@@ -144,6 +144,10 @@ PDF_SUMMARY_ACTION_HINTS: Tuple[str, ...] = (
     "summarzie",
     "summary",
     "explain",
+    "review",
+    "critique",
+    "analyze",
+    "analyse",
     "overview",
     "key points",
     "tldr",
@@ -275,7 +279,15 @@ def looks_like_pdf_read_promise(text: str) -> bool:
         PhraseHeuristic(
             hints=PDF_READ_PROMISE_HINTS,
             max_chars=280,
-            required_any_terms=("pdf", "page", "section", "document"),
+            required_any_terms=(
+                "pdf",
+                "page",
+                "section",
+                "document",
+                "paper",
+                "article",
+                "manuscript",
+            ),
         ),
     )
 

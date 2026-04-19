@@ -6,13 +6,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from email.utils import parseaddr
 import importlib
+import hashlib
 import json
 import os
 from pathlib import Path
 import logging
 import re
 import time
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from typing import Mapping
 
@@ -66,6 +67,7 @@ from annolid.services.chat_backend_support import (
     build_extractive_summary,
     build_gui_compact_system_prompt,
     build_gui_ollama_llm_callable,
+    build_llm_summary_source_candidates,
     build_live_pdf_context_prompt_block,
     build_live_web_context_prompt_block,
     build_tutorial_fallback_markdown,
@@ -119,7 +121,6 @@ from annolid.services.chat_backend_support import (
     topic_tokens,
     try_browser_search_fallback,
     try_open_page_content_fallback,
-    try_open_pdf_content_fallback,
     try_web_fetch_fallback,
     try_web_search_fallback,
 )
@@ -1872,8 +1873,31 @@ class StreamingChatTask(QRunnable):
         max_pages: int = 80,
         max_extract_chars: int = 350000,
     ) -> Dict[str, Any]:
+        normalized_max_pages = max(1, min(int(max_pages or 80), 200))
+        normalized_max_extract_chars = max(
+            10000, min(int(max_extract_chars or 350000), 2000000)
+        )
+        attempted_pdf_paths: set[str] = set()
         path_text = str(path or "").strip()
         if path_text:
+            resolved_explicit = self._resolve_pdf_path_for_gui_tool(path_text)
+            if resolved_explicit is not None and resolved_explicit.exists():
+                canonical = self._canonical_existing_path(resolved_explicit)
+                if canonical:
+                    attempted_pdf_paths.add(canonical)
+                summary_text = self._summarize_pdf_path_with_cache(
+                    resolved_explicit,
+                    max_pages=normalized_max_pages,
+                    max_extract_chars=normalized_max_extract_chars,
+                )
+                if summary_text:
+                    return {
+                        "ok": True,
+                        "path": str(resolved_explicit),
+                        "title": str(resolved_explicit.name),
+                        "summary": summary_text,
+                        "text": summary_text,
+                    }
             opened = self._run_async(self._tool_gui_open_pdf(path_text))
             if isinstance(opened, dict) and bool(opened.get("error")):
                 return {
@@ -1881,28 +1905,368 @@ class StreamingChatTask(QRunnable):
                     "error": str(opened.get("error") or "Failed to open PDF."),
                     "open_pdf": opened,
                 }
-        summary_text = gui_summarize_active_pdf_with_cache(
-            workspace=self.workspace,
-            get_pdf_state=self._tool_gui_pdf_get_state,
-            build_summary=self._build_extractive_summary,
-            max_pages=max(1, min(int(max_pages or 80), 200)),
-            max_extract_chars=max(
-                10000, min(int(max_extract_chars or 350000), 2000000)
-            ),
-            on_telemetry=self._log_pdf_summary_telemetry,
+
+        summary_text = self._summarize_active_pdf_with_cache_compat(
+            max_pages=normalized_max_pages,
+            max_extract_chars=normalized_max_extract_chars,
         )
+        if summary_text:
+            state = self._tool_gui_pdf_get_state()
+            return {
+                "ok": True,
+                "path": str(state.get("path") or ""),
+                "title": str(state.get("title") or ""),
+                "summary": summary_text,
+                "text": summary_text,
+            }
+        active_state = dict(self._tool_gui_pdf_get_state() or {})
+        active_canonical = self._canonical_existing_path(
+            str(active_state.get("path") or "")
+        )
+        if active_canonical:
+            attempted_pdf_paths.add(active_canonical)
+
+        source = self._resolve_pdf_summary_source(path_text=path_text)
+        source_mode = str(source.get("mode") or "").strip()
+        if source_mode == "pdf_path":
+            pdf_path = source.get("path")
+            if isinstance(pdf_path, Path):
+                canonical = self._canonical_existing_path(pdf_path)
+                if canonical and canonical in attempted_pdf_paths:
+                    pdf_path = None
+            if isinstance(pdf_path, Path):
+                summary_text = self._summarize_pdf_path_with_cache(
+                    pdf_path,
+                    max_pages=normalized_max_pages,
+                    max_extract_chars=normalized_max_extract_chars,
+                )
+                if summary_text:
+                    return {
+                        "ok": True,
+                        "path": str(pdf_path),
+                        "title": str(pdf_path.name),
+                        "summary": summary_text,
+                        "text": summary_text,
+                    }
+        elif source_mode == "cache_md":
+            cache_path = source.get("path")
+            if isinstance(cache_path, Path):
+                summary_text = self._summarize_cached_pdf_markdown(cache_path)
+                if summary_text:
+                    return {
+                        "ok": True,
+                        "path": "",
+                        "title": str(source.get("title") or ""),
+                        "summary": summary_text,
+                        "text": summary_text,
+                    }
+
+        prepared = self._prepare_active_pdf_for_summary_from_web()
+        if bool(prepared.get("ok")):
+            summary_text = self._summarize_active_pdf_with_cache_compat(
+                max_pages=normalized_max_pages,
+                max_extract_chars=normalized_max_extract_chars,
+            )
+            if summary_text:
+                state = self._tool_gui_pdf_get_state()
+                return {
+                    "ok": True,
+                    "path": str(state.get("path") or ""),
+                    "title": str(state.get("title") or ""),
+                    "summary": summary_text,
+                    "text": summary_text,
+                }
+
+        source_hint = str(source.get("hint") or "").strip()
+        if bool(prepared.get("error")) and source_hint:
+            source_hint = (
+                f"{source_hint}; web_prepare={str(prepared.get('error') or '')}"
+            )
         if not summary_text:
             return {
                 "ok": False,
-                "error": "Failed to summarize active PDF. Ensure a readable PDF is open.",
+                "error": (
+                    "Failed to summarize PDF from active view, session context, "
+                    "or cached extraction."
+                ),
+                "source_hint": source_hint,
+                "prepare_pdf": prepared if bool(prepared.get("error")) else {},
             }
-        state = self._tool_gui_pdf_get_state()
+        return {"ok": False, "error": "Failed to summarize PDF."}
+
+    @staticmethod
+    def _canonical_existing_path(path_value: Any) -> str:
+        text = str(path_value or "").strip()
+        if not text:
+            return ""
+        try:
+            candidate = Path(text).expanduser().resolve()
+        except Exception:
+            return ""
+        try:
+            if candidate.exists() and candidate.is_file():
+                return str(candidate)
+        except (OSError, ValueError):
+            return ""
+        return ""
+
+    def _summarize_pdf_path_with_cache(
+        self,
+        pdf_path: Path,
+        *,
+        max_pages: int,
+        max_extract_chars: int,
+    ) -> str:
+        candidate = Path(pdf_path).expanduser()
+        if not candidate.exists() or not candidate.is_file():
+            return ""
+        return gui_summarize_active_pdf_with_cache(
+            workspace=self.workspace,
+            get_pdf_state=lambda: {
+                "ok": True,
+                "has_pdf": True,
+                "path": str(candidate),
+                "title": str(candidate.name),
+            },
+            build_summary=self._build_extractive_summary,
+            build_llm_summary=self._build_llm_pdf_summary,
+            require_llm_summary=True,
+            max_pages=max_pages,
+            max_extract_chars=max_extract_chars,
+            on_telemetry=self._log_pdf_summary_telemetry,
+        )
+
+    @staticmethod
+    def _extract_cached_markdown_paths(text: str) -> List[Path]:
+        value = str(text or "")
+        if not value.strip():
+            return []
+        paths: list[Path] = []
+        for match in re.findall(r"Cached extraction:\s*([^\n\r]+)", value, flags=re.I):
+            candidate = Path(str(match or "").strip().strip("\"'`")).expanduser()
+            if str(candidate).lower().endswith(".md"):
+                paths.append(candidate)
+        for match in re.findall(
+            r"(?:~?/|/)[^\n\r]+?pdf_text_cache[^\n\r]+?\.md",
+            value,
+            flags=re.I,
+        ):
+            candidate = Path(str(match or "").strip().strip("\"'`")).expanduser()
+            paths.append(candidate)
+        deduped: list[Path] = []
+        seen: set[str] = set()
+        for path_obj in paths:
+            key = str(path_obj)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(path_obj)
+        return deduped
+
+    def _resolve_pdf_summary_source(self, *, path_text: str = "") -> Dict[str, Any]:
+        active_state = dict(self._tool_gui_pdf_get_state() or {})
+        active_path = str(active_state.get("path") or "").strip()
+        if (
+            bool(active_state.get("ok"))
+            and bool(active_state.get("has_pdf"))
+            and active_path
+        ):
+            candidate = Path(active_path).expanduser()
+            if candidate.exists() and candidate.is_file():
+                return {"mode": "pdf_path", "path": candidate, "hint": "active_pdf"}
+
+        if path_text:
+            resolved = self._resolve_pdf_path_for_gui_tool(path_text)
+            if resolved is not None and resolved.exists() and resolved.is_file():
+                return {"mode": "pdf_path", "path": resolved, "hint": "explicit_path"}
+
+        context_blobs: list[str] = [str(self.prompt or "").strip()]
+        history = self._load_history_messages()
+        for message in reversed(history[-80:]):
+            if not isinstance(message, dict):
+                continue
+            content = str(message.get("content") or "").strip()
+            if content:
+                context_blobs.append(content)
+
+        for blob in context_blobs:
+            for raw in self._extract_pdf_path_candidates(blob):
+                resolved = self._resolve_pdf_path_for_gui_tool(raw)
+                if resolved is None:
+                    try:
+                        candidate = Path(
+                            str(raw or "").strip().strip("\"'`")
+                        ).expanduser()
+                    except Exception:
+                        candidate = None
+                    if candidate is not None:
+                        try:
+                            if candidate.exists() and candidate.is_file():
+                                resolved = candidate
+                        except (OSError, ValueError):
+                            resolved = None
+                if resolved is not None and resolved.exists() and resolved.is_file():
+                    return {
+                        "mode": "pdf_path",
+                        "path": resolved,
+                        "hint": "session_pdf_path",
+                    }
+
+        for blob in context_blobs:
+            for cache_path in self._extract_cached_markdown_paths(blob):
+                if cache_path.exists() and cache_path.is_file():
+                    return {
+                        "mode": "cache_md",
+                        "path": cache_path,
+                        "title": str(cache_path.name),
+                        "hint": "session_cached_md",
+                    }
+
+        cache_dir = self.workspace / "pdf_text_cache"
+        if cache_dir.exists() and cache_dir.is_dir():
+            try:
+                cache_files = sorted(
+                    cache_dir.glob("*.md"),
+                    key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+                    reverse=True,
+                )
+            except Exception:
+                cache_files = []
+            if cache_files:
+                return {
+                    "mode": "cache_md",
+                    "path": cache_files[0],
+                    "title": str(cache_files[0].name),
+                    "hint": "latest_cached_md",
+                }
+
+        available = self._list_available_pdfs(limit=1)
+        if available:
+            candidate = available[0]
+            if candidate.exists() and candidate.is_file():
+                return {
+                    "mode": "pdf_path",
+                    "path": candidate,
+                    "hint": "recent_local_pdf",
+                }
+        return {"mode": "", "hint": "no_pdf_source"}
+
+    def _summarize_cached_pdf_markdown(self, cache_path: Path) -> str:
+        candidate = Path(cache_path).expanduser()
+        if not candidate.exists() or not candidate.is_file():
+            return ""
+        try:
+            raw_text = str(candidate.read_text(encoding="utf-8") or "").strip()
+        except Exception:
+            return ""
+        if not raw_text:
+            return ""
+        source_pdf_path = ""
+        source_match = re.search(
+            r"^\s*Source:\s*(.+?\.pdf)\s*$",
+            raw_text,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+        if source_match:
+            source_pdf_path = str(source_match.group(1) or "").strip()
+        summary = self._build_llm_pdf_summary(
+            raw_text,
+            max_chars=1800,
+            pdf_path=source_pdf_path,
+        )
+        if not summary:
+            return ""
+        source_label = Path(source_pdf_path).name if source_pdf_path else candidate.stem
+        return (
+            f"Summary of cached PDF ({source_label}):\n"
+            f"{summary}\n\n"
+            f"Cached extraction: {candidate}"
+        )
+
+    @staticmethod
+    def _extract_pdf_path_from_web_save_payload(payload: Dict[str, Any]) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        saved_path = str(payload.get("saved_path") or "").strip()
+        if saved_path.lower().endswith(".pdf") and Path(saved_path).exists():
+            return saved_path
+        if bool(payload.get("queued")):
+            return ""
+        saved_kind = str(
+            payload.get("last_saved_kind") or payload.get("kind") or ""
+        ).lower()
+        last_saved_path = str(payload.get("last_saved_path") or "").strip()
+        if (
+            saved_kind == "pdf"
+            and last_saved_path.lower().endswith(".pdf")
+            and Path(last_saved_path).exists()
+        ):
+            return last_saved_path
+        return ""
+
+    def _prepare_active_pdf_for_summary_from_web(self) -> Dict[str, Any]:
+        web_state = dict(self._tool_gui_web_get_state() or {})
+        if not bool(web_state.get("ok")) or not bool(web_state.get("has_page")):
+            return {
+                "ok": False,
+                "error": "No active web page available for PDF preparation.",
+            }
+
+        source_url = str(web_state.get("url") or "").strip()
+        if source_url:
+            opened_from_url = self._run_async(self._tool_gui_open_pdf(source_url))
+            if isinstance(opened_from_url, dict) and bool(opened_from_url.get("ok")):
+                state_after_url_open = dict(self._tool_gui_pdf_get_state() or {})
+                if bool(state_after_url_open.get("ok")) and bool(
+                    state_after_url_open.get("has_pdf")
+                ):
+                    return {
+                        "ok": True,
+                        "mode": "open_url",
+                        "path": str(state_after_url_open.get("path") or ""),
+                    }
+
+        initial_save = dict(self._tool_gui_web_save_current() or {})
+        saved_pdf_path = self._extract_pdf_path_from_web_save_payload(initial_save)
+        if not saved_pdf_path and bool(initial_save.get("queued")):
+            deadline = time.monotonic() + 2.5
+            while time.monotonic() < deadline:
+                QtCore.QThread.msleep(125)
+                polled = dict(self._tool_gui_web_save_current() or {})
+                saved_pdf_path = self._extract_pdf_path_from_web_save_payload(polled)
+                if saved_pdf_path:
+                    break
+                if not bool(polled.get("queued")):
+                    break
+        if not saved_pdf_path:
+            return {
+                "ok": False,
+                "error": "Could not save a PDF from the active web viewer.",
+                "web_save": initial_save,
+            }
+
+        opened_saved = self._run_async(self._tool_gui_open_pdf(saved_pdf_path))
+        if isinstance(opened_saved, dict) and bool(opened_saved.get("error")):
+            return {
+                "ok": False,
+                "error": str(opened_saved.get("error") or "Failed to open saved PDF."),
+                "web_save": initial_save,
+                "open_pdf": opened_saved,
+            }
+        state_after_save_open = dict(self._tool_gui_pdf_get_state() or {})
+        if not bool(state_after_save_open.get("ok")) or not bool(
+            state_after_save_open.get("has_pdf")
+        ):
+            return {
+                "ok": False,
+                "error": "Saved PDF could not be activated for summarization.",
+                "web_save": initial_save,
+                "path": saved_pdf_path,
+            }
         return {
             "ok": True,
-            "path": str(state.get("path") or ""),
-            "title": str(state.get("title") or ""),
-            "summary": summary_text,
-            "text": summary_text,
+            "mode": "saved_pdf",
+            "path": str(state_after_save_open.get("path") or saved_pdf_path),
         }
 
     async def _download_pdf_for_gui_tool(self, url: str) -> Optional[Path]:
@@ -2217,6 +2581,172 @@ class StreamingChatTask(QRunnable):
             text, max_sentences=max_sentences, max_chars=max_chars
         )
 
+    def _build_llm_pdf_summary(
+        self,
+        text: str,
+        *,
+        max_chars: int = 1800,
+        pdf_path: str = "",
+    ) -> str:
+        source_text = str(text or "").strip()
+        if len(source_text) < 120:
+            return ""
+        dep_error = self._provider_dependency_error()
+        if dep_error:
+            return ""
+        requested_style = ""
+        prompt_lower = str(self.prompt or "").lower()
+        if "andrew ng" in prompt_lower:
+            requested_style = (
+                "Write in a practical Andrew Ng-style teaching voice: clear, "
+                "structured, concrete, and no hype."
+            )
+        system_prompt = (
+            "You are reviewing a research paper from extracted PDF text. "
+            "Return a concise expert explanation with these sections: "
+            "1) Core idea, 2) Method, 3) Results/evidence, 4) Limits/risks, "
+            "5) Practical takeaways. "
+            "Ground every claim in the provided text and do not invent missing facts."
+        )
+        llm_cache = getattr(self, "_pdf_llm_summary_cache", None)
+        if not isinstance(llm_cache, dict):
+            llm_cache = {}
+            self._pdf_llm_summary_cache = llm_cache
+        kind = resolve_chat_provider_kind(
+            settings=self.settings, provider=self.provider
+        )
+        candidates = build_llm_summary_source_candidates(source_text) or [
+            {"label": "full_text", "text": source_text[:5200]}
+        ]
+        attempts = [
+            {"candidate_limit": 3200, "timeout_s": 10.0, "max_tokens": 600},
+            {"candidate_limit": 5200, "timeout_s": 18.0, "max_tokens": 850},
+        ]
+        last_error = ""
+        for attempt in attempts:
+            for candidate in candidates:
+                candidate_text = str(candidate.get("text") or "").strip()
+                if not candidate_text:
+                    continue
+                excerpt = candidate_text[: int(attempt["candidate_limit"])].strip()
+                cache_key = hashlib.sha1(
+                    (
+                        f"{self.provider}|{self.model}|{self.prompt}|{pdf_path}|"
+                        f"{max_chars}|{candidate.get('label')}|{attempt['candidate_limit']}|{excerpt}"
+                    ).encode("utf-8")
+                ).hexdigest()
+                if cache_key in llm_cache:
+                    cached_value = str(llm_cache.get(cache_key) or "")
+                    if cached_value:
+                        return cached_value
+                    continue
+                user_prompt = (
+                    f"User request: {str(self.prompt or '').strip()}\n"
+                    f"{requested_style}\n"
+                    f"Keep response under {int(max_chars)} characters.\n"
+                    f"PDF path: {str(pdf_path or '').strip()}\n"
+                    f"Focus slice: {str(candidate.get('label') or 'paper_excerpt')}\n\n"
+                    "Extracted paper text:\n"
+                    f"{excerpt}"
+                ).strip()
+                try:
+                    if kind == "ollama":
+                        llm_callable = self._build_ollama_llm_callable()
+                        response = self._run_async(
+                            llm_callable(
+                                [
+                                    {"role": "system", "content": system_prompt},
+                                    {"role": "user", "content": user_prompt},
+                                ],
+                                [],
+                                self.model,
+                            )
+                        )
+                        raw = str((response or {}).get("content") or "").strip()
+                    elif kind in {"openai_compat", "openai_codex", "codex_cli"}:
+                        _user_prompt, raw = self._run_sync_call_loop_safe(
+                            run_chat_openai,
+                            prompt=f"{system_prompt}\n\n{user_prompt}",
+                            image_path="",
+                            model=self.model,
+                            provider_name=self.provider,
+                            settings=self.settings,
+                            load_history_messages=lambda: [],
+                            session_id=self.session_id,
+                            timeout_s=min(
+                                float(attempt["timeout_s"]),
+                                self._agent_loop_llm_timeout_seconds(
+                                    prompt_needs_tools=False
+                                ),
+                            ),
+                            max_tokens=int(attempt["max_tokens"]),
+                        )
+                        raw = str(raw or "").strip()
+                    elif kind == "gemini":
+                        _user_prompt, raw = self._run_sync_call_loop_safe(
+                            run_chat_gemini,
+                            prompt=f"{system_prompt}\n\n{user_prompt}",
+                            image_path="",
+                            model=self.model,
+                            provider_name=self.provider,
+                            settings=self.settings,
+                        )
+                        raw = str(raw or "").strip()
+                    else:
+                        raw = ""
+                except Exception as exc:
+                    last_error = str(exc or "").strip()
+                    logger.warning(
+                        "annolid-bot pdf llm summary failed session=%s model=%s provider=%s slice=%s limit=%s error=%s",
+                        self.session_id,
+                        self.model,
+                        self.provider,
+                        str(candidate.get("label") or "paper_excerpt"),
+                        int(attempt["candidate_limit"]),
+                        last_error,
+                    )
+                    llm_cache[cache_key] = ""
+                    continue
+                if not raw or self._looks_like_pdf_read_promise(raw):
+                    llm_cache[cache_key] = ""
+                    continue
+                compact = raw.strip()
+                if len(compact) > int(max_chars):
+                    compact = compact[: int(max_chars)].rstrip()
+                return compact
+        if last_error:
+            logger.info(
+                "annolid-bot pdf llm summary exhausted retries session=%s model=%s provider=%s last_error=%s",
+                self.session_id,
+                self.model,
+                self.provider,
+                last_error,
+            )
+        return ""
+
+    @staticmethod
+    def _run_sync_call_loop_safe(func: Callable[..., Any], /, **kwargs: Any) -> Any:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return func(**kwargs)
+
+        result_holder: Dict[str, Any] = {}
+        error_holder: Dict[str, Exception] = {}
+
+        def _target() -> None:
+            try:
+                result_holder["value"] = func(**kwargs)
+            except Exception as exc:
+                error_holder["error"] = exc
+
+        worker = Thread(target=_target, daemon=True)
+        worker.start()
+        worker.join()
+        if "error" in error_holder:
+            raise error_holder["error"]
+        return result_holder.get("value")
+
     async def _try_web_fetch_fallback(
         self,
         prompt: str,
@@ -2268,18 +2798,42 @@ class StreamingChatTask(QRunnable):
         )
 
     def _try_open_pdf_content_fallback(self) -> str:
-        return try_open_pdf_content_fallback(
-            prompt=self.prompt,
-            get_state=self._tool_gui_pdf_get_state,
-            get_text=self._tool_gui_pdf_get_text,
-            build_summary=self._build_extractive_summary,
-        )
+        # Keep PDF fallback aligned with the main summarize tool: extracted text is
+        # an internal intermediate only, and user-facing content comes from the LLM.
+        return self._summarize_active_pdf_with_cache()
 
-    def _summarize_active_pdf_with_cache(self) -> str:
+    def _summarize_active_pdf_with_cache_compat(
+        self,
+        *,
+        max_pages: int,
+        max_extract_chars: int,
+    ) -> str:
+        try:
+            return self._summarize_active_pdf_with_cache(
+                max_pages=max_pages,
+                max_extract_chars=max_extract_chars,
+            )
+        except TypeError:
+            # Backward-compatibility for tests and call sites monkeypatching this
+            # method with a zero-arg callable.
+            return self._summarize_active_pdf_with_cache()
+
+    def _summarize_active_pdf_with_cache(
+        self,
+        *,
+        max_pages: int = 80,
+        max_extract_chars: int = 350000,
+    ) -> str:
         return gui_summarize_active_pdf_with_cache(
             workspace=self.workspace,
             get_pdf_state=self._tool_gui_pdf_get_state,
             build_summary=self._build_extractive_summary,
+            build_llm_summary=self._build_llm_pdf_summary,
+            require_llm_summary=True,
+            max_pages=max(1, min(int(max_pages or 80), 200)),
+            max_extract_chars=max(
+                10000, min(int(max_extract_chars or 350000), 2000000)
+            ),
             on_telemetry=self._log_pdf_summary_telemetry,
         )
 
@@ -2316,7 +2870,12 @@ class StreamingChatTask(QRunnable):
         if not self._looks_like_pdf_summary_request(self.prompt):
             return text
         if text and not gui_looks_like_raw_pdf_extract_response(text):
-            return text
+            if not self._looks_like_pdf_read_promise(text):
+                return text
+        if text and self._looks_like_pdf_read_promise(text):
+            self._emit_progress("Converting PDF read promise into concrete summary")
+        elif text and gui_looks_like_raw_pdf_extract_response(text):
+            self._emit_progress("Compressing raw PDF extraction into summary")
         upgraded = self._summarize_active_pdf_with_cache()
         return upgraded or text
 

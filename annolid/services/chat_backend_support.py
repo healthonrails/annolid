@@ -20,7 +20,6 @@ from annolid.core.agent.gui_backend.fallbacks import (
     extract_page_text_from_web_steps,
     try_browser_search_fallback,
     try_open_page_content_fallback,
-    try_open_pdf_content_fallback,
     try_web_fetch_fallback,
     try_web_search_fallback,
 )
@@ -73,6 +72,7 @@ from annolid.core.agent.gui_backend.response_finalize import (
     should_apply_web_refusal_fallback as gui_should_apply_web_refusal_fallback,
 )
 from annolid.core.agent.gui_backend.pdf_summary import (
+    build_llm_summary_source_candidates,
     looks_like_raw_pdf_extract_response as gui_looks_like_raw_pdf_extract_response,
     summarize_active_pdf_with_cache as gui_summarize_active_pdf_with_cache,
 )
@@ -116,6 +116,7 @@ __all__ = [
     "build_extractive_summary",
     "build_root_slash_completion_entries",
     "build_gui_compact_system_prompt",
+    "build_llm_summary_source_candidates",
     "build_live_pdf_context_prompt_block",
     "build_live_web_context_prompt_block",
     "build_tutorial_fallback_markdown",
@@ -170,7 +171,6 @@ __all__ = [
     "topic_tokens",
     "try_browser_search_fallback",
     "try_open_page_content_fallback",
-    "try_open_pdf_content_fallback",
     "try_web_fetch_fallback",
     "try_web_search_fallback",
     "build_gui_ollama_llm_callable",

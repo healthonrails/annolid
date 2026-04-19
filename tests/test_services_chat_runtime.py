@@ -87,6 +87,31 @@ def test_resolve_chat_pdf_path_uses_workspace_roots(
     assert result == roots[1] / "paper.pdf"
 
 
+def test_resolve_chat_pdf_path_ignores_large_summary_blob(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.services.chat_runtime as chat_runtime_mod
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        chat_runtime_mod, "build_chat_workspace_roots", lambda: [workspace]
+    )
+    cache_md = (
+        workspace
+        / "pdf_text_cache"
+        / "An_autonomous_AI_agent_for_universal_behavior_analysis_f8ba7757d8e3.md"
+    )
+
+    summary_blob = (
+        "Summary of the open PDF (An autonomous AI agent for universal behavior analysis.pdf):\n"
+        "Core idea and method overview.\n\n"
+        f"Cached extraction: {cache_md}"
+    )
+    result = resolve_chat_pdf_path(summary_blob)
+    assert result is None
+
+
 def test_chat_runtime_config_defaults_and_dirs(monkeypatch, tmp_path: Path) -> None:
     import annolid.services.chat_runtime as chat_runtime_mod
 

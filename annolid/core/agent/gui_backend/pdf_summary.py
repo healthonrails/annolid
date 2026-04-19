@@ -60,11 +60,103 @@ def clean_pdf_text_for_summary(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _slice_text(value: str, *, max_chars: int) -> str:
+    compact = str(value or "").strip()
+    if not compact:
+        return ""
+    return compact[: int(max_chars)].strip()
+
+
+def _extract_section_slice(
+    text: str,
+    *,
+    heading_pattern: str,
+    stop_patterns: tuple[str, ...] = (),
+    max_chars: int,
+) -> str:
+    value = str(text or "")
+    if not value:
+        return ""
+    match = re.search(heading_pattern, value, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    start = match.start()
+    end = len(value)
+    for stop_pattern in stop_patterns:
+        stop_match = re.search(stop_pattern, value[start + 1 :], flags=re.IGNORECASE)
+        if not stop_match:
+            continue
+        end = min(end, start + 1 + stop_match.start())
+    return _slice_text(value[start:end], max_chars=max_chars)
+
+
+def build_llm_summary_source_candidates(text: str) -> list[dict[str, str]]:
+    cleaned = clean_pdf_text_for_summary(text)
+    if not cleaned:
+        return []
+
+    candidates: list[dict[str, str]] = []
+
+    abstract_slice = _extract_section_slice(
+        cleaned,
+        heading_pattern=r"\babstract\b[:\s]",
+        stop_patterns=(
+            r"\b(?:introduction|background|methods?|materials?|results?)\b[:\s]",
+        ),
+        max_chars=3200,
+    )
+    if abstract_slice:
+        candidates.append({"label": "abstract", "text": abstract_slice})
+
+    intro_slice = _extract_section_slice(
+        cleaned,
+        heading_pattern=r"\b(?:introduction|background)\b[:\s]",
+        stop_patterns=(
+            r"\b(?:methods?|materials?|results?|discussion|conclusion[s]?)\b[:\s]",
+        ),
+        max_chars=2400,
+    )
+    ending_slice = _extract_section_slice(
+        cleaned,
+        heading_pattern=r"\b(?:discussion|conclusion[s]?|limitations?)\b[:\s]",
+        stop_patterns=(),
+        max_chars=1800,
+    )
+    combined_sections = "\n\n".join(
+        part for part in [abstract_slice, intro_slice, ending_slice] if part
+    ).strip()
+    if combined_sections:
+        candidates.append(
+            {
+                "label": "abstract_intro_conclusion",
+                "text": _slice_text(combined_sections, max_chars=5200),
+            }
+        )
+
+    lead_slice = _slice_text(cleaned, max_chars=5200)
+    if lead_slice:
+        candidates.append({"label": "lead_pages", "text": lead_slice})
+
+    deduped: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in candidates:
+        candidate_text = str(item.get("text") or "").strip()
+        if not candidate_text or candidate_text in seen:
+            continue
+        seen.add(candidate_text)
+        deduped.append(
+            {"label": str(item.get("label") or "candidate"), "text": candidate_text}
+        )
+    return deduped
+
+
 def summarize_active_pdf_with_cache(
     *,
     workspace: Path,
     get_pdf_state: Callable[[], Dict[str, Any]],
     build_summary: Callable[..., str],
+    build_llm_summary: Callable[..., str] | None = None,
+    require_llm_summary: bool = False,
     max_pages: int = 80,
     max_extract_chars: int = 350000,
     on_telemetry: Callable[[Dict[str, Any]], None] | None = None,
@@ -80,6 +172,8 @@ def summarize_active_pdf_with_cache(
         "text_chars": 0,
         "extract_ms": 0.0,
         "summary_ms": 0.0,
+        "llm_ms": 0.0,
+        "summary_mode": "extractive",
         "total_ms": 0.0,
     }
 
@@ -184,7 +278,37 @@ def summarize_active_pdf_with_cache(
 
     summary_started = time.perf_counter()
     summary_source = clean_pdf_text_for_summary(extracted_text)
-    summary = build_summary(summary_source, max_sentences=10, max_chars=1800)
+    summary = ""
+    llm_started = time.perf_counter()
+    if callable(build_llm_summary):
+        try:
+            summary = str(
+                build_llm_summary(
+                    summary_source,
+                    max_chars=1800,
+                    pdf_path=str(pdf_path),
+                )
+                or ""
+            ).strip()
+        except TypeError:
+            try:
+                summary = str(build_llm_summary(summary_source) or "").strip()
+            except Exception:
+                summary = ""
+        except Exception:
+            summary = ""
+    telemetry["llm_ms"] = round((time.perf_counter() - llm_started) * 1000.0, 1)
+    if summary:
+        telemetry["summary_mode"] = "llm"
+    else:
+        if bool(require_llm_summary):
+            telemetry["reason"] = "llm_summary_unavailable"
+            telemetry["summary_ms"] = round(
+                (time.perf_counter() - summary_started) * 1000.0, 1
+            )
+            _emit_telemetry()
+            return ""
+        summary = build_summary(summary_source, max_sentences=10, max_chars=1800)
     if not summary:
         compact = " ".join(summary_source.split())
         if not compact:

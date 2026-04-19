@@ -860,7 +860,7 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
 
     summarize_pdf_match = re.search(
         r"^\s*(?:please\s+)?"
-        r"(?:summarize|summarise|summarization|summarisation|summarzie|summary|tldr|tl;dr|overview|explain)\b"
+        r"(?:summarize|summarise|summarization|summarisation|summarzie|summary|tldr|tl;dr|overview|explain|review|critique|analyze|analyse)\b"
         r"[\s\S]*\b(?:paper|pdf|document)\b",
         lower,
     )
@@ -1389,11 +1389,8 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                 return {"name": "open_pdf", "args": {"path": normalized}}
             return {"name": "open_url", "args": {"url": normalized}}
 
-    open_pdf_hint = (
-        "open pdf" in lower
-        or "load pdf" in lower
-        or "open a pdf" in lower
-        or "open the pdf" in lower
+    open_pdf_hint = bool(
+        re.search(r"\b(?:open|load)\s+(?:a|the|this)?\s*pdf\b", lower)
         or "gui_open_pdf(" in lower
     )
     open_url_hint = re.search(

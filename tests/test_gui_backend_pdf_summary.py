@@ -80,3 +80,101 @@ def test_summarize_active_pdf_with_cache_emits_telemetry_and_reuses_cache(
     assert fitz_open_calls["count"] == 1
     assert telemetry_events[-1]["ok"] is True
     assert telemetry_events[-1]["cache_hit"] is True
+
+
+def test_summarize_active_pdf_with_cache_prefers_llm_summary_when_available(
+    monkeypatch, tmp_path: Path
+) -> None:
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 test")
+    telemetry_events: list[dict[str, object]] = []
+
+    class _Page:
+        def get_text(self, _mode: str) -> str:
+            return (
+                "Abstract. This paper introduces a multimodal behavior analysis agent."
+            )
+
+    class _Doc:
+        page_count = 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+        def load_page(self, index: int) -> _Page:
+            assert index == 0
+            return _Page()
+
+    class _FitzModule:
+        @staticmethod
+        def open(path: str) -> _Doc:
+            assert path == str(pdf_path)
+            return _Doc()
+
+    monkeypatch.setitem(sys.modules, "fitz", _FitzModule)
+
+    def _state() -> dict[str, object]:
+        return {"ok": True, "has_pdf": True, "path": str(pdf_path)}
+
+    summary = summarize_active_pdf_with_cache(
+        workspace=tmp_path,
+        get_pdf_state=_state,
+        build_summary=lambda text, **_: f"extractive({len(text)})",
+        build_llm_summary=lambda text, **_: "llm-summary",
+        on_telemetry=lambda payload: telemetry_events.append(dict(payload)),
+    )
+    assert "llm-summary" in summary
+    assert telemetry_events[-1]["summary_mode"] == "llm"
+
+
+def test_summarize_active_pdf_with_cache_can_require_llm_summary(
+    monkeypatch, tmp_path: Path
+) -> None:
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 test")
+    telemetry_events: list[dict[str, object]] = []
+
+    class _Page:
+        def get_text(self, _mode: str) -> str:
+            return (
+                "Abstract. This paper introduces a multimodal behavior analysis agent."
+            )
+
+    class _Doc:
+        page_count = 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+        def load_page(self, index: int) -> _Page:
+            assert index == 0
+            return _Page()
+
+    class _FitzModule:
+        @staticmethod
+        def open(path: str) -> _Doc:
+            assert path == str(pdf_path)
+            return _Doc()
+
+    monkeypatch.setitem(sys.modules, "fitz", _FitzModule)
+
+    def _state() -> dict[str, object]:
+        return {"ok": True, "has_pdf": True, "path": str(pdf_path)}
+
+    summary = summarize_active_pdf_with_cache(
+        workspace=tmp_path,
+        get_pdf_state=_state,
+        build_summary=lambda text, **_: f"extractive({len(text)})",
+        build_llm_summary=lambda text, **_: "",
+        require_llm_summary=True,
+        on_telemetry=lambda payload: telemetry_events.append(dict(payload)),
+    )
+    assert summary == ""
+    assert telemetry_events[-1]["ok"] is False
+    assert telemetry_events[-1]["reason"] == "llm_summary_unavailable"

@@ -1845,6 +1845,18 @@ def test_extract_pdf_path_candidates_includes_url() -> None:
     assert any(candidate.startswith("https://example.org/") for candidate in candidates)
 
 
+def test_extract_pdf_path_candidates_ignores_multiline_summary_blob() -> None:
+    task = StreamingChatTask("hi", widget=None)
+    summary_blob = (
+        "Summary of the open PDF (paper.pdf):\n"
+        "Core idea and method overview.\n\n"
+        "Cached extraction: /tmp/pdf_text_cache/paper_abc123.md"
+    )
+    candidates = task._extract_pdf_path_candidates(summary_blob)
+    assert summary_blob not in candidates
+    assert any(str(candidate).endswith("paper.pdf") for candidate in candidates)
+
+
 def test_resolve_video_path_uses_active_video_basename(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -2812,6 +2824,10 @@ def test_finalize_agent_text_prefers_open_pdf_content_on_local_access_refusal() 
         "total_pages": 12,
         "text": "This paper presents a robust segmentation method with strong benchmarks.",
     }
+    task._summarize_active_pdf_with_cache = lambda: (  # type: ignore[method-assign]
+        "Summary of the open PDF (paper.pdf):\n"
+        "This paper presents a robust segmentation method with strong benchmarks."
+    )
 
     text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
         _Result(),
@@ -2819,7 +2835,7 @@ def test_finalize_agent_text_prefers_open_pdf_content_on_local_access_refusal() 
     )
     assert used_recovery is False
     assert used_direct_gui_fallback is False
-    assert "Using the currently open PDF" in text
+    assert "Summary of the open PDF" in text
     assert "robust segmentation method" in text
 
 
@@ -2880,6 +2896,10 @@ def test_finalize_agent_text_pdf_fallback_uses_source_page_hint() -> None:
         }
 
     task._tool_gui_pdf_get_text = _pdf_get_text  # type: ignore[method-assign]
+    task._summarize_active_pdf_with_cache = lambda: (  # type: ignore[method-assign]
+        "Summary of the open PDF (paper.pdf):\n"
+        "Page 1 selected snippet context and concise explanation support."
+    )
 
     text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
         _Result(),
@@ -2887,10 +2907,7 @@ def test_finalize_agent_text_pdf_fallback_uses_source_page_hint() -> None:
     )
     assert used_recovery is False
     assert used_direct_gui_fallback is False
-    assert observed["pages"] == 1
-    assert observed["start_page"] == 1
-    assert observed["max_chars"] <= 4500
-    assert "Using the currently open PDF" in text
+    assert "Summary of the open PDF" in text
 
 
 def test_finalize_agent_text_pdf_fallback_replaces_read_promise_placeholder() -> None:
@@ -2919,6 +2936,10 @@ def test_finalize_agent_text_pdf_fallback_replaces_read_promise_placeholder() ->
         "total_pages": 10,
         "text": "Quantum-dot-grounded behavioral data links visual cues to behavior categories.",
     }
+    task._summarize_active_pdf_with_cache = lambda: (  # type: ignore[method-assign]
+        "Summary of the open PDF (paper.pdf):\n"
+        "Quantum-dot-grounded behavioral data links visual cues to behavior categories."
+    )
 
     text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
         _Result(),
@@ -2926,7 +2947,7 @@ def test_finalize_agent_text_pdf_fallback_replaces_read_promise_placeholder() ->
     )
     assert used_recovery is False
     assert isinstance(used_direct_gui_fallback, bool)
-    assert "Using the currently open PDF" in text
+    assert "Summary of the open PDF" in text
     assert "quantum-dot-grounded behavioral data".lower() in text.lower()
     assert "I'll read the relevant section" not in text
 
@@ -2963,6 +2984,10 @@ def test_finalize_agent_text_pdf_fallback_replaces_phrase_miss_placeholder() -> 
         "total_pages": 10,
         "text": "Quantum-dot-grounded behavioral data links visual cues to behavior categories.",
     }
+    task._summarize_active_pdf_with_cache = lambda: (  # type: ignore[method-assign]
+        "Summary of the open PDF (paper.pdf):\n"
+        "Quantum-dot-grounded behavioral data links visual cues to behavior categories."
+    )
 
     text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
         _Result(),
@@ -2970,7 +2995,7 @@ def test_finalize_agent_text_pdf_fallback_replaces_phrase_miss_placeholder() -> 
     )
     assert used_recovery is False
     assert isinstance(used_direct_gui_fallback, bool)
-    assert "Using the currently open PDF" in text
+    assert "Summary of the open PDF" in text
     assert "specific phrase on page 1" not in text
 
 
@@ -3010,6 +3035,10 @@ def test_finalize_agent_text_pdf_fallback_on_empty_after_tool_run_for_summary_pr
             "using vision-language reasoning and reports strong results across benchmarks."
         ),
     }
+    task._summarize_active_pdf_with_cache = lambda: (  # type: ignore[method-assign]
+        "Summary of the open PDF (paper.pdf):\n"
+        "BehaviorVLM presents a finetuning-free framework for behavioral understanding."
+    )
 
     text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
         _Result(),
@@ -3017,7 +3046,7 @@ def test_finalize_agent_text_pdf_fallback_on_empty_after_tool_run_for_summary_pr
     )
     assert used_recovery is False
     assert isinstance(used_direct_gui_fallback, bool)
-    assert "Using the currently open PDF" in text
+    assert "Summary of the open PDF" in text
     assert "BehaviorVLM" in text
 
 
@@ -3170,6 +3199,10 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_pdf_summary["name"] == "pdf_summarize"
     parsed_pdf_summary_typo = task._parse_direct_gui_command("summarzie this paper")
     assert parsed_pdf_summary_typo["name"] == "pdf_summarize"
+    parsed_pdf_review = task._parse_direct_gui_command(
+        "Review and explain the content of this paper like Andrew Ng"
+    )
+    assert parsed_pdf_review["name"] == "pdf_summarize"
 
     parsed_open_url_direct = task._parse_direct_gui_command(
         "open https://brainglobe.info/documentation/brainglobe-atlasapi/usage/atlas-details.html"
@@ -3777,6 +3810,384 @@ def test_parse_direct_gui_command_variants() -> None:
     assert "behavior analysis" in parsed_howto["args"]["topic"].lower()
 
 
+def test_upgrade_pdf_summary_response_replaces_read_promise(monkeypatch) -> None:
+    task = StreamingChatTask(
+        "Review and explain the content of this paper like Andrew Ng",
+        widget=None,
+    )
+    monkeypatch.setattr(
+        task,
+        "_summarize_active_pdf_with_cache",
+        lambda: "Summary of the open PDF (paper.pdf):\nKey points.",
+    )
+    upgraded = task._upgrade_pdf_summary_response(
+        "I'll read the full paper content first to give you a thorough Andrew Ng-style review."
+    )
+    assert upgraded.startswith("Summary of the open PDF (paper.pdf):")
+
+
+def test_build_llm_pdf_summary_uses_provider_and_rejects_read_promise(
+    monkeypatch,
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask(
+        "Review and explain the content of this paper like Andrew Ng",
+        widget=None,
+        provider="openai",
+        model="fake-model",
+        settings={"openai": {}},
+    )
+    task._provider_dependency_error = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        backend,
+        "resolve_chat_provider_kind",
+        lambda **_kwargs: "openai_compat",
+    )
+
+    captured_prompt: dict[str, str] = {}
+
+    def _fake_openai(**kwargs):
+        captured_prompt["value"] = str(kwargs.get("prompt") or "")
+        return ("user", "Structured explanation with grounded key points.")
+
+    monkeypatch.setattr(backend, "run_chat_openai", _fake_openai)
+    source_text = (
+        "Abstract. Behavior analysis is hard. We propose a multimodal agent that "
+        "uses language reasoning, visual grounding, and memory to automate "
+        "cross-species behavior analysis without retraining."
+    )
+    summary = task._build_llm_pdf_summary(
+        source_text,
+        max_chars=200,
+        pdf_path="/tmp/paper.pdf",
+    )
+    assert "grounded key points" in summary.lower()
+    assert "andrew ng-style teaching voice" in captured_prompt["value"].lower()
+
+    def _fake_openai_promise(**_kwargs):
+        return ("user", "I'll read the full paper content first.")
+
+    monkeypatch.setattr(backend, "run_chat_openai", _fake_openai_promise)
+    promise_summary = task._build_llm_pdf_summary(
+        source_text,
+        max_chars=200,
+        pdf_path="/tmp/paper.pdf",
+    )
+    assert promise_summary == ""
+
+
+def test_build_llm_pdf_summary_openai_path_is_loop_safe(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask(
+        "review this paper",
+        widget=None,
+        provider="openai",
+        model="fake-model",
+        settings={"openai": {}},
+    )
+    task._provider_dependency_error = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        backend,
+        "resolve_chat_provider_kind",
+        lambda **_kwargs: "openai_compat",
+    )
+
+    def _fake_openai(**_kwargs):
+        # This fails if called from an already-running event loop thread.
+        asyncio.run(asyncio.sleep(0))
+        return ("user", "Loop-safe LLM summary.")
+
+    monkeypatch.setattr(backend, "run_chat_openai", _fake_openai)
+
+    source_text = (
+        "Abstract. Behavior analysis is hard. We propose a multimodal agent that "
+        "uses language reasoning, visual grounding, and memory to automate "
+        "cross-species behavior analysis without retraining."
+    )
+
+    async def _call_inside_running_loop() -> str:
+        return task._build_llm_pdf_summary(
+            source_text,
+            max_chars=200,
+            pdf_path="/tmp/paper.pdf",
+        )
+
+    summary = asyncio.run(_call_inside_running_loop())
+    assert "loop-safe llm summary" in summary.lower()
+
+
+def test_build_llm_pdf_summary_caches_empty_llm_result(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask(
+        "review this paper",
+        widget=None,
+        provider="openai",
+        model="fake-model",
+        settings={"openai": {}},
+    )
+    task._provider_dependency_error = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        backend,
+        "resolve_chat_provider_kind",
+        lambda **_kwargs: "openai_compat",
+    )
+    calls = {"count": 0}
+
+    def _fake_openai(**_kwargs):
+        calls["count"] += 1
+        return ("user", "")
+
+    monkeypatch.setattr(backend, "run_chat_openai", _fake_openai)
+    source_text = (
+        "Abstract. Behavior analysis is hard. We propose a multimodal agent that "
+        "uses language reasoning, visual grounding, and memory to automate "
+        "cross-species behavior analysis without retraining."
+    )
+    assert (
+        task._build_llm_pdf_summary(
+            source_text,
+            max_chars=200,
+            pdf_path="/tmp/paper.pdf",
+        )
+        == ""
+    )
+    assert (
+        task._build_llm_pdf_summary(
+            source_text,
+            max_chars=200,
+            pdf_path="/tmp/paper.pdf",
+        )
+        == ""
+    )
+    assert calls["count"] == 2
+
+
+def test_build_llm_pdf_summary_retries_with_second_slice_after_timeout(
+    monkeypatch,
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask(
+        "summarize this paper",
+        widget=None,
+        provider="openai",
+        model="fake-model",
+        settings={"openai": {}},
+    )
+    task._provider_dependency_error = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        backend,
+        "resolve_chat_provider_kind",
+        lambda **_kwargs: "openai_compat",
+    )
+    calls = {"count": 0}
+
+    def _fake_openai(**_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise TimeoutError("Provider request timed out after 10s.")
+        return ("user", "Recovered summary from smaller follow-up slice.")
+
+    monkeypatch.setattr(backend, "run_chat_openai", _fake_openai)
+    source_text = (
+        "Abstract. Behavior analysis is hard. We propose a multimodal agent that "
+        "uses language reasoning, visual grounding, and memory to automate "
+        "cross-species behavior analysis without retraining.\n\n"
+        "Introduction. The system combines visual grounding, state estimation, "
+        "and LLM planning for general behavior analysis.\n\n"
+        "Conclusion. The approach works across domains."
+    )
+
+    summary = task._build_llm_pdf_summary(
+        source_text,
+        max_chars=220,
+        pdf_path="/tmp/paper.pdf",
+    )
+    assert "recovered summary" in summary.lower()
+    assert calls["count"] == 2
+
+
+def test_tool_gui_pdf_summarize_prepares_pdf_from_web_when_no_active_pdf(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("review this paper", widget=None)
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 test")
+
+    state_calls = {"count": 0}
+
+    def _pdf_state() -> dict[str, object]:
+        state_calls["count"] += 1
+        if state_calls["count"] <= 1:
+            return {"ok": True, "has_pdf": False, "path": "", "title": ""}
+        return {
+            "ok": True,
+            "has_pdf": True,
+            "path": str(pdf_path),
+            "title": "paper.pdf",
+        }
+
+    task._tool_gui_pdf_get_state = _pdf_state  # type: ignore[method-assign]
+    task._tool_gui_web_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_page": True,
+        "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12139829/pdf/",
+    }
+    task._tool_gui_web_save_current = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "queued": False,
+        "kind": "pdf",
+        "saved_path": str(pdf_path),
+        "last_saved_kind": "pdf",
+        "last_saved_path": str(pdf_path),
+    }
+
+    opened_paths: list[str] = []
+
+    async def _open_pdf(path: str = "") -> dict[str, object]:
+        opened_paths.append(str(path))
+        # Simulate URL open miss so the fallback uses saved local PDF path.
+        if str(path).startswith("http"):
+            return {"ok": False, "error": "URL open miss"}
+        return {"ok": True, "path": str(path)}
+
+    task._tool_gui_open_pdf = _open_pdf  # type: ignore[method-assign]
+    task._resolve_pdf_summary_source = lambda **_: {  # type: ignore[method-assign]
+        "mode": "",
+        "hint": "no_pdf_source",
+    }
+
+    monkeypatch.setattr(
+        backend,
+        "gui_summarize_active_pdf_with_cache",
+        lambda **kwargs: (
+            "Summary of the open PDF (paper.pdf):\nCore findings."
+            if bool((kwargs.get("get_pdf_state")() or {}).get("has_pdf"))
+            else ""
+        ),
+    )
+
+    payload = task._tool_gui_pdf_summarize()
+    assert payload["ok"] is True
+    assert "Core findings." in str(payload.get("summary") or "")
+    assert any(path.startswith("http") for path in opened_paths)
+    assert str(pdf_path) in opened_paths
+
+
+def test_tool_gui_pdf_summarize_uses_session_pdf_path_without_opening(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    pdf_path = tmp_path / "session_paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 test")
+    task = StreamingChatTask("review this paper", widget=None)
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": False,
+        "path": "",
+        "title": "",
+    }
+    task._load_history_messages = lambda: [  # type: ignore[method-assign]
+        {"role": "user", "content": f"Please summarize {pdf_path}"},
+    ]
+    task._prepare_active_pdf_for_summary_from_web = lambda: {  # type: ignore[method-assign]
+        "ok": False,
+        "error": "no web page",
+    }
+
+    def _fake_summary(**kwargs):
+        state = kwargs["get_pdf_state"]()
+        if not bool(state.get("has_pdf")):
+            return ""
+        assert str(state.get("path") or "") == str(pdf_path)
+        return "Summary of the open PDF (session_paper.pdf):\nSession source summary."
+
+    monkeypatch.setattr(backend, "gui_summarize_active_pdf_with_cache", _fake_summary)
+
+    payload = task._tool_gui_pdf_summarize()
+    assert payload["ok"] is True
+    assert payload["path"] == str(pdf_path)
+    assert "Session source summary." in str(payload.get("summary") or "")
+
+
+def test_tool_gui_pdf_summarize_uses_cached_md_from_session_when_pdf_not_active(
+    tmp_path: Path,
+) -> None:
+    task = StreamingChatTask("review this paper", widget=None)
+    cache_md = tmp_path / "paper_cache.md"
+    cache_md.write_text(
+        "# Extracted PDF Text\n\n"
+        "Source: /tmp/original_paper.pdf\n\n"
+        "## Page 1\n"
+        "Abstract. This manuscript proposes a robust behavior analysis approach.\n",
+        encoding="utf-8",
+    )
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": False,
+        "path": "",
+        "title": "",
+    }
+    task._load_history_messages = lambda: [  # type: ignore[method-assign]
+        {"role": "assistant", "content": f"Cached extraction: {cache_md}"},
+    ]
+    task._prepare_active_pdf_for_summary_from_web = lambda: {  # type: ignore[method-assign]
+        "ok": False,
+        "error": "no web page",
+    }
+    task._build_llm_pdf_summary = (  # type: ignore[method-assign]
+        lambda text, **_: "Grounded LLM summary from cached markdown."
+    )
+
+    payload = task._tool_gui_pdf_summarize()
+    assert payload["ok"] is True
+    assert "Summary of cached PDF" in str(payload.get("summary") or "")
+    assert "Grounded LLM summary" in str(payload.get("summary") or "")
+
+
+def test_tool_gui_pdf_summarize_skips_duplicate_source_path_after_active_attempt(
+    tmp_path: Path,
+) -> None:
+    task = StreamingChatTask("review this paper", widget=None)
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 test")
+
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": True,
+        "path": str(pdf_path),
+        "title": "paper.pdf",
+    }
+    task._summarize_active_pdf_with_cache_compat = lambda **_: ""  # type: ignore[method-assign]
+    task._resolve_pdf_summary_source = lambda **_: {  # type: ignore[method-assign]
+        "mode": "pdf_path",
+        "path": pdf_path,
+        "hint": "session_pdf_path",
+    }
+    task._prepare_active_pdf_for_summary_from_web = lambda: {  # type: ignore[method-assign]
+        "ok": False,
+        "error": "no web page",
+    }
+
+    called = {"count": 0}
+
+    def _summarize_pdf_path_with_cache(_path: Path, **_kwargs) -> str:
+        called["count"] += 1
+        return ""
+
+    task._summarize_pdf_path_with_cache = _summarize_pdf_path_with_cache  # type: ignore[method-assign]
+
+    payload = task._tool_gui_pdf_summarize()
+    assert payload["ok"] is False
+    assert called["count"] == 0
+
+
 def test_parse_direct_gui_command_prefers_local_markdown_file_over_domain(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -3789,6 +4200,17 @@ def test_parse_direct_gui_command_prefers_local_markdown_file_over_domain(
 
     assert parsed["name"] == "open_url"
     assert parsed["args"]["url"] == str(md_path)
+
+
+def test_parse_direct_gui_command_does_not_treat_summary_blob_as_open_pdf() -> None:
+    task = StreamingChatTask("hi", widget=None)
+    summary_blob = (
+        "Summary of the open PDF (paper.pdf):\n"
+        "Core idea and method overview.\n\n"
+        "Cached extraction: /tmp/pdf_text_cache/paper_abc123.md"
+    )
+    parsed = task._parse_direct_gui_command(summary_blob)
+    assert str(parsed.get("name") or "") != "open_pdf"
 
 
 def test_direct_annolid_run_prompt_routes_to_annolid_run_tool(monkeypatch) -> None:
