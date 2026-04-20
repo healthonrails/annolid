@@ -86,6 +86,9 @@ def test_skills_loader_lists_builtin_skills() -> None:
     loader = AgentSkillsLoader(Path.cwd())
     skills = loader.list_skills(filter_unavailable=False)
     names = {s["name"] for s in skills}
+    assert "behavior-assay-taxonomy" in names
+    assert "behavior-segmentation" in names
+    assert "scientific-reporting" in names
     assert "github" in names
     assert "weather" in names
     assert "web-scraping" in names
@@ -104,6 +107,36 @@ def test_skills_loader_suggests_sam3_agent_video_for_long_tracking_tasks() -> No
     assert suggestions
     assert suggestions[0]["name"] == "sam3-agent-video"
     assert suggestions[0]["strategy"] in {"lexical", "embedding", "hybrid"}
+
+
+def test_skills_loader_suggests_behavior_skills_for_behavior_analysis_tasks() -> None:
+    loader = AgentSkillsLoader(Path.cwd())
+
+    assay_suggestions = loader.suggest_skills_for_task_scored(
+        "Infer the assay type for this resident intruder behavior video",
+        top_k=5,
+    )
+    assert assay_suggestions
+    assay_names = [row["name"] for row in assay_suggestions]
+    assert "behavior-assay-taxonomy" in assay_names
+
+    segmentation_suggestions = loader.suggest_skills_for_task_scored(
+        "Segment aggression bouts and merge nearby sub-events into stable bout counts",
+        top_k=5,
+    )
+    assert segmentation_suggestions
+    segmentation_names = [row["name"] for row in segmentation_suggestions]
+    assert "behavior-segmentation" in segmentation_names
+    assert "timeline-reasoning" in segmentation_names
+
+    reporting_suggestions = loader.suggest_skills_for_task_scored(
+        "Write a scientific behavior analysis report with manifest provenance",
+        top_k=5,
+    )
+    assert reporting_suggestions
+    reporting_names = [row["name"] for row in reporting_suggestions]
+    assert "scientific-reporting" in reporting_names
+    assert "provenance" in reporting_names
 
 
 def test_skills_loader_precedence_workspace_over_managed_over_builtin(
@@ -869,6 +902,54 @@ def test_subagent_manager_applies_behavior_profile_skills(tmp_path: Path) -> Non
     system_prompt = str(run_call.get("system_prompt") or "")
     assert "## Subagent Profile" in system_prompt
     assert "behavior_assay_inference" in system_prompt
+
+
+def test_behavior_subagent_injects_builtin_skill_bodies_into_system_prompt(
+    tmp_path: Path,
+) -> None:
+    observed: dict[str, str] = {}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del tools, model, on_token
+        observed["system"] = str(messages[0].get("content") or "")
+        return {"content": "ok"}
+
+    manager = SubagentManager(
+        loop_factory=lambda: AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+            workspace=str(tmp_path),
+        ),
+        workspace=tmp_path,
+    )
+
+    async def _run() -> None:
+        msg = await manager.spawn(
+            task="segment aggression bouts from track artifacts",
+            profile="behavior_segmentation",
+            origin_channel="local",
+            origin_chat_id="u1",
+        )
+        task_id = msg.split("id: ")[-1].split(")")[0]
+        done = await manager.wait(task_id, timeout=2.0)
+        assert done is True
+
+    asyncio.run(_run())
+
+    system_prompt = observed.get("system", "")
+    assert "## Subagent Profile" in system_prompt
+    assert "behavior_segmentation" in system_prompt
+    assert "# Requested Skills" in system_prompt
+    assert "### Skill: behavior-segmentation" in system_prompt
+    assert "### Skill: timeline-reasoning" in system_prompt
+    assert "Produce typed behavior segments" in system_prompt
+    assert "detect bout starts and ends" in system_prompt
 
 
 def test_spawn_behavior_subagent_tool_validates_profile_and_forwards_args() -> None:

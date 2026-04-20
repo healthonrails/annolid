@@ -1653,20 +1653,15 @@ class AgentLoop:
                 reason="pre_prompt_build",
             )
 
-        if system_prompt:
-            messages.append({"role": "system", "content": str(system_prompt)})
-        elif self._context_builder is not None:
-            contextual = self._context_builder.build_system_prompt(
-                skill_names=skill_names,
-                task_hint=user_message_text,
-            )
-            if channel and chat_id:
-                contextual += (
-                    "\n\n## Current Session\n"
-                    f"Channel: {self._context_builder.redact_session_value(channel)}\n"
-                    f"Chat ID: {self._context_builder.redact_session_value(chat_id)}"
-                )
-            messages.append({"role": "system", "content": contextual})
+        resolved_system_prompt = self._resolve_system_prompt_content(
+            system_prompt=system_prompt,
+            user_message_text=user_message_text,
+            skill_names=skill_names,
+            channel=channel,
+            chat_id=chat_id,
+        )
+        if resolved_system_prompt:
+            messages.append({"role": "system", "content": resolved_system_prompt})
         if (
             memory_enabled
             and memory_facts
@@ -1702,6 +1697,33 @@ class AgentLoop:
         else:
             messages.append({"role": "user", "content": user_message_text})
         return messages
+
+    def _resolve_system_prompt_content(
+        self,
+        *,
+        system_prompt: Optional[str],
+        user_message_text: str,
+        skill_names: Optional[List[str]],
+        channel: Optional[str],
+        chat_id: Optional[str],
+    ) -> str:
+        base_prompt = str(system_prompt or "").strip()
+        if self._context_builder is None:
+            return base_prompt
+        contextual = self._context_builder.build_system_prompt(
+            skill_names=skill_names,
+            task_hint=user_message_text,
+        )
+        if channel and chat_id:
+            contextual += (
+                "\n\n## Current Session\n"
+                f"Channel: {self._context_builder.redact_session_value(channel)}\n"
+                f"Chat ID: {self._context_builder.redact_session_value(chat_id)}"
+            )
+        contextual = str(contextual or "").strip()
+        if base_prompt and contextual:
+            return f"{base_prompt}\n\n---\n\n{contextual}"
+        return base_prompt or contextual
 
     def _prepare_tool_selection(
         self,

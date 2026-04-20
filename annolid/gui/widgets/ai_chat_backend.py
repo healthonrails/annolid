@@ -1037,6 +1037,7 @@ class StreamingChatTask(QRunnable):
             chat_id="annolid_bot",
             media=media,
             system_prompt=context.system_prompt,
+            skill_names=list(self.selected_skill_names or []),
             on_progress=self._emit_progress,
         )
         self._raise_if_cancelled()

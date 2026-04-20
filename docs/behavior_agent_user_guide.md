@@ -87,6 +87,64 @@ Use run id run_gui_001 and frame gap 20.
 The bot uses the typed `gui_score_aggression_bouts` tool and returns a summary
 including the immutable manifest location.
 
+### Force a specific behavior-analysis skill
+
+If you want to steer the bot more explicitly, use the normal Annolid chat skill
+selection syntax before your prompt text.
+
+Examples:
+
+```text
+/skill behavior-assay-taxonomy
+Infer the assay type for the current video and explain the evidence.
+```
+
+```text
+/skill behavior-segmentation
+/skill timeline-reasoning
+Segment aggression bouts from the current run artifacts and explain why nearby sub-events were merged.
+```
+
+```text
+/skill scientific-reporting
+/skill provenance
+Write a concise behavior-analysis report with manifest and artifact references.
+```
+
+Use explicit skill selection when you want predictable bot behavior for assay
+inference, segmentation, derived metrics, or report writing.
+
+## Behavior-analysis bot skills
+
+Annolid Bot now exposes builtin behavior-analysis skills that can be selected
+explicitly or auto-suggested from the task text. These skills reuse the standard
+Annolid skill loader and subagent runtime; they are not a separate plugin
+system.
+
+Examples include:
+
+- `behavior-assay-taxonomy`
+- `behavior-feature-selection`
+- `perception-routing`
+- `behavior-segmentation`
+- `timeline-reasoning`
+- `sandboxed-analysis`
+- `scientific-reporting`
+- `provenance`
+
+These skills are used by the specialized behavior subagents for assay
+inference, feature planning, routing, segmentation, analysis coding, and
+reporting.
+
+The Agent Capabilities dialog (`/capabilities`) also includes behavior presets
+for:
+
+- assay inference,
+- aggression segmentation,
+- scientific reporting.
+
+Each preset sets a focused task hint and refreshes suggested skills.
+
 ## Output layout
 
 Each run is immutable and written under:

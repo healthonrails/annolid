@@ -9,6 +9,21 @@ from qtpy import QtWidgets
 from annolid.services.agent_tooling import describe_agent_capabilities
 from annolid.infrastructure.agent_workspace import get_agent_workspace_path
 
+_BEHAVIOR_PRESETS: tuple[tuple[str, str], ...] = (
+    (
+        "Assay Inference",
+        "Infer assay type for this behavior video and explain confidence and ambiguity.",
+    ),
+    (
+        "Aggression Segmentation",
+        "Segment aggression bouts from track artifacts using canonical sub-events and stable frame-gap merging.",
+    ),
+    (
+        "Scientific Report",
+        "Write a scientific behavior-analysis report with manifest provenance and key metrics.",
+    ),
+)
+
 
 def _json_text(value: Any) -> str:
     try:
@@ -68,6 +83,22 @@ class AgentCapabilitiesDialog(QtWidgets.QDialog):
         self.copy_btn.clicked.connect(self._copy_json)
         controls.addWidget(self.copy_btn)
         layout.addLayout(controls)
+        preset_row = QtWidgets.QHBoxLayout()
+        preset_row.addWidget(QtWidgets.QLabel("Behavior presets:"))
+        for label, task_hint in _BEHAVIOR_PRESETS:
+            button = QtWidgets.QToolButton(self)
+            button.setText(label)
+            button.setToolTip(
+                f"Apply preset task hint and refresh suggestions.\n{task_hint}"
+            )
+            button.clicked.connect(
+                lambda _checked=False, _hint=task_hint: self._apply_task_hint_preset(
+                    _hint
+                )
+            )
+            preset_row.addWidget(button)
+        preset_row.addStretch(1)
+        layout.addLayout(preset_row)
 
         self.summary_label = QtWidgets.QLabel("No data loaded yet.")
         self.summary_label.setWordWrap(True)
@@ -218,3 +249,7 @@ class AgentCapabilitiesDialog(QtWidgets.QDialog):
             top_k=int(self.top_k_spin.value()),
         )
         QtWidgets.QApplication.clipboard().setText(_json_text(payload))
+
+    def _apply_task_hint_preset(self, task_hint: str) -> None:
+        self.task_hint_edit.setText(str(task_hint or "").strip())
+        self.refresh()

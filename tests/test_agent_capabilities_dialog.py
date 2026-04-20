@@ -96,3 +96,58 @@ def test_agent_capabilities_dialog_renders_combined_payload(monkeypatch) -> None
         assert "strict" in dialog.overview_text.toPlainText()
     finally:
         dialog.close()
+
+
+def test_agent_capabilities_dialog_behavior_preset_updates_task_hint(
+    monkeypatch,
+) -> None:
+    _ensure_qapp()
+    calls: list[dict[str, object]] = []
+
+    def _fake_describe(**kwargs):
+        calls.append(dict(kwargs))
+        return {
+            "workspace": str(kwargs.get("workspace") or "/tmp/ws"),
+            "provider": "ollama",
+            "model": "qwen3",
+            "tool_pool": {
+                "counts": {"registered": 0, "allowed": 0, "denied": 0},
+                "allowed_tools": [],
+                "denied_tools": [],
+                "policy_profile": "default",
+                "policy_source": "runtime",
+            },
+            "skill_pool": {
+                "skill_pool": {"counts": {"total": 0, "available": 0}, "preview": []},
+                "suggested_skills": [],
+            },
+            "summary": {
+                "registered_tools": 0,
+                "available_tools": 0,
+                "available_skills": 0,
+                "suggested_skills": 0,
+            },
+        }
+
+    monkeypatch.setattr(
+        "annolid.gui.widgets.agent_capabilities_dialog.describe_agent_capabilities",
+        _fake_describe,
+    )
+
+    dialog = AgentCapabilitiesDialog()
+    try:
+        buttons = dialog.findChildren(QtWidgets.QToolButton)
+        preset = next(
+            btn for btn in buttons if btn.text().strip() == "Aggression Segmentation"
+        )
+        preset.click()
+        assert (
+            "Segment aggression bouts"
+            in str(dialog.task_hint_edit.text() or "").strip()
+        )
+        assert calls
+        assert (
+            "Segment aggression bouts" in str(calls[-1].get("task_hint") or "").strip()
+        )
+    finally:
+        dialog.close()
