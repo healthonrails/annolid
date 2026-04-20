@@ -22,6 +22,7 @@ _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "agent",
             "agent-onboard",
             "agent-status",
+            "agent-behavior",
             "agent-capabilities",
             "agent-skill-pool",
             "agent-security-check",
@@ -82,11 +83,12 @@ def _root_help_epilog() -> str:
         "  annolid-run train <model> --help-model\n"
         "  annolid-run predict <model> --help-model\n"
         "  annolid-run agent-status\n"
+        "  annolid-run agent-behavior --video /path/to/video.mp4\n"
         "  annolid-run agent-capabilities\n"
         "  annolid-run help train\n\n"
         "Common areas:\n"
         "  Models: train, predict, list-models\n"
-        "  Agent: agent, agent-status, agent-capabilities, agent-security-*, agent-cron-*\n"
+        "  Agent: agent, agent-behavior, agent-status, agent-capabilities, agent-security-*, agent-cron-*\n"
         "  Data: collect-labels, index-to-yolo, import-deeplabcut-training-data\n"
         "  Utilities: citations-*, validate-agent-output, validate-agent-tools"
     )
@@ -854,6 +856,45 @@ def _cmd_agent(args: argparse.Namespace) -> int:
         "cached": result.cached,
     }
     print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _cmd_agent_behavior(args: argparse.Namespace) -> int:
+    from annolid.services.behavior_agent.runtime import (
+        run_default_behavior_agent_pipeline,
+    )
+
+    video_path = Path(args.video).expanduser().resolve()
+    result = run_default_behavior_agent_pipeline(
+        video_path=video_path,
+        results_dir=(str(args.results_dir) if args.results_dir else None),
+        artifacts_ndjson=(
+            str(args.artifacts_ndjson) if args.artifacts_ndjson else None
+        ),
+        run_id=(str(args.run_id) if args.run_id else None),
+        episode_id=(str(args.episode_id) if args.episode_id else None),
+        context_prompt=str(args.context_prompt or ""),
+        assay=str(args.assay or ""),
+        default_assay=str(args.default_assay),
+        model_policy=str(args.model_policy),
+        bout_frame_gap=int(args.bout_frame_gap),
+        use_memory=not bool(args.no_memory),
+        use_analysis=not bool(args.no_analysis),
+    )
+    summary = {
+        "run_id": result.run_id,
+        "manifest_path": str(result.manifest_path),
+        "episode_id": result.episode.episode_id,
+        "video_path": result.episode.video_path,
+        "task_plan_assay": result.task_plan_assay,
+        "artifact_count": result.artifact_count,
+        "segment_count": result.segment_count,
+        "validation_errors": list(result.validation_errors),
+        "bout_counts": [row.to_dict() for row in result.bout_counts],
+    }
+    print(json.dumps(summary, indent=2))
+    if bool(args.fail_on_validation_error) and result.validation_errors:
+        return 1
     return 0
 
 
@@ -2286,6 +2327,53 @@ def _build_root_parser() -> argparse.ArgumentParser:
     )
     agent_p.add_argument("--no-progress", action="store_true")
     agent_p.set_defaults(_handler=_cmd_agent)
+
+    agent_behavior_p = sub.add_parser(
+        "agent-behavior",
+        help="Run typed behavior-agent orchestration and write immutable artifacts.",
+    )
+    agent_behavior_p.add_argument("--video", required=True, help="Input video path.")
+    agent_behavior_p.add_argument(
+        "--results-dir",
+        default=None,
+        help="Root output directory (default: <video_stem>/).",
+    )
+    agent_behavior_p.add_argument(
+        "--artifacts-ndjson",
+        default=None,
+        help="Optional TrackArtifact NDJSON input for replayable perception.",
+    )
+    agent_behavior_p.add_argument("--run-id", default=None)
+    agent_behavior_p.add_argument("--episode-id", default=None)
+    agent_behavior_p.add_argument(
+        "--model-policy",
+        default="annolid_behavior_agent_v1",
+    )
+    agent_behavior_p.add_argument(
+        "--context-prompt",
+        default="",
+        help="Optional task prompt context for assay inference.",
+    )
+    agent_behavior_p.add_argument(
+        "--assay",
+        default="",
+        help="Optional assay hint context for task inference.",
+    )
+    agent_behavior_p.add_argument(
+        "--default-assay",
+        default="unknown",
+        help="Fallback assay type when keyword inference does not match.",
+    )
+    agent_behavior_p.add_argument(
+        "--bout-frame-gap",
+        type=int,
+        default=20,
+        help="Frame-gap threshold used to group aggression sub-events into bouts.",
+    )
+    agent_behavior_p.add_argument("--no-memory", action="store_true")
+    agent_behavior_p.add_argument("--no-analysis", action="store_true")
+    agent_behavior_p.add_argument("--fail-on-validation-error", action="store_true")
+    agent_behavior_p.set_defaults(_handler=_cmd_agent_behavior)
 
     onboard_p = sub.add_parser(
         "agent-onboard",

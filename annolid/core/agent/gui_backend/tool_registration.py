@@ -37,6 +37,7 @@ _WRAPPED_GUI_TOOL_SPECS: Tuple[Tuple[str, str], ...] = (
     ("segment_track_video_callback", "segment_track_video"),
     ("label_behavior_segments_callback", "label_behavior_segments"),
     ("process_video_behaviors_callback", "process_video_behaviors"),
+    ("score_aggression_bouts_callback", "score_aggression_bouts"),
     ("behavior_catalog_callback", "behavior_catalog"),
     ("analyze_tracking_stats_callback", "analyze_tracking_stats"),
     ("start_realtime_stream_callback", "start_realtime_stream"),

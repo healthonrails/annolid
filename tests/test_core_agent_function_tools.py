@@ -3278,6 +3278,7 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("annolid_novelty_check")
     assert registry.has("annolid_paper_run_report")
     assert registry.has("cron")
+    assert registry.has("spawn_behavior_subagent")
     assert registry.has("download_url")
     assert registry.has("download_pdf")
     assert registry.has("bibtex_list_entries")
@@ -4147,6 +4148,9 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         process_video_behaviors_callback=lambda **kwargs: _mark(
             "process_video_behaviors", kwargs
         ),
+        score_aggression_bouts_callback=lambda **kwargs: _mark(
+            "score_aggression_bouts", kwargs
+        ),
         analyze_tracking_stats_callback=lambda **kwargs: _mark(
             "analyze_tracking_stats", kwargs
         ),
@@ -4238,6 +4242,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_segment_track_video")
     assert registry.has("gui_label_behavior_segments")
     assert registry.has("gui_process_video_behaviors")
+    assert registry.has("gui_score_aggression_bouts")
     assert registry.has("gui_analyze_tracking_stats")
     assert registry.has("gui_start_realtime_stream")
     assert registry.has("gui_stop_realtime_stream")
@@ -4420,6 +4425,18 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
                 "text_prompt": "mouse",
                 "run_tracking": True,
                 "run_behavior_labeling": True,
+            },
+        )
+    )
+    asyncio.run(
+        registry.execute(
+            "gui_score_aggression_bouts",
+            {
+                "path": "/tmp/a.mp4",
+                "artifacts_ndjson": "/tmp/a/agent.ndjson",
+                "run_id": "run_tools_test",
+                "context_prompt": "score aggression bouts",
+                "bout_frame_gap": 25,
             },
         )
     )
@@ -4614,6 +4631,16 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
                 "text_prompt": "mouse",
                 "run_tracking": True,
                 "run_behavior_labeling": True,
+            },
+        ),
+        (
+            "score_aggression_bouts",
+            {
+                "path": "/tmp/a.mp4",
+                "artifacts_ndjson": "/tmp/a/agent.ndjson",
+                "run_id": "run_tools_test",
+                "context_prompt": "score aggression bouts",
+                "bout_frame_gap": 25,
             },
         ),
         (

@@ -23,6 +23,11 @@ from annolid.core.agent.subagent import (
 )
 from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_registry import FunctionToolRegistry
+from annolid.core.agent.tools.messaging import SpawnBehaviorSubagentTool
+from annolid.services.behavior_agent import (
+    list_behavior_subagent_profiles,
+    resolve_behavior_subagent_profile,
+)
 
 
 def test_skills_loader_lists_workspace_skill(tmp_path: Path) -> None:
@@ -814,6 +819,91 @@ def test_subagent_prompt_includes_time_and_skills_path(tmp_path: Path) -> None:
     assert "UTC" in prompt
     assert "## Skills" in prompt
     assert str(tmp_path / "skills") in prompt
+
+
+def test_behavior_subagent_profile_registry_is_available() -> None:
+    rows = list_behavior_subagent_profiles()
+    assert rows
+    names = {row.name for row in rows}
+    assert "behavior_assay_inference" in names
+    assert "behavior_segmentation" in names
+    profile = resolve_behavior_subagent_profile("behavior_assay_inference")
+    assert profile is not None
+    assert profile.default_skill_names
+
+
+def test_subagent_manager_applies_behavior_profile_skills(tmp_path: Path) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class _CaptureLoop:
+        async def run(self, user_message: str, **kwargs: Any) -> Any:
+            calls.append({"user_message": user_message, **dict(kwargs)})
+            return SimpleNamespace(content="ok")
+
+    manager = SubagentManager(loop_factory=lambda: _CaptureLoop(), workspace=tmp_path)
+
+    async def _run() -> None:
+        msg = await manager.spawn(
+            task="infer assay from clip",
+            profile="behavior_assay_inference",
+            skill_names=["custom-skill"],
+            origin_channel="local",
+            origin_chat_id="u1",
+        )
+        task_id = msg.split("id: ")[-1].split(")")[0]
+        done = await manager.wait(task_id, timeout=2.0)
+        assert done is True
+        task = manager.get_task(task_id)
+        assert task is not None
+        assert task.profile == "behavior_assay_inference"
+        assert "custom-skill" in task.skill_names
+        assert "vision-language-analysis" in task.skill_names
+
+    asyncio.run(_run())
+    assert calls
+    run_call = calls[0]
+    assert "skill_names" in run_call
+    run_skills = list(run_call.get("skill_names") or [])
+    assert "custom-skill" in run_skills
+    assert "vision-language-analysis" in run_skills
+    system_prompt = str(run_call.get("system_prompt") or "")
+    assert "## Subagent Profile" in system_prompt
+    assert "behavior_assay_inference" in system_prompt
+
+
+def test_spawn_behavior_subagent_tool_validates_profile_and_forwards_args() -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def _spawn_callback(**kwargs: Any) -> str:
+        calls.append(dict(kwargs))
+        return "spawned"
+
+    tool = SpawnBehaviorSubagentTool(spawn_callback=_spawn_callback)
+    tool.set_context("gui", "chat-1")
+    result = asyncio.run(
+        tool.execute(
+            profile="behavior_reporting",
+            task="summarize run artifacts",
+            label="reporter",
+            skill_names=["custom-report-skill"],
+        )
+    )
+    assert result == "spawned"
+    assert calls
+    payload = calls[0]
+    assert payload["runtime"] == "subagent"
+    assert payload["profile"] == "behavior_reporting"
+    assert payload["label"] == "reporter"
+    assert payload["task"] == "summarize run artifacts"
+    assert payload["origin_channel"] == "gui"
+    assert payload["origin_chat_id"] == "chat-1"
+    assert payload["skill_names"] == ["custom-report-skill"]
+
+
+def test_spawn_behavior_subagent_tool_rejects_unknown_profile() -> None:
+    tool = SpawnBehaviorSubagentTool(spawn_callback=lambda **_: "ok")
+    result = asyncio.run(tool.execute(profile="unknown_profile"))
+    assert "unknown behavior subagent profile" in result
 
 
 def test_agent_loop_connects_mcp_without_overwriting_existing_tools(

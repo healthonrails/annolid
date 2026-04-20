@@ -279,6 +279,7 @@ def test_policy_group_automation_includes_google_calendar() -> None:
         "cron",
         "automation_schedule",
         "spawn",
+        "spawn_behavior_subagent",
         "google_calendar",
         "box",
         "email",
@@ -296,6 +297,7 @@ def test_policy_group_automation_includes_google_calendar() -> None:
         "cron",
         "automation_schedule",
         "spawn",
+        "spawn_behavior_subagent",
         "google_calendar",
         "box",
         "email",
@@ -309,6 +311,7 @@ def test_policy_messaging_profile_includes_camera_snapshot() -> None:
     all_tools = [
         "message",
         "spawn",
+        "spawn_behavior_subagent",
         "cron",
         "automation_schedule",
         "email",

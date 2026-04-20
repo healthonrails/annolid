@@ -10,6 +10,7 @@ from annolid.core.agent.gui_backend.tool_handlers_video import (
     resolve_video_path_for_gui_tool as gui_resolve_video_path_for_gui_tool,
 )
 from annolid.core.agent.gui_backend.tool_handlers_video_workflow import (
+    score_aggression_bouts_tool as gui_score_aggression_bouts_tool,
     behavior_catalog_tool as gui_behavior_catalog_tool,
     label_behavior_segments_tool as gui_label_behavior_segments_tool,
     process_video_behaviors_tool as gui_process_video_behaviors_tool,
@@ -63,6 +64,10 @@ def process_chat_video_behaviors_tool(**kwargs: Any) -> dict[str, Any]:
     return gui_process_video_behaviors_tool(**kwargs)
 
 
+def score_chat_aggression_bouts_tool(**kwargs: Any) -> dict[str, Any]:
+    return gui_score_aggression_bouts_tool(**kwargs)
+
+
 __all__ = [
     "behavior_catalog_tool",
     "label_chat_behavior_segments_tool",
@@ -70,5 +75,6 @@ __all__ = [
     "process_chat_video_behaviors_tool",
     "resolve_chat_video_path_for_gui_tool",
     "sam3_agent_video_track_tool",
+    "score_chat_aggression_bouts_tool",
     "segment_track_chat_video_tool",
 ]

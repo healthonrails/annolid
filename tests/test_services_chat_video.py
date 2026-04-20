@@ -7,6 +7,7 @@ from annolid.services.chat_video import (
     open_chat_video_tool,
     process_chat_video_behaviors_tool,
     resolve_chat_video_path_for_gui_tool,
+    score_chat_aggression_bouts_tool,
     segment_track_chat_video_tool,
 )
 
@@ -39,6 +40,11 @@ def test_chat_video_wrappers(monkeypatch) -> None:
         "gui_process_video_behaviors_tool",
         lambda **kwargs: {"ok": True, "kind": "process_video_behaviors", **kwargs},
     )
+    monkeypatch.setattr(
+        video_mod,
+        "gui_score_aggression_bouts_tool",
+        lambda **kwargs: {"ok": True, "kind": "score_aggression_bouts", **kwargs},
+    )
 
     assert open_chat_video_tool("clip.mp4") == {
         "ok": True,
@@ -64,4 +70,11 @@ def test_chat_video_wrappers(monkeypatch) -> None:
             run_behavior_labeling=True,
         )["kind"]
         == "process_video_behaviors"
+    )
+    assert (
+        score_chat_aggression_bouts_tool(
+            path="clip.mp4",
+            artifacts_ndjson="/tmp/artifacts.ndjson",
+        )["kind"]
+        == "score_aggression_bouts"
     )

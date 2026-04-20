@@ -509,3 +509,142 @@ def behavior_catalog_tool(
             }
         return dict(widget_result)
     return {"ok": True, "queued": True, "action": action_norm}
+
+
+def score_aggression_bouts_tool(
+    *,
+    path: str,
+    artifacts_ndjson: str = "",
+    run_id: str = "",
+    episode_id: str = "",
+    results_dir: str = "",
+    context_prompt: str = "",
+    assay: str = "",
+    default_assay: str = "aggression",
+    model_policy: str = "annolid_behavior_agent_v1",
+    bout_frame_gap: int = 20,
+    no_memory: bool = False,
+    no_analysis: bool = False,
+    fail_on_validation_error: bool = False,
+    resolve_video_path: Callable[[str], Optional[Path]],
+) -> Dict[str, Any]:
+    video_path = resolve_video_path(path)
+    if video_path is None:
+        return {
+            "ok": False,
+            "error": "Video not found from provided path/text.",
+            "input": str(path or "").strip(),
+        }
+
+    (
+        resolved_artifacts,
+        searched_artifact_paths,
+        used_explicit_artifact_path,
+    ) = _resolve_artifact_ndjson_path(
+        raw_path=str(artifacts_ndjson or "").strip(),
+        video_path=video_path,
+    )
+    if used_explicit_artifact_path and resolved_artifacts is None:
+        return {
+            "ok": False,
+            "error": "artifacts_ndjson was provided but no readable file was found.",
+            "path": str(video_path),
+            "input": str(path or "").strip(),
+            "artifacts_ndjson_input": str(artifacts_ndjson or "").strip(),
+            "searched_paths": [str(candidate) for candidate in searched_artifact_paths],
+        }
+    try:
+        from annolid.services.behavior_agent.runtime import (
+            run_default_behavior_agent_pipeline,
+        )
+
+        result = run_default_behavior_agent_pipeline(
+            video_path=str(video_path),
+            results_dir=(str(results_dir) if str(results_dir or "").strip() else None),
+            artifacts_ndjson=(
+                str(resolved_artifacts) if resolved_artifacts is not None else None
+            ),
+            run_id=(str(run_id) if str(run_id or "").strip() else None),
+            episode_id=(str(episode_id) if str(episode_id or "").strip() else None),
+            context_prompt=str(context_prompt or ""),
+            assay=str(assay or ""),
+            default_assay=str(default_assay or "aggression"),
+            model_policy=str(model_policy or "annolid_behavior_agent_v1"),
+            bout_frame_gap=max(1, int(bout_frame_gap)),
+            use_memory=not bool(no_memory),
+            use_analysis=not bool(no_analysis),
+        )
+    except FileExistsError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "hint": "Use a new run_id or clear existing immutable run directory.",
+            "path": str(video_path),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"Failed to score aggression bouts: {exc}",
+            "path": str(video_path),
+        }
+
+    if bool(fail_on_validation_error) and result.validation_errors:
+        return {
+            "ok": False,
+            "error": "Aggression bout scoring validation failed.",
+            "path": str(video_path),
+            "manifest_path": str(result.manifest_path),
+            "validation_errors": list(result.validation_errors),
+            "bout_counts": [row.to_dict() for row in result.bout_counts],
+        }
+
+    return {
+        "ok": True,
+        "path": str(video_path),
+        "manifest_path": str(result.manifest_path),
+        "run_id": str(result.run_id),
+        "episode_id": str(result.episode.episode_id),
+        "task_plan_assay": str(result.task_plan_assay),
+        "artifact_count": int(result.artifact_count),
+        "segment_count": int(result.segment_count),
+        "validation_errors": list(result.validation_errors),
+        "bout_counts": [row.to_dict() for row in result.bout_counts],
+        "artifacts_ndjson": str(resolved_artifacts) if resolved_artifacts else "",
+        "artifacts_source": (
+            "explicit"
+            if (used_explicit_artifact_path and resolved_artifacts is not None)
+            else ("default" if resolved_artifacts is not None else "none")
+        ),
+    }
+
+
+def _resolve_artifact_ndjson_path(
+    *, raw_path: str, video_path: Path
+) -> tuple[Optional[Path], list[Path], bool]:
+    candidates: list[Path] = []
+    text = str(raw_path or "").strip()
+    used_explicit = bool(text)
+    if text:
+        raw = Path(text).expanduser()
+        if raw.is_absolute():
+            candidates.append(raw)
+        else:
+            candidates.extend(
+                [
+                    Path.cwd() / raw,
+                    video_path.parent / raw,
+                    video_path.with_suffix("") / raw,
+                ]
+            )
+    else:
+        stem_dir = video_path.with_suffix("")
+        candidates.extend(
+            [
+                stem_dir / "artifacts" / "tracks.ndjson",
+                stem_dir / "agent.ndjson",
+            ]
+        )
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate.resolve(), candidates, used_explicit
+    return None, candidates, used_explicit

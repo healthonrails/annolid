@@ -67,7 +67,13 @@ from .git import (
     _RepoCliTool,
 )
 from .memory import MemoryGetTool, MemorySearchTool, MemorySetTool
-from .messaging import MessageTool, SpawnTool, ListTasksTool, CancelTaskTool
+from .messaging import (
+    CancelTaskTool,
+    ListTasksTool,
+    MessageTool,
+    SpawnBehaviorSubagentTool,
+    SpawnTool,
+)
 from .swarm_tool import SwarmTool
 from .nanobot import register_nanobot_style_tools
 from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
@@ -126,6 +132,7 @@ __all__ = [
     "BibtexRemoveEntryTool",
     "MessageTool",
     "SpawnTool",
+    "SpawnBehaviorSubagentTool",
     "ListTasksTool",
     "CancelTaskTool",
     "SwarmTool",

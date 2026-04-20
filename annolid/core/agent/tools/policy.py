@@ -132,6 +132,7 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
     "messaging": {
         *_CAPABILITY_EMAIL,
         "spawn",
+        "spawn_behavior_subagent",
         "cron",
         "automation_schedule",
         "camera_snapshot",
@@ -240,6 +241,7 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "cron",
         "automation_schedule",
         "spawn",
+        "spawn_behavior_subagent",
         "google_calendar",
         "box",
         "email",
@@ -351,6 +353,7 @@ def _apply_high_risk_guards(
         "cron",
         "automation_schedule",
         "spawn",
+        "spawn_behavior_subagent",
     }
     # Deny-by-default for process execution mixed with messaging/automation primitives.
     runtime_exec = {"exec", "exec_start", "exec_process"}
@@ -362,16 +365,25 @@ def _apply_high_risk_guards(
     if (
         "read_file" in resolved
         and ("email" in resolved or "message" in resolved)
-        and any(t in resolved for t in {"cron", "automation_schedule", "spawn"})
+        and any(
+            t in resolved
+            for t in {
+                "cron",
+                "automation_schedule",
+                "spawn",
+                "spawn_behavior_subagent",
+            }
+        )
     ):
         resolved.discard("read_file")
     # Deny-by-default for subagent spawning mixed with scheduling + direct messaging.
     if (
-        "spawn" in resolved
+        ("spawn" in resolved or "spawn_behavior_subagent" in resolved)
         and ("cron" in resolved or "automation_schedule" in resolved)
         and "message" in resolved
     ):
         resolved.discard("spawn")
+        resolved.discard("spawn_behavior_subagent")
     return resolved
 
 

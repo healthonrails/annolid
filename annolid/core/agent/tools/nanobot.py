@@ -43,7 +43,13 @@ from .git import (
     GitStatusTool,
 )
 from .memory import MemoryGetTool, MemorySearchTool, MemorySetTool
-from .messaging import MessageTool, SpawnTool, ListTasksTool, CancelTaskTool
+from .messaging import (
+    CancelTaskTool,
+    ListTasksTool,
+    MessageTool,
+    SpawnBehaviorSubagentTool,
+    SpawnTool,
+)
 from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
 from .sandboxed_shell import SandboxedExecTool
 from .shell_sessions import ExecProcessTool, ExecStartTool
@@ -304,6 +310,8 @@ async def register_nanobot_style_tools(
         registry.register(MessageTool(send_callback=send_callback))
     if "spawn" not in ignored_tools:
         registry.register(SpawnTool(spawn_callback=spawn_callback))
+    if "spawn_behavior_subagent" not in ignored_tools:
+        registry.register(SpawnBehaviorSubagentTool(spawn_callback=spawn_callback))
     if "list_tasks" not in ignored_tools:
         registry.register(ListTasksTool())
     if "cancel_task" not in ignored_tools:

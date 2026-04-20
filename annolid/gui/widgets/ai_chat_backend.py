@@ -285,6 +285,7 @@ from annolid.services.chat_video import (
     open_chat_video_tool,
     process_chat_video_behaviors_tool,
     resolve_chat_video_path_for_gui_tool,
+    score_chat_aggression_bouts_tool,
     segment_track_chat_video_tool,
     sam3_agent_video_track_tool,
 )
@@ -1321,6 +1322,7 @@ class StreamingChatTask(QRunnable):
                 "sam3_agent_video_track": self._tool_gui_sam3_agent_video_track,
                 "label_behavior_segments": self._tool_gui_label_behavior_segments,
                 "process_video_behaviors": self._tool_gui_process_video_behaviors,
+                "score_aggression_bouts": self._tool_gui_score_aggression_bouts,
                 "behavior_catalog": self._tool_gui_behavior_catalog,
                 "analyze_tracking_stats": self._tool_gui_analyze_tracking_stats,
                 "start_realtime_stream": self._tool_gui_start_realtime_stream,
@@ -2471,6 +2473,7 @@ class StreamingChatTask(QRunnable):
             "sam3_agent_video_track": self._tool_gui_sam3_agent_video_track,
             "label_behavior_segments": self._tool_gui_label_behavior_segments,
             "process_video_behaviors": self._tool_gui_process_video_behaviors,
+            "score_aggression_bouts": self._tool_gui_score_aggression_bouts,
             "behavior_catalog": self._tool_gui_behavior_catalog,
             "start_realtime_stream": self._tool_gui_start_realtime_stream,
             "stop_realtime_stream": self._tool_gui_stop_realtime_stream,
@@ -3755,6 +3758,40 @@ class StreamingChatTask(QRunnable):
                 focus_points_text=str(focus_points_text or ""),
             ),
             get_action_result=self._get_widget_action_result,
+        )
+
+    def _tool_gui_score_aggression_bouts(
+        self,
+        *,
+        path: str,
+        artifacts_ndjson: str = "",
+        run_id: str = "",
+        episode_id: str = "",
+        results_dir: str = "",
+        context_prompt: str = "",
+        assay: str = "",
+        default_assay: str = "aggression",
+        model_policy: str = "annolid_behavior_agent_v1",
+        bout_frame_gap: int = 20,
+        no_memory: bool = False,
+        no_analysis: bool = False,
+        fail_on_validation_error: bool = False,
+    ) -> Dict[str, Any]:
+        return score_chat_aggression_bouts_tool(
+            path=path,
+            artifacts_ndjson=artifacts_ndjson,
+            run_id=run_id,
+            episode_id=episode_id,
+            results_dir=results_dir,
+            context_prompt=context_prompt,
+            assay=assay,
+            default_assay=default_assay,
+            model_policy=model_policy,
+            bout_frame_gap=bout_frame_gap,
+            no_memory=no_memory,
+            no_analysis=no_analysis,
+            fail_on_validation_error=fail_on_validation_error,
+            resolve_video_path=self._resolve_video_path_for_gui_tool,
         )
 
     def _tool_gui_behavior_catalog(

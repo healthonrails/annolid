@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import annolid.core.agent.gui_backend.tool_handlers_video_workflow as workflow
@@ -303,3 +304,103 @@ def test_process_video_behaviors_tool_returns_stage_failure(monkeypatch) -> None
     assert payload["ok"] is False
     assert payload["stage"] == "tracking"
     assert payload["stages"]["tracking"]["ok"] is False
+
+
+def test_score_aggression_bouts_tool_generates_manifest(tmp_path: Path) -> None:
+    artifacts = tmp_path / "agent.ndjson"
+    artifacts.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "artifact_id": "a1",
+                        "frame_index": 10,
+                        "track_id": "mouse_1",
+                        "label": "slap in the face",
+                        "meta": {"count": 2},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "artifact_id": "a2",
+                        "frame_index": 15,
+                        "track_id": "mouse_2",
+                        "label": "run away",
+                        "meta": {"count": 1},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = workflow.score_aggression_bouts_tool(
+        path="mouse.mp4",
+        artifacts_ndjson=str(artifacts),
+        run_id="run_workflow_001",
+        results_dir=str(tmp_path / "results"),
+        context_prompt="score aggression bouts",
+        assay="aggression",
+        bout_frame_gap=20,
+        resolve_video_path=lambda _path: tmp_path / "mouse.mp4",
+    )
+
+    assert payload["ok"] is True
+    assert payload["run_id"] == "run_workflow_001"
+    assert payload["task_plan_assay"] == "aggression"
+    assert len(payload["bout_counts"]) == 1
+    assert Path(str(payload["manifest_path"])).exists()
+    assert payload["artifacts_source"] == "explicit"
+    assert payload["artifacts_ndjson"] == str(artifacts.resolve())
+
+
+def test_score_aggression_bouts_tool_resolves_default_sidecar_artifacts(
+    tmp_path: Path,
+) -> None:
+    sidecar_dir = tmp_path / "mouse"
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = sidecar_dir / "agent.ndjson"
+    artifacts.write_text(
+        json.dumps(
+            {
+                "artifact_id": "a1",
+                "frame_index": 10,
+                "track_id": "mouse_1",
+                "label": "fight initiation",
+                "meta": {"count": 1},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = workflow.score_aggression_bouts_tool(
+        path="mouse.mp4",
+        artifacts_ndjson="",
+        run_id="run_workflow_default_sidecar",
+        results_dir=str(tmp_path / "results"),
+        resolve_video_path=lambda _path: tmp_path / "mouse.mp4",
+    )
+
+    assert payload["ok"] is True
+    assert payload["artifacts_source"] == "default"
+    assert payload["artifacts_ndjson"] == str(artifacts.resolve())
+    assert len(payload["bout_counts"]) == 1
+
+
+def test_score_aggression_bouts_tool_errors_on_missing_explicit_artifacts(
+    tmp_path: Path,
+) -> None:
+    payload = workflow.score_aggression_bouts_tool(
+        path="mouse.mp4",
+        artifacts_ndjson="missing.ndjson",
+        run_id="run_workflow_missing_sidecar",
+        results_dir=str(tmp_path / "results"),
+        resolve_video_path=lambda _path: tmp_path / "mouse.mp4",
+    )
+
+    assert payload["ok"] is False
+    assert "artifacts_ndjson was provided" in str(payload.get("error"))
+    assert payload["artifacts_ndjson_input"] == "missing.ndjson"
+    assert payload["searched_paths"]

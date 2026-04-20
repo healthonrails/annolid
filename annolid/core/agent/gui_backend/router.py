@@ -59,6 +59,7 @@ async def execute_direct_gui_command(
     segment_track_video: Callable[..., Any],
     label_behavior_segments: Callable[..., Any],
     process_video_behaviors: Callable[..., Any],
+    score_aggression_bouts: Callable[..., Any],
     sam3_agent_video_track: Callable[..., Any],
     behavior_catalog: Callable[..., Any],
     start_realtime_stream: Callable[..., Any],
@@ -326,6 +327,31 @@ async def execute_direct_gui_command(
             label = Path(path).name if path else "selected video"
             return f"Processed video behaviors for {label}."
         return str(payload.get("error") or "Failed to process video behaviors.")
+
+    if name == "score_aggression_bouts":
+        payload = await _run(
+            score_aggression_bouts,
+            path=str(args.get("path") or ""),
+            artifacts_ndjson=str(args.get("artifacts_ndjson") or ""),
+            run_id=str(args.get("run_id") or ""),
+            episode_id=str(args.get("episode_id") or ""),
+            results_dir=str(args.get("results_dir") or ""),
+            context_prompt=str(args.get("context_prompt") or ""),
+            assay=str(args.get("assay") or ""),
+            default_assay=str(args.get("default_assay") or "aggression"),
+            model_policy=str(args.get("model_policy") or "annolid_behavior_agent_v1"),
+            bout_frame_gap=int(args.get("bout_frame_gap") or 20),
+            no_memory=bool(args.get("no_memory", False)),
+            no_analysis=bool(args.get("no_analysis", False)),
+            fail_on_validation_error=bool(args.get("fail_on_validation_error", False)),
+        )
+        if payload.get("ok"):
+            return (
+                "Scored aggression bouts and wrote typed analysis artifacts. "
+                f"Bouts: {len(payload.get('bout_counts') or [])}. "
+                f"Manifest: {payload.get('manifest_path')}"
+            )
+        return str(payload.get("error") or "Failed to score aggression bouts.")
 
     if name == "behavior_catalog":
         payload = await _run(

@@ -9,6 +9,10 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Sequence
 
 from .acp import ACPRuntimeManager
 from .loop import AgentLoop
+from annolid.services.behavior_agent.subagents import (
+    BehaviorSubagentProfile,
+    resolve_behavior_subagent_profile,
+)
 from .tools import (
     EditFileTool,
     FunctionToolRegistry,
@@ -36,6 +40,8 @@ class SubagentTask:
     )
     finished_at: str = ""
     inbox: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
+    profile: str = ""
+    skill_names: list[str] = field(default_factory=list)
 
 
 class SubagentManager:
@@ -64,11 +70,18 @@ class SubagentManager:
         provider: str = "",
         model: str = "",
         workspace: str = "",
+        profile: str = "",
+        skill_names: Optional[Sequence[str]] = None,
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
     ) -> str:
         del runtime, provider, model, workspace
         task_id = str(uuid.uuid4())[:8]
+        resolved_profile = resolve_behavior_subagent_profile(profile)
+        merged_skill_names = self._merge_skill_names(
+            provided=skill_names,
+            profile=resolved_profile,
+        )
         display_label = label or (task[:30] + ("..." if len(task) > 30 else ""))
         meta = SubagentTask(
             task_id=task_id,
@@ -76,6 +89,8 @@ class SubagentManager:
             task=task,
             origin_channel=origin_channel,
             origin_chat_id=origin_chat_id,
+            profile=resolved_profile.name if resolved_profile else str(profile or ""),
+            skill_names=list(merged_skill_names),
         )
 
         if len(self._tasks) >= 100:
@@ -138,12 +153,18 @@ class SubagentManager:
                 loop = await loop_or_coro
             else:
                 loop = loop_or_coro
-            prompt = self._build_subagent_prompt(meta.task)
+            profile = resolve_behavior_subagent_profile(meta.profile)
+            prompt = self._build_subagent_prompt(
+                meta.task,
+                profile=profile,
+                skill_names=meta.skill_names,
+            )
             result = await loop.run(
                 meta.task,
                 session_id=f"subagent:{meta.task_id}",
                 system_prompt=prompt,
                 use_memory=False,
+                skill_names=list(meta.skill_names),
             )
             meta.status = "ok"
             meta.result = result.content
@@ -171,7 +192,13 @@ class SubagentManager:
         if asyncio.iscoroutine(ret):
             await ret
 
-    def _build_subagent_prompt(self, task: str) -> str:
+    def _build_subagent_prompt(
+        self,
+        task: str,
+        *,
+        profile: BehaviorSubagentProfile | None = None,
+        skill_names: Optional[Sequence[str]] = None,
+    ) -> str:
         now_local = datetime.now().astimezone()
         tz_name = now_local.tzname() or "local"
         tz_offset = now_local.strftime("%z")
@@ -183,21 +210,70 @@ class SubagentManager:
         )
         workspace = str(self._workspace) if self._workspace is not None else "."
         skills_dir = str(Path(workspace) / "skills")
-        return (
-            "# Subagent\n\n"
-            "You are a focused background subagent for a single task.\n\n"
-            f"## Current Time\n{now_text}\n\n"
-            f"## Task\n{task}\n\n"
-            "## Rules\n"
-            "1. Stay focused on this task only.\n"
-            "2. Use tools when needed.\n"
-            "3. Return concise findings.\n"
-            "4. Do not start side conversations.\n\n"
-            f"## Workspace\n{workspace}\n\n"
-            "## Skills\n"
-            f"Workspace skill docs are under: {skills_dir}\n"
-            "Read the relevant `SKILL.md` files when a task needs a specific skill.\n"
+        return "".join(
+            [
+                "# Subagent\n\n"
+                "You are a focused background subagent for a single task.\n\n"
+                f"## Current Time\n{now_text}\n\n"
+                f"## Task\n{task}\n\n"
+                "## Rules\n"
+                "1. Stay focused on this task only.\n"
+                "2. Use tools when needed.\n"
+                "3. Return concise findings.\n"
+                "4. Do not start side conversations.\n\n",
+                self._render_profile_block(profile),
+                f"## Workspace\n{workspace}\n\n"
+                "## Skills\n"
+                f"Workspace skill docs are under: {skills_dir}\n"
+                "Read the relevant `SKILL.md` files when a task needs a specific skill.\n",
+                self._render_selected_skills_block(skill_names),
+            ]
         )
+
+    @staticmethod
+    def _render_profile_block(profile: BehaviorSubagentProfile | None) -> str:
+        if profile is None:
+            return ""
+        return (
+            "## Subagent Profile\n"
+            f"Profile: {profile.name}\n"
+            f"Purpose: {profile.description}\n"
+            f"Instructions: {profile.system_instructions}\n\n"
+        )
+
+    @staticmethod
+    def _render_selected_skills_block(skill_names: Optional[Sequence[str]]) -> str:
+        names = [str(name).strip() for name in (skill_names or []) if str(name).strip()]
+        if not names:
+            return ""
+        lines = "\n".join(f"- `{name}`" for name in names)
+        return (
+            "Selected skills for this subagent task:\n"
+            f"{lines}\n"
+            "Prioritize these skill docs before using generic heuristics.\n"
+        )
+
+    @staticmethod
+    def _merge_skill_names(
+        *,
+        provided: Optional[Sequence[str]],
+        profile: BehaviorSubagentProfile | None,
+    ) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for name in provided or []:
+            normalized = str(name).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(normalized)
+        for name in profile.default_skill_names if profile is not None else ():
+            normalized = str(name).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(normalized)
+        return merged
 
 
 class RuntimeSessionRouter:
@@ -222,6 +298,8 @@ class RuntimeSessionRouter:
         provider: str = "",
         model: str = "",
         workspace: str = "",
+        profile: str = "",
+        skill_names: Optional[Sequence[str]] = None,
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
     ) -> str:
@@ -239,12 +317,23 @@ class RuntimeSessionRouter:
                 origin_channel=origin_channel,
                 origin_chat_id=origin_chat_id,
             )
-        return await self._subagent_manager.spawn(
-            task=task,
-            label=label,
-            origin_channel=origin_channel,
-            origin_chat_id=origin_chat_id,
-        )
+        try:
+            return await self._subagent_manager.spawn(
+                task=task,
+                label=label,
+                profile=profile,
+                skill_names=skill_names,
+                origin_channel=origin_channel,
+                origin_chat_id=origin_chat_id,
+            )
+        except TypeError:
+            # Compatibility with legacy subagent manager implementations.
+            return await self._subagent_manager.spawn(
+                task=task,
+                label=label,
+                origin_channel=origin_channel,
+                origin_chat_id=origin_chat_id,
+            )
 
     def list_tasks(self) -> Dict[str, Any]:
         rows: Dict[str, Any] = dict(self._subagent_manager.list_tasks())

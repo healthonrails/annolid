@@ -3,6 +3,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable
 
+from annolid.services.behavior_agent import (
+    list_behavior_subagent_profiles,
+    resolve_behavior_subagent_profile,
+)
+
 from .function_base import FunctionTool
 
 
@@ -101,6 +106,18 @@ class SpawnTool(FunctionTool):
                 "provider": {"type": "string"},
                 "model": {"type": "string"},
                 "workspace": {"type": "string"},
+                "profile": {
+                    "type": "string",
+                    "description": (
+                        "Optional subagent profile name (for example "
+                        "behavior_assay_inference)."
+                    ),
+                },
+                "skill_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional explicit skill names to prioritize.",
+                },
             },
             "required": ["task"],
         }
@@ -113,6 +130,8 @@ class SpawnTool(FunctionTool):
         provider: str = "",
         model: str = "",
         workspace: str = "",
+        profile: str = "",
+        skill_names: list[str] | None = None,
         **kwargs: Any,
     ) -> str:
         del kwargs
@@ -126,11 +145,105 @@ class SpawnTool(FunctionTool):
                 provider=provider,
                 model=model,
                 workspace=workspace,
+                profile=profile,
+                skill_names=skill_names,
                 origin_channel=self._origin_channel,
                 origin_chat_id=self._origin_chat_id,
             )
         except TypeError:
             ret = self._spawn_callback(task, label)
+        if asyncio.iscoroutine(ret):
+            return str(await ret)
+        return str(ret)
+
+
+class SpawnBehaviorSubagentTool(FunctionTool):
+    def __init__(
+        self,
+        spawn_callback: Callable[..., Awaitable[str] | str] | None = None,
+    ):
+        self._spawn_callback = spawn_callback
+        self._origin_channel = "cli"
+        self._origin_chat_id = "direct"
+
+    def set_context(self, channel: str, chat_id: str) -> None:
+        self._origin_channel = channel
+        self._origin_chat_id = chat_id
+
+    def set_spawn_callback(
+        self, callback: Callable[..., Awaitable[str] | str] | None
+    ) -> None:
+        self._spawn_callback = callback
+
+    @property
+    def name(self) -> str:
+        return "spawn_behavior_subagent"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Spawn a specialized behavior-analysis subagent profile with optional "
+            "explicit skills."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        profiles = [row.name for row in list_behavior_subagent_profiles()]
+        return {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string"},
+                "profile": {
+                    "type": "string",
+                    "enum": profiles,
+                },
+                "label": {"type": "string"},
+                "skill_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["profile"],
+        }
+
+    async def execute(
+        self,
+        profile: str,
+        task: str = "",
+        label: str | None = None,
+        skill_names: list[str] | None = None,
+        **kwargs: Any,
+    ) -> str:
+        del kwargs
+        resolved_profile = resolve_behavior_subagent_profile(profile)
+        if resolved_profile is None:
+            names = ", ".join(row.name for row in list_behavior_subagent_profiles())
+            return (
+                f"Error: unknown behavior subagent profile '{profile}'. "
+                f"Available profiles: {names}"
+            )
+        if self._spawn_callback is None:
+            return "Error: spawn callback not configured"
+
+        task_text = str(task or "").strip()
+        if not task_text:
+            task_text = (
+                f"{resolved_profile.description} "
+                f"Follow profile guidance and return concise results."
+            )
+        profile_label = str(label or "").strip() or resolved_profile.name
+        try:
+            ret = self._spawn_callback(
+                task=task_text,
+                label=profile_label,
+                runtime="subagent",
+                profile=resolved_profile.name,
+                skill_names=skill_names,
+                origin_channel=self._origin_channel,
+                origin_chat_id=self._origin_chat_id,
+            )
+        except TypeError:
+            ret = self._spawn_callback(task_text, profile_label)
         if asyncio.iscoroutine(ret):
             return str(await ret)
         return str(ret)
@@ -225,4 +338,10 @@ class CancelTaskTool(FunctionTool):
         return f"Could not cancel task {task_id} (not found or not running)."
 
 
-__all__ = ["MessageTool", "SpawnTool", "ListTasksTool", "CancelTaskTool"]
+__all__ = [
+    "MessageTool",
+    "SpawnTool",
+    "SpawnBehaviorSubagentTool",
+    "ListTasksTool",
+    "CancelTaskTool",
+]

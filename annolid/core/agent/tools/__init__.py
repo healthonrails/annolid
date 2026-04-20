@@ -73,7 +73,13 @@ from .filesystem import (
     WriteFileTool,
 )
 from .memory import MemoryGetTool, MemorySetTool, MemorySearchTool
-from .messaging import MessageTool, SpawnTool, ListTasksTool, CancelTaskTool
+from .messaging import (
+    CancelTaskTool,
+    ListTasksTool,
+    MessageTool,
+    SpawnBehaviorSubagentTool,
+    SpawnTool,
+)
 from .swarm_tool import SwarmTool
 from .nanobot import register_nanobot_style_tools
 from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
@@ -120,6 +126,7 @@ from .function_gui_video import (
     GuiListRealtimeModelsTool,
     GuiOpenVideoTool,
     GuiProcessVideoBehaviorsTool,
+    GuiScoreAggressionBoutsTool,
     GuiRunAiTextSegmentationTool,
     GuiSegmentTrackVideoTool,
     GuiSetAiTextPromptTool,
@@ -284,6 +291,7 @@ __all__ = [
     "GuiSegmentTrackVideoTool",
     "GuiLabelBehaviorSegmentsTool",
     "GuiProcessVideoBehaviorsTool",
+    "GuiScoreAggressionBoutsTool",
     "GuiBehaviorCatalogTool",
     "GuiStartRealtimeStreamTool",
     "GuiStopRealtimeStreamTool",
@@ -294,6 +302,7 @@ __all__ = [
     "GuiSharedImagePathTool",
     "MessageTool",
     "SpawnTool",
+    "SpawnBehaviorSubagentTool",
     "ListTasksTool",
     "CancelTaskTool",
     "SwarmTool",

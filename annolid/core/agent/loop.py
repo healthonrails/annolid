@@ -54,6 +54,7 @@ from .tools.function_builtin import (
     CronTool,
     ListTasksTool,
     MessageTool,
+    SpawnBehaviorSubagentTool,
     SpawnTool,
 )
 from annolid.core.agent.tools.swarm_tool import SwarmTool
@@ -2669,6 +2670,12 @@ class AgentLoop:
         spawn_tool = self._tools.get("spawn")
         if isinstance(spawn_tool, SpawnTool) and runtime_router is not None:
             spawn_tool.set_spawn_callback(runtime_router.spawn)
+        spawn_behavior_tool = self._tools.get("spawn_behavior_subagent")
+        if (
+            isinstance(spawn_behavior_tool, SpawnBehaviorSubagentTool)
+            and runtime_router is not None
+        ):
+            spawn_behavior_tool.set_spawn_callback(runtime_router.spawn)
 
         list_tasks_tool = self._tools.get("list_tasks")
         if isinstance(list_tasks_tool, ListTasksTool) and runtime_router is not None:
@@ -2714,6 +2721,9 @@ class AgentLoop:
         spawn_tool = self._tools.get("spawn")
         if isinstance(spawn_tool, SpawnTool):
             spawn_tool.set_context(resolved_channel, resolved_chat_id)
+        spawn_behavior_tool = self._tools.get("spawn_behavior_subagent")
+        if isinstance(spawn_behavior_tool, SpawnBehaviorSubagentTool):
+            spawn_behavior_tool.set_context(resolved_channel, resolved_chat_id)
 
         automation_tool = self._tools.get("automation_schedule")
         if isinstance(automation_tool, AutomationSchedulerTool):

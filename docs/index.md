@@ -14,6 +14,7 @@
     <a href="installation/">Install Annolid</a>
     <a href="install_with_uv/">Use <code>.venv</code> for development</a>
     <a href="workflows/">Follow core workflows</a>
+    <a href="behavior_agent_user_guide/">Use behavior-agent scoring</a>
     <a href="agent_annolid_run/">Run <code>annolid-run</code> from Annolid agents</a>
     <a href="sam3/">Track long videos with SAM3</a>
     <a href="tutorials/">Explore tutorials</a>

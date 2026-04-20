@@ -1246,6 +1246,43 @@ def test_gui_process_video_behaviors_forwards_to_service(monkeypatch) -> None:
     assert "identify initiator" in str(captured["focus_points"])
 
 
+def test_gui_score_aggression_bouts_forwards_to_service(monkeypatch) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    task = StreamingChatTask("hi", widget=None)
+    captured: dict[str, object] = {}
+
+    def _fake_score_chat_aggression_bouts_tool(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "kind": "score_aggression_bouts", "bout_counts": []}
+
+    monkeypatch.setattr(
+        backend,
+        "score_chat_aggression_bouts_tool",
+        _fake_score_chat_aggression_bouts_tool,
+    )
+
+    payload = task._tool_gui_score_aggression_bouts(
+        path="/tmp/mouse.mp4",
+        artifacts_ndjson="/tmp/agent.ndjson",
+        run_id="run_abc",
+        context_prompt="score aggression bouts",
+        assay="aggression",
+        bout_frame_gap=25,
+        fail_on_validation_error=True,
+    )
+
+    assert payload["ok"] is True
+    assert payload["kind"] == "score_aggression_bouts"
+    assert captured["path"] == "/tmp/mouse.mp4"
+    assert captured["artifacts_ndjson"] == "/tmp/agent.ndjson"
+    assert captured["run_id"] == "run_abc"
+    assert captured["context_prompt"] == "score aggression bouts"
+    assert captured["assay"] == "aggression"
+    assert captured["bout_frame_gap"] == 25
+    assert captured["fail_on_validation_error"] is True
+
+
 def test_check_stream_source_snapshot_opens_image_on_canvas(monkeypatch) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
 

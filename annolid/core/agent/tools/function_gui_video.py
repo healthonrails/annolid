@@ -323,6 +323,49 @@ class GuiProcessVideoBehaviorsTool(FunctionTool):
         return await _run_callback(self._process_video_behaviors_callback, **kwargs)
 
 
+class GuiScoreAggressionBoutsTool(FunctionTool):
+    def __init__(
+        self, score_aggression_bouts_callback: Optional[ActionCallback] = None
+    ):
+        self._score_aggression_bouts_callback = score_aggression_bouts_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_score_aggression_bouts"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Score aggression bouts from counted sub-events (slap in face, run away, "
+            "fight initiation) and write a typed immutable analysis manifest."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "minLength": 1},
+                "artifacts_ndjson": {"type": "string"},
+                "run_id": {"type": "string"},
+                "episode_id": {"type": "string"},
+                "results_dir": {"type": "string"},
+                "context_prompt": {"type": "string"},
+                "assay": {"type": "string"},
+                "default_assay": {"type": "string"},
+                "model_policy": {"type": "string"},
+                "bout_frame_gap": {"type": "integer", "minimum": 1},
+                "no_memory": {"type": "boolean"},
+                "no_analysis": {"type": "boolean"},
+                "fail_on_validation_error": {"type": "boolean"},
+            },
+            "required": ["path"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._score_aggression_bouts_callback, **kwargs)
+
+
 class GuiAnalyzeTrackingStatsTool(FunctionTool):
     def __init__(
         self, analyze_tracking_stats_callback: Optional[ActionCallback] = None

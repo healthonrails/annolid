@@ -99,6 +99,7 @@ nav:
       - Behavior Labeling (Timeline + Flags + Bot): tutorials/behavior_timeline_flags_bot.md
       - Video Processing with FFmpeg: tutorials/video_ffmpeg_processing.md
       - Segment-based Batch Tracking: tutorials/segment-based-batch-tracking.md
+      - Behavior Agent User Guide: behavior_agent_user_guide.md
       - Draw Zones Quickstart (GUI): tutorials/draw_zones_quickstart.md
       - Zone Analysis Workflow: tutorials/zone_analysis_workflow.md
       - Identity Governor Workflow: identity_governor.md
@@ -121,6 +122,7 @@ nav:
       - Overview: operations.md
       - Deployment: deployment.md
       - Migration Plan: migration.md
+      - Behavior Agent Architecture: architecture/behavior_analysis_architecture.md
       - Architecture Layers: architecture_layers.md
       - Redirect Map: redirects.md
   - Reference:

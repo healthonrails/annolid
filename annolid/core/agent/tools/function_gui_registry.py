@@ -49,6 +49,7 @@ from .function_gui_video import (
     GuiListRealtimeModelsTool,
     GuiOpenVideoTool,
     GuiProcessVideoBehaviorsTool,
+    GuiScoreAggressionBoutsTool,
     GuiSetFrameTool,
     GuiTrackNextFramesTool,
     GuiSetAiTextPromptTool,
@@ -121,6 +122,7 @@ def register_annolid_gui_tools(
     segment_track_video_callback: Optional[ActionCallback] = None,
     label_behavior_segments_callback: Optional[ActionCallback] = None,
     process_video_behaviors_callback: Optional[ActionCallback] = None,
+    score_aggression_bouts_callback: Optional[ActionCallback] = None,
     behavior_catalog_callback: Optional[ActionCallback] = None,
     analyze_tracking_stats_callback: Optional[ActionCallback] = None,
     start_realtime_stream_callback: Optional[ActionCallback] = None,
@@ -237,6 +239,11 @@ def register_annolid_gui_tools(
     registry.register(
         GuiProcessVideoBehaviorsTool(
             process_video_behaviors_callback=process_video_behaviors_callback
+        )
+    )
+    registry.register(
+        GuiScoreAggressionBoutsTool(
+            score_aggression_bouts_callback=score_aggression_bouts_callback
         )
     )
     registry.register(

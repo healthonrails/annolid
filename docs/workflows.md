@@ -91,6 +91,7 @@ For behavior-centric projects, a typical path is:
 For GUI-first behavior scoring with timeline playhead dragging, shared behavior catalog usage across Flags/Timeline, and Annolid Bot segment labeling prompts, see:
 
 - [Behavior labeling with Timeline, Flags, and Annolid Bot](tutorials/behavior_timeline_flags_bot.md)
+- [Behavior Agent User Guide](behavior_agent_user_guide.md)
 
 Example time-budget command:
 

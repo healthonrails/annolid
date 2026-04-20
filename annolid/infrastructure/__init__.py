@@ -26,6 +26,9 @@ _EXPORTS = {
     "resolve_llm_config": "annolid.infrastructure.external_apis",
     "resolve_weight_path": "annolid.infrastructure.model_downloads",
     "sanitize_qt_plugin_env": "annolid.infrastructure.runtime",
+    "BehaviorAgentStoreAdapter": "annolid.infrastructure.artifact_store",
+    "SandboxExecutionError": "annolid.infrastructure.sandbox",
+    "execute_generated_analysis": "annolid.infrastructure.sandbox",
 }
 
 __all__ = sorted(_EXPORTS)
