@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from bisect import bisect_right
 from collections import OrderedDict, deque
 from numbers import Number
 import os
@@ -10,6 +11,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Optional
+from types import SimpleNamespace
 
 from qtpy import QtCore, QtWidgets
 
@@ -58,12 +60,16 @@ class AnnotationLoadingMixin:
     _FRAME_LABEL_CACHE_KEY = "_frame_label_cache"
     _FRAME_LABEL_CACHE_MAX_ENTRIES = 48
     _FRAME_STORE_HAS_FRAME_CACHE_KEY = "_frame_store_has_frame_cache"
+    _FRAME_LABEL_SOURCE_INDEX_CACHE_KEY = "_frame_label_source_index_cache"
     _FRAME_LABEL_PREFETCH_QUEUE_KEY = "_frame_label_prefetch_queue"
     _FRAME_LABEL_PREFETCH_ACTIVE_KEY = "_frame_label_prefetch_active"
     _FRAME_LABEL_PREFETCH_WINDOW = 4
     _FRAME_LABEL_PREFETCH_BUDGET = 2
     _TRACKING_SHAPE_CACHE_KEY = "_tracking_shape_cache"
     _TRACKING_SHAPE_CACHE_MAX_ENTRIES = 128
+    _TRACKING_KEYPOINT_AREA_THRESHOLD = 16
+    _PREFER_ANNOTATION_STORE_OVER_FRAME_JSON = True
+    _ENABLE_TRACKING_CSV_SHAPE_FALLBACK = False
     # Correctness-first default: keep label/store probing during playback so
     # frame-specific predictions are not skipped. The tracking fast path remains
     # available as an explicit opt-in for constrained environments.
@@ -361,9 +367,9 @@ class AnnotationLoadingMixin:
         for shape_data in shapes:
             label = shape_data["label"]
             points = shape_data["points"]
-            shape_type = shape_data["shape_type"]
+            shape_type = shape_data.get("shape_type", "polygon")
             flags = dict(shape_data.get("flags") or {})
-            group_id = shape_data["group_id"]
+            group_id = shape_data.get("group_id")
             description = shape_data.get("description", "")
             other_data = dict(shape_data.get("other_data") or {})
             if "visible" in shape_data:
@@ -379,7 +385,7 @@ class AnnotationLoadingMixin:
                 shape_type=shape_type,
                 group_id=group_id,
                 description=description,
-                mask=shape_data["mask"],
+                mask=shape_data.get("mask"),
                 visible=visible,
             )
             for x, y in points:
@@ -1741,6 +1747,51 @@ class AnnotationLoadingMixin:
 
     def _label_candidate_cache_token(self, candidate: Path) -> tuple | None:
         """Return a freshness token for on-demand frame label loading."""
+        if (
+            str(candidate.suffix or "").lower() == ".json"
+            and candidate.exists()
+            and candidate.is_file()
+            and candidate.with_suffix(".png").exists()
+        ):
+            try:
+                stat_result = candidate.stat()
+                return (
+                    "file_manual",
+                    str(candidate),
+                    int(getattr(stat_result, "st_mtime_ns", 0)),
+                    int(getattr(stat_result, "st_size", 0)),
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to stat manual label candidate %s.",
+                    candidate,
+                    exc_info=True,
+                )
+
+        prefer_store = bool(
+            getattr(self, "_PREFER_ANNOTATION_STORE_OVER_FRAME_JSON", True)
+        )
+        if prefer_store and str(candidate.suffix or "").lower() == ".json":
+            try:
+                if self._annotation_store_has_frame(candidate):
+                    store = AnnotationStore.for_frame_path(candidate)
+                    store_path = Path(store.store_path)
+                    if store_path.exists():
+                        stat_result = store_path.stat()
+                        return (
+                            "store_preferred",
+                            str(candidate),
+                            str(store_path),
+                            int(getattr(stat_result, "st_mtime_ns", 0)),
+                            int(getattr(stat_result, "st_size", 0)),
+                        )
+            except Exception:
+                logger.debug(
+                    "Failed to resolve store-preferred token for %s.",
+                    candidate,
+                    exc_info=True,
+                )
+
         try:
             if candidate.exists() and candidate.is_file():
                 stat_result = candidate.stat()
@@ -1773,6 +1824,216 @@ class AnnotationLoadingMixin:
                 "Failed to resolve annotation-store cache token for %s.",
                 candidate,
                 exc_info=True,
+            )
+        return None
+
+    def _load_store_backed_label_file(self, candidate: Path):
+        try:
+            frame_number = AnnotationStore.frame_number_from_path(candidate)
+            if frame_number is None:
+                return None
+            store = AnnotationStore.for_frame_path(candidate)
+            record = store.get_frame_fast(frame_number)
+            if record is None:
+                record = store.get_frame(frame_number)
+            if not isinstance(record, dict):
+                return None
+            shapes = list(record.get("shapes") or [])
+            flags = dict(record.get("flags") or {})
+            caption = record.get("caption")
+            return SimpleNamespace(
+                shapes=shapes,
+                flags=flags,
+                get_caption=(lambda value=caption: value),
+            )
+        except Exception:
+            logger.debug(
+                "Failed to load store-backed frame payload for %s.",
+                candidate,
+                exc_info=True,
+            )
+            return None
+
+    def _frame_label_index_cache_get(self, cache_key: tuple, signature: tuple):
+        cache = getattr(self, self._FRAME_LABEL_SOURCE_INDEX_CACHE_KEY, None)
+        if not isinstance(cache, dict):
+            return None
+        cached = cache.get(cache_key)
+        if not isinstance(cached, dict):
+            return None
+        if cached.get("signature") != signature:
+            return None
+        return cached.get("value")
+
+    def _frame_label_index_cache_set(
+        self,
+        cache_key: tuple,
+        signature: tuple,
+        value,
+    ) -> None:
+        cache = getattr(self, self._FRAME_LABEL_SOURCE_INDEX_CACHE_KEY, None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(self, self._FRAME_LABEL_SOURCE_INDEX_CACHE_KEY, cache)
+        cache[cache_key] = {
+            "signature": signature,
+            "value": value,
+        }
+
+    def _manual_label_frames_for_dir(self, directory: Path) -> dict[int, Path]:
+        try:
+            stat_result = directory.stat()
+            signature = (
+                int(getattr(stat_result, "st_mtime_ns", 0)),
+                int(getattr(stat_result, "st_size", 0)),
+            )
+        except OSError:
+            return {}
+
+        cache_key = ("manual_dir", str(directory))
+        cached = self._frame_label_index_cache_get(cache_key, signature)
+        if isinstance(cached, dict):
+            return dict(cached)
+
+        frame_map: dict[int, Path] = {}
+        try:
+            for entry in directory.iterdir():
+                if not entry.is_file() or str(entry.suffix).lower() != ".json":
+                    continue
+                if not entry.with_suffix(".png").exists():
+                    continue
+                frame_number = AnnotationStore.frame_number_from_path(entry)
+                if frame_number is None:
+                    continue
+                frame_map[int(frame_number)] = entry
+        except OSError:
+            return {}
+
+        self._frame_label_index_cache_set(cache_key, signature, dict(frame_map))
+        return frame_map
+
+    def _annotation_store_frames_for_candidate(self, candidate: Path) -> list[int]:
+        try:
+            store = AnnotationStore.for_frame_path(candidate)
+            store_path = Path(store.store_path)
+            if not store_path.exists():
+                return []
+            stat_result = store_path.stat()
+            signature = (
+                int(getattr(stat_result, "st_mtime_ns", 0)),
+                int(getattr(stat_result, "st_size", 0)),
+            )
+        except OSError:
+            return []
+
+        cache_key = ("store_frames", str(store_path))
+        cached = self._frame_label_index_cache_get(cache_key, signature)
+        if isinstance(cached, list):
+            return [int(frame) for frame in cached]
+
+        try:
+            frames = sorted(int(frame) for frame in store.iter_frames())
+        except Exception:
+            logger.debug(
+                "Failed to index annotation store frames for %s.",
+                store_path,
+                exc_info=True,
+            )
+            return []
+
+        self._frame_label_index_cache_set(cache_key, signature, list(frames))
+        return frames
+
+    @staticmethod
+    def _nearest_frame_at_or_before(
+        frame_number: int,
+        candidate_frames: list[int],
+    ) -> Optional[int]:
+        if not candidate_frames:
+            return None
+        try:
+            target = int(frame_number)
+        except (TypeError, ValueError):
+            return None
+        idx = bisect_right(candidate_frames, target) - 1
+        if idx < 0:
+            return None
+        return int(candidate_frames[idx])
+
+    @staticmethod
+    def _generated_store_candidate_path(directory: Path, frame_number: int) -> Path:
+        return directory / f"{directory.name}_{int(frame_number):09}.json"
+
+    def _resolve_sparse_frame_label_candidate(
+        self,
+        frame_number: int,
+        frame_path: Optional[Path],
+        label_candidates: list[Path],
+    ) -> Optional[Path]:
+        unique_candidates: list[Path] = []
+        seen_candidates: set[Path] = set()
+        for candidate in list(label_candidates or []):
+            try:
+                normalized = Path(candidate)
+            except Exception:
+                continue
+            if normalized in seen_candidates:
+                continue
+            seen_candidates.add(normalized)
+            unique_candidates.append(normalized)
+
+        directories: list[Path] = []
+        seen_dirs: set[Path] = set()
+        for candidate in unique_candidates:
+            directory = candidate.parent
+            if directory in seen_dirs:
+                continue
+            seen_dirs.add(directory)
+            directories.append(directory)
+        if frame_path is not None:
+            frame_dir = Path(frame_path).parent
+            if frame_dir not in seen_dirs:
+                directories.append(frame_dir)
+
+        best_manual_frame: Optional[int] = None
+        best_manual_candidate: Optional[Path] = None
+        for directory in directories:
+            frame_map = self._manual_label_frames_for_dir(directory)
+            resolved_frame = self._nearest_frame_at_or_before(
+                frame_number,
+                sorted(frame_map.keys()),
+            )
+            if resolved_frame is None:
+                continue
+            if best_manual_frame is None or int(resolved_frame) > int(
+                best_manual_frame
+            ):
+                best_manual_frame = int(resolved_frame)
+                best_manual_candidate = frame_map.get(int(resolved_frame))
+        if best_manual_candidate is not None:
+            return best_manual_candidate
+
+        best_store_frame: Optional[int] = None
+        best_store_dir: Optional[Path] = None
+        seen_store_dirs: set[Path] = set()
+        for candidate in unique_candidates:
+            directory = candidate.parent
+            if directory in seen_store_dirs:
+                continue
+            seen_store_dirs.add(directory)
+            resolved_frame = self._nearest_frame_at_or_before(
+                frame_number,
+                self._annotation_store_frames_for_candidate(candidate),
+            )
+            if resolved_frame is None:
+                continue
+            if best_store_frame is None or int(resolved_frame) > int(best_store_frame):
+                best_store_frame = int(resolved_frame)
+                best_store_dir = directory
+        if best_store_dir is not None and best_store_frame is not None:
+            return self._generated_store_candidate_path(
+                best_store_dir,
+                int(best_store_frame),
             )
         return None
 
@@ -2036,8 +2297,42 @@ class AnnotationLoadingMixin:
                 except Exception:
                     row["instance_name"] = "unknown"
                 row["segmentation"] = None
+            if not decode_segmentation:
+                # Fast playback path: avoid expensive mask decoding but still render
+                # robust per-instance overlays from bbox coordinates.
+                try:
+                    x1 = float(row.get("x1"))
+                    y1 = float(row.get("y1"))
+                    x2 = float(row.get("x2"))
+                    y2 = float(row.get("y2"))
+                except (TypeError, ValueError):
+                    x1 = y1 = x2 = y2 = float("nan")
+                if all(value == value and value >= 0.0 for value in (x1, y1, x2, y2)):
+                    label_name = str(row.get("instance_name") or "unknown")
+                    tracking_id = row.get("tracking_id")
+                    try:
+                        tracking_id_int = int(tracking_id)
+                    except (TypeError, ValueError):
+                        tracking_id_int = -1
+                    if tracking_id_int >= 0:
+                        label_name = f"{label_name}_{tracking_id_int}"
+                    rect_shape = Shape(
+                        label=label_name,
+                        shape_type="rectangle",
+                        flags={},
+                    )
+                    rect_shape.addPoint((x1, y1))
+                    rect_shape.addPoint((x2, y2))
+                    frame_label_list.append(rect_shape)
+                continue
             frame_label_list.extend(
-                pred_dict_to_labelme(row, decode_segmentation=decode_segmentation)
+                pred_dict_to_labelme(
+                    row,
+                    keypoint_area_threshold=int(
+                        getattr(self, "_TRACKING_KEYPOINT_AREA_THRESHOLD", 16)
+                    ),
+                    decode_segmentation=decode_segmentation,
+                )
             )
         self._tracking_shape_cache_set(
             frame_number,
@@ -2119,52 +2414,14 @@ class AnnotationLoadingMixin:
 
         frame_path = Path(filename) if filename else None
         persistent_zone_shapes = self._persistent_zone_shapes_for_frame(frame_path)
-        preloaded_tracking_shapes: list[Shape] | None = None
         label_candidates = self._iter_frame_label_candidates(frame_number, frame_path)
-
-        playback_tracking_fastpath = (
-            bool(getattr(self, "isPlaying", False))
-            and bool(getattr(self, "_df", None) is not None)
-            and bool(
-                getattr(self, "_PREFER_TRACKING_OVER_LABEL_IO_DURING_PLAYBACK", True)
-            )
+        sparse_candidate = self._resolve_sparse_frame_label_candidate(
+            int(frame_number),
+            frame_path,
+            label_candidates,
         )
-        if playback_tracking_fastpath:
-            # During active playback, avoid expensive per-frame label candidate and
-            # annotation-store probing. Use tracking-derived overlays for smooth
-            # scrubbing/playing and restore full label discovery on pause.
-            decode_segmentation = False
-            tracking_shapes = self._tracking_shapes_for_frame(
-                int(frame_number), decode_segmentation=decode_segmentation
-            )
-            preloaded_tracking_shapes = list(tracking_shapes)
-            if preloaded_tracking_shapes:
-                has_frame_specific_labels = False
-                for candidate in label_candidates:
-                    cache_token = self._label_candidate_cache_token(candidate)
-                    if cache_token is not None:
-                        has_frame_specific_labels = True
-                        break
-                if has_frame_specific_labels:
-                    # Keep smooth playback but prefer frame-specific predictions
-                    # (json/annotation-store-backed) when present.
-                    preloaded_tracking_shapes = list(preloaded_tracking_shapes)
-                else:
-                    fallback_shapes = list(preloaded_tracking_shapes)
-                    if persistent_zone_shapes:
-                        fallback_shapes = self._merge_persistent_zones_into_shapes(
-                            fallback_shapes,
-                            frame_path,
-                            persistent_zone_shapes=persistent_zone_shapes,
-                        )
-                    self.loadShapes(fallback_shapes)
-                    if self.caption_widget is not None:
-                        applied = self._apply_timeline_caption_if_available(
-                            frame_number, only_if_empty=False
-                        )
-                        if not applied:
-                            self.caption_widget.set_caption("")
-                    return
+        if sparse_candidate is not None and sparse_candidate not in label_candidates:
+            label_candidates = [*label_candidates, sparse_candidate]
 
         seen_candidates: set[Path] = set()
         label_loaded = False
@@ -2180,10 +2437,16 @@ class AnnotationLoadingMixin:
             label_file = self._label_file_cache_get(candidate, cache_token)
             if label_file is None:
                 try:
-                    label_file = LabelFile(
-                        str(candidate),
-                        is_video_frame=True,
-                    )
+                    token_kind = str(cache_token[0]) if cache_token else ""
+                    if token_kind == "store_preferred":
+                        label_file = self._load_store_backed_label_file(candidate)
+                        if label_file is None:
+                            continue
+                    else:
+                        label_file = LabelFile(
+                            str(candidate),
+                            is_video_frame=True,
+                        )
                 except LabelFileError as exc:
                     logger.error(
                         "Failed to load label file %s: %s",
@@ -2210,8 +2473,27 @@ class AnnotationLoadingMixin:
                         frame_path,
                         persistent_zone_shapes=persistent_zone_shapes,
                     )
-                self.loadShapes(frame_shapes)
+            except Exception:
+                logger.debug(
+                    "Failed to prepare loaded label payload from %s.",
+                    candidate,
+                    exc_info=True,
+                )
+                continue
+
+            self.loadShapes(frame_shapes)
+            label_loaded = True
+
+            try:
                 self.update_flags_from_file(label_file)
+            except Exception:
+                logger.debug(
+                    "Failed to update flags from loaded label payload %s.",
+                    candidate,
+                    exc_info=True,
+                )
+
+            try:
                 if (
                     len(self.canvas.current_behavior_text) > 1
                     and "other" not in self.canvas.current_behavior_text.lower()
@@ -2219,6 +2501,14 @@ class AnnotationLoadingMixin:
                     self.add_highlighted_mark(
                         self.frame_number, mark_type=self.canvas.current_behavior_text
                     )
+            except Exception:
+                logger.debug(
+                    "Failed to add highlighted mark for loaded label payload %s.",
+                    candidate,
+                    exc_info=True,
+                )
+
+            try:
                 caption = label_file.get_caption()
                 if caption is not None and len(caption) > 0:
                     if self.caption_widget is None:
@@ -2230,42 +2520,27 @@ class AnnotationLoadingMixin:
                     )
                     if not applied:
                         self.caption_widget.set_caption("")
-                label_loaded = True
-                break
             except Exception:
                 logger.debug(
-                    "Failed to apply loaded label payload from %s.",
+                    "Failed to update caption from loaded label payload %s.",
                     candidate,
                     exc_info=True,
                 )
-                continue
+            break
 
         if label_loaded:
             self._enqueue_neighbor_label_prefetch(frame_number, frame_path)
             return
 
-        tracking_shapes: list[Shape] = (
-            list(preloaded_tracking_shapes)
-            if preloaded_tracking_shapes is not None
-            else []
-        )
-        if self._df is not None and not tracking_shapes:
-            decode_segmentation = not bool(getattr(self, "isPlaying", False))
-            tracking_shapes = self._tracking_shapes_for_frame(
-                int(frame_number), decode_segmentation=decode_segmentation
+        # Do not fall back to tracking CSV for shape overlays in the frame loader.
+        fallback_shapes: list[Shape] = []
+        if persistent_zone_shapes:
+            fallback_shapes = self._merge_persistent_zones_into_shapes(
+                fallback_shapes,
+                frame_path,
+                persistent_zone_shapes=persistent_zone_shapes,
             )
-            if tracking_shapes:
-                self._enqueue_neighbor_label_prefetch(frame_number, frame_path)
-
-        if not label_loaded:
-            fallback_shapes = list(tracking_shapes)
-            if persistent_zone_shapes:
-                fallback_shapes = self._merge_persistent_zones_into_shapes(
-                    fallback_shapes,
-                    frame_path,
-                    persistent_zone_shapes=persistent_zone_shapes,
-                )
-            self.loadShapes(fallback_shapes)
+        self.loadShapes(fallback_shapes)
 
         if not label_loaded and self.caption_widget is not None:
             applied = self._apply_timeline_caption_if_available(
