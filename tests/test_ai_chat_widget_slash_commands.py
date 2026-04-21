@@ -286,6 +286,41 @@ def test_chat_bubble_thinking_collapses_and_toggles() -> None:
         bubble.deleteLater()
 
 
+def test_append_thinking_progress_line_prefers_newest_and_prefix_growth() -> None:
+    class _Dummy:
+        def __init__(self) -> None:
+            self._progress_lines = []
+
+    dummy = _Dummy()
+    boilerplate = {
+        "starting agent loop",
+        "loading tools and context",
+        "prepared system prompt",
+        "received model response",
+    }
+
+    AIChatWidget._append_thinking_progress_line(
+        dummy, "starting agent loop", boilerplate=boilerplate
+    )
+    assert dummy._progress_lines == ["starting agent loop"]
+
+    AIChatWidget._append_thinking_progress_line(
+        dummy, "Analyzing frame 1", boilerplate=boilerplate
+    )
+    assert dummy._progress_lines == ["Analyzing frame 1"]
+
+    AIChatWidget._append_thinking_progress_line(
+        dummy, "Analyzing frame 1 with pose features", boilerplate=boilerplate
+    )
+    assert dummy._progress_lines == ["Analyzing frame 1 with pose features"]
+
+    AIChatWidget._append_thinking_progress_line(
+        dummy, "Evaluating trajectory priors", boilerplate=boilerplate
+    )
+    assert dummy._progress_lines[0] == "Evaluating trajectory priors"
+    assert dummy._progress_lines[1] == "Analyzing frame 1 with pose features"
+
+
 def test_capability_chips_and_shortcuts_route_actions(monkeypatch) -> None:
     _ensure_qapp()
     monkeypatch.setattr(

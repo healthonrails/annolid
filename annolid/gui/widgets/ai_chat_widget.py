@@ -484,13 +484,16 @@ class _ChatBubble(QtWidgets.QFrame):
         self.thinking_view: Optional[QtWidgets.QTextBrowser] = None
         self.thinking_doc: Optional[QtGui.QTextDocument] = None
         if not self._is_user:
+            thinking_insert_idx = 1 if hasattr(self, "sender_label") else 0
             self.thinking_toggle_button = QtWidgets.QToolButton(self)
             self.thinking_toggle_button.setObjectName("thinkingToggleButton")
             self.thinking_toggle_button.setCursor(QtCore.Qt.PointingHandCursor)
             self.thinking_toggle_button.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
             self.thinking_toggle_button.clicked.connect(self.toggle_thinking_content)
             self.thinking_toggle_button.hide()
-            self.main_layout.addWidget(self.thinking_toggle_button)
+            self.main_layout.insertWidget(
+                thinking_insert_idx, self.thinking_toggle_button
+            )
 
             self.thinking_view = QtWidgets.QTextBrowser(self)
             self.thinking_view.setObjectName("thinkingView")
@@ -526,7 +529,7 @@ class _ChatBubble(QtWidgets.QFrame):
             if thinking_layout is not None:
                 thinking_layout.documentSizeChanged.connect(self._sync_thinking_height)
             self.thinking_view.hide()
-            self.main_layout.addWidget(self.thinking_view)
+            self.main_layout.insertWidget(thinking_insert_idx + 1, self.thinking_view)
 
         # Footer: Actions + Timestamp
         self.footer_layout = QtWidgets.QHBoxLayout()
@@ -2730,7 +2733,8 @@ class AIChatWidget(QtWidgets.QWidget):
             return
         lines: List[str] = []
         if self.enable_progress_stream and self._progress_lines:
-            lines.extend(self._progress_lines[-3:])
+            # Keep latest provider/model reasoning visible at the top.
+            lines.extend(self._progress_lines[:32])
         if not lines:
             dots = "." * ((self._typing_tick % 3) + 1)
             lines = [f"Thinking{dots}"]
@@ -2740,6 +2744,43 @@ class AIChatWidget(QtWidgets.QWidget):
         )
         QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def _append_thinking_progress_line(
+        self,
+        line: str,
+        *,
+        boilerplate: set[str],
+    ) -> None:
+        value = str(line or "").strip()
+        if not value:
+            return
+        low = value.lower()
+        has_rich_progress = any(
+            str(item or "").strip().lower() not in boilerplate
+            for item in self._progress_lines
+        )
+        if low in boilerplate and has_rich_progress:
+            return
+        if low not in boilerplate and self._progress_lines:
+            self._progress_lines = [
+                item
+                for item in self._progress_lines
+                if str(item or "").strip().lower() not in boilerplate
+            ]
+
+        if self._progress_lines:
+            top = str(self._progress_lines[0] or "").strip()
+            # Some providers stream reasoning as a progressively longer prefix.
+            if value.startswith(top) and len(value) > len(top):
+                self._progress_lines[0] = value
+                return
+            if top.startswith(value):
+                return
+        if value in self._progress_lines:
+            self._progress_lines.remove(value)
+        self._progress_lines.insert(0, value)
+        if len(self._progress_lines) > 256:
+            self._progress_lines = self._progress_lines[:256]
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
         try:
@@ -7174,31 +7215,21 @@ class AIChatWidget(QtWidgets.QWidget):
 
     @QtCore.Slot(str)
     def stream_chat_progress(self, update: str) -> None:
-        line = str(update or "").strip()
-        if not line:
+        text = str(update or "").strip()
+        if not text:
             return
-        self._latest_progress_text = line
-        low = line.lower()
+        self._latest_progress_text = text
         boilerplate = {
             "starting agent loop",
             "loading tools and context",
             "prepared system prompt",
             "received model response",
         }
-        has_rich_progress = any(
-            str(item or "").strip().lower() not in boilerplate
-            for item in self._progress_lines
-        )
-        if low in boilerplate and has_rich_progress:
+        parts = [part.strip() for part in text.splitlines() if part.strip()]
+        if not parts:
             return
-        if low not in boilerplate and self._progress_lines:
-            self._progress_lines = [
-                item
-                for item in self._progress_lines
-                if str(item or "").strip().lower() not in boilerplate
-            ]
-        if not self._progress_lines or self._progress_lines[-1] != line:
-            self._progress_lines.append(line)
+        for part in parts:
+            self._append_thinking_progress_line(part, boilerplate=boilerplate)
         self._render_progress_in_bubble()
 
     @QtCore.Slot(str, bool)
