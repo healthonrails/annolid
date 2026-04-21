@@ -7,6 +7,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from annolid.core.agent.gui_backend.commands import parse_direct_gui_command
 from annolid.gui.widgets.ai_chat_backend import _append_selected_capabilities_prompt
 from annolid.gui.widgets.ai_chat_widget import _compose_slash_selection_draft
+from annolid.gui.widgets.ai_chat_widget import _ChatBubble
 from annolid.gui.widgets.ai_chat_widget import _extract_slash_selection_state
 from annolid.gui.widgets.ai_chat_widget import AIChatWidget
 from annolid.gui.widgets.track_slash_dialog import TrackSlashDialog
@@ -258,6 +259,31 @@ def test_extract_prediction_from_model_text_infers_aggression_sub_events_from_te
         "run_away": 1,
         "fight_initiation": 1,
     }
+
+
+def test_chat_bubble_thinking_collapses_and_toggles() -> None:
+    _ensure_qapp()
+    bubble = _ChatBubble("Annolid Bot", "", is_user=False)
+    try:
+        bubble.show()
+        QtWidgets.QApplication.processEvents()
+        bubble.set_thinking_text("Loading context", in_progress=True)
+        assert bubble.thinking_toggle_button is not None
+        assert bubble.thinking_view is not None
+        assert bubble.thinking_toggle_button.isVisible()
+        assert bubble.thinking_view.isVisible()
+        assert "running" in bubble.thinking_toggle_button.text().lower()
+
+        bubble.finish_thinking(collapse=True)
+        QtWidgets.QApplication.processEvents()
+        assert not bubble.thinking_view.isVisible()
+        assert "finished" in bubble.thinking_toggle_button.text().lower()
+
+        bubble.toggle_thinking_content()
+        QtWidgets.QApplication.processEvents()
+        assert bubble.thinking_view.isVisible()
+    finally:
+        bubble.deleteLater()
 
 
 def test_capability_chips_and_shortcuts_route_actions(monkeypatch) -> None:

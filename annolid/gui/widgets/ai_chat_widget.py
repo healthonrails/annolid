@@ -413,6 +413,9 @@ class _ChatBubble(QtWidgets.QFrame):
         self._drag_start_text_width = 0
         self._edge_handle_px = 12
         self._syncing_message_height = False
+        self._syncing_thinking_height = False
+        self._thinking_text = ""
+        self._thinking_finished = False
 
         self.setObjectName("chatBubble")
         self.setFrameShape(QtWidgets.QFrame.NoFrame)
@@ -476,6 +479,54 @@ class _ChatBubble(QtWidgets.QFrame):
 
         self.main_layout.addWidget(self.message_view)
         self._render_markdown(self._raw_text)
+
+        self.thinking_toggle_button: Optional[QtWidgets.QToolButton] = None
+        self.thinking_view: Optional[QtWidgets.QTextBrowser] = None
+        self.thinking_doc: Optional[QtGui.QTextDocument] = None
+        if not self._is_user:
+            self.thinking_toggle_button = QtWidgets.QToolButton(self)
+            self.thinking_toggle_button.setObjectName("thinkingToggleButton")
+            self.thinking_toggle_button.setCursor(QtCore.Qt.PointingHandCursor)
+            self.thinking_toggle_button.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+            self.thinking_toggle_button.clicked.connect(self.toggle_thinking_content)
+            self.thinking_toggle_button.hide()
+            self.main_layout.addWidget(self.thinking_toggle_button)
+
+            self.thinking_view = QtWidgets.QTextBrowser(self)
+            self.thinking_view.setObjectName("thinkingView")
+            self.thinking_view.setFrameShape(QtWidgets.QFrame.NoFrame)
+            self.thinking_view.setOpenExternalLinks(False)
+            self.thinking_view.setOpenLinks(False)
+            self.thinking_view.setHorizontalScrollBarPolicy(
+                QtCore.Qt.ScrollBarAlwaysOff
+            )
+            self.thinking_view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            self.thinking_view.setSizeAdjustPolicy(
+                QtWidgets.QAbstractScrollArea.AdjustToContents
+            )
+            self.thinking_view.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            self.thinking_doc = QtGui.QTextDocument(self.thinking_view)
+            self.thinking_doc.setDocumentMargin(0)
+            thinking_option = self.thinking_doc.defaultTextOption()
+            thinking_option.setWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
+            self.thinking_doc.setDefaultTextOption(thinking_option)
+            self.thinking_doc.setDefaultStyleSheet(
+                """
+                body, p, li, ul, ol {
+                    color: #AAB2BD;
+                    font-size: 12px;
+                    line-height: 1.35;
+                }
+                p { margin: 0 0 6px 0; }
+                p:last-child { margin-bottom: 0; }
+                """
+            )
+            self.thinking_view.setDocument(self.thinking_doc)
+            thinking_layout = self.thinking_doc.documentLayout()
+            if thinking_layout is not None:
+                thinking_layout.documentSizeChanged.connect(self._sync_thinking_height)
+            self.thinking_view.hide()
+            self.main_layout.addWidget(self.thinking_view)
 
         # Footer: Actions + Timestamp
         self.footer_layout = QtWidgets.QHBoxLayout()
@@ -662,9 +713,41 @@ class _ChatBubble(QtWidgets.QFrame):
         finally:
             self._syncing_message_height = False
 
+    def _sync_thinking_height(self, _doc_size: Optional[QtCore.QSizeF] = None) -> None:
+        if self._syncing_thinking_height:
+            return
+        if self.thinking_view is None or self.thinking_doc is None:
+            return
+        if not self.thinking_view.isVisible():
+            return
+        self._syncing_thinking_height = True
+        try:
+            vp_width = self.thinking_view.viewport().width()
+            if vp_width > 0:
+                self.thinking_doc.setTextWidth(float(vp_width))
+            doc_height = int(self.thinking_doc.size().height())
+            target_height = max(28, doc_height + 12)
+            parent_window = self.window()
+            max_limit = 240
+            if parent_window:
+                max_limit = int(max(parent_window.height() * 0.35, 120))
+            if target_height > max_limit:
+                self.thinking_view.setFixedHeight(max_limit)
+                self.thinking_view.setVerticalScrollBarPolicy(
+                    QtCore.Qt.ScrollBarAsNeeded
+                )
+            else:
+                self.thinking_view.setFixedHeight(target_height)
+                self.thinking_view.setVerticalScrollBarPolicy(
+                    QtCore.Qt.ScrollBarAlwaysOff
+                )
+        finally:
+            self._syncing_thinking_height = False
+
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         self._sync_message_height()
+        self._sync_thinking_height()
 
     def set_message_width(self, width: int) -> None:
         # Simplified: The layout handles width now mostly, but we can hint the doc.
@@ -675,7 +758,66 @@ class _ChatBubble(QtWidgets.QFrame):
         # This is called by parent to enforce max widths
         if self.message_doc:
             self.message_doc.setTextWidth(float(text_width))
+        if self.thinking_doc:
+            self.thinking_doc.setTextWidth(float(text_width))
         self._sync_message_height()
+        self._sync_thinking_height()
+
+    def set_thinking_text(self, text: str, *, in_progress: bool = True) -> None:
+        if self._is_user:
+            return
+        value = str(text or "").strip()
+        self._thinking_text = value
+        if in_progress:
+            self._thinking_finished = False
+        if self.thinking_toggle_button is None or self.thinking_view is None:
+            return
+        if not value:
+            self.thinking_toggle_button.hide()
+            self.thinking_view.hide()
+            return
+        if self.thinking_doc is not None:
+            if hasattr(self.thinking_doc, "setMarkdown"):
+                self.thinking_doc.setMarkdown(value)
+            else:
+                self.thinking_doc.setPlainText(value)
+        self.thinking_toggle_button.show()
+        self.thinking_view.show()
+        self._sync_thinking_height()
+        self._refresh_thinking_toggle_text()
+
+    def finish_thinking(self, collapse: bool = True) -> None:
+        if self._is_user:
+            return
+        self._thinking_finished = True
+        if self.thinking_toggle_button is None or self.thinking_view is None:
+            return
+        if not self._thinking_text:
+            self.thinking_toggle_button.hide()
+            self.thinking_view.hide()
+            return
+        if collapse:
+            self.thinking_view.hide()
+        self._refresh_thinking_toggle_text()
+
+    def toggle_thinking_content(self) -> None:
+        if self.thinking_view is None or self.thinking_toggle_button is None:
+            return
+        if not self._thinking_text:
+            return
+        self.thinking_view.setVisible(not self.thinking_view.isVisible())
+        self._refresh_thinking_toggle_text()
+        self._sync_thinking_height()
+
+    def _refresh_thinking_toggle_text(self) -> None:
+        if self.thinking_toggle_button is None:
+            return
+        is_open = bool(
+            self.thinking_view is not None and self.thinking_view.isVisible()
+        )
+        chevron = "▼" if is_open else "▶"
+        status = "finished" if self._thinking_finished else "running"
+        self.thinking_toggle_button.setText(f"{chevron} Thinking ({status})")
 
     def _speak(self) -> None:
         if callable(self._on_speak):
@@ -2586,14 +2728,16 @@ class AIChatWidget(QtWidgets.QWidget):
             return
         if self._current_response_bubble is None:
             return
-        if self._has_streamed_response_chunk:
-            return
-        dots = "." * ((self._typing_tick % 3) + 1)
-        lines: List[str] = [f"Thinking{dots}"]
+        lines: List[str] = []
         if self.enable_progress_stream and self._progress_lines:
-            for line in self._progress_lines[-3:]:
-                lines.append(f"- {line}")
-        self._current_response_bubble.set_text("\n".join(lines))
+            lines.extend(self._progress_lines[-3:])
+        if not lines:
+            dots = "." * ((self._typing_tick % 3) + 1)
+            lines = [f"Thinking{dots}"]
+        self._current_response_bubble.set_thinking_text(
+            "\n".join(lines),
+            in_progress=True,
+        )
         QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
@@ -2897,6 +3041,24 @@ class AIChatWidget(QtWidgets.QWidget):
                 }}
                 QPushButton#bubbleActionButton:hover {{
                      background: rgba(128, 128, 128, 0.1);
+                }}
+                QToolButton#thinkingToggleButton {{
+                    border: none;
+                    background: transparent;
+                    color: {subtitle_fg};
+                    font-size: 11px;
+                    font-weight: 600;
+                    text-align: left;
+                    padding: 2px 0;
+                }}
+                QToolButton#thinkingToggleButton:hover {{
+                    color: {fg_main};
+                }}
+                QTextBrowser#thinkingView {{
+                    border: 1px solid {border_main};
+                    border-radius: 8px;
+                    background: rgba(128, 128, 128, 0.08);
+                    padding: 6px 8px;
                 }}
                 QLabel#sender {{
                     color: {subtitle_fg};
@@ -6901,11 +7063,12 @@ class AIChatWidget(QtWidgets.QWidget):
         self.status_label.setText("")
         self._current_response_bubble = self._add_bubble(
             assistant_name,
-            "Thinking.",
+            "",
             is_user=False,
             allow_regenerate=True,
             allow_stop=True,
         )
+        self._current_response_bubble.set_thinking_text("Thinking.", in_progress=True)
         self.send_button.setEnabled(False)
         self.is_streaming_chat = True
         self._start_typing_indicator()
@@ -7015,6 +7178,25 @@ class AIChatWidget(QtWidgets.QWidget):
         if not line:
             return
         self._latest_progress_text = line
+        low = line.lower()
+        boilerplate = {
+            "starting agent loop",
+            "loading tools and context",
+            "prepared system prompt",
+            "received model response",
+        }
+        has_rich_progress = any(
+            str(item or "").strip().lower() not in boilerplate
+            for item in self._progress_lines
+        )
+        if low in boilerplate and has_rich_progress:
+            return
+        if low not in boilerplate and self._progress_lines:
+            self._progress_lines = [
+                item
+                for item in self._progress_lines
+                if str(item or "").strip().lower() not in boilerplate
+            ]
         if not self._progress_lines or self._progress_lines[-1] != line:
             self._progress_lines.append(line)
         self._render_progress_in_bubble()
@@ -7048,6 +7230,7 @@ class AIChatWidget(QtWidgets.QWidget):
             )
             self._current_response_bubble = bubble
 
+        self._current_response_bubble.finish_thinking(collapse=True)
         if is_error:
             if self._has_streamed_response_chunk:
                 current = self._current_response_bubble.text()

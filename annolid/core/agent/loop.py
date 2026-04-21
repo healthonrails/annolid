@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 import inspect
 import json
 import os
@@ -555,21 +555,61 @@ class AgentLoop:
                 thought_buffer = []
                 is_thinking = False
                 last_update = time.perf_counter()
+                last_progress_text = ""
+                runtime_loop = asyncio.get_running_loop()
 
                 def _on_llm_token(token: str) -> None:
-                    nonlocal is_thinking, last_update
+                    nonlocal is_thinking, last_update, last_progress_text
+                    raw_token = str(token or "")
+                    if not raw_token:
+                        return
+                    remaining = raw_token
+                    while remaining:
+                        if is_thinking:
+                            end_idx = remaining.find("</think>")
+                            if end_idx < 0:
+                                thought_buffer.append(remaining)
+                                remaining = ""
+                                continue
+                            if end_idx > 0:
+                                thought_buffer.append(remaining[:end_idx])
+                            remaining = remaining[end_idx + len("</think>") :]
+                            is_thinking = False
+                            continue
 
-                    if "<think>" in token:
+                        start_idx = remaining.find("<think>")
+                        if start_idx < 0:
+                            token_buffer.append(remaining)
+                            remaining = ""
+                            continue
+                        if start_idx > 0:
+                            token_buffer.append(remaining[:start_idx])
+                        remaining = remaining[start_idx + len("<think>") :]
                         is_thinking = True
-                        token = token.replace("<think>", "")
-                    if "</think>" in token:
-                        is_thinking = False
-                        token = token.replace("</think>", "")
+                    progress_text = (
+                        str("".join(thought_buffer) or "").strip()
+                        or str("".join(token_buffer) or "").strip()
+                    )
+                    if (
+                        on_progress is not None
+                        and progress_text
+                        and progress_text != last_progress_text
+                    ):
+                        last_progress_text = progress_text
+                        progress_task = runtime_loop.create_task(
+                            self._dispatch_progress(on_progress, progress_text)
+                        )
 
-                    if is_thinking:
-                        thought_buffer.append(token)
-                    else:
-                        token_buffer.append(token)
+                        def _log_progress_failure(task: asyncio.Task[Any]) -> None:
+                            with suppress(Exception):
+                                err = task.exception()
+                                if err is not None:
+                                    self._logger.warning(
+                                        "on_progress callback failed: %s",
+                                        err,
+                                    )
+
+                        progress_task.add_done_callback(_log_progress_failure)
 
                     # Throttled visualizer update (every 500ms or so)
                     now = time.perf_counter()
@@ -653,9 +693,11 @@ class AgentLoop:
 
                 if tool_calls:
                     if on_progress is not None:
-                        progress_text = self._strip_think(
-                            assistant_text
-                        ) or self._tool_hint(tool_calls)
+                        progress_text = (
+                            self._extract_think(assistant_text)
+                            or self._strip_think(assistant_text)
+                            or self._tool_hint(tool_calls)
+                        )
                         if progress_text:
                             try:
                                 await self._dispatch_progress(
@@ -3406,6 +3448,17 @@ class AgentLoop:
         if not raw:
             return ""
         return re.sub(r"<think>[\s\S]*?</think>", "", raw).strip()
+
+    @staticmethod
+    def _extract_think(text: str | None) -> str:
+        """Return concatenated <think>...</think> content when present."""
+        raw = str(text or "")
+        if not raw:
+            return ""
+        blocks = re.findall(r"<think>([\s\S]*?)</think>", raw)
+        if not blocks:
+            return ""
+        return "\n".join(str(block or "").strip() for block in blocks if block).strip()
 
     @staticmethod
     def _tool_hint(tool_calls: Sequence[Mapping[str, Any]]) -> str:

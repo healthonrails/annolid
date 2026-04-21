@@ -837,7 +837,7 @@ def test_agent_loop_emits_intermediate_progress_for_tool_calls() -> None:
     loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
     result = asyncio.run(loop.run("hi", on_progress=_on_progress))
     assert result.content == "done"
-    assert progress_updates == ["Need a tool call."]
+    assert progress_updates == ["internal"]
 
 
 def test_agent_loop_progress_uses_tool_hint_when_content_empty() -> None:
@@ -897,6 +897,39 @@ def test_agent_loop_progress_accepts_sync_callback() -> None:
     loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
     _ = asyncio.run(loop.run("hi", on_progress=progress_updates.append))
     assert progress_updates == ['echo("hello")']
+
+
+def test_agent_loop_emits_streamed_thinking_progress() -> None:
+    registry = FunctionToolRegistry()
+    registry.register(_EchoTool())
+    state = {"n": 0}
+    progress_updates: list[str] = []
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model
+        state["n"] += 1
+        if state["n"] == 1:
+            if on_token is not None:
+                on_token("<think>Plan with confidence and inspect annotations.</think>")
+            return {
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "echo", "arguments": {"text": "hello"}}
+                ],
+            }
+        return {"content": "done"}
+
+    async def _on_progress(text: str) -> None:
+        progress_updates.append(text)
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    _ = asyncio.run(loop.run("hi", on_progress=_on_progress))
+    assert any("Plan with confidence" in row for row in progress_updates)
 
 
 def test_agent_loop_timeout_raises_explicit_message() -> None:
