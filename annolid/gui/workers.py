@@ -1009,10 +1009,10 @@ class ProcessVideosWorker(QThread):
                     # Define user prompt
                     user_prompt = "Describe the main activities in this video."
 
-                    # Process video with the agent
-                    from annolid.agents import behavior_agent
+                    # Process video with the behavior-video service facade.
+                    from annolid.services.inference import run_behavior_video_agent
 
-                    response = behavior_agent.process_video_with_agent(
+                    response = run_behavior_video_agent(
                         video_path, user_prompt, self.agent
                     )
 

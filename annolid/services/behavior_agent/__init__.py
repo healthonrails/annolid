@@ -1,97 +1,54 @@
 """Behavior-agent service layer (additive, typed orchestration surface)."""
 
-from annolid.services.behavior_agent.artifact_store import BehaviorAgentArtifactStore
-from annolid.services.behavior_agent.bout_scoring import (
-    AGGRESSION_SUBEVENT_TYPES,
-    AggressionBoutCount,
-    aggregate_aggression_bout_counts,
-    normalize_aggression_sub_event_type,
-    validate_aggression_bout_counts,
-)
-from annolid.services.behavior_agent.interfaces import (
-    AnalysisRunner,
-    BehaviorSegmenter,
-    MemoryStore,
-    PerceptionAdapter,
-    TaskInferencer,
-)
-from annolid.services.behavior_agent.defaults import (
-    AggressionSubEventSegmenter,
-    DeterministicAnalysisRunner,
-    InMemoryMemoryStore,
-    KeywordTaskInferencer,
-    NDJSONPerceptionAdapter,
-    PassThroughPerceptionAdapter,
-)
-from annolid.services.behavior_agent.pipeline import (
-    BehaviorAgentPipeline,
-    BehaviorAgentPipelineResult,
-)
-from annolid.services.behavior_agent.orchestrator import (
-    BehaviorAgentOrchestrator,
-    OrchestrationResult,
-)
-from annolid.services.behavior_agent.model_policy import (
-    BehaviorModelPolicy,
-    DEFAULT_POLICY,
-    PRIVACY_POLICY,
-    resolve_behavior_model_policy,
-)
-from annolid.services.behavior_agent.specialized_pipeline import (
-    SpecializedBehaviorAgentPipeline,
-    SpecializedBehaviorPipelineResult,
-)
-from annolid.services.behavior_agent.evaluation import (
-    BehaviorAgentBenchmarkRow,
-    BehaviorAgentBenchmarkSummary,
-    summarize_behavior_agent_benchmarks,
-)
-from annolid.services.behavior_agent.runtime import (
-    build_default_behavior_agent_pipeline,
-    resolve_behavior_results_root,
-    run_default_behavior_agent_pipeline,
-)
-from annolid.services.behavior_agent.subagents import (
-    BehaviorSubagentProfile,
-    list_behavior_subagent_profiles,
-    resolve_behavior_subagent_profile,
-)
+from __future__ import annotations
 
-__all__ = [
-    "BehaviorAgentArtifactStore",
-    "AGGRESSION_SUBEVENT_TYPES",
-    "AggressionBoutCount",
-    "aggregate_aggression_bout_counts",
-    "normalize_aggression_sub_event_type",
-    "validate_aggression_bout_counts",
-    "TaskInferencer",
-    "PerceptionAdapter",
-    "BehaviorSegmenter",
-    "MemoryStore",
-    "AnalysisRunner",
-    "AggressionSubEventSegmenter",
-    "DeterministicAnalysisRunner",
-    "InMemoryMemoryStore",
-    "KeywordTaskInferencer",
-    "NDJSONPerceptionAdapter",
-    "PassThroughPerceptionAdapter",
-    "BehaviorAgentPipeline",
-    "BehaviorAgentPipelineResult",
-    "BehaviorAgentOrchestrator",
-    "OrchestrationResult",
-    "BehaviorModelPolicy",
-    "DEFAULT_POLICY",
-    "PRIVACY_POLICY",
-    "resolve_behavior_model_policy",
-    "SpecializedBehaviorAgentPipeline",
-    "SpecializedBehaviorPipelineResult",
-    "BehaviorAgentBenchmarkRow",
-    "BehaviorAgentBenchmarkSummary",
-    "summarize_behavior_agent_benchmarks",
-    "build_default_behavior_agent_pipeline",
-    "resolve_behavior_results_root",
-    "run_default_behavior_agent_pipeline",
-    "BehaviorSubagentProfile",
-    "list_behavior_subagent_profiles",
-    "resolve_behavior_subagent_profile",
-]
+from importlib import import_module
+
+_EXPORTS = {
+    "BehaviorAgentArtifactStore": "annolid.services.behavior_agent.artifact_store",
+    "AGGRESSION_SUBEVENT_TYPES": "annolid.services.behavior_agent.bout_scoring",
+    "AggressionBoutCount": "annolid.services.behavior_agent.bout_scoring",
+    "aggregate_aggression_bout_counts": "annolid.services.behavior_agent.bout_scoring",
+    "normalize_aggression_sub_event_type": "annolid.services.behavior_agent.bout_scoring",
+    "validate_aggression_bout_counts": "annolid.services.behavior_agent.bout_scoring",
+    "TaskInferencer": "annolid.services.behavior_agent.interfaces",
+    "PerceptionAdapter": "annolid.services.behavior_agent.interfaces",
+    "BehaviorSegmenter": "annolid.services.behavior_agent.interfaces",
+    "MemoryStore": "annolid.services.behavior_agent.interfaces",
+    "AnalysisRunner": "annolid.services.behavior_agent.interfaces",
+    "AggressionSubEventSegmenter": "annolid.services.behavior_agent.defaults",
+    "DeterministicAnalysisRunner": "annolid.services.behavior_agent.defaults",
+    "InMemoryMemoryStore": "annolid.services.behavior_agent.defaults",
+    "KeywordTaskInferencer": "annolid.services.behavior_agent.defaults",
+    "NDJSONPerceptionAdapter": "annolid.services.behavior_agent.defaults",
+    "PassThroughPerceptionAdapter": "annolid.services.behavior_agent.defaults",
+    "BehaviorAgentPipeline": "annolid.services.behavior_agent.pipeline",
+    "BehaviorAgentPipelineResult": "annolid.services.behavior_agent.pipeline",
+    "BehaviorAgentOrchestrator": "annolid.services.behavior_agent.orchestrator",
+    "OrchestrationResult": "annolid.services.behavior_agent.orchestrator",
+    "BehaviorModelPolicy": "annolid.services.behavior_agent.model_policy",
+    "DEFAULT_POLICY": "annolid.services.behavior_agent.model_policy",
+    "PRIVACY_POLICY": "annolid.services.behavior_agent.model_policy",
+    "resolve_behavior_model_policy": "annolid.services.behavior_agent.model_policy",
+    "SpecializedBehaviorAgentPipeline": "annolid.services.behavior_agent.specialized_pipeline",
+    "SpecializedBehaviorPipelineResult": "annolid.services.behavior_agent.specialized_pipeline",
+    "BehaviorAgentBenchmarkRow": "annolid.services.behavior_agent.evaluation",
+    "BehaviorAgentBenchmarkSummary": "annolid.services.behavior_agent.evaluation",
+    "summarize_behavior_agent_benchmarks": "annolid.services.behavior_agent.evaluation",
+    "build_default_behavior_agent_pipeline": "annolid.services.behavior_agent.runtime",
+    "resolve_behavior_results_root": "annolid.services.behavior_agent.runtime",
+    "run_default_behavior_agent_pipeline": "annolid.services.behavior_agent.runtime",
+    "BehaviorSubagentProfile": "annolid.services.behavior_agent.subagents",
+    "list_behavior_subagent_profiles": "annolid.services.behavior_agent.subagents",
+    "resolve_behavior_subagent_profile": "annolid.services.behavior_agent.subagents",
+}
+
+__all__ = sorted(_EXPORTS)
+
+
+def __getattr__(name: str):
+    module_name = _EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(module_name)
+    return getattr(module, name)

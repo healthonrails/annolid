@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from annolid.services.behavior_agent import (
     BehaviorAgentArtifactStore,
     SpecializedBehaviorAgentPipeline,
 )
 
 
+@pytest.mark.active_provider
 def test_specialized_pipeline_writes_evidence_and_provenance(tmp_path) -> None:
     artifacts = tmp_path / "tracks.ndjson"
     artifacts.write_text(
@@ -67,6 +70,7 @@ def test_specialized_pipeline_writes_evidence_and_provenance(tmp_path) -> None:
     )
 
 
+@pytest.mark.active_provider
 def test_specialized_pipeline_is_immutable_by_run_id(tmp_path) -> None:
     pipeline = SpecializedBehaviorAgentPipeline(
         artifact_store=BehaviorAgentArtifactStore(tmp_path),

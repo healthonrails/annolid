@@ -17,17 +17,23 @@ def run_behavior_inference_cli() -> None:
     main()
 
 
+def initialize_behavior_video_agent(*args: Any, **kwargs: Any):
+    from annolid.agents.behavior_agent import initialize_agent
+
+    return initialize_agent(*args, **kwargs)
+
+
 def run_behavior_video_agent(video_path: str, user_prompt: str, agent=None):
     from annolid.agents.behavior_agent import (
-        initialize_agent,
         process_video_with_agent,
     )
 
-    resolved_agent = agent if agent is not None else initialize_agent()
+    resolved_agent = agent if agent is not None else initialize_behavior_video_agent()
     return process_video_with_agent(video_path, user_prompt, resolved_agent)
 
 
 __all__ = [
+    "initialize_behavior_video_agent",
     "predict_behavior",
     "run_behavior_inference_cli",
     "run_behavior_video_agent",

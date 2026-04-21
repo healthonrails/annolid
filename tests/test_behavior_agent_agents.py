@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from annolid.agents.assay_agent import AssayInferenceAgent
 from annolid.agents.feature_agent import FeaturePlanningAgent
 from annolid.agents.routing_agent import PerceptionRoutingAgent
@@ -32,6 +34,7 @@ def test_assay_feature_routing_agents_work_together() -> None:
     assert route.backend in {"annolid_tracking", "grounding_dino", "sam2_server"}
 
 
+@pytest.mark.active_provider
 def test_segmentation_coding_reporting_agents() -> None:
     plan = TaskPlan(assay_type="aggression")
     artifacts = [

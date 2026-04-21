@@ -499,9 +499,9 @@ class VideoManagerWidget(QWidget):
 
         # Initialize behavior agent
         try:
-            from annolid.agents import behavior_agent
+            from annolid.services.inference import initialize_behavior_video_agent
 
-            agent = behavior_agent.initialize_agent()
+            agent = initialize_behavior_video_agent()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to initialize agent: {str(e)}")
             return

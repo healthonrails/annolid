@@ -15,7 +15,7 @@ from annolid.utils.llm_settings import (
     resolve_llm_config,
 )
 
-PROFILE_NAME = "behavior_agent"
+LEGACY_PROFILE_NAME = "behavior_agent"
 SYSTEM_PROMPT = """
 Task: Video Behavior Analysis
 
@@ -85,10 +85,22 @@ class AgentRunResult:
 class BehaviorVideoAgent:
     """Provider-configured behavior agent for video analysis."""
 
-    def __init__(self, provider: str, model_name: str, system_prompt: str) -> None:
+    def __init__(
+        self,
+        provider: str,
+        model_name: str,
+        system_prompt: str,
+        *,
+        llm_profile: str | None = None,
+    ) -> None:
         self._provider = str(provider).strip().lower()
         self._model_name = model_name
         self._system_prompt = system_prompt
+        self._llm_profile = (
+            str(llm_profile).strip()
+            if llm_profile is not None and str(llm_profile).strip()
+            else None
+        )
         self._model = None
         self._chat_adapter = None
 
@@ -105,7 +117,7 @@ class BehaviorVideoAgent:
             )
         else:
             self._chat_adapter = LLMChatAdapter(
-                profile=PROFILE_NAME,
+                profile=self._llm_profile,
                 provider=self._provider,
                 model=self._model_name,
             )
@@ -226,9 +238,46 @@ class BehaviorVideoAgent:
         return AgentRunResult(content=(response.text or "").strip())
 
 
-def initialize_agent() -> BehaviorVideoAgent:
+def _resolve_behavior_video_llm_config(
+    *,
+    use_annolid_bot: bool = True,
+    profile: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+):
+    """
+    Resolve the LLM config for behavior-video analysis.
+
+    Default behavior follows the active Annolid Bot settings by using the
+    global/default provider+model resolution. Legacy profile-based behavior can
+    still be requested explicitly for backward-compatible tests or scripts.
+    """
+    resolved_profile = (
+        None
+        if bool(use_annolid_bot)
+        else str(profile or LEGACY_PROFILE_NAME).strip() or LEGACY_PROFILE_NAME
+    )
+    return resolve_llm_config(
+        profile=resolved_profile,
+        provider=provider,
+        model=model,
+    )
+
+
+def initialize_agent(
+    *,
+    use_annolid_bot: bool = True,
+    profile: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+) -> BehaviorVideoAgent:
     """Initialize and return the configured video behavior analysis agent."""
-    config = resolve_llm_config(profile=PROFILE_NAME)
+    config = _resolve_behavior_video_llm_config(
+        use_annolid_bot=use_annolid_bot,
+        profile=profile,
+        provider=provider,
+        model=model,
+    )
     ensure_provider_env(config)
 
     if config.provider == "gemini":
@@ -244,6 +293,7 @@ def initialize_agent() -> BehaviorVideoAgent:
         provider=config.provider,
         model_name=config.model,
         system_prompt=SYSTEM_PROMPT,
+        llm_profile=config.profile,
     )
 
 

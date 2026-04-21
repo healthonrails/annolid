@@ -30,15 +30,33 @@ def _simulation_skip_reason() -> str | None:
     return None
 
 
+def _active_provider_skip_reason() -> str | None:
+    if os.environ.get("ANNOLID_RUN_ACTIVE_PROVIDER_TESTS") == "1":
+        return None
+
+    return (
+        "active-provider tests are opt-in; set "
+        "ANNOLID_RUN_ACTIVE_PROVIDER_TESTS=1 after provider runtime setup"
+    )
+
+
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
     del config
     reason = _simulation_skip_reason()
-    if reason is None:
-        return
-
-    skip_marker = pytest.mark.skip(reason=reason)
+    active_provider_reason = _active_provider_skip_reason()
+    skip_marker = pytest.mark.skip(reason=reason) if reason else None
+    active_provider_skip = (
+        pytest.mark.skip(reason=active_provider_reason)
+        if active_provider_reason
+        else None
+    )
     for item in items:
-        if item.get_closest_marker("simulation") is not None:
+        if skip_marker and item.get_closest_marker("simulation") is not None:
             item.add_marker(skip_marker)
+        if (
+            active_provider_skip
+            and item.get_closest_marker("active_provider") is not None
+        ):
+            item.add_marker(active_provider_skip)

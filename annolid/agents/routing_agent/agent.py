@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from annolid.services.behavior_agent.model_policy import BehaviorModelPolicy
+if TYPE_CHECKING:
+    from annolid.services.behavior_agent.model_policy import BehaviorModelPolicy
 
 
 @dataclass(frozen=True)
