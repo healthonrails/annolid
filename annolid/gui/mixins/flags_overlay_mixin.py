@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 from qtpy import QtWidgets
 
@@ -38,9 +38,18 @@ class FlagsOverlayMixin:
         current[behavior] = bool(active)
         self.loadFlags(current)
 
-    def _refresh_behavior_overlay(self) -> None:
+    def _refresh_behavior_overlay(self, frame_number: Optional[int] = None) -> None:
         """Synchronize canvas label and flag widget with timeline behaviors."""
-        active_behaviors = self.behavior_controller.active_behaviors(self.frame_number)
+        target_frame = self.frame_number if frame_number is None else frame_number
+        try:
+            target_frame = int(target_frame)
+        except Exception:
+            target_frame = int(getattr(self, "frame_number", 0) or 0)
+        active_behaviors = self.behavior_controller.active_behaviors(target_frame)
+        overlay_text = ",".join(sorted(active_behaviors)) if active_behaviors else None
+        # Keep canvas text in sync even when active-behavior signature has not changed.
+        self.canvas.setBehaviorText(overlay_text)
+
         signature = tuple(sorted(str(name) for name in active_behaviors))
         if signature == getattr(self, "_last_behavior_overlay_signature", None):
             return
@@ -63,6 +72,3 @@ class FlagsOverlayMixin:
 
         if current_flags:
             self.loadFlags(current_flags)
-        else:
-            text = ",".join(sorted(active_behaviors)) if active_behaviors else None
-            self.canvas.setBehaviorText(text)

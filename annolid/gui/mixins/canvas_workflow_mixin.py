@@ -224,7 +224,7 @@ class CanvasWorkflowMixin:
             depth_manager.update_overlay_for_frame(frame_number, frame_rgb)
         if needs_flow_overlay and optical_flow_manager is not None:
             optical_flow_manager.update_overlay_for_frame(frame_number, frame_rgb)
-        self._refresh_behavior_overlay()
+        self._refresh_behavior_overlay(frame_number=int(frame_number))
 
     @staticmethod
     def _qimage_to_bytes(qimage: QtGui.QImage, fmt: str = "PNG"):

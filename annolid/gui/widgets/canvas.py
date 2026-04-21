@@ -301,7 +301,13 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         self._release_device_cache()
 
     def setBehaviorText(self, text):
-        self.current_behavior_text = text
+        normalized = str(text).strip() if text is not None else None
+        if normalized == "":
+            normalized = None
+        if normalized == self.current_behavior_text:
+            return
+        self.current_behavior_text = normalized
+        self.update()
 
     def getCaption(self):
         return self.caption_label.toPlainText()
