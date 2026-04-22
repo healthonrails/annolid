@@ -5155,6 +5155,13 @@ class AIChatWidget(QtWidgets.QWidget):
         host = self.host_window_widget or self.window()
         manager = getattr(host, "threejs_manager", None)
         if manager is None:
+            ensure_threejs_manager = getattr(host, "ensure_threejs_manager", None)
+            if callable(ensure_threejs_manager):
+                try:
+                    manager = ensure_threejs_manager()
+                except Exception:
+                    manager = None
+        if manager is None:
             self.status_label.setText(
                 "Bot action failed: Three.js viewer is unavailable."
             )

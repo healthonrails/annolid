@@ -228,6 +228,10 @@ async function boot() {
     const ext = (modelExtHint || "").replace(/^\./, "");
     const root = new THREE.Group();
     scene.add(root);
+    const isPanoramaImageExt = (value) => {
+      const lower = String(value || "").toLowerCase();
+      return ["jpg", "jpeg", "png", "webp", "bmp", "gif"].includes(lower);
+    };
 
     const fitCameraToObject = (obj, options = {}) => {
       const box = new THREE.Box3().setFromObject(obj || root);
@@ -1183,7 +1187,47 @@ async function boot() {
     window.addEventListener("resize", positionFlybodyControls);
 
     if (modelUrl) {
-      if (ext === "stl") {
+      if (isPanoramaImageExt(ext)) {
+        const loader = new THREE.TextureLoader();
+        loader.load(
+          modelUrl,
+          (texture) => {
+            try {
+              texture.colorSpace = THREE.SRGBColorSpace;
+            } catch (err) {
+              // Older builds may not expose colorSpace.
+            }
+            texture.mapping = THREE.EquirectangularReflectionMapping;
+            const sphere = new THREE.Mesh(
+              new THREE.SphereGeometry(500, 64, 40),
+              new THREE.MeshBasicMaterial({
+                map: texture,
+                side: THREE.BackSide,
+              })
+            );
+            scene.add(sphere);
+            controls.enablePan = false;
+            controls.enableZoom = false;
+            controls.target.set(0, 0, 0);
+            camera.position.set(0, 0, 0.1);
+            controls.update();
+            const texImage = texture.image || {};
+            const width = Number(texImage.width) || 0;
+            const height = Number(texImage.height) || 0;
+            const ratio = height > 0 ? width / height : 0;
+            const ratioHint =
+              ratio > 1.95 && ratio < 2.05
+                ? ""
+                : " (image is not near 2:1; projection may look stretched)";
+            setStatus(`Loaded 360 panorama: ${title}${ratioHint}.`);
+            document.body.setAttribute("data-threejs-ready", "1");
+          },
+          undefined,
+          (err) => {
+            setStatus(`Failed to load 360 panorama: ${err}`, "error");
+          }
+        );
+      } else if (ext === "stl") {
         const loader = new STLLoader();
         loader.load(
           modelUrl,

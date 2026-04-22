@@ -166,6 +166,19 @@ def _prepare_live_flybody_view_payload(
 class ViewerToolsMixin:
     """3D viewer and PCA map UI helpers."""
 
+    def _resolve_threejs_manager(self):
+        manager = getattr(self, "threejs_manager", None)
+        if manager is not None:
+            return manager
+        ensure_fn = getattr(self, "ensure_threejs_manager", None)
+        if not callable(ensure_fn):
+            return None
+        try:
+            manager = ensure_fn()
+        except Exception:
+            manager = None
+        return manager
+
     def _show_flybody_static_example(self, manager) -> bool:
         try:
             base_dir = Path(tempfile.gettempdir()) / "annolid_threejs_examples"
@@ -215,7 +228,7 @@ class ViewerToolsMixin:
             str(Path(self.filename).parent) if getattr(self, "filename", None) else "."
         )
         filters = self.tr(
-            "3D sources (*.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.glb *.gltf *.json);;All files (*.*)"
+            "3D sources (*.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.glb *.gltf *.json *.jpg *.jpeg *.png *.webp *.bmp *.gif);;All files (*.*)"
         )
         dialog = QtWidgets.QFileDialog(
             self, self.tr("Choose 3D Model/Simulation Source")
@@ -241,7 +254,7 @@ class ViewerToolsMixin:
             logger.info("3D viewer: no source selected.")
             return
 
-        manager = getattr(self, "threejs_manager", None)
+        manager = self._resolve_threejs_manager()
         if manager is None:
             QtWidgets.QMessageBox.warning(
                 self,
@@ -284,7 +297,7 @@ class ViewerToolsMixin:
             )
             return
 
-        supported = ".stl, .obj, .ply, .csv, .xyz, .glb, .gltf, simulation .json"
+        supported = ".stl, .obj, .ply, .csv, .xyz, .glb, .gltf, simulation .json, 360 panorama (.jpg/.jpeg/.png/.webp/.bmp/.gif)"
         QtWidgets.QMessageBox.information(
             self,
             self.tr("Unsupported 3D Source"),
@@ -297,7 +310,7 @@ class ViewerToolsMixin:
         )
 
     def open_threejs_example(self, example_id: str):
-        manager = getattr(self, "threejs_manager", None)
+        manager = self._resolve_threejs_manager()
         if manager is None:
             QtWidgets.QMessageBox.warning(
                 self,
@@ -359,7 +372,7 @@ class ViewerToolsMixin:
     def _start_live_flybody_behavior_example(
         self, *, behavior: str, label: str
     ) -> None:
-        manager = getattr(self, "threejs_manager", None)
+        manager = self._resolve_threejs_manager()
         if manager is None:
             QtWidgets.QMessageBox.warning(
                 self,
@@ -753,7 +766,7 @@ class ViewerToolsMixin:
         thread.start()
 
     def open_simulation_3d_viewer(self) -> None:
-        manager = getattr(self, "threejs_manager", None)
+        manager = self._resolve_threejs_manager()
         if manager is None:
             QtWidgets.QMessageBox.warning(
                 self,
@@ -777,7 +790,7 @@ class ViewerToolsMixin:
         manager.show_simulation_in_viewer(filename)
 
     def run_simulation_3d_viewer(self) -> None:
-        manager = getattr(self, "threejs_manager", None)
+        manager = self._resolve_threejs_manager()
         if manager is None:
             QtWidgets.QMessageBox.warning(
                 self,

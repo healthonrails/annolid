@@ -10,6 +10,10 @@ def test_supports_threejs_canvas_known_extensions():
     assert supports_threejs_canvas("scene.gltf")
     assert supports_threejs_canvas("points.csv")
     assert supports_threejs_canvas("points.xyz")
+    assert supports_threejs_canvas("panorama.jpg")
+    assert supports_threejs_canvas("panorama.jpeg")
+    assert supports_threejs_canvas("panorama.png")
+    assert supports_threejs_canvas("panorama.webp")
 
 
 def test_supports_threejs_canvas_rejects_unknown_extensions():
@@ -98,3 +102,20 @@ def test_flybody_controls_snap_under_toolbar_and_are_draggable():
     assert "Drag to move FlyBody controls" in js_source
     assert "cursor: move;" in css_source
     assert "touch-action: none;" in css_source
+
+
+def test_threejs_viewer_supports_360_equirectangular_images():
+    repo_root = Path(__file__).resolve().parents[1]
+    js_path = (
+        repo_root
+        / "annolid"
+        / "gui"
+        / "assets"
+        / "threejs"
+        / "annolid_threejs_viewer.js"
+    )
+    source = js_path.read_text(encoding="utf-8")
+
+    assert "isPanoramaImageExt" in source
+    assert "SphereGeometry(500, 64, 40)" in source
+    assert "Loaded 360 panorama" in source

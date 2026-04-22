@@ -176,6 +176,25 @@ class _DummyViewerHost(ViewerToolsMixin):
         return text
 
 
+class _LazyThreeJsHost(ViewerToolsMixin):
+    def __init__(self) -> None:
+        self.threejs_manager = None
+        self._status = _DummyStatusBar()
+        self.ensure_calls = 0
+
+    def ensure_threejs_manager(self):
+        self.ensure_calls += 1
+        if self.threejs_manager is None:
+            self.threejs_manager = _DummyManager()
+        return self.threejs_manager
+
+    def statusBar(self):
+        return self._status
+
+    def tr(self, text: str) -> str:
+        return text
+
+
 def test_open_threejs_example_flybody_stays_on_fast_example_path(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -231,6 +250,33 @@ def test_open_threejs_example_flybody_does_not_prompt_for_install(
     )
 
     widget.open_threejs_example("flybody_simulation_json")
+
+
+def test_open_threejs_example_lazily_initializes_threejs_manager(
+    tmp_path: Path, monkeypatch
+) -> None:
+    widget = _LazyThreeJsHost()
+    example_path = tmp_path / "helix.csv"
+    example_path.write_text("x,y,z\n0,0,0\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "annolid.gui.mixins.viewer_tools_mixin.generate_threejs_example",
+        lambda example_id, out_dir: example_path,
+    )
+
+    warnings = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: warnings.append((args, kwargs)),
+    )
+
+    widget.open_threejs_example("helix_points_csv")
+
+    assert widget.ensure_calls >= 1
+    assert widget.threejs_manager is not None
+    assert widget.threejs_manager.model_paths == [example_path]
+    assert not warnings
 
 
 def test_handle_flybody_viewer_command_routes_start_and_stop(monkeypatch) -> None:
