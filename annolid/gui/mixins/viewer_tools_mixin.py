@@ -166,6 +166,38 @@ def _prepare_live_flybody_view_payload(
 class ViewerToolsMixin:
     """3D viewer and PCA map UI helpers."""
 
+    def _normalize_3d_source_path(self, source_path: str | Path) -> str:
+        raw = str(source_path or "").strip()
+        if not raw:
+            return ""
+        path = Path(raw).expanduser()
+        parts = [path, *path.parents]
+        for candidate in parts:
+            if str(candidate.suffix or "").lower() == ".zarr":
+                return str(candidate)
+        return str(path)
+
+    def _resolve_picked_3d_source(
+        self,
+        *,
+        selected_paths: list[str] | None = None,
+        current_dir: str = "",
+        hinted_path: str = "",
+    ) -> str | None:
+        for candidate in list(selected_paths or []):
+            normalized = self._normalize_3d_source_path(candidate)
+            if normalized:
+                return normalized
+        if hinted_path:
+            normalized = self._normalize_3d_source_path(hinted_path)
+            if normalized:
+                return normalized
+        if current_dir:
+            normalized = self._normalize_3d_source_path(current_dir)
+            if normalized and normalized != ".":
+                return normalized
+        return None
+
     def _resolve_threejs_manager(self):
         manager = getattr(self, "threejs_manager", None)
         if manager is not None:
@@ -228,7 +260,7 @@ class ViewerToolsMixin:
             str(Path(self.filename).parent) if getattr(self, "filename", None) else "."
         )
         filters = self.tr(
-            "3D sources (*.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.glb *.gltf *.json *.jpg *.jpeg *.png *.webp *.bmp *.gif);;All files (*.*)"
+            "3D sources (*.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.glb *.gltf *.zarr *.json *.jpg *.jpeg *.png *.webp *.bmp *.gif);;All files (*.*)"
         )
         dialog = QtWidgets.QFileDialog(
             self, self.tr("Choose 3D Model/Simulation Source")
@@ -238,10 +270,31 @@ class ViewerToolsMixin:
         dialog.setFileMode(QtWidgets.QFileDialog.ExistingFiles)
         dialog.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, True)
         dialog.setOption(QtWidgets.QFileDialog.ReadOnly, True)
+        hinted_source = {"path": ""}
+
+        def _accept_zarr_dir(candidate_path: str) -> None:
+            normalized = self._normalize_3d_source_path(candidate_path)
+            if not normalized:
+                return
+            path = Path(normalized)
+            if path.exists() and path.is_dir() and path.suffix.lower() == ".zarr":
+                hinted_source["path"] = normalized
+                QtCore.QTimer.singleShot(0, dialog.accept)
+
+        dialog.directoryEntered.connect(_accept_zarr_dir)
+        dialog.currentChanged.connect(_accept_zarr_dir)
         paths: list[str] = []
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
             paths = dialog.selectedFiles()
-        return paths[0] if paths else None
+        try:
+            current_dir = str(dialog.directory().absolutePath() or "").strip()
+        except Exception:
+            current_dir = ""
+        return self._resolve_picked_3d_source(
+            selected_paths=paths,
+            current_dir=current_dir,
+            hinted_path=str(hinted_source.get("path", "") or ""),
+        )
 
     def open_3d_viewer(self):
         """Open Annolid's Three.js 3D viewer for model/simulation sources."""
@@ -297,7 +350,7 @@ class ViewerToolsMixin:
             )
             return
 
-        supported = ".stl, .obj, .ply, .csv, .xyz, .glb, .gltf, simulation .json, 360 panorama (.jpg/.jpeg/.png/.webp/.bmp/.gif)"
+        supported = ".stl, .obj, .ply, .csv, .xyz, .glb, .gltf, volume .zarr, simulation .json, 360 panorama (.jpg/.jpeg/.png/.webp/.bmp/.gif)"
         QtWidgets.QMessageBox.information(
             self,
             self.tr("Unsupported 3D Source"),

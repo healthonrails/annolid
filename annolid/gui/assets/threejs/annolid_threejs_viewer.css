@@ -80,7 +80,9 @@ body.white-theme {
 #annolidThreeMeta[hidden],
 #annolidThreeFlybodyControls[hidden],
 #annolidThreeLegend[hidden],
-#annolidThreeCategoryPanel[hidden] {
+#annolidThreeCategoryPanel[hidden],
+#annolidThreeVolumePanel[hidden],
+#btnToggleVolumePanel[hidden] {
   display: none;
 }
 
@@ -179,7 +181,8 @@ body.white-theme {
 }
 
 #annolidThreeLegend,
-#annolidThreeCategoryPanel {
+#annolidThreeCategoryPanel,
+#annolidThreeVolumePanel {
   position: fixed;
   right: 12px;
   background: rgba(8, 12, 18, 0.74);
@@ -201,6 +204,18 @@ body.white-theme {
   top: 328px;
   min-width: 200px;
   max-width: min(32vw, 300px);
+}
+
+#annolidThreeVolumePanel {
+  top: 180px;
+  min-width: 248px;
+  max-width: min(34vw, 340px);
+  max-height: min(68vh, 720px);
+  overflow: auto;
+}
+
+#annolidThreeVolumePanel.dragging {
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 }
 
 .three-panel-title {
@@ -241,7 +256,8 @@ body.white-theme #annolidThreeTimeline,
 body.white-theme #annolidThreeMeta,
 body.white-theme #annolidThreeFlybodyControls,
 body.white-theme #annolidThreeLegend,
-body.white-theme #annolidThreeCategoryPanel {
+body.white-theme #annolidThreeCategoryPanel,
+body.white-theme #annolidThreeVolumePanel {
   background: rgba(255, 255, 255, 0.82);
   border-color: rgba(0, 0, 0, 0.1);
   color: #1a2230;
@@ -335,6 +351,94 @@ body.white-theme .tool-sep {
   display: flex;
   flex-direction: row;
   gap: 6px;
+}
+
+.three-volume-panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.three-volume-panel-tag {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
+.three-volume-section-title {
+  margin: 12px 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.82;
+}
+
+.three-volume-histogram {
+  width: 100%;
+  height: 92px;
+  display: block;
+  margin-bottom: 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(5, 9, 14, 0.78);
+}
+
+.three-volume-grid {
+  display: grid;
+  grid-template-columns: minmax(82px, 1fr) minmax(110px, 1.2fr) auto;
+  gap: 8px 10px;
+  align-items: center;
+}
+
+.three-volume-grid label {
+  font-size: 12px;
+  opacity: 0.92;
+}
+
+.three-volume-grid input[type="range"],
+.three-volume-grid select {
+  width: 100%;
+}
+
+.three-volume-grid input[type="checkbox"] {
+  justify-self: start;
+  width: auto;
+  accent-color: #d19a54;
+}
+
+.three-volume-grid output {
+  min-width: 40px;
+  text-align: right;
+  font-size: 11px;
+  opacity: 0.82;
+}
+
+.three-volume-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.three-volume-actions button {
+  flex: 1 1 auto;
+  height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  cursor: pointer;
+}
+
+body.white-theme .three-volume-actions button {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
 }
 
 #annolidThreeIndicators {

@@ -10,6 +10,8 @@ async function boot() {
   const toolbarEl = document.getElementById("annolidThreeToolbar");
   const legendEl = document.getElementById("annolidThreeLegend");
   const categoryPanelEl = document.getElementById("annolidThreeCategoryPanel");
+  const volumePanelEl = document.getElementById("annolidThreeVolumePanel");
+  const btnToggleVolumePanel = document.getElementById("btnToggleVolumePanel");
   const modelUrl = window.__annolidThreeModelUrl || "";
   const modelExtHint = (window.__annolidThreeModelExt || "").toLowerCase();
   const title = window.__annolidThreeTitle || "3D";
@@ -197,6 +199,13 @@ async function boot() {
         btnToggleAutoRotate.style.color = controls.autoRotate ? "#fff" : "#888";
       };
     }
+    if (btnToggleVolumePanel) {
+      btnToggleVolumePanel.onclick = () => {
+        if (!volumePanelEl || btnToggleVolumePanel.hidden) return;
+        volumePanelEl.hidden = !volumePanelEl.hidden;
+        btnToggleVolumePanel.style.color = volumePanelEl.hidden ? "#888" : "#fff";
+      };
+    }
     if (btnToggleRealtime) {
       btnToggleRealtime.onclick = () => {
         realtimeEnabled = !realtimeEnabled;
@@ -258,6 +267,7 @@ async function boot() {
     };
 
     const addLoadedObject = (obj) => {
+      hideVolumePanel();
       root.add(obj);
       const box = new THREE.Box3().setFromObject(root);
       if (box.isEmpty()) {
@@ -455,6 +465,8 @@ async function boot() {
     const simulationEnvironmentRoot = new THREE.Group();
     const simulationModelRoot = new THREE.Group();
     const simulationBodyPartsRoot = new THREE.Group();
+    const simulationVolumeRoot = new THREE.Group();
+    const simulationSlices = new THREE.Group();
     const simulationPoints = new THREE.Group();
     const simulationEdges = new THREE.Group();
     const simulationTrails = new THREE.Group();
@@ -462,6 +474,8 @@ async function boot() {
     simulationRoot.add(simulationEnvironmentRoot);
     simulationRoot.add(simulationModelRoot);
     simulationRoot.add(simulationBodyPartsRoot);
+    simulationRoot.add(simulationVolumeRoot);
+    simulationRoot.add(simulationSlices);
     simulationRoot.add(simulationPoints);
     simulationRoot.add(simulationEdges);
     simulationRoot.add(simulationTrails);
@@ -476,8 +490,14 @@ async function boot() {
     let simulationMeshKey = "";
     let simulationEnvironmentKey = "";
     let simulationActiveBehavior = "";
+    let volumeRenderState = null;
+    let volumeRenderDefaults = null;
+    let volumeGridCache = null;
+    let volumeTextureCache = null;
     let flybodyControlsMoved = false;
     let flybodyDragState = null;
+    let volumePanelMoved = false;
+    let volumePanelDragState = null;
 
     const positionFlybodyControls = () => {
       if (!flybodyControlsEl || !toolbarEl || flybodyControlsMoved) return;
@@ -506,6 +526,26 @@ async function boot() {
       flybodyControlsEl.style.left = `${nextLeft}px`;
       flybodyControlsEl.style.top = `${nextTop}px`;
       flybodyControlsEl.style.right = "auto";
+    };
+
+    const stopVolumePanelDrag = () => {
+      volumePanelDragState = null;
+      if (volumePanelEl) {
+        volumePanelEl.classList.remove("dragging");
+      }
+      window.removeEventListener("pointermove", onVolumePanelDragMove);
+      window.removeEventListener("pointerup", stopVolumePanelDrag);
+      window.removeEventListener("pointercancel", stopVolumePanelDrag);
+    };
+
+    const onVolumePanelDragMove = (event) => {
+      if (!volumePanelDragState || !volumePanelEl) return;
+      volumePanelMoved = true;
+      const nextLeft = Math.max(8, event.clientX - volumePanelDragState.offsetX);
+      const nextTop = Math.max(8, event.clientY - volumePanelDragState.offsetY);
+      volumePanelEl.style.left = `${nextLeft}px`;
+      volumePanelEl.style.top = `${nextTop}px`;
+      volumePanelEl.style.right = "auto";
     };
 
     const issueFlybodyCommand = (action, behavior) => {
@@ -787,6 +827,9 @@ async function boot() {
     const updateSimulationMeta = (frame) => {
       if (!metaEl || !simulationPayload || !frame) return;
       const adapter = simulationPayload.adapter || "simulation";
+      const renderMode = String(
+        (((simulationPayload || {}).metadata || {}).render_mode || "")
+      ).trim();
       const qposLen = Array.isArray(frame.qpos) ? frame.qpos.length : 0;
       const dryRun = frame.dry_run ? "yes" : "no";
       const lines = [
@@ -796,10 +839,1330 @@ async function boot() {
         `Qpos: ${qposLen}`,
         `Dry run: ${dryRun}`,
       ];
+      if (renderMode) {
+        lines.push(`Render: ${renderMode}`);
+      }
       if (Number.isFinite(frame.timestamp_sec)) {
         lines.push(`Time: ${Number(frame.timestamp_sec).toFixed(3)} s`);
       }
       metaEl.textContent = lines.join("\n");
+    };
+
+    let _zarrSplatTexture = null;
+    const getZarrSplatTexture = () => {
+      if (_zarrSplatTexture) return _zarrSplatTexture;
+      const texCanvas = document.createElement("canvas");
+      texCanvas.width = 64;
+      texCanvas.height = 64;
+      const ctx = texCanvas.getContext("2d");
+      const gradient = ctx.createRadialGradient(32, 32, 2, 32, 32, 30);
+      gradient.addColorStop(0.0, "rgba(255,255,255,1)");
+      gradient.addColorStop(0.4, "rgba(255,255,255,0.7)");
+      gradient.addColorStop(1.0, "rgba(255,255,255,0)");
+      ctx.clearRect(0, 0, 64, 64);
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, 64, 64);
+      _zarrSplatTexture = new THREE.CanvasTexture(texCanvas);
+      _zarrSplatTexture.needsUpdate = true;
+      return _zarrSplatTexture;
+    };
+
+    let _zarrSectionTexture = null;
+    const getZarrSectionTexture = () => {
+      if (_zarrSectionTexture) return _zarrSectionTexture;
+      const texCanvas = document.createElement("canvas");
+      texCanvas.width = 48;
+      texCanvas.height = 48;
+      const ctx = texCanvas.getContext("2d");
+      ctx.clearRect(0, 0, 48, 48);
+      const gradient = ctx.createLinearGradient(0, 0, 0, 48);
+      gradient.addColorStop(0.0, "rgba(255,255,255,0.96)");
+      gradient.addColorStop(0.55, "rgba(255,255,255,0.84)");
+      gradient.addColorStop(1.0, "rgba(255,255,255,0.08)");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(8, 8, 32, 32);
+      ctx.fillStyle = "rgba(0,0,0,0.06)";
+      for (let i = 0; i < 80; i += 1) {
+        const x = ((i * 1103515245 + 12345) >>> 0) % 32;
+        const y = ((i * 134775813 + 1) >>> 0) % 32;
+        ctx.fillRect(8 + x, 8 + y, 1, 1);
+      }
+      _zarrSectionTexture = new THREE.CanvasTexture(texCanvas);
+      _zarrSectionTexture.needsUpdate = true;
+      return _zarrSectionTexture;
+    };
+
+    const decodeVolumeGrid = (metadata) => {
+      const shape = Array.isArray(metadata && metadata.volume_grid_shape)
+        ? metadata.volume_grid_shape.map((v) => Math.max(1, Number(v) || 1))
+        : [];
+      const encoded = String((metadata && metadata.volume_grid_base64) || "");
+      if (shape.length !== 3 || !encoded) return null;
+      const cacheKey = `${String((metadata && metadata.source_path) || "")}:${shape.join("x")}:${encoded.length}`;
+      if (volumeGridCache && volumeGridCache.key === cacheKey) {
+        return volumeGridCache.value;
+      }
+      try {
+        const binary = window.atob(encoded);
+        const data = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          data[i] = binary.charCodeAt(i);
+        }
+        const value = { data, shape };
+        volumeGridCache = { key: cacheKey, value };
+        return value;
+      } catch (_err) {
+        return null;
+      }
+    };
+
+    const getVolumeTexture = (THREE, metadata) => {
+      const volumeGrid = decodeVolumeGrid(metadata);
+      if (!volumeGrid) return null;
+      const cacheKey = `${String((metadata && metadata.source_path) || "")}:${volumeGrid.shape.join("x")}:${String((metadata && metadata.volume_grid_base64) || "").length}`;
+      if (volumeTextureCache && volumeTextureCache.key === cacheKey) {
+        return volumeTextureCache.texture;
+      }
+      const [zCount, yCount, xCount] = volumeGrid.shape;
+      const texture = new THREE.Data3DTexture(volumeGrid.data, xCount, yCount, zCount);
+      texture.format = THREE.RedFormat;
+      texture.type = THREE.UnsignedByteType;
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.unpackAlignment = 1;
+      texture.needsUpdate = true;
+      volumeTextureCache = { key: cacheKey, texture };
+      return texture;
+    };
+
+    const clamp01 = (value) => Math.max(0, Math.min(1, Number(value) || 0));
+    const lerp = (a, b, t) => Number(a) + (Number(b) - Number(a)) * clamp01(t);
+
+    const hash01 = (value) => {
+      const seed = (Math.imul(Number(value) | 0, 1664525) + 1013904223) >>> 0;
+      return seed / 4294967295;
+    };
+
+    const getVolumeStateStorageKey = (metadata) => {
+      const sourcePath = String((metadata && metadata.source_path) || "").trim();
+      if (!sourcePath) return "";
+      return `annolid-three-volume-look:${sourcePath}`;
+    };
+
+    const loadPersistedVolumeState = (metadata) => {
+      const key = getVolumeStateStorageKey(metadata);
+      if (!key) return null;
+      try {
+        const raw = window.localStorage ? window.localStorage.getItem(key) : null;
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === "object" ? parsed : null;
+      } catch (_err) {
+        return null;
+      }
+    };
+
+    const persistVolumeState = (metadata, state) => {
+      const key = getVolumeStateStorageKey(metadata);
+      if (!key || !state) return;
+      try {
+        if (window.localStorage) {
+          window.localStorage.setItem(key, JSON.stringify(state));
+        }
+      } catch (_err) {
+      }
+    };
+
+    const clearPersistedVolumeState = (metadata) => {
+      const key = getVolumeStateStorageKey(metadata);
+      if (!key) return;
+      try {
+        if (window.localStorage) {
+          window.localStorage.removeItem(key);
+        }
+      } catch (_err) {
+      }
+    };
+
+    const getVolumeRenderDefaults = (metadata) => {
+      const raw = (metadata && metadata.volume_render_defaults) || {};
+      return {
+        preset: String(raw.preset || "cinematic"),
+        intensity: Number.isFinite(Number(raw.intensity)) ? Number(raw.intensity) : 1.1,
+        contrast: Number.isFinite(Number(raw.contrast)) ? Number(raw.contrast) : 1.28,
+        gamma: Number.isFinite(Number(raw.gamma)) ? Number(raw.gamma) : 0.9,
+        opacity: Number.isFinite(Number(raw.opacity)) ? Number(raw.opacity) : 0.42,
+        size: Number.isFinite(Number(raw.size)) ? Number(raw.size) : 0.03,
+        threshold: Number.isFinite(Number(raw.threshold)) ? Number(raw.threshold) : 0.16,
+        density: Number.isFinite(Number(raw.density)) ? Number(raw.density) : 0.9,
+        saturation: Number.isFinite(Number(raw.saturation)) ? Number(raw.saturation) : 1.08,
+        tfLow: Number.isFinite(Number(raw.tf_low)) ? Number(raw.tf_low) : 0.06,
+        tfMid: Number.isFinite(Number(raw.tf_mid)) ? Number(raw.tf_mid) : 0.48,
+        tfHigh: Number.isFinite(Number(raw.tf_high)) ? Number(raw.tf_high) : 0.96,
+        clipAxis: String(raw.clip_axis || "none"),
+        clipCenter: Number.isFinite(Number(raw.clip_center)) ? Number(raw.clip_center) : 0.5,
+        clipThickness: Number.isFinite(Number(raw.clip_thickness)) ? Number(raw.clip_thickness) : 1.0,
+        clipInvert: Boolean(raw.clip_invert),
+        palette: String(raw.palette || "ice_fire"),
+        blendMode: String(raw.blend_mode || "additive"),
+        pointTexture: String(raw.point_texture || "glow"),
+        backgroundTheme: String(raw.background_theme || "dark"),
+        renderStyle: String(raw.render_style || "points"),
+        sectionEmphasis: String(raw.section_emphasis || "auto"),
+      };
+    };
+
+    const getVolumePreset = (presetName) => {
+      const presets = {
+        cinematic: {
+          intensity: 1.1,
+          contrast: 1.28,
+          gamma: 0.9,
+          opacity: 0.42,
+          size: 0.03,
+          threshold: 0.16,
+          density: 0.9,
+          saturation: 1.08,
+          tfLow: 0.06,
+          tfMid: 0.48,
+          tfHigh: 0.96,
+          palette: "ice_fire",
+          blendMode: "additive",
+          pointTexture: "glow",
+          backgroundTheme: "dark",
+          renderStyle: "points",
+          sectionEmphasis: "auto",
+        },
+        histology_defaults: {
+          intensity: 1.18,
+          contrast: 1.52,
+          gamma: 0.84,
+          opacity: 0.74,
+          size: 0.05,
+          threshold: 0.02,
+          density: 1.0,
+          saturation: 0.84,
+          tfLow: 0.02,
+          tfMid: 0.30,
+          tfHigh: 0.86,
+          palette: "section_ink",
+          blendMode: "normal",
+          pointTexture: "section",
+          backgroundTheme: "light",
+          renderStyle: "raymarch",
+          sectionEmphasis: "auto",
+        },
+        section_stack: {
+          intensity: 1.22,
+          contrast: 1.56,
+          gamma: 0.84,
+          opacity: 0.68,
+          size: 0.05,
+          threshold: 0.03,
+          density: 1.0,
+          saturation: 0.78,
+          tfLow: 0.02,
+          tfMid: 0.32,
+          tfHigh: 0.84,
+          palette: "section_ink",
+          blendMode: "normal",
+          pointTexture: "section",
+          backgroundTheme: "light",
+          renderStyle: "slab",
+          sectionEmphasis: "auto",
+        },
+        nissl_sections: {
+          intensity: 1.26,
+          contrast: 1.62,
+          gamma: 0.82,
+          opacity: 0.66,
+          size: 0.048,
+          threshold: 0.03,
+          density: 1.0,
+          saturation: 0.96,
+          tfLow: 0.02,
+          tfMid: 0.34,
+          tfHigh: 0.84,
+          palette: "nissl",
+          blendMode: "normal",
+          pointTexture: "section",
+          backgroundTheme: "light",
+          renderStyle: "slab",
+          sectionEmphasis: "nissl",
+        },
+        myelin_sections: {
+          intensity: 1.14,
+          contrast: 1.78,
+          gamma: 0.88,
+          opacity: 0.72,
+          size: 0.05,
+          threshold: 0.04,
+          density: 1.0,
+          saturation: 0.22,
+          tfLow: 0.03,
+          tfMid: 0.30,
+          tfHigh: 0.82,
+          palette: "myelin",
+          blendMode: "normal",
+          pointTexture: "section",
+          backgroundTheme: "light",
+          renderStyle: "slab",
+          sectionEmphasis: "myelin",
+        },
+        xray: {
+          intensity: 1.35,
+          contrast: 1.42,
+          gamma: 0.72,
+          opacity: 0.3,
+          size: 0.026,
+          threshold: 0.24,
+          density: 0.72,
+          saturation: 0.35,
+          tfLow: 0.14,
+          tfMid: 0.52,
+          tfHigh: 0.98,
+          palette: "grayscale",
+          blendMode: "normal",
+          pointTexture: "section",
+          backgroundTheme: "light",
+          renderStyle: "slab",
+          sectionEmphasis: "auto",
+        },
+        neon: {
+          intensity: 1.28,
+          contrast: 1.5,
+          gamma: 0.82,
+          opacity: 0.52,
+          size: 0.034,
+          threshold: 0.14,
+          density: 1.0,
+          saturation: 1.28,
+          tfLow: 0.04,
+          tfMid: 0.42,
+          tfHigh: 0.88,
+          palette: "aurora",
+          blendMode: "additive",
+          pointTexture: "glow",
+          backgroundTheme: "dark",
+          renderStyle: "points",
+          sectionEmphasis: "auto",
+        },
+      };
+      return presets[String(presetName || "").toLowerCase()] || presets.cinematic;
+    };
+
+    const resolveAutoSectionEmphasis = (metadata, state) => {
+      if (!metadata || !metadata.interleaved_detected) return "neutral";
+      const sectionAxis = String(metadata.section_axis || "z");
+      const bounds = metadata.volume_bounds || {};
+      const axisBounds = Array.isArray(bounds[sectionAxis]) ? bounds[sectionAxis] : [0, 1];
+      const min = Number(axisBounds[0] || 0);
+      const max = Number(axisBounds[1] || 1);
+      const centerWorld = lerp(min, max, state.clipAxis === "none" ? 0.5 : state.clipCenter);
+      const stepWorld = Math.max(1e-5, Number(metadata.section_step_world) || 1);
+      const sliceIndex = Math.max(0, Math.round(Math.abs(centerWorld - min) / stepWorld));
+      return sliceIndex % 2 === 0 ? "nissl" : "myelin";
+    };
+
+    const buildEffectiveVolumeState = (state, metadata) => {
+      const next = Object.assign({}, state || {});
+      const emphasis = String(next.sectionEmphasis || "auto").toLowerCase();
+      const resolved = emphasis === "auto"
+        ? resolveAutoSectionEmphasis(metadata, next)
+        : emphasis;
+      next.resolvedSectionEmphasis = resolved;
+      if (resolved === "nissl") {
+        next.palette = "nissl";
+        next.backgroundTheme = "light";
+        next.pointTexture = "section";
+        next.blendMode = "normal";
+        next.renderStyle = next.renderStyle === "points" ? "slab" : next.renderStyle;
+      } else if (resolved === "myelin") {
+        next.palette = "myelin";
+        next.backgroundTheme = "light";
+        next.pointTexture = "section";
+        next.blendMode = "normal";
+        next.renderStyle = next.renderStyle === "points" ? "slab" : next.renderStyle;
+      }
+      return next;
+    };
+
+    const applyVolumeCurve = (value, state) => {
+      let v = clamp01(value);
+      const tfLow = clamp01(state.tfLow);
+      const tfHigh = Math.max(tfLow + 0.01, clamp01(state.tfHigh));
+      if (v <= tfLow) return 0;
+      if (v >= tfHigh) {
+        v = 1;
+      } else {
+        v = (v - tfLow) / Math.max(1e-5, tfHigh - tfLow);
+      }
+      const tfMid = clamp01(state.tfMid);
+      const midpointGamma = tfMid <= 0
+        ? 0.25
+        : Math.max(0.2, Math.log(Math.max(1e-5, tfMid)) / Math.log(0.5));
+      v = Math.pow(clamp01(v), midpointGamma);
+      const threshold = clamp01(state.threshold);
+      if (v < threshold) {
+        return 0;
+      }
+      const denom = Math.max(1e-5, 1 - threshold);
+      v = (v - threshold) / denom;
+      v = Math.pow(clamp01(v), Math.max(0.15, Number(state.gamma) || 1));
+      v = (v - 0.5) * Math.max(0.2, Number(state.contrast) || 1) + 0.5;
+      v = clamp01(v * Math.max(0.05, Number(state.intensity) || 1));
+      return v;
+    };
+
+    const sampleVolumePalette = (value, paletteName, saturationBoost = 1) => {
+      const v = clamp01(value);
+      const palette = String(paletteName || "ice_fire").toLowerCase();
+      const color = new THREE.Color();
+      if (palette === "grayscale") {
+        color.setRGB(v, v, v);
+      } else if (palette === "magma") {
+        color.setRGB(
+          clamp01(Math.pow(v, 0.7) * 1.15),
+          clamp01(Math.pow(v, 1.15) * 0.62),
+          clamp01(Math.pow(v, 2.2) * 0.32 + 0.06)
+        );
+      } else if (palette === "viridis") {
+        color.setRGB(
+          clamp01(0.18 + v * 0.7),
+          clamp01(0.08 + Math.sin(v * Math.PI) * 0.82),
+          clamp01(0.36 + (1 - v) * 0.48)
+        );
+      } else if (palette === "aurora") {
+        color.setRGB(
+          clamp01(0.22 + Math.pow(v, 0.6) * 0.42),
+          clamp01(0.25 + Math.sin(v * Math.PI * 0.95) * 0.72),
+          clamp01(0.45 + Math.pow(1 - v, 0.8) * 0.42)
+        );
+      } else if (palette === "nissl") {
+        color.setRGB(
+          clamp01(0.72 - Math.pow(v, 0.85) * 0.36),
+          clamp01(0.67 - Math.pow(v, 0.9) * 0.42),
+          clamp01(0.86 - Math.pow(v, 0.72) * 0.56)
+        );
+      } else if (palette === "myelin") {
+        color.setRGB(
+          clamp01(0.82 - Math.pow(v, 0.78) * 0.54),
+          clamp01(0.81 - Math.pow(v, 0.82) * 0.56),
+          clamp01(0.79 - Math.pow(v, 0.86) * 0.6)
+        );
+      } else if (palette === "section_ink") {
+        color.setRGB(
+          clamp01(0.86 - Math.pow(v, 0.78) * 0.44),
+          clamp01(0.8 - Math.pow(v, 0.9) * 0.52),
+          clamp01(0.72 - Math.pow(v, 0.95) * 0.56)
+        );
+      } else {
+        color.setRGB(
+          clamp01(0.18 + Math.pow(v, 0.7) * 0.82),
+          clamp01(0.32 + Math.sin(v * Math.PI) * 0.42),
+          clamp01(0.92 - Math.pow(v, 0.82) * 0.72)
+        );
+      }
+      const hsl = {};
+      color.getHSL(hsl);
+      color.setHSL(hsl.h, clamp01(hsl.s * Math.max(0, Number(saturationBoost) || 1)), hsl.l);
+      return color;
+    };
+
+    const applyVolumeSceneStyle = (state) => {
+      const theme = String((state && state.backgroundTheme) || "dark").toLowerCase();
+      const isLight = theme === "light";
+      document.body.classList.toggle("white-theme", isLight);
+      scene.background = new THREE.Color(isLight ? 0xf3eee5 : 0x121824);
+    };
+
+    const getActiveVolumeSlabConfig = (metadata, state) => {
+      const axis = String(
+        (state && state.clipAxis && state.clipAxis !== "none")
+          ? state.clipAxis
+          : ((metadata && metadata.section_axis) || "z")
+      );
+      const bounds = (metadata && metadata.volume_bounds) || {};
+      const axisBounds = Array.isArray(bounds[axis]) ? bounds[axis] : [0, 1];
+      const min = Number(axisBounds[0] || 0);
+      const max = Number(axisBounds[1] || 1);
+      const centerNorm = (state && state.clipAxis && state.clipAxis !== "none")
+        ? clamp01(state.clipCenter)
+        : 0.5;
+      const thicknessNorm = (state && state.clipAxis && state.clipAxis !== "none")
+        ? clamp01(state.clipThickness)
+        : 0.06;
+      return {
+        axis,
+        min,
+        max,
+        centerWorld: lerp(min, max, centerNorm),
+        halfThickness: Math.max(1e-5, Math.abs(max - min) * Math.max(0.01, thicknessNorm) * 0.5),
+      };
+    };
+
+    const isVolumePointVisible = (pt, state, metadata) => {
+      const axis = String(state.clipAxis || "none");
+      if (axis === "none") return true;
+      const bounds = (metadata && metadata.volume_bounds) || {};
+      const axisBounds = Array.isArray(bounds[axis]) ? bounds[axis] : null;
+      if (!axisBounds || axisBounds.length < 2) return true;
+      const min = Number(axisBounds[0]);
+      const max = Number(axisBounds[1]);
+      if (!Number.isFinite(min) || !Number.isFinite(max) || Math.abs(max - min) < 1e-6) {
+        return true;
+      }
+      const centerWorld = lerp(min, max, state.clipCenter);
+      const halfThickness = Math.max(1e-5, Math.abs(max - min) * clamp01(state.clipThickness) * 0.5);
+      const coord = Number(pt && pt[axis]);
+      if (!Number.isFinite(coord)) return true;
+      const inside = Math.abs(coord - centerWorld) <= halfThickness;
+      return state.clipInvert ? !inside : inside;
+    };
+
+    const fitCameraToVolumeSlab = (metadata, state) => {
+      const slab = getActiveVolumeSlabConfig(metadata, state);
+      const bounds = (metadata && metadata.volume_bounds) || {};
+      const xBounds = Array.isArray(bounds.x) ? bounds.x : [0, 1];
+      const yBounds = Array.isArray(bounds.y) ? bounds.y : [0, 1];
+      const zBounds = Array.isArray(bounds.z) ? bounds.z : [0, 1];
+      const center = new THREE.Vector3(
+        lerp(xBounds[0], xBounds[1], 0.5),
+        lerp(yBounds[0], yBounds[1], 0.5),
+        lerp(zBounds[0], zBounds[1], 0.5)
+      );
+      center[slab.axis] = slab.centerWorld;
+      const width = Math.abs(Number(xBounds[1]) - Number(xBounds[0]));
+      const height = Math.abs(Number(yBounds[1]) - Number(yBounds[0]));
+      const depth = Math.abs(Number(zBounds[1]) - Number(zBounds[0]));
+      const distance = Math.max(width, height, depth, 1) * 0.95;
+      if (slab.axis === "x") {
+        camera.position.set(center.x + distance, center.y, center.z);
+      } else if (slab.axis === "y") {
+        camera.position.set(center.x, center.y + distance, center.z);
+      } else {
+        camera.position.set(center.x, center.y, center.z + distance);
+      }
+      controls.target.copy(center);
+      camera.lookAt(center);
+      controls.update();
+    };
+
+    const renderVolumeSlabPlane = (orderedPoints, metadata, state) => {
+      const effectiveState = buildEffectiveVolumeState(state, metadata);
+      const slab = getActiveVolumeSlabConfig(metadata, effectiveState);
+      const bounds = (metadata && metadata.volume_bounds) || {};
+      const axisToPlane = {
+        x: ["z", "y"],
+        y: ["x", "z"],
+        z: ["x", "y"],
+      };
+      const [uAxis, vAxis] = axisToPlane[slab.axis] || ["x", "y"];
+      const uBounds = Array.isArray(bounds[uAxis]) ? bounds[uAxis] : [0, 1];
+      const vBounds = Array.isArray(bounds[vAxis]) ? bounds[vAxis] : [0, 1];
+      const volumeGrid = decodeVolumeGrid(metadata);
+      if (!volumeGrid) {
+        return;
+      }
+      const [zCount, yCount, xCount] = volumeGrid.shape;
+      const axisIndexMap = { x: 2, y: 1, z: 0 };
+      const sliceCount = [zCount, yCount, xCount][axisIndexMap[slab.axis]] || 1;
+      const axisBounds = Array.isArray(bounds[slab.axis]) ? bounds[slab.axis] : [0, 1];
+      const axisMin = Number(axisBounds[0] || 0);
+      const axisMax = Number(axisBounds[1] || 1);
+      const sliceNormCenter = clamp01((slab.centerWorld - axisMin) / Math.max(1e-5, axisMax - axisMin));
+      const startIndex = Math.max(
+        0,
+        Math.floor((sliceNormCenter - clamp01(effectiveState.clipThickness) * 0.5) * (sliceCount - 1))
+      );
+      const endIndex = Math.min(
+        sliceCount - 1,
+        Math.ceil((sliceNormCenter + clamp01(effectiveState.clipThickness) * 0.5) * (sliceCount - 1))
+      );
+      const maxPlanes = effectiveState.renderStyle === "hybrid" ? 12 : 28;
+      const step = Math.max(1, Math.ceil((endIndex - startIndex + 1) / maxPlanes));
+      const makeSliceCanvas = (sliceIndex, emphasis) => {
+        const width = slab.axis === "x" ? zCount : xCount;
+        const height = slab.axis === "z" ? yCount : (slab.axis === "y" ? zCount : yCount);
+        const canvasEl = document.createElement("canvas");
+        canvasEl.width = width;
+        canvasEl.height = height;
+        const ctx = canvasEl.getContext("2d");
+        if (!ctx) return null;
+        const image = ctx.createImageData(width, height);
+        let maxStrength = 0;
+        const strengths = new Float32Array(width * height);
+        const rgb = new Float32Array(width * height * 3);
+        const palette = emphasis === "nissl"
+          ? "nissl"
+          : emphasis === "myelin"
+            ? "myelin"
+            : effectiveState.palette;
+        for (let row = 0; row < height; row += 1) {
+          for (let col = 0; col < width; col += 1) {
+            let value = 0;
+            if (slab.axis === "z") {
+              value = volumeGrid.data[sliceIndex * (yCount * xCount) + row * xCount + col] / 255;
+            } else if (slab.axis === "y") {
+              value = volumeGrid.data[row * (yCount * xCount) + sliceIndex * xCount + col] / 255;
+            } else {
+              value = volumeGrid.data[row * (yCount * xCount) + col * xCount + sliceIndex] / 255;
+            }
+            const curved = applyVolumeCurve(value, effectiveState);
+            const idx = row * width + col;
+            strengths[idx] = curved;
+            if (curved > maxStrength) maxStrength = curved;
+            const color = sampleVolumePalette(curved, palette, effectiveState.saturation);
+            rgb[idx * 3 + 0] = color.r;
+            rgb[idx * 3 + 1] = color.g;
+            rgb[idx * 3 + 2] = color.b;
+          }
+        }
+        if (maxStrength <= 0) return null;
+        for (let idx = 0; idx < strengths.length; idx += 1) {
+          const base = idx * 4;
+          const strength = strengths[idx] / maxStrength;
+          image.data[base + 0] = Math.round(clamp01(rgb[idx * 3 + 0]) * 255);
+          image.data[base + 1] = Math.round(clamp01(rgb[idx * 3 + 1]) * 255);
+          image.data[base + 2] = Math.round(clamp01(rgb[idx * 3 + 2]) * 255);
+          image.data[base + 3] = Math.round(clamp01(Math.pow(strength, 0.8) * 255));
+        }
+        ctx.putImageData(image, 0, 0);
+        return canvasEl;
+      };
+
+      const planeWidth = Math.abs(Number(uBounds[1]) - Number(uBounds[0]));
+      const planeHeight = Math.abs(Number(vBounds[1]) - Number(vBounds[0]));
+      let renderedPlanes = 0;
+      for (let sliceIndex = startIndex; sliceIndex <= endIndex; sliceIndex += step) {
+        const emphasis = effectiveState.sectionEmphasis === "auto"
+          ? ((sliceIndex % 2 === 0) ? "nissl" : "myelin")
+          : effectiveState.resolvedSectionEmphasis;
+        const canvasEl = makeSliceCanvas(sliceIndex, emphasis);
+        if (!canvasEl) continue;
+        const texture = new THREE.CanvasTexture(canvasEl);
+        texture.needsUpdate = true;
+        const plane = new THREE.Mesh(
+          new THREE.PlaneGeometry(Math.max(planeWidth, 1), Math.max(planeHeight, 1)),
+          new THREE.MeshBasicMaterial({
+            map: texture,
+            transparent: true,
+            opacity: Math.max(0.08, effectiveState.opacity / Math.max(1, Math.ceil((endIndex - startIndex + 1) / step)) * 2.2),
+            side: THREE.DoubleSide,
+            depthWrite: false,
+            blending: String(effectiveState.blendMode || "normal") === "additive"
+              ? THREE.AdditiveBlending
+              : THREE.NormalBlending,
+          })
+        );
+        const t = sliceCount <= 1 ? 0.5 : sliceIndex / Math.max(1, sliceCount - 1);
+        const position = new THREE.Vector3(
+          lerp((bounds.x || [0, 1])[0], (bounds.x || [0, 1])[1], 0.5),
+          lerp((bounds.y || [0, 1])[0], (bounds.y || [0, 1])[1], 0.5),
+          lerp((bounds.z || [0, 1])[0], (bounds.z || [0, 1])[1], 0.5)
+        );
+        position[slab.axis] = lerp(axisMin, axisMax, t);
+        plane.position.copy(position);
+        if (slab.axis === "x") {
+          plane.rotation.y = Math.PI / 2;
+        } else if (slab.axis === "y") {
+          plane.rotation.x = -Math.PI / 2;
+        }
+        simulationSlices.add(plane);
+        renderedPlanes += 1;
+      }
+
+    };
+
+    const renderVolumeRaymarch = (metadata, state) => {
+      const effectiveState = buildEffectiveVolumeState(state, metadata);
+      const texture = getVolumeTexture(THREE, metadata);
+      if (!texture) return;
+      const bounds = (metadata && metadata.volume_bounds) || {};
+      const xBounds = Array.isArray(bounds.x) ? bounds.x : [0, 1];
+      const yBounds = Array.isArray(bounds.y) ? bounds.y : [0, 1];
+      const zBounds = Array.isArray(bounds.z) ? bounds.z : [0, 1];
+      const size = new THREE.Vector3(
+        Math.max(1e-3, Math.abs(Number(xBounds[1]) - Number(xBounds[0]))),
+        Math.max(1e-3, Math.abs(Number(yBounds[1]) - Number(yBounds[0]))),
+        Math.max(1e-3, Math.abs(Number(zBounds[1]) - Number(zBounds[0])))
+      );
+      const center = new THREE.Vector3(
+        lerp(xBounds[0], xBounds[1], 0.5),
+        lerp(yBounds[0], yBounds[1], 0.5),
+        lerp(zBounds[0], zBounds[1], 0.5)
+      );
+      const slab = getActiveVolumeSlabConfig(metadata, effectiveState);
+      const axisBounds = Array.isArray(bounds[slab.axis]) ? bounds[slab.axis] : [0, 1];
+      const clipCenterNorm = clamp01(
+        (slab.centerWorld - Number(axisBounds[0] || 0)) /
+        Math.max(1e-5, Number(axisBounds[1] || 1) - Number(axisBounds[0] || 0))
+      );
+      const clipHalfNorm = clamp01(
+        slab.halfThickness / Math.max(1e-5, Math.abs(Number(axisBounds[1] || 1) - Number(axisBounds[0] || 0)))
+      );
+      const paletteNames = ["grayscale", "section_ink", "nissl", "myelin", "ice_fire", "aurora", "magma", "viridis"];
+      const paletteIndex = Math.max(0, paletteNames.indexOf(String(effectiveState.palette || "section_ink")));
+      const clipAxisIndex = { none: 0, x: 1, y: 2, z: 3 }[String(effectiveState.clipAxis || "none")] || 0;
+      const geometry = new THREE.BoxGeometry(1, 1, 1);
+      const material = new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        transparent: true,
+        depthWrite: false,
+        uniforms: {
+          u_data: { value: texture },
+          u_steps: { value: 192.0 },
+          u_opacity: { value: Math.max(0.04, Number(effectiveState.opacity) || 0.6) },
+          u_density: { value: Math.max(0.05, Number(effectiveState.density) || 1.0) },
+          u_tfLow: { value: clamp01(effectiveState.tfLow) },
+          u_tfMid: { value: clamp01(effectiveState.tfMid) },
+          u_tfHigh: { value: clamp01(effectiveState.tfHigh) },
+          u_threshold: { value: clamp01(effectiveState.threshold) },
+          u_intensity: { value: Math.max(0.05, Number(effectiveState.intensity) || 1.0) },
+          u_contrast: { value: Math.max(0.05, Number(effectiveState.contrast) || 1.0) },
+          u_gamma: { value: Math.max(0.15, Number(effectiveState.gamma) || 1.0) },
+          u_saturation: { value: Math.max(0.0, Number(effectiveState.saturation) || 1.0) },
+          u_paletteIndex: { value: Number(paletteIndex) },
+          u_clipAxis: { value: Number(clipAxisIndex) },
+          u_clipCenter: { value: Number(clipCenterNorm) },
+          u_clipHalfThickness: { value: Number(clipHalfNorm) },
+        },
+        vertexShader: `
+          varying vec3 vOrigin;
+          varying vec3 vDirection;
+          void main() {
+            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            vOrigin = vec3(inverse(modelMatrix) * vec4(cameraPosition, 1.0));
+            vDirection = position - vOrigin;
+            gl_Position = projectionMatrix * mvPosition;
+          }
+        `,
+        fragmentShader: `
+          precision highp float;
+          precision highp sampler3D;
+          varying vec3 vOrigin;
+          varying vec3 vDirection;
+          uniform sampler3D u_data;
+          uniform float u_steps;
+          uniform float u_opacity;
+          uniform float u_density;
+          uniform float u_tfLow;
+          uniform float u_tfMid;
+          uniform float u_tfHigh;
+          uniform float u_threshold;
+          uniform float u_intensity;
+          uniform float u_contrast;
+          uniform float u_gamma;
+          uniform float u_saturation;
+          uniform float u_paletteIndex;
+          uniform float u_clipAxis;
+          uniform float u_clipCenter;
+          uniform float u_clipHalfThickness;
+
+          vec2 hitBox(vec3 orig, vec3 dir) {
+            const vec3 boxMin = vec3(-0.5);
+            const vec3 boxMax = vec3(0.5);
+            vec3 invDir = 1.0 / dir;
+            vec3 tMinTmp = (boxMin - orig) * invDir;
+            vec3 tMaxTmp = (boxMax - orig) * invDir;
+            vec3 tMin = min(tMinTmp, tMaxTmp);
+            vec3 tMax = max(tMinTmp, tMaxTmp);
+            float t0 = max(tMin.x, max(tMin.y, tMin.z));
+            float t1 = min(tMax.x, min(tMax.y, tMax.z));
+            return vec2(t0, t1);
+          }
+
+          float applyCurve(float value) {
+            float v = clamp(value, 0.0, 1.0);
+            float tfHigh = max(u_tfLow + 0.01, u_tfHigh);
+            if (v <= u_tfLow) return 0.0;
+            if (v >= tfHigh) {
+              v = 1.0;
+            } else {
+              v = (v - u_tfLow) / max(1e-5, tfHigh - u_tfLow);
+            }
+            float midpointGamma = u_tfMid <= 0.0 ? 0.25 : max(0.2, log(max(1e-5, u_tfMid)) / log(0.5));
+            v = pow(clamp(v, 0.0, 1.0), midpointGamma);
+            if (v < u_threshold) return 0.0;
+            v = (v - u_threshold) / max(1e-5, 1.0 - u_threshold);
+            v = pow(clamp(v, 0.0, 1.0), max(0.15, u_gamma));
+            v = (v - 0.5) * max(0.05, u_contrast) + 0.5;
+            v = clamp(v * max(0.05, u_intensity), 0.0, 1.0);
+            return v;
+          }
+
+          vec3 paletteColor(float value) {
+            float v = clamp(value, 0.0, 1.0);
+            vec3 color;
+            if (u_paletteIndex < 0.5) {
+              color = vec3(v);
+            } else if (u_paletteIndex < 1.5) {
+              color = vec3(
+                clamp(0.86 - pow(v, 0.78) * 0.44, 0.0, 1.0),
+                clamp(0.8 - pow(v, 0.9) * 0.52, 0.0, 1.0),
+                clamp(0.72 - pow(v, 0.95) * 0.56, 0.0, 1.0)
+              );
+            } else if (u_paletteIndex < 2.5) {
+              color = vec3(
+                clamp(0.72 - pow(v, 0.85) * 0.36, 0.0, 1.0),
+                clamp(0.67 - pow(v, 0.9) * 0.42, 0.0, 1.0),
+                clamp(0.86 - pow(v, 0.72) * 0.56, 0.0, 1.0)
+              );
+            } else if (u_paletteIndex < 3.5) {
+              color = vec3(
+                clamp(0.82 - pow(v, 0.78) * 0.54, 0.0, 1.0),
+                clamp(0.81 - pow(v, 0.82) * 0.56, 0.0, 1.0),
+                clamp(0.79 - pow(v, 0.86) * 0.6, 0.0, 1.0)
+              );
+            } else if (u_paletteIndex < 4.5) {
+              color = vec3(
+                clamp(0.18 + pow(v, 0.7) * 0.82, 0.0, 1.0),
+                clamp(0.32 + sin(v * 3.14159265) * 0.42, 0.0, 1.0),
+                clamp(0.92 - pow(v, 0.82) * 0.72, 0.0, 1.0)
+              );
+            } else if (u_paletteIndex < 5.5) {
+              color = vec3(
+                clamp(0.22 + pow(v, 0.6) * 0.42, 0.0, 1.0),
+                clamp(0.25 + sin(v * 3.14159265 * 0.95) * 0.72, 0.0, 1.0),
+                clamp(0.45 + pow(1.0 - v, 0.8) * 0.42, 0.0, 1.0)
+              );
+            } else if (u_paletteIndex < 6.5) {
+              color = vec3(
+                clamp(pow(v, 0.7) * 1.15, 0.0, 1.0),
+                clamp(pow(v, 1.15) * 0.62, 0.0, 1.0),
+                clamp(pow(v, 2.2) * 0.32 + 0.06, 0.0, 1.0)
+              );
+            } else {
+              color = vec3(
+                clamp(0.18 + v * 0.7, 0.0, 1.0),
+                clamp(0.08 + sin(v * 3.14159265) * 0.82, 0.0, 1.0),
+                clamp(0.36 + (1.0 - v) * 0.48, 0.0, 1.0)
+              );
+            }
+            float l = dot(color, vec3(0.299, 0.587, 0.114));
+            return mix(vec3(l), color, clamp(u_saturation, 0.0, 2.0));
+          }
+
+          bool insideClip(vec3 texPos) {
+            if (u_clipAxis < 0.5) return true;
+            float coord = u_clipAxis < 1.5 ? texPos.x : (u_clipAxis < 2.5 ? texPos.y : texPos.z);
+            return abs(coord - u_clipCenter) <= max(0.005, u_clipHalfThickness);
+          }
+
+          void main() {
+            vec3 rayDir = normalize(vDirection);
+            vec2 bounds = hitBox(vOrigin, rayDir);
+            if (bounds.x > bounds.y) discard;
+            bounds.x = max(bounds.x, 0.0);
+            vec3 p = vOrigin + bounds.x * rayDir;
+            float delta = (bounds.y - bounds.x) / max(u_steps, 8.0);
+            vec3 stepDir = rayDir * delta;
+            vec4 accum = vec4(0.0);
+            for (float i = 0.0; i < 320.0; i += 1.0) {
+              if (i >= u_steps) break;
+              vec3 texPos = p + 0.5;
+              if (all(greaterThanEqual(texPos, vec3(0.0))) && all(lessThanEqual(texPos, vec3(1.0))) && insideClip(texPos)) {
+                float raw = texture(u_data, texPos).r;
+                float value = applyCurve(raw);
+                if (value > 0.0) {
+                  vec3 color = paletteColor(value);
+                  float alpha = clamp(value * u_opacity * u_density * 0.08, 0.0, 1.0);
+                  accum.rgb += (1.0 - accum.a) * alpha * color;
+                  accum.a += (1.0 - accum.a) * alpha;
+                  if (accum.a >= 0.98) break;
+                }
+              }
+              p += stepDir;
+            }
+            if (accum.a <= 0.001) discard;
+            gl_FragColor = accum;
+          }
+        `,
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.scale.copy(size);
+      mesh.position.copy(center);
+      simulationVolumeRoot.add(mesh);
+    };
+
+    const refreshVolumePanelLayout = () => {
+      if (!volumePanelEl || volumePanelEl.hidden) return;
+      if (volumePanelMoved) return;
+      const toolbarRect = toolbarEl ? toolbarEl.getBoundingClientRect() : null;
+      const top = toolbarRect ? Math.round(toolbarRect.bottom + 8) : 64;
+      volumePanelEl.style.top = `${top}px`;
+      volumePanelEl.style.left = "auto";
+      volumePanelEl.style.right = "12px";
+    };
+
+    const syncVolumeToolbarButton = () => {
+      if (!btnToggleVolumePanel) return;
+      btnToggleVolumePanel.style.color = !volumePanelEl || volumePanelEl.hidden ? "#888" : "#fff";
+    };
+
+    const drawVolumeHistogram = (canvasEl, metadata, state) => {
+      if (!canvasEl) return;
+      const ctx = canvasEl.getContext("2d");
+      if (!ctx) return;
+      const histogram = (metadata && metadata.volume_histogram) || {};
+      const values = Array.isArray(histogram.normalized_counts) ? histogram.normalized_counts : [];
+      const width = canvasEl.width;
+      const height = canvasEl.height;
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "rgba(12, 18, 26, 0.86)";
+      ctx.fillRect(0, 0, width, height);
+      const gradient = ctx.createLinearGradient(0, 0, width, 0);
+      gradient.addColorStop(0.0, "#5cc8ff");
+      gradient.addColorStop(0.5, "#ff8a5b");
+      gradient.addColorStop(1.0, "#f4f7fb");
+      if (values.length > 0) {
+        const barWidth = width / values.length;
+        ctx.fillStyle = "rgba(92, 200, 255, 0.32)";
+        values.forEach((value, index) => {
+          const barHeight = Math.max(1, clamp01(value) * (height - 16));
+          const x = index * barWidth;
+          ctx.fillRect(x, height - barHeight - 8, Math.max(1, barWidth - 1), barHeight);
+        });
+      }
+      const lowX = clamp01(state.tfLow) * width;
+      const highX = clamp01(state.tfHigh) * width;
+      const midX = clamp01(state.tfMid) * width;
+      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.fillRect(0, 0, lowX, height);
+      ctx.fillRect(highX, 0, width - highX, height);
+      ctx.strokeStyle = gradient;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(lowX, height - 4);
+      ctx.lineTo(midX, 8);
+      ctx.lineTo(highX, height - 4);
+      ctx.stroke();
+      [lowX, midX, highX].forEach((x, idx) => {
+        ctx.beginPath();
+        ctx.fillStyle = idx === 1 ? "#ffd36a" : "#ffffff";
+        ctx.arc(x, idx === 1 ? 10 : height - 6, 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    };
+
+    const renderVolumePanel = () => {
+      if (!volumePanelEl) return;
+      const adapter = String((simulationPayload && simulationPayload.adapter) || "");
+      if (adapter !== "zarr-volume" || !volumeRenderState || !volumeRenderDefaults) {
+        volumePanelEl.hidden = true;
+        if (btnToggleVolumePanel) btnToggleVolumePanel.hidden = true;
+        syncVolumeToolbarButton();
+        return;
+      }
+      if (btnToggleVolumePanel) btnToggleVolumePanel.hidden = false;
+      volumePanelEl.hidden = false;
+      const state = volumeRenderState;
+      const makeSlider = (id, label, min, max, step, value, formatter) => {
+        const displayValue = typeof formatter === "function" ? formatter(value) : String(value);
+        return `
+          <label for="${id}">${label}</label>
+          <input id="${id}" type="range" min="${min}" max="${max}" step="${step}" value="${value}" />
+          <output id="${id}Value">${displayValue}</output>
+        `;
+      };
+      const metadata = (simulationPayload && simulationPayload.metadata) || {};
+      volumePanelEl.innerHTML = `
+        <div class="three-volume-panel-header">
+          <div class="three-panel-title">Volume Look</div>
+          <div class="three-volume-panel-tag">Zarr Volume</div>
+        </div>
+        <div class="three-volume-section-title">Transfer Function</div>
+        <canvas id="volumeHistogramCanvas" class="three-volume-histogram" width="260" height="92"></canvas>
+        <div class="three-volume-grid">
+          <label for="volumePreset">Preset</label>
+          <select id="volumePreset">
+            <option value="cinematic">Cinematic</option>
+            <option value="histology_defaults">Histology Defaults</option>
+            <option value="section_stack">Section Stack</option>
+            <option value="nissl_sections">Nissl Sections</option>
+            <option value="myelin_sections">Myelin Sections</option>
+            <option value="xray">X-Ray</option>
+            <option value="neon">Neon</option>
+            <option value="custom">Custom</option>
+          </select>
+          <output id="volumePresetValue">${state.preset}</output>
+          <label for="volumeRenderStyle">Renderer</label>
+          <select id="volumeRenderStyle">
+            <option value="points">Point Cloud</option>
+            <option value="slab">Volume Stack</option>
+            <option value="raymarch">Raymarch</option>
+            <option value="hybrid">Hybrid</option>
+          </select>
+          <output id="volumeRenderStyleValue">${state.renderStyle}</output>
+          <label for="volumeSectionEmphasis">Section</label>
+          <select id="volumeSectionEmphasis">
+            <option value="auto">Auto</option>
+            <option value="neutral">Neutral</option>
+            <option value="nissl">Nissl</option>
+            <option value="myelin">Myelin</option>
+          </select>
+          <output id="volumeSectionEmphasisValue">${state.sectionEmphasis}</output>
+          <label for="volumePalette">Palette</label>
+          <select id="volumePalette">
+            <option value="ice_fire">Ice Fire</option>
+            <option value="section_ink">Section Ink</option>
+            <option value="nissl">Nissl</option>
+            <option value="myelin">Myelin</option>
+            <option value="aurora">Aurora</option>
+            <option value="magma">Magma</option>
+            <option value="viridis">Viridis</option>
+            <option value="grayscale">Grayscale</option>
+          </select>
+          <output id="volumePaletteValue">${state.palette}</output>
+          ${makeSlider("volumeTfLow", "Black Point", 0.0, 0.9, 0.01, state.tfLow, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeTfMid", "Midtone", 0.05, 0.95, 0.01, state.tfMid, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeTfHigh", "White Point", 0.1, 1.0, 0.01, state.tfHigh, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeIntensity", "Intensity", 0.2, 2.5, 0.01, state.intensity, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeContrast", "Contrast", 0.3, 2.5, 0.01, state.contrast, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeGamma", "Gamma", 0.25, 2.2, 0.01, state.gamma, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeThreshold", "Threshold", 0.0, 0.95, 0.01, state.threshold, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeDensity", "Density", 0.08, 1.0, 0.01, state.density, (v) => `${Math.round(Number(v) * 100)}%`)}
+          ${makeSlider("volumeSaturation", "Saturation", 0.0, 1.8, 0.01, state.saturation, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeOpacity", "Opacity", 0.05, 1.0, 0.01, state.opacity, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeSize", "Point Size", 0.01, 0.08, 0.001, state.size, (v) => Number(v).toFixed(3))}
+          <label for="volumeBlendMode">Blend</label>
+          <select id="volumeBlendMode">
+            <option value="additive">Additive Glow</option>
+            <option value="normal">Normal</option>
+          </select>
+          <output id="volumeBlendModeValue">${state.blendMode}</output>
+        </div>
+        <div class="three-volume-section-title">Clipping</div>
+        <div class="three-volume-grid">
+          <label for="volumeClipAxis">Axis</label>
+          <select id="volumeClipAxis">
+            <option value="none">Off</option>
+            <option value="x">X</option>
+            <option value="y">Y</option>
+            <option value="z">Z</option>
+          </select>
+          <output id="volumeClipAxisValue">${state.clipAxis}</output>
+          ${makeSlider("volumeClipCenter", "Slice Center", 0.0, 1.0, 0.01, state.clipCenter, (v) => `${Math.round(Number(v) * 100)}%`)}
+          ${makeSlider("volumeClipThickness", "Slab Width", 0.02, 1.0, 0.01, state.clipThickness, (v) => `${Math.round(Number(v) * 100)}%`)}
+          <label for="volumeClipInvert">Invert</label>
+          <input id="volumeClipInvert" type="checkbox" ${state.clipInvert ? "checked" : ""} />
+          <output id="volumeClipInvertValue">${state.clipInvert ? "outside" : "inside"}</output>
+        </div>
+        <div class="three-volume-actions">
+          <button id="volumePresetApply" type="button">Apply Preset</button>
+          <button id="volumeHistologyDefaults" type="button">Histology Defaults</button>
+          <button id="volumeFocusSlab" type="button">Focus Slab</button>
+          <button id="volumeReset" type="button">Reset</button>
+        </div>
+      `;
+      const presetSelect = document.getElementById("volumePreset");
+      const renderStyleSelect = document.getElementById("volumeRenderStyle");
+      const sectionEmphasisSelect = document.getElementById("volumeSectionEmphasis");
+      const paletteSelect = document.getElementById("volumePalette");
+      const blendSelect = document.getElementById("volumeBlendMode");
+      const clipAxisSelect = document.getElementById("volumeClipAxis");
+      const headerEl = volumePanelEl.querySelector(".three-volume-panel-header");
+      if (presetSelect) presetSelect.value = String(state.preset || "custom");
+      if (renderStyleSelect) renderStyleSelect.value = String(state.renderStyle || "points");
+      if (sectionEmphasisSelect) sectionEmphasisSelect.value = String(state.sectionEmphasis || "auto");
+      if (paletteSelect) paletteSelect.value = String(state.palette || "ice_fire");
+      if (blendSelect) blendSelect.value = String(state.blendMode || "additive");
+      if (clipAxisSelect) clipAxisSelect.value = String(state.clipAxis || "none");
+      if (headerEl) {
+        headerEl.title = "Drag to move volume controls";
+        headerEl.addEventListener("pointerdown", (event) => {
+          if (!volumePanelEl) return;
+          const target = event.target;
+          if (target && target.closest && target.closest("button, input, select, canvas")) {
+            return;
+          }
+          const rect = volumePanelEl.getBoundingClientRect();
+          volumePanelDragState = {
+            offsetX: event.clientX - rect.left,
+            offsetY: event.clientY - rect.top,
+          };
+          volumePanelEl.classList.add("dragging");
+          window.addEventListener("pointermove", onVolumePanelDragMove);
+          window.addEventListener("pointerup", stopVolumePanelDrag);
+          window.addEventListener("pointercancel", stopVolumePanelDrag);
+        });
+      }
+      drawVolumeHistogram(document.getElementById("volumeHistogramCanvas"), metadata, state);
+      applyVolumeSceneStyle(state);
+
+      const bindSlider = (id, key, formatter) => {
+        const input = document.getElementById(id);
+        const output = document.getElementById(`${id}Value`);
+        if (!input || !output) return;
+        const updateOutput = (value) => {
+          output.textContent = typeof formatter === "function" ? formatter(value) : String(value);
+        };
+        updateOutput(state[key]);
+        input.addEventListener("input", () => {
+          state[key] = Number(input.value);
+          if (key === "tfLow" && state.tfHigh <= state[key]) {
+            state.tfHigh = Math.min(1, state[key] + 0.02);
+            const tfHighInput = document.getElementById("volumeTfHigh");
+            const tfHighValue = document.getElementById("volumeTfHighValue");
+            if (tfHighInput) tfHighInput.value = String(state.tfHigh);
+            if (tfHighValue) tfHighValue.textContent = Number(state.tfHigh).toFixed(2);
+          }
+          if (key === "tfHigh" && state.tfLow >= state[key]) {
+            state.tfLow = Math.max(0, state[key] - 0.02);
+            const tfLowInput = document.getElementById("volumeTfLow");
+            const tfLowValue = document.getElementById("volumeTfLowValue");
+            if (tfLowInput) tfLowInput.value = String(state.tfLow);
+            if (tfLowValue) tfLowValue.textContent = Number(state.tfLow).toFixed(2);
+          }
+          state.preset = "custom";
+          const presetValue = document.getElementById("volumePresetValue");
+          if (presetValue) presetValue.textContent = "custom";
+          if (presetSelect) presetSelect.value = "custom";
+          updateOutput(state[key]);
+          drawVolumeHistogram(document.getElementById("volumeHistogramCanvas"), metadata, state);
+          persistVolumeState(metadata, state);
+          renderSimulationFrame(simulationFrameIndex);
+        });
+      };
+      bindSlider("volumeTfLow", "tfLow", (v) => Number(v).toFixed(2));
+      bindSlider("volumeTfMid", "tfMid", (v) => Number(v).toFixed(2));
+      bindSlider("volumeTfHigh", "tfHigh", (v) => Number(v).toFixed(2));
+      bindSlider("volumeIntensity", "intensity", (v) => Number(v).toFixed(2));
+      bindSlider("volumeContrast", "contrast", (v) => Number(v).toFixed(2));
+      bindSlider("volumeGamma", "gamma", (v) => Number(v).toFixed(2));
+      bindSlider("volumeThreshold", "threshold", (v) => Number(v).toFixed(2));
+      bindSlider("volumeDensity", "density", (v) => `${Math.round(Number(v) * 100)}%`);
+      bindSlider("volumeSaturation", "saturation", (v) => Number(v).toFixed(2));
+      bindSlider("volumeOpacity", "opacity", (v) => Number(v).toFixed(2));
+      bindSlider("volumeSize", "size", (v) => Number(v).toFixed(3));
+
+      if (paletteSelect) {
+        paletteSelect.addEventListener("change", () => {
+          state.palette = paletteSelect.value;
+          if (["nissl", "myelin", "section_ink", "grayscale"].includes(state.palette)) {
+            state.backgroundTheme = "light";
+            state.pointTexture = "section";
+          }
+          state.preset = "custom";
+          const paletteValue = document.getElementById("volumePaletteValue");
+          const presetValue = document.getElementById("volumePresetValue");
+          if (paletteValue) paletteValue.textContent = state.palette;
+          if (presetValue) presetValue.textContent = "custom";
+          if (presetSelect) presetSelect.value = "custom";
+          persistVolumeState(metadata, state);
+          applyVolumeSceneStyle(state);
+          renderSimulationFrame(simulationFrameIndex);
+        });
+      }
+      if (blendSelect) {
+        blendSelect.addEventListener("change", () => {
+          state.blendMode = blendSelect.value;
+          state.preset = "custom";
+          const blendValue = document.getElementById("volumeBlendModeValue");
+          const presetValue = document.getElementById("volumePresetValue");
+          if (blendValue) blendValue.textContent = state.blendMode;
+          if (presetValue) presetValue.textContent = "custom";
+          if (presetSelect) presetSelect.value = "custom";
+          persistVolumeState(metadata, state);
+          renderSimulationFrame(simulationFrameIndex);
+        });
+      }
+      if (renderStyleSelect) {
+        renderStyleSelect.addEventListener("change", () => {
+          state.renderStyle = renderStyleSelect.value;
+          state.preset = "custom";
+          const renderStyleValue = document.getElementById("volumeRenderStyleValue");
+          const presetValue = document.getElementById("volumePresetValue");
+          if (renderStyleValue) renderStyleValue.textContent = state.renderStyle;
+          if (presetValue) presetValue.textContent = "custom";
+          if (presetSelect) presetSelect.value = "custom";
+          persistVolumeState(metadata, state);
+          renderSimulationFrame(simulationFrameIndex);
+        });
+      }
+      if (sectionEmphasisSelect) {
+        sectionEmphasisSelect.addEventListener("change", () => {
+          state.sectionEmphasis = sectionEmphasisSelect.value;
+          state.preset = "custom";
+          const sectionValue = document.getElementById("volumeSectionEmphasisValue");
+          const presetValue = document.getElementById("volumePresetValue");
+          if (sectionValue) sectionValue.textContent = state.sectionEmphasis;
+          if (presetValue) presetValue.textContent = "custom";
+          if (presetSelect) presetSelect.value = "custom";
+          persistVolumeState(metadata, state);
+          renderVolumePanel();
+          renderSimulationFrame(simulationFrameIndex);
+        });
+      }
+      if (clipAxisSelect) {
+        clipAxisSelect.addEventListener("change", () => {
+          state.clipAxis = clipAxisSelect.value;
+          const clipAxisValue = document.getElementById("volumeClipAxisValue");
+          if (clipAxisValue) clipAxisValue.textContent = state.clipAxis;
+          state.preset = "custom";
+          persistVolumeState(metadata, state);
+          renderSimulationFrame(simulationFrameIndex);
+        });
+      }
+      const focusSlabBtn = document.getElementById("volumeFocusSlab");
+      const histologyDefaultsBtn = document.getElementById("volumeHistologyDefaults");
+      if (focusSlabBtn) {
+        focusSlabBtn.addEventListener("click", () => {
+          fitCameraToVolumeSlab(metadata, buildEffectiveVolumeState(state, metadata));
+        });
+      }
+      if (histologyDefaultsBtn) {
+        histologyDefaultsBtn.addEventListener("click", () => {
+          const next = Object.assign({}, getVolumePreset("section_stack"), {
+            preset: "histology_defaults",
+            renderStyle: "raymarch",
+            sectionEmphasis: "auto",
+            clipAxis: "none",
+            clipCenter: 0.5,
+            clipThickness: 1.0,
+            backgroundTheme: "light",
+          });
+          volumeRenderState = Object.assign({}, volumeRenderState || {}, next);
+          persistVolumeState(metadata, volumeRenderState);
+          renderVolumePanel();
+          renderSimulationFrame(simulationFrameIndex);
+        });
+      }
+      const clipInvert = document.getElementById("volumeClipInvert");
+      if (clipInvert) {
+        clipInvert.addEventListener("change", () => {
+          state.clipInvert = Boolean(clipInvert.checked);
+          const clipInvertValue = document.getElementById("volumeClipInvertValue");
+          if (clipInvertValue) clipInvertValue.textContent = state.clipInvert ? "outside" : "inside";
+          state.preset = "custom";
+          persistVolumeState(metadata, state);
+          renderSimulationFrame(simulationFrameIndex);
+        });
+      }
+      bindSlider("volumeClipCenter", "clipCenter", (v) => `${Math.round(Number(v) * 100)}%`);
+      bindSlider("volumeClipThickness", "clipThickness", (v) => `${Math.round(Number(v) * 100)}%`);
+      if (presetSelect) {
+        presetSelect.addEventListener("change", () => {
+          const nextPreset = String(presetSelect.value || "cinematic");
+          const presetValue = document.getElementById("volumePresetValue");
+          if (presetValue) presetValue.textContent = nextPreset;
+        });
+      }
+      const applyBtn = document.getElementById("volumePresetApply");
+      if (applyBtn) {
+        applyBtn.addEventListener("click", () => {
+          const nextPreset = presetSelect ? String(presetSelect.value || "cinematic") : "cinematic";
+          const presetState = nextPreset === "custom"
+            ? volumeRenderDefaults
+            : Object.assign({}, volumeRenderDefaults, getVolumePreset(nextPreset));
+          volumeRenderState = Object.assign({}, volumeRenderState || {}, presetState, { preset: nextPreset });
+          persistVolumeState(metadata, volumeRenderState);
+          renderVolumePanel();
+          renderSimulationFrame(simulationFrameIndex);
+        });
+      }
+      const resetBtn = document.getElementById("volumeReset");
+      if (resetBtn) {
+        resetBtn.addEventListener("click", () => {
+          volumeRenderState = Object.assign({}, volumeRenderDefaults, { preset: volumeRenderDefaults.preset || "cinematic" });
+          clearPersistedVolumeState(metadata);
+          renderVolumePanel();
+          renderSimulationFrame(simulationFrameIndex);
+        });
+      }
+      refreshVolumePanelLayout();
+      syncVolumeToolbarButton();
+    };
+
+    const hideVolumePanel = () => {
+      volumeRenderDefaults = null;
+      volumeRenderState = null;
+      volumePanelMoved = false;
+      if (volumePanelEl) {
+        volumePanelEl.hidden = true;
+        volumePanelEl.innerHTML = "";
+        volumePanelEl.style.left = "auto";
+        volumePanelEl.style.right = "12px";
+      }
+      if (btnToggleVolumePanel) {
+        btnToggleVolumePanel.hidden = true;
+      }
+      applyVolumeSceneStyle({ backgroundTheme: "dark" });
+      syncVolumeToolbarButton();
+    };
+
+    const renderZarrGaussianSplatPoints = (orderedPoints, showPoints) => {
+      if (!showPoints || !Array.isArray(orderedPoints) || orderedPoints.length <= 0) {
+        return;
+      }
+      const metadata = (simulationPayload && simulationPayload.metadata) || {};
+      const state = buildEffectiveVolumeState(
+        volumeRenderState || getVolumeRenderDefaults(metadata),
+        metadata
+      );
+      const splatSize = Number(state.size || metadata.splat_size);
+      const splatOpacity = Number(state.opacity || metadata.splat_opacity);
+      const density = clamp01(state.density);
+      const pointCount = orderedPoints.length;
+      const positions = new Float32Array(pointCount * 3);
+      const colors = new Float32Array(pointCount * 3);
+      let writeIndex = 0;
+      orderedPoints.forEach((pt, ptIdx) => {
+        if (!pt || typeof pt !== "object") return;
+        const x = Number(pt.x);
+        const y = Number(pt.y);
+        const z = Number(pt.z);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+        if (!isVolumePointVisible({ x, y, z }, state, metadata)) return;
+        const confidence = clamp01(Number(pt.confidence));
+        const curved = applyVolumeCurve(confidence, state);
+        if (curved <= 0) return;
+        if (density < 0.999 && hash01(ptIdx) > Math.min(1, density * (0.52 + curved * 0.48))) {
+          return;
+        }
+        const color = sampleVolumePalette(
+          curved,
+          state.palette,
+          state.saturation
+        );
+        const base = writeIndex * 3;
+        positions[base + 0] = x;
+        positions[base + 1] = y;
+        positions[base + 2] = z;
+        colors[base + 0] = color.r;
+        colors[base + 1] = color.g;
+        colors[base + 2] = color.b;
+        writeIndex += 1;
+      });
+      if (writeIndex <= 0) {
+        return;
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute(positions.subarray(0, writeIndex * 3), 3)
+      );
+      geometry.setAttribute(
+        "color",
+        new THREE.Float32BufferAttribute(colors.subarray(0, writeIndex * 3), 3)
+      );
+      const material = new THREE.PointsMaterial({
+        size: Number.isFinite(splatSize) && splatSize > 0 ? splatSize : 0.03,
+        sizeAttenuation: true,
+        vertexColors: true,
+        transparent: true,
+        opacity: Number.isFinite(splatOpacity) ? splatOpacity : 0.38,
+        depthWrite: false,
+        blending: String(state.blendMode || "additive") === "normal"
+          ? THREE.NormalBlending
+          : THREE.AdditiveBlending,
+        map: String(state.pointTexture || "glow") === "section"
+          ? getZarrSectionTexture()
+          : getZarrSplatTexture(),
+        alphaTest: String(state.pointTexture || "glow") === "section" ? 0.005 : 0.02,
+      });
+      const splatPoints = new THREE.Points(geometry, material);
+      simulationPoints.add(splatPoints);
     };
 
     const renderSimulationFrame = (index) => {
@@ -813,11 +2176,25 @@ async function boot() {
       const display = simulationPayload && typeof simulationPayload.display === "object"
         ? simulationPayload.display
         : {};
+      const adapter = String((simulationPayload && simulationPayload.adapter) || "");
+      const renderMode = String(
+        (((simulationPayload || {}).metadata || {}).render_mode || "")
+      ).toLowerCase();
+      const useGaussianSplat =
+        adapter === "zarr-volume" &&
+        (renderMode === "gaussian_splatting" || renderMode === "gaussian_splats");
+      const metadata = (simulationPayload && simulationPayload.metadata) || {};
+      const effectiveVolumeState = buildEffectiveVolumeState(
+        volumeRenderState || getVolumeRenderDefaults(metadata),
+        metadata
+      );
       const showPoints = display.show_points !== false;
       const showLabels = display.show_labels !== false;
       const showEdges = display.show_edges !== false;
       const showTrails = display.show_trails !== false;
 
+      clearGroupAndDispose(simulationVolumeRoot);
+      clearGroupAndDispose(simulationSlices);
       clearGroupAndDispose(simulationPoints);
       clearGroupAndDispose(simulationEdges);
       clearGroupAndDispose(simulationTrails);
@@ -825,63 +2202,85 @@ async function boot() {
 
       const pointMap = new Map();
       const orderedPoints = Array.isArray(frame.points) ? frame.points : [];
-      orderedPoints.forEach((pt, ptIdx) => {
-        if (!pt || typeof pt !== "object") return;
-        const x = Number(pt.x);
-        const y = Number(pt.y);
-        const z = Number(pt.z);
-        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
-        const label = String(pt.label || `point_${ptIdx}`);
-        const color = new THREE.Color().setHSL((ptIdx * 0.13) % 1, 0.78, 0.56);
-        if (showPoints) {
-          const sphere = new THREE.Mesh(
-            new THREE.SphereGeometry(0.02, 12, 12),
-            new THREE.MeshStandardMaterial({
-              color,
-              emissive: color.clone().multiplyScalar(0.28),
-              roughness: 0.35,
-              metalness: 0.08,
-            })
-          );
-          sphere.position.set(x, y, z);
-          simulationPoints.add(sphere);
+      if (useGaussianSplat) {
+        orderedPoints.forEach((pt, ptIdx) => {
+          if (!pt || typeof pt !== "object") return;
+          const x = Number(pt.x);
+          const y = Number(pt.y);
+          const z = Number(pt.z);
+          if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+          const label = String(pt.label || `point_${ptIdx}`);
+          pointMap.set(label, new THREE.Vector3(x, y, z));
+        });
+        const renderStyle = String(effectiveVolumeState.renderStyle || "points");
+        if (renderStyle === "raymarch") {
+          renderVolumeRaymarch(metadata, effectiveVolumeState);
         }
-        pointMap.set(label, new THREE.Vector3(x, y, z));
-
-        if (showLabels) {
-          const labelSprite = createBehaviorLabelSprite(label, `#${color.getHexString()}`);
-          if (labelSprite) {
-            labelSprite.scale.set(0.6, 0.16, 1);
-            labelSprite.position.set(x, y + 0.035, z);
-            simulationLabels.add(labelSprite);
+        if (renderStyle === "slab" || renderStyle === "hybrid") {
+          renderVolumeSlabPlane(orderedPoints, metadata, effectiveVolumeState);
+        }
+        if (renderStyle === "points" || renderStyle === "hybrid") {
+          renderZarrGaussianSplatPoints(orderedPoints, showPoints);
+        }
+      } else {
+        orderedPoints.forEach((pt, ptIdx) => {
+          if (!pt || typeof pt !== "object") return;
+          const x = Number(pt.x);
+          const y = Number(pt.y);
+          const z = Number(pt.z);
+          if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+          const label = String(pt.label || `point_${ptIdx}`);
+          const color = new THREE.Color().setHSL((ptIdx * 0.13) % 1, 0.78, 0.56);
+          if (showPoints) {
+            const sphere = new THREE.Mesh(
+              new THREE.SphereGeometry(0.02, 12, 12),
+              new THREE.MeshStandardMaterial({
+                color,
+                emissive: color.clone().multiplyScalar(0.28),
+                roughness: 0.35,
+                metalness: 0.08,
+              })
+            );
+            sphere.position.set(x, y, z);
+            simulationPoints.add(sphere);
           }
-        }
+          pointMap.set(label, new THREE.Vector3(x, y, z));
 
-        const start = Math.max(0, safeIndex - 24);
-        const trailPoints = [];
-        for (let i = start; i <= safeIndex; i += 1) {
-          const srcFrame = frames[i];
-          if (!srcFrame || !Array.isArray(srcFrame.points)) continue;
-          const srcPoint = srcFrame.points.find((item) => item && String(item.label || "") === label);
-          if (!srcPoint) continue;
-          const tx = Number(srcPoint.x);
-          const ty = Number(srcPoint.y);
-          const tz = Number(srcPoint.z);
-          if (!Number.isFinite(tx) || !Number.isFinite(ty) || !Number.isFinite(tz)) continue;
-          trailPoints.push(new THREE.Vector3(tx, ty, tz));
-        }
-        if (showTrails && trailPoints.length > 1) {
-          const trail = new THREE.Line(
-            new THREE.BufferGeometry().setFromPoints(trailPoints),
-            new THREE.LineBasicMaterial({
-              color,
-              transparent: true,
-              opacity: 0.42,
-            })
-          );
-          simulationTrails.add(trail);
-        }
-      });
+          if (showLabels) {
+            const labelSprite = createBehaviorLabelSprite(label, `#${color.getHexString()}`);
+            if (labelSprite) {
+              labelSprite.scale.set(0.6, 0.16, 1);
+              labelSprite.position.set(x, y + 0.035, z);
+              simulationLabels.add(labelSprite);
+            }
+          }
+
+          const start = Math.max(0, safeIndex - 24);
+          const trailPoints = [];
+          for (let i = start; i <= safeIndex; i += 1) {
+            const srcFrame = frames[i];
+            if (!srcFrame || !Array.isArray(srcFrame.points)) continue;
+            const srcPoint = srcFrame.points.find((item) => item && String(item.label || "") === label);
+            if (!srcPoint) continue;
+            const tx = Number(srcPoint.x);
+            const ty = Number(srcPoint.y);
+            const tz = Number(srcPoint.z);
+            if (!Number.isFinite(tx) || !Number.isFinite(ty) || !Number.isFinite(tz)) continue;
+            trailPoints.push(new THREE.Vector3(tx, ty, tz));
+          }
+          if (showTrails && trailPoints.length > 1) {
+            const trail = new THREE.Line(
+              new THREE.BufferGeometry().setFromPoints(trailPoints),
+              new THREE.LineBasicMaterial({
+                color,
+                transparent: true,
+                opacity: 0.42,
+              })
+            );
+            simulationTrails.add(trail);
+          }
+        });
+      }
 
       if (showEdges) {
         const edges = Array.isArray(simulationPayload.edges) ? simulationPayload.edges : [];
@@ -947,6 +2346,19 @@ async function boot() {
         throw new Error("Unsupported simulation payload");
       }
       simulationPayload = payload;
+      const adapter = String((payload && payload.adapter) || "");
+      const metadata = (payload && payload.metadata) || {};
+      if (adapter === "zarr-volume") {
+        volumeRenderDefaults = getVolumeRenderDefaults(metadata);
+        volumeRenderState = Object.assign(
+          {},
+          volumeRenderDefaults,
+          loadPersistedVolumeState(metadata) || {}
+        );
+      } else {
+        volumeRenderDefaults = null;
+        volumeRenderState = null;
+      }
       simulationActiveBehavior = String(
         (((payload.metadata || {}).run_metadata || {}).behavior || "")
       );
@@ -980,6 +2392,7 @@ async function boot() {
         categoryPanelEl.hidden = true;
         categoryPanelEl.innerHTML = "";
       }
+      renderVolumePanel();
       if (simulationRoot.parent !== root) {
         root.add(simulationRoot);
       }
@@ -1184,7 +2597,10 @@ async function boot() {
       }
     };
 
-    window.addEventListener("resize", positionFlybodyControls);
+    window.addEventListener("resize", () => {
+      positionFlybodyControls();
+      refreshVolumePanelLayout();
+    });
 
     if (modelUrl) {
       if (isPanoramaImageExt(ext)) {

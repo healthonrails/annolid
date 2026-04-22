@@ -279,6 +279,33 @@ def test_open_threejs_example_lazily_initializes_threejs_manager(
     assert not warnings
 
 
+def test_normalize_3d_source_path_collapses_nested_zarr_entries(tmp_path: Path) -> None:
+    widget = _DummyViewerHost()
+    zarr_root = tmp_path / "atlas_interleaved_30um_image.zarr"
+    nested = zarr_root / "185.0.0"
+    nested.parent.mkdir(parents=True, exist_ok=True)
+    nested.write_text("chunk", encoding="utf-8")
+
+    normalized = widget._normalize_3d_source_path(str(nested))
+    assert normalized == str(zarr_root)
+
+
+def test_resolve_picked_3d_source_prefers_hinted_zarr_root(tmp_path: Path) -> None:
+    widget = _DummyViewerHost()
+    zarr_root = tmp_path / "atlas_interleaved_30um_image.zarr"
+    nested = zarr_root / "185.0.0"
+    nested.parent.mkdir(parents=True, exist_ok=True)
+    nested.write_text("chunk", encoding="utf-8")
+
+    resolved = widget._resolve_picked_3d_source(
+        selected_paths=[],
+        current_dir=str(zarr_root),
+        hinted_path=str(nested),
+    )
+
+    assert resolved == str(zarr_root)
+
+
 def test_handle_flybody_viewer_command_routes_start_and_stop(monkeypatch) -> None:
     widget = _DummyViewerHost()
     calls = []

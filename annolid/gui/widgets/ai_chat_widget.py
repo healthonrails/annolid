@@ -5169,7 +5169,12 @@ class AIChatWidget(QtWidgets.QWidget):
 
         local_path = Path(target).expanduser()
         try:
-            if local_path.exists() and local_path.is_file():
+            is_local_zarr = (
+                local_path.exists()
+                and local_path.is_dir()
+                and local_path.suffix.lower() == ".zarr"
+            )
+            if local_path.exists() and (local_path.is_file() or is_local_zarr):
                 suffix = local_path.suffix.lower()
                 if suffix in {".html", ".htm", ".xhtml"}:
                     url = QtCore.QUrl.fromLocalFile(str(local_path)).toString()

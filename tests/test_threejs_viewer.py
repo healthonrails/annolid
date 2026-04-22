@@ -14,6 +14,7 @@ def test_supports_threejs_canvas_known_extensions():
     assert supports_threejs_canvas("panorama.jpeg")
     assert supports_threejs_canvas("panorama.png")
     assert supports_threejs_canvas("panorama.webp")
+    assert supports_threejs_canvas("atlas_interleaved_30um_image.zarr")
 
 
 def test_supports_threejs_canvas_rejects_unknown_extensions():
@@ -119,3 +120,54 @@ def test_threejs_viewer_supports_360_equirectangular_images():
     assert "isPanoramaImageExt" in source
     assert "SphereGeometry(500, 64, 40)" in source
     assert "Loaded 360 panorama" in source
+
+
+def test_threejs_viewer_supports_zarr_gaussian_splat_render_mode():
+    repo_root = Path(__file__).resolve().parents[1]
+    js_path = (
+        repo_root
+        / "annolid"
+        / "gui"
+        / "assets"
+        / "threejs"
+        / "annolid_threejs_viewer.js"
+    )
+    source = js_path.read_text(encoding="utf-8")
+
+    assert "gaussian_splatting" in source
+    assert "renderZarrGaussianSplatPoints" in source
+    assert "THREE.AdditiveBlending" in source
+    assert "annolidThreeVolumePanel" in source
+    assert "getVolumeRenderDefaults" in source
+    assert "decodeVolumeGrid" in source
+    assert "Data3DTexture" in source
+    assert "renderVolumePanel" in source
+    assert "volumeHistogramCanvas" in source
+    assert "loadPersistedVolumeState" in source
+    assert "window.localStorage" in source
+    assert "isVolumePointVisible" in source
+    assert "volumeClipAxis" in source
+    assert "nissl_sections" in source
+    assert "myelin_sections" in source
+    assert "section_ink" in source
+    assert "getZarrSectionTexture" in source
+    assert "applyVolumeSceneStyle" in source
+    assert "renderVolumeSlabPlane" in source
+    assert "renderVolumeRaymarch" in source
+    assert "fitCameraToVolumeSlab" in source
+    assert "volume_grid_base64" in source
+    assert "volumeHistologyDefaults" in source
+    assert "histology_defaults" in source
+    assert 'value="raymarch"' in source
+    assert "volumeSectionEmphasis" in source
+    assert "resolveAutoSectionEmphasis" in source
+    assert "interleaved_detected" in source
+    assert "volumeFocusSlab" in source
+    assert "cursor: move;" in (
+        repo_root
+        / "annolid"
+        / "gui"
+        / "assets"
+        / "threejs"
+        / "annolid_threejs_viewer.css"
+    ).read_text(encoding="utf-8")

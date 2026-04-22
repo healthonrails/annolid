@@ -241,6 +241,9 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
     <button class="tool-btn" id="btnToggleRealtime" title="Toggle Real-time Updates">
       <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
     </button>
+    <button class="tool-btn" id="btnToggleVolumePanel" title="Volume Look" hidden>
+      <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 7h10v2H4V7Zm0 8h16v2H4v-2Zm0-4h16v2H4v-2Zm12-5h4v4h-4V6Zm-6 8h4v4h-4v-4Z"/></svg>
+    </button>
   </div>
 
   <div id="annolidThreeIndicators">
@@ -258,6 +261,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
   <div id="annolidThreeFlybodyControls" hidden></div>
   <div id="annolidThreeLegend" hidden></div>
   <div id="annolidThreeCategoryPanel" hidden></div>
+  <div id="annolidThreeVolumePanel" hidden></div>
 
   <div id="annolidThreeStatus">{status_text}</div>
   <div id="annolidThreeHints">{hints_text}</div>
