@@ -4,11 +4,19 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from qtpy import QtCore, QtWidgets
 import numpy as np
-import zarr
+
+try:
+    import zarr
+except ImportError:  # pragma: no cover
+    zarr = None
 
 from annolid.gui.widgets.threejs_manager import ThreeJsManager
+
+
+requires_zarr = pytest.mark.skipif(zarr is None, reason="zarr is not installed")
 
 
 _QAPP = None
@@ -156,6 +164,7 @@ def test_threejs_manager_connects_viewer_region_picked_signal(monkeypatch) -> No
     assert window.picked_regions == ["region_b||"]
 
 
+@requires_zarr
 def test_show_model_in_viewer_routes_zarr_through_simulation_payload(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -183,6 +192,7 @@ def test_show_model_in_viewer_routes_zarr_through_simulation_payload(
     assert viewer.model_calls == []
 
 
+@requires_zarr
 def test_build_zarr_simulation_payload_extracts_sparse_volume(tmp_path: Path) -> None:
     _ensure_qapp()
     window = _DummyWindow()
@@ -226,6 +236,7 @@ def test_build_zarr_simulation_payload_extracts_sparse_volume(tmp_path: Path) ->
     assert len(payload["frames"][0]["points"]) > 0
 
 
+@requires_zarr
 def test_build_zarr_simulation_payload_prefers_multiscale_level_for_large_data(
     tmp_path: Path,
 ) -> None:
@@ -270,6 +281,7 @@ def test_build_zarr_simulation_payload_prefers_multiscale_level_for_large_data(
     assert payload["metadata"]["point_count"] > 0
 
 
+@requires_zarr
 def test_build_zarr_simulation_payload_respects_axes_and_channel_selection(
     tmp_path: Path,
 ) -> None:
@@ -299,6 +311,7 @@ def test_build_zarr_simulation_payload_respects_axes_and_channel_selection(
     assert payload["metadata"]["point_count"] > 0
 
 
+@requires_zarr
 def test_build_zarr_simulation_payload_inverts_bright_background_histology(
     tmp_path: Path,
 ) -> None:
