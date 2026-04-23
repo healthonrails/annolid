@@ -1433,7 +1433,6 @@ class MenuController:
                 (
                     w.open_3d_viewer_action,
                     w.close_3d_viewer_action,
-                    w.toggle_threejs_view_action,
                 ),
                 (w.threejs_examples_menu.menuAction(),),
                 (actions["sam3d_reconstruct"],),

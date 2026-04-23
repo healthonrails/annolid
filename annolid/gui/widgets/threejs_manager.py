@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import csv
 import json
 import math
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -179,84 +181,134 @@ class ThreeJsManager(QtCore.QObject):
             sampled = volume
             stride = 1
 
+        sampled = np.asarray(sampled)
         finite = sampled[np.isfinite(sampled)]
         if finite.size <= 0:
             raise RuntimeError(f"TIFF volume has no finite values: {path}")
-        lo = float(np.min(finite))
-        hi = float(np.max(finite))
-        scale = hi - lo
-        if scale <= 1e-8:
-            normalized = np.ones_like(sampled, dtype=np.float32)
+        (
+            is_label_volume,
+            label_indices,
+            label_id_lut,
+            label_id_total,
+            label_id_truncated,
+        ) = self._prepare_tiff_label_volume(sampled=sampled, source_path=path)
+        threshold = 0.0
+        intensity_inverted = False
+        label_indices_i32: Any | None = None
+        if is_label_volume:
+            dense_volume = label_indices
+            label_indices_i32 = np.asarray(dense_volume, dtype=np.int32)
+            mask = label_indices_i32 > 0
+            coords = np.argwhere(mask)
+            values = np.ones(coords.shape[0], dtype=np.float32)
+            if coords.shape[0] > int(self._ZARR_MAX_POINTS):
+                step = max(
+                    1, int(math.ceil(coords.shape[0] / float(self._ZARR_MAX_POINTS)))
+                )
+                coords = coords[::step]
+                if coords.shape[0] > int(self._ZARR_MAX_POINTS):
+                    coords = coords[: int(self._ZARR_MAX_POINTS)]
+                values = np.ones(coords.shape[0], dtype=np.float32)
+            histogram = self._build_zarr_histogram(
+                dense_volume.astype(np.float32) / 255.0
+            )
+            render_defaults = self._build_label_volume_render_defaults()
+            render_defaults["label_color_seed"] = int(
+                self._stable_label_color_seed(path)
+            )
+            render_profile = "label_ids"
         else:
-            normalized = (sampled - lo) / scale
+            sampled_f32 = sampled.astype(np.float32, copy=False)
+            lo = float(np.min(finite))
+            hi = float(np.max(finite))
+            scale = hi - lo
+            if scale <= 1e-8:
+                normalized = np.ones_like(sampled_f32, dtype=np.float32)
+            else:
+                normalized = (sampled_f32 - lo) / scale
 
-        intensity_inverted = self._should_invert_zarr_signal(normalized)
-        if intensity_inverted:
-            normalized = 1.0 - normalized
-        dense_volume = np.clip(np.round(normalized * 255.0), 0, 255).astype(np.uint8)
+            intensity_inverted = self._should_invert_zarr_signal(normalized)
+            if intensity_inverted:
+                normalized = 1.0 - normalized
+            dense_volume = np.clip(np.round(normalized * 255.0), 0, 255).astype(
+                np.uint8
+            )
 
-        threshold_quantile = 0.70 if intensity_inverted else 0.92
-        threshold_floor = 0.10 if intensity_inverted else 0.18
-        threshold = max(
-            threshold_floor,
-            float(np.quantile(normalized[np.isfinite(normalized)], threshold_quantile)),
-        )
-        mask = np.isfinite(normalized) & (normalized >= threshold)
-        if int(mask.sum()) < 2000:
+            threshold_quantile = 0.70 if intensity_inverted else 0.92
+            threshold_floor = 0.10 if intensity_inverted else 0.18
             threshold = max(
-                0.05 if intensity_inverted else 0.45,
+                threshold_floor,
                 float(
-                    np.quantile(
-                        normalized[np.isfinite(normalized)],
-                        0.52 if intensity_inverted else 0.80,
-                    )
+                    np.quantile(normalized[np.isfinite(normalized)], threshold_quantile)
                 ),
             )
             mask = np.isfinite(normalized) & (normalized >= threshold)
-        if int(mask.sum()) <= 0:
-            mask = np.isfinite(normalized)
+            if int(mask.sum()) < 2000:
+                threshold = max(
+                    0.05 if intensity_inverted else 0.45,
+                    float(
+                        np.quantile(
+                            normalized[np.isfinite(normalized)],
+                            0.52 if intensity_inverted else 0.80,
+                        )
+                    ),
+                )
+                mask = np.isfinite(normalized) & (normalized >= threshold)
+            if int(mask.sum()) <= 0:
+                mask = np.isfinite(normalized)
 
-        coords = np.argwhere(mask)
-        values = normalized[mask]
-        max_points = int(self._ZARR_MAX_POINTS)
-        if coords.shape[0] > max_points:
-            keep = np.argpartition(values, -max_points)[-max_points:]
-            coords = coords[keep]
-            values = values[keep]
-
-        histogram = self._build_zarr_histogram(values)
-        render_defaults = self._build_zarr_render_defaults(
-            values=values,
-            stride=int(stride),
-            source_path=path,
-            intensity_inverted=bool(intensity_inverted),
-        )
-        if str(render_defaults.get("render_style", "")).lower() in {"points", "hybrid"}:
-            render_defaults["render_style"] = "raymarch"
+            coords = np.argwhere(mask)
+            values = normalized[mask]
+            max_points = int(self._ZARR_MAX_POINTS)
+            if coords.shape[0] > max_points:
+                keep = np.argpartition(values, -max_points)[-max_points:]
+                coords = coords[keep]
+                values = values[keep]
+            histogram = self._build_zarr_histogram(values)
+            render_defaults = self._build_zarr_render_defaults(
+                values=values,
+                stride=int(stride),
+                source_path=path,
+                intensity_inverted=bool(intensity_inverted),
+            )
+            if str(render_defaults.get("render_style", "")).lower() in {
+                "points",
+                "hybrid",
+            }:
+                render_defaults["render_style"] = "raymarch"
+            render_profile = self._classify_zarr_render_profile(
+                source_path=path,
+                intensity_inverted=bool(intensity_inverted),
+            )
         z_len, y_len, x_len = [int(v) for v in dense_volume.shape]
         z_scale = float(max(1, int(stride)) * float(spacing_zyx[0]))
         y_scale = float(max(1, int(stride)) * float(spacing_zyx[1]))
         x_scale = float(max(1, int(stride)) * float(spacing_zyx[2]))
-        render_profile = self._classify_zarr_render_profile(
-            source_path=path,
-            intensity_inverted=bool(intensity_inverted),
-        )
         render_defaults.setdefault(
             "section_emphasis", "auto" if render_profile != "cinematic" else "neutral"
         )
+        if is_label_volume:
+            render_defaults["section_emphasis"] = "neutral"
         interleaved_detected = "interleaved" in str(path.stem or "").lower()
 
         points: list[dict[str, Any]] = []
         for idx, (z, y, x) in enumerate(coords):
-            points.append(
-                {
-                    "label": f"v{idx}",
-                    "x": float(min(int(x), x_len - 1) * x_scale),
-                    "y": float(-min(int(y), y_len - 1) * y_scale),
-                    "z": float(-min(int(z), z_len - 1) * z_scale),
-                    "confidence": float(values[idx]),
-                }
-            )
+            point = {
+                "label": f"v{idx}",
+                "x": float(min(int(x), x_len - 1) * x_scale),
+                "y": float(-min(int(y), y_len - 1) * y_scale),
+                "z": float(-min(int(z), z_len - 1) * z_scale),
+                "confidence": float(values[idx]),
+            }
+            if is_label_volume and label_indices_i32 is not None:
+                label_index = int(label_indices_i32[int(z), int(y), int(x)])
+                point["label_index"] = int(label_index)
+                point["label_id"] = (
+                    int(label_id_lut[label_index - 1])
+                    if label_index > 0 and label_index <= len(label_id_lut)
+                    else int(label_index)
+                )
+            points.append(point)
 
         payload: dict[str, Any] = {
             "kind": "annolid-simulation-v1",
@@ -269,7 +321,7 @@ class ThreeJsManager(QtCore.QObject):
                 "downsample_stride": int(stride),
                 "threshold": float(threshold),
                 "channel_index": 0,
-                "render_mode": "gaussian_splatting",
+                "render_mode": "label_ids" if is_label_volume else "gaussian_splatting",
                 "render_profile": render_profile,
                 "interleaved_detected": bool(interleaved_detected),
                 "section_axis": "z",
@@ -287,6 +339,25 @@ class ThreeJsManager(QtCore.QObject):
                 "splat_size": float(render_defaults["size"]),
                 "splat_opacity": float(render_defaults["opacity"]),
                 "point_count": int(len(points)),
+                "label_volume": bool(is_label_volume),
+                "label_mode": "categorical_ids" if is_label_volume else "continuous",
+                "label_id_count": int(label_id_total) if is_label_volume else 0,
+                "label_id_lut_count": int(len(label_id_lut)) if is_label_volume else 0,
+                "label_id_lut_truncated": bool(label_id_truncated)
+                if is_label_volume
+                else False,
+                "volume_label_id_lut": [int(v) for v in label_id_lut]
+                if is_label_volume
+                else [],
+                "volume_label_color_seed": int(self._stable_label_color_seed(path))
+                if is_label_volume
+                else 1337,
+                "volume_label_colors": self._load_label_color_overrides(
+                    source_path=path,
+                    label_ids=label_id_lut,
+                )
+                if is_label_volume
+                else {},
                 "confidence_range": [
                     float(np.min(values)) if values.size > 0 else 0.0,
                     float(np.max(values)) if values.size > 0 else 1.0,
@@ -333,7 +404,7 @@ class ThreeJsManager(QtCore.QObject):
             ) from exc
 
         with tifffile.TiffFile(str(path)) as tif:
-            volume = np.asarray(tif.asarray(), dtype=np.float32)
+            volume = np.asarray(tif.asarray())
             spacing_zyx = ThreeJsManager._resolve_tiff_spacing_zyx(tif=tif)
 
         volume = np.squeeze(volume)
@@ -349,7 +420,470 @@ class ThreeJsManager(QtCore.QObject):
             raise RuntimeError(
                 f"Unsupported TIFF shape for volume rendering: {tuple(int(v) for v in volume.shape)}"
             )
-        return np.asarray(volume, dtype=np.float32), spacing_zyx
+        return np.asarray(volume), spacing_zyx
+
+    @staticmethod
+    def _build_label_volume_render_defaults() -> dict[str, Any]:
+        defaults = ThreeJsManager._with_volume_renderer_defaults(
+            {
+                "preset": "label_ids",
+                "intensity": 1.0,
+                "contrast": 1.0,
+                "gamma": 1.0,
+                "opacity": 0.9,
+                "size": 0.032,
+                "threshold": 0.0,
+                "density": 1.0,
+                "saturation": 1.0,
+                "tf_low": 0.0,
+                "tf_mid": 0.5,
+                "tf_high": 1.0,
+                "clip_axis": "none",
+                "clip_center": 0.5,
+                "clip_thickness": 1.0,
+                "clip_invert": False,
+                "palette": "allen_labels",
+                "blend_mode": "normal",
+                "point_texture": "section",
+                "background_theme": "dark",
+            },
+            profile="cinematic",
+        )
+        defaults["render_style"] = "slab"
+        defaults["gradient_opacity"] = False
+        defaults["use_shading"] = False
+        defaults["raymarch_steps"] = 180
+        defaults["raymarch_step_scale"] = 1.0
+        defaults["raymarch_jitter"] = 0.0
+        defaults["section_emphasis"] = "neutral"
+        return defaults
+
+    @staticmethod
+    def _stable_label_color_seed(source_path: Path) -> int:
+        stem = str(source_path.stem or source_path.name or "")
+        seed = 1337
+        for ch in stem:
+            seed = ((seed * 33) ^ ord(ch)) & 0xFFFFFFFF
+        return int(seed % 100000)
+
+    @staticmethod
+    def _normalize_mapping_header(value: str) -> str:
+        return str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+
+    @staticmethod
+    def _parse_rgb_triplet(value: str) -> list[int] | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        parts = [p for p in re.split(r"[\s,;|]+", text) if p]
+        if len(parts) < 3:
+            return None
+        try:
+            rgb = [int(float(parts[i])) for i in range(3)]
+        except Exception:
+            return None
+        if not all(0 <= ch <= 255 for ch in rgb):
+            return None
+        return [rgb[0], rgb[1], rgb[2], 255]
+
+    @staticmethod
+    def _parse_hex_color(value: str) -> list[int] | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if text.lower().startswith("0x"):
+            text = text[2:]
+        if text.startswith("#"):
+            text = text[1:]
+        if len(text) == 3:
+            text = "".join(ch * 2 for ch in text)
+        if len(text) != 6:
+            return None
+        try:
+            r = int(text[0:2], 16)
+            g = int(text[2:4], 16)
+            b = int(text[4:6], 16)
+        except Exception:
+            return None
+        return [r, g, b, 255]
+
+    @staticmethod
+    def _candidate_ontology_color_tables(source_path: Path) -> list[Path]:
+        base = source_path.parent
+        stem = source_path.stem
+        stem_root = re.sub(
+            r"(?i)(_labels?|_annotation|_annot|_seg(mentation)?|_atlas)$", "", stem
+        ).strip("_-")
+        names = [
+            "structure_tree_safe_2017.csv",
+            "structure_tree_safe_2017.json",
+            "structure_tree.csv",
+            "structure_tree.json",
+            "allen_structure_tree.csv",
+            "allen_structure_tree.json",
+            "ontology.csv",
+            "ontology.json",
+            "structures.csv",
+            "structures.json",
+            f"{stem}_structure_tree.csv",
+            f"{stem}_structure_tree.json",
+            f"{stem}_ontology.csv",
+            f"{stem}_ontology.json",
+            f"{stem}_structures.csv",
+            f"{stem}_structures.json",
+        ]
+        if stem_root and stem_root != stem:
+            names.extend(
+                [
+                    f"{stem_root}_structure_tree.csv",
+                    f"{stem_root}_structure_tree.json",
+                    f"{stem_root}_ontology.csv",
+                    f"{stem_root}_ontology.json",
+                    f"{stem_root}_structures.csv",
+                    f"{stem_root}_structures.json",
+                ]
+            )
+        candidates: list[Path] = []
+        for name in names:
+            p = base / name
+            if p.exists() and p.is_file():
+                candidates.append(p)
+        patterns = (
+            "*structure*tree*.csv",
+            "*structure*tree*.json",
+            "*ontology*.csv",
+            "*ontology*.json",
+            "*atlas*structure*.csv",
+            "*atlas*structure*.json",
+            "*atlas*label*.csv",
+            "*atlas*label*.json",
+            "*label*map*.csv",
+            "*label*map*.json",
+        )
+        for pattern in patterns:
+            for p in sorted(base.glob(pattern)):
+                if not p.is_file():
+                    continue
+                if p not in candidates:
+                    candidates.append(p)
+                if len(candidates) >= 24:
+                    return candidates
+        return candidates
+
+    @staticmethod
+    def _extract_label_color_from_record(record: dict[str, Any]) -> list[int] | None:
+        if not isinstance(record, dict):
+            return None
+        hex_keys = (
+            "color_hex_triplet",
+            "hex_triplet",
+            "color_hex",
+            "hex_color",
+            "hex",
+            "color",
+        )
+        rgb_keys = (
+            "rgb",
+            "rgb_triplet",
+            "rgb_color",
+            "color_rgb",
+        )
+        for key in hex_keys:
+            if key in record:
+                rgba = ThreeJsManager._parse_hex_color(str(record.get(key, "")))
+                if rgba is not None:
+                    return rgba
+        for key in rgb_keys:
+            if key in record:
+                rgba = ThreeJsManager._parse_rgb_triplet(str(record.get(key, "")))
+                if rgba is not None:
+                    return rgba
+        if all(k in record for k in ("r", "g", "b")):
+            rgba = ThreeJsManager._parse_rgb_triplet(
+                f"{record.get('r', '')},{record.get('g', '')},{record.get('b', '')}"
+            )
+            if rgba is not None:
+                return rgba
+        if all(k in record for k in ("red", "green", "blue")):
+            rgba = ThreeJsManager._parse_rgb_triplet(
+                f"{record.get('red', '')},{record.get('green', '')},{record.get('blue', '')}"
+            )
+            if rgba is not None:
+                return rgba
+        return None
+
+    @staticmethod
+    def _extract_label_id_from_record(record: dict[str, Any]) -> int | None:
+        if not isinstance(record, dict):
+            return None
+        for key in (
+            "id",
+            "structure_id",
+            "atlas_id",
+            "label_id",
+            "region_id",
+            "value",
+            "index",
+        ):
+            if key not in record:
+                continue
+            try:
+                return int(float(str(record.get(key, "")).strip()))
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _collect_color_records_from_json(value: Any) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        if isinstance(value, dict):
+            normalized = {
+                ThreeJsManager._normalize_mapping_header(str(k)): v
+                for k, v in value.items()
+            }
+            candidate: dict[str, Any] = {}
+            for k, v in normalized.items():
+                candidate[k] = v
+            if ThreeJsManager._extract_label_id_from_record(candidate) is not None:
+                records.append(candidate)
+            for child in value.values():
+                records.extend(ThreeJsManager._collect_color_records_from_json(child))
+            return records
+        if isinstance(value, list):
+            for item in value:
+                records.extend(ThreeJsManager._collect_color_records_from_json(item))
+        return records
+
+    @staticmethod
+    def _load_label_color_overrides_from_json(
+        *, json_path: Path, wanted: set[int]
+    ) -> dict[str, list[int]]:
+        try:
+            parsed = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        discovered: dict[str, list[int]] = {}
+        for record in ThreeJsManager._collect_color_records_from_json(parsed):
+            if len(discovered) >= len(wanted):
+                break
+            label_id = ThreeJsManager._extract_label_id_from_record(record)
+            if label_id is None or label_id not in wanted:
+                continue
+            key = str(label_id)
+            if key in discovered:
+                continue
+            rgba = ThreeJsManager._extract_label_color_from_record(record)
+            if rgba is None:
+                continue
+            discovered[key] = rgba
+        return discovered
+
+    @staticmethod
+    def _load_label_color_overrides_from_csv(
+        *, csv_path: Path, wanted: set[int]
+    ) -> dict[str, list[int]]:
+        id_column_candidates = (
+            "id",
+            "structure_id",
+            "atlas_id",
+            "label_id",
+            "region_id",
+            "value",
+            "index",
+        )
+        hex_color_candidates = (
+            "color_hex_triplet",
+            "hex_triplet",
+            "color_hex",
+            "hex_color",
+            "hex",
+            "color",
+        )
+        rgb_compact_candidates = (
+            "rgb",
+            "rgb_triplet",
+            "rgb_color",
+            "color_rgb",
+        )
+        rgb_r_candidates = ("r", "red")
+        rgb_g_candidates = ("g", "green")
+        rgb_b_candidates = ("b", "blue")
+
+        def _select_column(
+            fieldnames: list[str], candidates: tuple[str, ...]
+        ) -> str | None:
+            normalized = {
+                ThreeJsManager._normalize_mapping_header(name): name
+                for name in fieldnames
+                if name
+            }
+            for candidate in candidates:
+                if candidate in normalized:
+                    return normalized[candidate]
+            return None
+
+        try:
+            raw = csv_path.read_text(encoding="utf-8-sig")
+        except Exception:
+            return {}
+        if not raw.strip():
+            return {}
+        try:
+            dialect = csv.Sniffer().sniff(raw[:4096], delimiters=",\t;")
+        except Exception:
+            dialect = csv.excel
+        reader = csv.DictReader(raw.splitlines(), dialect=dialect)
+        fieldnames = list(reader.fieldnames or [])
+        id_col = _select_column(fieldnames, id_column_candidates)
+        if id_col is None:
+            return {}
+        hex_col = _select_column(fieldnames, hex_color_candidates)
+        rgb_compact_col = _select_column(fieldnames, rgb_compact_candidates)
+        r_col = _select_column(fieldnames, rgb_r_candidates)
+        g_col = _select_column(fieldnames, rgb_g_candidates)
+        b_col = _select_column(fieldnames, rgb_b_candidates)
+        if (
+            hex_col is None
+            and rgb_compact_col is None
+            and not (r_col and g_col and b_col)
+        ):
+            return {}
+        discovered: dict[str, list[int]] = {}
+        for row in reader:
+            try:
+                label_id = int(float(str(row.get(id_col, "")).strip()))
+            except Exception:
+                continue
+            if label_id not in wanted:
+                continue
+            if str(label_id) in discovered:
+                continue
+            rgba = None
+            if hex_col:
+                rgba = ThreeJsManager._parse_hex_color(str(row.get(hex_col, "")))
+            if rgba is None and rgb_compact_col:
+                rgba = ThreeJsManager._parse_rgb_triplet(
+                    str(row.get(rgb_compact_col, ""))
+                )
+            if rgba is None and r_col and g_col and b_col:
+                rgba = ThreeJsManager._parse_rgb_triplet(
+                    f"{row.get(r_col, '')},{row.get(g_col, '')},{row.get(b_col, '')}"
+                )
+            if rgba is None:
+                continue
+            discovered[str(label_id)] = rgba
+        return discovered
+
+    @staticmethod
+    def _load_label_color_overrides(
+        *, source_path: Path, label_ids: list[int]
+    ) -> dict[str, list[int]]:
+        wanted = {int(v) for v in label_ids if int(v) > 0}
+        if not wanted:
+            return {}
+        discovered: dict[str, list[int]] = {}
+        for table_path in ThreeJsManager._candidate_ontology_color_tables(source_path):
+            if len(discovered) >= len(wanted):
+                break
+            current: dict[str, list[int]]
+            if table_path.suffix.lower() == ".json":
+                current = ThreeJsManager._load_label_color_overrides_from_json(
+                    json_path=table_path,
+                    wanted=wanted,
+                )
+            else:
+                current = ThreeJsManager._load_label_color_overrides_from_csv(
+                    csv_path=table_path,
+                    wanted=wanted,
+                )
+            for key, value in current.items():
+                if key not in discovered:
+                    discovered[key] = value
+                if len(discovered) >= len(wanted):
+                    break
+        return discovered
+
+    @staticmethod
+    def _prepare_tiff_label_volume(
+        *, sampled: Any, source_path: Path
+    ) -> tuple[bool, Any, list[int], int, bool]:
+        try:
+            import numpy as np
+        except Exception:
+            return False, sampled, [], 0, False
+
+        finite = sampled[np.isfinite(sampled)]
+        if finite.size <= 0:
+            return False, sampled, [], 0, False
+
+        integer_dtype = np.issubdtype(sampled.dtype, np.integer)
+        if integer_dtype:
+            labels_raw = sampled.astype(np.int64, copy=False)
+        else:
+            rounded = np.rint(finite)
+            fractional = np.abs(finite - rounded)
+            if float(np.quantile(fractional, 0.995)) > 1e-4:
+                return False, sampled, [], 0, False
+            labels_raw = np.rint(sampled).astype(np.int64)
+
+        labels_nonzero = labels_raw[labels_raw > 0]
+        if labels_nonzero.size <= 0:
+            return False, sampled, [], 0, False
+        label_ids, label_counts = np.unique(labels_nonzero, return_counts=True)
+        if label_ids.size <= 1:
+            return False, sampled, [], 0, False
+
+        label_span = max(1, int(label_ids[-1] - label_ids[0] + 1))
+        fill_ratio = float(label_ids.size) / float(label_span)
+        hint = str(source_path.stem or "").lower()
+        hinted = any(k in hint for k in ("label", "annotation", "atlas", "seg", "mask"))
+        if not integer_dtype and not hinted:
+            return False, sampled, [], 0, False
+        # Detect categorical label volumes conservatively.
+        # Continuous integer-valued microscopy stacks (e.g. 12/16-bit intensity)
+        # can have max values >255 and should not be treated as label IDs.
+        unique_count = int(label_ids.size)
+        nonzero_count = int(labels_nonzero.size)
+        unique_ratio = float(unique_count) / float(max(1, nonzero_count))
+        is_sparse_id_space = fill_ratio < 0.45
+        is_small_vocab = unique_count <= 2048
+        is_low_unique_ratio = unique_ratio <= 0.01
+
+        is_label_volume = bool(
+            hinted or (is_sparse_id_space and is_small_vocab and is_low_unique_ratio)
+        )
+        if not is_label_volume:
+            return False, sampled, [], 0, False
+
+        label_ids_total = int(label_ids.size)
+        max_lut = 255
+        if label_ids.size > max_lut:
+            keep = np.argpartition(label_counts, -max_lut)[-max_lut:]
+            label_ids = label_ids[keep]
+        selected = np.sort(label_ids.astype(np.int64))
+        lut = [int(v) for v in selected.tolist()]
+        selected_arr = selected
+        if selected_arr.size <= 0:
+            return False, sampled, [], 0, False
+
+        flat = labels_raw.reshape(-1)
+        indices = np.searchsorted(selected_arr, flat)
+        valid = (indices >= 0) & (indices < selected_arr.size)
+        matched = np.zeros(flat.shape, dtype=bool)
+        if np.any(valid):
+            matched[valid] = selected_arr[indices[valid]] == flat[valid]
+        mapped = np.zeros(flat.shape, dtype=np.uint8)
+        if np.any(matched):
+            mapped[matched] = (indices[matched] + 1).astype(np.uint8)
+        mapped_volume = mapped.reshape(labels_raw.shape)
+
+        return (
+            True,
+            mapped_volume,
+            lut,
+            label_ids_total,
+            bool(label_ids_total > len(lut)),
+        )
 
     @staticmethod
     def _resolve_tiff_spacing_zyx(*, tif: Any) -> list[float]:

@@ -301,6 +301,154 @@ def test_build_tiff_simulation_payload_extracts_sparse_volume(tmp_path: Path) ->
     assert len(payload["frames"][0]["points"]) > 0
 
 
+@requires_tifffile
+def test_build_tiff_simulation_payload_detects_label_ids_volume(tmp_path: Path) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+
+    tif_path = tmp_path / "allen_annotation_labels.tif"
+    data = np.zeros((12, 12, 12), dtype=np.uint16)
+    data[2:8, 2:8, 2:8] = 315
+    data[5:10, 5:10, 5:10] = 671
+    data[1:3, 1:3, 1:3] = 997
+    tifffile.imwrite(str(tif_path), data)
+
+    payload = manager._build_tiff_simulation_payload(tif_path)
+
+    assert payload["kind"] == "annolid-simulation-v1"
+    assert payload["adapter"] == "tiff-volume"
+    assert payload["metadata"]["render_mode"] == "label_ids"
+    assert payload["metadata"]["label_volume"] is True
+    assert payload["metadata"]["label_id_count"] >= 3
+    assert payload["metadata"]["volume_label_id_lut"]
+    assert isinstance(payload["metadata"]["volume_label_color_seed"], int)
+    assert payload["metadata"]["volume_label_color_seed"] >= 0
+    assert payload["metadata"]["volume_label_colors"] == {}
+    assert (
+        payload["metadata"]["volume_render_defaults"]["label_color_seed"]
+        == payload["metadata"]["volume_label_color_seed"]
+    )
+    assert payload["metadata"]["volume_render_defaults"]["palette"] == "allen_labels"
+    assert payload["metadata"]["volume_grid_shape"] == [12, 12, 12]
+    assert payload["metadata"]["volume_grid_base64"]
+    assert len(payload["frames"]) == 1
+    assert len(payload["frames"][0]["points"]) > 0
+    first = payload["frames"][0]["points"][0]
+    assert "label_id" in first
+    assert "label_index" in first
+
+
+@requires_tifffile
+def test_build_tiff_simulation_payload_loads_allen_ontology_colors(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+
+    tif_path = tmp_path / "allen_annotation_labels.tif"
+    data = np.zeros((10, 10, 10), dtype=np.uint16)
+    data[1:6, 1:6, 1:6] = 315
+    data[4:9, 4:9, 4:9] = 671
+    tifffile.imwrite(str(tif_path), data)
+
+    ontology_csv = tmp_path / "structure_tree_safe_2017.csv"
+    ontology_csv.write_text(
+        "\n".join(
+            [
+                "id,acronym,name,color_hex_triplet",
+                "315,VISp,Primary visual area,FF3366",
+                "671,CP,Caudoputamen,33CC55",
+                "997,root,root,FFFFFF",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    payload = manager._build_tiff_simulation_payload(tif_path)
+    colors = payload["metadata"]["volume_label_colors"]
+
+    assert payload["metadata"]["label_volume"] is True
+    assert payload["metadata"]["render_mode"] == "label_ids"
+    assert colors["315"] == [255, 51, 102, 255]
+    assert colors["671"] == [51, 204, 85, 255]
+    # Unused IDs are not included in the exported override map.
+    assert "997" not in colors
+
+
+@requires_tifffile
+def test_build_tiff_simulation_payload_loads_allen_ontology_colors_from_json(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+
+    tif_path = tmp_path / "allen_annotation_labels.tif"
+    data = np.zeros((10, 10, 10), dtype=np.uint16)
+    data[1:6, 1:6, 1:6] = 315
+    data[4:9, 4:9, 4:9] = 671
+    tifffile.imwrite(str(tif_path), data)
+
+    ontology_json = tmp_path / "structure_tree_safe_2017.json"
+    ontology_json.write_text(
+        json.dumps(
+            {
+                "msg": [
+                    {
+                        "id": 315,
+                        "acronym": "VISp",
+                        "name": "Primary visual area",
+                        "color_hex_triplet": "FF3366",
+                    },
+                    {
+                        "id": 671,
+                        "acronym": "CP",
+                        "name": "Caudoputamen",
+                        "color_hex_triplet": "33CC55",
+                    },
+                    {"id": 997, "acronym": "root", "color_hex_triplet": "FFFFFF"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = manager._build_tiff_simulation_payload(tif_path)
+    colors = payload["metadata"]["volume_label_colors"]
+
+    assert payload["metadata"]["label_volume"] is True
+    assert payload["metadata"]["render_mode"] == "label_ids"
+    assert colors["315"] == [255, 51, 102, 255]
+    assert colors["671"] == [51, 204, 85, 255]
+    assert "997" not in colors
+
+
+@requires_tifffile
+def test_build_tiff_simulation_payload_keeps_continuous_uint16_as_intensity(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+
+    tif_path = tmp_path / "reference_uint16_volume.tif"
+    z, y, x = np.indices((24, 24, 24), dtype=np.float32)
+    center = np.array([11.5, 11.5, 11.5], dtype=np.float32)
+    radius = np.sqrt((z - center[0]) ** 2 + (y - center[1]) ** 2 + (x - center[2]) ** 2)
+    signal = np.clip(4095.0 - radius * 220.0, 0.0, 4095.0)
+    data = signal.astype(np.uint16)
+    tifffile.imwrite(str(tif_path), data)
+
+    payload = manager._build_tiff_simulation_payload(tif_path)
+
+    assert payload["metadata"]["label_volume"] is False
+    assert payload["metadata"]["render_mode"] == "gaussian_splatting"
+    assert payload["metadata"]["label_id_count"] == 0
+    assert not payload["metadata"]["volume_label_id_lut"]
+
+
 @requires_zarr
 def test_build_zarr_simulation_payload_prefers_multiscale_level_for_large_data(
     tmp_path: Path,

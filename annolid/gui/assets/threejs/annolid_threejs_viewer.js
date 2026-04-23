@@ -530,6 +530,8 @@ async function boot() {
     let volumeRenderDefaults = null;
     let volumeGridCache = null;
     let volumeTextureCache = null;
+    let volumeLabelColorTableCache = null;
+    let volumeLabelColorTextureCache = null;
     let volumeRenderFrameHandle = 0;
     let activeRaymarchMaterial = null;
     let frameTimeEmaMs = 16.6;
@@ -957,10 +959,108 @@ async function boot() {
       }
     };
 
+    const getVolumeLabelIdLut = (metadata) => {
+      const raw = metadata && Array.isArray(metadata.volume_label_id_lut)
+        ? metadata.volume_label_id_lut
+        : [];
+      return raw
+        .map((v) => Number(v))
+        .filter((v) => Number.isFinite(v) && v > 0);
+    };
+
+    const getVolumeLabelColorSeed = (metadata, state) => {
+      const stateSeed = Number(state && state.labelColorSeed);
+      if (Number.isFinite(stateSeed)) {
+        return Math.max(0, Math.floor(stateSeed));
+      }
+      const metadataSeed = Number(metadata && metadata.volume_label_color_seed);
+      if (Number.isFinite(metadataSeed)) {
+        return Math.max(0, Math.floor(metadataSeed));
+      }
+      return 1337;
+    };
+
+    const normalizeLabelColorEntry = (entry) => {
+      if (entry == null) return null;
+      if (typeof entry === "string") {
+        if (entry.trim().toLowerCase() === "transparent") {
+          return [0, 0, 0, 0];
+        }
+        try {
+          const color = new THREE.Color();
+          color.setStyle(entry);
+          return [color.r, color.g, color.b, 1];
+        } catch (_err) {
+          return null;
+        }
+      }
+      if (Array.isArray(entry)) {
+        if (entry.length < 3) return null;
+        const channels = entry.map((v) => Number(v));
+        if (!channels.slice(0, 3).every((v) => Number.isFinite(v))) {
+          return null;
+        }
+        const scale = channels.slice(0, 3).some((v) => v > 1.0) ? 255.0 : 1.0;
+        const alphaRaw = Number.isFinite(channels[3]) ? channels[3] : 1.0;
+        const alphaScale = alphaRaw > 1.0 ? 255.0 : 1.0;
+        return [
+          clamp01(channels[0] / scale),
+          clamp01(channels[1] / scale),
+          clamp01(channels[2] / scale),
+          clamp01(alphaRaw / alphaScale),
+        ];
+      }
+      if (typeof entry === "object") {
+        const r = Number(entry.r);
+        const g = Number(entry.g);
+        const b = Number(entry.b);
+        if (![r, g, b].every((v) => Number.isFinite(v))) {
+          return null;
+        }
+        const scale = [r, g, b].some((v) => v > 1.0) ? 255.0 : 1.0;
+        const alphaRaw = Number.isFinite(Number(entry.a)) ? Number(entry.a) : 1.0;
+        const alphaScale = alphaRaw > 1.0 ? 255.0 : 1.0;
+        return [
+          clamp01(r / scale),
+          clamp01(g / scale),
+          clamp01(b / scale),
+          clamp01(alphaRaw / alphaScale),
+        ];
+      }
+      return null;
+    };
+
+    const getVolumeLabelColorOverrides = (metadata) => {
+      const raw = metadata && (
+        metadata.volume_label_colors ||
+        metadata.volume_label_color_map ||
+        metadata.label_color_map
+      );
+      if (!raw || typeof raw !== "object") {
+        return { map: new Map(), signature: "none" };
+      }
+      const map = new Map();
+      const signatureParts = [];
+      Object.entries(raw).forEach(([key, value]) => {
+        const labelId = Number(key);
+        if (!Number.isFinite(labelId) || labelId < 0) return;
+        const rgba = normalizeLabelColorEntry(value);
+        if (!rgba) return;
+        const canonicalLabelId = Math.floor(labelId);
+        map.set(canonicalLabelId, rgba);
+        signatureParts.push(
+          `${canonicalLabelId}:${rgba.map((v) => Math.round(clamp01(v) * 255)).join(",")}`
+        );
+      });
+      signatureParts.sort();
+      return { map, signature: signatureParts.join("|") || "none" };
+    };
+
     const getVolumeTexture = (THREE, metadata) => {
       const volumeGrid = decodeVolumeGrid(metadata);
       if (!volumeGrid) return null;
-      const cacheKey = `${String((metadata && metadata.source_path) || "")}:${volumeGrid.shape.join("x")}:${String((metadata && metadata.volume_grid_base64) || "").length}`;
+      const isLabelVolume = Boolean(metadata && metadata.label_volume);
+      const cacheKey = `${String((metadata && metadata.source_path) || "")}:${volumeGrid.shape.join("x")}:${String((metadata && metadata.volume_grid_base64) || "").length}:${isLabelVolume ? "label" : "intensity"}`;
       if (volumeTextureCache && volumeTextureCache.key === cacheKey) {
         return volumeTextureCache.texture;
       }
@@ -968,8 +1068,8 @@ async function boot() {
       const texture = new THREE.Data3DTexture(volumeGrid.data, xCount, yCount, zCount);
       texture.format = THREE.RedFormat;
       texture.type = THREE.UnsignedByteType;
-      texture.minFilter = THREE.LinearFilter;
-      texture.magFilter = THREE.LinearFilter;
+      texture.minFilter = isLabelVolume ? THREE.NearestFilter : THREE.LinearFilter;
+      texture.magFilter = isLabelVolume ? THREE.NearestFilter : THREE.LinearFilter;
       texture.unpackAlignment = 1;
       texture.needsUpdate = true;
       volumeTextureCache = { key: cacheKey, texture };
@@ -982,6 +1082,102 @@ async function boot() {
     const hash01 = (value) => {
       const seed = (Math.imul(Number(value) | 0, 1664525) + 1013904223) >>> 0;
       return seed / 4294967295;
+    };
+
+    const hashLabel01 = (value, salt = 0, seed = 0) => {
+      const mixed = Math.imul((Number(value) | 0) ^ (salt | 0), 1103515245) + 12345 + ((Number(seed) | 0) * 2654435761);
+      return ((mixed >>> 0) % 1000003) / 1000003;
+    };
+
+    const sampleLabelIdColor = (labelId, saturationBoost = 1, seed = 0) => {
+      const id = Math.max(1, Math.floor(Number(labelId) || 0));
+      const h = hashLabel01(id, 97, seed);
+      const s = 0.55 + hashLabel01(id, 193, seed) * 0.35;
+      const l = 0.42 + hashLabel01(id, 389, seed) * 0.26;
+      const color = new THREE.Color();
+      color.setHSL(h, clamp01(s * Math.max(0.2, Number(saturationBoost) || 1)), clamp01(l));
+      return color;
+    };
+
+    const getVolumeLabelColorTable = (metadata, state) => {
+      const labelLut = getVolumeLabelIdLut(metadata);
+      const saturation = Math.max(0.0, Number(state && state.saturation) || 1.0);
+      const seed = getVolumeLabelColorSeed(metadata, state);
+      const overrides = getVolumeLabelColorOverrides(metadata);
+      const cacheKey = [
+        String((metadata && metadata.source_path) || ""),
+        String((metadata && metadata.label_volume) ? "label" : "intensity"),
+        labelLut.join(","),
+        `${seed}`,
+        `${Math.round(saturation * 1000)}`,
+        overrides.signature,
+      ].join("|");
+      if (volumeLabelColorTableCache && volumeLabelColorTableCache.key === cacheKey) {
+        return volumeLabelColorTableCache.value;
+      }
+      const rgba8 = new Uint8Array(256 * 4);
+      const rgbaFloat = new Float32Array(256 * 4);
+      const byId = new Map();
+      for (let labelIndex = 0; labelIndex <= 255; labelIndex += 1) {
+        let rgba = [0, 0, 0, 0];
+        if (labelIndex > 0) {
+          const labelId = labelLut[labelIndex - 1] || labelIndex;
+          const override = overrides.map.get(labelId);
+          if (override) {
+            rgba = [override[0], override[1], override[2], override[3]];
+          } else {
+            const color = sampleLabelIdColor(labelId, saturation, seed);
+            rgba = [color.r, color.g, color.b, 1.0];
+          }
+          byId.set(labelId, rgba);
+        }
+        const base = labelIndex * 4;
+        rgbaFloat[base + 0] = clamp01(rgba[0]);
+        rgbaFloat[base + 1] = clamp01(rgba[1]);
+        rgbaFloat[base + 2] = clamp01(rgba[2]);
+        rgbaFloat[base + 3] = clamp01(rgba[3]);
+        rgba8[base + 0] = Math.round(rgbaFloat[base + 0] * 255);
+        rgba8[base + 1] = Math.round(rgbaFloat[base + 1] * 255);
+        rgba8[base + 2] = Math.round(rgbaFloat[base + 2] * 255);
+        rgba8[base + 3] = Math.round(rgbaFloat[base + 3] * 255);
+      }
+      const value = {
+        rgba8,
+        rgbaFloat,
+        byId,
+        seed,
+        key: cacheKey,
+      };
+      volumeLabelColorTableCache = { key: cacheKey, value };
+      return value;
+    };
+
+    const getVolumeLabelColorTexture = (THREE, metadata, state) => {
+      const table = getVolumeLabelColorTable(metadata, state);
+      const textureKey = table.key;
+      if (volumeLabelColorTextureCache && volumeLabelColorTextureCache.key === textureKey) {
+        return volumeLabelColorTextureCache.texture;
+      }
+      const texture = new THREE.DataTexture(table.rgba8, 256, 1, THREE.RGBAFormat);
+      texture.type = THREE.UnsignedByteType;
+      texture.minFilter = THREE.NearestFilter;
+      texture.magFilter = THREE.NearestFilter;
+      texture.wrapS = THREE.ClampToEdgeWrapping;
+      texture.wrapT = THREE.ClampToEdgeWrapping;
+      texture.unpackAlignment = 1;
+      texture.needsUpdate = true;
+      volumeLabelColorTextureCache = { key: textureKey, texture };
+      return texture;
+    };
+
+    const getLabelColorRgba = (labelId, metadata, state) => {
+      const id = Math.max(0, Math.floor(Number(labelId) || 0));
+      if (id <= 0) return null;
+      const table = getVolumeLabelColorTable(metadata, state);
+      const override = table.byId.get(id);
+      if (override) return override;
+      const color = sampleLabelIdColor(id, Math.max(0.0, Number(state && state.saturation) || 1.0), table.seed);
+      return [color.r, color.g, color.b, 1.0];
     };
 
     const getVolumeStateStorageKey = (metadata) => {
@@ -1064,10 +1260,15 @@ async function boot() {
         clipCenter: Number.isFinite(Number(raw.clip_center)) ? Number(raw.clip_center) : 0.5,
         clipThickness: Number.isFinite(Number(raw.clip_thickness)) ? Number(raw.clip_thickness) : 1.0,
         clipInvert: Boolean(raw.clip_invert),
-        palette: String(raw.palette || "ice_fire"),
+        palette: String(raw.palette || (metadata && metadata.label_volume ? "allen_labels" : "ice_fire")),
         blendMode: String(raw.blend_mode || "additive"),
         pointTexture: String(raw.point_texture || "glow"),
         backgroundTheme: String(raw.background_theme || "dark"),
+        labelColorSeed: Number.isFinite(Number(raw.label_color_seed))
+          ? Number(raw.label_color_seed)
+          : Number.isFinite(Number(metadata && metadata.volume_label_color_seed))
+            ? Number(metadata.volume_label_color_seed)
+            : 1337,
         renderStyle: String(raw.render_style || "hybrid"),
         sectionEmphasis: String(raw.section_emphasis || "auto"),
         raymarchSteps: Number.isFinite(Number(raw.raymarch_steps))
@@ -1264,6 +1465,18 @@ async function boot() {
 
     const buildEffectiveVolumeState = (state, metadata) => {
       const next = Object.assign({}, state || {});
+      if (metadata && metadata.label_volume) {
+        next.palette = String(next.palette || "allen_labels");
+        next.sectionEmphasis = "neutral";
+        next.labelColorSeed = getVolumeLabelColorSeed(metadata, next);
+        next.renderStyle = getMetadataResolvedRenderStyle(
+          { renderStyle: String(next.renderStyle || "slab") },
+          metadata
+        );
+        next.blendMode = "normal";
+        next.pointTexture = "section";
+        next.backgroundTheme = String(next.backgroundTheme || "dark");
+      }
       const emphasis = String(next.sectionEmphasis || "auto").toLowerCase();
       const resolved = emphasis === "auto"
         ? resolveAutoSectionEmphasis(metadata, next)
@@ -1312,11 +1525,13 @@ async function boot() {
       return v;
     };
 
-    const sampleVolumePalette = (value, paletteName, saturationBoost = 1) => {
+    const sampleVolumePalette = (value, paletteName, saturationBoost = 1, labelSeed = 0) => {
       const v = clamp01(value);
       const palette = String(paletteName || "ice_fire").toLowerCase();
       const color = new THREE.Color();
-      if (palette === "grayscale") {
+      if (palette === "allen_labels") {
+        return sampleLabelIdColor(value, saturationBoost, labelSeed);
+      } else if (palette === "grayscale") {
         color.setRGB(v, v, v);
       } else if (palette === "magma") {
         color.setRGB(
@@ -1372,6 +1587,14 @@ async function boot() {
       const isLight = theme === "light";
       document.body.classList.toggle("white-theme", isLight);
       scene.background = new THREE.Color(isLight ? 0xf3eee5 : 0x121824);
+    };
+
+    const getMetadataResolvedRenderStyle = (state, metadata) => {
+      const style = String((state && state.renderStyle) || "points").toLowerCase();
+      if (["points", "slab", "raymarch", "hybrid"].includes(style)) {
+        return style;
+      }
+      return "points";
     };
 
     const getActiveVolumeSlabConfig = (metadata, state) => {
@@ -1448,6 +1671,9 @@ async function boot() {
 
     const renderVolumeSlabPlane = (orderedPoints, metadata, state) => {
       const effectiveState = buildEffectiveVolumeState(state, metadata);
+      const isLabelVolume = Boolean(metadata && metadata.label_volume);
+      const labelLut = isLabelVolume ? getVolumeLabelIdLut(metadata) : [];
+      const labelColorTable = isLabelVolume ? getVolumeLabelColorTable(metadata, effectiveState) : null;
       const slab = getActiveVolumeSlabConfig(metadata, effectiveState);
       const bounds = (metadata && metadata.volume_bounds) || {};
       const axisToPlane = {
@@ -1498,19 +1724,44 @@ async function boot() {
             : effectiveState.palette;
         for (let row = 0; row < height; row += 1) {
           for (let col = 0; col < width; col += 1) {
-            let value = 0;
+            let raw = 0;
             if (slab.axis === "z") {
-              value = volumeGrid.data[sliceIndex * (yCount * xCount) + row * xCount + col] / 255;
+              raw = volumeGrid.data[sliceIndex * (yCount * xCount) + row * xCount + col];
             } else if (slab.axis === "y") {
-              value = volumeGrid.data[row * (yCount * xCount) + sliceIndex * xCount + col] / 255;
+              raw = volumeGrid.data[row * (yCount * xCount) + sliceIndex * xCount + col];
             } else {
-              value = volumeGrid.data[row * (yCount * xCount) + col * xCount + sliceIndex] / 255;
+              raw = volumeGrid.data[row * (yCount * xCount) + col * xCount + sliceIndex];
             }
-            const curved = applyVolumeCurve(value, effectiveState);
             const idx = row * width + col;
+            let curved = 0;
+            let color = null;
+            if (isLabelVolume) {
+              const labelIndex = Math.round(Number(raw) || 0);
+              const labelId = labelIndex > 0
+                ? (labelLut[labelIndex - 1] || labelIndex)
+                : 0;
+              if (labelId > 0) {
+                const base = labelIndex * 4;
+                const alpha = labelColorTable ? labelColorTable.rgbaFloat[base + 3] : 0;
+                if (alpha > 0) {
+                  curved = alpha;
+                  color = new THREE.Color(
+                    labelColorTable.rgbaFloat[base + 0],
+                    labelColorTable.rgbaFloat[base + 1],
+                    labelColorTable.rgbaFloat[base + 2]
+                  );
+                }
+              }
+            } else {
+              const value = raw / 255;
+              curved = applyVolumeCurve(value, effectiveState);
+              if (curved > 0) {
+                color = sampleVolumePalette(curved, palette, effectiveState.saturation);
+              }
+            }
             strengths[idx] = curved;
             if (curved > maxStrength) maxStrength = curved;
-            const color = sampleVolumePalette(curved, palette, effectiveState.saturation);
+            if (!color) continue;
             rgb[idx * 3 + 0] = color.r;
             rgb[idx * 3 + 1] = color.g;
             rgb[idx * 3 + 2] = color.b;
@@ -1519,11 +1770,15 @@ async function boot() {
         if (maxStrength <= 0) return null;
         for (let idx = 0; idx < strengths.length; idx += 1) {
           const base = idx * 4;
-          const strength = strengths[idx] / maxStrength;
+          const strength = isLabelVolume
+            ? strengths[idx]
+            : strengths[idx] / maxStrength;
           image.data[base + 0] = Math.round(clamp01(rgb[idx * 3 + 0]) * 255);
           image.data[base + 1] = Math.round(clamp01(rgb[idx * 3 + 1]) * 255);
           image.data[base + 2] = Math.round(clamp01(rgb[idx * 3 + 2]) * 255);
-          image.data[base + 3] = Math.round(clamp01(Math.pow(strength, 0.8) * 255));
+          image.data[base + 3] = Math.round(
+            clamp01((isLabelVolume ? strength : Math.pow(strength, 0.8)) * (0.2 + 0.8 * clamp01(effectiveState.opacity))) * 255
+          );
         }
         ctx.putImageData(image, 0, 0);
         return canvasEl;
@@ -1574,7 +1829,9 @@ async function boot() {
 
     const renderVolumeRaymarch = (metadata, state) => {
       const effectiveState = buildEffectiveVolumeState(state, metadata);
+      const isLabelVolume = Boolean(metadata && metadata.label_volume);
       const texture = getVolumeTexture(THREE, metadata);
+      const labelColorTexture = getVolumeLabelColorTexture(THREE, metadata, effectiveState);
       if (!texture) return;
       const volumeGrid = decodeVolumeGrid(metadata);
       if (!volumeGrid || !Array.isArray(volumeGrid.shape) || volumeGrid.shape.length !== 3) {
@@ -1617,7 +1874,7 @@ async function boot() {
         Number(effectiveState.raymarchLightY) || 0.52,
         Number(effectiveState.raymarchLightZ) || 0.76
       ).normalize();
-      const paletteNames = ["grayscale", "section_ink", "nissl", "myelin", "ice_fire", "aurora", "magma", "viridis"];
+      const paletteNames = ["grayscale", "section_ink", "nissl", "myelin", "ice_fire", "aurora", "magma", "viridis", "allen_labels"];
       const paletteIndex = Math.max(0, paletteNames.indexOf(String(effectiveState.palette || "section_ink")));
       const clipAxisIndex = { none: 0, x: 1, y: 2, z: 3 }[String(effectiveState.clipAxis || "none")] || 0;
       const geometry = new THREE.BoxGeometry(1, 1, 1);
@@ -1627,6 +1884,8 @@ async function boot() {
         depthWrite: false,
         uniforms: {
           u_data: { value: texture },
+          u_labelColors: { value: labelColorTexture },
+          u_labelColorCount: { value: 256.0 },
           u_steps: { value: Number(baseSteps) },
           u_stepScale: { value: Number(stepScale) },
           u_jitter: { value: Number(jitterStrength) },
@@ -1641,6 +1900,7 @@ async function boot() {
           u_gamma: { value: Math.max(0.15, Number(effectiveState.gamma) || 1.0) },
           u_saturation: { value: Math.max(0.0, Number(effectiveState.saturation) || 1.0) },
           u_paletteIndex: { value: Number(paletteIndex) },
+          u_labelVolume: { value: isLabelVolume ? 1.0 : 0.0 },
           u_clipAxis: { value: Number(clipAxisIndex) },
           u_clipCenter: { value: Number(clipCenterNorm) },
           u_clipHalfThickness: { value: Number(clipHalfNorm) },
@@ -1684,6 +1944,8 @@ async function boot() {
           varying vec3 vOrigin;
           varying vec3 vDirection;
           uniform sampler3D u_data;
+          uniform sampler2D u_labelColors;
+          uniform float u_labelColorCount;
           uniform float u_steps;
           uniform float u_stepScale;
           uniform float u_jitter;
@@ -1698,6 +1960,7 @@ async function boot() {
           uniform float u_gamma;
           uniform float u_saturation;
           uniform float u_paletteIndex;
+          uniform float u_labelVolume;
           uniform float u_clipAxis;
           uniform float u_clipCenter;
           uniform float u_clipHalfThickness;
@@ -1754,7 +2017,14 @@ async function boot() {
           vec3 paletteColor(float value) {
             float v = clamp(value, 0.0, 1.0);
             vec3 color;
-            if (u_paletteIndex < 0.5) {
+            if (u_paletteIndex > 7.5) {
+              float id = max(1.0, floor(v * 255.0 + 0.5));
+              float h = fract(sin(id * 12.9898 + 78.233) * 43758.5453);
+              float s = 0.55 + fract(sin(id * 17.13 + 19.19) * 15731.743) * 0.35;
+              float l = 0.42 + fract(sin(id * 7.77 + 39.91) * 9113.117) * 0.24;
+              vec3 p = abs(fract(vec3(h) + vec3(0.0, 0.6666667, 0.3333333)) * 6.0 - 3.0);
+              color = clamp(vec3(l) + vec3(s) * (clamp(p - 1.0, 0.0, 1.0) - 0.5), 0.0, 1.0);
+            } else if (u_paletteIndex < 0.5) {
               color = vec3(v);
             } else if (u_paletteIndex < 1.5) {
               color = vec3(
@@ -1803,6 +2073,16 @@ async function boot() {
             return mix(vec3(l), color, clamp(u_saturation, 0.0, 2.0));
           }
 
+          vec4 lookupLabelColor(float rawValue) {
+            float labelIndex = floor(rawValue * 255.0 + 0.5);
+            if (labelIndex < 0.5) {
+              return vec4(0.0);
+            }
+            float width = max(1.0, u_labelColorCount);
+            float u = clamp((labelIndex + 0.5) / width, 0.0, 1.0);
+            return texture2D(u_labelColors, vec2(u, 0.5));
+          }
+
           bool insideClip(vec3 texPos) {
             if (u_clipAxis < 0.5) return true;
             float coord = u_clipAxis < 1.5 ? texPos.x : (u_clipAxis < 2.5 ? texPos.y : texPos.z);
@@ -1849,8 +2129,21 @@ async function boot() {
               vec3 texPos = p + 0.5;
               if (all(greaterThanEqual(texPos, vec3(0.0))) && all(lessThanEqual(texPos, vec3(1.0))) && insideClip(texPos)) {
                 float raw = texture(u_data, texPos).r;
-                float value = applyCurve(raw);
-                if (value > 0.0) {
+                if (u_labelVolume > 0.5) {
+                  vec4 labelColor = lookupLabelColor(raw);
+                  if (labelColor.a > 0.001) {
+                    float extinction = max(0.02, u_density) * 1.6;
+                    float alpha = (1.0 - exp(-extinction * delta * 16.0)) * clamp(u_opacity, 0.0, 1.0) * labelColor.a;
+                    accum.rgb += (1.0 - accum.a) * alpha * labelColor.rgb;
+                    accum.a += (1.0 - accum.a) * alpha;
+                    if (accum.a >= 0.98) break;
+                  }
+                } else {
+                  float value = applyCurve(raw);
+                  if (value <= 0.0) {
+                    p += stepDir;
+                    continue;
+                  }
                   vec3 color = paletteColor(value);
                   vec3 grad = computeGradient(texPos);
                   float gradMag = length(grad);
@@ -1957,6 +2250,8 @@ async function boot() {
       if (btnToggleVolumePanel) btnToggleVolumePanel.hidden = false;
       volumePanelEl.hidden = false;
       const state = volumeRenderState;
+      const metadata = (simulationPayload && simulationPayload.metadata) || {};
+      const resolvedRenderStyle = getMetadataResolvedRenderStyle(state, metadata);
       const makeSlider = (id, label, min, max, step, value, formatter) => {
         const displayValue = typeof formatter === "function" ? formatter(value) : String(value);
         return `
@@ -1965,7 +2260,6 @@ async function boot() {
           <output id="${id}Value">${displayValue}</output>
         `;
       };
-      const metadata = (simulationPayload && simulationPayload.metadata) || {};
       const sourceTag = adapter === "tiff-volume" ? "TIFF Volume" : "Zarr Volume";
       const requestVolumeRender = ({ rerenderPanel = false, refreshSceneStyle = false } = {}) => {
         const activeState = volumeRenderState || state;
@@ -2018,7 +2312,7 @@ async function boot() {
             <option value="raymarch">Raymarch</option>
             <option value="hybrid">Hybrid</option>
           </select>
-          <output id="volumeRenderStyleValue">${state.renderStyle}</output>
+          <output id="volumeRenderStyleValue">${resolvedRenderStyle}</output>
           <label for="volumeSectionEmphasis">Section</label>
           <select id="volumeSectionEmphasis">
             <option value="auto">Auto</option>
@@ -2029,6 +2323,7 @@ async function boot() {
           <output id="volumeSectionEmphasisValue">${state.sectionEmphasis}</output>
           <label for="volumePalette">Palette</label>
           <select id="volumePalette">
+            <option value="allen_labels">Allen Labels</option>
             <option value="ice_fire">Ice Fire</option>
             <option value="section_ink">Section Ink</option>
             <option value="nissl">Nissl</option>
@@ -2039,6 +2334,9 @@ async function boot() {
             <option value="grayscale">Grayscale</option>
           </select>
           <output id="volumePaletteValue">${state.palette}</output>
+          ${(metadata && metadata.label_volume)
+            ? makeSlider("volumeLabelColorSeed", "Label Seed", 0, 100000, 1, state.labelColorSeed, (v) => `${Math.round(Number(v))}`)
+            : ""}
           ${makeSlider("volumeTfLow", "Black Point", 0.0, 0.9, 0.01, state.tfLow, (v) => Number(v).toFixed(2))}
           ${makeSlider("volumeTfMid", "Midtone", 0.05, 0.95, 0.01, state.tfMid, (v) => Number(v).toFixed(2))}
           ${makeSlider("volumeTfHigh", "White Point", 0.1, 1.0, 0.01, state.tfHigh, (v) => Number(v).toFixed(2))}
@@ -2115,9 +2413,9 @@ async function boot() {
       const clipAxisSelect = document.getElementById("volumeClipAxis");
       const headerEl = volumePanelEl.querySelector(".three-volume-panel-header");
       if (presetSelect) presetSelect.value = String(state.preset || "custom");
-      if (renderStyleSelect) renderStyleSelect.value = String(state.renderStyle || "points");
+      if (renderStyleSelect) renderStyleSelect.value = String(resolvedRenderStyle || "points");
       if (sectionEmphasisSelect) sectionEmphasisSelect.value = String(state.sectionEmphasis || "auto");
-      if (paletteSelect) paletteSelect.value = String(state.palette || "ice_fire");
+      if (paletteSelect) paletteSelect.value = String(state.palette || (metadata && metadata.label_volume ? "allen_labels" : "ice_fire"));
       if (blendSelect) blendSelect.value = String(state.blendMode || "additive");
       if (clipAxisSelect) clipAxisSelect.value = String(state.clipAxis || "none");
       if (headerEl) {
@@ -2186,6 +2484,7 @@ async function boot() {
       bindSlider("volumeSaturation", "saturation", (v) => Number(v).toFixed(2));
       bindSlider("volumeOpacity", "opacity", (v) => Number(v).toFixed(2));
       bindSlider("volumeSize", "size", (v) => Number(v).toFixed(3));
+      bindSlider("volumeLabelColorSeed", "labelColorSeed", (v) => `${Math.round(Number(v))}`);
       bindSlider("volumeRaymarchSteps", "raymarchSteps", (v) => `${Math.round(Number(v))}`);
       bindSlider("volumeRaymarchStepScale", "raymarchStepScale", (v) => Number(v).toFixed(2));
       bindSlider("volumeRaymarchJitter", "raymarchJitter", (v) => Number(v).toFixed(2));
@@ -2259,6 +2558,9 @@ async function boot() {
           if (["nissl", "myelin", "section_ink", "grayscale"].includes(state.palette)) {
             state.backgroundTheme = "light";
             state.pointTexture = "section";
+          } else if (state.palette === "allen_labels") {
+            state.backgroundTheme = "dark";
+            state.pointTexture = "section";
           }
           state.preset = "custom";
           const paletteValue = document.getElementById("volumePaletteValue");
@@ -2287,7 +2589,9 @@ async function boot() {
           state.preset = "custom";
           const renderStyleValue = document.getElementById("volumeRenderStyleValue");
           const presetValue = document.getElementById("volumePresetValue");
-          if (renderStyleValue) renderStyleValue.textContent = state.renderStyle;
+          if (renderStyleValue) {
+            renderStyleValue.textContent = getMetadataResolvedRenderStyle(state, metadata);
+          }
           if (presetValue) presetValue.textContent = "custom";
           if (presetSelect) presetSelect.value = "custom";
           requestVolumeRender();
@@ -2402,10 +2706,12 @@ async function boot() {
         return;
       }
       const metadata = (simulationPayload && simulationPayload.metadata) || {};
+      const isLabelVolume = Boolean(metadata && metadata.label_volume);
       const state = buildEffectiveVolumeState(
         volumeRenderState || getVolumeRenderDefaults(metadata),
         metadata
       );
+      const labelColorTable = isLabelVolume ? getVolumeLabelColorTable(metadata, state) : null;
       const splatSize = Number(state.size || metadata.splat_size);
       const splatOpacity = Number(state.opacity || metadata.splat_opacity);
       const density = clamp01(state.density);
@@ -2420,17 +2726,42 @@ async function boot() {
         const z = Number(pt.z);
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
         if (!isVolumePointVisible({ x, y, z }, state, metadata)) return;
-        const confidence = clamp01(Number(pt.confidence));
-        const curved = applyVolumeCurve(confidence, state);
-        if (curved <= 0) return;
+        let curved = 0;
+        let color = null;
+        if (isLabelVolume) {
+          const labelId = Number(pt.label_id);
+          const labelIndex = Number(pt.label_index);
+          if ((!Number.isFinite(labelId) || labelId <= 0) && (!Number.isFinite(labelIndex) || labelIndex <= 0)) {
+            return;
+          }
+          let rgba = null;
+          if (Number.isFinite(labelIndex) && labelIndex > 0 && labelColorTable && labelIndex <= 255) {
+            const base = Math.floor(labelIndex) * 4;
+            rgba = [
+              labelColorTable.rgbaFloat[base + 0],
+              labelColorTable.rgbaFloat[base + 1],
+              labelColorTable.rgbaFloat[base + 2],
+              labelColorTable.rgbaFloat[base + 3],
+            ];
+          } else {
+            rgba = getLabelColorRgba(labelId, metadata, state);
+          }
+          if (!rgba || rgba[3] <= 0) return;
+          curved = rgba[3];
+          color = new THREE.Color(rgba[0], rgba[1], rgba[2]);
+        } else {
+          const confidence = clamp01(Number(pt.confidence));
+          curved = applyVolumeCurve(confidence, state);
+          if (curved <= 0) return;
+          color = sampleVolumePalette(
+            curved,
+            state.palette,
+            state.saturation
+          );
+        }
         if (density < 0.999 && hash01(ptIdx) > Math.min(1, density * (0.52 + curved * 0.48))) {
           return;
         }
-        const color = sampleVolumePalette(
-          curved,
-          state.palette,
-          state.saturation
-        );
         const base = writeIndex * 3;
         positions[base + 0] = x;
         positions[base + 1] = y;
@@ -2486,11 +2817,12 @@ async function boot() {
       const renderMode = String(
         (((simulationPayload || {}).metadata || {}).render_mode || "")
       ).toLowerCase();
+      const metadata = (simulationPayload && simulationPayload.metadata) || {};
       const isVolumeAdapter = adapter === "zarr-volume" || adapter === "tiff-volume";
+      const isLabelVolume = Boolean((metadata && metadata.label_volume) || renderMode === "label_ids");
       const useGaussianSplat =
         isVolumeAdapter &&
-        (renderMode === "gaussian_splatting" || renderMode === "gaussian_splats");
-      const metadata = (simulationPayload && simulationPayload.metadata) || {};
+        (renderMode === "gaussian_splatting" || renderMode === "gaussian_splats" || isLabelVolume);
       const effectiveVolumeState = buildEffectiveVolumeState(
         volumeRenderState || getVolumeRenderDefaults(metadata),
         metadata
@@ -2520,7 +2852,7 @@ async function boot() {
           const label = String(pt.label || `point_${ptIdx}`);
           pointMap.set(label, new THREE.Vector3(x, y, z));
         });
-        const renderStyle = String(effectiveVolumeState.renderStyle || "points");
+        const renderStyle = getMetadataResolvedRenderStyle(effectiveVolumeState, metadata);
         if (renderStyle === "raymarch") {
           renderVolumeRaymarch(metadata, effectiveVolumeState);
         }
@@ -3604,7 +3936,8 @@ async function boot() {
         return;
       }
       const state = volumeRenderState || {};
-      const renderStyle = String(state.renderStyle || "").toLowerCase();
+      const metadata = (simulationPayload && simulationPayload.metadata) || {};
+      const renderStyle = getMetadataResolvedRenderStyle(state, metadata);
       if (!(renderStyle === "raymarch" || renderStyle === "hybrid")) {
         adaptiveRaymarchFactor = 1.0;
         return;
