@@ -2729,7 +2729,68 @@ async function boot() {
           }
         });
       });
-      drawVolumeHistogram(document.getElementById("volumeHistogramCanvas"), metadata, state);
+      const histogramCanvas = document.getElementById("volumeHistogramCanvas");
+      const setPresetCustom = () => {
+        state.preset = "custom";
+        const presetValue = document.getElementById("volumePresetValue");
+        if (presetValue) presetValue.textContent = "custom";
+        if (presetSelect) presetSelect.value = "custom";
+      };
+      const enforceTransferFunctionBounds = () => {
+        state.tfLow = clamp01(Number(state.tfLow));
+        state.tfHigh = clamp01(Number(state.tfHigh));
+        if (state.tfHigh < state.tfLow + 0.02) {
+          state.tfHigh = Math.min(1, state.tfLow + 0.02);
+          if (state.tfHigh < state.tfLow + 0.02) {
+            state.tfLow = Math.max(0, state.tfHigh - 0.02);
+          }
+        }
+        const midMin = Math.min(0.99, state.tfLow + 0.01);
+        const midMax = Math.max(0.01, state.tfHigh - 0.01);
+        state.tfMid = Math.min(midMax, Math.max(midMin, clamp01(Number(state.tfMid))));
+      };
+      const syncTransferFunctionControls = () => {
+        const tfBindings = [
+          ["volumeTfLow", state.tfLow],
+          ["volumeTfMid", state.tfMid],
+          ["volumeTfHigh", state.tfHigh],
+        ];
+        tfBindings.forEach(([id, value]) => {
+          const input = document.getElementById(id);
+          const output = document.getElementById(`${id}Value`);
+          if (input) input.value = String(value);
+          if (output) output.textContent = Number(value).toFixed(2);
+        });
+        drawVolumeHistogram(histogramCanvas, metadata, state);
+      };
+      const pickTransferFunctionHandle = (event) => {
+        if (!histogramCanvas) return null;
+        const rect = histogramCanvas.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return null;
+        const relX = event.clientX - rect.left;
+        const relY = event.clientY - rect.top;
+        const handleY = {
+          tfLow: rect.height - 6,
+          tfMid: 10,
+          tfHigh: rect.height - 6,
+        };
+        const handles = [
+          { key: "tfLow", x: clamp01(state.tfLow) * rect.width, y: handleY.tfLow },
+          { key: "tfMid", x: clamp01(state.tfMid) * rect.width, y: handleY.tfMid },
+          { key: "tfHigh", x: clamp01(state.tfHigh) * rect.width, y: handleY.tfHigh },
+        ];
+        let closest = null;
+        handles.forEach((handle) => {
+          const dx = relX - handle.x;
+          const dy = relY - handle.y;
+          const distance = Math.hypot(dx, dy);
+          if (!closest || distance < closest.distance) {
+            closest = { key: handle.key, distance };
+          }
+        });
+        return closest && closest.distance <= 14 ? closest.key : null;
+      };
+      syncTransferFunctionControls();
       applyVolumeSceneStyle(state);
 
       const bindSlider = (id, key, formatter) => {
@@ -2742,26 +2803,14 @@ async function boot() {
         updateOutput(state[key]);
         input.addEventListener("input", () => {
           state[key] = Number(input.value);
-          if (key === "tfLow" && state.tfHigh <= state[key]) {
-            state.tfHigh = Math.min(1, state[key] + 0.02);
-            const tfHighInput = document.getElementById("volumeTfHigh");
-            const tfHighValue = document.getElementById("volumeTfHighValue");
-            if (tfHighInput) tfHighInput.value = String(state.tfHigh);
-            if (tfHighValue) tfHighValue.textContent = Number(state.tfHigh).toFixed(2);
+          if (key === "tfLow" || key === "tfMid" || key === "tfHigh") {
+            enforceTransferFunctionBounds();
+            syncTransferFunctionControls();
+          } else {
+            updateOutput(state[key]);
+            drawVolumeHistogram(histogramCanvas, metadata, state);
           }
-          if (key === "tfHigh" && state.tfLow >= state[key]) {
-            state.tfLow = Math.max(0, state[key] - 0.02);
-            const tfLowInput = document.getElementById("volumeTfLow");
-            const tfLowValue = document.getElementById("volumeTfLowValue");
-            if (tfLowInput) tfLowInput.value = String(state.tfLow);
-            if (tfLowValue) tfLowValue.textContent = Number(state.tfLow).toFixed(2);
-          }
-          state.preset = "custom";
-          const presetValue = document.getElementById("volumePresetValue");
-          if (presetValue) presetValue.textContent = "custom";
-          if (presetSelect) presetSelect.value = "custom";
-          updateOutput(state[key]);
-          drawVolumeHistogram(document.getElementById("volumeHistogramCanvas"), metadata, state);
+          setPresetCustom();
           requestVolumeRender();
         });
       };
@@ -2795,6 +2844,63 @@ async function boot() {
       );
       bindSlider("volumeSliceStep", "sliceStep", (v) => `${Math.max(1, Math.round(Number(v)))}`);
       bindSlider("volumeSlicePlaybackFps", "slicePlaybackFps", (v) => `${Math.max(1, Math.round(Number(v)))}`);
+      if (histogramCanvas) {
+        let activeHandle = null;
+        const applyPointerToTransferFunction = (event) => {
+          const rect = histogramCanvas.getBoundingClientRect();
+          if (rect.width <= 0) return;
+          const next = clamp01((event.clientX - rect.left) / rect.width);
+          if (activeHandle === "tfLow") {
+            state.tfLow = next;
+          } else if (activeHandle === "tfMid") {
+            state.tfMid = next;
+          } else if (activeHandle === "tfHigh") {
+            state.tfHigh = next;
+          }
+          enforceTransferFunctionBounds();
+          syncTransferFunctionControls();
+          setPresetCustom();
+          requestVolumeRender();
+        };
+        const stopHandleDrag = () => {
+          if (!activeHandle) return;
+          activeHandle = null;
+          histogramCanvas.classList.remove("is-dragging");
+          histogramCanvas.style.cursor = "crosshair";
+        };
+        histogramCanvas.style.cursor = "crosshair";
+        histogramCanvas.addEventListener("pointerdown", (event) => {
+          const handle = pickTransferFunctionHandle(event);
+          if (!handle) return;
+          event.preventDefault();
+          activeHandle = handle;
+          histogramCanvas.classList.add("is-dragging");
+          histogramCanvas.style.cursor = "grabbing";
+          if (typeof histogramCanvas.setPointerCapture === "function") {
+            histogramCanvas.setPointerCapture(event.pointerId);
+          }
+          applyPointerToTransferFunction(event);
+        });
+        histogramCanvas.addEventListener("pointermove", (event) => {
+          if (activeHandle) {
+            applyPointerToTransferFunction(event);
+            return;
+          }
+          const hoverHandle = pickTransferFunctionHandle(event);
+          histogramCanvas.style.cursor = hoverHandle ? "grab" : "crosshair";
+        });
+        histogramCanvas.addEventListener("pointerup", () => {
+          stopHandleDrag();
+        });
+        histogramCanvas.addEventListener("pointercancel", () => {
+          stopHandleDrag();
+        });
+        histogramCanvas.addEventListener("pointerleave", () => {
+          if (!activeHandle) {
+            histogramCanvas.style.cursor = "crosshair";
+          }
+        });
+      }
 
       const bindToggle = (id, key, outputId, labels = ["off", "on"]) => {
         const input = document.getElementById(id);

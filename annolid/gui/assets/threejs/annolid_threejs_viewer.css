@@ -463,6 +463,12 @@ body.white-theme .tool-sep {
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(5, 9, 14, 0.78);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.three-volume-histogram.is-dragging {
+  cursor: grabbing;
 }
 
 .three-volume-grid {
