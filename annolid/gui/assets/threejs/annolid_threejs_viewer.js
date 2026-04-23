@@ -494,6 +494,7 @@ async function boot() {
     let volumeRenderDefaults = null;
     let volumeGridCache = null;
     let volumeTextureCache = null;
+    let volumeRenderFrameHandle = 0;
     let flybodyControlsMoved = false;
     let flybodyDragState = null;
     let volumePanelMoved = false;
@@ -984,9 +985,29 @@ async function boot() {
       }
     };
 
+    const ensureRaymarchControlState = (rawState) =>
+      Object.assign(
+        {
+          raymarchSteps: 220,
+          raymarchStepScale: 1.0,
+          raymarchJitter: 0.45,
+          raymarchGradientOpacity: false,
+          raymarchGradientFactor: 2.8,
+          raymarchShading: true,
+          raymarchAmbient: 0.34,
+          raymarchDiffuse: 0.86,
+          raymarchSpecular: 0.22,
+          raymarchSpecularPower: 24.0,
+          raymarchLightX: 0.38,
+          raymarchLightY: 0.52,
+          raymarchLightZ: 0.76,
+        },
+        rawState || {}
+      );
+
     const getVolumeRenderDefaults = (metadata) => {
       const raw = (metadata && metadata.volume_render_defaults) || {};
-      return {
+      return ensureRaymarchControlState({
         preset: String(raw.preset || "cinematic"),
         intensity: Number.isFinite(Number(raw.intensity)) ? Number(raw.intensity) : 1.1,
         contrast: Number.isFinite(Number(raw.contrast)) ? Number(raw.contrast) : 1.28,
@@ -1007,9 +1028,44 @@ async function boot() {
         blendMode: String(raw.blend_mode || "additive"),
         pointTexture: String(raw.point_texture || "glow"),
         backgroundTheme: String(raw.background_theme || "dark"),
-        renderStyle: String(raw.render_style || "points"),
+        renderStyle: String(raw.render_style || "hybrid"),
         sectionEmphasis: String(raw.section_emphasis || "auto"),
-      };
+        raymarchSteps: Number.isFinite(Number(raw.raymarch_steps))
+          ? Number(raw.raymarch_steps)
+          : 220,
+        raymarchStepScale: Number.isFinite(Number(raw.raymarch_step_scale))
+          ? Number(raw.raymarch_step_scale)
+          : 1.0,
+        raymarchJitter: Number.isFinite(Number(raw.raymarch_jitter))
+          ? Number(raw.raymarch_jitter)
+          : 0.45,
+        raymarchGradientOpacity: Boolean(raw.gradient_opacity),
+        raymarchGradientFactor: Number.isFinite(Number(raw.gradient_opacity_factor))
+          ? Number(raw.gradient_opacity_factor)
+          : 2.8,
+        raymarchShading: raw.use_shading !== false,
+        raymarchAmbient: Number.isFinite(Number(raw.ambient_strength))
+          ? Number(raw.ambient_strength)
+          : 0.34,
+        raymarchDiffuse: Number.isFinite(Number(raw.diffuse_strength))
+          ? Number(raw.diffuse_strength)
+          : 0.86,
+        raymarchSpecular: Number.isFinite(Number(raw.specular_strength))
+          ? Number(raw.specular_strength)
+          : 0.22,
+        raymarchSpecularPower: Number.isFinite(Number(raw.specular_power))
+          ? Number(raw.specular_power)
+          : 24.0,
+        raymarchLightX: Array.isArray(raw.light_direction) && Number.isFinite(Number(raw.light_direction[0]))
+          ? Number(raw.light_direction[0])
+          : 0.38,
+        raymarchLightY: Array.isArray(raw.light_direction) && Number.isFinite(Number(raw.light_direction[1]))
+          ? Number(raw.light_direction[1])
+          : 0.52,
+        raymarchLightZ: Array.isArray(raw.light_direction) && Number.isFinite(Number(raw.light_direction[2]))
+          ? Number(raw.light_direction[2])
+          : 0.76,
+      });
     };
 
     const getVolumePreset = (presetName) => {
@@ -1148,7 +1204,9 @@ async function boot() {
           sectionEmphasis: "auto",
         },
       };
-      return presets[String(presetName || "").toLowerCase()] || presets.cinematic;
+      return ensureRaymarchControlState(
+        presets[String(presetName || "").toLowerCase()] || presets.cinematic
+      );
     };
 
     const resolveAutoSectionEmphasis = (metadata, state) => {
@@ -1478,6 +1536,10 @@ async function boot() {
       const effectiveState = buildEffectiveVolumeState(state, metadata);
       const texture = getVolumeTexture(THREE, metadata);
       if (!texture) return;
+      const volumeGrid = decodeVolumeGrid(metadata);
+      if (!volumeGrid || !Array.isArray(volumeGrid.shape) || volumeGrid.shape.length !== 3) {
+        return;
+      }
       const bounds = (metadata && metadata.volume_bounds) || {};
       const xBounds = Array.isArray(bounds.x) ? bounds.x : [0, 1];
       const yBounds = Array.isArray(bounds.y) ? bounds.y : [0, 1];
@@ -1501,6 +1563,20 @@ async function boot() {
       const clipHalfNorm = clamp01(
         slab.halfThickness / Math.max(1e-5, Math.abs(Number(axisBounds[1] || 1) - Number(axisBounds[0] || 0)))
       );
+      const [zCount, yCount, xCount] = volumeGrid.shape;
+      const texel = new THREE.Vector3(
+        1.0 / Math.max(1, Number(xCount) || 1),
+        1.0 / Math.max(1, Number(yCount) || 1),
+        1.0 / Math.max(1, Number(zCount) || 1)
+      );
+      const baseSteps = Math.max(64, Math.min(640, Math.round(Number(effectiveState.raymarchSteps) || 220)));
+      const stepScale = Math.max(0.25, Math.min(3.0, Number(effectiveState.raymarchStepScale) || 1.0));
+      const jitterStrength = clamp01(Number(effectiveState.raymarchJitter) || 0.0);
+      const lightDir = new THREE.Vector3(
+        Number(effectiveState.raymarchLightX) || 0.38,
+        Number(effectiveState.raymarchLightY) || 0.52,
+        Number(effectiveState.raymarchLightZ) || 0.76
+      ).normalize();
       const paletteNames = ["grayscale", "section_ink", "nissl", "myelin", "ice_fire", "aurora", "magma", "viridis"];
       const paletteIndex = Math.max(0, paletteNames.indexOf(String(effectiveState.palette || "section_ink")));
       const clipAxisIndex = { none: 0, x: 1, y: 2, z: 3 }[String(effectiveState.clipAxis || "none")] || 0;
@@ -1511,7 +1587,9 @@ async function boot() {
         depthWrite: false,
         uniforms: {
           u_data: { value: texture },
-          u_steps: { value: 192.0 },
+          u_steps: { value: Number(baseSteps) },
+          u_stepScale: { value: Number(stepScale) },
+          u_jitter: { value: Number(jitterStrength) },
           u_opacity: { value: Math.max(0.04, Number(effectiveState.opacity) || 0.6) },
           u_density: { value: Math.max(0.05, Number(effectiveState.density) || 1.0) },
           u_tfLow: { value: clamp01(effectiveState.tfLow) },
@@ -1526,6 +1604,29 @@ async function boot() {
           u_clipAxis: { value: Number(clipAxisIndex) },
           u_clipCenter: { value: Number(clipCenterNorm) },
           u_clipHalfThickness: { value: Number(clipHalfNorm) },
+          u_clipInvert: { value: effectiveState.clipInvert ? 1.0 : 0.0 },
+          u_texel: { value: texel },
+          u_useGradientOpacity: {
+            value: effectiveState.raymarchGradientOpacity ? 1.0 : 0.0,
+          },
+          u_gradientOpacityFactor: {
+            value: Math.max(0.0, Number(effectiveState.raymarchGradientFactor) || 0.0),
+          },
+          u_useShading: { value: effectiveState.raymarchShading ? 1.0 : 0.0 },
+          u_ambientStrength: {
+            value: Math.max(0.0, Number(effectiveState.raymarchAmbient) || 0.34),
+          },
+          u_diffuseStrength: {
+            value: Math.max(0.0, Number(effectiveState.raymarchDiffuse) || 0.86),
+          },
+          u_specularStrength: {
+            value: Math.max(0.0, Number(effectiveState.raymarchSpecular) || 0.22),
+          },
+          u_specularPower: {
+            value: Math.max(2.0, Number(effectiveState.raymarchSpecularPower) || 24.0),
+          },
+          u_lightDir: { value: lightDir },
+          u_time: { value: performance.now() / 1000.0 },
         },
         vertexShader: `
           varying vec3 vOrigin;
@@ -1544,6 +1645,8 @@ async function boot() {
           varying vec3 vDirection;
           uniform sampler3D u_data;
           uniform float u_steps;
+          uniform float u_stepScale;
+          uniform float u_jitter;
           uniform float u_opacity;
           uniform float u_density;
           uniform float u_tfLow;
@@ -1558,6 +1661,23 @@ async function boot() {
           uniform float u_clipAxis;
           uniform float u_clipCenter;
           uniform float u_clipHalfThickness;
+          uniform float u_clipInvert;
+          uniform vec3 u_texel;
+          uniform float u_useGradientOpacity;
+          uniform float u_gradientOpacityFactor;
+          uniform float u_useShading;
+          uniform float u_ambientStrength;
+          uniform float u_diffuseStrength;
+          uniform float u_specularStrength;
+          uniform float u_specularPower;
+          uniform vec3 u_lightDir;
+          uniform float u_time;
+
+          float hash12(vec2 p) {
+            vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+            p3 += dot(p3, p3.yzx + 33.33);
+            return fract((p3.x + p3.y) * p3.z);
+          }
 
           vec2 hitBox(vec3 orig, vec3 dir) {
             const vec3 boxMin = vec3(-0.5);
@@ -1646,7 +1766,30 @@ async function boot() {
           bool insideClip(vec3 texPos) {
             if (u_clipAxis < 0.5) return true;
             float coord = u_clipAxis < 1.5 ? texPos.x : (u_clipAxis < 2.5 ? texPos.y : texPos.z);
-            return abs(coord - u_clipCenter) <= max(0.005, u_clipHalfThickness);
+            bool inside = abs(coord - u_clipCenter) <= max(0.005, u_clipHalfThickness);
+            if (u_clipInvert > 0.5) return !inside;
+            return inside;
+          }
+
+          vec3 computeGradient(vec3 texPos) {
+            vec3 dx = vec3(u_texel.x, 0.0, 0.0);
+            vec3 dy = vec3(0.0, u_texel.y, 0.0);
+            vec3 dz = vec3(0.0, 0.0, u_texel.z);
+            float gx = texture(u_data, clamp(texPos + dx, 0.0, 1.0)).r - texture(u_data, clamp(texPos - dx, 0.0, 1.0)).r;
+            float gy = texture(u_data, clamp(texPos + dy, 0.0, 1.0)).r - texture(u_data, clamp(texPos - dy, 0.0, 1.0)).r;
+            float gz = texture(u_data, clamp(texPos + dz, 0.0, 1.0)).r - texture(u_data, clamp(texPos - dz, 0.0, 1.0)).r;
+            return vec3(gx, gy, gz);
+          }
+
+          vec3 shadeColor(vec3 color, vec3 normal, vec3 viewDir) {
+            vec3 n = normalize(normal);
+            vec3 l = normalize(u_lightDir);
+            vec3 v = normalize(viewDir);
+            vec3 h = normalize(l + v);
+            float ndotl = max(dot(n, l), 0.0);
+            float spec = pow(max(dot(n, h), 0.0), max(2.0, u_specularPower));
+            float shade = u_ambientStrength + u_diffuseStrength * ndotl;
+            return color * shade + vec3(u_specularStrength * spec);
           }
 
           void main() {
@@ -1654,19 +1797,32 @@ async function boot() {
             vec2 bounds = hitBox(vOrigin, rayDir);
             if (bounds.x > bounds.y) discard;
             bounds.x = max(bounds.x, 0.0);
-            vec3 p = vOrigin + bounds.x * rayDir;
-            float delta = (bounds.y - bounds.x) / max(u_steps, 8.0);
+            float steps = clamp(u_steps * u_stepScale, 32.0, 720.0);
+            float delta = (bounds.y - bounds.x) / max(steps, 8.0);
+            float jitter = (hash12(gl_FragCoord.xy + vec2(u_time * 13.1, u_time * 7.7)) - 0.5) * u_jitter;
+            float startT = bounds.x + delta * (0.5 + jitter);
+            vec3 p = vOrigin + startT * rayDir;
             vec3 stepDir = rayDir * delta;
             vec4 accum = vec4(0.0);
-            for (float i = 0.0; i < 320.0; i += 1.0) {
-              if (i >= u_steps) break;
+            for (float i = 0.0; i < 720.0; i += 1.0) {
+              if (i >= steps) break;
               vec3 texPos = p + 0.5;
               if (all(greaterThanEqual(texPos, vec3(0.0))) && all(lessThanEqual(texPos, vec3(1.0))) && insideClip(texPos)) {
                 float raw = texture(u_data, texPos).r;
                 float value = applyCurve(raw);
                 if (value > 0.0) {
                   vec3 color = paletteColor(value);
-                  float alpha = clamp(value * u_opacity * u_density * 0.08, 0.0, 1.0);
+                  vec3 grad = computeGradient(texPos);
+                  float gradMag = length(grad);
+                  if (u_useShading > 0.5 && gradMag > 1e-6) {
+                    color = shadeColor(color, grad, -rayDir);
+                  }
+                  float gradientBoost = 1.0;
+                  if (u_useGradientOpacity > 0.5) {
+                    gradientBoost = clamp(gradMag * u_gradientOpacityFactor, 0.2, 2.5);
+                  }
+                  float extinction = max(0.0, value) * max(0.01, u_density) * gradientBoost * 4.0;
+                  float alpha = (1.0 - exp(-extinction * delta * 42.0)) * clamp(u_opacity, 0.0, 1.0);
                   accum.rgb += (1.0 - accum.a) * alpha * color;
                   accum.a += (1.0 - accum.a) * alpha;
                   if (accum.a >= 0.98) break;
@@ -1748,7 +1904,8 @@ async function boot() {
     const renderVolumePanel = () => {
       if (!volumePanelEl) return;
       const adapter = String((simulationPayload && simulationPayload.adapter) || "");
-      if (adapter !== "zarr-volume" || !volumeRenderState || !volumeRenderDefaults) {
+      const isVolumeAdapter = adapter === "zarr-volume" || adapter === "tiff-volume";
+      if (!isVolumeAdapter || !volumeRenderState || !volumeRenderDefaults) {
         volumePanelEl.hidden = true;
         if (btnToggleVolumePanel) btnToggleVolumePanel.hidden = true;
         syncVolumeToolbarButton();
@@ -1766,14 +1923,39 @@ async function boot() {
         `;
       };
       const metadata = (simulationPayload && simulationPayload.metadata) || {};
+      const sourceTag = adapter === "tiff-volume" ? "TIFF Volume" : "Zarr Volume";
+      const requestVolumeRender = ({ rerenderPanel = false, refreshSceneStyle = false } = {}) => {
+        const activeState = volumeRenderState || state;
+        if (refreshSceneStyle) {
+          applyVolumeSceneStyle(activeState);
+        }
+        persistVolumeState(metadata, activeState);
+        if (volumeRenderFrameHandle) {
+          return;
+        }
+        volumeRenderFrameHandle = window.requestAnimationFrame(() => {
+          volumeRenderFrameHandle = 0;
+          if (rerenderPanel) {
+            renderVolumePanel();
+          }
+          renderSimulationFrame(simulationFrameIndex);
+        });
+      };
       volumePanelEl.innerHTML = `
         <div class="three-volume-panel-header">
           <div class="three-panel-title">Volume Look</div>
-          <div class="three-volume-panel-tag">Zarr Volume</div>
+          <div class="three-volume-panel-tag">${sourceTag}</div>
         </div>
-        <div class="three-volume-section-title">Transfer Function</div>
-        <canvas id="volumeHistogramCanvas" class="three-volume-histogram" width="260" height="92"></canvas>
-        <div class="three-volume-grid">
+        <div class="three-volume-quick-presets">
+          <button id="volumeQuickPresetCinematic" type="button">Cinematic</button>
+          <button id="volumeQuickPresetSection" type="button">Section</button>
+          <button id="volumeQuickPresetNissl" type="button">Nissl</button>
+          <button id="volumeQuickPresetMyelin" type="button">Myelin</button>
+        </div>
+        <section class="three-volume-card">
+          <div class="three-volume-section-title">Transfer Function</div>
+          <canvas id="volumeHistogramCanvas" class="three-volume-histogram" width="260" height="92"></canvas>
+          <div class="three-volume-grid">
           <label for="volumePreset">Preset</label>
           <select id="volumePreset">
             <option value="cinematic">Cinematic</option>
@@ -1831,9 +2013,33 @@ async function boot() {
             <option value="normal">Normal</option>
           </select>
           <output id="volumeBlendModeValue">${state.blendMode}</output>
-        </div>
-        <div class="three-volume-section-title">Clipping</div>
-        <div class="three-volume-grid">
+          </div>
+        </section>
+        <section class="three-volume-card">
+          <div class="three-volume-section-title">Raymarch</div>
+          <div class="three-volume-grid">
+          ${makeSlider("volumeRaymarchSteps", "Ray Steps", 64, 640, 1, state.raymarchSteps, (v) => `${Math.round(Number(v))}`)}
+          ${makeSlider("volumeRaymarchStepScale", "Step Scale", 0.4, 2.5, 0.01, state.raymarchStepScale, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeRaymarchJitter", "Jitter", 0.0, 1.0, 0.01, state.raymarchJitter, (v) => Number(v).toFixed(2))}
+          <label for="volumeRaymarchGradientOpacity">Gradient Opacity</label>
+          <input id="volumeRaymarchGradientOpacity" type="checkbox" ${state.raymarchGradientOpacity ? "checked" : ""} />
+          <output id="volumeRaymarchGradientOpacityValue">${state.raymarchGradientOpacity ? "on" : "off"}</output>
+          ${makeSlider("volumeRaymarchGradientFactor", "Gradient Gain", 0.0, 8.0, 0.05, state.raymarchGradientFactor, (v) => Number(v).toFixed(2))}
+          <label for="volumeRaymarchShading">Shading</label>
+          <input id="volumeRaymarchShading" type="checkbox" ${state.raymarchShading ? "checked" : ""} />
+          <output id="volumeRaymarchShadingValue">${state.raymarchShading ? "on" : "off"}</output>
+          ${makeSlider("volumeRaymarchAmbient", "Ambient", 0.0, 1.0, 0.01, state.raymarchAmbient, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeRaymarchDiffuse", "Diffuse", 0.0, 2.0, 0.01, state.raymarchDiffuse, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeRaymarchSpecular", "Specular", 0.0, 1.2, 0.01, state.raymarchSpecular, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeRaymarchSpecularPower", "Spec Power", 4.0, 96.0, 1.0, state.raymarchSpecularPower, (v) => `${Math.round(Number(v))}`)}
+          ${makeSlider("volumeRaymarchLightX", "Light X", -1.0, 1.0, 0.01, state.raymarchLightX, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeRaymarchLightY", "Light Y", -1.0, 1.0, 0.01, state.raymarchLightY, (v) => Number(v).toFixed(2))}
+          ${makeSlider("volumeRaymarchLightZ", "Light Z", -1.0, 1.0, 0.01, state.raymarchLightZ, (v) => Number(v).toFixed(2))}
+          </div>
+        </section>
+        <section class="three-volume-card">
+          <div class="three-volume-section-title">Clipping</div>
+          <div class="three-volume-grid">
           <label for="volumeClipAxis">Axis</label>
           <select id="volumeClipAxis">
             <option value="none">Off</option>
@@ -1847,13 +2053,16 @@ async function boot() {
           <label for="volumeClipInvert">Invert</label>
           <input id="volumeClipInvert" type="checkbox" ${state.clipInvert ? "checked" : ""} />
           <output id="volumeClipInvertValue">${state.clipInvert ? "outside" : "inside"}</output>
-        </div>
-        <div class="three-volume-actions">
+          </div>
+        </section>
+        <section class="three-volume-card">
+          <div class="three-volume-actions">
           <button id="volumePresetApply" type="button">Apply Preset</button>
           <button id="volumeHistologyDefaults" type="button">Histology Defaults</button>
           <button id="volumeFocusSlab" type="button">Focus Slab</button>
           <button id="volumeReset" type="button">Reset</button>
-        </div>
+          </div>
+        </section>
       `;
       const presetSelect = document.getElementById("volumePreset");
       const renderStyleSelect = document.getElementById("volumeRenderStyle");
@@ -1920,8 +2129,7 @@ async function boot() {
           if (presetSelect) presetSelect.value = "custom";
           updateOutput(state[key]);
           drawVolumeHistogram(document.getElementById("volumeHistogramCanvas"), metadata, state);
-          persistVolumeState(metadata, state);
-          renderSimulationFrame(simulationFrameIndex);
+          requestVolumeRender();
         });
       };
       bindSlider("volumeTfLow", "tfLow", (v) => Number(v).toFixed(2));
@@ -1935,6 +2143,72 @@ async function boot() {
       bindSlider("volumeSaturation", "saturation", (v) => Number(v).toFixed(2));
       bindSlider("volumeOpacity", "opacity", (v) => Number(v).toFixed(2));
       bindSlider("volumeSize", "size", (v) => Number(v).toFixed(3));
+      bindSlider("volumeRaymarchSteps", "raymarchSteps", (v) => `${Math.round(Number(v))}`);
+      bindSlider("volumeRaymarchStepScale", "raymarchStepScale", (v) => Number(v).toFixed(2));
+      bindSlider("volumeRaymarchJitter", "raymarchJitter", (v) => Number(v).toFixed(2));
+      bindSlider("volumeRaymarchGradientFactor", "raymarchGradientFactor", (v) => Number(v).toFixed(2));
+      bindSlider("volumeRaymarchAmbient", "raymarchAmbient", (v) => Number(v).toFixed(2));
+      bindSlider("volumeRaymarchDiffuse", "raymarchDiffuse", (v) => Number(v).toFixed(2));
+      bindSlider("volumeRaymarchSpecular", "raymarchSpecular", (v) => Number(v).toFixed(2));
+      bindSlider("volumeRaymarchSpecularPower", "raymarchSpecularPower", (v) => `${Math.round(Number(v))}`);
+      bindSlider("volumeRaymarchLightX", "raymarchLightX", (v) => Number(v).toFixed(2));
+      bindSlider("volumeRaymarchLightY", "raymarchLightY", (v) => Number(v).toFixed(2));
+      bindSlider("volumeRaymarchLightZ", "raymarchLightZ", (v) => Number(v).toFixed(2));
+
+      const bindToggle = (id, key, outputId, labels = ["off", "on"]) => {
+        const input = document.getElementById(id);
+        const output = document.getElementById(outputId);
+        if (!input) return;
+        const sync = () => {
+          if (output) {
+            output.textContent = state[key] ? labels[1] : labels[0];
+          }
+        };
+        sync();
+        input.addEventListener("change", () => {
+          state[key] = Boolean(input.checked);
+          state.preset = "custom";
+          const presetValue = document.getElementById("volumePresetValue");
+          if (presetValue) presetValue.textContent = "custom";
+          if (presetSelect) presetSelect.value = "custom";
+          sync();
+          requestVolumeRender();
+        });
+      };
+      bindToggle(
+        "volumeRaymarchGradientOpacity",
+        "raymarchGradientOpacity",
+        "volumeRaymarchGradientOpacityValue",
+        ["off", "on"]
+      );
+      bindToggle(
+        "volumeRaymarchShading",
+        "raymarchShading",
+        "volumeRaymarchShadingValue",
+        ["off", "on"]
+      );
+      const quickPresetMap = {
+        volumeQuickPresetCinematic: "cinematic",
+        volumeQuickPresetSection: "section_stack",
+        volumeQuickPresetNissl: "nissl_sections",
+        volumeQuickPresetMyelin: "myelin_sections",
+      };
+      Object.entries(quickPresetMap).forEach(([elementId, presetName]) => {
+        const button = document.getElementById(elementId);
+        if (!button) return;
+        button.addEventListener("click", () => {
+          const presetState = Object.assign({}, volumeRenderDefaults, getVolumePreset(presetName));
+          volumeRenderState = Object.assign({}, volumeRenderState || {}, presetState, { preset: presetName });
+          if (presetSelect) {
+            presetSelect.value = presetName;
+          }
+          const presetValue = document.getElementById("volumePresetValue");
+          if (presetValue) {
+            presetValue.textContent = presetName;
+          }
+          requestVolumeRender({ rerenderPanel: true, refreshSceneStyle: true });
+        });
+      });
 
       if (paletteSelect) {
         paletteSelect.addEventListener("change", () => {
@@ -1949,9 +2223,7 @@ async function boot() {
           if (paletteValue) paletteValue.textContent = state.palette;
           if (presetValue) presetValue.textContent = "custom";
           if (presetSelect) presetSelect.value = "custom";
-          persistVolumeState(metadata, state);
-          applyVolumeSceneStyle(state);
-          renderSimulationFrame(simulationFrameIndex);
+          requestVolumeRender({ refreshSceneStyle: true });
         });
       }
       if (blendSelect) {
@@ -1963,8 +2235,7 @@ async function boot() {
           if (blendValue) blendValue.textContent = state.blendMode;
           if (presetValue) presetValue.textContent = "custom";
           if (presetSelect) presetSelect.value = "custom";
-          persistVolumeState(metadata, state);
-          renderSimulationFrame(simulationFrameIndex);
+          requestVolumeRender();
         });
       }
       if (renderStyleSelect) {
@@ -1976,8 +2247,7 @@ async function boot() {
           if (renderStyleValue) renderStyleValue.textContent = state.renderStyle;
           if (presetValue) presetValue.textContent = "custom";
           if (presetSelect) presetSelect.value = "custom";
-          persistVolumeState(metadata, state);
-          renderSimulationFrame(simulationFrameIndex);
+          requestVolumeRender();
         });
       }
       if (sectionEmphasisSelect) {
@@ -1989,9 +2259,7 @@ async function boot() {
           if (sectionValue) sectionValue.textContent = state.sectionEmphasis;
           if (presetValue) presetValue.textContent = "custom";
           if (presetSelect) presetSelect.value = "custom";
-          persistVolumeState(metadata, state);
-          renderVolumePanel();
-          renderSimulationFrame(simulationFrameIndex);
+          requestVolumeRender({ rerenderPanel: true });
         });
       }
       if (clipAxisSelect) {
@@ -2000,8 +2268,7 @@ async function boot() {
           const clipAxisValue = document.getElementById("volumeClipAxisValue");
           if (clipAxisValue) clipAxisValue.textContent = state.clipAxis;
           state.preset = "custom";
-          persistVolumeState(metadata, state);
-          renderSimulationFrame(simulationFrameIndex);
+          requestVolumeRender();
         });
       }
       const focusSlabBtn = document.getElementById("volumeFocusSlab");
@@ -2021,11 +2288,10 @@ async function boot() {
             clipCenter: 0.5,
             clipThickness: 1.0,
             backgroundTheme: "light",
+            raymarchGradientOpacity: true,
           });
           volumeRenderState = Object.assign({}, volumeRenderState || {}, next);
-          persistVolumeState(metadata, volumeRenderState);
-          renderVolumePanel();
-          renderSimulationFrame(simulationFrameIndex);
+          requestVolumeRender({ rerenderPanel: true, refreshSceneStyle: true });
         });
       }
       const clipInvert = document.getElementById("volumeClipInvert");
@@ -2035,8 +2301,7 @@ async function boot() {
           const clipInvertValue = document.getElementById("volumeClipInvertValue");
           if (clipInvertValue) clipInvertValue.textContent = state.clipInvert ? "outside" : "inside";
           state.preset = "custom";
-          persistVolumeState(metadata, state);
-          renderSimulationFrame(simulationFrameIndex);
+          requestVolumeRender();
         });
       }
       bindSlider("volumeClipCenter", "clipCenter", (v) => `${Math.round(Number(v) * 100)}%`);
@@ -2056,9 +2321,7 @@ async function boot() {
             ? volumeRenderDefaults
             : Object.assign({}, volumeRenderDefaults, getVolumePreset(nextPreset));
           volumeRenderState = Object.assign({}, volumeRenderState || {}, presetState, { preset: nextPreset });
-          persistVolumeState(metadata, volumeRenderState);
-          renderVolumePanel();
-          renderSimulationFrame(simulationFrameIndex);
+          requestVolumeRender({ rerenderPanel: true, refreshSceneStyle: true });
         });
       }
       const resetBtn = document.getElementById("volumeReset");
@@ -2066,8 +2329,7 @@ async function boot() {
         resetBtn.addEventListener("click", () => {
           volumeRenderState = Object.assign({}, volumeRenderDefaults, { preset: volumeRenderDefaults.preset || "cinematic" });
           clearPersistedVolumeState(metadata);
-          renderVolumePanel();
-          renderSimulationFrame(simulationFrameIndex);
+          requestVolumeRender({ rerenderPanel: true, refreshSceneStyle: true });
         });
       }
       refreshVolumePanelLayout();
@@ -2180,8 +2442,9 @@ async function boot() {
       const renderMode = String(
         (((simulationPayload || {}).metadata || {}).render_mode || "")
       ).toLowerCase();
+      const isVolumeAdapter = adapter === "zarr-volume" || adapter === "tiff-volume";
       const useGaussianSplat =
-        adapter === "zarr-volume" &&
+        isVolumeAdapter &&
         (renderMode === "gaussian_splatting" || renderMode === "gaussian_splats");
       const metadata = (simulationPayload && simulationPayload.metadata) || {};
       const effectiveVolumeState = buildEffectiveVolumeState(
@@ -2348,7 +2611,7 @@ async function boot() {
       simulationPayload = payload;
       const adapter = String((payload && payload.adapter) || "");
       const metadata = (payload && payload.metadata) || {};
-      if (adapter === "zarr-volume") {
+      if (adapter === "zarr-volume" || adapter === "tiff-volume") {
         volumeRenderDefaults = getVolumeRenderDefaults(metadata);
         volumeRenderState = Object.assign(
           {},

@@ -208,9 +208,9 @@ body.white-theme {
 
 #annolidThreeVolumePanel {
   top: 180px;
-  min-width: 248px;
-  max-width: min(34vw, 340px);
-  max-height: min(68vh, 720px);
+  min-width: 290px;
+  max-width: min(38vw, 420px);
+  max-height: min(74vh, 820px);
   overflow: auto;
 }
 
@@ -372,12 +372,41 @@ body.white-theme .tool-sep {
 }
 
 .three-volume-section-title {
-  margin: 12px 0 8px;
+  margin: 0 0 8px;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   opacity: 0.82;
+}
+
+.three-volume-card {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.three-volume-quick-presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.three-volume-quick-presets button {
+  height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.three-volume-quick-presets button:hover {
+  background: rgba(255, 255, 255, 0.14);
 }
 
 .three-volume-histogram {
@@ -392,7 +421,7 @@ body.white-theme .tool-sep {
 
 .three-volume-grid {
   display: grid;
-  grid-template-columns: minmax(82px, 1fr) minmax(110px, 1.2fr) auto;
+  grid-template-columns: minmax(88px, 1fr) minmax(134px, 1.35fr) auto;
   gap: 8px 10px;
   align-items: center;
 }
@@ -437,6 +466,16 @@ body.white-theme .tool-sep {
 }
 
 body.white-theme .three-volume-actions button {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+body.white-theme .three-volume-card {
+  background: rgba(255, 255, 255, 0.65);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
+body.white-theme .three-volume-quick-presets button {
   background: rgba(0, 0, 0, 0.05);
   border-color: rgba(0, 0, 0, 0.1);
 }

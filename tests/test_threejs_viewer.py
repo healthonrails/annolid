@@ -15,10 +15,11 @@ def test_supports_threejs_canvas_known_extensions():
     assert supports_threejs_canvas("panorama.png")
     assert supports_threejs_canvas("panorama.webp")
     assert supports_threejs_canvas("atlas_interleaved_30um_image.zarr")
+    assert supports_threejs_canvas("volume.tif")
+    assert supports_threejs_canvas("volume.tiff")
 
 
 def test_supports_threejs_canvas_rejects_unknown_extensions():
-    assert not supports_threejs_canvas("volume.tif")
     assert not supports_threejs_canvas("volume.nii.gz")
     assert not supports_threejs_canvas("anything")
 
@@ -154,6 +155,8 @@ def test_threejs_viewer_supports_zarr_gaussian_splat_render_mode():
     assert "applyVolumeSceneStyle" in source
     assert "renderVolumeSlabPlane" in source
     assert "renderVolumeRaymarch" in source
+    assert 'adapter === "tiff-volume"' in source
+    assert 'adapter === "zarr-volume" || adapter === "tiff-volume"' in source
     assert "fitCameraToVolumeSlab" in source
     assert "volume_grid_base64" in source
     assert "volumeHistologyDefaults" in source
@@ -161,9 +164,16 @@ def test_threejs_viewer_supports_zarr_gaussian_splat_render_mode():
     assert 'value="raymarch"' in source
     assert "volumeSectionEmphasis" in source
     assert "resolveAutoSectionEmphasis" in source
+    assert "volumeRaymarchSteps" in source
+    assert "volumeRaymarchGradientOpacity" in source
+    assert "volumeRaymarchShading" in source
+    assert "volumeQuickPresetCinematic" in source
+    assert "requestVolumeRender" in source
+    assert "u_useGradientOpacity" in source
+    assert "u_useShading" in source
     assert "interleaved_detected" in source
     assert "volumeFocusSlab" in source
-    assert "cursor: move;" in (
+    css_source = (
         repo_root
         / "annolid"
         / "gui"
@@ -171,3 +181,6 @@ def test_threejs_viewer_supports_zarr_gaussian_splat_render_mode():
         / "threejs"
         / "annolid_threejs_viewer.css"
     ).read_text(encoding="utf-8")
+    assert "cursor: move;" in css_source
+    assert ".three-volume-card" in css_source
+    assert ".three-volume-quick-presets" in css_source

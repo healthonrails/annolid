@@ -260,7 +260,7 @@ class ViewerToolsMixin:
             str(Path(self.filename).parent) if getattr(self, "filename", None) else "."
         )
         filters = self.tr(
-            "3D sources (*.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.glb *.gltf *.zarr *.json *.jpg *.jpeg *.png *.webp *.bmp *.gif);;All files (*.*)"
+            "3D sources (*.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.glb *.gltf *.zarr *.tif *.tiff *.json *.jpg *.jpeg *.png *.webp *.bmp *.gif);;All files (*.*)"
         )
         dialog = QtWidgets.QFileDialog(
             self, self.tr("Choose 3D Model/Simulation Source")
@@ -350,7 +350,7 @@ class ViewerToolsMixin:
             )
             return
 
-        supported = ".stl, .obj, .ply, .csv, .xyz, .glb, .gltf, volume .zarr, simulation .json, 360 panorama (.jpg/.jpeg/.png/.webp/.bmp/.gif)"
+        supported = ".stl, .obj, .ply, .csv, .xyz, .glb, .gltf, volume .zarr/.tif/.tiff, simulation .json, 360 panorama (.jpg/.jpeg/.png/.webp/.bmp/.gif)"
         QtWidgets.QMessageBox.information(
             self,
             self.tr("Unsupported 3D Source"),

@@ -25,6 +25,7 @@ class ThreeJsManager(QtCore.QObject):
     _ZARR_TARGET_SAMPLED_VOXELS = 1_000_000
     _ZARR_MAX_POINTS = 120_000
     _ZARR_MULTISCALE_MAX_VOXELS = 16_000_000
+    _TIFF_TARGET_SAMPLED_VOXELS = 1_000_000
 
     def __init__(
         self, window: "AnnolidWindow", viewer_stack: QtWidgets.QStackedWidget
@@ -34,6 +35,7 @@ class ThreeJsManager(QtCore.QObject):
         self.viewer_stack = viewer_stack
         self.threejs_viewer: Optional[ThreeJsViewerWidget] = None
         self._zarr_payload_cache: dict[str, tuple[int, Path]] = {}
+        self._tiff_payload_cache: dict[str, tuple[int, Path]] = {}
 
     def ensure_threejs_viewer(self) -> ThreeJsViewerWidget:
         if self.threejs_viewer is None:
@@ -64,9 +66,13 @@ class ThreeJsManager(QtCore.QObject):
             return False
         viewer = self.ensure_threejs_viewer()
         is_zarr_source = path.suffix.lower() == ".zarr"
+        is_tiff_source = path.suffix.lower() in {".tif", ".tiff"}
         try:
             if is_zarr_source:
                 payload_path = self._resolve_zarr_simulation_payload(path)
+                viewer.load_simulation_payload(payload_path, title=path.stem)
+            elif is_tiff_source:
+                payload_path = self._resolve_tiff_simulation_payload(path)
                 viewer.load_simulation_payload(payload_path, title=path.stem)
             else:
                 viewer.load_model(
@@ -97,6 +103,10 @@ class ThreeJsManager(QtCore.QObject):
             self.window.statusBar().showMessage(
                 self.window.tr("Loaded Zarr volume %1").replace("%1", path.name), 3000
             )
+        elif is_tiff_source:
+            self.window.statusBar().showMessage(
+                self.window.tr("Loaded TIFF volume %1").replace("%1", path.name), 3000
+            )
         else:
             self.window.statusBar().showMessage(
                 self.window.tr("Loaded 3D model %1").replace("%1", path.name), 3000
@@ -119,6 +129,272 @@ class ThreeJsManager(QtCore.QObject):
         )
         self._zarr_payload_cache[cache_key] = (mtime_ns, out_path)
         return out_path
+
+    def _resolve_tiff_simulation_payload(self, path: Path) -> Path:
+        cache_key = str(path.resolve())
+        mtime_ns = int(path.stat().st_mtime_ns)
+        cached = self._tiff_payload_cache.get(cache_key)
+        if cached is not None and int(cached[0]) == mtime_ns and cached[1].exists():
+            return cached[1]
+        payload = self._build_tiff_simulation_payload(path)
+        out_dir = Path(tempfile.gettempdir()) / "annolid_threejs_tiff"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{path.stem}_threejs_payload.json"
+        out_path.write_text(
+            json.dumps(payload, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        self._tiff_payload_cache[cache_key] = (mtime_ns, out_path)
+        return out_path
+
+    def _build_tiff_simulation_payload(self, path: Path) -> dict[str, Any]:
+        try:
+            import numpy as np
+        except Exception as exc:
+            raise RuntimeError("TIFF volume support requires `numpy` package.") from exc
+
+        volume, spacing_zyx = self._read_tiff_volume(path)
+        if volume.ndim != 3:
+            raise RuntimeError(
+                f"Unsupported TIFF dimensionality for 3D viewer: ndim={int(volume.ndim)}"
+            )
+        if volume.size <= 0:
+            raise RuntimeError(f"TIFF volume is empty: {path}")
+
+        z_len_full, y_len_full, x_len_full = [int(v) for v in volume.shape]
+        spatial_voxels = float(
+            np.prod(np.asarray([z_len_full, y_len_full, x_len_full], dtype=np.float64))
+        )
+        stride = max(
+            1,
+            int(
+                math.ceil(
+                    (spatial_voxels / float(self._TIFF_TARGET_SAMPLED_VOXELS))
+                    ** (1.0 / 3.0)
+                )
+            ),
+        )
+        sampled = volume[::stride, ::stride, ::stride]
+        if sampled.size <= 0:
+            sampled = volume
+            stride = 1
+
+        finite = sampled[np.isfinite(sampled)]
+        if finite.size <= 0:
+            raise RuntimeError(f"TIFF volume has no finite values: {path}")
+        lo = float(np.min(finite))
+        hi = float(np.max(finite))
+        scale = hi - lo
+        if scale <= 1e-8:
+            normalized = np.ones_like(sampled, dtype=np.float32)
+        else:
+            normalized = (sampled - lo) / scale
+
+        intensity_inverted = self._should_invert_zarr_signal(normalized)
+        if intensity_inverted:
+            normalized = 1.0 - normalized
+        dense_volume = np.clip(np.round(normalized * 255.0), 0, 255).astype(np.uint8)
+
+        threshold_quantile = 0.70 if intensity_inverted else 0.92
+        threshold_floor = 0.10 if intensity_inverted else 0.18
+        threshold = max(
+            threshold_floor,
+            float(np.quantile(normalized[np.isfinite(normalized)], threshold_quantile)),
+        )
+        mask = np.isfinite(normalized) & (normalized >= threshold)
+        if int(mask.sum()) < 2000:
+            threshold = max(
+                0.05 if intensity_inverted else 0.45,
+                float(
+                    np.quantile(
+                        normalized[np.isfinite(normalized)],
+                        0.52 if intensity_inverted else 0.80,
+                    )
+                ),
+            )
+            mask = np.isfinite(normalized) & (normalized >= threshold)
+        if int(mask.sum()) <= 0:
+            mask = np.isfinite(normalized)
+
+        coords = np.argwhere(mask)
+        values = normalized[mask]
+        max_points = int(self._ZARR_MAX_POINTS)
+        if coords.shape[0] > max_points:
+            keep = np.argpartition(values, -max_points)[-max_points:]
+            coords = coords[keep]
+            values = values[keep]
+
+        histogram = self._build_zarr_histogram(values)
+        render_defaults = self._build_zarr_render_defaults(
+            values=values,
+            stride=int(stride),
+            source_path=path,
+            intensity_inverted=bool(intensity_inverted),
+        )
+        if str(render_defaults.get("render_style", "")).lower() in {"points", "hybrid"}:
+            render_defaults["render_style"] = "raymarch"
+        z_len, y_len, x_len = [int(v) for v in dense_volume.shape]
+        z_scale = float(max(1, int(stride)) * float(spacing_zyx[0]))
+        y_scale = float(max(1, int(stride)) * float(spacing_zyx[1]))
+        x_scale = float(max(1, int(stride)) * float(spacing_zyx[2]))
+        render_profile = self._classify_zarr_render_profile(
+            source_path=path,
+            intensity_inverted=bool(intensity_inverted),
+        )
+        render_defaults.setdefault(
+            "section_emphasis", "auto" if render_profile != "cinematic" else "neutral"
+        )
+        interleaved_detected = "interleaved" in str(path.stem or "").lower()
+
+        points: list[dict[str, Any]] = []
+        for idx, (z, y, x) in enumerate(coords):
+            points.append(
+                {
+                    "label": f"v{idx}",
+                    "x": float(min(int(x), x_len - 1) * x_scale),
+                    "y": float(-min(int(y), y_len - 1) * y_scale),
+                    "z": float(-min(int(z), z_len - 1) * z_scale),
+                    "confidence": float(values[idx]),
+                }
+            )
+
+        payload: dict[str, Any] = {
+            "kind": "annolid-simulation-v1",
+            "adapter": "tiff-volume",
+            "metadata": {
+                "source_path": str(path),
+                "shape": [int(v) for v in volume.shape],
+                "source_dataset_path": "",
+                "axes": ["z", "y", "x"],
+                "downsample_stride": int(stride),
+                "threshold": float(threshold),
+                "channel_index": 0,
+                "render_mode": "gaussian_splatting",
+                "render_profile": render_profile,
+                "interleaved_detected": bool(interleaved_detected),
+                "section_axis": "z",
+                "section_step_world": float(z_scale),
+                "voxel_spacing_zyx": [float(v) for v in spacing_zyx],
+                "voxel_spacing_xyz": [
+                    float(spacing_zyx[2]),
+                    float(spacing_zyx[1]),
+                    float(spacing_zyx[0]),
+                ],
+                "signal_polarity": "dark_on_light"
+                if intensity_inverted
+                else "light_on_dark",
+                "intensity_inverted": bool(intensity_inverted),
+                "splat_size": float(render_defaults["size"]),
+                "splat_opacity": float(render_defaults["opacity"]),
+                "point_count": int(len(points)),
+                "confidence_range": [
+                    float(np.min(values)) if values.size > 0 else 0.0,
+                    float(np.max(values)) if values.size > 0 else 1.0,
+                ],
+                "volume_grid_shape": [int(v) for v in dense_volume.shape],
+                "volume_grid_base64": self._encode_zarr_volume_grid(dense_volume),
+                "volume_histogram": histogram,
+                "volume_bounds": {
+                    "x": [0.0, float(max(0, x_len - 1) * x_scale)],
+                    "y": [float(-max(0, y_len - 1) * y_scale), 0.0],
+                    "z": [float(-max(0, z_len - 1) * z_scale), 0.0],
+                },
+                "volume_render_defaults": render_defaults,
+            },
+            "edges": [],
+            "display": {
+                "show_points": True,
+                "show_labels": False,
+                "show_edges": False,
+                "show_trails": False,
+            },
+            "playback": {
+                "autoplay": False,
+                "loop": False,
+                "interval_ms": 200,
+            },
+            "frames": [
+                {
+                    "frame_index": 0,
+                    "points": points,
+                }
+            ],
+        }
+        return payload
+
+    @staticmethod
+    def _read_tiff_volume(path: Path) -> tuple[Any, list[float]]:
+        try:
+            import numpy as np
+            import tifffile
+        except Exception as exc:
+            raise RuntimeError(
+                "TIFF volume support requires `tifffile` and `numpy` packages."
+            ) from exc
+
+        with tifffile.TiffFile(str(path)) as tif:
+            volume = np.asarray(tif.asarray(), dtype=np.float32)
+            spacing_zyx = ThreeJsManager._resolve_tiff_spacing_zyx(tif=tif)
+
+        volume = np.squeeze(volume)
+        if volume.ndim == 2:
+            volume = volume[np.newaxis, :, :]
+        elif volume.ndim >= 4:
+            # Collapse likely color channels, then select the first sample on extra axes.
+            if int(volume.shape[-1]) <= 4:
+                volume = np.mean(volume, axis=-1)
+            while volume.ndim > 3:
+                volume = volume[0]
+        if volume.ndim != 3:
+            raise RuntimeError(
+                f"Unsupported TIFF shape for volume rendering: {tuple(int(v) for v in volume.shape)}"
+            )
+        return np.asarray(volume, dtype=np.float32), spacing_zyx
+
+    @staticmethod
+    def _resolve_tiff_spacing_zyx(*, tif: Any) -> list[float]:
+        spacing_zyx = [1.0, 1.0, 1.0]
+        try:
+            page0 = tif.pages[0]
+        except Exception:
+            return spacing_zyx
+
+        def _resolution_to_spacing(value: Any) -> float:
+            try:
+                num, den = value
+                num_f = float(num)
+                den_f = float(den)
+                if num_f > 0.0:
+                    return den_f / num_f
+            except Exception:
+                return 1.0
+            return 1.0
+
+        try:
+            xres_tag = page0.tags.get("XResolution")
+            if xres_tag is not None:
+                spacing_zyx[2] = float(
+                    _resolution_to_spacing(getattr(xres_tag, "value", None))
+                )
+        except Exception:
+            pass
+        try:
+            yres_tag = page0.tags.get("YResolution")
+            if yres_tag is not None:
+                spacing_zyx[1] = float(
+                    _resolution_to_spacing(getattr(yres_tag, "value", None))
+                )
+        except Exception:
+            pass
+
+        try:
+            imagej = getattr(tif, "imagej_metadata", None)
+            z_spacing = imagej.get("spacing") if isinstance(imagej, dict) else None
+            if z_spacing is not None:
+                spacing_zyx[0] = float(z_spacing)
+        except Exception:
+            pass
+        return [max(1e-6, float(v)) for v in spacing_zyx]
 
     def _build_zarr_simulation_payload(self, path: Path) -> dict[str, Any]:
         try:
@@ -354,102 +630,142 @@ class ThreeJsManager(QtCore.QObject):
             intensity_inverted=bool(intensity_inverted),
         )
         if profile == "nissl_sections":
-            return {
-                "preset": "nissl_sections",
-                "intensity": 1.26,
-                "contrast": 1.62,
-                "gamma": 0.82,
-                "opacity": 0.66,
-                "size": 0.048,
-                "threshold": 0.03,
-                "density": 1.0,
-                "saturation": 0.96,
-                "tf_low": 0.02,
-                "tf_mid": 0.34,
-                "tf_high": 0.84,
-                "clip_axis": "none",
-                "clip_center": 0.5,
-                "clip_thickness": 1.0,
-                "clip_invert": False,
-                "palette": "nissl",
-                "blend_mode": "normal",
-                "point_texture": "section",
-                "background_theme": "light",
-            }
+            return ThreeJsManager._with_volume_renderer_defaults(
+                {
+                    "preset": "nissl_sections",
+                    "intensity": 1.26,
+                    "contrast": 1.62,
+                    "gamma": 0.82,
+                    "opacity": 0.66,
+                    "size": 0.048,
+                    "threshold": 0.03,
+                    "density": 1.0,
+                    "saturation": 0.96,
+                    "tf_low": 0.02,
+                    "tf_mid": 0.34,
+                    "tf_high": 0.84,
+                    "clip_axis": "none",
+                    "clip_center": 0.5,
+                    "clip_thickness": 1.0,
+                    "clip_invert": False,
+                    "palette": "nissl",
+                    "blend_mode": "normal",
+                    "point_texture": "section",
+                    "background_theme": "light",
+                },
+                profile=profile,
+            )
         if profile == "myelin_sections":
-            return {
-                "preset": "myelin_sections",
-                "intensity": 1.14,
-                "contrast": 1.78,
-                "gamma": 0.88,
-                "opacity": 0.72,
-                "size": 0.05,
-                "threshold": 0.04,
-                "density": 1.0,
-                "saturation": 0.22,
-                "tf_low": 0.03,
-                "tf_mid": 0.3,
-                "tf_high": 0.82,
-                "clip_axis": "none",
-                "clip_center": 0.5,
-                "clip_thickness": 1.0,
-                "clip_invert": False,
-                "palette": "myelin",
-                "blend_mode": "normal",
-                "point_texture": "section",
-                "background_theme": "light",
-            }
+            return ThreeJsManager._with_volume_renderer_defaults(
+                {
+                    "preset": "myelin_sections",
+                    "intensity": 1.14,
+                    "contrast": 1.78,
+                    "gamma": 0.88,
+                    "opacity": 0.72,
+                    "size": 0.05,
+                    "threshold": 0.04,
+                    "density": 1.0,
+                    "saturation": 0.22,
+                    "tf_low": 0.03,
+                    "tf_mid": 0.3,
+                    "tf_high": 0.82,
+                    "clip_axis": "none",
+                    "clip_center": 0.5,
+                    "clip_thickness": 1.0,
+                    "clip_invert": False,
+                    "palette": "myelin",
+                    "blend_mode": "normal",
+                    "point_texture": "section",
+                    "background_theme": "light",
+                },
+                profile=profile,
+            )
         if profile == "section_stack":
-            return {
-                "preset": "section_stack",
-                "intensity": 1.22,
-                "contrast": 1.56,
-                "gamma": 0.84,
-                "opacity": 0.68,
-                "size": 0.05,
-                "threshold": 0.03,
-                "density": 1.0,
-                "saturation": 0.78,
-                "tf_low": 0.02,
-                "tf_mid": 0.32,
-                "tf_high": 0.84,
-                "clip_axis": "none",
-                "clip_center": 0.5,
-                "clip_thickness": 1.0,
-                "clip_invert": False,
-                "palette": "section_ink",
-                "blend_mode": "normal",
-                "point_texture": "section",
-                "background_theme": "light",
-            }
+            return ThreeJsManager._with_volume_renderer_defaults(
+                {
+                    "preset": "section_stack",
+                    "intensity": 1.22,
+                    "contrast": 1.56,
+                    "gamma": 0.84,
+                    "opacity": 0.68,
+                    "size": 0.05,
+                    "threshold": 0.03,
+                    "density": 1.0,
+                    "saturation": 0.78,
+                    "tf_low": 0.02,
+                    "tf_mid": 0.32,
+                    "tf_high": 0.84,
+                    "clip_axis": "none",
+                    "clip_center": 0.5,
+                    "clip_thickness": 1.0,
+                    "clip_invert": False,
+                    "palette": "section_ink",
+                    "blend_mode": "normal",
+                    "point_texture": "section",
+                    "background_theme": "light",
+                },
+                profile=profile,
+            )
 
         size = 0.024 + min(max(int(stride), 1), 6) * 0.004
         density = 0.9 if mean_value >= 0.68 else 0.82
         intensity = 1.1 if peak_value >= 0.95 else 1.2
         contrast = 1.28 if mean_value >= 0.72 else 1.42
         gamma = 0.9 if mean_value >= 0.72 else 0.82
-        return {
-            "preset": "cinematic",
-            "intensity": float(intensity),
-            "contrast": float(contrast),
-            "gamma": float(gamma),
-            "opacity": 0.42,
-            "size": float(size),
-            "threshold": 0.16,
-            "density": float(density),
-            "saturation": 1.08,
-            "tf_low": 0.06,
-            "tf_mid": 0.48,
-            "tf_high": 0.96,
-            "clip_axis": "none",
-            "clip_center": 0.5,
-            "clip_thickness": 1.0,
-            "clip_invert": False,
-            "palette": "ice_fire",
-            "blend_mode": "additive",
-            "point_texture": "glow",
-            "background_theme": "dark",
-        }
+        return ThreeJsManager._with_volume_renderer_defaults(
+            {
+                "preset": "cinematic",
+                "intensity": float(intensity),
+                "contrast": float(contrast),
+                "gamma": float(gamma),
+                "opacity": 0.42,
+                "size": float(size),
+                "threshold": 0.16,
+                "density": float(density),
+                "saturation": 1.08,
+                "tf_low": 0.06,
+                "tf_mid": 0.48,
+                "tf_high": 0.96,
+                "clip_axis": "none",
+                "clip_center": 0.5,
+                "clip_thickness": 1.0,
+                "clip_invert": False,
+                "palette": "ice_fire",
+                "blend_mode": "additive",
+                "point_texture": "glow",
+                "background_theme": "dark",
+            },
+            profile=profile,
+        )
+
+    @staticmethod
+    def _with_volume_renderer_defaults(
+        defaults: dict[str, Any], *, profile: str
+    ) -> dict[str, Any]:
+        merged = dict(defaults)
+        is_histology = profile in {"nissl_sections", "myelin_sections", "section_stack"}
+        merged.setdefault("render_style", "raymarch" if is_histology else "hybrid")
+        merged.setdefault(
+            "section_emphasis",
+            "nissl"
+            if profile == "nissl_sections"
+            else "myelin"
+            if profile == "myelin_sections"
+            else "auto",
+        )
+        merged.setdefault("raymarch_steps", 256 if is_histology else 208)
+        merged.setdefault("raymarch_step_scale", 1.0)
+        merged.setdefault("raymarch_jitter", 0.45)
+        merged.setdefault("gradient_opacity", bool(is_histology))
+        merged.setdefault("gradient_opacity_factor", 3.6 if is_histology else 2.6)
+        merged.setdefault("use_shading", True)
+        merged.setdefault("ambient_strength", 0.34)
+        merged.setdefault("diffuse_strength", 0.86)
+        merged.setdefault("specular_strength", 0.22)
+        merged.setdefault("specular_power", 24.0)
+        merged.setdefault("light_direction", [0.38, 0.52, 0.76])
+        return merged
 
     @staticmethod
     def _classify_zarr_render_profile(

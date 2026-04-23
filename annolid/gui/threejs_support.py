@@ -3,7 +3,18 @@ from __future__ import annotations
 from pathlib import Path
 
 THREEJS_MODEL_EXTENSIONS = frozenset(
-    {".stl", ".obj", ".ply", ".csv", ".xyz", ".glb", ".gltf", ".zarr"}
+    {
+        ".stl",
+        ".obj",
+        ".ply",
+        ".csv",
+        ".xyz",
+        ".glb",
+        ".gltf",
+        ".zarr",
+        ".tif",
+        ".tiff",
+    }
 )
 THREEJS_PANORAMA_EXTENSIONS = frozenset(
     {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}

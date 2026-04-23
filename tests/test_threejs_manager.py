@@ -12,11 +12,18 @@ try:
     import zarr
 except ImportError:  # pragma: no cover
     zarr = None
+try:
+    import tifffile
+except ImportError:  # pragma: no cover
+    tifffile = None
 
 from annolid.gui.widgets.threejs_manager import ThreeJsManager
 
 
 requires_zarr = pytest.mark.skipif(zarr is None, reason="zarr is not installed")
+requires_tifffile = pytest.mark.skipif(
+    tifffile is None, reason="tifffile is not installed"
+)
 
 
 _QAPP = None
@@ -192,6 +199,34 @@ def test_show_model_in_viewer_routes_zarr_through_simulation_payload(
     assert viewer.model_calls == []
 
 
+@requires_tifffile
+def test_show_model_in_viewer_routes_tiff_through_simulation_payload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+    viewer = _DummyModelViewer()
+    monkeypatch.setattr(manager, "ensure_threejs_viewer", lambda: viewer)
+
+    tif_path = tmp_path / "atlas_interleaved_30um_image.tif"
+    tifffile.imwrite(str(tif_path), np.zeros((8, 8, 8), dtype=np.uint16))
+    payload_path = tmp_path / "atlas_payload.json"
+    payload_path.write_text(
+        json.dumps({"kind": "annolid-simulation-v1", "frames": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        manager,
+        "_resolve_tiff_simulation_payload",
+        lambda path: payload_path,
+    )
+
+    assert manager.show_model_in_viewer(tif_path) is True
+    assert viewer.sim_calls == [(payload_path, "atlas_interleaved_30um_image")]
+    assert viewer.model_calls == []
+
+
 @requires_zarr
 def test_build_zarr_simulation_payload_extracts_sparse_volume(tmp_path: Path) -> None:
     _ensure_qapp()
@@ -232,6 +267,36 @@ def test_build_zarr_simulation_payload_extracts_sparse_volume(tmp_path: Path) ->
         payload["metadata"]["volume_render_defaults"]["tf_low"]
         < payload["metadata"]["volume_render_defaults"]["tf_high"]
     )
+    assert len(payload["frames"]) == 1
+    assert len(payload["frames"][0]["points"]) > 0
+
+
+@requires_tifffile
+def test_build_tiff_simulation_payload_extracts_sparse_volume(tmp_path: Path) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+
+    tif_path = tmp_path / "mouse_nissl_sections.tif"
+    data = np.zeros((16, 16, 16), dtype=np.float32)
+    data[4:12, 4:12, 4:12] = 10.0
+    data[7:9, 7:9, 7:9] = 20.0
+    tifffile.imwrite(str(tif_path), data)
+
+    payload = manager._build_tiff_simulation_payload(tif_path)
+
+    assert payload["kind"] == "annolid-simulation-v1"
+    assert payload["adapter"] == "tiff-volume"
+    assert payload["metadata"]["shape"] == [16, 16, 16]
+    assert payload["metadata"]["render_mode"] == "gaussian_splatting"
+    assert payload["metadata"]["point_count"] > 0
+    assert payload["metadata"]["volume_grid_shape"] == [16, 16, 16]
+    assert payload["metadata"]["volume_grid_base64"]
+    assert payload["metadata"]["section_step_world"] >= 1.0
+    assert payload["metadata"]["voxel_spacing_zyx"] == [1.0, 1.0, 1.0]
+    assert payload["metadata"]["voxel_spacing_xyz"] == [1.0, 1.0, 1.0]
+    assert payload["metadata"]["volume_render_defaults"]["render_style"] == "raymarch"
+    assert payload["metadata"]["volume_render_defaults"]["raymarch_steps"] >= 64
     assert len(payload["frames"]) == 1
     assert len(payload["frames"][0]["points"]) > 0
 
