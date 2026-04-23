@@ -169,6 +169,10 @@ def test_threejs_viewer_supports_zarr_gaussian_splat_render_mode():
     assert "volumeRaymarchShading" in source
     assert "volumeQuickPresetCinematic" in source
     assert "requestVolumeRender" in source
+    assert "WebGPURenderer" in source
+    assert "data-threejs-renderer" in source
+    assert "updateAdaptiveRaymarchQuality" in source
+    assert "adaptiveRaymarchFactor" in source
     assert "u_useGradientOpacity" in source
     assert "u_useShading" in source
     assert "interleaved_detected" in source

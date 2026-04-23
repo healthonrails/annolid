@@ -55,12 +55,45 @@ async function boot() {
       "https://esm.sh/three@0.182.0/examples/jsm/loaders/GLTFLoader.js"
     );
 
-    const renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: true,
-      alpha: false,
-    });
-    renderer.setPixelRatio(Math.min(Math.max(1, window.devicePixelRatio || 1), 2));
+    let rendererBackend = "webgl";
+    const createRenderer = async () => {
+      const maxPixelRatio = Math.min(Math.max(1, window.devicePixelRatio || 1), 2);
+      if (typeof navigator !== "undefined" && navigator.gpu) {
+        try {
+          const webgpuModule = await import(
+            "https://esm.sh/three@0.182.0/examples/jsm/renderers/webgpu/WebGPURenderer.js"
+          );
+          const WebGPURenderer = webgpuModule.WebGPURenderer || webgpuModule.default;
+          if (WebGPURenderer) {
+            const webgpuRenderer = new WebGPURenderer({
+              canvas,
+              antialias: false,
+              alpha: false,
+              powerPreference: "high-performance",
+            });
+            if (typeof webgpuRenderer.init === "function") {
+              await webgpuRenderer.init();
+            }
+            webgpuRenderer.setPixelRatio(maxPixelRatio);
+            rendererBackend = "webgpu";
+            return webgpuRenderer;
+          }
+        } catch (_err) {
+          rendererBackend = "webgl";
+        }
+      }
+      const webglRenderer = new THREE.WebGLRenderer({
+        canvas,
+        antialias: true,
+        alpha: false,
+        powerPreference: "high-performance",
+      });
+      webglRenderer.setPixelRatio(maxPixelRatio);
+      rendererBackend = "webgl";
+      return webglRenderer;
+    };
+
+    const renderer = await createRenderer();
     const getCanvasSize = () => {
       const w = Math.max(1, canvas.clientWidth || window.innerWidth || 800);
       const h = Math.max(1, canvas.clientHeight || window.innerHeight || 600);
@@ -70,7 +103,10 @@ async function boot() {
       const { w, h } = getCanvasSize();
       renderer.setSize(w, h, false);
     }
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    if ("outputColorSpace" in renderer) {
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+    }
+    document.body.setAttribute("data-threejs-renderer", String(rendererBackend));
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x121824);
@@ -495,6 +531,9 @@ async function boot() {
     let volumeGridCache = null;
     let volumeTextureCache = null;
     let volumeRenderFrameHandle = 0;
+    let activeRaymarchMaterial = null;
+    let frameTimeEmaMs = 16.6;
+    let adaptiveRaymarchFactor = 1.0;
     let flybodyControlsMoved = false;
     let flybodyDragState = null;
     let volumePanelMoved = false;
@@ -835,6 +874,7 @@ async function boot() {
       const dryRun = frame.dry_run ? "yes" : "no";
       const lines = [
         `Adapter: ${adapter}`,
+        `Renderer Backend: ${String(rendererBackend || "webgl")}`,
         `Frame: ${frame.frame_index}`,
         `Points: ${Array.isArray(frame.points) ? frame.points.length : 0}`,
         `Qpos: ${qposLen}`,
@@ -1835,10 +1875,13 @@ async function boot() {
           }
         `,
       });
+      material.userData = material.userData || {};
+      material.userData.baseRaymarchSteps = Number(baseSteps);
       const mesh = new THREE.Mesh(geometry, material);
       mesh.scale.copy(size);
       mesh.position.copy(center);
       simulationVolumeRoot.add(mesh);
+      activeRaymarchMaterial = material;
     };
 
     const refreshVolumePanelLayout = () => {
@@ -2340,6 +2383,7 @@ async function boot() {
       volumeRenderDefaults = null;
       volumeRenderState = null;
       volumePanelMoved = false;
+      activeRaymarchMaterial = null;
       if (volumePanelEl) {
         volumePanelEl.hidden = true;
         volumePanelEl.innerHTML = "";
@@ -2462,6 +2506,7 @@ async function boot() {
       clearGroupAndDispose(simulationEdges);
       clearGroupAndDispose(simulationTrails);
       clearGroupAndDispose(simulationLabels);
+      activeRaymarchMaterial = null;
 
       const pointMap = new Map();
       const orderedPoints = Array.isArray(frame.points) ? frame.points : [];
@@ -3549,8 +3594,49 @@ async function boot() {
     };
     window.addEventListener("resize", onResize, { passive: true });
 
+    const updateAdaptiveRaymarchQuality = () => {
+      if (
+        !activeRaymarchMaterial ||
+        !activeRaymarchMaterial.uniforms ||
+        !activeRaymarchMaterial.uniforms.u_steps
+      ) {
+        adaptiveRaymarchFactor = 1.0;
+        return;
+      }
+      const state = volumeRenderState || {};
+      const renderStyle = String(state.renderStyle || "").toLowerCase();
+      if (!(renderStyle === "raymarch" || renderStyle === "hybrid")) {
+        adaptiveRaymarchFactor = 1.0;
+        return;
+      }
+      const targetMs = rendererBackend === "webgpu" ? 16.7 : 18.5;
+      if (frameTimeEmaMs > targetMs + 6.0) {
+        adaptiveRaymarchFactor *= 0.96;
+      } else if (frameTimeEmaMs > targetMs + 2.5) {
+        adaptiveRaymarchFactor *= 0.985;
+      } else if (frameTimeEmaMs < targetMs - 3.0) {
+        adaptiveRaymarchFactor *= 1.015;
+      }
+      adaptiveRaymarchFactor = Math.max(0.45, Math.min(1.35, adaptiveRaymarchFactor));
+      const baseSteps = Number(activeRaymarchMaterial.userData.baseRaymarchSteps) || 220;
+      const nextSteps = Math.max(
+        48,
+        Math.min(720, Math.round(baseSteps * adaptiveRaymarchFactor))
+      );
+      const currentSteps = Number(activeRaymarchMaterial.uniforms.u_steps.value) || 0;
+      if (Math.abs(nextSteps - currentSteps) >= 1.0) {
+        activeRaymarchMaterial.uniforms.u_steps.value = nextSteps;
+      }
+    };
+
     let animationFrameId = 0;
+    let previousTickTime = performance.now();
     const tick = () => {
+      const now = performance.now();
+      const dtMs = Math.max(1, now - previousTickTime);
+      previousTickTime = now;
+      frameTimeEmaMs = frameTimeEmaMs * 0.9 + dtMs * 0.1;
+      updateAdaptiveRaymarchQuality();
       controls.update();
       renderer.render(scene, camera);
       animationFrameId = window.requestAnimationFrame(tick);
