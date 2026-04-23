@@ -130,6 +130,99 @@ async function boot() {
     // --- Toolbar Interaction ---
     const btnHome = document.getElementById("btnHome");
     const btnToggleRealtime = document.getElementById("btnToggleRealtime");
+    const btnToggleMoveMode = document.getElementById("btnToggleMoveMode");
+    const btnCenterObject = document.getElementById("btnCenterObject");
+    const btnResetObjectMove = document.getElementById("btnResetObjectMove");
+    let moveModeEnabled = false;
+    let moveDragState = null;
+    let rootBaselinePosition = null;
+
+    const setMoveModeEnabled = (enabled) => {
+      moveModeEnabled = Boolean(enabled);
+      if (btnToggleMoveMode) {
+        btnToggleMoveMode.classList.toggle("active", moveModeEnabled);
+      }
+    };
+
+    const centerLoadedContent = ({ fit = false } = {}) => {
+      if (!root) return;
+      const box = new THREE.Box3().setFromObject(root);
+      if (box.isEmpty()) return;
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      root.position.sub(center);
+      controls.target.sub(center);
+      controls.update();
+      if (fit) {
+        fitCameraToObject(root, { centerControls: false });
+      }
+      if (rootBaselinePosition) {
+        rootBaselinePosition.copy(root.position);
+      } else {
+        rootBaselinePosition = root.position.clone();
+      }
+    };
+
+    const resetLoadedContentTranslation = () => {
+      if (!root) return;
+      const baseline = rootBaselinePosition || new THREE.Vector3(0, 0, 0);
+      root.position.copy(baseline);
+      controls.update();
+      setStatus("Object translation reset.");
+    };
+
+    const getDepthForMove = () => {
+      const box = new THREE.Box3().setFromObject(root || scene);
+      const center = new THREE.Vector3();
+      if (!box.isEmpty()) {
+        box.getCenter(center);
+      } else {
+        center.copy(controls.target);
+      }
+      return Math.max(0.1, camera.position.distanceTo(center));
+    };
+
+    const startMoveDrag = (event) => {
+      if (!root || event.button !== 0) return;
+      const allowMove = moveModeEnabled || event.shiftKey;
+      if (!allowMove) return;
+      moveDragState = {
+        startX: Number(event.clientX) || 0,
+        startY: Number(event.clientY) || 0,
+        startPos: root.position.clone(),
+        depth: getDepthForMove(),
+      };
+      controls.enabled = false;
+      canvas.style.cursor = "grabbing";
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    const onMoveDrag = (event) => {
+      if (!moveDragState || !root) return;
+      const { w, h } = getCanvasSize();
+      const dx = (Number(event.clientX) || 0) - moveDragState.startX;
+      const dy = (Number(event.clientY) || 0) - moveDragState.startY;
+      const fovRad = THREE.MathUtils.degToRad(Number(camera.fov) || 50);
+      const worldPerPixelY = (2 * Math.tan(fovRad / 2) * moveDragState.depth) / Math.max(1, h);
+      const worldPerPixelX = worldPerPixelY * (Math.max(1, w) / Math.max(1, h));
+      const up = camera.up.clone().normalize();
+      const forward = new THREE.Vector3();
+      camera.getWorldDirection(forward);
+      const right = forward.clone().cross(up).normalize();
+      const deltaWorld = right.multiplyScalar(dx * worldPerPixelX)
+        .add(up.clone().multiplyScalar(-dy * worldPerPixelY));
+      root.position.copy(moveDragState.startPos).add(deltaWorld);
+      controls.update();
+      event.preventDefault();
+    };
+
+    const stopMoveDrag = () => {
+      if (!moveDragState) return;
+      moveDragState = null;
+      controls.enabled = true;
+      canvas.style.cursor = moveModeEnabled ? "grab" : "";
+    };
 
     const resetCamera = () => {
       if (!root) return;
@@ -151,6 +244,25 @@ async function boot() {
     };
 
     if (btnHome) btnHome.onclick = resetCamera;
+    if (btnToggleMoveMode) {
+      btnToggleMoveMode.onclick = () => {
+        setMoveModeEnabled(!moveModeEnabled);
+        canvas.style.cursor = moveModeEnabled ? "grab" : "";
+        setStatus(moveModeEnabled ? "Move mode enabled. Drag to move object." : "Move mode disabled.");
+      };
+    }
+    if (btnCenterObject) {
+      btnCenterObject.onclick = () => {
+        centerLoadedContent({ fit: false });
+        setStatus("Centered loaded content.");
+      };
+    }
+    if (btnResetObjectMove) {
+      btnResetObjectMove.onclick = () => {
+        resetLoadedContentTranslation();
+      };
+    }
+    setMoveModeEnabled(false);
 
     // --- Advanced Views ---
     const btnViewX = document.getElementById("btnViewX");
@@ -250,6 +362,14 @@ async function boot() {
         setStatus(realtimeEnabled ? "Real-time updates resumed" : "Real-time updates paused");
       };
     }
+    canvas.addEventListener("pointerdown", startMoveDrag, { passive: false });
+    window.addEventListener("pointermove", onMoveDrag, { passive: false });
+    window.addEventListener("pointerup", stopMoveDrag);
+    window.addEventListener("pointercancel", stopMoveDrag);
+    canvas.addEventListener("dblclick", () => {
+      centerLoadedContent({ fit: false });
+      setStatus("Centered loaded content.");
+    });
 
     // --- Gesture Indicators ---
     const indRotate = document.getElementById("indRotate");
@@ -315,6 +435,7 @@ async function boot() {
       box.getSize(size);
       box.getCenter(center);
       root.position.sub(center);
+      rootBaselinePosition = root.position.clone();
       controls.target.set(0, 0, 0);
       fitCameraToObject(root, { centerControls: false });
 
@@ -533,6 +654,7 @@ async function boot() {
     let volumeLabelColorTableCache = null;
     let volumeLabelColorTextureCache = null;
     let volumeRenderFrameHandle = 0;
+    let volumeSlicePlaybackTimer = null;
     let activeRaymarchMaterial = null;
     let frameTimeEmaMs = 16.6;
     let adaptiveRaymarchFactor = 1.0;
@@ -1269,6 +1391,27 @@ async function boot() {
           : Number.isFinite(Number(metadata && metadata.volume_label_color_seed))
             ? Number(metadata.volume_label_color_seed)
             : 1337,
+        sliceModeEnabled: Boolean(raw.slice_mode_enabled || raw.slice_mode),
+        sliceAxis: String(
+          raw.slice_axis ||
+          raw.clip_axis ||
+          ((metadata && metadata.section_axis) || "z")
+        ),
+        slicePosition: Number.isFinite(Number(raw.slice_position))
+          ? Number(raw.slice_position)
+          : Number.isFinite(Number(raw.clip_center))
+            ? Number(raw.clip_center)
+            : 0.5,
+        sliceStep: Number.isFinite(Number(raw.slice_step))
+          ? Math.max(1, Math.round(Number(raw.slice_step)))
+          : 1,
+        slicePlaybackFps: Number.isFinite(Number(raw.slice_playback_fps))
+          ? Math.max(1, Math.round(Number(raw.slice_playback_fps)))
+          : 8,
+        sliceAutoplay: Boolean(raw.slice_autoplay),
+        collapsedCards: raw.collapsed_cards && typeof raw.collapsed_cards === "object"
+          ? Object.assign({}, raw.collapsed_cards)
+          : {},
         renderStyle: String(raw.render_style || "hybrid"),
         sectionEmphasis: String(raw.section_emphasis || "auto"),
         raymarchSteps: Number.isFinite(Number(raw.raymarch_steps))
@@ -1465,6 +1608,12 @@ async function boot() {
 
     const buildEffectiveVolumeState = (state, metadata) => {
       const next = Object.assign({}, state || {});
+      next.sliceAxis = normalizeVolumeAxis(next.sliceAxis || (metadata && metadata.section_axis) || "z", "z");
+      next.slicePosition = clamp01(
+        Number.isFinite(Number(next.slicePosition)) ? Number(next.slicePosition) : 0.5
+      );
+      next.sliceStep = Math.max(1, Math.round(Number(next.sliceStep) || 1));
+      next.slicePlaybackFps = Math.max(1, Math.round(Number(next.slicePlaybackFps) || 8));
       if (metadata && metadata.label_volume) {
         next.palette = String(next.palette || "allen_labels");
         next.sectionEmphasis = "neutral";
@@ -1476,6 +1625,16 @@ async function boot() {
         next.blendMode = "normal";
         next.pointTexture = "section";
         next.backgroundTheme = String(next.backgroundTheme || "dark");
+      }
+      if (next.sliceModeEnabled) {
+        const axis = normalizeVolumeAxis(next.sliceAxis || (metadata && metadata.section_axis) || "z", "z");
+        next.sliceAxis = axis;
+        next.clipAxis = axis;
+        next.clipCenter = clamp01(next.slicePosition);
+        next.clipThickness = getSingleSliceThicknessNorm(metadata, axis);
+        if (next.renderStyle === "points") {
+          next.renderStyle = "slab";
+        }
       }
       const emphasis = String(next.sectionEmphasis || "auto").toLowerCase();
       const resolved = emphasis === "auto"
@@ -1595,6 +1754,48 @@ async function boot() {
         return style;
       }
       return "points";
+    };
+
+    const normalizeVolumeAxis = (axis, fallback = "z") => {
+      const value = String(axis || fallback).toLowerCase();
+      return ["x", "y", "z"].includes(value) ? value : String(fallback || "z").toLowerCase();
+    };
+
+    const getVolumeSliceCount = (metadata, axis) => {
+      const shape = Array.isArray(metadata && metadata.volume_grid_shape)
+        ? metadata.volume_grid_shape
+        : [];
+      if (shape.length !== 3) return 1;
+      const ax = normalizeVolumeAxis(axis, (metadata && metadata.section_axis) || "z");
+      const idx = ax === "z" ? 0 : (ax === "y" ? 1 : 2);
+      const count = Number(shape[idx] || 1);
+      return Math.max(1, Math.round(count));
+    };
+
+    const getSingleSliceThicknessNorm = (metadata, axis) => {
+      const count = getVolumeSliceCount(metadata, axis);
+      if (count <= 1) return 1.0;
+      const oneSlice = 1.0 / Math.max(1, count - 1);
+      return Math.max(0.002, Math.min(0.2, oneSlice));
+    };
+
+    const getSliceIndexFromPosition = (position, metadata, axis) => {
+      const count = getVolumeSliceCount(metadata, axis);
+      if (count <= 1) return 0;
+      return Math.max(0, Math.min(count - 1, Math.round(clamp01(position) * (count - 1))));
+    };
+
+    const getSlicePositionFromIndex = (index, metadata, axis) => {
+      const count = getVolumeSliceCount(metadata, axis);
+      if (count <= 1) return 0.0;
+      const clamped = Math.max(0, Math.min(count - 1, Math.round(Number(index) || 0)));
+      return clamped / Math.max(1, count - 1);
+    };
+
+    const formatSliceIndexLabel = (position, metadata, axis) => {
+      const count = getVolumeSliceCount(metadata, axis);
+      const index = getSliceIndexFromPosition(position, metadata, axis);
+      return `${index + 1}/${count}`;
     };
 
     const getActiveVolumeSlabConfig = (metadata, state) => {
@@ -2192,6 +2393,13 @@ async function boot() {
       btnToggleVolumePanel.style.color = !volumePanelEl || volumePanelEl.hidden ? "#888" : "#fff";
     };
 
+    const stopVolumeSlicePlayback = () => {
+      if (volumeSlicePlaybackTimer !== null) {
+        window.clearInterval(volumeSlicePlaybackTimer);
+        volumeSlicePlaybackTimer = null;
+      }
+    };
+
     const drawVolumeHistogram = (canvasEl, metadata, state) => {
       if (!canvasEl) return;
       const ctx = canvasEl.getContext("2d");
@@ -2252,6 +2460,13 @@ async function boot() {
       const state = volumeRenderState;
       const metadata = (simulationPayload && simulationPayload.metadata) || {};
       const resolvedRenderStyle = getMetadataResolvedRenderStyle(state, metadata);
+      const collapsedCards = state.collapsedCards && typeof state.collapsedCards === "object"
+        ? state.collapsedCards
+        : {};
+      const cardClass = (key) =>
+        collapsedCards[key]
+          ? "three-volume-card is-collapsed"
+          : "three-volume-card";
       const makeSlider = (id, label, min, max, step, value, formatter) => {
         const displayValue = typeof formatter === "function" ? formatter(value) : String(value);
         return `
@@ -2278,6 +2493,12 @@ async function boot() {
           renderSimulationFrame(simulationFrameIndex);
         });
       };
+      const sliceAxisValue = normalizeVolumeAxis(
+        state.sliceAxis || (metadata && metadata.section_axis) || "z",
+        "z"
+      );
+      const sliceCount = getVolumeSliceCount(metadata, sliceAxisValue);
+      const sliceIndexLabel = formatSliceIndexLabel(state.slicePosition, metadata, sliceAxisValue);
       volumePanelEl.innerHTML = `
         <div class="three-volume-panel-header">
           <div class="three-panel-title">Volume Look</div>
@@ -2289,8 +2510,9 @@ async function boot() {
           <button id="volumeQuickPresetNissl" type="button">Nissl</button>
           <button id="volumeQuickPresetMyelin" type="button">Myelin</button>
         </div>
-        <section class="three-volume-card">
+        <section class="${cardClass("transfer")}" data-card-key="transfer">
           <div class="three-volume-section-title">Transfer Function</div>
+          <div class="three-volume-card-body">
           <canvas id="volumeHistogramCanvas" class="three-volume-histogram" width="260" height="92"></canvas>
           <div class="three-volume-grid">
           <label for="volumePreset">Preset</label>
@@ -2355,9 +2577,11 @@ async function boot() {
           </select>
           <output id="volumeBlendModeValue">${state.blendMode}</output>
           </div>
+          </div>
         </section>
-        <section class="three-volume-card">
+        <section class="${cardClass("raymarch")}" data-card-key="raymarch">
           <div class="three-volume-section-title">Raymarch</div>
+          <div class="three-volume-card-body">
           <div class="three-volume-grid">
           ${makeSlider("volumeRaymarchSteps", "Ray Steps", 64, 640, 1, state.raymarchSteps, (v) => `${Math.round(Number(v))}`)}
           ${makeSlider("volumeRaymarchStepScale", "Step Scale", 0.4, 2.5, 0.01, state.raymarchStepScale, (v) => Number(v).toFixed(2))}
@@ -2377,9 +2601,38 @@ async function boot() {
           ${makeSlider("volumeRaymarchLightY", "Light Y", -1.0, 1.0, 0.01, state.raymarchLightY, (v) => Number(v).toFixed(2))}
           ${makeSlider("volumeRaymarchLightZ", "Light Z", -1.0, 1.0, 0.01, state.raymarchLightZ, (v) => Number(v).toFixed(2))}
           </div>
+          </div>
         </section>
-        <section class="three-volume-card">
+        <section class="${cardClass("slice")}" data-card-key="slice">
+          <div class="three-volume-section-title">Slice Navigator</div>
+          <div class="three-volume-card-body">
+          <div class="three-volume-grid">
+          <label for="volumeSliceMode">Single Slice</label>
+          <input id="volumeSliceMode" type="checkbox" ${state.sliceModeEnabled ? "checked" : ""} />
+          <output id="volumeSliceModeValue">${state.sliceModeEnabled ? "on" : "off"}</output>
+          <label for="volumeSliceAxis">Slice Axis</label>
+          <select id="volumeSliceAxis">
+            <option value="x">X</option>
+            <option value="y">Y</option>
+            <option value="z">Z</option>
+          </select>
+          <output id="volumeSliceAxisValue">${sliceAxisValue}</output>
+          ${makeSlider("volumeSlicePosition", "Slice", 0.0, 1.0, 0.001, state.slicePosition, () => sliceIndexLabel)}
+          ${makeSlider("volumeSliceStep", "Step", 1, Math.max(1, Math.min(32, sliceCount)), 1, state.sliceStep, (v) => `${Math.round(Number(v))}`)}
+          ${makeSlider("volumeSlicePlaybackFps", "FPS", 1, 30, 1, state.slicePlaybackFps, (v) => `${Math.round(Number(v))}`)}
+          <label for="volumeSliceAutoplay">Autoplay</label>
+          <input id="volumeSliceAutoplay" type="checkbox" ${state.sliceAutoplay ? "checked" : ""} />
+          <output id="volumeSliceAutoplayValue">${state.sliceAutoplay ? "on" : "off"}</output>
+          </div>
+          <div class="three-volume-actions">
+            <button id="volumeSlicePrev" type="button">Prev Slice</button>
+            <button id="volumeSliceNext" type="button">Next Slice</button>
+          </div>
+          </div>
+        </section>
+        <section class="${cardClass("clipping")}" data-card-key="clipping">
           <div class="three-volume-section-title">Clipping</div>
+          <div class="three-volume-card-body">
           <div class="three-volume-grid">
           <label for="volumeClipAxis">Axis</label>
           <select id="volumeClipAxis">
@@ -2395,13 +2648,17 @@ async function boot() {
           <input id="volumeClipInvert" type="checkbox" ${state.clipInvert ? "checked" : ""} />
           <output id="volumeClipInvertValue">${state.clipInvert ? "outside" : "inside"}</output>
           </div>
+          </div>
         </section>
-        <section class="three-volume-card">
+        <section class="${cardClass("actions")}" data-card-key="actions">
+          <div class="three-volume-section-title">Actions</div>
+          <div class="three-volume-card-body">
           <div class="three-volume-actions">
           <button id="volumePresetApply" type="button">Apply Preset</button>
           <button id="volumeHistologyDefaults" type="button">Histology Defaults</button>
           <button id="volumeFocusSlab" type="button">Focus Slab</button>
           <button id="volumeReset" type="button">Reset</button>
+          </div>
           </div>
         </section>
       `;
@@ -2411,6 +2668,11 @@ async function boot() {
       const paletteSelect = document.getElementById("volumePalette");
       const blendSelect = document.getElementById("volumeBlendMode");
       const clipAxisSelect = document.getElementById("volumeClipAxis");
+      const sliceModeInput = document.getElementById("volumeSliceMode");
+      const sliceAxisSelect = document.getElementById("volumeSliceAxis");
+      const sliceAutoplayInput = document.getElementById("volumeSliceAutoplay");
+      const slicePrevBtn = document.getElementById("volumeSlicePrev");
+      const sliceNextBtn = document.getElementById("volumeSliceNext");
       const headerEl = volumePanelEl.querySelector(".three-volume-panel-header");
       if (presetSelect) presetSelect.value = String(state.preset || "custom");
       if (renderStyleSelect) renderStyleSelect.value = String(resolvedRenderStyle || "points");
@@ -2418,6 +2680,7 @@ async function boot() {
       if (paletteSelect) paletteSelect.value = String(state.palette || (metadata && metadata.label_volume ? "allen_labels" : "ice_fire"));
       if (blendSelect) blendSelect.value = String(state.blendMode || "additive");
       if (clipAxisSelect) clipAxisSelect.value = String(state.clipAxis || "none");
+      if (sliceAxisSelect) sliceAxisSelect.value = sliceAxisValue;
       if (headerEl) {
         headerEl.title = "Drag to move volume controls";
         headerEl.addEventListener("pointerdown", (event) => {
@@ -2437,6 +2700,35 @@ async function boot() {
           window.addEventListener("pointercancel", stopVolumePanelDrag);
         });
       }
+      const cardEls = volumePanelEl.querySelectorAll(".three-volume-card[data-card-key]");
+      cardEls.forEach((cardEl) => {
+        const key = String(cardEl.getAttribute("data-card-key") || "");
+        if (!key) return;
+        const titleEl = cardEl.querySelector(".three-volume-section-title");
+        if (!titleEl) return;
+        titleEl.setAttribute("role", "button");
+        titleEl.setAttribute("tabindex", "0");
+        titleEl.setAttribute("aria-expanded", cardEl.classList.contains("is-collapsed") ? "false" : "true");
+        const toggleCard = () => {
+          const nextCollapsed = !cardEl.classList.contains("is-collapsed");
+          cardEl.classList.toggle("is-collapsed", nextCollapsed);
+          titleEl.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
+          if (!state.collapsedCards || typeof state.collapsedCards !== "object") {
+            state.collapsedCards = {};
+          }
+          state.collapsedCards[key] = nextCollapsed;
+          persistVolumeState(metadata, state);
+        };
+        titleEl.addEventListener("click", () => {
+          toggleCard();
+        });
+        titleEl.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            toggleCard();
+          }
+        });
+      });
       drawVolumeHistogram(document.getElementById("volumeHistogramCanvas"), metadata, state);
       applyVolumeSceneStyle(state);
 
@@ -2496,6 +2788,13 @@ async function boot() {
       bindSlider("volumeRaymarchLightX", "raymarchLightX", (v) => Number(v).toFixed(2));
       bindSlider("volumeRaymarchLightY", "raymarchLightY", (v) => Number(v).toFixed(2));
       bindSlider("volumeRaymarchLightZ", "raymarchLightZ", (v) => Number(v).toFixed(2));
+      bindSlider(
+        "volumeSlicePosition",
+        "slicePosition",
+        (v) => formatSliceIndexLabel(v, metadata, normalizeVolumeAxis(state.sliceAxis || "z", "z"))
+      );
+      bindSlider("volumeSliceStep", "sliceStep", (v) => `${Math.max(1, Math.round(Number(v)))}`);
+      bindSlider("volumeSlicePlaybackFps", "slicePlaybackFps", (v) => `${Math.max(1, Math.round(Number(v)))}`);
 
       const bindToggle = (id, key, outputId, labels = ["off", "on"]) => {
         const input = document.getElementById(id);
@@ -2529,6 +2828,89 @@ async function boot() {
         "volumeRaymarchShadingValue",
         ["off", "on"]
       );
+
+      const stepSliceBy = (delta) => {
+        const axis = normalizeVolumeAxis(state.sliceAxis || "z", "z");
+        const count = getVolumeSliceCount(metadata, axis);
+        if (count <= 1) {
+          state.slicePosition = 0.0;
+          return;
+        }
+        const step = Math.max(1, Math.round(Number(state.sliceStep) || 1));
+        const current = getSliceIndexFromPosition(state.slicePosition, metadata, axis);
+        const next = ((current + delta * step) % count + count) % count;
+        state.slicePosition = getSlicePositionFromIndex(next, metadata, axis);
+      };
+      const refreshSliceReadouts = () => {
+        const axis = normalizeVolumeAxis(state.sliceAxis || "z", "z");
+        const axisOutput = document.getElementById("volumeSliceAxisValue");
+        const posOutput = document.getElementById("volumeSlicePositionValue");
+        if (axisOutput) axisOutput.textContent = axis;
+        if (posOutput) {
+          posOutput.textContent = formatSliceIndexLabel(state.slicePosition, metadata, axis);
+        }
+      };
+      const restartSlicePlaybackIfNeeded = () => {
+        stopVolumeSlicePlayback();
+        if (!state.sliceAutoplay) return;
+        const fps = Math.max(1, Math.round(Number(state.slicePlaybackFps) || 8));
+        const delayMs = Math.max(33, Math.round(1000 / fps));
+        volumeSlicePlaybackTimer = window.setInterval(() => {
+          stepSliceBy(1);
+          refreshSliceReadouts();
+          requestVolumeRender();
+        }, delayMs);
+      };
+
+      if (sliceModeInput) {
+        sliceModeInput.addEventListener("change", () => {
+          state.sliceModeEnabled = Boolean(sliceModeInput.checked);
+          const sliceModeValue = document.getElementById("volumeSliceModeValue");
+          if (sliceModeValue) sliceModeValue.textContent = state.sliceModeEnabled ? "on" : "off";
+          if (state.sliceModeEnabled && String(state.renderStyle || "points") === "points") {
+            state.renderStyle = "slab";
+            if (renderStyleSelect) renderStyleSelect.value = "slab";
+            const renderStyleValue = document.getElementById("volumeRenderStyleValue");
+            if (renderStyleValue) renderStyleValue.textContent = "slab";
+          }
+          state.preset = "custom";
+          requestVolumeRender();
+        });
+      }
+      if (sliceAxisSelect) {
+        sliceAxisSelect.addEventListener("change", () => {
+          state.sliceAxis = normalizeVolumeAxis(sliceAxisSelect.value, "z");
+          refreshSliceReadouts();
+          state.preset = "custom";
+          requestVolumeRender({ rerenderPanel: true });
+        });
+      }
+      if (sliceAutoplayInput) {
+        sliceAutoplayInput.addEventListener("change", () => {
+          state.sliceAutoplay = Boolean(sliceAutoplayInput.checked);
+          const sliceAutoplayValue = document.getElementById("volumeSliceAutoplayValue");
+          if (sliceAutoplayValue) sliceAutoplayValue.textContent = state.sliceAutoplay ? "on" : "off";
+          restartSlicePlaybackIfNeeded();
+          state.preset = "custom";
+          requestVolumeRender();
+        });
+      }
+      if (slicePrevBtn) {
+        slicePrevBtn.addEventListener("click", () => {
+          stepSliceBy(-1);
+          refreshSliceReadouts();
+          state.preset = "custom";
+          requestVolumeRender();
+        });
+      }
+      if (sliceNextBtn) {
+        sliceNextBtn.addEventListener("click", () => {
+          stepSliceBy(1);
+          refreshSliceReadouts();
+          state.preset = "custom";
+          requestVolumeRender();
+        });
+      }
       const quickPresetMap = {
         volumeQuickPresetCinematic: "cinematic",
         volumeQuickPresetSection: "section_stack",
@@ -2674,16 +3056,19 @@ async function boot() {
       const resetBtn = document.getElementById("volumeReset");
       if (resetBtn) {
         resetBtn.addEventListener("click", () => {
+          stopVolumeSlicePlayback();
           volumeRenderState = Object.assign({}, volumeRenderDefaults, { preset: volumeRenderDefaults.preset || "cinematic" });
           clearPersistedVolumeState(metadata);
           requestVolumeRender({ rerenderPanel: true, refreshSceneStyle: true });
         });
       }
+      restartSlicePlaybackIfNeeded();
       refreshVolumePanelLayout();
       syncVolumeToolbarButton();
     };
 
     const hideVolumePanel = () => {
+      stopVolumeSlicePlayback();
       volumeRenderDefaults = null;
       volumeRenderState = null;
       volumePanelMoved = false;
@@ -2996,6 +3381,7 @@ async function boot() {
           loadPersistedVolumeState(metadata) || {}
         );
       } else {
+        stopVolumeSlicePlayback();
         volumeRenderDefaults = null;
         volumeRenderState = null;
       }
@@ -3004,6 +3390,7 @@ async function boot() {
       );
       document.body.setAttribute("data-threejs-simulation", "1");
       root.position.set(0, 0, 0);
+      rootBaselinePosition = root.position.clone();
       root.rotation.set(0, 0, 0);
       root.scale.set(1, 1, 1);
       if (timelineEl) timelineEl.hidden = false;
@@ -3977,6 +4364,12 @@ async function boot() {
     tick();
 
     const disposeViewer = () => {
+      stopVolumeSlicePlayback();
+      stopMoveDrag();
+      canvas.removeEventListener("pointerdown", startMoveDrag);
+      window.removeEventListener("pointermove", onMoveDrag);
+      window.removeEventListener("pointerup", stopMoveDrag);
+      window.removeEventListener("pointercancel", stopMoveDrag);
       window.removeEventListener("resize", onResize);
       if (animationFrameId) {
         window.cancelAnimationFrame(animationFrameId);

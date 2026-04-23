@@ -241,6 +241,23 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
     <button class="tool-btn" id="btnToggleRealtime" title="Toggle Real-time Updates">
       <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
     </button>
+    <div class="tool-group" id="toolGroupObjectTransform">
+      <button class="tool-btn" id="btnToggleMoveMode" title="Move mode (or hold Shift while dragging)" aria-label="Toggle move mode">
+        <svg viewBox="0 0 24 24" width="18" height="18">
+          <path fill="currentColor" d="M12 2l3 3h-2v4h4V7l3 3-3 3v-2h-4v4h2l-3 3-3-3h2v-4H7v2l-3-3 3-3v2h4V5H9l3-3z"/>
+        </svg>
+      </button>
+      <button class="tool-btn" id="btnCenterObject" title="Center loaded object" aria-label="Center object">
+        <svg viewBox="0 0 24 24" width="18" height="18">
+          <path fill="currentColor" d="M11 3v2.07A7.002 7.002 0 005.07 11H3v2h2.07A7.002 7.002 0 0011 18.93V21h2v-2.07A7.002 7.002 0 0018.93 13H21v-2h-2.07A7.002 7.002 0 0013 5.07V3h-2zm1 4a5 5 0 110 10 5 5 0 010-10zm0 3a2 2 0 100 4 2 2 0 000-4z"/>
+        </svg>
+      </button>
+      <button class="tool-btn" id="btnResetObjectMove" title="Reset object translation" aria-label="Reset object move">
+        <svg viewBox="0 0 24 24" width="18" height="18">
+          <path fill="currentColor" d="M12 5V2L7 7l5 5V9c2.76 0 5 2.24 5 5a5 5 0 01-8.66 3.54l-1.42 1.42A7 7 0 1019 14c0-3.87-3.13-7-7-7z"/>
+        </svg>
+      </button>
+    </div>
     <button class="tool-btn" id="btnToggleVolumePanel" title="Volume Look" hidden>
       <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 7h10v2H4V7Zm0 8h16v2H4v-2Zm0-4h16v2H4v-2Zm12-5h4v4h-4V6Zm-6 8h4v4h-4v-4Z"/></svg>
     </button>

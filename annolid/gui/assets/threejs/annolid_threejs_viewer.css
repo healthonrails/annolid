@@ -313,6 +313,13 @@ body.white-theme .flybody-tool-btn.active {
   font-size: 14px;
 }
 
+.tool-btn.active {
+  background: rgba(123, 198, 255, 0.2);
+  border-color: rgba(123, 198, 255, 0.55);
+  color: #dff3ff;
+  box-shadow: 0 0 0 1px rgba(123, 198, 255, 0.18) inset;
+}
+
 .tool-btn:hover {
   background: rgba(255, 255, 255, 0.15);
   border-color: rgba(255, 255, 255, 0.3);
@@ -341,6 +348,13 @@ body.white-theme .tool-btn {
   background: rgba(0, 0, 0, 0.05);
   border-color: rgba(0, 0, 0, 0.08);
   color: #333;
+}
+
+body.white-theme .tool-btn.active {
+  background: rgba(40, 110, 170, 0.12);
+  border-color: rgba(40, 110, 170, 0.35);
+  color: #15486f;
+  box-shadow: 0 0 0 1px rgba(40, 110, 170, 0.15) inset;
 }
 
 body.white-theme .tool-sep {
@@ -378,6 +392,38 @@ body.white-theme .tool-sep {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   opacity: 0.82;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.three-volume-section-title::after {
+  content: "▾";
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.9;
+  transition: transform 0.16s ease;
+}
+
+.three-volume-card.is-collapsed .three-volume-section-title::after {
+  transform: rotate(-90deg);
+}
+
+.three-volume-card-body {
+  display: block;
+}
+
+.three-volume-card.is-collapsed .three-volume-card-body {
+  display: none;
+}
+
+.three-volume-section-title:focus-visible {
+  outline: 2px solid rgba(123, 198, 255, 0.55);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 .three-volume-card {
