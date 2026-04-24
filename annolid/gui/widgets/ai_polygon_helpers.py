@@ -84,18 +84,24 @@ def _polygon_prompt_alignment_score(
     polygon_points: list[QtCore.QPointF],
     prompt_points: list[list[float]],
     point_labels: list[int],
-) -> tuple[int, float]:
-    """Return (positive_hits_inside_polygon, mean_abs_distance_to_contour)."""
+) -> tuple[int, int, float, float]:
+    """Return a prompt-centered quality score for a candidate polygon.
+
+    Positive prompts should land inside the polygon, but that alone is not
+    enough: thin model artifacts can pass directly through a click and still be
+    bad annotations.  The remaining values penalize strip-like and oversized
+    candidates so a compact object mask around the prompt wins.
+    """
     if len(polygon_points) < 3:
-        return (0, float("inf"))
+        return (0, 1, float("inf"), float("inf"))
     try:
         contour = np.asarray(
             [[point.x(), point.y()] for point in polygon_points], dtype=np.float32
         ).reshape(-1, 1, 2)
     except Exception:
-        return (0, float("inf"))
+        return (0, 1, float("inf"), float("inf"))
     if contour.shape[0] < 3:
-        return (0, float("inf"))
+        return (0, 1, float("inf"), float("inf"))
 
     distances: list[float] = []
     hits = 0
@@ -118,8 +124,19 @@ def _polygon_prompt_alignment_score(
         distances.append(abs(signed_dist))
 
     if not distances:
-        return (0, float("inf"))
-    return (int(hits), float(np.mean(np.asarray(distances, dtype=np.float32))))
+        mean_distance = float("inf")
+    else:
+        mean_distance = float(np.mean(np.asarray(distances, dtype=np.float32)))
+
+    _x, _y, width, height = cv2.boundingRect(contour)
+    area = abs(float(cv2.contourArea(contour)))
+    bbox_area = max(1.0, float(width * height))
+    thin_side = max(1.0, float(min(width, height)))
+    long_side = max(1.0, float(max(width, height)))
+    aspect_ratio = long_side / thin_side
+    fill_ratio = area / bbox_area
+    strip_like = int(aspect_ratio >= 8.0 and fill_ratio <= 0.35)
+    return (int(hits), strip_like, float(bbox_area), float(mean_distance))
 
 
 def normalize_ai_polygon_points(
@@ -287,8 +304,12 @@ def polygon_from_refined_mask(
                 else:
                     cleaned[:, start : prev + 1] = 0
 
-        row_full = np.where(np.sum(cleaned > 0, axis=1) >= int(width * 0.9))[0]
-        col_full = np.where(np.sum(cleaned > 0, axis=0) >= int(height * 0.9))[0]
+        # Interactive SAM variants can occasionally return a narrow line that
+        # runs through the clicked point and connects unrelated regions.  It may
+        # span most, but not all, of the frame, so treat long thin bands as
+        # artifacts instead of requiring a literal full-frame span.
+        row_full = np.where(np.sum(cleaned > 0, axis=1) >= int(width * 0.60))[0]
+        col_full = np.where(np.sum(cleaned > 0, axis=0) >= int(height * 0.60))[0]
         _zero_bands(row_full, axis=0, max_band=max_row_band)
         _zero_bands(col_full, axis=1, max_band=max_col_band)
         return cleaned
@@ -327,9 +348,29 @@ def polygon_from_refined_mask(
             )
             labels_arr = np.asarray(point_labels or [], dtype=np.int32).reshape(-1)
             has_prompts = points_arr.size > 0 and labels_arr.size == points_arr.shape[0]
+            positive_points = (
+                points_arr[labels_arr > 0]
+                if has_prompts
+                else np.empty((0, 2), dtype=np.float32)
+            )
             full_h, full_w = mask_u8.shape
             best_label = None
             best_score = None
+
+            def _distance_to_bbox(
+                points: np.ndarray, x: int, y: int, width: int, height: int
+            ) -> float:
+                if points.size == 0:
+                    return float("inf")
+                x2 = x + max(0, width - 1)
+                y2 = y + max(0, height - 1)
+                distances = []
+                for px, py in points:
+                    dx = max(float(x) - float(px), 0.0, float(px) - float(x2))
+                    dy = max(float(y) - float(py), 0.0, float(py) - float(y2))
+                    distances.append(float(np.hypot(dx, dy)))
+                return float(np.min(np.asarray(distances, dtype=np.float32)))
+
             for comp_idx in range(1, int(num_labels)):
                 x = int(stats[comp_idx, cv2.CC_STAT_LEFT])
                 y = int(stats[comp_idx, cv2.CC_STAT_TOP])
@@ -355,10 +396,17 @@ def polygon_from_refined_mask(
                             positive_hits += 1
                         else:
                             negative_hits += 1
-                    if positive_hits == 0:
-                        continue
 
-                score = (positive_hits, -negative_hits, -int(strip_like), area)
+                prompt_distance = _distance_to_bbox(
+                    positive_points, x, y, width, height
+                )
+                score = (
+                    positive_hits,
+                    -negative_hits,
+                    -int(strip_like),
+                    -float(prompt_distance),
+                    -area,
+                )
                 if best_score is None or score > best_score:
                     best_score = score
                     best_label = comp_idx
@@ -455,7 +503,7 @@ def predict_ai_polygon_points(
             point_variants = [list(prompt_points or [])]
 
         best_points: list[QtCore.QPointF] = []
-        best_score: tuple[int, float] | None = None
+        best_score: tuple[int, int, float, float] | None = None
         for variant_idx, variant_points in enumerate(point_variants):
             try:
                 mask = mask_predictor(points=variant_points, point_labels=point_labels)
@@ -489,12 +537,26 @@ def predict_ai_polygon_points(
             if (
                 best_score is None
                 or score[0] > best_score[0]
-                or (score[0] == best_score[0] and score[1] < best_score[1])
+                or (
+                    score[0] == best_score[0]
+                    and (
+                        score[1] < best_score[1]
+                        or (
+                            score[1] == best_score[1]
+                            and (
+                                score[2] < best_score[2]
+                                or (
+                                    score[2] == best_score[2]
+                                    and score[3] < best_score[3]
+                                )
+                            )
+                        )
+                    )
+                )
             ):
                 best_score = score
                 best_points = candidate
-                # Good alignment: at least one positive prompt lies inside.
-                if score[0] > 0:
+                if score[0] > 0 and score[1] == 0:
                     break
         if len(best_points) >= 3:
             return best_points

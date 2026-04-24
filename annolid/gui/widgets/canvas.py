@@ -154,6 +154,7 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         self._ai_model_image_signature = None
         self._ai_model_signature_cache_token = None
         self._ai_model_signature_cache_value = None
+        self._ai_model_image_dirty = True
         self._ai_model_rect = None
         self.sam_predictor = None
         self.sam_hq_model = None
@@ -732,7 +733,8 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         if self.pixmap is None or self.pixmap.isNull():
             return False
         source_signature = self._ai_model_image_signature_value()
-        if not force:
+        image_dirty = bool(getattr(self, "_ai_model_image_dirty", True))
+        if not force and not image_dirty:
             # The semantic image/frame identity is the real cache key.
             # `QPixmap.cacheKey()` is only a fallback when signature generation is unavailable.
             if (
@@ -755,10 +757,15 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
             self._ai_model.set_image(image=utils.img_qt_to_arr(self.pixmap.toImage()))
             self._ai_model_pixmap_key = int(self.pixmap.cacheKey())
             self._ai_model_image_signature = source_signature
+            self._ai_model_image_dirty = False
             return True
         except Exception:
             logger.debug("Failed to sync AI model image.", exc_info=True)
             return False
+
+    def _invalidate_ai_model_image_signature_cache(self) -> None:
+        self._ai_model_signature_cache_token = None
+        self._ai_model_signature_cache_value = None
 
     def _ai_model_image_signature_value(self):
         if self.pixmap is None or self.pixmap.isNull():
@@ -3264,7 +3271,17 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
 
     def loadPixmap(self, pixmap, clear_shapes=True):
         previous_signature = self._ai_model_image_signature_value()
+        try:
+            previous_pixmap_key = int(self.pixmap.cacheKey())
+        except Exception:
+            previous_pixmap_key = None
         self.pixmap = pixmap
+        try:
+            current_pixmap_key = int(self.pixmap.cacheKey())
+        except Exception:
+            current_pixmap_key = None
+        self._invalidate_ai_model_image_signature_cache()
+        self._ai_model_image_dirty = previous_pixmap_key != current_pixmap_key
         current_signature = self._ai_model_image_signature_value()
         if (
             previous_signature is not None
@@ -3273,7 +3290,7 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         ):
             self._clear_ai_prompt_state()
         if self._ai_model is not None and self.pixmap is not None:
-            self._sync_ai_model_image(force=False)
+            self._sync_ai_model_image(force=bool(self._ai_model_image_dirty))
         if clear_shapes:
             self.shapes = []
             self.sam_mask = MaskShape()

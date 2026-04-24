@@ -43,31 +43,39 @@ class SegmentAnythingModel:
         self._image_embedding_cache = collections.OrderedDict()
 
         self._thread = None
+        self._image_generation = 0
+        self._image_embedding = None
 
     def set_image(self, image: np.ndarray):
+        image = np.asarray(image).copy()
+        image_key = image.tobytes()
         with self._lock:
+            self._image_generation += 1
+            generation = int(self._image_generation)
             self._image = image
-            self._image_embedding = self._image_embedding_cache.get(
-                self._image.tobytes()
-            )
+            self._image_embedding = self._image_embedding_cache.get(image_key)
 
         if self._image_embedding is None:
             self._thread = threading.Thread(
-                target=self._compute_and_cache_image_embedding
+                target=self._compute_and_cache_image_embedding,
+                args=(image, image_key, generation),
+                daemon=True,
             )
             self._thread.start()
 
-    def _compute_and_cache_image_embedding(self):
+    def _compute_and_cache_image_embedding(self, image, image_key, generation):
+        logger.debug("Computing image embedding...")
+        image_embedding = _compute_image_embedding(
+            image_size=self._image_size,
+            encoder_session=self._encoder_session,
+            image=image,
+        )
         with self._lock:
-            logger.debug("Computing image embedding...")
-            self._image_embedding = _compute_image_embedding(
-                image_size=self._image_size,
-                encoder_session=self._encoder_session,
-                image=self._image,
-            )
             if len(self._image_embedding_cache) > 10:
                 self._image_embedding_cache.popitem(last=False)
-            self._image_embedding_cache[self._image.tobytes()] = self._image_embedding
+            self._image_embedding_cache[image_key] = image_embedding
+            if int(generation) == int(self._image_generation):
+                self._image_embedding = image_embedding
             logger.debug("Done computing image embedding.")
 
     def _get_image_embedding(self):

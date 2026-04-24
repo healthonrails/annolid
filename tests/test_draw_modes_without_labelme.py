@@ -2,6 +2,7 @@ import builtins
 import importlib
 import os
 import threading
+import time
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -112,6 +113,42 @@ def test_annotation_compat_provides_ai_models_without_labelme(monkeypatch):
     assert getattr(mask, "shape", None) == (64, 64)
 
 
+def test_segment_anything_embedding_worker_keeps_latest_image(monkeypatch):
+    from annolid.segmentation.SAM import segment_anything as sam_module
+
+    model = sam_module.SegmentAnythingModel.__new__(sam_module.SegmentAnythingModel)
+    model.name = "fake"
+    model._image_size = 1024
+    model._encoder_session = object()
+    model._decoder_session = object()
+    model._lock = threading.Lock()
+    model._image_embedding_cache = {}
+    model._thread = None
+    model._image_generation = 0
+    model._image_embedding = None
+
+    first = np.zeros((8, 8, 3), dtype=np.uint8)
+    second = np.ones((8, 8, 3), dtype=np.uint8) * 255
+
+    def _fake_compute(*, image_size, encoder_session, image):
+        _ = image_size, encoder_session
+        if int(image[0, 0, 0]) == 0:
+            time.sleep(0.05)
+            return "first-embedding"
+        return "second-embedding"
+
+    monkeypatch.setattr(sam_module, "_compute_image_embedding", _fake_compute)
+
+    model.set_image(first)
+    first_thread = model._thread
+    model.set_image(second)
+
+    assert model._get_image_embedding() == "second-embedding"
+    if first_thread is not None:
+        first_thread.join(timeout=1.0)
+    assert model._image_embedding == "second-embedding"
+
+
 def test_ai_model_image_refreshes_after_pixmap_switch():
     _ensure_qapp()
 
@@ -182,7 +219,7 @@ def test_ai_model_image_does_not_refresh_for_same_pixmap_twice():
         w.close()
 
 
-def test_ai_model_image_does_not_refresh_for_same_frame_new_pixmap_instance():
+def test_ai_model_image_refreshes_for_same_frame_new_pixmap_instance():
     _ensure_qapp()
 
     from annolid.gui.app import AnnolidWindow
@@ -212,12 +249,12 @@ def test_ai_model_image_does_not_refresh_for_same_frame_new_pixmap_instance():
         second.fill(QtGui.QColor(10, 20, 30))
         w.canvas.loadPixmap(QtGui.QPixmap.fromImage(second), clear_shapes=False)
 
-        assert len(fake_model.images) == 1
+        assert len(fake_model.images) == 2
     finally:
         w.close()
 
 
-def test_ai_model_image_does_not_refresh_for_same_image_without_filename():
+def test_ai_model_image_refreshes_for_new_pixmap_without_filename():
     _ensure_qapp()
 
     from annolid.gui.app import AnnolidWindow
@@ -247,7 +284,7 @@ def test_ai_model_image_does_not_refresh_for_same_image_without_filename():
         second.fill(QtGui.QColor(10, 20, 30))
         w.canvas.loadPixmap(QtGui.QPixmap.fromImage(second), clear_shapes=False)
 
-        assert len(fake_model.images) == 1
+        assert len(fake_model.images) == 2
     finally:
         w.close()
 
@@ -1154,6 +1191,49 @@ def test_ai_polygon_ignores_full_width_strip_mask_artifacts(monkeypatch) -> None
         canvas.close()
 
 
+def test_ai_polygon_keeps_prompt_object_when_strip_artifact_is_connected(
+    monkeypatch,
+) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(420, 220, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(20, 30, 40))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
+
+        class _ConnectedStripArtifactMaskModel:
+            def predict_mask_from_points(self, points, point_labels):
+                _ = points, point_labels
+                mask = np.zeros((220, 420), dtype=np.uint8)
+                # Artifact resembling the reported failure: a long, thin line
+                # through the clicked object that is connected to the object.
+                mask[150:156, 0:355] = 1
+                mask[118:178, 276:334] = 1
+                return mask
+
+        canvas._ai_model = _ConnectedStripArtifactMaskModel()
+        polygon = canvas._predict_ai_polygon_points(
+            prompt_points=[[305.0, 145.0]],
+            point_labels=[1],
+        )
+
+        assert len(polygon) >= 3
+        xs = [point.x() for point in polygon]
+        ys = [point.y() for point in polygon]
+        assert min(xs) >= 265
+        assert max(xs) <= 345
+        assert min(ys) >= 108
+        assert max(ys) <= 188
+    finally:
+        canvas.close()
+
+
 def test_ai_polygon_retries_with_normalized_prompt_coordinates(monkeypatch) -> None:
     _ensure_qapp()
 
@@ -1414,6 +1494,45 @@ def test_sync_ai_model_image_refreshes_when_signature_changes_even_if_pixmap_key
         canvas._ai_model_pixmap_key = int(canvas.pixmap.cacheKey())
         assert canvas._sync_ai_model_image(force=False) is True
         assert canvas._ai_model.calls == 2
+    finally:
+        canvas.close()
+
+
+def test_load_pixmap_forces_ai_model_sync_even_when_signature_cache_is_stale(
+    monkeypatch,
+) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.widgets.canvas import Canvas
+
+    class _TrackingAiModel:
+        def __init__(self):
+            self.images = []
+
+        def set_image(self, image):
+            self.images.append(np.asarray(image).copy())
+
+    canvas = Canvas()
+    try:
+        first = QtGui.QImage(64, 48, QtGui.QImage.Format_RGB32)
+        first.fill(QtGui.QColor(10, 20, 30))
+        second = QtGui.QImage(64, 48, QtGui.QImage.Format_RGB32)
+        second.fill(QtGui.QColor(200, 120, 40))
+
+        canvas._ai_model = _TrackingAiModel()
+        monkeypatch.setattr(
+            canvas,
+            "_ai_model_image_signature_value",
+            lambda: ("video-frame", 1),
+        )
+
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(first), clear_shapes=False)
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(second), clear_shapes=False)
+
+        assert len(canvas._ai_model.images) == 2
+        assert not np.array_equal(
+            canvas._ai_model.images[0], canvas._ai_model.images[1]
+        )
     finally:
         canvas.close()
 
