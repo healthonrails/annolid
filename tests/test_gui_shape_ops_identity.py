@@ -1,5 +1,7 @@
 import json
 import os
+import threading
+import time
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -62,6 +64,7 @@ class _DummyMainWindow:
         self.filename = str(frames[first_frame])
         self.labelList = AnnolidLabelListWidget()
         self.canvas = None
+        self.shape_actions_run_in_background = False
 
     def _getLabelFile(self, filename):
         return str(Path(filename).with_suffix(".json"))
@@ -549,6 +552,408 @@ def test_shape_dialog_rename_updates_annotation_store_backed_json(
         for record in store_lines
         for shape in record.get("shapes", [])
     )
+
+
+def test_shape_dialog_store_backed_rename_batches_frame_updates(monkeypatch, tmp_path):
+    _ensure_qapp()
+
+    from annolid.gui.window_base import AnnolidLabelListItem
+    import annolid.gui.widgets.shape_dialog as shape_dialog_mod
+    from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+    from annolid.utils.annotation_store import AnnotationStore
+
+    current_png = tmp_path / "video_000000010.png"
+    future_png = tmp_path / "video_000000011.png"
+    current_json = current_png.with_suffix(".json")
+    future_json = future_png.with_suffix(".json")
+    store_path = tmp_path / f"{tmp_path.name}_annotations.ndjson"
+
+    _write_annotation_store(
+        store_path,
+        [
+            {
+                "frame": 10,
+                "shapes": [_shape_payload("stim_2")],
+                "imagePath": current_png.name,
+                "imageHeight": 100,
+                "imageWidth": 100,
+            },
+            {
+                "frame": 11,
+                "shapes": [_shape_payload("stim_2")],
+                "imagePath": future_png.name,
+                "imageHeight": 100,
+                "imageWidth": 100,
+            },
+        ],
+    )
+    for frame, path in ((10, current_json), (11, future_json)):
+        path.write_text(
+            json.dumps({"annotation_store": store_path.name, "frame": frame}),
+            encoding="utf-8",
+        )
+
+    canvas = type("Canvas", (), {})()
+    canvas.shapes = [_square("stim_2")]
+    canvas.selectedShapes = [canvas.shapes[0]]
+    canvas.update = lambda: None
+
+    window = _DummyMainWindow({10: current_png, 11: future_png})
+    window.canvas = canvas
+    window.labelList.addItem(AnnolidLabelListItem("stim_2", canvas.shapes[0]))
+
+    update_batches = []
+    original_update_frames = AnnotationStore.update_frames
+
+    def _counting_update_frames(self, updates):
+        update_batches.append(
+            (self.store_path, sorted(int(frame) for frame in updates))
+        )
+        return original_update_frames(self, updates)
+
+    def _fail_update_frame(self, frame, record):
+        raise AssertionError(
+            "bulk shape actions should not rewrite one frame at a time"
+        )
+
+    monkeypatch.setattr(AnnotationStore, "update_frames", _counting_update_frames)
+    monkeypatch.setattr(AnnotationStore, "update_frame", _fail_update_frame)
+    info_messages = []
+    original_info = shape_dialog_mod.logger.info
+
+    def _capture_info(message, *args, **kwargs):
+        info_messages.append(str(message) % args if args else str(message))
+        return original_info(message, *args, **kwargs)
+
+    monkeypatch.setattr(shape_dialog_mod.logger, "info", _capture_info)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "information", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", lambda *args, **kwargs: None)
+
+    dialog = ShapePropagationDialog(canvas, window, current_frame=10, max_frame=11)
+    dialog.shape_list.setCurrentRow(0)
+    dialog.action_combo.setCurrentText("Rename & Propagate")
+    dialog.rename_line.setText("rover")
+    dialog.frame_spin.setValue(11)
+
+    dialog.do_action()
+
+    assert update_batches == [(store_path, [10, 11])]
+    assert AnnotationStore(store_path).get_frame(10)["shapes"][0]["label"] == "rover"
+    assert AnnotationStore(store_path).get_frame(11)["shapes"][0]["label"] == "rover"
+    assert not any("Saving frame " in message for message in info_messages)
+    assert not any(" updated with action: " in message for message in info_messages)
+    assert any("Completed shape action" in message for message in info_messages)
+
+
+def test_shape_dialog_store_backed_propagate_bulk_loads_store_once(
+    monkeypatch, tmp_path
+):
+    _ensure_qapp()
+
+    from annolid.gui.window_base import AnnolidLabelListItem
+    from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+    from annolid.utils.annotation_store import AnnotationStore
+
+    current_png = tmp_path / "video_000000000.png"
+    frame_one_png = tmp_path / "video_000000001.png"
+    frame_two_png = tmp_path / "video_000000002.png"
+    store_path = tmp_path / f"{tmp_path.name}_annotations.ndjson"
+    _write_annotation_store(
+        store_path,
+        [
+            {
+                "frame": 1,
+                "shapes": [],
+                "imagePath": frame_one_png.name,
+                "imageHeight": 100,
+                "imageWidth": 100,
+            },
+            {
+                "frame": 2,
+                "shapes": [],
+                "imagePath": frame_two_png.name,
+                "imageHeight": 100,
+                "imageWidth": 100,
+            },
+        ],
+    )
+
+    canvas = type("Canvas", (), {})()
+    canvas.shapes = [_square("stim_2")]
+    canvas.selectedShapes = [canvas.shapes[0]]
+    canvas.update = lambda: None
+
+    window = _DummyMainWindow({0: current_png, 1: frame_one_png, 2: frame_two_png})
+    window.canvas = canvas
+    window.labelList.addItem(AnnolidLabelListItem("stim_2", canvas.shapes[0]))
+
+    calls = []
+    original_get_frames_fast = AnnotationStore.get_frames_fast
+
+    def _counting_get_frames_fast(self, frames):
+        calls.append((self.store_path, sorted(int(frame) for frame in frames)))
+        return original_get_frames_fast(self, frames)
+
+    def _fail_get_frame_fast(self, frame):
+        raise AssertionError("per-frame store lookup should not be used")
+
+    monkeypatch.setattr(AnnotationStore, "get_frames_fast", _counting_get_frames_fast)
+    monkeypatch.setattr(AnnotationStore, "get_frame_fast", _fail_get_frame_fast)
+
+    dialog = ShapePropagationDialog(canvas, window, current_frame=0, max_frame=2)
+    result = dialog._execute_shape_range_action(
+        action="propagate",
+        selected_shape_record=_shape_payload("stim_2"),
+        reference_shape=_shape_payload("stim_2"),
+        new_label="",
+        new_group_id=None,
+        current_label_file=str(current_png.with_suffix(".json")),
+        original_frame=0,
+        frame_label_files=[
+            (1, str(frame_one_png.with_suffix(".json"))),
+            (2, str(frame_two_png.with_suffix(".json"))),
+        ],
+    )
+
+    assert result["updated_frames"] == 2
+    assert calls == [(store_path, [1, 2])]
+
+
+def test_shape_dialog_dispatches_long_shape_action_to_background(monkeypatch, tmp_path):
+    _ensure_qapp()
+
+    from annolid.gui.window_base import AnnolidLabelListItem
+    from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+
+    current_png = tmp_path / "video_000000000.png"
+    future_png = tmp_path / "video_000000001.png"
+
+    canvas = type("Canvas", (), {})()
+    canvas.shapes = [_square("stim_2")]
+    canvas.selectedShapes = [canvas.shapes[0]]
+    canvas.update = lambda: None
+
+    window = _DummyMainWindow({0: current_png, 1: future_png})
+    window.canvas = canvas
+    window.shape_actions_run_in_background = True
+    window.labelList.addItem(AnnolidLabelListItem("stim_2", canvas.shapes[0]))
+
+    dialog = ShapePropagationDialog(canvas, window, current_frame=0, max_frame=1)
+    dialog.shape_list.setCurrentRow(0)
+    dialog.action_combo.setCurrentText("Propagate")
+    dialog.frame_spin.setValue(1)
+
+    worker_threads = []
+    main_thread = QtCore.QThread.currentThread()
+
+    def _background_task(**_kwargs):
+        worker_threads.append(QtCore.QThread.currentThread())
+        time.sleep(0.05)
+        return {"final_updated_frame": 1}
+
+    monkeypatch.setattr(dialog, "_execute_shape_range_action", _background_task)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "information", lambda *args, **kwargs: None
+    )
+
+    dialog.do_action()
+
+    assert dialog.result() == QtWidgets.QDialog.Accepted
+    assert dialog.background_action_started is True
+    assert dialog.apply_btn.isEnabled() is False
+    assert dialog._shape_action_progress.windowModality() == QtCore.Qt.NonModal
+    assert dialog._shape_action_cancel_button is not None
+    assert dialog in window._shape_action_dialog_jobs
+
+    deadline = time.monotonic() + 2.0
+    while not worker_threads and time.monotonic() < deadline:
+        QtWidgets.QApplication.processEvents()
+        time.sleep(0.01)
+
+    assert worker_threads
+    assert worker_threads[0] is not main_thread
+
+    deadline = time.monotonic() + 2.0
+    while dialog in window._shape_action_dialog_jobs and time.monotonic() < deadline:
+        QtWidgets.QApplication.processEvents()
+        time.sleep(0.01)
+
+    assert dialog not in window._shape_action_dialog_jobs
+
+
+def test_shape_dialog_cancel_discards_pending_store_batch(monkeypatch, tmp_path):
+    _ensure_qapp()
+
+    from annolid.gui.window_base import AnnolidLabelListItem
+    from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+    from annolid.utils.annotation_store import AnnotationStore
+
+    current_png = tmp_path / "video_000000000.png"
+    frame_one_png = tmp_path / "video_000000001.png"
+    frame_two_png = tmp_path / "video_000000002.png"
+    store_path = tmp_path / f"{tmp_path.name}_annotations.ndjson"
+    _write_annotation_store(
+        store_path,
+        [
+            {
+                "frame": 1,
+                "shapes": [],
+                "imagePath": frame_one_png.name,
+                "imageHeight": 100,
+                "imageWidth": 100,
+            },
+            {
+                "frame": 2,
+                "shapes": [],
+                "imagePath": frame_two_png.name,
+                "imageHeight": 100,
+                "imageWidth": 100,
+            },
+        ],
+    )
+    for frame, path in (
+        (1, frame_one_png.with_suffix(".json")),
+        (2, frame_two_png.with_suffix(".json")),
+    ):
+        path.write_text(
+            json.dumps({"annotation_store": store_path.name, "frame": frame}),
+            encoding="utf-8",
+        )
+
+    canvas = type("Canvas", (), {})()
+    canvas.shapes = [_square("stim_2")]
+    canvas.selectedShapes = [canvas.shapes[0]]
+    canvas.update = lambda: None
+
+    window = _DummyMainWindow({0: current_png, 1: frame_one_png, 2: frame_two_png})
+    window.canvas = canvas
+    window.labelList.addItem(AnnolidLabelListItem("stim_2", canvas.shapes[0]))
+
+    dialog = ShapePropagationDialog(canvas, window, current_frame=0, max_frame=2)
+    stop_event = threading.Event()
+    original_save_shape_file = dialog._save_shape_file
+
+    def _cancel_after_first_save(label_file, lf):
+        original_save_shape_file(label_file, lf)
+        stop_event.set()
+
+    def _fail_update_frames(self, updates):
+        raise AssertionError("canceled store batch should not be flushed")
+
+    monkeypatch.setattr(dialog, "_save_shape_file", _cancel_after_first_save)
+    monkeypatch.setattr(AnnotationStore, "update_frames", _fail_update_frames)
+
+    result = dialog._execute_shape_range_action(
+        action="propagate",
+        selected_shape_record=_shape_payload("stim_2"),
+        reference_shape=_shape_payload("stim_2"),
+        new_label="",
+        new_group_id=None,
+        current_label_file=str(current_png.with_suffix(".json")),
+        original_frame=0,
+        frame_label_files=[
+            (1, str(frame_one_png.with_suffix(".json"))),
+            (2, str(frame_two_png.with_suffix(".json"))),
+        ],
+        stop_event=stop_event,
+    )
+
+    assert result["canceled"] is True
+    assert AnnotationStore(store_path).get_frame(1)["shapes"] == []
+    assert AnnotationStore(store_path).get_frame(2)["shapes"] == []
+
+
+def test_shape_dialog_cancel_discards_pending_json_batch(monkeypatch, tmp_path):
+    _ensure_qapp()
+
+    from annolid.gui.window_base import AnnolidLabelListItem
+    from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+
+    current_png = tmp_path / "video_000000000.png"
+    frame_one_png = tmp_path / "video_000000001.png"
+    frame_two_png = tmp_path / "video_000000002.png"
+    frame_one_json = frame_one_png.with_suffix(".json")
+    frame_two_json = frame_two_png.with_suffix(".json")
+    _write_label_file(frame_one_json, [])
+    _write_label_file(frame_two_json, [])
+
+    canvas = type("Canvas", (), {})()
+    canvas.shapes = [_square("stim_2")]
+    canvas.selectedShapes = [canvas.shapes[0]]
+    canvas.update = lambda: None
+
+    window = _DummyMainWindow({0: current_png, 1: frame_one_png, 2: frame_two_png})
+    window.canvas = canvas
+    window.labelList.addItem(AnnolidLabelListItem("stim_2", canvas.shapes[0]))
+
+    dialog = ShapePropagationDialog(canvas, window, current_frame=0, max_frame=2)
+    stop_event = threading.Event()
+    original_save_shape_file = dialog._save_shape_file
+
+    def _cancel_after_first_save(label_file, lf):
+        original_save_shape_file(label_file, lf)
+        stop_event.set()
+
+    monkeypatch.setattr(dialog, "_save_shape_file", _cancel_after_first_save)
+
+    result = dialog._execute_shape_range_action(
+        action="propagate",
+        selected_shape_record=_shape_payload("stim_2"),
+        reference_shape=_shape_payload("stim_2"),
+        new_label="",
+        new_group_id=None,
+        current_label_file=str(current_png.with_suffix(".json")),
+        original_frame=0,
+        frame_label_files=[
+            (1, str(frame_one_json)),
+            (2, str(frame_two_json)),
+        ],
+        stop_event=stop_event,
+    )
+
+    assert result["canceled"] is True
+    assert _load_shapes(frame_one_json) == []
+    assert _load_shapes(frame_two_json) == []
+
+
+def test_shape_dialog_cancel_restores_renamed_canvas_shape(monkeypatch, tmp_path):
+    _ensure_qapp()
+
+    from annolid.gui.window_base import AnnolidLabelListItem
+    from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+
+    current_png = tmp_path / "video_000000000.png"
+    canvas = type("Canvas", (), {})()
+    canvas.shapes = [_square("stim_2")]
+    canvas.selectedShapes = [canvas.shapes[0]]
+    canvas.update = lambda: None
+
+    future_png = tmp_path / "video_000000001.png"
+    window = _DummyMainWindow({0: current_png, 1: future_png})
+    window.canvas = canvas
+    window.labelList.addItem(AnnolidLabelListItem("stim_2", canvas.shapes[0]))
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "information", lambda *args, **kwargs: None
+    )
+
+    dialog = ShapePropagationDialog(canvas, window, current_frame=0, max_frame=1)
+    shape = canvas.shapes[0]
+    shape.label = "renamed"
+    shape.group_id = 42
+
+    dialog._finish_shape_action_canceled(
+        "rename & propagate",
+        0,
+        restore_shape_state={"shape": shape, "label": "stim_2", "group_id": None},
+        updated_frames=0,
+        skipped_frames=0,
+    )
+
+    assert shape.label == "stim_2"
+    assert shape.group_id is None
 
 
 def test_shape_dialog_rename_updates_store_backed_prediction_without_json_stub(

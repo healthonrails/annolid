@@ -8,6 +8,7 @@ from annolid.gui.label_file import LabelFile
 from annolid.annotation.polygons import are_polygons_close_or_overlap
 from annolid.utils.shapes import shape_to_dict
 from annolid.utils.annotation_store import AnnotationStore, AnnotationStoreError
+from annolid.gui.workers import FlexibleWorker
 
 
 class ShapePropagationDialog(QtWidgets.QDialog):
@@ -26,6 +27,16 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         self.main_window = main_window  # Reference to the main window
         self.current_frame = current_frame
         self.max_frame = max_frame
+        self._annotation_store_batch = None
+        self._annotation_json_batch = None
+        self._shape_action_thread = None
+        self._shape_action_worker = None
+        self._shape_action_progress = None
+        self._shape_action_cancel_button = None
+        self._pending_shape_action = None
+        self._annotation_target_cache = None
+        self._shape_action_cancel_requested = False
+        self.background_action_started = False
 
         self.setWindowTitle("Shape Action on Future Frames")
 
@@ -344,10 +355,20 @@ class ShapePropagationDialog(QtWidgets.QDialog):
 
     def _resolve_annotation_target(self, label_file):
         path = osp.abspath(label_file)
+        if isinstance(self._annotation_target_cache, dict):
+            cached = self._annotation_target_cache.get(path)
+            if cached is not None:
+                return cached
         if path.lower().endswith(".ndjson"):
-            return "store", AnnotationStore(Path(path)), None
+            result = ("store", AnnotationStore(Path(path)), None)
+            if isinstance(self._annotation_target_cache, dict):
+                self._annotation_target_cache[path] = result
+            return result
         if not path.lower().endswith(".json"):
-            return "json", None, None
+            result = ("json", None, None)
+            if isinstance(self._annotation_target_cache, dict):
+                self._annotation_target_cache[path] = result
+            return result
 
         frame = AnnotationStore.frame_number_from_path(path)
         fallback_store = AnnotationStore.for_frame_path(path)
@@ -366,15 +387,37 @@ class ShapePropagationDialog(QtWidgets.QDialog):
                     frame_value = int(frame_value)
                 except (TypeError, ValueError):
                     frame_value = AnnotationStore.frame_number_from_path(path)
-                return "store", store, frame_value
+                result = ("store", store, frame_value)
+                if isinstance(self._annotation_target_cache, dict):
+                    self._annotation_target_cache[path] = result
+                return result
 
             if isinstance(raw.get("shapes"), list) and len(raw.get("shapes")) > 0:
-                return "json", None, None
+                result = ("json", None, None)
+                if isinstance(self._annotation_target_cache, dict):
+                    self._annotation_target_cache[path] = result
+                return result
+
+        if (
+            fallback_store.store_path.exists()
+            and frame is not None
+            and not Path(path).exists()
+        ):
+            result = ("store", fallback_store, int(frame))
+            if isinstance(self._annotation_target_cache, dict):
+                self._annotation_target_cache[path] = result
+            return result
 
         if fallback_store.store_path.exists() and frame is not None:
             try:
-                if fallback_store.get_frame(int(frame)) is not None:
-                    return "store", fallback_store, int(frame)
+                record = fallback_store.get_frame_fast(int(frame))
+                if record is None:
+                    record = fallback_store.get_frame(int(frame))
+                if record is not None:
+                    result = ("store", fallback_store, int(frame))
+                    if isinstance(self._annotation_target_cache, dict):
+                        self._annotation_target_cache[path] = result
+                    return result
             except Exception:
                 logger.debug(
                     "Failed to inspect fallback annotation store for %s",
@@ -382,7 +425,10 @@ class ShapePropagationDialog(QtWidgets.QDialog):
                     exc_info=True,
                 )
 
-        return "json", None, None
+        result = ("json", None, None)
+        if isinstance(self._annotation_target_cache, dict):
+            self._annotation_target_cache[path] = result
+        return result
 
     def _build_labelme_record(self, lf):
         return {
@@ -404,13 +450,37 @@ class ShapePropagationDialog(QtWidgets.QDialog):
                 raise AnnotationStoreError(
                     f"Frame number required to update annotation store-backed file: {label_file}"
                 )
-            logger.info(
+            log = (
+                logger.debug
+                if isinstance(self._annotation_store_batch, dict)
+                else logger.info
+            )
+            log(
                 "Saving frame %s via annotation store %s (%s)",
                 frame,
                 store.store_path,
                 label_file,
             )
-            store.update_frame(int(frame), self._build_labelme_record(lf))
+            record = self._build_labelme_record(lf)
+            if isinstance(self._annotation_store_batch, dict):
+                batch = self._annotation_store_batch.setdefault(store.store_path, {})
+                batch[int(frame)] = record
+            else:
+                store.update_frame(int(frame), record)
+            return
+
+        if isinstance(self._annotation_json_batch, dict):
+            logger.debug("Saving frame via JSON file %s", label_file)
+            self._annotation_json_batch[str(label_file)] = {
+                "shapes": lf.shapes,
+                "imagePath": lf.imagePath,
+                "imageHeight": getattr(lf, "imageHeight", None),
+                "imageWidth": getattr(lf, "imageWidth", None),
+                "imageData": lf.imageData,
+                "otherData": lf.otherData,
+                "flags": lf.flags,
+                "caption": lf.caption,
+            }
             return
 
         logger.info("Saving frame via JSON file %s", label_file)
@@ -425,6 +495,250 @@ class ShapePropagationDialog(QtWidgets.QDialog):
             lf.flags,
             lf.caption,
         )
+
+    def _flush_annotation_batches(self) -> tuple[int, int]:
+        store_count = 0
+        json_count = 0
+        if isinstance(self._annotation_store_batch, dict):
+            for store_path, updates in self._annotation_store_batch.items():
+                if not updates:
+                    continue
+                store_count += len(updates)
+                logger.info(
+                    "Saving %s frame(s) via annotation store %s",
+                    len(updates),
+                    store_path,
+                )
+                AnnotationStore(Path(store_path)).update_frames(updates)
+            self._annotation_store_batch.clear()
+
+        if isinstance(self._annotation_json_batch, dict):
+            for label_file, payload in self._annotation_json_batch.items():
+                json_count += 1
+                lf = LabelFile()
+                lf.save(
+                    label_file,
+                    payload["shapes"],
+                    payload["imagePath"],
+                    payload["imageHeight"],
+                    payload["imageWidth"],
+                    payload["imageData"],
+                    payload["otherData"],
+                    payload["flags"],
+                    payload["caption"],
+                )
+            if json_count:
+                logger.info("Saving %s frame(s) via JSON files", json_count)
+            self._annotation_json_batch.clear()
+
+        return store_count, json_count
+
+    def _discard_annotation_batches(self) -> tuple[int, int]:
+        store_count = 0
+        json_count = 0
+        if isinstance(self._annotation_store_batch, dict):
+            store_count = sum(
+                len(updates) for updates in self._annotation_store_batch.values()
+            )
+            self._annotation_store_batch.clear()
+        if isinstance(self._annotation_json_batch, dict):
+            json_count = len(self._annotation_json_batch)
+            self._annotation_json_batch.clear()
+        return store_count, json_count
+
+    def _should_run_shape_action_in_background(self, frame_count: int) -> bool:
+        _ = frame_count
+        main_window = self.main_window
+        return bool(getattr(main_window, "shape_actions_run_in_background", True))
+
+    def _start_shape_action_worker(
+        self, task, *, action: str, original_frame: int, restore_shape_state=None
+    ):
+        owner = self.main_window if self.main_window is not None else self
+        parent_widget = owner if isinstance(owner, QtWidgets.QWidget) else self
+        thread_parent = owner if isinstance(owner, QtCore.QObject) else self
+        progress = QtWidgets.QProgressDialog(
+            f"{action.capitalize()} shapes in background...",
+            "Cancel",
+            0,
+            0,
+            parent_widget,
+        )
+        progress.setWindowTitle("Shape Action")
+        cancel_button = QtWidgets.QPushButton("Cancel", progress)
+        progress.setCancelButton(cancel_button)
+        progress.setMinimumDuration(0)
+        progress.setWindowModality(QtCore.Qt.NonModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+
+        thread = QtCore.QThread(thread_parent)
+        worker = FlexibleWorker(task)
+        worker.moveToThread(thread)
+
+        self._shape_action_thread = thread
+        self._shape_action_worker = worker
+        self._shape_action_progress = progress
+        self._shape_action_cancel_button = cancel_button
+        self._pending_shape_action = {
+            "action": action,
+            "original_frame": int(original_frame),
+            "restore_shape_state": restore_shape_state,
+        }
+        self._shape_action_cancel_requested = False
+        self.background_action_started = True
+        active_jobs = getattr(owner, "_shape_action_dialog_jobs", None)
+        if not isinstance(active_jobs, list):
+            active_jobs = []
+            setattr(owner, "_shape_action_dialog_jobs", active_jobs)
+        active_jobs.append(self)
+
+        thread.started.connect(worker.run)
+        progress.canceled.connect(self._cancel_shape_action)
+        worker.finished_signal.connect(
+            self._on_shape_action_finished, QtCore.Qt.QueuedConnection
+        )
+        worker.finished_signal.connect(thread.quit, QtCore.Qt.QueuedConnection)
+        thread.finished.connect(worker.deleteLater, QtCore.Qt.QueuedConnection)
+        thread.finished.connect(thread.deleteLater, QtCore.Qt.QueuedConnection)
+        thread.finished.connect(
+            self._clear_shape_action_worker, QtCore.Qt.QueuedConnection
+        )
+
+        progress.show()
+        if hasattr(self.main_window, "statusBar"):
+            self.main_window.statusBar().showMessage(
+                f"{action.capitalize()} is running in the background..."
+            )
+        thread.start()
+
+    def _cancel_shape_action(self):
+        worker = self._shape_action_worker
+        progress = self._shape_action_progress
+        self._shape_action_cancel_requested = True
+        if progress is not None:
+            progress.setLabelText("Canceling shape action...")
+        cancel_button = self._shape_action_cancel_button
+        if cancel_button is not None:
+            cancel_button.setEnabled(False)
+        if worker is not None and hasattr(worker, "request_stop"):
+            worker.request_stop()
+        if hasattr(self.main_window, "statusBar"):
+            self.main_window.statusBar().showMessage("Canceling shape action...")
+
+    def _clear_shape_action_worker(self):
+        self._shape_action_thread = None
+        self._shape_action_worker = None
+        self._shape_action_cancel_button = None
+        active_jobs = getattr(self.main_window, "_shape_action_dialog_jobs", None)
+        if isinstance(active_jobs, list) and self in active_jobs:
+            active_jobs.remove(self)
+
+    def _on_shape_action_finished(self, result):
+        progress = self._shape_action_progress
+        self._shape_action_progress = None
+        if progress is not None:
+            progress.close()
+
+        pending = self._pending_shape_action or {}
+        self._pending_shape_action = None
+        action = pending.get("action", "action")
+        original_frame = pending.get("original_frame", self.current_frame)
+        restore_shape_state = pending.get("restore_shape_state")
+
+        if isinstance(result, Exception):
+            logger.error(
+                "Background shape action failed.",
+                exc_info=(type(result), result, result.__traceback__),
+            )
+            QtWidgets.QMessageBox.critical(
+                self.main_window,
+                "Shape Action Failed",
+                f"Failed to {action}: {result}",
+            )
+            self._restore_shape_state(restore_shape_state)
+            self.apply_btn.setEnabled(True)
+            return
+
+        final_updated_frame = None
+        canceled = False
+        updated_frames = None
+        skipped_frames = None
+        if isinstance(result, dict):
+            final_updated_frame = result.get("final_updated_frame")
+            canceled = bool(result.get("canceled", False))
+            updated_frames = result.get("updated_frames")
+            skipped_frames = result.get("skipped_frames")
+        if canceled:
+            self._finish_shape_action_canceled(
+                action,
+                original_frame,
+                restore_shape_state=restore_shape_state,
+                updated_frames=updated_frames,
+                skipped_frames=skipped_frames,
+            )
+            return
+        self._finish_shape_action_success(action, original_frame, final_updated_frame)
+
+    def _finish_shape_action_canceled(
+        self,
+        action: str,
+        original_frame: int,
+        *,
+        restore_shape_state=None,
+        updated_frames=None,
+        skipped_frames=None,
+    ) -> None:
+        self._restore_shape_state(restore_shape_state)
+        try:
+            self.main_window.set_frame_number(original_frame)
+        except Exception:
+            logger.debug(
+                "Failed to restore frame after canceled shape action.", exc_info=True
+            )
+
+        if hasattr(self.main_window, "statusBar"):
+            self.main_window.statusBar().showMessage(f"{action.capitalize()} canceled.")
+        detail = ""
+        if updated_frames is not None and skipped_frames is not None:
+            detail = f" Updated {updated_frames} frame(s), skipped {skipped_frames}."
+        QtWidgets.QMessageBox.information(
+            self.main_window,
+            f"{action.capitalize()} Canceled",
+            f"The shape action was canceled.{detail}",
+        )
+
+    def _restore_shape_state(self, restore_shape_state) -> None:
+        if not isinstance(restore_shape_state, dict):
+            return
+        shape = restore_shape_state.get("shape")
+        if shape is None:
+            return
+        try:
+            shape.label = restore_shape_state.get("label")
+            shape.group_id = restore_shape_state.get("group_id")
+            self._refresh_current_shape_views(shape)
+        except Exception:
+            logger.debug("Failed to restore shape state.", exc_info=True)
+
+    def _finish_shape_action_success(
+        self, action: str, original_frame: int, final_updated_frame
+    ) -> None:
+        if action == "rename & propagate":
+            self._reload_annotation_view(final_updated_frame)
+        else:
+            self.main_window.set_frame_number(original_frame)
+
+        if hasattr(self.main_window, "statusBar"):
+            self.main_window.statusBar().showMessage(
+                f"{action.capitalize()} completed."
+            )
+        QtWidgets.QMessageBox.information(
+            self.main_window,
+            f"{action.capitalize()} Complete",
+            f"The shape has been {action}ed in future frames.",
+        )
+        self.accept()
 
     def _prediction_store_candidates(self):
         main_window = self.main_window
@@ -649,7 +963,9 @@ class ShapePropagationDialog(QtWidgets.QDialog):
             if frame is None:
                 return None
             try:
-                record = store.get_frame(int(frame))
+                record = store.get_frame_fast(int(frame))
+                if record is None:
+                    record = store.get_frame(int(frame))
                 if record is None:
                     return None
             except Exception:
@@ -669,6 +985,48 @@ class ShapePropagationDialog(QtWidgets.QDialog):
             logger.error(f"Error loading label file {label_file}: {exc}")
             return None
 
+    def _preload_store_records(self, frame_label_files):
+        store_frames: dict[Path, set[int]] = {}
+        label_targets = {}
+        for frame, label_file in frame_label_files:
+            if not label_file:
+                continue
+            target_kind, store, target_frame = self._resolve_annotation_target(
+                label_file
+            )
+            label_targets[label_file] = (target_kind, store, target_frame)
+            if target_kind != "store" or store is None or target_frame is None:
+                continue
+            store_frames.setdefault(store.store_path, set()).add(int(target_frame))
+
+        preload = {}
+        for store_path, frames in store_frames.items():
+            store = AnnotationStore(Path(store_path))
+            records = store.get_frames_fast(frames)
+            for frame in frames:
+                if int(frame) in records:
+                    continue
+                record = store.get_frame(int(frame))
+                if record is not None:
+                    records[int(frame)] = record
+            preload[store_path] = records
+        return label_targets, preload
+
+    def _load_existing_label_file_from_preload(
+        self, label_file, label_targets, preloaded_store_records
+    ):
+        target_kind, store, frame = label_targets.get(
+            label_file, self._resolve_annotation_target(label_file)
+        )
+        if target_kind == "store" and store is not None:
+            if frame is None:
+                return None
+            record = preloaded_store_records.get(store.store_path, {}).get(int(frame))
+            if record is None:
+                return None
+            return self._label_file_from_record(record, label_file)
+        return self._load_existing_label_file(label_file)
+
     def _label_file_from_record(self, record, label_file):
         lf = LabelFile()
         lf.filename = label_file
@@ -682,6 +1040,196 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         lf.otherData = dict(record.get("otherData") or {})
         lf.is_video_frame = True
         return lf
+
+    def _execute_shape_range_action(
+        self,
+        *,
+        action: str,
+        selected_shape_record,
+        reference_shape,
+        new_label: str,
+        new_group_id,
+        current_label_file: str,
+        original_frame: int,
+        frame_label_files,
+        stop_event=None,
+    ):
+        frame_numbers = [
+            int(frame) for frame, label_file in frame_label_files if label_file
+        ]
+        range_text = (
+            f"{min(frame_numbers)}-{max(frame_numbers)}" if frame_numbers else "none"
+        )
+        logger.info(
+            "Starting shape action '%s' over frame range %s (%s target frame(s)).",
+            action,
+            range_text,
+            len(frame_numbers),
+        )
+        updated_frames = []
+        skipped_frames = []
+        store_batch_count = 0
+        json_batch_count = 0
+        canceled = False
+        self._annotation_store_batch = {}
+        self._annotation_json_batch = {}
+        self._annotation_target_cache = {}
+        label_targets, preloaded_store_records = self._preload_store_records(
+            frame_label_files
+        )
+        if stop_event is not None and stop_event.is_set():
+            canceled = True
+        if not canceled and action == "rename & propagate":
+            current_lf = self._load_existing_label_file(current_label_file)
+            if current_lf is not None:
+                self._rename_matching_shapes_in_label_file(
+                    current_lf,
+                    current_label_file,
+                    reference_shape,
+                    new_label,
+                    new_group_id,
+                )
+            else:
+                logger.warning(
+                    "Rename & propagate skipped current frame %s because no existing annotation record was found.",
+                    original_frame,
+                )
+
+        final_updated_frame = original_frame if action == "rename & propagate" else None
+        try:
+            for frame, label_file in frame_label_files:
+                if stop_event is not None and stop_event.is_set():
+                    canceled = True
+                    break
+                if not label_file:
+                    continue
+                target_kind, _, _ = label_targets.get(
+                    label_file, self._resolve_annotation_target(label_file)
+                )
+                if action == "propagate":
+                    lf = self._load_existing_label_file_from_preload(
+                        label_file, label_targets, preloaded_store_records
+                    )
+                    if lf is None:
+                        if target_kind == "store":
+                            logger.debug(
+                                "Skipping store-backed frame %s during propagate because the existing record could not be loaded.",
+                                frame,
+                            )
+                            skipped_frames.append(frame)
+                            continue
+                        lf = self.load_or_create_label_file(label_file)
+                else:
+                    lf = self._load_existing_label_file_from_preload(
+                        label_file, label_targets, preloaded_store_records
+                    )
+                if lf is None:
+                    skipped_frames.append(frame)
+                    continue
+
+                shapes = lf.shapes
+                frame_saved = False
+
+                if action == "propagate":
+                    new_shape_dict = dict(selected_shape_record)
+                    if self._shape_group_id(new_shape_dict) is None:
+                        new_shape_dict["group_id"] = self._shape_group_id(
+                            selected_shape_record
+                        )
+                    matches = self._match_shapes(shapes, reference_shape)
+                    if not matches:
+                        shapes.append(new_shape_dict)
+                    else:
+                        match_ids = {id(shape) for shape in matches}
+                        replaced = False
+                        updated_shapes = []
+                        for existing_shape in shapes:
+                            if id(existing_shape) in match_ids:
+                                updated_shapes.append(new_shape_dict)
+                                replaced = True
+                            else:
+                                updated_shapes.append(existing_shape)
+                        if not replaced:
+                            updated_shapes.append(new_shape_dict)
+                        shapes = updated_shapes
+                elif action == "rename & propagate":
+                    self._rename_matching_shapes_in_label_file(
+                        lf,
+                        label_file,
+                        reference_shape,
+                        new_label,
+                        new_group_id,
+                    )
+                    shapes = lf.shapes
+                    frame_saved = True
+                elif action == "delete":
+                    logger.debug(
+                        "Deleting shape with label: %s | Details: %s",
+                        self._shape_label(reference_shape),
+                        reference_shape,
+                    )
+                    shapes = [
+                        s
+                        for s in shapes
+                        if not self._shape_matches_reference(s, reference_shape)
+                    ]
+
+                lf.shapes = shapes
+
+                if not frame_saved:
+                    self._save_shape_file(label_file, lf)
+                final_updated_frame = frame
+                updated_frames.append(frame)
+
+            if stop_event is not None and stop_event.is_set():
+                canceled = True
+            if canceled:
+                discarded_store_count, discarded_json_count = (
+                    self._discard_annotation_batches()
+                )
+                logger.info(
+                    "Canceled shape action '%s' over frame range %s: updated=%s skipped=%s pending_store_batch_discarded=%s pending_json_batch_discarded=%s.",
+                    action,
+                    range_text,
+                    len(updated_frames),
+                    len(skipped_frames),
+                    discarded_store_count,
+                    discarded_json_count,
+                )
+                return {
+                    "final_updated_frame": final_updated_frame,
+                    "updated_frames": len(updated_frames),
+                    "skipped_frames": len(skipped_frames),
+                    "canceled": True,
+                }
+
+            if isinstance(self._annotation_store_batch, dict):
+                store_batch_count = sum(
+                    len(updates) for updates in self._annotation_store_batch.values()
+                )
+            if isinstance(self._annotation_json_batch, dict):
+                json_batch_count = len(self._annotation_json_batch)
+            self._flush_annotation_batches()
+            logger.info(
+                "Completed shape action '%s' over frame range %s: updated=%s skipped=%s store_batched=%s json_batched=%s.",
+                action,
+                range_text,
+                len(updated_frames),
+                len(skipped_frames),
+                store_batch_count,
+                json_batch_count,
+            )
+        finally:
+            self._annotation_store_batch = None
+            self._annotation_json_batch = None
+            self._annotation_target_cache = None
+
+        return {
+            "final_updated_frame": final_updated_frame,
+            "updated_frames": len(updated_frames),
+            "skipped_frames": len(skipped_frames),
+            "canceled": False,
+        }
 
     def do_action(self):
         item = self.shape_list.currentItem()
@@ -733,126 +1281,59 @@ class ShapePropagationDialog(QtWidgets.QDialog):
             logger.info(
                 f"{action.capitalize()} shape '{selected_shape.label}' from frame {self.current_frame + 1} to {action_end_frame}"
             )
-            # if delete start from the current frame
-            if action == "delete":
-                self.current_frame -= 1
-
-            renamed_shape = selected_shape
+            start_frame = original_frame if action == "delete" else original_frame + 1
+            frame_label_files = [
+                (frame, self._label_file_for_frame(frame))
+                for frame in range(start_frame, action_end_frame + 1)
+            ]
             new_group_id = self._shape_group_id(selected_shape)
+            restore_shape_state = None
             if action == "rename & propagate":
+                restore_shape_state = {
+                    "shape": selected_shape,
+                    "label": self._shape_label(selected_shape),
+                    "group_id": self._shape_group_id(selected_shape),
+                }
                 if new_group_id is None:
                     new_group_id = self._allocate_group_id()
-                renamed_shape.label = new_label
-                renamed_shape.group_id = new_group_id
-                self._refresh_current_shape_views(renamed_shape)
+                selected_shape.label = new_label
+                selected_shape.group_id = new_group_id
+                self._refresh_current_shape_views(selected_shape)
 
-                current_lf = self._load_existing_label_file(current_label_file)
-                if current_lf is not None:
-                    self._rename_matching_shapes_in_label_file(
-                        current_lf,
-                        current_label_file,
-                        reference_shape,
-                        new_label,
-                        new_group_id,
-                    )
-                else:
-                    logger.warning(
-                        "Rename & propagate skipped current frame %s because no existing annotation record was found.",
-                        original_frame,
-                    )
+            selected_shape_record = shape_to_dict(selected_shape)
 
-            final_updated_frame = (
-                original_frame if action == "rename & propagate" else None
-            )
-            for frame in range(self.current_frame + 1, action_end_frame + 1):
-                label_file = self._label_file_for_frame(frame)
-                if not label_file:
-                    continue
-                target_kind, _, _ = self._resolve_annotation_target(label_file)
-                if action == "propagate":
-                    lf = self._load_existing_label_file(label_file)
-                    if lf is None:
-                        if target_kind == "store":
-                            logger.warning(
-                                "Skipping store-backed frame %s during propagate because the existing record could not be loaded.",
-                                frame,
-                            )
-                            continue
-                        lf = self.load_or_create_label_file(label_file)
-                else:
-                    lf = self._load_existing_label_file(label_file)
-                if lf is None:
-                    continue
+            def _task(stop_event=None):
+                return self._execute_shape_range_action(
+                    action=action,
+                    selected_shape_record=selected_shape_record,
+                    reference_shape=reference_shape,
+                    new_label=new_label,
+                    new_group_id=new_group_id,
+                    current_label_file=current_label_file,
+                    original_frame=original_frame,
+                    frame_label_files=frame_label_files,
+                    stop_event=stop_event,
+                )
 
-                shapes = lf.shapes
-                frame_saved = False
-
-                if action == "propagate":
-                    new_shape = (
-                        selected_shape.copy()
-                        if hasattr(selected_shape, "copy")
-                        else selected_shape
-                    )
-                    if self._shape_group_id(new_shape) is None:
-                        new_shape.group_id = self._shape_group_id(selected_shape)
-                    new_shape_dict = shape_to_dict(new_shape)
-                    matches = self._match_shapes(shapes, reference_shape)
-                    if not matches:
-                        shapes.append(new_shape_dict)
-                    else:
-                        match_ids = {id(shape) for shape in matches}
-                        replaced = False
-                        updated_shapes = []
-                        for existing_shape in shapes:
-                            if id(existing_shape) in match_ids:
-                                updated_shapes.append(new_shape_dict)
-                                replaced = True
-                            else:
-                                updated_shapes.append(existing_shape)
-                        if not replaced:
-                            updated_shapes.append(new_shape_dict)
-                        shapes = updated_shapes
-                elif action == "rename & propagate":
-                    if new_group_id is None:
-                        new_group_id = self._allocate_group_id()
-                    self._rename_matching_shapes_in_label_file(
-                        lf,
-                        label_file,
-                        reference_shape,
-                        new_label,
-                        new_group_id,
-                    )
-                    shapes = lf.shapes
-                    frame_saved = True
-                elif action == "delete":
-                    # Convert the shape to a dictionary for detailed logging.
-                    shape_details = reference_shape
-                    logger.info(
-                        f"Deleting shape with label: {selected_shape.label} | Details: {shape_details}"
-                    )
-                    shapes = [
-                        s
-                        for s in shapes
-                        if not self._shape_matches_reference(s, reference_shape)
-                    ]
-
-                lf.shapes = shapes
-
-                if not frame_saved:
-                    self._save_shape_file(label_file, lf)
-                final_updated_frame = frame
-                logger.info(f"Frame {frame} updated with action: {action}.")
-
+            frame_count = len(frame_label_files)
             if action == "rename & propagate":
-                self._reload_annotation_view(final_updated_frame)
-            else:
-                main_window.set_frame_number(original_frame)
-            QtWidgets.QMessageBox.information(
-                self,
-                f"{action.capitalize()} Complete",
-                f"The shape has been {action}ed in future frames.",
+                frame_count += 1
+            if self._should_run_shape_action_in_background(frame_count):
+                self.apply_btn.setEnabled(False)
+                self._start_shape_action_worker(
+                    _task,
+                    action=action,
+                    original_frame=original_frame,
+                    restore_shape_state=restore_shape_state,
+                )
+                self.accept()
+                return
+
+            result = _task()
+            final_updated_frame = result.get("final_updated_frame")
+            self._finish_shape_action_success(
+                action, original_frame, final_updated_frame
             )
-            self.accept()
 
         elif action == "define proximity event":
             target_group = self.target_group_combo.currentText()

@@ -2,7 +2,7 @@ import json
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Set, Union
+from typing import Any, Dict, Iterable, Mapping, Optional, Set, Union
 
 from annolid.utils.logger import logger
 
@@ -290,18 +290,29 @@ class AnnotationStore:
         record: Dict[str, Any],
     ) -> None:
         """Replace the stored record for a frame, preserving line order."""
-        if frame is None:
-            raise AnnotationStoreError("Frame is required to update a record.")
+        self.update_frames({frame: record})
+
+    def update_frames(self, updates: Mapping[int, Dict[str, Any]]) -> None:
+        """Replace stored records for multiple frames in one atomic rewrite."""
+        if not updates:
+            return
         if not self.store_path.exists():
             raise AnnotationStoreError(f"Annotation store not found: {self.store_path}")
 
-        try:
-            frame_key = int(frame)
-        except (TypeError, ValueError) as exc:
-            raise AnnotationStoreError(f"Invalid frame number: {frame!r}") from exc
+        normalized_updates: Dict[int, Dict[str, Any]] = {}
+        for frame, record in updates.items():
+            if frame is None:
+                raise AnnotationStoreError("Frame is required to update a record.")
+            try:
+                frame_key = int(frame)
+            except (TypeError, ValueError) as exc:
+                raise AnnotationStoreError(f"Invalid frame number: {frame!r}") from exc
+            replacement = dict(record)
+            replacement.setdefault("frame", frame_key)
+            normalized_updates[frame_key] = replacement
 
+        missing_frames = set(normalized_updates)
         lines_to_keep = []
-        replaced = False
         try:
             self._ensure_explicit_frame_metadata()
             with self.store_path.open("r", encoding="utf-8") as fh:
@@ -328,14 +339,16 @@ class AnnotationStore:
                             f"Frame metadata missing while updating {self.store_path}."
                         )
 
-                    if payload_frame == frame_key:
+                    if payload_frame in normalized_updates:
                         lines_to_keep.append(
                             json.dumps(
-                                record, ensure_ascii=False, separators=(",", ":")
+                                normalized_updates[payload_frame],
+                                ensure_ascii=False,
+                                separators=(",", ":"),
                             )
                             + "\n"
                         )
-                        replaced = True
+                        missing_frames.discard(payload_frame)
                     else:
                         lines_to_keep.append(
                             raw_line if raw_line.endswith("\n") else f"{raw_line}\n"
@@ -345,9 +358,10 @@ class AnnotationStore:
                 f"Failed to read annotation store {self.store_path}: {exc}"
             ) from exc
 
-        if not replaced:
+        if missing_frames:
+            missing = ", ".join(str(frame) for frame in sorted(missing_frames))
             raise AnnotationStoreError(
-                f"Frame {frame_key} not present in store {self.store_path}"
+                f"Frame(s) {missing} not present in store {self.store_path}"
             )
 
         try:
@@ -476,6 +490,57 @@ class AnnotationStore:
         except OSError:
             return None
         return None
+
+    def get_frames_fast(self, frames: Iterable[int]) -> Dict[int, Dict[str, Any]]:
+        """Return records for multiple frames with one best-effort store scan."""
+        frame_keys: Set[int] = set()
+        for frame in frames:
+            try:
+                frame_keys.add(int(frame))
+            except (TypeError, ValueError):
+                continue
+        if not frame_keys:
+            return {}
+
+        results: Dict[int, Dict[str, Any]] = {}
+        cached_records = self._cached_records_or_empty()
+        for frame in list(frame_keys):
+            cached = cached_records.get(frame)
+            if isinstance(cached, dict):
+                results[frame] = cached
+                frame_keys.discard(frame)
+        if not frame_keys or not self.store_path.exists():
+            return results
+
+        try:
+            with self.store_path.open("r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    if not frame_keys:
+                        break
+                    if '"frame"' not in raw_line:
+                        continue
+                    match = self._FRAME_PATTERN.search(raw_line)
+                    if not match:
+                        continue
+                    try:
+                        line_frame = int(match.group(1))
+                    except (TypeError, ValueError):
+                        continue
+                    if line_frame not in frame_keys:
+                        continue
+                    try:
+                        data = json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        continue
+                    explicit = self._explicit_frame_for_record(data)
+                    if explicit != line_frame:
+                        continue
+                    results[line_frame] = data
+                    frame_keys.discard(line_frame)
+        except OSError:
+            return results
+
+        return results
 
     def iter_frames(self) -> Iterable[int]:
         records = self._load_records()

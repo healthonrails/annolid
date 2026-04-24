@@ -652,7 +652,10 @@ class LabelPanelMixin:
 
         self._select_shape_row_in_propagation_dialog(dialog, selected_shape)
 
-        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+        result = dialog.exec_()
+        if getattr(dialog, "background_action_started", False):
+            self.statusBar().showMessage("Shape propagation running in background.")
+        elif result == QtWidgets.QDialog.Accepted:
             self.statusBar().showMessage("Shape propagation completed.")
         else:
             self.statusBar().showMessage("Shape propagation canceled.")

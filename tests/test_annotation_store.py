@@ -131,6 +131,36 @@ def test_update_frame_rewrites_legacy_store_using_inferred_frames(tmp_path):
     assert rows[1]["shapes"][0]["label"] == "box"
 
 
+def test_update_frames_rewrites_multiple_records_once(tmp_path, monkeypatch):
+    frame_path = tmp_path / "video" / "video_000000000.json"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    store = AnnotationStore.for_frame_path(frame_path)
+    for frame in range(4):
+        _append_dummy_record(store, frame)
+
+    writes = {"count": 0}
+    original_write_lines = store._write_lines_atomically
+
+    def _counting_write_lines(lines):
+        writes["count"] += 1
+        original_write_lines(lines)
+
+    monkeypatch.setattr(store, "_write_lines_atomically", _counting_write_lines)
+
+    store.update_frames(
+        {
+            1: {"version": "annolid", "shapes": [{"label": "a"}]},
+            3: {"version": "annolid", "shapes": [{"label": "b"}]},
+        }
+    )
+
+    assert writes["count"] == 1
+    assert store.get_frame(1)["frame"] == 1
+    assert store.get_frame(1)["shapes"][0]["label"] == "a"
+    assert store.get_frame(3)["frame"] == 3
+    assert store.get_frame(3)["shapes"][0]["label"] == "b"
+
+
 def test_get_frame_uses_cache_without_rerunning_migration(tmp_path, monkeypatch):
     frame_path = tmp_path / "video" / "video_000000000.json"
     frame_path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,6 +236,24 @@ def test_load_labelme_json_prefers_fast_single_frame_lookup(tmp_path, monkeypatc
     assert payload.get("shapes") == []
     assert payload.get("imageHeight") == 1
     assert payload.get("imageWidth") == 1
+
+
+def test_get_frames_fast_reads_many_records_in_one_scan(tmp_path, monkeypatch):
+    frame_path = tmp_path / "video" / "video_000000000.json"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    store = AnnotationStore.for_frame_path(frame_path)
+    for frame in range(20):
+        _append_dummy_record(store, frame)
+
+    def _fail_full_parse(_force_reload=False):
+        raise AssertionError("Bulk lookup should not require full-store parsing.")
+
+    monkeypatch.setattr(store, "_load_records", _fail_full_parse)
+
+    records = store.get_frames_fast([3, 7, 12])
+
+    assert sorted(records) == [3, 7, 12]
+    assert all(record["imageHeight"] == 1 for record in records.values())
 
 
 def test_append_frame_handles_fast_scan_only_cache_state(tmp_path):
