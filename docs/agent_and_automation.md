@@ -135,7 +135,8 @@ Recommended decision rule:
 1. Use `video_info` if you only need metadata.
 2. Use `video_run_model_inference` if you want a generic `annolid-run predict ...` flow.
 3. Use `gui_segment_track_video` if you are already inside the GUI and want the interactive open+track path.
-4. Use `sam3_agent_video_track` if you want Annolid Bot to refine the first frame of each window with SAM3 Agent before propagation.
+4. Use `video_segment_frame_grid` to sample a bounded video segment into one annotated image grid before asking a multimodal model to describe visible events or behaviors. The tool returns the grid path plus frame/timestamp metadata for each tile.
+5. Use `sam3_agent_video_track` if you want Annolid Bot to refine the first frame of each window with SAM3 Agent before propagation.
 
 Example prompt:
 

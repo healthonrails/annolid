@@ -31,6 +31,7 @@ from .function_video import (
     VideoRunModelInferenceTool,
     VideoSampleFramesTool,
     VideoSegmentTool,
+    VideoSegmentFrameGridTool,
 )
 from .function_sam3 import Sam3AgentVideoTrackTool
 from .git import (
@@ -208,6 +209,12 @@ async def register_nanobot_style_tools(
     )
     registry.register(
         VideoProcessSegmentsTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    registry.register(
+        VideoSegmentFrameGridTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )

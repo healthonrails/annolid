@@ -11,7 +11,12 @@ from typing import Any, List, Sequence
 
 import cv2
 
-from annolid.core.media.video import CV2Video
+from annolid.core.media.video import (
+    CV2Video,
+    build_segment_frame_grid,
+    encode_rgb_image_data_uri,
+    save_rgb_image,
+)
 from annolid.core.agent.tools.sampling import FPSampler, UniformSampler
 
 from .function_base import FunctionTool
@@ -633,6 +638,154 @@ class VideoProcessSegmentsTool(FunctionTool):
                     "results": results,
                 }
             )
+        except PermissionError as exc:
+            return json.dumps({"error": str(exc), "path": path})
+        except Exception as exc:
+            return json.dumps({"error": str(exc), "path": path})
+
+
+class VideoSegmentFrameGridTool(FunctionTool):
+    def __init__(
+        self,
+        allowed_dir: Path | None = None,
+        allowed_read_roots: Sequence[str | Path] | None = None,
+    ):
+        self._allowed_dir = allowed_dir
+        self._allowed_read_roots = tuple(allowed_read_roots or ())
+
+    @property
+    def name(self) -> str:
+        return "video_segment_frame_grid"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Sample frames from a video segment and stack them into one "
+            "model-ready image grid for describing events or behaviors."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "output_path": {"type": "string"},
+                "start_frame": {"type": "integer", "minimum": 0},
+                "end_frame": {"type": "integer", "minimum": 0},
+                "start_sec": {"type": "number", "minimum": 0},
+                "end_sec": {"type": "number", "minimum": 0},
+                "sample_count": {"type": "integer", "minimum": 1, "maximum": 64},
+                "columns": {"type": "integer", "minimum": 1, "maximum": 16},
+                "tile_width": {"type": "integer", "minimum": 16, "maximum": 1024},
+                "tile_height": {"type": "integer", "minimum": 16, "maximum": 1024},
+                "annotate": {"type": "boolean"},
+                "include_data_uri": {"type": "boolean"},
+                "image_format": {
+                    "type": "string",
+                    "enum": ["png", "jpg", "jpeg", "webp"],
+                },
+                "overwrite": {"type": "boolean"},
+            },
+            "required": ["path"],
+        }
+
+    async def execute(
+        self,
+        path: str,
+        output_path: str | None = None,
+        start_frame: int | None = None,
+        end_frame: int | None = None,
+        start_sec: float | None = None,
+        end_sec: float | None = None,
+        sample_count: int = 8,
+        columns: int | None = None,
+        tile_width: int = 224,
+        tile_height: int | None = None,
+        annotate: bool = True,
+        include_data_uri: bool = False,
+        image_format: str = "png",
+        overwrite: bool = False,
+        **kwargs: Any,
+    ) -> str:
+        del kwargs
+        try:
+            video_path = _resolve_read_path(
+                path,
+                allowed_dir=self._allowed_dir,
+                allowed_read_roots=self._allowed_read_roots,
+            )
+            if not video_path.exists():
+                return json.dumps({"error": f"File not found: {path}", "path": path})
+            if not video_path.is_file():
+                return json.dumps({"error": f"Not a file: {path}", "path": path})
+
+            image_ext = str(image_format or "png").strip().lower().lstrip(".")
+            if image_ext not in {"png", "jpg", "jpeg", "webp"}:
+                return json.dumps(
+                    {
+                        "error": "image_format must be one of: png, jpg, jpeg, webp.",
+                        "path": str(video_path),
+                    }
+                )
+            if output_path:
+                out_path = _resolve_write_path(
+                    output_path,
+                    allowed_dir=self._allowed_dir,
+                )
+            else:
+                suffix = ".jpg" if image_ext == "jpeg" else f".{image_ext}"
+                if self._allowed_dir is not None:
+                    out_path = _resolve_write_path(
+                        str(
+                            Path(self._allowed_dir)
+                            / f"{video_path.stem}_segment_grid{suffix}"
+                        ),
+                        allowed_dir=self._allowed_dir,
+                    )
+                else:
+                    out_path = (
+                        video_path.parent / f"{video_path.stem}_segment_grid{suffix}"
+                    )
+
+            if out_path.exists() and not overwrite:
+                return json.dumps(
+                    {
+                        "error": "Output file exists; set overwrite=true to replace.",
+                        "output_path": str(out_path),
+                    }
+                )
+
+            grid = build_segment_frame_grid(
+                video_path,
+                start_frame=start_frame,
+                end_frame=end_frame,
+                start_sec=start_sec,
+                end_sec=end_sec,
+                sample_count=max(1, min(int(sample_count), 64)),
+                columns=columns,
+                tile_width=int(tile_width),
+                tile_height=int(tile_height) if tile_height is not None else None,
+                annotate=bool(annotate),
+            )
+            saved_path = save_rgb_image(grid.image, out_path)
+            payload = {
+                "ok": True,
+                "path": str(video_path),
+                "output_path": str(saved_path),
+                "metadata": grid.metadata(),
+                "prompt_hint": (
+                    "Use the frame grid as chronological visual evidence. "
+                    "Describe visible events or behaviors across tiles in order, "
+                    "and cite frame indices when possible."
+                ),
+            }
+            if include_data_uri:
+                payload["data_uri"] = encode_rgb_image_data_uri(
+                    grid.image,
+                    image_format=image_ext,
+                )
+            return json.dumps(payload)
         except PermissionError as exc:
             return json.dumps({"error": str(exc), "path": path})
         except Exception as exc:

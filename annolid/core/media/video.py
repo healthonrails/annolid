@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
+import math
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator, List, Optional
+from typing import Generator, List, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -10,6 +13,45 @@ import numpy as np
 from annolid.utils.logger import logger
 
 DEFAULT_SUBPROCESS_TIMEOUT = 10.0
+
+
+@dataclass(frozen=True)
+class SegmentFrameGridResult:
+    """Model-ready frame grid plus source-frame metadata."""
+
+    image: np.ndarray
+    frame_indices: list[int]
+    timestamps_sec: list[float | None]
+    start_frame: int
+    end_frame: int
+    fps: float
+    total_frames: int
+    rows: int
+    columns: int
+    tile_width: int
+    tile_height: int
+
+    def metadata(self) -> dict[str, object]:
+        return {
+            "start_frame": int(self.start_frame),
+            "end_frame": int(self.end_frame),
+            "fps": float(self.fps),
+            "total_frames": int(self.total_frames),
+            "rows": int(self.rows),
+            "columns": int(self.columns),
+            "tile_width": int(self.tile_width),
+            "tile_height": int(self.tile_height),
+            "frames": [
+                {
+                    "tile_index": int(idx),
+                    "frame_index": int(frame_index),
+                    "timestamp_sec": timestamp,
+                }
+                for idx, (frame_index, timestamp) in enumerate(
+                    zip(self.frame_indices, self.timestamps_sec)
+                )
+            ],
+        }
 
 
 def get_video_fps(
@@ -132,6 +174,272 @@ def get_keyframe_timestamps(
         if ts >= 0:
             timestamps.append(ts)
     return timestamps
+
+
+def clamp_frame_index(index: int, total_frames: int) -> int:
+    """Clamp a frame index to the valid inclusive frame range."""
+    if total_frames <= 0:
+        return 0
+    return max(0, min(int(index), int(total_frames) - 1))
+
+
+def resolve_segment_frame_bounds(
+    *,
+    total_frames: int,
+    fps: float,
+    start_frame: int | None = None,
+    end_frame: int | None = None,
+    start_sec: float | None = None,
+    end_sec: float | None = None,
+) -> tuple[int, int]:
+    """Resolve an inclusive segment frame range from frame or time inputs."""
+    max_index = max(0, int(total_frames) - 1)
+    if start_frame is not None or end_frame is not None:
+        start_idx = int(start_frame or 0)
+        end_idx = int(end_frame if end_frame is not None else max_index)
+    elif start_sec is not None or end_sec is not None:
+        effective_fps = float(fps or 0.0)
+        if effective_fps <= 0:
+            effective_fps = 30.0
+        start_idx = int(round(float(start_sec or 0.0) * effective_fps))
+        end_idx = int(
+            round(
+                float(end_sec if end_sec is not None else (max_index / effective_fps))
+                * effective_fps
+            )
+        )
+    else:
+        start_idx, end_idx = 0, max_index
+
+    start_idx = clamp_frame_index(start_idx, max(total_frames, 1))
+    end_idx = clamp_frame_index(end_idx, max(total_frames, 1))
+    return start_idx, end_idx
+
+
+def sample_segment_frame_indices(
+    *,
+    start_frame: int,
+    end_frame: int,
+    sample_count: int,
+) -> list[int]:
+    """Return deterministic, unique frame indices across an inclusive segment."""
+    start = int(start_frame)
+    end = int(end_frame)
+    if end < start:
+        raise ValueError(
+            "Segment end_frame must be greater than or equal to start_frame."
+        )
+    count = max(1, int(sample_count))
+    available = (end - start) + 1
+    if count >= available:
+        return list(range(start, end + 1))
+    if count == 1:
+        return [start]
+
+    raw = np.linspace(start, end, num=count)
+    selected: list[int] = []
+    seen: set[int] = set()
+    for value in raw:
+        index = int(round(float(value)))
+        index = max(start, min(index, end))
+        if index in seen:
+            continue
+        seen.add(index)
+        selected.append(index)
+
+    candidate = start
+    while len(selected) < count and candidate <= end:
+        if candidate not in seen:
+            selected.append(candidate)
+            seen.add(candidate)
+        candidate += 1
+    return sorted(selected)
+
+
+def _resize_frame_to_tile(
+    frame_rgb: np.ndarray,
+    *,
+    tile_width: int,
+    tile_height: int,
+) -> np.ndarray:
+    height, width = frame_rgb.shape[:2]
+    if width <= 0 or height <= 0:
+        raise ValueError("Frame has invalid dimensions.")
+    scale = min(float(tile_width) / float(width), float(tile_height) / float(height))
+    resized_width = max(1, int(round(float(width) * scale)))
+    resized_height = max(1, int(round(float(height) * scale)))
+    resized = cv2.resize(
+        frame_rgb,
+        (resized_width, resized_height),
+        interpolation=cv2.INTER_AREA,
+    )
+    tile = np.zeros((int(tile_height), int(tile_width), 3), dtype=np.uint8)
+    y_offset = (int(tile_height) - resized_height) // 2
+    x_offset = (int(tile_width) - resized_width) // 2
+    tile[
+        y_offset : y_offset + resized_height,
+        x_offset : x_offset + resized_width,
+    ] = resized
+    return tile
+
+
+def build_frame_grid_image(
+    frames_rgb: Sequence[np.ndarray],
+    *,
+    frame_indices: Sequence[int],
+    timestamps_sec: Sequence[float | None] | None = None,
+    columns: int | None = None,
+    tile_width: int = 224,
+    tile_height: int | None = None,
+    annotate: bool = True,
+) -> tuple[np.ndarray, int, int]:
+    """Stack RGB frames into a deterministic tiled RGB grid."""
+    if not frames_rgb:
+        raise ValueError("At least one frame is required to build a frame grid.")
+    tile_w = max(16, int(tile_width))
+    if tile_height is None:
+        first = frames_rgb[0]
+        height, width = first.shape[:2]
+        tile_h = max(16, int(round(tile_w * (float(height) / float(width)))))
+    else:
+        tile_h = max(16, int(tile_height))
+
+    tile_count = len(frames_rgb)
+    cols = int(columns or math.ceil(math.sqrt(tile_count)))
+    cols = max(1, min(cols, tile_count))
+    rows = int(math.ceil(float(tile_count) / float(cols)))
+    grid = np.zeros((rows * tile_h, cols * tile_w, 3), dtype=np.uint8)
+    timestamps = list(timestamps_sec or [None] * tile_count)
+
+    for idx, frame in enumerate(frames_rgb):
+        row = idx // cols
+        col = idx % cols
+        tile = _resize_frame_to_tile(
+            frame,
+            tile_width=tile_w,
+            tile_height=tile_h,
+        )
+        if annotate:
+            frame_index = int(frame_indices[idx]) if idx < len(frame_indices) else idx
+            timestamp = timestamps[idx] if idx < len(timestamps) else None
+            label = f"f{frame_index}"
+            if timestamp is not None:
+                label = f"{label} {float(timestamp):.2f}s"
+            cv2.rectangle(tile, (0, 0), (min(tile_w - 1, 150), 22), (0, 0, 0), -1)
+            cv2.putText(
+                tile,
+                label,
+                (6, 16),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+        y0 = row * tile_h
+        x0 = col * tile_w
+        grid[y0 : y0 + tile_h, x0 : x0 + tile_w] = tile
+    return grid, rows, cols
+
+
+def build_segment_frame_grid(
+    video_file: str | Path,
+    *,
+    start_frame: int | None = None,
+    end_frame: int | None = None,
+    start_sec: float | None = None,
+    end_sec: float | None = None,
+    sample_count: int = 8,
+    columns: int | None = None,
+    tile_width: int = 224,
+    tile_height: int | None = None,
+    annotate: bool = True,
+) -> SegmentFrameGridResult:
+    """Sample a video segment and stack frames into one RGB image grid."""
+    video = CV2Video(video_file)
+    try:
+        total_frames = int(video.total_frames())
+        fps = float(video.get_fps() or 0.0)
+        resolved_start, resolved_end = resolve_segment_frame_bounds(
+            total_frames=total_frames,
+            fps=fps,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            start_sec=start_sec,
+            end_sec=end_sec,
+        )
+        if resolved_end < resolved_start:
+            raise ValueError(
+                "Segment end_frame must be greater than or equal to start_frame."
+            )
+        frame_indices = sample_segment_frame_indices(
+            start_frame=resolved_start,
+            end_frame=resolved_end,
+            sample_count=sample_count,
+        )
+        frames: list[np.ndarray] = []
+        timestamps: list[float | None] = []
+        for index in frame_indices:
+            frames.append(video.load_frame(index))
+            timestamp = video.last_timestamp_sec()
+            if timestamp is None and fps > 0:
+                timestamp = float(index) / float(fps)
+            timestamps.append(timestamp)
+    finally:
+        video.release()
+
+    image, rows, cols = build_frame_grid_image(
+        frames,
+        frame_indices=frame_indices,
+        timestamps_sec=timestamps,
+        columns=columns,
+        tile_width=tile_width,
+        tile_height=tile_height,
+        annotate=annotate,
+    )
+    tile_h = int(image.shape[0] // rows)
+    tile_w = int(image.shape[1] // cols)
+    return SegmentFrameGridResult(
+        image=image,
+        frame_indices=frame_indices,
+        timestamps_sec=timestamps,
+        start_frame=resolved_start,
+        end_frame=resolved_end,
+        fps=fps,
+        total_frames=total_frames,
+        rows=rows,
+        columns=cols,
+        tile_width=tile_w,
+        tile_height=tile_h,
+    )
+
+
+def save_rgb_image(image: np.ndarray, output_path: str | Path) -> Path:
+    """Save an RGB image using OpenCV while preserving caller-visible paths."""
+    out_path = Path(output_path).expanduser().resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    if not cv2.imwrite(str(out_path), image_bgr):
+        raise RuntimeError(f"Failed to save image: {out_path}")
+    return out_path
+
+
+def encode_rgb_image_data_uri(
+    image: np.ndarray,
+    *,
+    image_format: str = "png",
+) -> str:
+    """Encode an RGB image as a data URI for multimodal model requests."""
+    ext = "." + str(image_format or "png").strip().lower().lstrip(".")
+    if ext not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise ValueError("image_format must be one of: png, jpg, jpeg, webp.")
+    image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    ok, buffer = cv2.imencode(ext, image_bgr)
+    if not ok:
+        raise RuntimeError("Failed to encode frame grid image.")
+    mime = "image/jpeg" if ext in {".jpg", ".jpeg"} else f"image/{ext.lstrip('.')}"
+    data = base64.b64encode(buffer.tobytes()).decode("ascii")
+    return f"data:{mime};base64,{data}"
 
 
 class CV2Video:

@@ -69,6 +69,7 @@ from annolid.core.agent.tools.function_video import (
     VideoRunModelInferenceTool,
     VideoSampleFramesTool,
     VideoSegmentTool,
+    VideoSegmentFrameGridTool,
 )
 from annolid.core.agent.tools.function_sam3 import Sam3AgentVideoTrackTool
 from annolid.core.agent.tools.function_gui import register_annolid_gui_tools
@@ -2302,6 +2303,43 @@ def test_video_process_segments_tool_exports_multiple_ranges(tmp_path: Path) -> 
         assert Path(item["output_path"]).exists()
 
 
+def test_video_segment_frame_grid_tool_exports_model_ready_grid(
+    tmp_path: Path,
+) -> None:
+    video_path = tmp_path / "tiny.avi"
+    _write_test_video(video_path, fps=10.0, frames=12)
+    out_path = tmp_path / "grid.png"
+    tool = VideoSegmentFrameGridTool(allowed_dir=tmp_path)
+    result = asyncio.run(
+        tool.execute(
+            path=str(video_path),
+            output_path=str(out_path),
+            start_frame=2,
+            end_frame=8,
+            sample_count=4,
+            columns=2,
+            tile_width=64,
+            tile_height=48,
+            include_data_uri=True,
+            overwrite=True,
+        )
+    )
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert out_path.exists()
+    assert payload["data_uri"].startswith("data:image/png;base64,")
+    metadata = payload["metadata"]
+    assert metadata["start_frame"] == 2
+    assert metadata["end_frame"] == 8
+    assert metadata["rows"] == 2
+    assert metadata["columns"] == 2
+    assert [item["frame_index"] for item in metadata["frames"]] == [2, 4, 6, 8]
+
+    image = cv2.imread(str(out_path))
+    assert image is not None
+    assert image.shape[:2] == (96, 128)
+
+
 def test_video_tools_allow_external_read_root_but_write_to_workspace(
     tmp_path: Path,
 ) -> None:
@@ -2329,6 +2367,18 @@ def test_video_tools_allow_external_read_root_but_write_to_workspace(
         image_path = Path(frame["image_path"])
         assert image_path.exists()
         assert str(image_path).startswith(str(workspace))
+
+    grid_tool = VideoSegmentFrameGridTool(
+        allowed_dir=workspace,
+        allowed_read_roots=[str(external)],
+    )
+    grid_result = asyncio.run(
+        grid_tool.execute(path=str(video_path), sample_count=2, overwrite=True)
+    )
+    grid_payload = json.loads(grid_result)
+    grid_path = Path(grid_payload["output_path"])
+    assert grid_path.exists()
+    assert str(grid_path).startswith(str(workspace))
 
 
 def test_video_list_inference_models_tool_reports_video_compatible_models(

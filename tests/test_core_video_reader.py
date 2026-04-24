@@ -4,7 +4,11 @@ import cv2
 import numpy as np
 import pytest
 
-from annolid.core.media.video import CV2Video
+from annolid.core.media.video import (
+    CV2Video,
+    build_segment_frame_grid,
+    sample_segment_frame_indices,
+)
 
 
 def _write_test_video(path: Path, *, fps: float = 10.0, frames: int = 5) -> None:
@@ -42,3 +46,38 @@ def test_core_cv2video_reads_frames_and_timestamps(tmp_path: Path):
             assert ts1 >= ts0
     finally:
         video.release()
+
+
+def test_sample_segment_frame_indices_are_deterministic_and_inclusive():
+    assert sample_segment_frame_indices(
+        start_frame=2,
+        end_frame=8,
+        sample_count=4,
+    ) == [2, 4, 6, 8]
+    assert sample_segment_frame_indices(
+        start_frame=2,
+        end_frame=4,
+        sample_count=10,
+    ) == [2, 3, 4]
+
+
+def test_build_segment_frame_grid_returns_metadata(tmp_path: Path):
+    video_path = tmp_path / "test.avi"
+    _write_test_video(video_path, fps=10.0, frames=6)
+
+    result = build_segment_frame_grid(
+        video_path,
+        start_frame=1,
+        end_frame=5,
+        sample_count=3,
+        columns=3,
+        tile_width=32,
+        tile_height=24,
+        annotate=False,
+    )
+
+    assert result.frame_indices == [1, 3, 5]
+    assert result.rows == 1
+    assert result.columns == 3
+    assert result.image.shape[:2] == (24, 96)
+    assert result.metadata()["frames"][0]["frame_index"] == 1

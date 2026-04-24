@@ -152,6 +152,7 @@ from .function_video import (
     VideoRunModelInferenceTool,
     VideoSampleFramesTool,
     VideoSegmentTool,
+    VideoSegmentFrameGridTool,
 )
 from .function_sam3 import Sam3AgentVideoTrackTool
 from .policy import (
@@ -246,6 +247,7 @@ __all__ = [
     "VideoListInferenceModelsTool",
     "VideoSampleFramesTool",
     "VideoSegmentTool",
+    "VideoSegmentFrameGridTool",
     "VideoProcessSegmentsTool",
     "VideoRunModelInferenceTool",
     "Sam3AgentVideoTrackTool",
