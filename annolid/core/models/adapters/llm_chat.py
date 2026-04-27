@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import base64
+import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 from annolid.core.agent.providers import resolve_openai_compat
 from annolid.utils.llm_settings import resolve_llm_config
@@ -30,6 +31,57 @@ def _encode_image_data_uri(path: Path) -> str:
     mime = _guess_mime_type(path)
     data = base64.b64encode(path.read_bytes()).decode("utf-8")
     return f"data:{mime};base64,{data}"
+
+
+def _get_value(obj: Any, key: str, default: Any = None) -> Any:
+    if obj is None:
+        return default
+    if isinstance(obj, Mapping):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _content_to_text(content: Any) -> Optional[str]:
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            value = _content_to_text(item)
+            if value:
+                parts.append(value)
+        return "".join(parts) if parts else None
+    if isinstance(content, Mapping):
+        value = content.get("text") or content.get("content")
+        if value is not None:
+            return _content_to_text(value)
+        if content.get("type") in {"output_text", "text"} and content.get("value"):
+            return str(content.get("value"))
+        return json.dumps(dict(content), ensure_ascii=False)
+    return str(content) if content else None
+
+
+def _extract_completion_text(result: Any) -> Optional[str]:
+    direct_text = _content_to_text(_get_value(result, "output_text", None))
+    if direct_text:
+        return direct_text
+    direct_text = _content_to_text(_get_value(result, "text", None))
+    if direct_text:
+        return direct_text
+
+    choices = _get_value(result, "choices", None) or []
+    if not choices:
+        return None
+    choice = choices[0]
+    message = _get_value(choice, "message", None)
+    if message is not None:
+        for key in ("content", "parsed", "reasoning_content", "refusal"):
+            text = _content_to_text(_get_value(message, key, None))
+            if text:
+                return text
+    return _content_to_text(_get_value(choice, "text", None))
 
 
 @dataclass(frozen=True)
@@ -152,19 +204,28 @@ class LLMChatAdapter(RuntimeModel):
         }
         if max_tokens_value is not None:
             kwargs["max_tokens"] = max_tokens_value
+        response_format = request.params.get("response_format")
+        if isinstance(response_format, Mapping):
+            kwargs["response_format"] = dict(response_format)
 
         result = self._client.chat.completions.create(**kwargs)
-        try:
-            text = result.choices[0].message.content
-        except Exception:
-            text = None
+        text = _extract_completion_text(result)
+        choices = _get_value(result, "choices", None) or []
+        finish_reason = ""
+        if choices:
+            finish_reason = str(_get_value(choices[0], "finish_reason", "") or "")
 
         return ModelResponse(
             task=request.task,
             output={"text": text},
             text=text,
             raw=result,
-            meta={"provider": self._config.provider, "model": self._config.model},
+            meta={
+                "provider": self._config.provider,
+                "model": self._config.model,
+                "finish_reason": finish_reason,
+                "empty_text": not bool(str(text or "").strip()),
+            },
         )
 
     def close(self) -> None:

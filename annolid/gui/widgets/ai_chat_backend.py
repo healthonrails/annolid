@@ -1651,6 +1651,63 @@ class StreamingChatTask(QRunnable):
             ),
         )
 
+    def _tool_gui_describe_image(self, path: str, prompt: str = "") -> Dict[str, Any]:
+        raw_path = str(path or "").strip()
+        if not raw_path:
+            return {"ok": False, "error": "Image path is required."}
+        image_path = Path(raw_path).expanduser()
+        if not image_path.is_absolute():
+            candidate = (Path.cwd() / image_path).resolve()
+            image_path = candidate if candidate.exists() else image_path
+        if not image_path.exists() or not image_path.is_file():
+            return {"ok": False, "error": f"Image not found: {raw_path}"}
+
+        try:
+            from annolid.core.models.adapters.llm_chat import LLMChatAdapter
+            from annolid.core.models.base import ModelRequest
+
+            prompt_text = str(prompt or "").strip() or "Describe this image."
+            adapter = LLMChatAdapter(
+                provider=str(self.provider or "").strip() or None,
+                model=str(self.model or "").strip() or None,
+                persist=False,
+            )
+            with adapter:
+                response = adapter.predict(
+                    ModelRequest(
+                        task="caption",
+                        image_path=str(image_path),
+                        text=prompt_text,
+                        params={"temperature": 0.0, "max_tokens": 500},
+                    )
+                )
+            description = str(
+                response.text or (response.output or {}).get("text") or ""
+            ).strip()
+            if not description:
+                return {
+                    "ok": False,
+                    "error": "Model returned an empty image description.",
+                    "image_path": str(image_path),
+                }
+            self.image_path = str(image_path)
+            self._invoke_widget_slot(
+                "bot_open_image", QtCore.Q_ARG(str, str(image_path))
+            )
+            return {
+                "ok": True,
+                "image_path": str(image_path),
+                "description": description,
+                "provider": str(self.provider or ""),
+                "model": str(self.model or ""),
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": f"Failed to describe image: {exc}",
+                "image_path": str(image_path),
+            }
+
     async def _tool_gui_open_url(self, url: str) -> Dict[str, Any]:
         return await open_chat_url_tool(
             url,
@@ -2462,6 +2519,7 @@ class StreamingChatTask(QRunnable):
     def _direct_command_handlers(self) -> Dict[str, Callable[..., Any]]:
         return {
             "open_video": self._tool_gui_open_video,
+            "describe_image": self._tool_gui_describe_image,
             "open_url": self._tool_gui_open_url,
             "open_in_browser": self._tool_gui_open_in_browser,
             "open_threejs": self._tool_gui_open_threejs,
@@ -3375,7 +3433,8 @@ class StreamingChatTask(QRunnable):
         segment_mode: str = "timeline",
         segment_frames: int = 60,
         segment_seconds: Optional[float] = None,
-        sample_frames_per_segment: int = 3,
+        sample_frames_per_segment: int = 4,
+        frames_per_grid: Optional[int] = None,
         max_segments: int = 120,
         subject: str = "Agent",
         overwrite_existing: bool = False,
@@ -3493,6 +3552,9 @@ class StreamingChatTask(QRunnable):
                 QtCore.Q_ARG(str, model),
             )
 
+        if frames_per_grid is not None:
+            sample_frames_per_segment = int(frames_per_grid)
+
         return label_chat_behavior_segments_tool(
             path=path,
             behavior_labels=behavior_labels,
@@ -3567,7 +3629,8 @@ class StreamingChatTask(QRunnable):
         segment_mode: str = "timeline",
         segment_frames: int = 60,
         segment_seconds: Optional[float] = None,
-        sample_frames_per_segment: int = 3,
+        sample_frames_per_segment: int = 4,
+        frames_per_grid: Optional[int] = None,
         max_segments: int = 120,
         subject: str = "Agent",
         overwrite_existing: bool = False,
@@ -3679,6 +3742,9 @@ class StreamingChatTask(QRunnable):
                 QtCore.Q_ARG(str, provider),
                 QtCore.Q_ARG(str, model),
             )
+
+        if frames_per_grid is not None:
+            sample_frames_per_segment = int(frames_per_grid)
 
         return process_chat_video_behaviors_tool(
             path=path,

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from annolid.core.agent.bus import InboundMessage
+from annolid.core.models.base import ModelResponse
 from annolid.gui.widgets.ai_chat_backend import StreamingChatTask
 
 
@@ -303,12 +304,13 @@ def test_weather_lookup_promise_triggers_fallback() -> None:
 
 def test_compact_system_prompt_includes_allowed_read_roots(tmp_path: Path) -> None:
     task = StreamingChatTask("hi", widget=None)
+    read_root = str(tmp_path / "test_annolid_videos_batch")
     prompt = task._build_compact_system_prompt(
         tmp_path,
-        allowed_read_roots=["/Users/chenyang/Downloads/test_annolid_videos_batch"],
+        allowed_read_roots=[read_root],
     )
     assert "Allowed Read Roots" in prompt
-    assert "/Users/chenyang/Downloads/test_annolid_videos_batch" in prompt
+    assert read_root in prompt
     assert "schedule camera check every 5 minutes" in prompt
     assert "list cron jobs" in prompt
     assert "check cron job <job_id>" in prompt
@@ -1188,6 +1190,7 @@ def test_gui_label_behavior_segments_json_payload_includes_context_fields(
         behavior_labels=["aggression_bout"],
         segment_mode="uniform",
         segment_frames=30,
+        frames_per_grid=5,
         video_description="Two mice in open field.",
         instance_count=2,
         experiment_context="Resident intruder assay.",
@@ -1195,11 +1198,22 @@ def test_gui_label_behavior_segments_json_payload_includes_context_fields(
         focus_points="Count bouts and initiator.",
     )
     assert payload["ok"] is True
+    assert captured_kwargs["sample_frames_per_segment"] == 5
     assert captured_kwargs["video_description"] == "Two mice in open field."
     assert captured_kwargs["instance_count"] == 2
     assert captured_kwargs["experiment_context"] == "Resident intruder assay."
     assert "slap in face" in str(captured_kwargs["behavior_definitions"])
     assert "Count bouts" in str(captured_kwargs["focus_points"])
+
+    captured_kwargs.clear()
+    default_payload = task._tool_gui_label_behavior_segments(
+        path=str(video_file),
+        behavior_labels=["aggression_bout"],
+        segment_mode="uniform",
+        segment_frames=30,
+    )
+    assert default_payload["ok"] is True
+    assert captured_kwargs["sample_frames_per_segment"] == 4
 
 
 def test_gui_process_video_behaviors_forwards_to_service(monkeypatch) -> None:
@@ -1482,7 +1496,7 @@ def test_gui_open_video_accepts_tool_style_text(monkeypatch, tmp_path: Path) -> 
     calls: list[str] = []
     task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
     payload = task._tool_gui_open_video(
-        'gui_open_video(path="/Users/chenyang/Downloads/test_annolid_videos_batch/fish_demo.mp4")'
+        'gui_open_video(path="/tmp/test_annolid_videos_batch/fish_demo.mp4")'
     )
     assert payload["ok"] is True
     assert Path(payload["path"]).name == "fish_demo.mp4"
@@ -2198,7 +2212,7 @@ def test_direct_gui_fallback_opens_video_from_prompt(
     task = StreamingChatTask("hi", widget=None)
     task._invoke_widget_slot = lambda *args, **kwargs: True  # type: ignore[method-assign]
     text = task._maybe_run_direct_gui_tool_from_prompt(
-        "Please open video /Users/chenyang/Downloads/test_annolid_videos_batch/fish_demo.mp4"
+        "Please open video /tmp/test_annolid_videos_batch/fish_demo.mp4"
     )
     assert "Opened video in Annolid:" in text
     assert text.endswith("fish_demo.mp4")
@@ -3291,6 +3305,16 @@ def test_parse_direct_gui_command_variants() -> None:
     )
     assert parsed_video["name"] == "open_video"
 
+    parsed_image_describe = task._parse_direct_gui_command(
+        "find this image describe this image /tmp/mouse_segment_000001_frames_0_38.png and describe it"
+    )
+    assert parsed_image_describe["name"] == "describe_image"
+    assert (
+        parsed_image_describe["args"]["path"]
+        == "/tmp/mouse_segment_000001_frames_0_38.png"
+    )
+    assert "describe this image" in parsed_image_describe["args"]["prompt"]
+
     parsed_frame = task._parse_direct_gui_command("go to frame 128")
     assert parsed_frame["name"] == "set_frame"
     assert parsed_frame["args"]["frame_index"] == 128
@@ -3321,18 +3345,20 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_label_in["args"]["segment_seconds"] is None
 
     parsed_label_seconds = task._parse_direct_gui_command(
-        "label behaviors in mouse.mp4 with labels rearing, walking every 1s"
+        "label behaviors in mouse.mp4 with labels rearing, walking every 1s frames per grid 6"
     )
     assert parsed_label_seconds["name"] == "label_behavior_segments"
     assert parsed_label_seconds["args"]["path"] == "mouse.mp4"
     assert parsed_label_seconds["args"]["segment_seconds"] == 1.0
+    assert parsed_label_seconds["args"]["sample_frames_per_segment"] == 6
     assert parsed_label_seconds["args"]["use_defined_behavior_list"] is False
 
     parsed_label_defined = task._parse_direct_gui_command(
-        "label behavior in mouse.mp4 from defined list every 1s"
+        "label behavior in mouse.mp4 from defined list every 1s with 5 frames per grid"
     )
     assert parsed_label_defined["name"] == "label_behavior_segments"
     assert parsed_label_defined["args"]["segment_seconds"] == 1.0
+    assert parsed_label_defined["args"]["sample_frames_per_segment"] == 5
     assert parsed_label_defined["args"]["use_defined_behavior_list"] is True
 
     parsed_label_colon = task._parse_direct_gui_command(
@@ -3364,9 +3390,26 @@ def test_parse_direct_gui_command_variants() -> None:
     assert "slap in face" in parsed_label_with_context["args"]["behavior_definitions"]
     assert "identify initiator" in parsed_label_with_context["args"]["focus_points"]
 
+    parsed_defined_label_use_case = task._parse_direct_gui_command(
+        "label behavior in /tmp/test_annolid_videos_batch/mouse.mp4 "
+        "with labels grooming, rearing, walking from defined list every 1s"
+    )
+    assert parsed_defined_label_use_case["name"] == "label_behavior_segments"
+    assert (
+        parsed_defined_label_use_case["args"]["path"]
+        == "/tmp/test_annolid_videos_batch/mouse.mp4"
+    )
+    assert parsed_defined_label_use_case["args"]["behavior_labels"] == [
+        "grooming",
+        "rearing",
+        "walking",
+    ]
+    assert parsed_defined_label_use_case["args"]["use_defined_behavior_list"] is True
+    assert parsed_defined_label_use_case["args"]["segment_seconds"] == 1.0
+
     parsed_process = task._parse_direct_gui_command(
         "process video behaviors in mouse.mp4 behaviors: walking, rearing "
-        "video description: two mice open field, instances: 2"
+        "video description: two mice open field, instances: 2, grid frames: 7"
     )
     assert parsed_process["name"] == "process_video_behaviors"
     assert parsed_process["args"]["path"] == "mouse.mp4"
@@ -3374,6 +3417,7 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_process["args"]["run_behavior_labeling"] is True
     assert parsed_process["args"]["behavior_labels"] == ["walking", "rearing"]
     assert parsed_process["args"]["instance_count"] == 2
+    assert parsed_process["args"]["sample_frames_per_segment"] == 7
 
     parsed_label_prose = task._parse_direct_gui_command(
         "label behavior in mouse.mp4 with labels aggression_bout every 1s "
@@ -4223,6 +4267,55 @@ def test_tool_gui_pdf_summarize_skips_duplicate_source_path_after_active_attempt
     payload = task._tool_gui_pdf_summarize()
     assert payload["ok"] is False
     assert called["count"] == 0
+
+
+def test_direct_image_description_sends_resolved_image_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    image_path = tmp_path / "mouse_segment_000001_frames_0_38.png"
+    image_path.write_bytes(b"fake png")
+    requests = []
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            requests.append(request)
+            return ModelResponse(
+                task="caption",
+                output={"text": "A frame grid showing sampled segment frames."},
+                text="A frame grid showing sampled segment frames.",
+            )
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+
+    task = StreamingChatTask(
+        f"find this image describe this image {image_path} and describe it",
+        widget=None,
+        provider="nvidia",
+        model="moonshotai/kimi-k2.5",
+    )
+    task._invoke_widget_slot = lambda *args, **kwargs: True  # type: ignore[method-assign]
+
+    result = asyncio.run(task._execute_direct_gui_command(task.prompt))
+
+    assert "Image description for" in result
+    assert "A frame grid showing sampled segment frames." in result
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.task == "caption"
+    assert request.image_path == str(image_path)
+    assert "describe this image" in str(request.text).lower()
+    assert task.image_path == str(image_path)
 
 
 def test_parse_direct_gui_command_prefers_local_markdown_file_over_domain(

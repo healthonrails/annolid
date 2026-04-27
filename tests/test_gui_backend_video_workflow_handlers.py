@@ -140,6 +140,7 @@ def test_label_behavior_segments_tool_uses_seconds_from_fps(monkeypatch) -> None
     assert int(captured["segment_frames"]) == 30
     assert float(captured["segment_seconds"]) == 1.0
     assert int(captured["samples"]) == 4
+    assert payload["visual_input_mode"] == "frame_grid"
 
 
 def test_label_behavior_segments_tool_forwards_behavior_context(monkeypatch) -> None:

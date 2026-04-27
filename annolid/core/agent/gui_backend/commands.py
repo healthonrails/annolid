@@ -89,6 +89,34 @@ def _looks_like_path(value: str) -> bool:
     return False
 
 
+def _extract_image_path_candidate(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    quoted = re.search(
+        r"['\"](?P<path>[^'\"]+\.(?:png|jpe?g|gif|tiff?|bmp|webp))['\"]",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if quoted:
+        return _strip_trailing_punctuation(str(quoted.group("path") or "").strip())
+    absolute = re.search(
+        r"(?P<path>(?:~|/|[A-Za-z]:[\\/])\S*?\.(?:png|jpe?g|gif|tiff?|bmp|webp))",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if absolute:
+        return _strip_trailing_punctuation(str(absolute.group("path") or "").strip())
+    relative = re.search(
+        r"(?P<path>\S*?\.(?:png|jpe?g|gif|tiff?|bmp|webp))",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if relative:
+        return _strip_trailing_punctuation(str(relative.group("path") or "").strip())
+    return ""
+
+
 def _extract_bibtex_payload(text: str) -> str:
     raw = str(text or "")
     if not raw.strip():
@@ -126,6 +154,28 @@ def _extract_segment_seconds(text: str) -> float | None:
     if value <= 0.0:
         return None
     return value
+
+
+def _extract_frames_per_grid(text: str) -> int | None:
+    raw = str(text or "")
+    if not raw:
+        return None
+    patterns = (
+        r"\b(?P<value>\d+)\s+frames?\s+per\s+grid(?:\s+frame)?\b",
+        r"\bframes?\s+per\s+grid(?:\s+frame)?\s*(?:=|:)?\s*(?P<value>\d+)\b",
+        r"\bgrid(?:\s+frame)?\s+frames?\s*(?:=|:)?\s*(?P<value>\d+)\b",
+        r"\bsample\s+(?P<value>\d+)\s+frames?\s+per\s+segment\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, raw, flags=re.IGNORECASE)
+        if match is None:
+            continue
+        try:
+            value = int(match.group("value"))
+        except Exception:
+            return None
+        return value if value > 0 else None
+    return None
 
 
 def _mentions_defined_behavior_list(text: str) -> bool:
@@ -411,6 +461,23 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
     if slash_command:
         return slash_command
 
+    image_path = _extract_image_path_candidate(text)
+    if image_path and re.search(
+        r"\b(?:describe|caption|explain|analy[sz]e|inspect|find|look\s+at)\b",
+        lower,
+    ):
+        prompt_without_path = text.replace(image_path, " ").strip()
+        prompt_without_path = re.sub(
+            r"\s+", " ", prompt_without_path, flags=re.MULTILINE
+        ).strip()
+        return {
+            "name": "describe_image",
+            "args": {
+                "path": image_path,
+                "prompt": prompt_without_path or "Describe this image.",
+            },
+        }
+
     model_match = re.search(
         r"(?:set|switch)\s+(?:chat\s+)?model\s+"
         r"(ollama|openai|openrouter|gemini)\s*[:/]\s*([^\n]+)",
@@ -692,6 +759,7 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         ):
             labels = _split_behavior_labels(labels_text)
             segment_seconds = _extract_segment_seconds(text)
+            frames_per_grid = _extract_frames_per_grid(text)
             return {
                 "name": "label_behavior_segments",
                 "args": {
@@ -700,6 +768,7 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                     "use_defined_behavior_list": _mentions_defined_behavior_list(text),
                     "segment_mode": "uniform",
                     "segment_seconds": segment_seconds,
+                    "sample_frames_per_segment": frames_per_grid,
                     "overwrite_existing": False,
                     **_extract_behavior_context_args(text),
                 },
@@ -738,6 +807,7 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             mode = "timeline" if "timeline" in lower else "uniform"
             overwrite = "overwrite" in lower or "replace" in lower
             segment_seconds = _extract_segment_seconds(text)
+            frames_per_grid = _extract_frames_per_grid(text)
             return {
                 "name": "label_behavior_segments",
                 "args": {
@@ -746,6 +816,7 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                     "use_defined_behavior_list": _mentions_defined_behavior_list(text),
                     "segment_mode": mode,
                     "segment_seconds": segment_seconds,
+                    "sample_frames_per_segment": frames_per_grid,
                     "overwrite_existing": overwrite,
                     **_extract_behavior_context_args(text),
                 },
@@ -767,6 +838,7 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         ):
             labels = _extract_behavior_labels_clause(text)
             segment_seconds = _extract_segment_seconds(text)
+            frames_per_grid = _extract_frames_per_grid(text)
             mode = "timeline" if "timeline" in lower else "uniform"
             return {
                 "name": "process_video_behaviors",
@@ -777,6 +849,7 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                     "use_defined_behavior_list": _mentions_defined_behavior_list(text),
                     "segment_mode": mode,
                     "segment_seconds": segment_seconds,
+                    "sample_frames_per_segment": frames_per_grid,
                     "run_tracking": True,
                     "run_behavior_labeling": True,
                     "overwrite_existing": ("overwrite" in lower or "replace" in lower),

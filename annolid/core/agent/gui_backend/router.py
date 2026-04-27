@@ -48,6 +48,7 @@ async def execute_direct_gui_command(
     command: Dict[str, Any],
     *,
     open_video: Callable[[str], Any],
+    describe_image: Callable[..., Any],
     open_url: Callable[[str], Any],
     open_in_browser: Callable[[str], Any],
     open_threejs: Callable[[str], Any],
@@ -119,6 +120,20 @@ async def execute_direct_gui_command(
         if payload.get("ok"):
             return f"Opened video in Annolid: {payload.get('path')}"
         return str(payload.get("error") or "Failed to open video.")
+
+    if name == "describe_image":
+        payload = await _run(
+            describe_image,
+            str(args.get("path") or ""),
+            str(args.get("prompt") or ""),
+        )
+        if payload.get("ok"):
+            description = str(payload.get("description") or "").strip()
+            image_path = str(payload.get("image_path") or "").strip()
+            if image_path:
+                return f"Image description for {image_path}:\n{description}".strip()
+            return description or "Image described."
+        return str(payload.get("error") or "Failed to describe image.")
 
     if name == "open_url":
         payload = await _run(open_url, str(args.get("url") or ""))
@@ -250,7 +265,11 @@ async def execute_direct_gui_command(
                 if args.get("segment_seconds") not in (None, "")
                 else None
             ),
-            sample_frames_per_segment=int(args.get("sample_frames_per_segment") or 3),
+            sample_frames_per_segment=int(
+                args.get("sample_frames_per_segment")
+                or args.get("frames_per_grid")
+                or 4
+            ),
             max_segments=int(args.get("max_segments") or 120),
             subject=str(args.get("subject") or "Agent"),
             overwrite_existing=bool(args.get("overwrite_existing", False)),
@@ -303,7 +322,11 @@ async def execute_direct_gui_command(
                 if args.get("segment_seconds") not in (None, "")
                 else None
             ),
-            sample_frames_per_segment=int(args.get("sample_frames_per_segment") or 3),
+            sample_frames_per_segment=int(
+                args.get("sample_frames_per_segment")
+                or args.get("frames_per_grid")
+                or 4
+            ),
             max_segments=int(args.get("max_segments") or 120),
             subject=str(args.get("subject") or "Agent"),
             overwrite_existing=bool(args.get("overwrite_existing", False)),

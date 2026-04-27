@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
+import cv2
+import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
+from annolid.core.models.base import ModelResponse
 from annolid.core.agent.gui_backend.commands import parse_direct_gui_command
 from annolid.gui.widgets.ai_chat_backend import _append_selected_capabilities_prompt
 from annolid.gui.widgets.ai_chat_widget import _compose_slash_selection_draft
@@ -259,6 +264,16 @@ def test_extract_prediction_from_model_text_infers_aggression_sub_events_from_te
         "run_away": 1,
         "fight_initiation": 1,
     }
+
+
+def test_extract_prediction_from_model_text_does_not_default_to_first_label() -> None:
+    parsed = AIChatWidget._extract_prediction_from_model_text(
+        "The animal is moving across the arena, but no exact class is stated.",
+        ["grooming", "rearing", "walking"],
+    )
+    assert parsed["label"] == ""
+    assert parsed["confidence"] == 0.0
+    assert "moving across" in parsed["unmatched_text"]
 
 
 def test_chat_bubble_thinking_collapses_and_toggles() -> None:
@@ -770,3 +785,419 @@ def test_behavior_label_preview_applies_incremental_updates(monkeypatch) -> None
         assert calls[-1][1]["labeled_segments"] == 1
     finally:
         widget.close()
+
+
+def test_behavior_segment_vlm_worker_uses_frame_grid_by_default(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "mouse.mp4"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        10.0,
+        (64, 48),
+    )
+    if not writer.isOpened():
+        video_path = tmp_path / "mouse.avi"
+        writer = cv2.VideoWriter(
+            str(video_path),
+            cv2.VideoWriter_fourcc(*"MJPG"),
+            10.0,
+            (64, 48),
+        )
+    assert writer.isOpened()
+    try:
+        for idx in range(12):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 10
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    requests = []
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            requests.append(request)
+            return ModelResponse(
+                task="caption",
+                output={"text": '{"label":"walking","confidence":0.91}'},
+                text='{"label":"walking","confidence":0.91}',
+            )
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 0, "end_frame": 9, "subject": "mouse"}],
+        labels=["grooming", "rearing", "walking"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="",
+        llm_model="",
+    )
+
+    assert result["skipped_segments"] == 0
+    assert len(result["predictions"]) == 1
+    prediction = result["predictions"][0]
+    assert prediction["label"] == "walking"
+    assert prediction["classification"] == "walking"
+    assert prediction["description"]
+    assert prediction["visual_evidence"]["type"] == "frame_grid"
+    assert prediction["visual_evidence"]["frame_indices"] == [0, 4, 9]
+    grid_path = Path(prediction["grid_image_path"])
+    assert grid_path.exists()
+    assert (
+        grid_path.parent
+        == video_path.parent / f"{video_path.stem}_behavior_segment_grids"
+    )
+    assert grid_path.name == f"{video_path.stem}_segment_000001_frames_0_9.png"
+    assert prediction["visual_evidence"]["grid_image_path"] == str(grid_path)
+    assert "segment frames 0-9" in prediction["grid_frame_description"]
+    assert (
+        prediction["visual_evidence"]["grid_frame_description"]
+        == prediction["grid_frame_description"]
+    )
+    assert len(requests) == 1
+    assert Path(requests[0].image_path) == grid_path
+    assert "chronological frame grid" in requests[0].text
+    assert "grooming" in requests[0].text
+
+
+def test_behavior_segment_vlm_worker_retries_empty_json_response(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "mouse.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(8):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 10
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    requests = []
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            requests.append(request)
+            if "response_format" in dict(request.params or {}):
+                return ModelResponse(task="caption", output={"text": ""}, text="")
+            return ModelResponse(
+                task="caption",
+                output={
+                    "text": (
+                        '{"classification":"grooming","confidence":0.72,'
+                        '"description":"Mouse repeatedly moves near the head."}'
+                    )
+                },
+                text=(
+                    '{"classification":"grooming","confidence":0.72,'
+                    '"description":"Mouse repeatedly moves near the head."}'
+                ),
+            )
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 0, "end_frame": 7, "subject": "mouse"}],
+        labels=["grooming", "rearing"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="",
+        llm_model="",
+    )
+
+    assert result["skipped_segments"] == 0
+    assert len(requests) == 2
+    prediction = result["predictions"][0]
+    assert prediction["label"] == "grooming"
+    assert prediction["classification"] == "grooming"
+    assert prediction["description"] == "Mouse repeatedly moves near the head."
+
+
+def test_behavior_segment_vlm_worker_normalizes_classification_to_label_list(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "mouse.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(8):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 12
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            return ModelResponse(
+                task="caption",
+                output={
+                    "text": (
+                        '{"label":"walking","classification":"locomotion",'
+                        '"confidence":0.78,"description":"mouse traverses cage"}'
+                    )
+                },
+                text=(
+                    '{"label":"walking","classification":"locomotion",'
+                    '"confidence":0.78,"description":"mouse traverses cage"}'
+                ),
+            )
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 0, "end_frame": 7, "subject": "mouse"}],
+        labels=["grooming", "rearing", "walking"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="",
+        llm_model="",
+    )
+
+    assert result["skipped_segments"] == 0
+    prediction = result["predictions"][0]
+    assert prediction["label"] == "walking"
+    assert prediction["classification"] == "walking"
+    assert prediction["description"] == "mouse traverses cage"
+
+
+def test_behavior_segment_vlm_worker_repair_prompt_fallback_is_label_agnostic(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "mouse.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(8):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 20
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    requests = []
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            requests.append(request)
+            if "Your previous response was empty" in str(request.text or ""):
+                return ModelResponse(
+                    task="caption",
+                    output={
+                        "text": (
+                            '{"label":"rearing","confidence":0.61,'
+                            '"description":"posture remains elevated across tiles"}'
+                        )
+                    },
+                    text=(
+                        '{"label":"rearing","confidence":0.61,'
+                        '"description":"posture remains elevated across tiles"}'
+                    ),
+                )
+            return ModelResponse(task="caption", output={"text": ""}, text="")
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 0, "end_frame": 7, "subject": "mouse"}],
+        labels=["grooming", "rearing", "digging"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="",
+        llm_model="",
+    )
+
+    assert result["skipped_segments"] == 0
+    assert len(result["predictions"]) == 1
+    prediction = result["predictions"][0]
+    assert prediction["label"] == "rearing"
+    assert prediction["classification"] == "rearing"
+    assert prediction["description"]
+    assert prediction["visual_evidence"]["fallback_reason"] == "repair_prompt"
+    assert all(str(req.task) == "caption" for req in requests)
+
+
+def test_behavior_segment_vlm_worker_motion_affinity_fallback_is_label_agnostic(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "mouse.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for _idx in range(8):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = 80
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            return ModelResponse(task="caption", output={"text": ""}, text="")
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 0, "end_frame": 7, "subject": "mouse"}],
+        labels=["resting", "exploring", "rearing"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="",
+        llm_model="",
+    )
+
+    assert result["skipped_segments"] == 0
+    assert len(result["predictions"]) == 1
+    prediction = result["predictions"][0]
+    assert prediction["label"] == "resting"
+    assert prediction["classification"] == "resting"
+    assert prediction["visual_evidence"]["fallback_reason"] == "motion_affinity"
+
+
+def test_behavior_segment_log_saves_classification_and_description(
+    tmp_path: Path,
+) -> None:
+    video_path = tmp_path / "mouse.mp4"
+    video_path.write_bytes(b"fake")
+
+    class _Host:
+        video_file = str(video_path)
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._save_behavior_segment_labeling_log(
+        _Host(),
+        mode="uniform",
+        labels_used=["grooming", "rearing"],
+        segment_frames=10,
+        segment_seconds=1.0,
+        sample_frames_per_segment=3,
+        evaluated_segments=2,
+        skipped_segments=0,
+        predictions=[
+            {
+                "start_frame": 0,
+                "end_frame": 9,
+                "subject": "mouse",
+                "label": "rearing",
+                "confidence": 0.77,
+                "description": "Mouse stands upright on hind legs.",
+                "grid_image_path": str(tmp_path / "grid.png"),
+                "grid_frame_description": "segment frames 0-9; tiles f0, f4, f9.",
+            },
+            {
+                "start_frame": 10,
+                "end_frame": 19,
+                "subject": "mouse",
+                "classification": "grooming",
+                "confidence": 0.64,
+                "visual_evidence": {
+                    "grid_image_path": str(tmp_path / "grid2.png"),
+                    "grid_frame_description": "segment frames 10-19; tiles f10, f14, f19.",
+                },
+            },
+        ],
+    )
+
+    assert result["ok"] is True
+    payload = json.loads(Path(result["path"]).read_text(encoding="utf-8"))
+    assert len(payload["predictions"]) == 2
+    assert payload["predictions"][0]["classification"] == "rearing"
+    assert payload["predictions"][0]["description"] == (
+        "Mouse stands upright on hind legs."
+    )
+    assert payload["predictions"][0]["grid_image_path"].endswith("grid.png")
+    assert "segment frames 0-9" in payload["predictions"][0]["grid_frame_description"]
+    assert payload["predictions"][1]["classification"] == "grooming"
+    assert payload["predictions"][1]["label"] == "grooming"
+    assert payload["predictions"][1]["description"] == ""
+    assert payload["predictions"][1]["grid_image_path"].endswith("grid2.png")
+    assert "segment frames 10-19" in payload["predictions"][1]["grid_frame_description"]

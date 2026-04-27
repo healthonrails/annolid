@@ -261,6 +261,9 @@ def label_behavior_segments_tool(
             "sample_frames_per_segment": int(
                 widget_result.get("sample_frames_per_segment") or sample_frames
             ),
+            "visual_input_mode": str(
+                widget_result.get("visual_input_mode") or "frame_grid"
+            ),
             "use_defined_behavior_list": bool(
                 widget_result.get(
                     "use_defined_behavior_list", use_defined_behavior_list
@@ -297,6 +300,7 @@ def label_behavior_segments_tool(
         "segment_frames": int(frames),
         "segment_seconds": float(seconds),
         "sample_frames_per_segment": int(sample_frames),
+        "visual_input_mode": "frame_grid",
         "use_defined_behavior_list": bool(use_defined_behavior_list),
         "video_description": str(video_description or ""),
         "instance_count": instance_count_value,

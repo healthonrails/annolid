@@ -54,6 +54,7 @@ from annolid.behavior.event_utils import (
     infer_aggression_sub_event_counts_from_text,
     parse_aggression_sub_event_counts,
 )
+from annolid.core.media.video import build_segment_frame_grid, save_rgb_image
 from annolid.datasets.labelme_collection import default_label_index_path
 from annolid.gui.realtime_launch import (
     build_realtime_launch_payload,
@@ -4121,6 +4122,7 @@ class AIChatWidget(QtWidgets.QWidget):
                                 )
                             parsed: Dict[str, Any] = {
                                 "label": candidate,
+                                "classification": candidate,
                                 "confidence": max(0.0, min(1.0, conf)),
                             }
                             description = str(payload.get("description") or "").strip()
@@ -4130,19 +4132,37 @@ class AIChatWidget(QtWidgets.QWidget):
                                 parsed["aggression_sub_events"] = parsed_sub_events
                             return parsed
 
-        lowered = raw.lower()
+        def _label_mentioned(candidate: str, source: str) -> bool:
+            normalized_candidate = re.sub(
+                r"[^a-z0-9]+", " ", str(candidate or "").lower()
+            ).strip()
+            normalized_source = re.sub(
+                r"[^a-z0-9]+", " ", str(source or "").lower()
+            ).strip()
+            if not normalized_candidate or not normalized_source:
+                return False
+            return bool(
+                re.search(
+                    rf"\b{re.escape(normalized_candidate)}\b",
+                    normalized_source,
+                )
+            )
+
         for candidate in labels:
-            if candidate.lower() in lowered:
+            if _label_mentioned(candidate, raw):
                 return {
                     "label": candidate,
+                    "classification": candidate,
                     "confidence": 0.6,
+                    "description": raw,
                     "aggression_sub_events": infer_aggression_sub_event_counts_from_text(
                         raw
                     ),
                 }
         return {
-            "label": labels[0],
-            "confidence": 0.2,
+            "label": "",
+            "confidence": 0.0,
+            "unmatched_text": raw,
             "aggression_sub_events": infer_aggression_sub_event_counts_from_text(raw),
         }
 
@@ -4164,6 +4184,162 @@ class AIChatWidget(QtWidgets.QWidget):
         step = (end - start) / float(max(1, count - 1))
         frames = [int(round(start + (idx * step))) for idx in range(count)]
         return sorted(set(max(start, min(end, frame)) for frame in frames))
+
+    @staticmethod
+    def _behavior_grid_segment_label(
+        *,
+        start_frame: int,
+        end_frame: int,
+        frame_indices: List[int],
+    ) -> str:
+        tiles = ", ".join(f"f{int(frame)}" for frame in frame_indices)
+        return (
+            f"segment frames {int(start_frame)}-{int(end_frame)}. "
+            "The provided image is one chronological frame grid for this segment; "
+            f"read tiles left-to-right, top-to-bottom ({tiles})."
+        )
+
+    @staticmethod
+    def _behavior_grid_output_path(
+        *,
+        video_path: str,
+        segment_index: int,
+        start_frame: int,
+        end_frame: int,
+    ) -> Path:
+        source_path = Path(video_path)
+        output_dir = source_path.parent / f"{source_path.stem}_behavior_segment_grids"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir / (
+            f"{source_path.stem}_segment_{int(segment_index):06d}"
+            f"_frames_{int(start_frame)}_{int(end_frame)}.png"
+        )
+
+    @staticmethod
+    def _behavior_label_retry_prompt(prompt: str, labels: List[str]) -> str:
+        labels_text = ", ".join(str(label) for label in labels)
+        return "\n".join(
+            [
+                str(prompt or "").strip(),
+                "",
+                "Your previous response was empty or did not include a valid label.",
+                f"Choose exactly one label from this list: {labels_text}.",
+                'Return JSON only: {"label":"<one label exactly as listed>","classification":"<same label>","confidence":0.0,"description":"observable evidence from the frame grid"}.',
+                "Do not return an empty message. Do not use a label outside the list.",
+            ]
+        )
+
+    @staticmethod
+    def _summarize_frame_grid_motion(
+        grid_image: Any,
+        *,
+        rows: int,
+        columns: int,
+        tile_width: int,
+        tile_height: int,
+        frame_count: int,
+    ) -> Dict[str, Any]:
+        if frame_count < 2:
+            return {"motion_score": 0.0, "mean_delta": 0.0, "pair_count": 0}
+        try:
+            import cv2  # type: ignore
+        except Exception:
+            return {"motion_score": 0.0, "mean_delta": 0.0, "pair_count": 0}
+
+        tiles = []
+        limit = min(int(frame_count), int(rows) * int(columns))
+        for idx in range(limit):
+            row = idx // int(columns)
+            col = idx % int(columns)
+            y0 = row * int(tile_height)
+            x0 = col * int(tile_width)
+            tile = grid_image[y0 : y0 + int(tile_height), x0 : x0 + int(tile_width)]
+            if tile is None or getattr(tile, "size", 0) <= 0:
+                continue
+            # Ignore the annotation strip at the top of each tile.
+            crop = tile[min(24, max(0, int(tile_height) - 1)) :, :]
+            if getattr(crop, "size", 0) <= 0:
+                crop = tile
+            gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+            gray = cv2.resize(gray, (64, 64), interpolation=cv2.INTER_AREA)
+            tiles.append(gray)
+        if len(tiles) < 2:
+            return {"motion_score": 0.0, "mean_delta": 0.0, "pair_count": 0}
+        diffs = [
+            float(cv2.absdiff(tiles[idx - 1], tiles[idx]).mean())
+            for idx in range(1, len(tiles))
+        ]
+        motion_score = max(diffs) if diffs else 0.0
+        mean_delta = (sum(diffs) / len(diffs)) if diffs else 0.0
+        return {
+            "motion_score": motion_score,
+            "mean_delta": mean_delta,
+            "pair_count": len(diffs),
+        }
+
+    @staticmethod
+    def _select_label_by_motion_affinity(
+        *,
+        labels: List[str],
+        motion_score: float,
+    ) -> Optional[str]:
+        if not labels:
+            return None
+
+        active_hints = (
+            "walk",
+            "run",
+            "move",
+            "rear",
+            "jump",
+            "climb",
+            "chase",
+            "aggress",
+            "attack",
+            "explor",
+            "travel",
+            "locomot",
+        )
+        passive_hints = (
+            "rest",
+            "sleep",
+            "still",
+            "idle",
+            "freeze",
+            "groom",
+            "sit",
+            "eat",
+            "drink",
+            "sniff",
+        )
+
+        def score(label: str) -> float:
+            text = str(label).strip().lower()
+            active = float(sum(1 for token in active_hints if token in text))
+            passive = float(sum(1 for token in passive_hints if token in text))
+            return active - passive
+
+        ranked = sorted(
+            (str(label), score(str(label))) for label in labels if str(label).strip()
+        )
+        if not ranked:
+            return None
+        motion_threshold = 2.0
+        if motion_score >= motion_threshold:
+            return max(ranked, key=lambda item: item[1])[0]
+        return min(ranked, key=lambda item: item[1])[0]
+
+    @staticmethod
+    def _build_grid_description_fallback(
+        *,
+        segment_text: str,
+        motion_score: float,
+        mean_delta: float,
+    ) -> str:
+        return (
+            f"{segment_text} Observed temporal change across tiles "
+            f"(motion_score={motion_score:.2f}, mean_delta={mean_delta:.2f})."
+        )
 
     def _save_behavior_timestamps_csv(self, host: object) -> Dict[str, Any]:
         behavior_controller = getattr(host, "behavior_controller", None)
@@ -4209,7 +4385,13 @@ class AIChatWidget(QtWidgets.QWidget):
             output_path = video_path.with_name(
                 f"{video_path.stem}_behavior_segment_labels.json"
             )
-            aggression_summary = aggregate_aggression_bout_summary(predictions)
+            normalized_predictions = [
+                self._normalize_behavior_segment_prediction_for_log(pred)
+                for pred in predictions
+            ]
+            aggression_summary = aggregate_aggression_bout_summary(
+                normalized_predictions
+            )
             payload: Dict[str, Any] = {
                 "video_path": str(video_path),
                 "mode": str(mode or "uniform"),
@@ -4217,10 +4399,11 @@ class AIChatWidget(QtWidgets.QWidget):
                 "segment_frames": int(segment_frames),
                 "segment_seconds": float(segment_seconds),
                 "sample_frames_per_segment": int(sample_frames_per_segment),
+                "visual_input_mode": "frame_grid",
                 "evaluated_segments": int(evaluated_segments),
-                "labeled_segments": int(len(predictions)),
+                "labeled_segments": int(len(normalized_predictions)),
                 "skipped_segments": int(skipped_segments),
-                "predictions": list(predictions),
+                "predictions": list(normalized_predictions),
                 "event_schema": aggression_sub_event_schema(),
                 "aggression_bout_summary": aggression_summary,
                 "generated_at": datetime.now().isoformat(),
@@ -4229,9 +4412,56 @@ class AIChatWidget(QtWidgets.QWidget):
                 json.dumps(payload, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
-            return {"ok": True, "path": str(output_path), "rows": len(predictions)}
+            return {
+                "ok": True,
+                "path": str(output_path),
+                "rows": len(normalized_predictions),
+            }
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    @staticmethod
+    def _normalize_behavior_segment_prediction_for_log(
+        prediction: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        label = str(
+            prediction.get("label") or prediction.get("classification") or ""
+        ).strip()
+        classification = str(
+            prediction.get("classification") or prediction.get("label") or label
+        ).strip()
+        normalized: Dict[str, Any] = {
+            "start_frame": int(prediction.get("start_frame") or 0),
+            "end_frame": int(
+                prediction.get("end_frame") or prediction.get("start_frame") or 0
+            ),
+            "subject": prediction.get("subject"),
+            "label": label,
+            "classification": classification,
+            "confidence": float(prediction.get("confidence") or 0.0),
+            "description": str(prediction.get("description") or "").strip(),
+            "grid_image_path": str(prediction.get("grid_image_path") or "").strip(),
+            "grid_frame_description": str(
+                prediction.get("grid_frame_description") or ""
+            ).strip(),
+            "aggression_sub_events": parse_aggression_sub_event_counts(
+                prediction.get("aggression_sub_events")
+                or prediction.get("sub_events")
+                or prediction.get("subevents")
+            ),
+        }
+        visual_evidence = prediction.get("visual_evidence")
+        if isinstance(visual_evidence, dict):
+            normalized["visual_evidence"] = dict(visual_evidence)
+            if not normalized["grid_image_path"]:
+                normalized["grid_image_path"] = str(
+                    visual_evidence.get("grid_image_path") or ""
+                ).strip()
+            if not normalized["grid_frame_description"]:
+                normalized["grid_frame_description"] = str(
+                    visual_evidence.get("grid_frame_description") or ""
+                ).strip()
+        return normalized
 
     def _run_behavior_segment_vlm_worker(
         self,
@@ -4254,163 +4484,222 @@ class AIChatWidget(QtWidgets.QWidget):
         from annolid.core.models.adapters.llm_chat import LLMChatAdapter
         from annolid.core.models.base import ModelRequest
 
-        import cv2  # type: ignore
-
-        cap = cv2.VideoCapture(str(video_path))
-        if not cap.isOpened():
-            raise RuntimeError(
-                f"Unable to open video for segment labeling: {video_path}"
-            )
-        inference_cache: Dict[int, Dict[str, Any]] = {}
         predictions: List[Dict[str, Any]] = []
         skipped_segments = 0
 
-        try:
-            adapter = LLMChatAdapter(
-                profile=str(llm_profile or "").strip() or None,
-                provider=str(llm_provider or "").strip() or None,
-                model=str(llm_model or "").strip() or None,
-                persist=False,
-            )
-            with (
-                adapter,
-                tempfile.TemporaryDirectory(
-                    prefix="annolid_behavior_segment_"
-                ) as tmp_dir,
-            ):
-                total = max(1, len(intervals))
-                for idx, item in enumerate(intervals, start=1):
-                    if stop_event is not None and bool(stop_event.is_set()):
-                        break
-                    start_frame = int(item["start_frame"])
-                    end_frame = int(item["end_frame"])
-                    probe_frames = self._uniform_segment_frame_indices(
-                        start_frame, end_frame, sample_frames_per_segment
+        adapter = LLMChatAdapter(
+            profile=str(llm_profile or "").strip() or None,
+            provider=str(llm_provider or "").strip() or None,
+            model=str(llm_model or "").strip() or None,
+            persist=False,
+        )
+        with adapter:
+            total = max(1, len(intervals))
+            for idx, item in enumerate(intervals, start=1):
+                if stop_event is not None and bool(stop_event.is_set()):
+                    break
+                start_frame = int(item["start_frame"])
+                end_frame = int(item["end_frame"])
+                progress_value = int((idx * 100) / total)
+                try:
+                    grid = build_segment_frame_grid(
+                        video_path,
+                        start_frame=start_frame,
+                        end_frame=end_frame,
+                        sample_count=max(1, int(sample_frames_per_segment)),
+                        tile_width=224,
+                        annotate=True,
                     )
-                    frame_votes: Dict[str, int] = {}
-                    frame_confidences: Dict[str, float] = {}
-                    frame_sub_event_counts: Dict[str, Dict[str, int]] = {}
-                    frame_descriptions: Dict[str, str] = {}
-                    successful_samples = 0
-                    for probe_frame in probe_frames:
-                        cached = inference_cache.get(probe_frame)
-                        if cached is None:
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, int(probe_frame))
-                            ok, frame = cap.read()
-                            if not ok or frame is None:
-                                continue
-                            image_path = str(
-                                Path(tmp_dir) / f"frame_{int(probe_frame):09d}.png"
-                            )
-                            if not cv2.imwrite(image_path, frame):
-                                continue
-                            try:
-                                segment_text = (
-                                    f"segment frames {int(start_frame)}-{int(end_frame)}, "
-                                    f"representative frame {int(probe_frame)}"
-                                )
-                                prompt = behavior_prompting.build_behavior_classification_prompt(
-                                    behavior_labels=labels,
-                                    segment_label=segment_text,
-                                    video_description=video_description,
-                                    instance_count=instance_count,
-                                    experiment_context=experiment_context,
-                                    behavior_definitions=behavior_definitions,
-                                    focus_points=focus_points,
-                                )
-                                resp = adapter.predict(
-                                    ModelRequest(
-                                        task="caption",
-                                        image_path=image_path,
-                                        text=prompt,
-                                        params={"temperature": 0.0, "max_tokens": 90},
-                                    )
-                                )
-                                raw = str(
-                                    resp.text or (resp.output or {}).get("text") or ""
-                                ).strip()
-                                cached = self._extract_prediction_from_model_text(
-                                    raw, labels
-                                )
-                                inference_cache[probe_frame] = cached
-                            except Exception:
-                                continue
-                            finally:
-                                try:
-                                    if os.path.exists(image_path):
-                                        os.remove(image_path)
-                                except OSError:
-                                    pass
-                        label = str(cached.get("label") or "").strip()
-                        confidence = float(cached.get("confidence") or 0.0)
-                        if not str(label or "").strip():
-                            continue
-                        frame_votes[label] = int(frame_votes.get(label, 0)) + 1
-                        frame_confidences[label] = float(
-                            frame_confidences.get(label, 0.0)
-                        ) + float(confidence)
-                        parsed_sub_events = parse_aggression_sub_event_counts(
-                            cached.get("aggression_sub_events")
-                            or cached.get("sub_events")
-                            or cached.get("subevents")
-                        )
-                        if parsed_sub_events:
-                            bucket = frame_sub_event_counts.setdefault(label, {})
-                            for code, count in parsed_sub_events.items():
-                                bucket[code] = max(
-                                    int(bucket.get(code, 0)),
-                                    int(count),
-                                )
-                        description = str(cached.get("description") or "").strip()
-                        if description and label not in frame_descriptions:
-                            frame_descriptions[label] = description
-                        successful_samples += 1
-
-                    if successful_samples <= 0 or not frame_votes:
-                        skipped_segments += 1
-                        progress_value = int((idx * 100) / total)
-                        if pred_worker is not None:
-                            pred_worker.report_preview(
-                                {
-                                    "index": int(idx),
-                                    "total": int(total),
-                                    "start_frame": int(start_frame),
-                                    "end_frame": int(end_frame),
-                                    "status": "skipped",
-                                    "progress": int(progress_value),
-                                }
-                            )
-                            pred_worker.report_progress(progress_value)
-                        continue
-
-                    sorted_labels = sorted(
-                        frame_votes.keys(),
-                        key=lambda key: (
-                            -int(frame_votes.get(key, 0)),
-                            -float(frame_confidences.get(key, 0.0)),
-                            key.lower(),
+                    image_path = save_rgb_image(
+                        grid.image,
+                        self._behavior_grid_output_path(
+                            video_path=video_path,
+                            segment_index=idx,
+                            start_frame=start_frame,
+                            end_frame=end_frame,
                         ),
                     )
-                    best_label = str(sorted_labels[0])
-                    best_conf = float(frame_confidences.get(best_label, 0.0)) / float(
-                        max(1, frame_votes.get(best_label, 1))
+                    segment_text = self._behavior_grid_segment_label(
+                        start_frame=start_frame,
+                        end_frame=end_frame,
+                        frame_indices=list(grid.frame_indices),
                     )
+                    prompt = behavior_prompting.build_behavior_classification_prompt(
+                        behavior_labels=labels,
+                        segment_label=segment_text,
+                        video_description=video_description,
+                        instance_count=instance_count,
+                        experiment_context=experiment_context,
+                        behavior_definitions=behavior_definitions,
+                        focus_points=focus_points,
+                    )
+                    retry_prompt = self._behavior_label_retry_prompt(prompt, labels)
+                    attempts: List[Dict[str, Any]] = [
+                        {
+                            "name": "json_with_image",
+                            "text": prompt,
+                            "params": {
+                                "temperature": 0.0,
+                                "max_tokens": 180,
+                                "response_format": {"type": "json_object"},
+                            },
+                        },
+                        {
+                            "name": "plain_with_image",
+                            "text": prompt,
+                            "params": {"temperature": 0.0, "max_tokens": 180},
+                        },
+                        {
+                            "name": "repair_with_image",
+                            "text": retry_prompt,
+                            "params": {"temperature": 0.0, "max_tokens": 180},
+                        },
+                    ]
+
+                    raw = ""
+                    parsed: Dict[str, Any] = {}
+                    label = ""
+                    used_attempt_name = ""
+                    empty_attempts = 0
+                    for attempt in attempts:
+                        attempt_name = str(attempt.get("name") or "").strip()
+                        used_attempt_name = attempt_name or used_attempt_name
+                        try:
+                            resp = adapter.predict(
+                                ModelRequest(
+                                    task="caption",
+                                    image_path=str(image_path),
+                                    text=str(attempt.get("text") or "").strip(),
+                                    params=dict(attempt.get("params") or {}),
+                                )
+                            )
+                        except Exception as exc:
+                            logger.info(
+                                "Behavior segment attempt '%s' failed for frames %s-%s: %s",
+                                attempt_name,
+                                start_frame,
+                                end_frame,
+                                exc,
+                            )
+                            continue
+                        raw = str(
+                            resp.text or (resp.output or {}).get("text") or ""
+                        ).strip()
+                        if not raw:
+                            empty_attempts += 1
+                            logger.info(
+                                "Behavior segment attempt '%s' returned empty text for frames %s-%s.",
+                                attempt_name,
+                                start_frame,
+                                end_frame,
+                            )
+                            continue
+                        parsed = self._extract_prediction_from_model_text(raw, labels)
+                        label = str(parsed.get("label") or "").strip()
+                        if label:
+                            if attempt_name == "repair_with_image":
+                                parsed.setdefault("fallback_reason", "repair_prompt")
+                            break
+                    motion_summary = self._summarize_frame_grid_motion(
+                        grid.image,
+                        rows=int(grid.rows),
+                        columns=int(grid.columns),
+                        tile_width=int(grid.tile_width),
+                        tile_height=int(grid.tile_height),
+                        frame_count=len(grid.frame_indices),
+                    )
+                    motion_score = float(motion_summary.get("motion_score") or 0.0)
+                    mean_delta = float(motion_summary.get("mean_delta") or 0.0)
+                    if not label:
+                        fallback_label = self._select_label_by_motion_affinity(
+                            labels=labels,
+                            motion_score=motion_score,
+                        )
+                        if fallback_label:
+                            parsed = {
+                                "label": fallback_label,
+                                "classification": fallback_label,
+                                "confidence": 0.2,
+                                "description": self._build_grid_description_fallback(
+                                    segment_text=segment_text,
+                                    motion_score=motion_score,
+                                    mean_delta=mean_delta,
+                                ),
+                                "fallback_reason": "motion_affinity",
+                            }
+                            label = fallback_label
+                    if not label:
+                        raw_preview = raw[:240].replace("\n", " ")
+                        raise RuntimeError(
+                            "Model response did not contain a label from the defined "
+                            f"list {labels!r}. Raw response: {raw_preview!r}"
+                        )
+                    classification_raw = str(
+                        parsed.get("classification") or parsed.get("label") or label
+                    ).strip()
+                    label_lookup = {
+                        str(candidate).strip().casefold(): str(candidate).strip()
+                        for candidate in labels
+                        if str(candidate).strip()
+                    }
+                    normalized_classification = label_lookup.get(
+                        classification_raw.casefold(), label
+                    )
+                    parsed["classification"] = normalized_classification
+                    description = str(parsed.get("description") or "").strip()
+                    if not description:
+                        description = self._build_grid_description_fallback(
+                            segment_text=segment_text,
+                            motion_score=motion_score,
+                            mean_delta=mean_delta,
+                        )
+                    parsed["description"] = description
+                    fallback_reason = str(parsed.get("fallback_reason") or "").strip()
+                    visual_evidence = {
+                        "type": "frame_grid",
+                        "grid_image_path": str(image_path),
+                        "grid_frame_description": segment_text,
+                        "frame_indices": list(grid.frame_indices),
+                        "rows": int(grid.rows),
+                        "columns": int(grid.columns),
+                        "tile_width": int(grid.tile_width),
+                        "tile_height": int(grid.tile_height),
+                        "model_attempt": used_attempt_name,
+                        "empty_attempts": int(empty_attempts),
+                    }
+                    if fallback_reason:
+                        visual_evidence["fallback_reason"] = fallback_reason
+                    if parsed.get("motion_score") is not None:
+                        visual_evidence["motion_score"] = float(
+                            parsed.get("motion_score") or 0.0
+                        )
+                    elif motion_summary:
+                        visual_evidence["motion_score"] = motion_score
+                    if motion_summary.get("mean_delta") is not None:
+                        visual_evidence["mean_delta"] = float(
+                            motion_summary.get("mean_delta") or 0.0
+                        )
                     predictions.append(
                         {
                             "start_frame": start_frame,
                             "end_frame": end_frame,
                             "subject": item.get("subject"),
-                            "label": best_label,
-                            "confidence": best_conf,
-                            "description": str(
-                                frame_descriptions.get(best_label) or ""
+                            "label": label,
+                            "classification": str(
+                                parsed.get("classification") or label
                             ).strip(),
+                            "confidence": float(parsed.get("confidence") or 0.0),
+                            "description": str(parsed.get("description") or "").strip(),
+                            "grid_image_path": str(image_path),
+                            "grid_frame_description": segment_text,
                             "aggression_sub_events": parse_aggression_sub_event_counts(
-                                frame_sub_event_counts.get(best_label, {})
+                                parsed.get("aggression_sub_events")
+                                or parsed.get("sub_events")
+                                or parsed.get("subevents")
                             ),
+                            "visual_evidence": visual_evidence,
                         }
                     )
-                    progress_value = int((idx * 100) / total)
                     if pred_worker is not None:
                         pred_worker.report_preview(
                             {
@@ -4422,8 +4711,27 @@ class AIChatWidget(QtWidgets.QWidget):
                             }
                         )
                         pred_worker.report_progress(progress_value)
-        finally:
-            cap.release()
+                except Exception as exc:
+                    skipped_segments += 1
+                    logger.warning(
+                        "Behavior segment grid labeling skipped frames %s-%s: %s",
+                        start_frame,
+                        end_frame,
+                        exc,
+                    )
+                    if pred_worker is not None:
+                        pred_worker.report_preview(
+                            {
+                                "index": int(idx),
+                                "total": int(total),
+                                "start_frame": int(start_frame),
+                                "end_frame": int(end_frame),
+                                "status": "skipped",
+                                "progress": int(progress_value),
+                                "error": str(exc),
+                            }
+                        )
+                        pred_worker.report_progress(progress_value)
 
         return {
             "predictions": predictions,
@@ -4490,14 +4798,30 @@ class AIChatWidget(QtWidgets.QWidget):
             "end_frame": int(end_frame),
             "subject": resolved_subject,
             "label": label,
+            "classification": label,
             "confidence": float(prediction.get("confidence") or 0.0),
             "description": str(prediction.get("description") or "").strip(),
+            "grid_image_path": str(prediction.get("grid_image_path") or "").strip(),
+            "grid_frame_description": str(
+                prediction.get("grid_frame_description") or ""
+            ).strip(),
             "aggression_sub_events": parse_aggression_sub_event_counts(
                 prediction.get("aggression_sub_events")
                 or prediction.get("sub_events")
                 or prediction.get("subevents")
             ),
         }
+        visual_evidence = prediction.get("visual_evidence")
+        if isinstance(visual_evidence, dict):
+            normalized_prediction["visual_evidence"] = dict(visual_evidence)
+            if not normalized_prediction["grid_image_path"]:
+                normalized_prediction["grid_image_path"] = str(
+                    visual_evidence.get("grid_image_path") or ""
+                ).strip()
+            if not normalized_prediction["grid_frame_description"]:
+                normalized_prediction["grid_frame_description"] = str(
+                    visual_evidence.get("grid_frame_description") or ""
+                ).strip()
         context_predictions = list(context.get("predictions") or [])
         context_predictions.append(normalized_prediction)
         context["predictions"] = context_predictions
@@ -4529,7 +4853,7 @@ class AIChatWidget(QtWidgets.QWidget):
             segment_frames=int(context.get("segment_frames") or 1),
             segment_seconds=float(context.get("segment_seconds") or 0.0),
             sample_frames_per_segment=int(
-                context.get("sample_frames_per_segment") or 1
+                context.get("sample_frames_per_segment") or 4
             ),
             evaluated_segments=int(context.get("evaluated_segments") or 0),
             skipped_segments=int(context.get("skipped_segments") or 0),
@@ -4678,7 +5002,10 @@ class AIChatWidget(QtWidgets.QWidget):
                 "segment_frames": int(context.get("segment_frames") or 1),
                 "segment_seconds": float(context.get("segment_seconds") or 0.0),
                 "sample_frames_per_segment": int(
-                    context.get("sample_frames_per_segment") or 1
+                    context.get("sample_frames_per_segment") or 4
+                ),
+                "visual_input_mode": str(
+                    context.get("visual_input_mode") or "frame_grid"
                 ),
                 "use_defined_behavior_list": bool(
                     context.get("use_defined_behavior_list", True)
@@ -4789,7 +5116,10 @@ class AIChatWidget(QtWidgets.QWidget):
                 "segment_frames": int(context.get("segment_frames") or 1),
                 "segment_seconds": float(context.get("segment_seconds") or 0.0),
                 "sample_frames_per_segment": int(
-                    context.get("sample_frames_per_segment") or 1
+                    context.get("sample_frames_per_segment") or 4
+                ),
+                "visual_input_mode": str(
+                    context.get("visual_input_mode") or "frame_grid"
                 ),
                 "use_defined_behavior_list": bool(
                     context.get("use_defined_behavior_list", True)
@@ -6033,7 +6363,7 @@ class AIChatWidget(QtWidgets.QWidget):
         segment_mode: str = "timeline",
         segment_frames: int = 60,
         segment_seconds: float = 0.0,
-        sample_frames_per_segment: int = 3,
+        sample_frames_per_segment: int = 4,
         max_segments: int = 120,
         subject: str = "Agent",
         overwrite_existing: bool = False,
@@ -6174,6 +6504,7 @@ class AIChatWidget(QtWidgets.QWidget):
                     "segment_frames": int(segment_frames),
                     "segment_seconds": float(segment_seconds),
                     "sample_frames_per_segment": int(sample_frames_per_segment),
+                    "visual_input_mode": "frame_grid",
                     "use_defined_behavior_list": bool(use_defined_behavior_list),
                     "labels_used": labels,
                     "video_description": str(video_description or "").strip(),
@@ -6195,6 +6526,7 @@ class AIChatWidget(QtWidgets.QWidget):
                 "segment_frames": int(segment_frames),
                 "segment_seconds": float(segment_seconds),
                 "sample_frames_per_segment": int(sample_frames_per_segment),
+                "visual_input_mode": "frame_grid",
                 "evaluated_segments": int(len(intervals)),
                 "processed_segments": 0,
                 "skipped_segments": 0,
@@ -6287,7 +6619,9 @@ class AIChatWidget(QtWidgets.QWidget):
             segment_frames=int(payload.get("segment_frames") or 60),
             segment_seconds=float(payload.get("segment_seconds") or 0.0),
             sample_frames_per_segment=int(
-                payload.get("sample_frames_per_segment") or 3
+                payload.get("sample_frames_per_segment")
+                or payload.get("frames_per_grid")
+                or 4
             ),
             max_segments=int(payload.get("max_segments") or 120),
             subject=str(payload.get("subject") or "Agent"),

@@ -57,6 +57,59 @@ def test_llm_adapter_caption_swappable_without_openai(tmp_path: Path):
     assert resp.output["text"] == "fake caption"
 
 
+def test_llm_adapter_extracts_structured_message_content(tmp_path: Path):
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    img_path = tmp_path / "img.png"
+
+    try:
+        import cv2  # type: ignore
+    except ImportError:
+        pytest.skip("cv2 is required for this test.")
+
+    assert cv2.imwrite(str(img_path), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+
+    class _StructuredCompletions:
+        def create(self, **kwargs):  # noqa: ANN003
+            assert kwargs["response_format"] == {"type": "json_object"}
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(
+                            content=None,
+                            parsed={
+                                "label": "rearing",
+                                "classification": "rearing",
+                                "description": "Mouse is upright.",
+                            },
+                        ),
+                    )
+                ]
+            )
+
+    class _StructuredClient:
+        chat = SimpleNamespace(completions=_StructuredCompletions())
+
+    adapter = LLMChatAdapter(
+        provider="ollama",
+        model="qwen3-vl",
+        persist=False,
+        client_factory=lambda _cfg: _StructuredClient(),
+    )
+
+    response = adapter.predict(
+        ModelRequest(
+            task="caption",
+            image_path=str(img_path),
+            text="Classify",
+            params={"response_format": {"type": "json_object"}},
+        )
+    )
+
+    assert '"classification": "rearing"' in str(response.text)
+    assert response.meta["empty_text"] is False
+
+
 def test_cv_adapter_caption_swappable_with_fake_model(tmp_path: Path):
     torch = pytest.importorskip("torch")
 

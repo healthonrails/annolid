@@ -145,6 +145,14 @@ Track the mouse in /path/to/video.mp4 with SAM3 Agent.
 Use a window size of 5, stride 5, and save the summary to the default output folder.
 ```
 
+Defined-list behavior labeling uses frame grids by default. For example:
+
+```text
+Label behavior in mouse.mp4 with labels grooming, rearing, walking from defined list every 1s frames per grid 4
+```
+
+Annolid resolves the requested labels against the current behavior catalog when available, splits the video into 1-second segments, builds one annotated chronological frame grid per segment, and sends each grid to the selected VLM for a single JSON label decision. Each grid samples 4 frames by default; users can override this with phrases like `frames per grid 6` or the tool argument `sample_frames_per_segment=6`.
+
 What the tool returns:
 
 - a JSON summary
