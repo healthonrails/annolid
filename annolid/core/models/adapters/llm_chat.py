@@ -102,16 +102,21 @@ class LLMChatAdapter(RuntimeModel):
         provider: Optional[str] = None,
         model: Optional[str] = None,
         persist: bool = False,
+        use_annolid_bot_system: bool = True,
+        workspace: Optional[str] = None,
         client_factory: Optional[Callable[[_OpenAICompatConfig], Any]] = None,
     ) -> None:
         self._profile = profile
         self._provider_override = provider
         self._model_override = model
         self._persist = bool(persist)
+        self._use_annolid_bot_system = bool(use_annolid_bot_system)
+        self._workspace_override = str(workspace or "").strip() or None
         self._client_factory = client_factory
 
         self._client: Any = None
         self._config: Optional[_OpenAICompatConfig] = None
+        self._annolid_system_prompt_cache: Optional[str] = None
 
     @property
     def model_id(self) -> str:
@@ -178,6 +183,15 @@ class LLMChatAdapter(RuntimeModel):
             messages = list(request.messages)
         else:
             system_prompt = request.params.get("system_prompt")
+            use_annolid_system = bool(
+                request.params.get(
+                    "use_annolid_bot_system", self._use_annolid_bot_system
+                )
+            )
+            if not system_prompt and use_annolid_system:
+                system_prompt = self._resolve_annolid_system_prompt(
+                    task_hint=str(request.text or "").strip()
+                )
             messages = []
             if system_prompt:
                 messages.append({"role": "system", "content": str(system_prompt)})
@@ -228,6 +242,29 @@ class LLMChatAdapter(RuntimeModel):
             },
         )
 
+    def _resolve_annolid_system_prompt(self, *, task_hint: str = "") -> str:
+        cached = str(self._annolid_system_prompt_cache or "").strip()
+        if cached:
+            return cached
+        try:
+            from annolid.core.agent.context import AgentContextBuilder
+            from annolid.core.agent.utils import get_agent_workspace_path
+
+            workspace = get_agent_workspace_path(self._workspace_override)
+            builder = AgentContextBuilder(Path(workspace))
+            prompt = str(
+                builder.build_system_prompt(
+                    task_hint=task_hint or "Vision-language classification request.",
+                )
+                or ""
+            ).strip()
+            if prompt:
+                self._annolid_system_prompt_cache = prompt
+            return prompt
+        except Exception:
+            return ""
+
     def close(self) -> None:
         self._client = None
         self._config = None
+        self._annolid_system_prompt_cache = None

@@ -940,14 +940,56 @@ class ThreeJsManager(QtCore.QObject):
             ) from exc
 
         source = zarr.open(str(path), mode="r")
-        array, source_dataset_path, axis_names = self._resolve_zarr_array_for_viewer(
-            source
-        )
+        candidates = self._resolve_zarr_array_candidates_for_viewer(source)
+        failures: list[tuple[str, Exception]] = []
+        for array, source_dataset_path, axis_names in candidates:
+            try:
+                return self._build_zarr_payload_from_array(
+                    source=source,
+                    source_path=path,
+                    array=array,
+                    source_dataset_path=source_dataset_path,
+                    axis_names=axis_names,
+                    np_module=np,
+                )
+            except Exception as exc:
+                failures.append((str(source_dataset_path or ""), exc))
+                logger.warning(
+                    "Failed to read Zarr dataset '%s' for Three.js viewer: %s",
+                    source_dataset_path or "<root>",
+                    exc,
+                )
+        if failures:
+            last_dataset, last_exc = failures[-1]
+            if len(failures) == 1:
+                raise RuntimeError(str(last_exc)) from last_exc
+            failed_paths = ", ".join(
+                f"'{dataset or '<root>'}'" for dataset, _exc in failures
+            )
+            raise RuntimeError(
+                f"Unable to read any Zarr dataset for 3D viewer; tried {failed_paths}. "
+                f"Last error from '{last_dataset or '<root>'}': {last_exc}"
+            ) from last_exc
+        raise RuntimeError("No readable array found in Zarr store.")
+
+    def _build_zarr_payload_from_array(
+        self,
+        *,
+        source: Any,
+        source_path: Path,
+        array: Any,
+        source_dataset_path: str,
+        axis_names: list[str],
+        np_module: Any,
+    ) -> dict[str, Any]:
+        np = np_module
         shape = tuple(int(v) for v in getattr(array, "shape", ()) or ())
         if not shape:
-            raise RuntimeError(f"Zarr store has invalid shape metadata: {path}")
+            raise RuntimeError(f"Zarr store has invalid shape metadata: {source_path}")
         if any(int(v) <= 0 for v in shape):
-            raise RuntimeError(f"Zarr store has non-positive shape dimensions: {path}")
+            raise RuntimeError(
+                f"Zarr store has non-positive shape dimensions: {source_path}"
+            )
 
         axis_map = self._resolve_zarr_axis_map(shape=shape, axis_names=axis_names)
         spatial_axes = axis_map["spatial_axes"]
@@ -997,11 +1039,11 @@ class ThreeJsManager(QtCore.QObject):
                 f"Unsupported sampled Zarr dimensionality for 3D viewer: ndim={int(sampled.ndim)}"
             )
         if sampled.size <= 0:
-            raise RuntimeError(f"Zarr volume is empty: {path}")
+            raise RuntimeError(f"Zarr volume is empty: {source_path}")
 
         finite = sampled[np.isfinite(sampled)]
         if finite.size <= 0:
-            raise RuntimeError(f"Zarr volume has no finite values: {path}")
+            raise RuntimeError(f"Zarr volume has no finite values: {source_path}")
         lo = float(np.min(finite))
         hi = float(np.max(finite))
         scale = hi - lo
@@ -1048,7 +1090,7 @@ class ThreeJsManager(QtCore.QObject):
         render_defaults = self._build_zarr_render_defaults(
             values=values,
             stride=int(stride),
-            source_path=path,
+            source_path=source_path,
             intensity_inverted=bool(intensity_inverted),
         )
         points: list[dict[str, Any]] = []
@@ -1063,10 +1105,10 @@ class ThreeJsManager(QtCore.QObject):
         y_scale = float(max(1, int(stride)) * float(spatial_spacing[1]))
         x_scale = float(max(1, int(stride)) * float(spatial_spacing[2]))
         render_profile = self._classify_zarr_render_profile(
-            source_path=path,
+            source_path=source_path,
             intensity_inverted=bool(intensity_inverted),
         )
-        interleaved_detected = "interleaved" in str(path.stem or "").lower()
+        interleaved_detected = "interleaved" in str(source_path.stem or "").lower()
         for idx, (z, y, x) in enumerate(coords):
             points.append(
                 {
@@ -1082,7 +1124,7 @@ class ThreeJsManager(QtCore.QObject):
             "kind": "annolid-simulation-v1",
             "adapter": "zarr-volume",
             "metadata": {
-                "source_path": str(path),
+                "source_path": str(source_path),
                 "shape": [int(v) for v in shape],
                 "source_dataset_path": str(source_dataset_path or ""),
                 "axes": [str(v) for v in axis_names],
@@ -1404,6 +1446,11 @@ class ThreeJsManager(QtCore.QObject):
         return None
 
     def _resolve_zarr_array_for_viewer(self, source: Any) -> tuple[Any, str, list[str]]:
+        return self._resolve_zarr_array_candidates_for_viewer(source)[0]
+
+    def _resolve_zarr_array_candidates_for_viewer(
+        self, source: Any
+    ) -> list[tuple[Any, str, list[str]]]:
         shape = tuple(int(v) for v in getattr(source, "shape", ()) or ())
         if shape:
             axis_names = self._normalize_zarr_axes(
@@ -1411,17 +1458,23 @@ class ThreeJsManager(QtCore.QObject):
                 ndim=len(shape),
                 array=source,
             )
-            return source, "", axis_names
+            return [(source, "", axis_names)]
 
         multiscale_candidates = self._zarr_multiscale_candidates(source)
         if multiscale_candidates:
-            array, path, axes = self._choose_zarr_multiscale_candidate(
-                multiscale_candidates
-            )
-            axis_names = self._normalize_zarr_axes(
-                axes, ndim=len(array.shape), array=array
-            )
-            return array, path, axis_names
+            preferred = self._choose_zarr_multiscale_candidate(multiscale_candidates)
+            ordered: list[tuple[Any, str, Any]] = [preferred]
+            for candidate in multiscale_candidates:
+                if candidate is preferred:
+                    continue
+                ordered.append(candidate)
+            resolved: list[tuple[Any, str, list[str]]] = []
+            for array, path, axes in ordered:
+                axis_names = self._normalize_zarr_axes(
+                    axes, ndim=len(array.shape), array=array
+                )
+                resolved.append((array, path, axis_names))
+            return resolved
 
         selected = self._select_zarr_array(source)
         if selected is None:
@@ -1431,7 +1484,7 @@ class ThreeJsManager(QtCore.QObject):
             ndim=len(getattr(selected, "shape", ()) or ()),
             array=selected,
         )
-        return selected, "", axis_names
+        return [(selected, "", axis_names)]
 
     @staticmethod
     def _normalize_zarr_axes(axes_raw: Any, *, ndim: int, array: Any) -> list[str]:

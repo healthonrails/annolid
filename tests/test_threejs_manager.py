@@ -544,3 +544,59 @@ def test_build_zarr_simulation_payload_inverts_bright_background_histology(
     assert payload["metadata"]["intensity_inverted"] is True
     assert payload["metadata"]["signal_polarity"] == "dark_on_light"
     assert payload["metadata"]["volume_render_defaults"]["preset"] == "nissl_sections"
+
+
+@requires_zarr
+def test_build_zarr_simulation_payload_falls_back_when_candidate_read_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+
+    zarr_path = tmp_path / "atlas_nissl_30um_image.zarr"
+    zarr_path.mkdir(parents=True, exist_ok=True)
+
+    fake_source = object()
+    broken_array = object()
+    good_array = object()
+    monkeypatch.setattr(
+        zarr,
+        "open",
+        lambda *_args, **_kwargs: fake_source,
+    )
+    monkeypatch.setattr(
+        manager,
+        "_resolve_zarr_array_candidates_for_viewer",
+        lambda _source: [
+            (broken_array, "0", ["z", "y", "x"]),
+            (good_array, "1", ["z", "y", "x"]),
+        ],
+    )
+
+    call_order: list[str] = []
+
+    def _build_from_array(
+        *,
+        source,
+        source_path,
+        array,
+        source_dataset_path,
+        axis_names,
+        np_module,
+    ):
+        _ = source
+        _ = source_path
+        _ = axis_names
+        _ = np_module
+        call_order.append(source_dataset_path)
+        if array is broken_array:
+            raise RuntimeError("error during blosc decompression: -1")
+        return {"kind": "annolid-simulation-v1", "metadata": {"ok": True}}
+
+    monkeypatch.setattr(manager, "_build_zarr_payload_from_array", _build_from_array)
+
+    payload = manager._build_zarr_simulation_payload(zarr_path)
+
+    assert payload["metadata"]["ok"] is True
+    assert call_order == ["0", "1"]

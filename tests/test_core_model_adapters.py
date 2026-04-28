@@ -18,8 +18,10 @@ from annolid.core.models.adapters.qwen3_embedding import Qwen3EmbeddingAdapter
 class _FakeOpenAIChatCompletions:
     def __init__(self, text: str) -> None:
         self._text = text
+        self.last_kwargs = None
 
     def create(self, **kwargs):  # noqa: ANN003
+        self.last_kwargs = dict(kwargs)
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=self._text))]
         )
@@ -27,7 +29,8 @@ class _FakeOpenAIChatCompletions:
 
 class _FakeOpenAIClient:
     def __init__(self, text: str) -> None:
-        self.chat = SimpleNamespace(completions=_FakeOpenAIChatCompletions(text))
+        self.completions = _FakeOpenAIChatCompletions(text)
+        self.chat = SimpleNamespace(completions=self.completions)
 
 
 def test_llm_adapter_caption_swappable_without_openai(tmp_path: Path):
@@ -108,6 +111,72 @@ def test_llm_adapter_extracts_structured_message_content(tmp_path: Path):
 
     assert '"classification": "rearing"' in str(response.text)
     assert response.meta["empty_text"] is False
+
+
+def test_llm_adapter_uses_annolid_bot_system_prompt_by_default(tmp_path: Path):
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    img_path = tmp_path / "img.png"
+
+    try:
+        import cv2  # type: ignore
+    except ImportError:
+        pytest.skip("cv2 is required for this test.")
+
+    assert cv2.imwrite(str(img_path), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+
+    fake_client = _FakeOpenAIClient("ok")
+    adapter = LLMChatAdapter(
+        provider="ollama",
+        model="qwen3-vl",
+        persist=False,
+        client_factory=lambda _cfg: fake_client,
+    )
+    adapter._resolve_annolid_system_prompt = lambda **_kwargs: "ANNOLID_SYSTEM"  # type: ignore[method-assign]
+
+    _ = adapter.predict(
+        ModelRequest(task="caption", image_path=str(img_path), text="Describe image")
+    )
+
+    kwargs = fake_client.completions.last_kwargs or {}
+    messages = list(kwargs.get("messages") or [])
+    assert messages
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"] == "ANNOLID_SYSTEM"
+
+
+def test_llm_adapter_can_disable_annolid_bot_system_prompt(tmp_path: Path):
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    img_path = tmp_path / "img.png"
+
+    try:
+        import cv2  # type: ignore
+    except ImportError:
+        pytest.skip("cv2 is required for this test.")
+
+    assert cv2.imwrite(str(img_path), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+
+    fake_client = _FakeOpenAIClient("ok")
+    adapter = LLMChatAdapter(
+        provider="ollama",
+        model="qwen3-vl",
+        persist=False,
+        client_factory=lambda _cfg: fake_client,
+    )
+    adapter._resolve_annolid_system_prompt = lambda **_kwargs: "ANNOLID_SYSTEM"  # type: ignore[method-assign]
+
+    _ = adapter.predict(
+        ModelRequest(
+            task="caption",
+            image_path=str(img_path),
+            text="Describe image",
+            params={"use_annolid_bot_system": False},
+        )
+    )
+
+    kwargs = fake_client.completions.last_kwargs or {}
+    messages = list(kwargs.get("messages") or [])
+    assert messages
+    assert messages[0]["role"] == "user"
 
 
 def test_cv_adapter_caption_swappable_with_fake_model(tmp_path: Path):

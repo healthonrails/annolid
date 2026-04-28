@@ -4230,6 +4230,20 @@ class AIChatWidget(QtWidgets.QWidget):
         )
 
     @staticmethod
+    def _behavior_grid_system_prompt(labels: List[str]) -> str:
+        labels_text = ", ".join(str(label) for label in labels if str(label).strip())
+        return "\n".join(
+            [
+                "You are Annolid Bot.",
+                "Analyze chronological frame-grid images for behavior labeling.",
+                "You must ground output in visible evidence from the grid tiles.",
+                f"Allowed labels: {labels_text}",
+                "Classification must be exactly one allowed label.",
+                "Always include a short behavior description.",
+            ]
+        )
+
+    @staticmethod
     def _summarize_frame_grid_motion(
         grid_image: Any,
         *,
@@ -4341,6 +4355,22 @@ class AIChatWidget(QtWidgets.QWidget):
             f"(motion_score={motion_score:.2f}, mean_delta={mean_delta:.2f})."
         )
 
+    @staticmethod
+    def _is_likely_non_vision_model(*, provider: str, model: str) -> bool:
+        provider_text = str(provider or "").strip().lower()
+        model_text = str(model or "").strip().lower()
+        if not model_text:
+            return False
+        known_text_only_tokens = (
+            "kimi-k2.5",
+            "kimi-k2",
+        )
+        if any(token in model_text for token in known_text_only_tokens):
+            return True
+        if provider_text == "nvidia" and "moonshotai/kimi-k2.5" in model_text:
+            return True
+        return False
+
     def _save_behavior_timestamps_csv(self, host: object) -> Dict[str, Any]:
         behavior_controller = getattr(host, "behavior_controller", None)
         if behavior_controller is None:
@@ -4440,6 +4470,10 @@ class AIChatWidget(QtWidgets.QWidget):
             "classification": classification,
             "confidence": float(prediction.get("confidence") or 0.0),
             "description": str(prediction.get("description") or "").strip(),
+            "model_description": str(prediction.get("model_description") or "").strip(),
+            "description_source": str(
+                prediction.get("description_source") or ""
+            ).strip(),
             "grid_image_path": str(prediction.get("grid_image_path") or "").strip(),
             "grid_frame_description": str(
                 prediction.get("grid_frame_description") or ""
@@ -4487,13 +4521,39 @@ class AIChatWidget(QtWidgets.QWidget):
         predictions: List[Dict[str, Any]] = []
         skipped_segments = 0
 
-        adapter = LLMChatAdapter(
-            profile=str(llm_profile or "").strip() or None,
-            provider=str(llm_provider or "").strip() or None,
-            model=str(llm_model or "").strip() or None,
-            persist=False,
+        requested_profile = str(llm_profile or "").strip()
+        requested_provider = str(llm_provider or "").strip()
+        requested_model = str(llm_model or "").strip()
+        route_to_caption_profile = self._is_likely_non_vision_model(
+            provider=requested_provider,
+            model=requested_model,
         )
-        with adapter:
+        if route_to_caption_profile:
+            logger.info(
+                "Behavior segment routing to caption profile for image labeling "
+                "because selected model appears non-vision provider=%s model=%s",
+                requested_provider,
+                requested_model,
+            )
+
+        with contextlib.ExitStack() as stack:
+            if route_to_caption_profile:
+                adapter = stack.enter_context(
+                    LLMChatAdapter(
+                        profile="caption",
+                        persist=False,
+                    )
+                )
+            else:
+                adapter = stack.enter_context(
+                    LLMChatAdapter(
+                        profile=requested_profile or None,
+                        provider=requested_provider or None,
+                        model=requested_model or None,
+                        persist=False,
+                    )
+                )
+            caption_rescue_adapter: Optional[LLMChatAdapter] = None
             total = max(1, len(intervals))
             for idx, item in enumerate(intervals, start=1):
                 if stop_event is not None and bool(stop_event.is_set()):
@@ -4534,6 +4594,7 @@ class AIChatWidget(QtWidgets.QWidget):
                         focus_points=focus_points,
                     )
                     retry_prompt = self._behavior_label_retry_prompt(prompt, labels)
+                    system_prompt = self._behavior_grid_system_prompt(labels)
                     attempts: List[Dict[str, Any]] = [
                         {
                             "name": "json_with_image",
@@ -4541,18 +4602,27 @@ class AIChatWidget(QtWidgets.QWidget):
                             "params": {
                                 "temperature": 0.0,
                                 "max_tokens": 180,
+                                "system_prompt": system_prompt,
                                 "response_format": {"type": "json_object"},
                             },
                         },
                         {
                             "name": "plain_with_image",
                             "text": prompt,
-                            "params": {"temperature": 0.0, "max_tokens": 180},
+                            "params": {
+                                "temperature": 0.0,
+                                "max_tokens": 180,
+                                "system_prompt": system_prompt,
+                            },
                         },
                         {
                             "name": "repair_with_image",
                             "text": retry_prompt,
-                            "params": {"temperature": 0.0, "max_tokens": 180},
+                            "params": {
+                                "temperature": 0.0,
+                                "max_tokens": 180,
+                                "use_annolid_bot_system": False,
+                            },
                         },
                     ]
 
@@ -4561,6 +4631,7 @@ class AIChatWidget(QtWidgets.QWidget):
                     label = ""
                     used_attempt_name = ""
                     empty_attempts = 0
+                    model_description = ""
                     for attempt in attempts:
                         attempt_name = str(attempt.get("name") or "").strip()
                         used_attempt_name = attempt_name or used_attempt_name
@@ -4596,10 +4667,64 @@ class AIChatWidget(QtWidgets.QWidget):
                             continue
                         parsed = self._extract_prediction_from_model_text(raw, labels)
                         label = str(parsed.get("label") or "").strip()
+                        model_description = str(parsed.get("description") or "").strip()
                         if label:
                             if attempt_name == "repair_with_image":
                                 parsed.setdefault("fallback_reason", "repair_prompt")
                             break
+                    if not label and not route_to_caption_profile:
+                        if caption_rescue_adapter is None:
+                            caption_rescue_adapter = stack.enter_context(
+                                LLMChatAdapter(profile="caption", persist=False)
+                            )
+                        rescue_attempt_name = "rescue_caption_profile"
+                        used_attempt_name = rescue_attempt_name
+                        try:
+                            rescue_resp = caption_rescue_adapter.predict(
+                                ModelRequest(
+                                    task="caption",
+                                    image_path=str(image_path),
+                                    text=str(retry_prompt or "").strip(),
+                                    params={
+                                        "temperature": 0.0,
+                                        "max_tokens": 180,
+                                        "use_annolid_bot_system": False,
+                                    },
+                                )
+                            )
+                            rescue_raw = str(
+                                rescue_resp.text
+                                or (rescue_resp.output or {}).get("text")
+                                or ""
+                            ).strip()
+                            if not rescue_raw:
+                                empty_attempts += 1
+                                logger.info(
+                                    "Behavior segment attempt '%s' returned empty text for frames %s-%s.",
+                                    rescue_attempt_name,
+                                    start_frame,
+                                    end_frame,
+                                )
+                            else:
+                                parsed = self._extract_prediction_from_model_text(
+                                    rescue_raw, labels
+                                )
+                                label = str(parsed.get("label") or "").strip()
+                                model_description = str(
+                                    parsed.get("description") or ""
+                                ).strip()
+                                if label:
+                                    parsed.setdefault(
+                                        "fallback_reason", "caption_profile_rescue"
+                                    )
+                        except Exception as exc:
+                            logger.info(
+                                "Behavior segment attempt '%s' failed for frames %s-%s: %s",
+                                rescue_attempt_name,
+                                start_frame,
+                                end_frame,
+                                exc,
+                            )
                     motion_summary = self._summarize_frame_grid_motion(
                         grid.image,
                         rows=int(grid.rows),
@@ -4609,25 +4734,6 @@ class AIChatWidget(QtWidgets.QWidget):
                         frame_count=len(grid.frame_indices),
                     )
                     motion_score = float(motion_summary.get("motion_score") or 0.0)
-                    mean_delta = float(motion_summary.get("mean_delta") or 0.0)
-                    if not label:
-                        fallback_label = self._select_label_by_motion_affinity(
-                            labels=labels,
-                            motion_score=motion_score,
-                        )
-                        if fallback_label:
-                            parsed = {
-                                "label": fallback_label,
-                                "classification": fallback_label,
-                                "confidence": 0.2,
-                                "description": self._build_grid_description_fallback(
-                                    segment_text=segment_text,
-                                    motion_score=motion_score,
-                                    mean_delta=mean_delta,
-                                ),
-                                "fallback_reason": "motion_affinity",
-                            }
-                            label = fallback_label
                     if not label:
                         raw_preview = raw[:240].replace("\n", " ")
                         raise RuntimeError(
@@ -4647,14 +4753,19 @@ class AIChatWidget(QtWidgets.QWidget):
                     )
                     parsed["classification"] = normalized_classification
                     description = str(parsed.get("description") or "").strip()
-                    if not description:
-                        description = self._build_grid_description_fallback(
-                            segment_text=segment_text,
-                            motion_score=motion_score,
-                            mean_delta=mean_delta,
-                        )
-                    parsed["description"] = description
                     fallback_reason = str(parsed.get("fallback_reason") or "").strip()
+                    if not description:
+                        raw_preview = raw[:240].replace("\n", " ")
+                        raise RuntimeError(
+                            "Model response did not include a non-empty description. "
+                            f"Raw response: {raw_preview!r}"
+                        )
+                    if not model_description:
+                        model_description = description
+                    description_source = "model"
+                    parsed["description"] = description
+                    parsed["model_description"] = model_description
+                    parsed["description_source"] = description_source
                     visual_evidence = {
                         "type": "frame_grid",
                         "grid_image_path": str(image_path),
@@ -4666,7 +4777,14 @@ class AIChatWidget(QtWidgets.QWidget):
                         "tile_height": int(grid.tile_height),
                         "model_attempt": used_attempt_name,
                         "empty_attempts": int(empty_attempts),
+                        "description_source": description_source,
                     }
+                    if route_to_caption_profile:
+                        visual_evidence["model_routed_profile"] = "caption"
+                        if requested_provider:
+                            visual_evidence["requested_provider"] = requested_provider
+                        if requested_model:
+                            visual_evidence["requested_model"] = requested_model
                     if fallback_reason:
                         visual_evidence["fallback_reason"] = fallback_reason
                     if parsed.get("motion_score") is not None:
@@ -4690,6 +4808,12 @@ class AIChatWidget(QtWidgets.QWidget):
                             ).strip(),
                             "confidence": float(parsed.get("confidence") or 0.0),
                             "description": str(parsed.get("description") or "").strip(),
+                            "model_description": str(
+                                parsed.get("model_description") or ""
+                            ).strip(),
+                            "description_source": str(
+                                parsed.get("description_source") or "model"
+                            ).strip(),
                             "grid_image_path": str(image_path),
                             "grid_frame_description": segment_text,
                             "aggression_sub_events": parse_aggression_sub_event_counts(
@@ -4801,6 +4925,10 @@ class AIChatWidget(QtWidgets.QWidget):
             "classification": label,
             "confidence": float(prediction.get("confidence") or 0.0),
             "description": str(prediction.get("description") or "").strip(),
+            "model_description": str(prediction.get("model_description") or "").strip(),
+            "description_source": str(
+                prediction.get("description_source") or ""
+            ).strip(),
             "grid_image_path": str(prediction.get("grid_image_path") or "").strip(),
             "grid_frame_description": str(
                 prediction.get("grid_frame_description") or ""
