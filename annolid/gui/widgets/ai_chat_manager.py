@@ -198,7 +198,7 @@ class AIChatManager(QtCore.QObject):
         widget = AIChatWidget(dock)
         widget.set_canvas(getattr(self.window, "canvas", None))
         widget.set_host_window(self.window)
-        widget.set_default_visual_share_mode(attach_canvas=False, attach_window=False)
+        widget.set_default_visual_share_mode(attach_canvas=True, attach_window=False)
 
         dock.setWidget(widget)
         dock.visibilityChanged.connect(self._on_dock_visibility_changed)

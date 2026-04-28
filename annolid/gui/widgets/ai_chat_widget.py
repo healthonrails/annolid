@@ -6,6 +6,7 @@ import csv
 import ipaddress
 import fnmatch
 import logging
+import sys
 from collections import OrderedDict
 import os
 import tempfile
@@ -129,6 +130,10 @@ def _emoji_supported(text: str) -> bool:
 
 
 def _symbol_text(preferred: str, fallback: str) -> str:
+    # Ubuntu/Linux font stacks can report emoji coverage but still render
+    # placeholder glyphs in Qt widgets. Prefer stable ASCII labels there.
+    if sys.platform.startswith("linux"):
+        return str(fallback)
     return str(preferred) if _emoji_supported(preferred) else str(fallback)
 
 
@@ -1509,7 +1514,7 @@ class AIChatWidget(QtWidgets.QWidget):
     def _create_hidden_toggles(self, layout):
         # We might want to expose these via a menu later, but for now defaults
         self.attach_canvas_checkbox = QtWidgets.QCheckBox("Attach canvas", self)
-        self.attach_canvas_checkbox.setChecked(False)
+        self.attach_canvas_checkbox.setChecked(True)
         self.attach_canvas_checkbox.setVisible(False)
 
         self.attach_window_checkbox = QtWidgets.QCheckBox("Attach window", self)
