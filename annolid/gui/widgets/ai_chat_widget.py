@@ -113,6 +113,25 @@ from annolid.services.citation_verify import (
 logger = logging.getLogger(__name__)
 
 
+def _emoji_supported(text: str) -> bool:
+    candidate = str(text or "")
+    if not candidate:
+        return False
+    font = QtWidgets.QApplication.font()
+    metrics = QtGui.QFontMetrics(font)
+    for ch in candidate:
+        codepoint = ord(ch)
+        if codepoint < 128:
+            continue
+        if not metrics.inFontUcs4(codepoint):
+            return False
+    return True
+
+
+def _symbol_text(preferred: str, fallback: str) -> str:
+    return str(preferred) if _emoji_supported(preferred) else str(fallback)
+
+
 def _safe_stream_source_for_bot(source: str) -> str:
     text = str(source or "").strip()
     if not text or text.isdigit() or "://" not in text:
@@ -541,11 +560,21 @@ class _ChatBubble(QtWidgets.QFrame):
         self.actions_layout = QtWidgets.QHBoxLayout()
         self.actions_layout.setSpacing(4)
 
-        self.speak_button = self._create_action_button("🔊", "Read aloud")
-        self.copy_button = self._create_action_button("📋", "Copy text")
-        self.regenerate_button = self._create_action_button("🔄", "Regenerate")
-        self.stop_button = self._create_action_button("⏹", "Stop running")
-        self.delete_button = self._create_action_button("🗑", "Delete message")
+        self.speak_button = self._create_action_button(
+            _symbol_text("🔊", "Speak"), "Read aloud"
+        )
+        self.copy_button = self._create_action_button(
+            _symbol_text("📋", "Copy"), "Copy text"
+        )
+        self.regenerate_button = self._create_action_button(
+            _symbol_text("🔄", "Redo"), "Regenerate"
+        )
+        self.stop_button = self._create_action_button(
+            _symbol_text("⏹", "Stop"), "Stop running"
+        )
+        self.delete_button = self._create_action_button(
+            _symbol_text("🗑", "Del"), "Delete message"
+        )
         self.regenerate_button.setVisible(
             (not self._is_user) and self._allow_regenerate
         )
@@ -1228,11 +1257,21 @@ class AIChatWidget(QtWidgets.QWidget):
         tools_layout = QtWidgets.QHBoxLayout()
         tools_layout.setSpacing(2)
 
-        self.attach_file_button = self._create_input_icon("📎", "Attach file")
-        self.share_canvas_button = self._create_input_icon("🎨", "Share Canvas")
-        self.share_window_button = self._create_input_icon("🪟", "Share Window")
-        self.citation_button = self._create_input_icon("📚", "Manage citations")
-        self.zulip_button = self._create_input_icon("✉️", "Draft and send to Zulip")
+        self.attach_file_button = self._create_input_icon(
+            _symbol_text("📎", "File"), "Attach file"
+        )
+        self.share_canvas_button = self._create_input_icon(
+            _symbol_text("🎨", "Canvas"), "Share Canvas"
+        )
+        self.share_window_button = self._create_input_icon(
+            _symbol_text("🪟", "Window"), "Share Window"
+        )
+        self.citation_button = self._create_input_icon(
+            _symbol_text("📚", "Refs"), "Manage citations"
+        )
+        self.zulip_button = self._create_input_icon(
+            _symbol_text("✉", "@"), "Draft and send to Zulip"
+        )
 
         tools_layout.addWidget(self.attach_file_button)
         tools_layout.addWidget(self.share_canvas_button)
@@ -1259,13 +1298,13 @@ class AIChatWidget(QtWidgets.QWidget):
 
         self.talk_button = QtWidgets.QToolButton(self)
         self.talk_button.setObjectName("talkButton")
-        self.talk_button.setText("🎤")
+        self.talk_button.setText(_symbol_text("🎤", "Mic"))
         self.talk_button.setToolTip("Record voice input")
         self.talk_button.setFixedSize(36, 36)
 
         self.send_button = QtWidgets.QToolButton(self)
         self.send_button.setObjectName("sendButton")
-        self.send_button.setText("🚀")
+        self.send_button.setText(_symbol_text("🚀", "Send"))
         self.send_button.setToolTip("Send message (Ctrl+Enter)")
         self.send_button.setFixedSize(36, 36)
 
