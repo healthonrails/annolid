@@ -566,19 +566,19 @@ class _ChatBubble(QtWidgets.QFrame):
         self.actions_layout.setSpacing(4)
 
         self.speak_button = self._create_action_button(
-            _symbol_text("🔊", "Speak"), "Read aloud"
+            _symbol_text("🔊", "S"), "Read aloud"
         )
         self.copy_button = self._create_action_button(
-            _symbol_text("📋", "Copy"), "Copy text"
+            _symbol_text("📋", "C"), "Copy text"
         )
         self.regenerate_button = self._create_action_button(
-            _symbol_text("🔄", "Redo"), "Regenerate"
+            _symbol_text("🔄", "R"), "Regenerate"
         )
         self.stop_button = self._create_action_button(
-            _symbol_text("⏹", "Stop"), "Stop running"
+            _symbol_text("⏹", "X"), "Stop running"
         )
         self.delete_button = self._create_action_button(
-            _symbol_text("🗑", "Del"), "Delete message"
+            _symbol_text("🗑", "D"), "Delete message"
         )
         self.regenerate_button.setVisible(
             (not self._is_user) and self._allow_regenerate
@@ -1263,16 +1263,16 @@ class AIChatWidget(QtWidgets.QWidget):
         tools_layout.setSpacing(2)
 
         self.attach_file_button = self._create_input_icon(
-            _symbol_text("📎", "File"), "Attach file"
+            _symbol_text("📎", "F"), "Attach file"
         )
         self.share_canvas_button = self._create_input_icon(
-            _symbol_text("🎨", "Canvas"), "Share Canvas"
+            _symbol_text("🎨", "C"), "Share Canvas"
         )
         self.share_window_button = self._create_input_icon(
-            _symbol_text("🪟", "Window"), "Share Window"
+            _symbol_text("🪟", "W"), "Share Window"
         )
         self.citation_button = self._create_input_icon(
-            _symbol_text("📚", "Refs"), "Manage citations"
+            _symbol_text("📚", "R"), "Manage citations"
         )
         self.zulip_button = self._create_input_icon(
             _symbol_text("✉", "@"), "Draft and send to Zulip"
@@ -1309,7 +1309,7 @@ class AIChatWidget(QtWidgets.QWidget):
 
         self.send_button = QtWidgets.QToolButton(self)
         self.send_button.setObjectName("sendButton")
-        self.send_button.setText(_symbol_text("🚀", "Send"))
+        self.send_button.setText(_symbol_text("🚀", ">"))
         self.send_button.setToolTip("Send message (Ctrl+Enter)")
         self.send_button.setFixedSize(36, 36)
 

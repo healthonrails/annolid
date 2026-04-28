@@ -11,9 +11,11 @@ from qtpy import QtCore, QtGui, QtWidgets
 from annolid.core.models.base import ModelResponse
 from annolid.core.agent.gui_backend.commands import parse_direct_gui_command
 from annolid.gui.widgets.ai_chat_backend import _append_selected_capabilities_prompt
+from annolid.gui.widgets import ai_chat_widget as ai_chat_widget_module
 from annolid.gui.widgets.ai_chat_widget import _compose_slash_selection_draft
 from annolid.gui.widgets.ai_chat_widget import _ChatBubble
 from annolid.gui.widgets.ai_chat_widget import _extract_slash_selection_state
+from annolid.gui.widgets.ai_chat_widget import _symbol_text
 from annolid.gui.widgets.ai_chat_widget import AIChatWidget
 from annolid.gui.widgets.track_slash_dialog import TrackSlashDialog
 from annolid.gui.widgets.track_slash_dialog import build_track_slash_command
@@ -98,6 +100,22 @@ def test_slash_selection_state_preserves_control_order() -> None:
         "/skill weather",
         "Run the report",
     ]
+
+
+def test_linux_symbol_fallbacks_fit_fixed_icon_buttons(monkeypatch) -> None:
+    monkeypatch.setattr(ai_chat_widget_module.sys, "platform", "linux")
+
+    labels = [
+        _symbol_text("📎", "F"),
+        _symbol_text("🎨", "C"),
+        _symbol_text("🪟", "W"),
+        _symbol_text("📚", "R"),
+        _symbol_text("✉", "@"),
+        _symbol_text("🚀", ">"),
+    ]
+
+    assert labels == ["F", "C", "W", "R", "@", ">"]
+    assert all(len(label) <= 3 for label in labels)
 
 
 def test_parse_direct_gui_command_routes_capabilities_command() -> None:
