@@ -46,6 +46,7 @@ from ultralytics.engine.results import Masks
 from ultralytics import YOLO
 
 from annolid.utils.logger import logger
+from annolid.utils.log_paths import resolve_annolid_realtime_logs_root
 from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
 from annolid.realtime.config import Config
 # Late import to avoid dependency issues
@@ -1135,6 +1136,175 @@ class PerformanceMetrics:
         return report
 
 
+class DetectionSegmentRecorder:
+    """Record MP4 clips around detection events for selected classes."""
+
+    _ANIMAL_CLASSES = {
+        "bird",
+        "cat",
+        "dog",
+        "horse",
+        "sheep",
+        "cow",
+        "elephant",
+        "bear",
+        "zebra",
+        "giraffe",
+    }
+
+    def __init__(self, config: Config):
+        self.enabled = bool(config.save_detection_segments)
+        self.targets = [
+            str(v).strip().lower() for v in config.detection_segment_targets
+        ]
+        self.prebuffer_sec = max(0.0, float(config.detection_segment_prebuffer_sec))
+        self.postbuffer_sec = max(0.0, float(config.detection_segment_postbuffer_sec))
+        self.min_duration_sec = max(
+            0.0, float(config.detection_segment_min_duration_sec)
+        )
+        self.max_duration_sec = max(
+            self.min_duration_sec + 1.0,
+            float(config.detection_segment_max_duration_sec),
+        )
+        self.codec = str(config.detection_segment_codec or "mp4v")
+
+        out_dir = str(config.detection_segment_output_dir or "").strip()
+        if out_dir:
+            self.output_dir = Path(out_dir).expanduser().resolve()
+        else:
+            self.output_dir = (
+                resolve_annolid_realtime_logs_root() / "detection_segments"
+            ).resolve()
+
+        self._fps_hint = max(1.0, float(config.max_fps or 30.0))
+        self._prebuffer: deque = deque()
+        self._writer = None
+        self._segment_path: Optional[Path] = None
+        self._recording = False
+        self._segment_start_ts = 0.0
+        self._last_trigger_ts = 0.0
+
+    def _matches_target(self, class_name: str) -> bool:
+        name = str(class_name or "").strip().lower()
+        if not name:
+            return False
+        if not self.targets or "*" in self.targets:
+            return True
+        if name in self.targets:
+            return True
+        if "person" in self.targets and name == "person":
+            return True
+        if "car" in self.targets and name in {"car", "truck", "bus", "motorcycle"}:
+            return True
+        if "animal" in self.targets and name in self._ANIMAL_CLASSES:
+            return True
+        return False
+
+    def _append_prebuffer(self, frame: np.ndarray, timestamp: float) -> None:
+        frame_copy = np.ascontiguousarray(frame.copy())
+        self._prebuffer.append((float(timestamp), frame_copy))
+        cutoff = float(timestamp) - self.prebuffer_sec
+        while self._prebuffer and self._prebuffer[0][0] < cutoff:
+            self._prebuffer.popleft()
+
+    def _build_segment_path(self, event_ts: float) -> Path:
+        stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(event_ts))
+        millis = int((event_ts - int(event_ts)) * 1000)
+        return self.output_dir / f"segment_{stamp}_{millis:03d}.mp4"
+
+    def _open_writer(self, frame: np.ndarray, event_ts: float) -> bool:
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            h, w = frame.shape[:2]
+            segment_path = self._build_segment_path(event_ts)
+            fourcc = cv2.VideoWriter_fourcc(*self.codec[:4])
+            writer = cv2.VideoWriter(
+                str(segment_path),
+                fourcc,
+                float(self._fps_hint),
+                (int(w), int(h)),
+            )
+            if writer is None or not writer.isOpened():
+                logger.error("Failed to open segment writer: %s", segment_path)
+                return False
+            self._writer = writer
+            self._segment_path = segment_path
+            self._recording = True
+            self._segment_start_ts = float(event_ts)
+            self._last_trigger_ts = float(event_ts)
+            for _ts, buffered in self._prebuffer:
+                writer.write(buffered)
+            logger.info("Started detection segment recording: %s", segment_path)
+            return True
+        except Exception as exc:
+            logger.error("Failed to start segment recording: %s", exc, exc_info=True)
+            return False
+
+    def _close_writer(self, now_ts: float) -> None:
+        writer = self._writer
+        path = self._segment_path
+        duration = max(0.0, float(now_ts) - self._segment_start_ts)
+        self._writer = None
+        self._segment_path = None
+        self._recording = False
+        self._segment_start_ts = 0.0
+        self._last_trigger_ts = 0.0
+
+        if writer is not None:
+            try:
+                writer.release()
+            except Exception:
+                pass
+        if path is None:
+            return
+
+        if duration < self.min_duration_sec:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            logger.info(
+                "Discarded short detection segment (< %.2fs): %s",
+                self.min_duration_sec,
+                path,
+            )
+            return
+
+        logger.info("Saved detection segment (%.2fs): %s", duration, path)
+
+    def update(
+        self, frame: np.ndarray, timestamp: float, detected_classes: List[str]
+    ) -> None:
+        if not self.enabled:
+            return
+        if frame is None or frame.size == 0:
+            return
+
+        event_detected = any(
+            self._matches_target(name) for name in (detected_classes or [])
+        )
+        self._append_prebuffer(frame, timestamp)
+
+        if not self._recording and event_detected:
+            self._open_writer(frame, timestamp)
+
+        if self._recording and self._writer is not None:
+            self._writer.write(frame)
+            if event_detected:
+                self._last_trigger_ts = float(timestamp)
+
+            silence_sec = float(timestamp) - self._last_trigger_ts
+            duration_sec = float(timestamp) - self._segment_start_ts
+            if (
+                silence_sec >= self.postbuffer_sec
+                or duration_sec >= self.max_duration_sec
+            ):
+                self._close_writer(timestamp)
+
+    def close(self) -> None:
+        self._close_writer(time.time())
+
+
 # --- Detection Publisher ---
 
 
@@ -1279,6 +1449,7 @@ class PerceptionProcess:
         # Initialize components with recording manager
         self.video_source = HybridVideoSource(config, self.recording_manager)
         self.metrics = PerformanceMetrics()
+        self.segment_recorder = DetectionSegmentRecorder(config)
         self.publisher = DetectionPublisher(config.publisher_address)
         self.running = True
         self._shutdown_event = asyncio.Event()
@@ -1471,9 +1642,13 @@ class PerceptionProcess:
                         inference_time = time.time() - loop_start
 
                         # Process results
-                        detection_count = await self._process_detections(
+                        (
+                            detection_count,
+                            matched_classes,
+                        ) = await self._process_detections(
                             results, loop_start, metadata
                         )
+                        self.segment_recorder.update(frame, loop_start, matched_classes)
 
                         # Update metrics
                         self.metrics.record_frame(inference_time, detection_count)
@@ -1636,7 +1811,7 @@ class PerceptionProcess:
 
     async def _process_detections(
         self, result, timestamp: float, metadata: Dict[str, Any]
-    ) -> int:
+    ) -> Tuple[int, List[str]]:
         """Process detection results and publish with mask support."""
         # Polymorphic handling of MediaPipe results
         from annolid.realtime.mediapipe_engine import MediaPipeResult
@@ -1645,7 +1820,7 @@ class PerceptionProcess:
             return await self._process_mediapipe_detections(result, timestamp, metadata)
 
         if not result.boxes or len(result.boxes) == 0:
-            return 0
+            return 0, []
 
         def _to_list(data):
             if data is None:
@@ -1660,6 +1835,7 @@ class PerceptionProcess:
             return list(processed)
 
         detection_count = 0
+        matched_classes: List[str] = []
         target_behaviors = self.config.target_behaviors or []
         match_all_targets = (not target_behaviors) or ("*" in target_behaviors)
         boxes = result.boxes
@@ -1735,16 +1911,18 @@ class PerceptionProcess:
 
                 await self.publisher.publish_detection(detection)
                 detection_count += 1
+                matched_classes.append(class_name)
 
             except Exception as e:
                 logger.error(f"Detection processing error: {e}", exc_info=True)
-        return detection_count
+        return detection_count, matched_classes
 
     async def _process_mediapipe_detections(
         self, result: Any, timestamp: float, metadata: Dict[str, Any]
-    ) -> int:
+    ) -> Tuple[int, List[str]]:
         """Process native MediaPipe detections."""
         detection_count = 0
+        matched_classes: List[str] = []
         h, w = result.orig_img.shape[:2]
 
         for i, obj_norm_lms in enumerate(result.norm_landmarks):
@@ -1785,9 +1963,10 @@ class PerceptionProcess:
                 )
                 await self.publisher.publish_detection(detection)
                 detection_count += 1
+                matched_classes.append(class_name)
             except Exception as e:
                 logger.error(f"MediaPipe detection error: {e}")
-        return detection_count
+        return detection_count, matched_classes
 
     def _visualize_results(
         self, result, frame: np.ndarray, show_window: bool = True
@@ -1943,6 +2122,7 @@ class PerceptionProcess:
         self._shutdown_event.set()
 
         try:
+            self.segment_recorder.close()
             await self.video_source.cleanup()
             await self.publisher.cleanup()
 
@@ -2017,6 +2197,48 @@ def create_config_from_args() -> Config:
         default=30.0,
         help="Timeout for recording state changes",
     )
+    parser.add_argument(
+        "--save-detection-segments",
+        action="store_true",
+        help="Save MP4 segments when target classes are detected.",
+    )
+    parser.add_argument(
+        "--detection-segment-targets",
+        type=str,
+        nargs="+",
+        default=["animal", "car", "person"],
+        help="Target labels for segment recording (supports animal/car/person aliases).",
+    )
+    parser.add_argument(
+        "--detection-segment-output-dir",
+        type=str,
+        default="",
+        help="Directory for saved detection segments.",
+    )
+    parser.add_argument(
+        "--detection-segment-prebuffer-sec",
+        type=float,
+        default=2.0,
+        help="Seconds of video to include before first detection.",
+    )
+    parser.add_argument(
+        "--detection-segment-postbuffer-sec",
+        type=float,
+        default=3.0,
+        help="Seconds of video to keep after last detection.",
+    )
+    parser.add_argument(
+        "--detection-segment-min-duration-sec",
+        type=float,
+        default=1.0,
+        help="Minimum clip duration to keep on disk.",
+    )
+    parser.add_argument(
+        "--detection-segment-max-duration-sec",
+        type=float,
+        default=120.0,
+        help="Maximum clip duration before forced rollover.",
+    )
 
     args = parser.parse_args()
 
@@ -2044,6 +2266,21 @@ def create_config_from_args() -> Config:
         recording_state_timeout=args.recording_timeout,
         enable_segmentation=not is_pose_model,
         enable_pose=is_pose_model,
+        save_detection_segments=bool(args.save_detection_segments),
+        detection_segment_targets=list(args.detection_segment_targets or []),
+        detection_segment_output_dir=str(args.detection_segment_output_dir or ""),
+        detection_segment_prebuffer_sec=max(
+            0.0, float(args.detection_segment_prebuffer_sec)
+        ),
+        detection_segment_postbuffer_sec=max(
+            0.0, float(args.detection_segment_postbuffer_sec)
+        ),
+        detection_segment_min_duration_sec=max(
+            0.0, float(args.detection_segment_min_duration_sec)
+        ),
+        detection_segment_max_duration_sec=max(
+            1.0, float(args.detection_segment_max_duration_sec)
+        ),
     )
 
 

@@ -6913,6 +6913,55 @@ class AIChatWidget(QtWidgets.QWidget):
             safe_bot_email_to = str(start_options.get("bot_email_to", "") or "").strip()
             if len(safe_bot_email_to) > 256:
                 safe_bot_email_to = safe_bot_email_to[:256]
+            safe_save_detection_segments = _as_bool(
+                start_options.get("save_detection_segments", False), False
+            )
+            safe_detection_segment_targets_csv = str(
+                start_options.get("detection_segment_targets_csv", "animal,car,person")
+                or "animal,car,person"
+            ).strip()
+            if len(safe_detection_segment_targets_csv) > 512:
+                safe_detection_segment_targets_csv = safe_detection_segment_targets_csv[
+                    :512
+                ]
+            safe_detection_segment_output_dir = str(
+                start_options.get("detection_segment_output_dir", "") or ""
+            ).strip()
+            if len(safe_detection_segment_output_dir) > 2048:
+                safe_detection_segment_output_dir = safe_detection_segment_output_dir[
+                    :2048
+                ]
+            safe_detection_segment_prebuffer_sec = _as_float(
+                start_options.get("detection_segment_prebuffer_sec", 2.0),
+                2.0,
+                0.0,
+                30.0,
+            )
+            safe_detection_segment_postbuffer_sec = _as_float(
+                start_options.get("detection_segment_postbuffer_sec", 3.0),
+                3.0,
+                0.0,
+                30.0,
+            )
+            safe_detection_segment_min_duration_sec = _as_float(
+                start_options.get("detection_segment_min_duration_sec", 1.0),
+                1.0,
+                0.0,
+                120.0,
+            )
+            safe_detection_segment_max_duration_sec = _as_float(
+                start_options.get("detection_segment_max_duration_sec", 120.0),
+                120.0,
+                1.0,
+                3600.0,
+            )
+            if (
+                safe_detection_segment_max_duration_sec
+                <= safe_detection_segment_min_duration_sec
+            ):
+                safe_detection_segment_max_duration_sec = min(
+                    3600.0, safe_detection_segment_min_duration_sec + 1.0
+                )
 
             realtime_config, extras = build_realtime_launch_payload(
                 camera_source=resolved_camera_source,
@@ -6931,6 +6980,13 @@ class AIChatWidget(QtWidgets.QWidget):
                 bot_watch_labels=safe_bot_watch_labels_csv,
                 bot_email_report=safe_bot_email_report,
                 bot_email_to=safe_bot_email_to,
+                save_detection_segments=safe_save_detection_segments,
+                detection_segment_targets_csv=safe_detection_segment_targets_csv,
+                detection_segment_output_dir=safe_detection_segment_output_dir,
+                detection_segment_prebuffer_sec=safe_detection_segment_prebuffer_sec,
+                detection_segment_postbuffer_sec=safe_detection_segment_postbuffer_sec,
+                detection_segment_min_duration_sec=safe_detection_segment_min_duration_sec,
+                detection_segment_max_duration_sec=safe_detection_segment_max_duration_sec,
                 suppress_control_dock=True,
             )
             model_weight = resolve_realtime_model_weight(model_name)
@@ -6961,6 +7017,15 @@ class AIChatWidget(QtWidgets.QWidget):
                     "bot_watch_labels": list(extras.get("bot_watch_labels", [])),
                     "bot_email_report": bool(extras.get("bot_email_report", False)),
                     "bot_email_to": str(extras.get("bot_email_to", "")),
+                    "save_detection_segments": bool(
+                        extras.get("save_detection_segments", False)
+                    ),
+                    "detection_segment_targets": list(
+                        realtime_config.detection_segment_targets or []
+                    ),
+                    "detection_segment_output_dir": str(
+                        realtime_config.detection_segment_output_dir or ""
+                    ),
                 },
             )
             self.status_label.setText(

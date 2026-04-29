@@ -1302,6 +1302,21 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                 ("blink" in lower or "eye blink" in lower)
                 and model_name == "mediapipe_face"
             )
+            save_detection_segments = bool(
+                re.search(
+                    r"\b(?:save|record|capture|write)\b.*\b(?:segment|segments|clip|clips|mp4)\b",
+                    lower,
+                )
+            )
+            detection_segment_targets = []
+            if re.search(r"\banimal|animals\b", lower):
+                detection_segment_targets.append("animal")
+            if re.search(r"\bcar|cars|vehicle|vehicles\b", lower):
+                detection_segment_targets.append("car")
+            if re.search(r"\bperson|people|human|humans|pedestrian\b", lower):
+                detection_segment_targets.append("person")
+            if save_detection_segments and not detection_segment_targets:
+                detection_segment_targets = ["animal", "car", "person"]
             return {
                 "name": "start_realtime_stream",
                 "args": {
@@ -1310,6 +1325,8 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
                     "viewer_type": viewer_type,
                     "rtsp_transport": rtsp_transport,
                     "classify_eye_blinks": classify_eye_blinks,
+                    "save_detection_segments": save_detection_segments,
+                    "detection_segment_targets": detection_segment_targets,
                 },
             }
 

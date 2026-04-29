@@ -47,6 +47,22 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         main_layout = QtWidgets.QVBoxLayout(self)
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(6)
+        scroll_area = QtWidgets.QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll_content = QtWidgets.QWidget()
+        scroll_layout = QtWidgets.QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(6)
+        tabs = QtWidgets.QTabWidget()
+        setup_tab = QtWidgets.QWidget()
+        setup_layout = QtWidgets.QVBoxLayout(setup_tab)
+        setup_layout.setContentsMargins(0, 0, 0, 0)
+        setup_layout.setSpacing(6)
+        run_tab = QtWidgets.QWidget()
+        run_layout = QtWidgets.QVBoxLayout(run_tab)
+        run_layout.setContentsMargins(0, 0, 0, 0)
+        run_layout.setSpacing(6)
 
         # --- Model Selection -------------------------------------------------
         model_group = QtWidgets.QGroupBox(self.tr("Model"))
@@ -79,7 +95,10 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         model_layout.addWidget(QtWidgets.QLabel(self.tr("Model Path")), 1, 0)
         model_layout.addWidget(self.model_path_edit, 1, 1)
         model_layout.addWidget(browse_model_btn, 1, 2)
-        main_layout.addWidget(model_group)
+        model_group.setCheckable(True)
+        model_group.setChecked(True)
+        self._attach_collapsible_group(model_group)
+        setup_layout.addWidget(model_group)
 
         # --- Source Configuration -------------------------------------------
         source_group = QtWidgets.QGroupBox(self.tr("Source & Publisher"))
@@ -87,7 +106,9 @@ class RealtimeControlWidget(QtWidgets.QWidget):
 
         self.camera_edit = QtWidgets.QLineEdit()
         self.camera_edit.setPlaceholderText(
-            self.tr("e.g. 0, rtsp://host/stream, rtp://@host:port, filename")
+            self.tr(
+                "e.g. 0, rtsp://camera-host/stream, http://camera-host/img/video.mjpeg, filename"
+            )
         )
         browse_camera_btn = QtWidgets.QPushButton(self.tr("Browse…"))
         browse_camera_btn.clicked.connect(self._browse_camera_source)
@@ -124,7 +145,19 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         source_form.addRow(self.tr("Publisher Bind"), self.publisher_edit)
         source_form.addRow(self.tr("Subscriber Address"), self.subscriber_edit)
         source_form.addRow(self.tr("Target Behaviours"), self.targets_edit)
-        main_layout.addWidget(source_group)
+        source_tip = QtWidgets.QLabel(
+            self.tr(
+                "Tip: wireless camera MJPEG URLs are supported directly, for example "
+                "http://camera-host/img/video.mjpeg"
+            )
+        )
+        source_tip.setWordWrap(True)
+        source_tip.setStyleSheet("color: #57606a;")
+        source_group.setCheckable(True)
+        source_group.setChecked(True)
+        self._attach_collapsible_group(source_group)
+        setup_layout.addWidget(source_group)
+        setup_layout.addWidget(source_tip)
 
         # --- Performance / Thresholds ---------------------------------------
         perf_group = QtWidgets.QGroupBox(self.tr("Performance & Thresholds"))
@@ -148,7 +181,10 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         perf_form.addRow(self.tr("Frame Height"), self.height_spin)
         perf_form.addRow(self.tr("Max FPS"), self.max_fps_spin)
         perf_form.addRow(self.tr("Confidence"), self.confidence_spin)
-        main_layout.addWidget(perf_group)
+        perf_group.setCheckable(True)
+        perf_group.setChecked(True)
+        self._attach_collapsible_group(perf_group)
+        run_layout.addWidget(perf_group)
 
         # --- Output options --------------------------------------------------
         output_group = QtWidgets.QGroupBox(self.tr("Output Options"))
@@ -208,6 +244,36 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.bot_email_min_interval_spin.setSuffix(" s")
         self.bot_report_check.toggled.connect(self._on_bot_report_toggled)
         self.bot_email_report_check.toggled.connect(self._on_bot_report_toggled)
+        self.save_detection_segments_check = QtWidgets.QCheckBox(
+            self.tr("Save MP4 segments on detections")
+        )
+        self.detection_segment_targets_edit = QtWidgets.QLineEdit()
+        self.detection_segment_targets_edit.setPlaceholderText(
+            self.tr("animal,car,person")
+        )
+        self.detection_segment_output_dir_edit = QtWidgets.QLineEdit()
+        self.detection_segment_output_dir_edit.setPlaceholderText(
+            self.tr("Segment output directory")
+        )
+        self.detection_segment_prebuffer_spin = QtWidgets.QDoubleSpinBox()
+        self.detection_segment_prebuffer_spin.setRange(0.0, 30.0)
+        self.detection_segment_prebuffer_spin.setDecimals(1)
+        self.detection_segment_prebuffer_spin.setSingleStep(0.5)
+        self.detection_segment_postbuffer_spin = QtWidgets.QDoubleSpinBox()
+        self.detection_segment_postbuffer_spin.setRange(0.0, 30.0)
+        self.detection_segment_postbuffer_spin.setDecimals(1)
+        self.detection_segment_postbuffer_spin.setSingleStep(0.5)
+        self.detection_segment_min_duration_spin = QtWidgets.QDoubleSpinBox()
+        self.detection_segment_min_duration_spin.setRange(0.0, 120.0)
+        self.detection_segment_min_duration_spin.setDecimals(1)
+        self.detection_segment_min_duration_spin.setSingleStep(0.5)
+        self.detection_segment_max_duration_spin = QtWidgets.QDoubleSpinBox()
+        self.detection_segment_max_duration_spin.setRange(1.0, 3600.0)
+        self.detection_segment_max_duration_spin.setDecimals(1)
+        self.detection_segment_max_duration_spin.setSingleStep(1.0)
+        self.save_detection_segments_check.toggled.connect(
+            self._on_detection_segment_toggled
+        )
 
         output_layout.addWidget(self.publish_frames_check, 0, 0, 1, 3)
         output_layout.addWidget(self.publish_annotated_check, 1, 0, 1, 3)
@@ -241,7 +307,34 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         output_layout.addWidget(self.bot_email_to_edit, 13, 1, 1, 2)
         output_layout.addWidget(QtWidgets.QLabel(self.tr("Email Min Interval")), 14, 0)
         output_layout.addWidget(self.bot_email_min_interval_spin, 14, 1, 1, 2)
-        main_layout.addWidget(output_group)
+        output_layout.addWidget(self.save_detection_segments_check, 15, 0, 1, 3)
+        output_layout.addWidget(
+            QtWidgets.QLabel(self.tr("Segment Targets")), 16, 0, 1, 1
+        )
+        output_layout.addWidget(self.detection_segment_targets_edit, 16, 1, 1, 2)
+        output_layout.addWidget(
+            QtWidgets.QLabel(self.tr("Segment Output")), 17, 0, 1, 1
+        )
+        output_layout.addWidget(self.detection_segment_output_dir_edit, 17, 1, 1, 2)
+        output_layout.addWidget(QtWidgets.QLabel(self.tr("Prebuffer")), 18, 0, 1, 1)
+        output_layout.addWidget(self.detection_segment_prebuffer_spin, 18, 1, 1, 2)
+        output_layout.addWidget(QtWidgets.QLabel(self.tr("Postbuffer")), 19, 0, 1, 1)
+        output_layout.addWidget(self.detection_segment_postbuffer_spin, 19, 1, 1, 2)
+        output_layout.addWidget(QtWidgets.QLabel(self.tr("Min Duration")), 20, 0, 1, 1)
+        output_layout.addWidget(self.detection_segment_min_duration_spin, 20, 1, 1, 2)
+        output_layout.addWidget(QtWidgets.QLabel(self.tr("Max Duration")), 21, 0, 1, 1)
+        output_layout.addWidget(self.detection_segment_max_duration_spin, 21, 1, 1, 2)
+        output_group.setCheckable(True)
+        output_group.setChecked(True)
+        self._attach_collapsible_group(output_group)
+        run_layout.addWidget(output_group)
+        setup_layout.addStretch()
+        run_layout.addStretch()
+        tabs.addTab(setup_tab, self.tr("Setup"))
+        tabs.addTab(run_tab, self.tr("Run & Output"))
+        scroll_layout.addWidget(tabs)
+        scroll_area.setWidget(scroll_content)
+        main_layout.addWidget(scroll_area, 1)
 
         # --- Buttons / Status ------------------------------------------------
         button_layout = QtWidgets.QHBoxLayout()
@@ -260,7 +353,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.status_label = QtWidgets.QLabel(self.tr("Idle"))
         self.status_label.setWordWrap(True)
         main_layout.addWidget(self.status_label)
-        main_layout.addStretch()
+        main_layout.addStretch(0)
 
     # ------------------------------------------------------------------
     # Defaults & helpers
@@ -366,11 +459,43 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.blink_min_frames_spin.setValue(
             int(defaults.get("blink_min_consecutive_frames", 2))
         )
+        self.save_detection_segments_check.setChecked(
+            bool(defaults.get("save_detection_segments", False))
+        )
+        segment_targets = defaults.get(
+            "detection_segment_targets_csv",
+            defaults.get("detection_segment_targets", "animal,car,person"),
+        )
+        if isinstance(segment_targets, list):
+            segment_targets = ",".join(
+                str(v) for v in segment_targets if str(v).strip()
+            )
+        self.detection_segment_targets_edit.setText(
+            str(segment_targets or "animal,car,person")
+        )
+        self.detection_segment_output_dir_edit.setText(
+            str(defaults.get("detection_segment_output_dir", "") or "")
+        )
+        self.detection_segment_prebuffer_spin.setValue(
+            float(defaults.get("detection_segment_prebuffer_sec", 2.0))
+        )
+        self.detection_segment_postbuffer_spin.setValue(
+            float(defaults.get("detection_segment_postbuffer_sec", 3.0))
+        )
+        self.detection_segment_min_duration_spin.setValue(
+            float(defaults.get("detection_segment_min_duration_sec", 1.0))
+        )
+        self.detection_segment_max_duration_spin.setValue(
+            float(defaults.get("detection_segment_max_duration_sec", 120.0))
+        )
         log_path = defaults.get("log_path") or defaults.get("ndjson_path") or ""
         if log_path:
             self.log_path_edit.setText(str(log_path))
         self._on_publish_frames_toggled(self.publish_frames_check.isChecked())
         self._on_bot_report_toggled(self.bot_report_check.isChecked())
+        self._on_detection_segment_toggled(
+            self.save_detection_segments_check.isChecked()
+        )
         self._update_blink_controls()
 
     # UI slots
@@ -448,6 +573,43 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         email_enabled = enabled and self.bot_email_report_check.isChecked()
         self.bot_email_to_edit.setEnabled(email_enabled)
         self.bot_email_min_interval_spin.setEnabled(email_enabled)
+
+    def _on_detection_segment_toggled(self, checked: bool):
+        enabled = self.save_detection_segments_check.isChecked()
+        self.detection_segment_targets_edit.setEnabled(enabled)
+        self.detection_segment_output_dir_edit.setEnabled(enabled)
+        self.detection_segment_prebuffer_spin.setEnabled(enabled)
+        self.detection_segment_postbuffer_spin.setEnabled(enabled)
+        self.detection_segment_min_duration_spin.setEnabled(enabled)
+        self.detection_segment_max_duration_spin.setEnabled(enabled)
+
+    def _attach_collapsible_group(self, group: QtWidgets.QGroupBox) -> None:
+        def _on_toggled(checked: bool) -> None:
+            layout = group.layout()
+            if layout is None:
+                return
+            self._set_layout_widgets_visible(layout, checked)
+            if checked:
+                group.setMaximumHeight(16777215)
+            else:
+                title_height = max(group.fontMetrics().height() + 14, 24)
+                group.setMaximumHeight(title_height)
+            group.updateGeometry()
+
+        group.toggled.connect(_on_toggled)
+        _on_toggled(group.isChecked())
+
+    def _set_layout_widgets_visible(
+        self, layout: QtWidgets.QLayout, visible: bool
+    ) -> None:
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget is not None:
+                widget.setVisible(visible)
+            elif child_layout is not None:
+                self._set_layout_widgets_visible(child_layout, visible)
 
     # ------------------------------------------------------------------
     # State exposed to parent
@@ -527,4 +689,19 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             bot_email_report=self.bot_email_report_check.isChecked(),
             bot_email_to=self.bot_email_to_edit.text().strip(),
             bot_email_min_interval_sec=float(self.bot_email_min_interval_spin.value()),
+            save_detection_segments=self.save_detection_segments_check.isChecked(),
+            detection_segment_targets_csv=self.detection_segment_targets_edit.text().strip(),
+            detection_segment_output_dir=self.detection_segment_output_dir_edit.text().strip(),
+            detection_segment_prebuffer_sec=float(
+                self.detection_segment_prebuffer_spin.value()
+            ),
+            detection_segment_postbuffer_sec=float(
+                self.detection_segment_postbuffer_spin.value()
+            ),
+            detection_segment_min_duration_sec=float(
+                self.detection_segment_min_duration_spin.value()
+            ),
+            detection_segment_max_duration_sec=float(
+                self.detection_segment_max_duration_spin.value()
+            ),
         )

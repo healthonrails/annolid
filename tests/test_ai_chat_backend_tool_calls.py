@@ -3514,6 +3514,17 @@ def test_parse_direct_gui_command_variants() -> None:
         parsed_check_rtsp_yolo["args"]["camera_source"] == "rtsp://10.0.0.2:554/stream1"
     )
 
+    parsed_segment_stream = task._parse_direct_gui_command(
+        "start realtime stream and save mp4 segments for animal, car, and person"
+    )
+    assert parsed_segment_stream["name"] == "start_realtime_stream"
+    assert parsed_segment_stream["args"]["save_detection_segments"] is True
+    assert parsed_segment_stream["args"]["detection_segment_targets"] == [
+        "animal",
+        "car",
+        "person",
+    ]
+
     parsed_check_camera_health = task._parse_direct_gui_command(
         "check camera 0 stream health"
     )

@@ -36,3 +36,13 @@ class Config:
     mask_confidence_threshold: float = 0.5
     mask_encoding: str = "rle"
     enable_pose: bool = False
+    save_detection_segments: bool = False
+    detection_segment_targets: List[str] = field(
+        default_factory=lambda: ["animal", "car", "person"]
+    )
+    detection_segment_output_dir: str = ""
+    detection_segment_prebuffer_sec: float = 2.0
+    detection_segment_postbuffer_sec: float = 3.0
+    detection_segment_min_duration_sec: float = 1.0
+    detection_segment_max_duration_sec: float = 120.0
+    detection_segment_codec: str = "mp4v"

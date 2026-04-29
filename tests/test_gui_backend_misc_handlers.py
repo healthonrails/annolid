@@ -64,6 +64,37 @@ def test_start_realtime_stream_tool_normalizes_rtsp_transport() -> None:
     assert captured["args"][5] == "tcp"
 
 
+def test_start_realtime_stream_tool_includes_segment_options() -> None:
+    captured: dict[str, object] = {}
+
+    payload = start_realtime_stream_tool(
+        camera_source="rtsp://10.0.0.2:554/stream1",
+        model_name="model",
+        target_behaviors=[],
+        confidence_threshold=0.4,
+        viewer_type="threejs",
+        rtsp_transport="auto",
+        classify_eye_blinks=False,
+        blink_ear_threshold=None,
+        blink_min_consecutive_frames=None,
+        save_detection_segments=True,
+        detection_segment_targets=["animal", "person"],
+        detection_segment_output_dir="/tmp/segments",
+        detection_segment_prebuffer_sec=1.0,
+        detection_segment_postbuffer_sec=2.0,
+        detection_segment_min_duration_sec=1.5,
+        detection_segment_max_duration_sec=20.0,
+        invoke_start=lambda *args: bool(captured.setdefault("args", args) or True),
+        get_action_result=lambda _name: {},
+    )
+    assert payload["ok"] is True
+    assert payload["save_detection_segments"] is True
+    assert payload["detection_segment_targets"] == ["animal", "person"]
+    assert payload["detection_segment_output_dir"] == "/tmp/segments"
+    assert isinstance(captured.get("args"), tuple)
+    assert len(captured["args"]) == 10
+
+
 def test_realtime_status_and_inventory_tools_proxy_widget_payloads() -> None:
     status = get_realtime_status_tool(
         invoke_widget_json_slot=lambda *_a, **_k: {

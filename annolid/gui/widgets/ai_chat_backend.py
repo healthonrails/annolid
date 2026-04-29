@@ -4110,6 +4110,13 @@ class StreamingChatTask(QRunnable):
         bot_watch_labels: Any = None,
         bot_email_report: bool = False,
         bot_email_to: str = "",
+        save_detection_segments: bool = False,
+        detection_segment_targets: Any = None,
+        detection_segment_output_dir: str = "",
+        detection_segment_prebuffer_sec: Optional[float] = None,
+        detection_segment_postbuffer_sec: Optional[float] = None,
+        detection_segment_min_duration_sec: Optional[float] = None,
+        detection_segment_max_duration_sec: Optional[float] = None,
     ) -> Dict[str, Any]:
         explicit_camera_source = str(camera_source or "").strip()
         prompt_text = str(self.prompt or "")
@@ -4146,6 +4153,13 @@ class StreamingChatTask(QRunnable):
             bot_watch_labels=bot_watch_labels,
             bot_email_report=bot_email_report,
             bot_email_to=bot_email_to,
+            save_detection_segments=save_detection_segments,
+            detection_segment_targets=detection_segment_targets,
+            detection_segment_output_dir=detection_segment_output_dir,
+            detection_segment_prebuffer_sec=detection_segment_prebuffer_sec,
+            detection_segment_postbuffer_sec=detection_segment_postbuffer_sec,
+            detection_segment_min_duration_sec=detection_segment_min_duration_sec,
+            detection_segment_max_duration_sec=detection_segment_max_duration_sec,
             invoke_start=lambda camera_text,
             model_text,
             targets,

@@ -166,6 +166,13 @@ def build_realtime_launch_payload(
     bot_email_report: bool = False,
     bot_email_to: str = "",
     bot_email_min_interval_sec: float = 60.0,
+    save_detection_segments: bool = False,
+    detection_segment_targets_csv: str = "",
+    detection_segment_output_dir: str = "",
+    detection_segment_prebuffer_sec: float = 2.0,
+    detection_segment_postbuffer_sec: float = 3.0,
+    detection_segment_min_duration_sec: float = 1.0,
+    detection_segment_max_duration_sec: float = 120.0,
 ) -> Tuple[RealtimeConfig, dict]:
     model_weight = resolve_realtime_model_weight(model_name)
     camera_value = parse_camera_source(camera_source)
@@ -179,6 +186,10 @@ def build_realtime_launch_payload(
         conf = 0.25
     else:
         conf = _clamp(float(confidence_threshold), 0.0, 1.0)
+    seg_prebuffer = max(0.0, float(detection_segment_prebuffer_sec))
+    seg_postbuffer = max(0.0, float(detection_segment_postbuffer_sec))
+    seg_min = max(0.0, float(detection_segment_min_duration_sec))
+    seg_max = max(seg_min + 1.0, float(detection_segment_max_duration_sec))
     config = RealtimeConfig(
         camera_index=camera_value,
         server_address=str(server_address or "localhost"),
@@ -197,6 +208,18 @@ def build_realtime_launch_payload(
         publish_annotated_frames=bool(publish_annotated_frames),
         frame_encoding="jpg",
         frame_quality=80,
+        save_detection_segments=bool(save_detection_segments),
+        detection_segment_targets=parse_target_behaviors(
+            behavior_csv=detection_segment_targets_csv,
+            behavior_list=None,
+            include_eye_blink=False,
+        )
+        or ["animal", "car", "person"],
+        detection_segment_output_dir=str(detection_segment_output_dir or "").strip(),
+        detection_segment_prebuffer_sec=seg_prebuffer,
+        detection_segment_postbuffer_sec=seg_postbuffer,
+        detection_segment_min_duration_sec=seg_min,
+        detection_segment_max_duration_sec=seg_max,
     )
     viewer = str(viewer_type or "threejs").strip().lower()
     if viewer not in {"pyqt", "threejs"}:
@@ -239,6 +262,9 @@ def build_realtime_launch_payload(
         "bot_email_report": bool(bot_email_report),
         "bot_email_to": str(bot_email_to or "").strip(),
         "bot_email_min_interval_sec": bot_email_min_interval,
+        "save_detection_segments": bool(save_detection_segments),
+        "detection_segment_targets": list(config.detection_segment_targets or []),
+        "detection_segment_output_dir": str(config.detection_segment_output_dir or ""),
     }
     if blink_ear_threshold is not None:
         try:

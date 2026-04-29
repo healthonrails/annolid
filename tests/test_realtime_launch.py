@@ -41,6 +41,12 @@ def test_parse_camera_source_normalizes_main_cgi_control_page_to_mjpeg() -> None
     assert parsed == "http://camera.local/img/video.mjpeg"
 
 
+def test_parse_camera_source_keeps_direct_mjpeg_url() -> None:
+    source = "http://camera-host/img/video.mjpeg"
+    parsed = parse_camera_source(source)
+    assert parsed == source
+
+
 def test_parse_label_csv_deduplicates_case_insensitively() -> None:
     assert parse_label_csv("person, animal, Person,  animal  ") == ["person", "animal"]
 
@@ -62,3 +68,24 @@ def test_build_realtime_launch_payload_includes_bot_report_extras() -> None:
     assert extras["bot_email_report"] is True
     assert extras["bot_email_to"] == "lab@example.com"
     assert extras["bot_email_min_interval_sec"] == 45.0
+
+
+def test_build_realtime_launch_payload_includes_detection_segment_config() -> None:
+    cfg, _extras = build_realtime_launch_payload(
+        camera_source=0,
+        model_name="yolo11n",
+        save_detection_segments=True,
+        detection_segment_targets_csv="animal,car,person",
+        detection_segment_output_dir="/tmp/annolid-segments",
+        detection_segment_prebuffer_sec=1.5,
+        detection_segment_postbuffer_sec=2.5,
+        detection_segment_min_duration_sec=0.5,
+        detection_segment_max_duration_sec=30.0,
+    )
+    assert cfg.save_detection_segments is True
+    assert cfg.detection_segment_targets == ["animal", "car", "person"]
+    assert cfg.detection_segment_output_dir == "/tmp/annolid-segments"
+    assert cfg.detection_segment_prebuffer_sec == 1.5
+    assert cfg.detection_segment_postbuffer_sec == 2.5
+    assert cfg.detection_segment_min_duration_sec == 0.5
+    assert cfg.detection_segment_max_duration_sec == 30.0

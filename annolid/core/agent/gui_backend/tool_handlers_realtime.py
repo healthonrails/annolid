@@ -98,6 +98,13 @@ def start_realtime_stream_tool(
     bot_watch_labels: Any = None,
     bot_email_report: bool = False,
     bot_email_to: str = "",
+    save_detection_segments: bool = False,
+    detection_segment_targets: Any = None,
+    detection_segment_output_dir: str = "",
+    detection_segment_prebuffer_sec: float | None = None,
+    detection_segment_postbuffer_sec: float | None = None,
+    detection_segment_min_duration_sec: float | None = None,
+    detection_segment_max_duration_sec: float | None = None,
     invoke_start: Callable[
         [str, str, str, float, str, str, bool, float, int, str],
         bool,
@@ -164,6 +171,47 @@ def start_realtime_stream_tool(
         watch_labels = [p.strip() for p in bot_watch_labels.split(",") if p.strip()]
     watch_labels_csv = ",".join(watch_labels)
     email_to = str(bot_email_to or "").strip()
+    segment_targets: list[str] = []
+    if isinstance(detection_segment_targets, list):
+        segment_targets = [
+            str(v).strip() for v in detection_segment_targets if str(v).strip()
+        ]
+    elif isinstance(detection_segment_targets, str):
+        segment_targets = [
+            p.strip() for p in detection_segment_targets.split(",") if p.strip()
+        ]
+    if not segment_targets:
+        segment_targets = ["animal", "car", "person"]
+    segment_targets_csv = ",".join(segment_targets)
+
+    def _clamp_optional(
+        value: float | None, *, default: float, low: float, high: float
+    ) -> float:
+        if value is None:
+            return default
+        try:
+            numeric = float(value)
+        except Exception:
+            return default
+        return max(low, min(high, numeric))
+
+    seg_prebuffer = _clamp_optional(
+        detection_segment_prebuffer_sec, default=2.0, low=0.0, high=30.0
+    )
+    seg_postbuffer = _clamp_optional(
+        detection_segment_postbuffer_sec, default=3.0, low=0.0, high=30.0
+    )
+    seg_min_duration = _clamp_optional(
+        detection_segment_min_duration_sec, default=1.0, low=0.0, high=120.0
+    )
+    seg_max_duration = _clamp_optional(
+        detection_segment_max_duration_sec, default=120.0, low=1.0, high=3600.0
+    )
+    if seg_max_duration <= seg_min_duration:
+        seg_max_duration = min(3600.0, seg_min_duration + 1.0)
+    seg_output_dir = str(detection_segment_output_dir or "").strip()
+    if len(seg_output_dir) > 2048:
+        seg_output_dir = seg_output_dir[:2048]
 
     start_options_json = json.dumps(
         {
@@ -172,6 +220,13 @@ def start_realtime_stream_tool(
             "bot_watch_labels_csv": watch_labels_csv,
             "bot_email_report": bool(bot_email_report),
             "bot_email_to": email_to,
+            "save_detection_segments": bool(save_detection_segments),
+            "detection_segment_targets_csv": segment_targets_csv,
+            "detection_segment_output_dir": seg_output_dir,
+            "detection_segment_prebuffer_sec": seg_prebuffer,
+            "detection_segment_postbuffer_sec": seg_postbuffer,
+            "detection_segment_min_duration_sec": seg_min_duration,
+            "detection_segment_max_duration_sec": seg_max_duration,
         },
         separators=(",", ":"),
     )
@@ -222,6 +277,15 @@ def start_realtime_stream_tool(
                 widget_result.get("bot_email_report", bot_email_report)
             ),
             "bot_email_to": str(widget_result.get("bot_email_to", email_to)),
+            "save_detection_segments": bool(
+                widget_result.get("save_detection_segments", save_detection_segments)
+            ),
+            "detection_segment_targets": widget_result.get(
+                "detection_segment_targets", segment_targets
+            ),
+            "detection_segment_output_dir": str(
+                widget_result.get("detection_segment_output_dir", seg_output_dir)
+            ),
         }
 
     return {
@@ -237,6 +301,9 @@ def start_realtime_stream_tool(
         "bot_watch_labels": watch_labels,
         "bot_email_report": bool(bot_email_report),
         "bot_email_to": email_to,
+        "save_detection_segments": bool(save_detection_segments),
+        "detection_segment_targets": segment_targets,
+        "detection_segment_output_dir": seg_output_dir,
     }
 
 
