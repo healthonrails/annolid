@@ -68,4 +68,5 @@ def test_detection_segment_recorder_writes_segment_on_event(
 
     saved = list(tmp_path.glob("segment_*.mp4"))
     assert len(saved) == 1
+    assert "person" in saved[0].stem
     assert saved[0].read_bytes().startswith(b"frames=")

@@ -1,4 +1,5 @@
 import argparse
+import re
 import json
 import sys
 import signal
@@ -1180,6 +1181,7 @@ class DetectionSegmentRecorder:
         self._prebuffer: deque = deque()
         self._writer = None
         self._segment_path: Optional[Path] = None
+        self._segment_labels: set[str] = set()
         self._recording = False
         self._segment_start_ts = 0.0
         self._last_trigger_ts = 0.0
@@ -1212,11 +1214,43 @@ class DetectionSegmentRecorder:
         millis = int((event_ts - int(event_ts)) * 1000)
         return self.output_dir / f"segment_{stamp}_{millis:03d}.mp4"
 
-    def _open_writer(self, frame: np.ndarray, event_ts: float) -> bool:
+    @staticmethod
+    def _sanitize_label(class_name: str) -> str:
+        name = str(class_name or "").strip().lower()
+        if not name:
+            return ""
+        normalized = re.sub(r"[^a-z0-9]+", "_", name)
+        return normalized.strip("_")
+
+    def _collect_matched_labels(self, detected_classes: List[str]) -> set[str]:
+        labels: set[str] = set()
+        for class_name in detected_classes or []:
+            if not self._matches_target(class_name):
+                continue
+            slug = self._sanitize_label(class_name)
+            if slug:
+                labels.add(slug)
+        return labels
+
+    def _segment_path_with_labels(self, path: Path, labels: set[str]) -> Path:
+        if not labels:
+            return path
+        joined = "_".join(sorted(labels))
+        stem = path.stem
+        if stem.endswith(f"_{joined}") or stem == joined:
+            return path
+        return path.with_name(f"{stem}_{joined}{path.suffix}")
+
+    def _open_writer(
+        self, frame: np.ndarray, event_ts: float, labels: Optional[set[str]] = None
+    ) -> bool:
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             h, w = frame.shape[:2]
-            segment_path = self._build_segment_path(event_ts)
+            self._segment_labels = set(labels or set())
+            segment_path = self._segment_path_with_labels(
+                self._build_segment_path(event_ts), self._segment_labels
+            )
             fourcc = cv2.VideoWriter_fourcc(*self.codec[:4])
             writer = cv2.VideoWriter(
                 str(segment_path),
@@ -1244,8 +1278,10 @@ class DetectionSegmentRecorder:
         writer = self._writer
         path = self._segment_path
         duration = max(0.0, float(now_ts) - self._segment_start_ts)
+        labels = set(self._segment_labels)
         self._writer = None
         self._segment_path = None
+        self._segment_labels = set()
         self._recording = False
         self._segment_start_ts = 0.0
         self._last_trigger_ts = 0.0
@@ -1257,6 +1293,18 @@ class DetectionSegmentRecorder:
                 pass
         if path is None:
             return
+
+        labeled_path = self._segment_path_with_labels(path, labels)
+        if labeled_path != path:
+            try:
+                path.rename(labeled_path)
+                path = labeled_path
+            except Exception:
+                logger.warning(
+                    "Failed to rename segment with labels: %s -> %s",
+                    path,
+                    labeled_path,
+                )
 
         if duration < self.min_duration_sec:
             try:
@@ -1280,18 +1328,18 @@ class DetectionSegmentRecorder:
         if frame is None or frame.size == 0:
             return
 
-        event_detected = any(
-            self._matches_target(name) for name in (detected_classes or [])
-        )
+        matched_labels = self._collect_matched_labels(detected_classes or [])
+        event_detected = bool(matched_labels)
         self._append_prebuffer(frame, timestamp)
 
         if not self._recording and event_detected:
-            self._open_writer(frame, timestamp)
+            self._open_writer(frame, timestamp, labels=matched_labels)
 
         if self._recording and self._writer is not None:
             self._writer.write(frame)
             if event_detected:
                 self._last_trigger_ts = float(timestamp)
+                self._segment_labels.update(matched_labels)
 
             silence_sec = float(timestamp) - self._last_trigger_ts
             duration_sec = float(timestamp) - self._segment_start_ts
