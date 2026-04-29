@@ -159,11 +159,7 @@ def build_behavior_narrative_prompt(
         if include_roi_notes
         else ""
     )
-    segment_text = (
-        f"Focus on the segment {segment_label}. Describe what the mouse is doing during that interval."
-        if segment_label
-        else "Describe what the mouse is doing at this moment."
-    )
+    segment_text = build_segment_observation_sentence(segment_label)
 
     facts_guidance = "Avoid referencing the arena, camera, or environment. Do not speculate about intent or emotion."
     length_guidance = "Write 2–4 sentences that are concise but detailed."
@@ -226,11 +222,7 @@ def build_behavior_classification_prompt(
         if include_roi_notes
         else ""
     )
-    segment_text = (
-        f"Describe what the mouse is doing during {segment_label}."
-        if segment_label
-        else "Describe what the mouse is doing at this moment."
-    )
+    segment_text = build_segment_observation_sentence(segment_label)
     context = {
         "segment_sentence": segment_text,
         "view_guidance": view_text,
@@ -273,6 +265,17 @@ def build_behavior_classification_prompt(
         prompt_lines.extend(extra_lines)
 
     return "\n".join(prompt_lines)
+
+
+def build_segment_observation_sentence(segment_label: Optional[str]) -> str:
+    """Return consistent per-segment observation wording for behavior prompts."""
+    label = str(segment_label or "").strip()
+    if label:
+        return (
+            f"Describe what the mouse is doing during {label}. "
+            "Use only the visual evidence from this one segment."
+        )
+    return "Describe what the mouse is doing at this moment."
 
 
 def qwen_messages(images: Sequence[str], text: str) -> List[dict]:

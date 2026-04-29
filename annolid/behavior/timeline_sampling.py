@@ -42,10 +42,10 @@ def compute_timeline_points(
 
 
 def format_hhmmss(seconds: float) -> str:
-    """Format seconds as HH:MM:SS, clamped to a 24h clock."""
+    """Format seconds as HH:MM:SS without wrapping on long durations."""
 
     total = int(round(float(seconds or 0.0)))
-    total = max(0, min(total, (24 * 60 * 60) - 1))
+    total = max(0, total)
     h = total // 3600
     m = (total % 3600) // 60
     s = total % 60

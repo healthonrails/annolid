@@ -4235,10 +4235,20 @@ class AIChatWidget(QtWidgets.QWidget):
         start_frame: int,
         end_frame: int,
         frame_indices: List[int],
+        fps: float,
     ) -> str:
+        from annolid.behavior.timeline_sampling import format_hhmmss
+
         tiles = ", ".join(f"f{int(frame)}" for frame in frame_indices)
+        fps_value = float(fps or 0.0)
+        if fps_value > 0.0:
+            start_time = format_hhmmss(float(start_frame) / fps_value)
+            end_time = format_hhmmss(float(end_frame) / fps_value)
+            time_text = f" (time {start_time}-{end_time})"
+        else:
+            time_text = ""
         return (
-            f"segment frames {int(start_frame)}-{int(end_frame)}. "
+            f"segment frames {int(start_frame)}-{int(end_frame)}{time_text}. "
             "The provided image is one chronological frame grid for this segment; "
             f"read tiles left-to-right, top-to-bottom ({tiles})."
         )
@@ -4564,6 +4574,7 @@ class AIChatWidget(QtWidgets.QWidget):
 
         predictions: List[Dict[str, Any]] = []
         skipped_segments = 0
+        fps = self._infer_video_fps(video_path)
 
         requested_profile = str(llm_profile or "").strip()
         requested_provider = str(llm_provider or "").strip()
@@ -4627,6 +4638,7 @@ class AIChatWidget(QtWidgets.QWidget):
                         start_frame=start_frame,
                         end_frame=end_frame,
                         frame_indices=list(grid.frame_indices),
+                        fps=float(fps),
                     )
                     prompt = behavior_prompting.build_behavior_classification_prompt(
                         behavior_labels=labels,
@@ -4907,6 +4919,26 @@ class AIChatWidget(QtWidgets.QWidget):
             "processed_segments": int(len(intervals)),
             "cancelled": bool(stop_event is not None and stop_event.is_set()),
         }
+
+    def _infer_video_fps(self, video_path: str) -> float:
+        """Resolve a stable FPS value for segment-label prompts and logs."""
+        host_fps = getattr(getattr(self, "host_window_widget", None), "fps", None)
+        try:
+            fps = float(host_fps or 0.0)
+        except Exception:
+            fps = 0.0
+        if fps > 0.0:
+            return fps
+        try:
+            import cv2  # type: ignore
+
+            cap = cv2.VideoCapture(str(video_path))
+            if cap.isOpened():
+                fps = max(0.0, float(cap.get(cv2.CAP_PROP_FPS) or 0.0))
+            cap.release()
+        except Exception:
+            fps = 0.0
+        return fps
 
     def _clear_behavior_label_run_context(self) -> None:
         self._behavior_label_run_context = {}

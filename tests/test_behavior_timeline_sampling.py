@@ -26,6 +26,7 @@ def test_format_hhmmss():
     assert format_hhmmss(5) == "00:00:05"
     assert format_hhmmss(65) == "00:01:05"
     assert format_hhmmss(3661) == "01:01:01"
+    assert format_hhmmss(24 * 3600) == "24:00:00"
 
 
 def test_qwen_messages_supports_in_memory_base64_images():
@@ -42,6 +43,7 @@ def test_build_behavior_classification_prompt_requires_defined_labels_and_json()
     )
     assert "You are an animal behavior observer." in prompt
     assert "Describe what the mouse is doing during 00:00:00-00:00:01." in prompt
+    assert "Use only the visual evidence from this one segment." in prompt
     assert "Write 2–4 sentences that are concise but detailed." in prompt
     assert "- walking" in prompt
     assert "- grooming" in prompt
@@ -71,6 +73,17 @@ def test_build_behavior_classification_prompt_includes_optional_context():
         "Focus specifically on: Count bouts and identify initiator/responder." in prompt
     )
     assert "initiator/responder" in prompt
+
+
+def test_build_segment_observation_sentence_with_and_without_segment() -> None:
+    assert (
+        behavior_prompting.build_segment_observation_sentence("00:00:00-00:00:01")
+        == "Describe what the mouse is doing during 00:00:00-00:00:01. Use only the visual evidence from this one segment."
+    )
+    assert (
+        behavior_prompting.build_segment_observation_sentence(None)
+        == "Describe what the mouse is doing at this moment."
+    )
 
 
 def test_timeline_intervals_to_timestamp_rows_merges_adjacent_intervals():
