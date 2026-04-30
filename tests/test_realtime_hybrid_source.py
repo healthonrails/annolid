@@ -8,6 +8,7 @@ import numpy as np
 from annolid.realtime.config import Config
 from annolid.realtime.perception import (
     HybridVideoSource,
+    PerceptionProcess,
     RecordingStateManager,
     SourceState,
 )
@@ -51,6 +52,30 @@ class _FakeLocal:
 
     async def disconnect(self) -> None:
         self.disconnect_calls += 1
+
+
+class _FakeRecoveringLocal(_FakeLocal):
+    def __init__(self, connect_ok: bool = True, recover_ok: bool = True):
+        super().__init__(connect_ok=connect_ok)
+        self.recover_ok = recover_ok
+        self.recover_calls = 0
+
+    async def recover_connection(self, *, force: bool = False) -> bool:
+        _ = force
+        self.recover_calls += 1
+        return self.recover_ok
+
+
+class _FakeCleanupTarget:
+    def __init__(self) -> None:
+        self.cleanup_calls = 0
+
+    async def cleanup(self) -> None:
+        self.cleanup_calls += 1
+
+
+class _FakePublisher(_FakeCleanupTarget):
+    pass
 
 
 def test_hybrid_source_prefers_explicit_local_stream_over_remote() -> None:
@@ -101,3 +126,37 @@ def test_hybrid_source_remote_reconnect_backoff_grows_on_failures() -> None:
     assert result is not None
     assert src.remote.connect_calls == 1
     assert src._remote_retry_cooldown == 2.0
+
+
+def test_hybrid_source_network_local_attempts_recovery_before_reset() -> None:
+    cfg = Config(camera_index="http://camera.local/img/video.mjpeg")
+    cfg.local_no_frame_tolerance = 3
+    src = HybridVideoSource(cfg, RecordingStateManager(cfg))
+    src.remote = _FakeRemote(connect_ok=False)  # type: ignore[assignment]
+    local = _FakeRecoveringLocal(connect_ok=True, recover_ok=True)
+    src.local = local  # type: ignore[assignment]
+    src.state = SourceState.USING_LOCAL
+    src._next_local_reconnect_time = time.time() + 60.0
+
+    assert asyncio.run(src.get_frame()) is None
+    assert asyncio.run(src.get_frame()) is None
+    assert asyncio.run(src.get_frame()) is None
+    assert local.recover_calls == 1
+    assert src.state == SourceState.USING_LOCAL
+    assert local.disconnect_calls == 0
+
+
+def test_perception_shutdown_releases_publisher_after_stop_request() -> None:
+    cfg = Config(camera_index=0)
+    process = PerceptionProcess(cfg)
+    video_source = _FakeCleanupTarget()
+    publisher = _FakePublisher()
+    process.video_source = video_source  # type: ignore[assignment]
+    process.publisher = publisher  # type: ignore[assignment]
+
+    process.request_stop()
+    asyncio.run(process.shutdown())
+    asyncio.run(process.shutdown())
+
+    assert video_source.cleanup_calls == 1
+    assert publisher.cleanup_calls == 1

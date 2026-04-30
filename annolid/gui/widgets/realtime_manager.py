@@ -155,6 +155,17 @@ class RealtimeManager(QtCore.QObject):
         realtime_config: "RealtimeConfig",
         extras: Dict[str, Any],
     ):
+        # Reap stale worker references from a prior session before checking start preconditions.
+        if (
+            self.realtime_perception_worker is not None
+            and self.realtime_perception_worker.isFinished()
+        ):
+            self.realtime_perception_worker = None
+        if (
+            self.realtime_subscriber_worker is not None
+            and self.realtime_subscriber_worker.isFinished()
+        ):
+            self.realtime_subscriber_worker = None
         if not bool(extras.get("suppress_control_dock", False)):
             self.show_control_dialog()
         if self.realtime_perception_worker is not None:
@@ -172,13 +183,10 @@ class RealtimeManager(QtCore.QObject):
         publisher = realtime_config.publisher_address
         if publisher:
             try:
-                with contextlib.closing(
-                    socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                ) as sock:
-                    sock.settimeout(0.5)
-                    host, port = self._resolve_tcp_endpoint(publisher)
-                    bind_result = sock.connect_ex((host, port))
-                    if bind_result == 0:
+                host, port = self._resolve_tcp_endpoint(publisher)
+                if self._is_tcp_port_in_use(host, port):
+                    # Fast stop/start can race with socket teardown; wait briefly.
+                    if not self._wait_for_tcp_port_release(host, port, timeout_sec=6.0):
                         raise RuntimeError(
                             self.window.tr(
                                 "Publisher port %1 is already in use."
@@ -398,10 +406,16 @@ class RealtimeManager(QtCore.QObject):
         worker = self.realtime_perception_worker
         if worker is not None:
             worker.request_stop()
-            if not worker.wait(2500):  # Wait up to 2.5s
+            if not worker.wait(5000):  # Give publisher/socket teardown enough time.
                 logger.warning(
                     "Realtime perception worker did not stop gracefully in time."
                 )
+                message = self.window.tr(
+                    "Realtime is still stopping. Please wait a moment before restart."
+                )
+                self.window.statusBar().showMessage(message)
+                self.realtime_control_widget.set_status_text(message)
+                return
             self.realtime_perception_worker = None
 
         self._finalize_realtime_shutdown()
@@ -432,6 +446,32 @@ class RealtimeManager(QtCore.QObject):
             raise ValueError(f"Invalid tcp address: {address}")
         port = int(port_part)
         return host, port
+
+    @staticmethod
+    def _is_tcp_port_in_use(host: str, port: int) -> bool:
+        with contextlib.closing(
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ) as sock:
+            sock.settimeout(0.3)
+            return sock.connect_ex((host, port)) == 0
+
+    def _wait_for_tcp_port_release(
+        self, host: str, port: int, timeout_sec: float = 6.0
+    ) -> bool:
+        deadline = time.monotonic() + max(0.5, float(timeout_sec))
+        shown_waiting = False
+        while time.monotonic() < deadline:
+            if not self._is_tcp_port_in_use(host, port):
+                return True
+            if not shown_waiting:
+                msg = self.window.tr(
+                    "Waiting for realtime publisher port to be released…"
+                )
+                self.window.statusBar().showMessage(msg)
+                self.realtime_control_widget.set_status_text(msg)
+                shown_waiting = True
+            time.sleep(0.2)
+        return not self._is_tcp_port_in_use(host, port)
 
     def _resolve_model_path(self, model_name: str) -> Optional[Path]:
         """Find a local model file to avoid network downloads."""
@@ -1083,10 +1123,60 @@ class RealtimeManager(QtCore.QObject):
             saved_path = str(status.get("path") or "").strip()
             if saved_path and self._gdrive_auto_upload_enabled:
                 self._schedule_gdrive_upload(saved_path)
-        message = self.window.tr("Realtime %s: %s") % (
-            event_name,
-            status.get("recording_state", status.get("message", "")),
-        )
+        source = str(status.get("source") or "").strip()
+        reason = str(status.get("reason") or "").strip()
+        error = str(status.get("error") or "").strip()
+        cooldown = status.get("cooldown_sec")
+        misses = status.get("misses")
+        event_name = str(event_name)
+        if event_name in {
+            "reconnect_remote_attempt",
+            "reconnect_local_attempt",
+            "reconnect_attempt",
+        }:
+            if event_name == "reconnect_remote_attempt":
+                message = self.window.tr("Realtime reconnect: trying remote source")
+            elif event_name == "reconnect_local_attempt":
+                message = self.window.tr("Realtime reconnect: trying local source")
+            else:
+                message = self.window.tr("Realtime reconnect: attempting recovery")
+            details: List[str] = []
+            if source:
+                details.append(f"source={source}")
+            if reason:
+                details.append(f"reason={reason}")
+            if misses is not None:
+                details.append(f"misses={misses}")
+            if cooldown is not None:
+                details.append(f"cooldown={cooldown}s")
+            if details:
+                message += " (" + ", ".join(details) + ")"
+        elif event_name in {"reconnect_remote_success", "reconnect_local_success"}:
+            if event_name == "reconnect_remote_success":
+                message = self.window.tr("Realtime reconnect: remote source recovered")
+            else:
+                message = self.window.tr("Realtime reconnect: local source recovered")
+            if source:
+                message += f" [{source}]"
+        elif event_name in {"reconnect_remote_failed", "reconnect_local_failed"}:
+            if event_name == "reconnect_remote_failed":
+                message = self.window.tr("Realtime reconnect: remote source failed")
+            else:
+                message = self.window.tr("Realtime reconnect: local source failed")
+            details: List[str] = []
+            if source:
+                details.append(f"source={source}")
+            if error:
+                details.append(f"error={error}")
+            if cooldown is not None:
+                details.append(f"retry_after={cooldown}s")
+            if details:
+                message += " (" + ", ".join(details) + ")"
+        else:
+            message = self.window.tr("Realtime %s: %s") % (
+                event_name,
+                status.get("recording_state", status.get("message", "")),
+            )
         self.window.statusBar().showMessage(message)
         self.realtime_control_widget.set_status_text(message)
 

@@ -1102,10 +1102,8 @@ class PerceptionProcessWorker(QtCore.QThread):
         loop = self._loop
         perception = self._perception
         if loop and loop.is_running() and perception:
-            # Just set the running flag to False.
-            # The run() loop will exit, and _run_main's finally block
-            # will handle the actual async shutdown() call.
-            perception.running = False
+            # Promptly break the run loop from the GUI thread.
+            loop.call_soon_threadsafe(perception.request_stop)
 
 
 class RealtimeSubscriberWorker(QtCore.QThread):

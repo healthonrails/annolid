@@ -3,6 +3,7 @@ import re
 import json
 import sys
 import signal
+import contextlib
 import socket
 import statistics
 import struct
@@ -601,6 +602,16 @@ class CameraSource:
         self.cap: Optional[cv2.VideoCapture] = None
         self._lock = asyncio.Lock()
         self.last_error: Optional[str] = None
+        self._consecutive_read_failures = 0
+        self._stream_reconnect_attempts = 0
+        self._stream_reconnect_base_cooldown = max(
+            0.5, float(getattr(self.config, "local_reconnect_cooldown", 2.0))
+        )
+        self._stream_reconnect_max_cooldown = max(
+            self._stream_reconnect_base_cooldown,
+            float(getattr(self.config, "local_reconnect_max_cooldown", 20.0)),
+        )
+        self._next_stream_reconnect_time = 0.0
 
     async def connect(self) -> bool:
         """Connect to local camera."""
@@ -616,6 +627,9 @@ class CameraSource:
                     logger.info("Successfully connected to local camera")
                     # Local camera is always "recording"
                     await self.recording_manager.update_state(RecordingState.RECORDING)
+                    self._consecutive_read_failures = 0
+                    self._stream_reconnect_attempts = 0
+                    self._next_stream_reconnect_time = 0.0
                     return True
                 else:
                     logger.error("Failed to open camera")
@@ -652,7 +666,16 @@ class CameraSource:
     def _is_network_stream_source(source: object) -> bool:
         value = str(source or "").strip().lower()
         return value.startswith(
-            ("rtsp://", "rtsps://", "rtp://", "udp://", "srt://", "tcp://")
+            (
+                "http://",
+                "https://",
+                "rtsp://",
+                "rtsps://",
+                "rtp://",
+                "udp://",
+                "srt://",
+                "tcp://",
+            )
         )
 
     def _open_capture(self, candidate: object) -> Optional[cv2.VideoCapture]:
@@ -817,15 +840,65 @@ class CameraSource:
                     ret, frame = await asyncio.to_thread(self.cap.read)
 
             if ret and frame is not None:
+                self._consecutive_read_failures = 0
                 return frame, {
                     "source": "local",
                     "capture_timestamp": time.time(),
                     "recording_state": self.recording_manager.state.name,
                 }
+            self._consecutive_read_failures += 1
+            source = self.config.camera_index
+            if self._is_network_stream_source(source):
+                # HTTP/RTSP streams can drop transiently; attempt in-place recovery
+                # instead of forcing immediate source failover.
+                if self._consecutive_read_failures >= 3:
+                    await self.recover_connection()
             return None
         except Exception as e:
             logger.error(f"Frame read error: {e}")
+            self._consecutive_read_failures += 1
+            if self._is_network_stream_source(self.config.camera_index):
+                await self.recover_connection()
             return None
+
+    async def recover_connection(self, *, force: bool = False) -> bool:
+        """Attempt to recover an unstable network stream capture in-place."""
+        if not self._is_network_stream_source(self.config.camera_index):
+            return False
+        now = time.time()
+        if not force and now < self._next_stream_reconnect_time:
+            return False
+        cooldown = min(
+            self._stream_reconnect_max_cooldown,
+            self._stream_reconnect_base_cooldown
+            * (2.0**self._stream_reconnect_attempts),
+        )
+        self._next_stream_reconnect_time = now + cooldown
+        self._stream_reconnect_attempts = min(self._stream_reconnect_attempts + 1, 8)
+        logger.warning(
+            "Local stream read failed %d times; attempting reconnect (cooldown %.1fs).",
+            self._consecutive_read_failures,
+            cooldown,
+        )
+        async with self._lock:
+            try:
+                if self.cap is not None:
+                    try:
+                        await asyncio.to_thread(self.cap.release)
+                    except Exception:
+                        pass
+                self.cap = await asyncio.to_thread(self._init_camera)
+                if self.cap is not None and self.cap.isOpened():
+                    logger.info("Recovered local network stream connection.")
+                    self._consecutive_read_failures = 0
+                    self._stream_reconnect_attempts = 0
+                    self._next_stream_reconnect_time = 0.0
+                    return True
+                self.last_error = self._build_camera_open_failure_message()
+                return False
+            except Exception as exc:
+                self.last_error = str(exc)
+                return False
 
     async def disconnect(self):
         """Release camera resources."""
@@ -834,6 +907,9 @@ class CameraSource:
                 await asyncio.to_thread(self.cap.release)
                 self.cap = None
                 logger.info("Camera released")
+        self._consecutive_read_failures = 0
+        self._stream_reconnect_attempts = 0
+        self._next_stream_reconnect_time = 0.0
 
 
 # --- Source State Management ---
@@ -874,12 +950,37 @@ class HybridVideoSource:
         self._next_local_reconnect_time = 0.0
         self._prefer_local_only = self._is_explicit_local_source(config.camera_index)
         self._state_lock = asyncio.Lock()
+        self._status_events: deque = deque()
+
+    def _emit_status(self, event: str, **payload: Any) -> None:
+        self._status_events.append(
+            {
+                "event": str(event or "").strip() or "status",
+                "timestamp": time.time(),
+                **payload,
+            }
+        )
+
+    def pop_status_events(self) -> List[Dict[str, Any]]:
+        events: List[Dict[str, Any]] = []
+        while self._status_events:
+            events.append(dict(self._status_events.popleft()))
+        return events
 
     @staticmethod
     def _is_network_stream_source(source: object) -> bool:
         value = str(source or "").strip().lower()
         return value.startswith(
-            ("rtsp://", "rtsps://", "rtp://", "udp://", "srt://", "tcp://")
+            (
+                "http://",
+                "https://",
+                "rtsp://",
+                "rtsps://",
+                "rtp://",
+                "udp://",
+                "srt://",
+                "tcp://",
+            )
         )
 
     @staticmethod
@@ -916,11 +1017,25 @@ class HybridVideoSource:
         async with self._state_lock:
             if self._prefer_local_only:
                 self.state = SourceState.TRYING_LOCAL
+                self._emit_status(
+                    "reconnect_local_attempt",
+                    source=str(self.config.camera_index),
+                    reason="explicit_local_source",
+                )
                 if await self.local.connect():
                     self.state = SourceState.USING_LOCAL
                     logger.info("Connected to explicit local source")
+                    self._emit_status(
+                        "reconnect_local_success",
+                        source=str(self.config.camera_index),
+                    )
                     return
                 self.state = SourceState.DISCONNECTED
+                self._emit_status(
+                    "reconnect_local_failed",
+                    source=str(self.config.camera_index),
+                    error=str(self.local.last_error or "connect_failed"),
+                )
                 detail_text = (
                     f"local={self.local.last_error}" if self.local.last_error else ""
                 )
@@ -932,16 +1047,32 @@ class HybridVideoSource:
 
             # Try remote first
             self.state = SourceState.TRYING_REMOTE
+            self._emit_status("reconnect_remote_attempt", source="remote")
             if await self.remote.connect():
                 self.state = SourceState.USING_REMOTE
                 logger.info("Connected to remote source")
+                self._emit_status("reconnect_remote_success", source="remote")
                 return
+            self._emit_status(
+                "reconnect_remote_failed",
+                source="remote",
+                error=str(self.remote.last_error or "connect_failed"),
+            )
 
             # Fallback to local
             self.state = SourceState.TRYING_LOCAL
+            self._emit_status(
+                "reconnect_local_attempt",
+                source=str(self.config.camera_index),
+                reason="remote_unavailable",
+            )
             if await self.local.connect():
                 self.state = SourceState.USING_LOCAL
                 logger.info("Connected to local source")
+                self._emit_status(
+                    "reconnect_local_success",
+                    source=str(self.config.camera_index),
+                )
                 return
 
             # Last-resort hard fallback: force camera index 0 and retry once.
@@ -955,12 +1086,26 @@ class HybridVideoSource:
                     self.config.camera_index,
                 )
                 self.config.camera_index = 0
+                self._emit_status(
+                    "reconnect_local_attempt",
+                    source="0",
+                    reason="fallback_camera_0",
+                )
                 if await self.local.connect():
                     self.state = SourceState.USING_LOCAL
                     logger.info("Connected to fallback local camera 0")
+                    self._emit_status(
+                        "reconnect_local_success",
+                        source="0",
+                    )
                     return
 
             self.state = SourceState.DISCONNECTED
+            self._emit_status(
+                "reconnect_local_failed",
+                source=str(self.config.camera_index),
+                error=str(self.local.last_error or "connect_failed"),
+            )
             details: List[str] = []
             if self.remote.last_error:
                 details.append(f"remote={self.remote.last_error}")
@@ -994,6 +1139,11 @@ class HybridVideoSource:
                 logger.warning(
                     "Remote source connection is inactive, falling back to local."
                 )
+                self._emit_status(
+                    "reconnect_remote_failed",
+                    source="remote",
+                    error="connection_inactive",
+                )
                 await self.remote.disconnect()
                 async with self._state_lock:
                     self.state = SourceState.TRYING_LOCAL
@@ -1010,6 +1160,27 @@ class HybridVideoSource:
                 self._consecutive_local_misses += 1
                 if self._consecutive_local_misses < self._local_no_frame_tolerance:
                     return None
+                if self._is_network_stream_source(self.config.camera_index):
+                    self._emit_status(
+                        "reconnect_local_attempt",
+                        source=str(self.config.camera_index),
+                        reason="consecutive_misses",
+                        misses=int(self._consecutive_local_misses),
+                    )
+                    recover_fn = getattr(self.local, "recover_connection", None)
+                    recovered = await recover_fn() if callable(recover_fn) else False
+                    self._consecutive_local_misses = 0
+                    if recovered:
+                        self._emit_status(
+                            "reconnect_local_success",
+                            source=str(self.config.camera_index),
+                        )
+                        return None
+                    self._emit_status(
+                        "reconnect_local_failed",
+                        source=str(self.config.camera_index),
+                        error=str(self.local.last_error or "recover_failed"),
+                    )
                 logger.warning(
                     "Local source returned no frame %d times; resetting connection state",
                     self._consecutive_local_misses,
@@ -1033,6 +1204,11 @@ class HybridVideoSource:
                         self.state = SourceState.DISCONNECTED
                 elif self.state == SourceState.DISCONNECTED:
                     logger.info("Attempting to recover connection...")
+                    self._emit_status(
+                        "reconnect_attempt",
+                        source=str(self.config.camera_index),
+                        reason="disconnected",
+                    )
                     await self.connect()
 
         return None
@@ -1045,6 +1221,11 @@ class HybridVideoSource:
         if current_time - self.last_remote_attempt > self._remote_retry_cooldown:
             self.last_remote_attempt = current_time
             logger.info("Attempting remote reconnection...")
+            self._emit_status(
+                "reconnect_remote_attempt",
+                source="remote",
+                cooldown_sec=float(self._remote_retry_cooldown),
+            )
 
             if await self.remote.connect():
                 logger.info("Successfully reconnected to remote source")
@@ -1053,7 +1234,13 @@ class HybridVideoSource:
                 )
                 async with self._state_lock:
                     self.state = SourceState.USING_REMOTE
+                self._emit_status("reconnect_remote_success", source="remote")
             else:
+                self._emit_status(
+                    "reconnect_remote_failed",
+                    source="remote",
+                    error=str(self.remote.last_error or "connect_failed"),
+                )
                 self._remote_retry_cooldown = min(
                     self._remote_retry_max_cooldown,
                     self._remote_retry_cooldown * 2.0,
@@ -1520,11 +1707,16 @@ class DetectionPublisher:
         if self.socket is None:
             return
         try:
+            if self._bound:
+                with contextlib.suppress(Exception):
+                    self.socket.unbind(self.address)
             self.socket.setsockopt(zmq.LINGER, 0)
-            self.socket.close()
+            self.socket.close(0)
             self.socket = None
-            self.context.term()
+            if self.context is not None:
+                self.context.term()
             self.context = None
+            self._bound = False
             logger.info("Detection publisher cleaned up")
         except Exception as e:
             logger.error(f"Publisher cleanup error: {e}")
@@ -1563,6 +1755,7 @@ class PerceptionProcess:
         self.publisher = DetectionPublisher(config.publisher_address)
         self.running = True
         self._shutdown_event = asyncio.Event()
+        self._shutdown_complete = False
         self._frame_index = 0
 
         # Setup recording state callbacks
@@ -1727,8 +1920,10 @@ class PerceptionProcess:
                 loop_start = time.time()
 
                 try:
+                    await self._publish_source_status_events()
                     # Get frame
                     frame_data = await self.video_source.get_frame()
+                    await self._publish_source_status_events()
                     if not frame_data:
                         await asyncio.sleep(0.1)
                         continue
@@ -1841,6 +2036,18 @@ class PerceptionProcess:
                 # Frame rate limiting
                 elapsed = time.time() - loop_start
                 await asyncio.sleep(max(0, frame_interval - elapsed))
+
+    async def _publish_source_status_events(self) -> None:
+        pop_fn = getattr(self.video_source, "pop_status_events", None)
+        if not callable(pop_fn):
+            return
+        events = pop_fn()
+        if not events:
+            return
+        for event in events:
+            payload = dict(event or {})
+            payload.setdefault("recording_state", self.recording_manager.state.name)
+            await self.publisher.publish_status(payload)
 
     async def _run_inference(self, frame: np.ndarray):
         """Run YOLO inference on frame."""
@@ -2241,37 +2448,55 @@ class PerceptionProcess:
 
     async def shutdown(self):
         """Graceful shutdown."""
-        if self._shutdown_event.is_set() and not self.running:
+        if self._shutdown_complete:
             return
 
         logger.info("Shutting down perception process...")
         self.running = False
         self._shutdown_event.set()
 
-        try:
+        cleanup_errors = []
+        with contextlib.suppress(Exception):
             self.segment_recorder.close()
+        try:
             await self.video_source.cleanup()
-            await self.publisher.cleanup()
-
-            if self.config.visualize:
-                # On macOS, destroyAllWindows can crash if called from a thread.
-                # Also, we check if it's even available (headless etc).
-                try:
-                    import platform
-
-                    if platform.system() == "Darwin":
-                        # Be conservative on macOS
-                        logger.debug(
-                            "Skipping cv2.destroyAllWindows() on macOS to avoid crash."
-                        )
-                    else:
-                        cv2.destroyAllWindows()
-                except Exception:
-                    pass
-
-            logger.info("Shutdown complete")
         except Exception as e:
-            logger.error(f"Shutdown error: {e}")
+            cleanup_errors.append(e)
+            logger.error(f"Video source cleanup error: {e}", exc_info=True)
+        try:
+            await self.publisher.cleanup()
+        except Exception as e:
+            cleanup_errors.append(e)
+            logger.error(f"Publisher cleanup error: {e}", exc_info=True)
+
+        if self.config.visualize:
+            # On macOS, destroyAllWindows can crash if called from a thread.
+            # Also, we check if it's even available (headless etc).
+            try:
+                import platform
+
+                if platform.system() == "Darwin":
+                    # Be conservative on macOS
+                    logger.debug(
+                        "Skipping cv2.destroyAllWindows() on macOS to avoid crash."
+                    )
+                else:
+                    cv2.destroyAllWindows()
+            except Exception:
+                pass
+
+        if cleanup_errors:
+            logger.error(
+                "Shutdown completed with %d cleanup error(s).", len(cleanup_errors)
+            )
+        else:
+            logger.info("Shutdown complete")
+        self._shutdown_complete = True
+
+    def request_stop(self) -> None:
+        """Request a prompt stop from another thread without awaiting shutdown."""
+        self.running = False
+        self._shutdown_event.set()
 
 
 # --- Configuration and Main ---
