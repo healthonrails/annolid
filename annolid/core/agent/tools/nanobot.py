@@ -464,11 +464,18 @@ async def register_nanobot_style_tools(
                 )
                 drive_available = False
         if drive_available:
+            upload_roots: list[str | Path] = []
+            if allowed_dir is not None:
+                upload_roots.append(allowed_dir)
+            for root in allowed_read_roots or []:
+                if str(root).strip():
+                    upload_roots.append(root)
             registry.register(
                 GoogleDriveTool(
                     credentials_file=credentials_file,
                     token_file=token_file,
                     allow_interactive_auth=allow_interactive_auth,
+                    allowed_local_roots=upload_roots,
                 )
             )
         else:

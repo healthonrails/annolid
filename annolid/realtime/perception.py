@@ -1188,6 +1188,7 @@ class DetectionSegmentRecorder:
         self._consecutive_write_errors = 0
         self._max_consecutive_write_errors = 10
         self._last_write_error_log_ts = 0.0
+        self._completed_segments: deque = deque()
 
     def _matches_target(self, class_name: str) -> bool:
         name = str(class_name or "").strip().lower()
@@ -1365,6 +1366,14 @@ class DetectionSegmentRecorder:
             return
 
         logger.info("Saved detection segment (%.2fs): %s", duration, path)
+        self._completed_segments.append(
+            {
+                "path": str(path),
+                "duration_sec": float(duration),
+                "labels": sorted(labels),
+                "timestamp": float(now_ts),
+            }
+        )
 
     def update(
         self, frame: np.ndarray, timestamp: float, detected_classes: List[str]
@@ -1398,6 +1407,12 @@ class DetectionSegmentRecorder:
 
     def close(self) -> None:
         self._close_writer(time.time())
+
+    def pop_completed_segments(self) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        while self._completed_segments:
+            out.append(dict(self._completed_segments.popleft()))
+        return out
 
 
 # --- Detection Publisher ---
@@ -1744,6 +1759,23 @@ class PerceptionProcess:
                             results, loop_start, metadata
                         )
                         self.segment_recorder.update(frame, loop_start, matched_classes)
+                        completed_segments = (
+                            self.segment_recorder.pop_completed_segments()
+                        )
+                        for segment in completed_segments:
+                            await self.publisher.publish_status(
+                                {
+                                    "event": "detection_segment_saved",
+                                    "path": str(segment.get("path") or ""),
+                                    "duration_sec": float(
+                                        segment.get("duration_sec") or 0.0
+                                    ),
+                                    "labels": list(segment.get("labels") or []),
+                                    "timestamp": float(
+                                        segment.get("timestamp") or time.time()
+                                    ),
+                                }
+                            )
 
                         # Update metrics
                         self.metrics.record_frame(inference_time, detection_count)

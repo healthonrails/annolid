@@ -23,6 +23,8 @@ class RealtimeControlWidget(QtWidgets.QWidget):
 
     start_requested = QtCore.Signal(object, dict)
     stop_requested = QtCore.Signal()
+    google_auth_check_requested = QtCore.Signal()
+    google_auth_login_requested = QtCore.Signal()
 
     def __init__(
         self,
@@ -274,6 +276,31 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.save_detection_segments_check.toggled.connect(
             self._on_detection_segment_toggled
         )
+        self.gdrive_auth_status_label = QtWidgets.QLabel(
+            self.tr("Google auth: unknown")
+        )
+        self.gdrive_auth_check_btn = QtWidgets.QPushButton(self.tr("Check Auth"))
+        self.gdrive_auth_login_btn = QtWidgets.QPushButton(self.tr("Login"))
+        self.gdrive_auth_check_btn.clicked.connect(
+            self.google_auth_check_requested.emit
+        )
+        self.gdrive_auth_login_btn.clicked.connect(
+            self.google_auth_login_requested.emit
+        )
+        self.gdrive_auto_upload_check = QtWidgets.QCheckBox(
+            self.tr("Auto-upload saved segments to Google Drive")
+        )
+        self.gdrive_auto_upload_delay_spin = QtWidgets.QSpinBox()
+        self.gdrive_auto_upload_delay_spin.setRange(0, 3600)
+        self.gdrive_auto_upload_delay_spin.setSuffix(" s")
+        self.gdrive_remote_folder_edit = QtWidgets.QLineEdit()
+        self.gdrive_remote_folder_edit.setPlaceholderText("annolid/realtime_detect")
+        self.gdrive_skip_existing_check = QtWidgets.QCheckBox(
+            self.tr("Skip if same file already exists")
+        )
+        self.gdrive_auto_upload_check.toggled.connect(
+            self._on_gdrive_auto_upload_toggled
+        )
 
         output_layout.addWidget(self.publish_frames_check, 0, 0, 1, 3)
         output_layout.addWidget(self.publish_annotated_check, 1, 0, 1, 3)
@@ -324,6 +351,17 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         output_layout.addWidget(self.detection_segment_min_duration_spin, 20, 1, 1, 2)
         output_layout.addWidget(QtWidgets.QLabel(self.tr("Max Duration")), 21, 0, 1, 1)
         output_layout.addWidget(self.detection_segment_max_duration_spin, 21, 1, 1, 2)
+        output_layout.addWidget(self.gdrive_auth_status_label, 22, 0, 1, 3)
+        output_layout.addWidget(self.gdrive_auth_check_btn, 23, 0, 1, 1)
+        output_layout.addWidget(self.gdrive_auth_login_btn, 23, 1, 1, 2)
+        output_layout.addWidget(self.gdrive_auto_upload_check, 24, 0, 1, 3)
+        output_layout.addWidget(QtWidgets.QLabel(self.tr("Upload Delay")), 25, 0, 1, 1)
+        output_layout.addWidget(self.gdrive_auto_upload_delay_spin, 25, 1, 1, 2)
+        output_layout.addWidget(
+            QtWidgets.QLabel(self.tr("Drive Folder Path")), 26, 0, 1, 1
+        )
+        output_layout.addWidget(self.gdrive_remote_folder_edit, 26, 1, 1, 2)
+        output_layout.addWidget(self.gdrive_skip_existing_check, 27, 0, 1, 3)
         output_group.setCheckable(True)
         output_group.setChecked(True)
         self._attach_collapsible_group(output_group)
@@ -488,6 +526,23 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.detection_segment_max_duration_spin.setValue(
             float(defaults.get("detection_segment_max_duration_sec", 120.0))
         )
+        self.gdrive_auto_upload_check.setChecked(
+            bool(defaults.get("gdrive_auto_upload_enabled", False))
+        )
+        self.gdrive_auto_upload_delay_spin.setValue(
+            int(defaults.get("gdrive_auto_upload_delay_sec", 5) or 5)
+        )
+        self.gdrive_remote_folder_edit.setText(
+            str(
+                defaults.get(
+                    "gdrive_auto_upload_remote_folder", "annolid/realtime_detect"
+                )
+                or "annolid/realtime_detect"
+            )
+        )
+        self.gdrive_skip_existing_check.setChecked(
+            bool(defaults.get("gdrive_auto_upload_skip_if_exists", True))
+        )
         log_path = defaults.get("log_path") or defaults.get("ndjson_path") or ""
         if log_path:
             self.log_path_edit.setText(str(log_path))
@@ -496,6 +551,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self._on_detection_segment_toggled(
             self.save_detection_segments_check.isChecked()
         )
+        self._on_gdrive_auto_upload_toggled(self.gdrive_auto_upload_check.isChecked())
         self._update_blink_controls()
 
     # UI slots
@@ -582,6 +638,17 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.detection_segment_postbuffer_spin.setEnabled(enabled)
         self.detection_segment_min_duration_spin.setEnabled(enabled)
         self.detection_segment_max_duration_spin.setEnabled(enabled)
+
+    def _on_gdrive_auto_upload_toggled(self, checked: bool):
+        enabled = bool(checked)
+        self.gdrive_auto_upload_delay_spin.setEnabled(enabled)
+        self.gdrive_remote_folder_edit.setEnabled(enabled)
+        self.gdrive_skip_existing_check.setEnabled(enabled)
+
+    def set_google_auth_status(self, text: str) -> None:
+        self.gdrive_auth_status_label.setText(
+            str(text or "").strip() or "Google auth: unknown"
+        )
 
     def _attach_collapsible_group(self, group: QtWidgets.QGroupBox) -> None:
         def _on_toggled(checked: bool) -> None:
@@ -704,4 +771,10 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             detection_segment_max_duration_sec=float(
                 self.detection_segment_max_duration_spin.value()
             ),
+            gdrive_auto_upload_enabled=self.gdrive_auto_upload_check.isChecked(),
+            gdrive_auto_upload_delay_sec=float(
+                self.gdrive_auto_upload_delay_spin.value()
+            ),
+            gdrive_auto_upload_remote_folder=self.gdrive_remote_folder_edit.text().strip(),
+            gdrive_auto_upload_skip_if_exists=self.gdrive_skip_existing_check.isChecked(),
         )

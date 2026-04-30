@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import contextlib
+import asyncio
 import json
 import logging
 import os
 import socket
+import threading
 import tempfile
 import time
 from collections import Counter
@@ -31,6 +33,9 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency guard
 from annolid.gui.widgets.bot_explain import _resolve_chat_widget
 from annolid.gui.workers import PerceptionProcessWorker, RealtimeSubscriberWorker
 from annolid.gui.shape import Shape, MaskShape
+from annolid.core.agent.config import load_config
+from annolid.core.agent.tools.google_auth import GoogleOAuthHelper
+from annolid.core.agent.tools.google_drive import GoogleDriveTool
 from annolid.utils.logger import logger
 from annolid.utils.log_paths import resolve_annolid_realtime_logs_root
 
@@ -81,6 +86,11 @@ class RealtimeManager(QtCore.QObject):
         self._bot_report_dedup_window_sec = 20.0
         self._bot_event_log_fp = None
         self._bot_event_log_path = None
+        self._gdrive_auto_upload_enabled = False
+        self._gdrive_auto_upload_delay_sec = 5.0
+        self._gdrive_auto_upload_remote_folder = "annolid/realtime_detect"
+        self._gdrive_auto_upload_skip_if_exists = True
+        self._gdrive_pending_uploads: set[str] = set()
 
         # Dock + control widget
         self.realtime_control_dock = QtWidgets.QDockWidget(
@@ -97,6 +107,12 @@ class RealtimeManager(QtCore.QObject):
         self.realtime_control_widget.stop_requested.connect(
             self.stop_realtime_inference
         )
+        self.realtime_control_widget.google_auth_check_requested.connect(
+            self._check_google_auth_status
+        )
+        self.realtime_control_widget.google_auth_login_requested.connect(
+            self._start_google_auth_login
+        )
         self.realtime_control_dock.setWidget(self.realtime_control_widget)
         self.realtime_control_dock.setFeatures(
             QtWidgets.QDockWidget.DockWidgetMovable
@@ -110,6 +126,7 @@ class RealtimeManager(QtCore.QObject):
         self.realtime_control_dock.visibilityChanged.connect(
             self._on_dock_visibility_changed
         )
+        self._check_google_auth_status()
 
     def _on_dock_visibility_changed(self, visible: bool) -> None:
         """Handle dock visibility changes to restore layout when closed."""
@@ -267,6 +284,19 @@ class RealtimeManager(QtCore.QObject):
         self._bot_last_busy_log_ts = 0.0
         self._bot_report_signature = ""
         self._bot_report_signature_ts = 0.0
+        self._gdrive_auto_upload_enabled = bool(
+            extras.get("gdrive_auto_upload_enabled", False)
+        )
+        self._gdrive_auto_upload_delay_sec = max(
+            0.0, float(extras.get("gdrive_auto_upload_delay_sec", 5.0) or 5.0)
+        )
+        self._gdrive_auto_upload_remote_folder = str(
+            extras.get("gdrive_auto_upload_remote_folder", "annolid/realtime_detect")
+            or "annolid/realtime_detect"
+        ).strip()
+        self._gdrive_auto_upload_skip_if_exists = bool(
+            extras.get("gdrive_auto_upload_skip_if_exists", True)
+        )
 
         if self._bot_report_enabled:
             if self._bot_email_report and not self._bot_email_to:
@@ -1049,12 +1079,119 @@ class RealtimeManager(QtCore.QObject):
         if not isinstance(status, dict):
             return
         event_name = status.get("event") or "status"
+        if str(event_name) == "detection_segment_saved":
+            saved_path = str(status.get("path") or "").strip()
+            if saved_path and self._gdrive_auto_upload_enabled:
+                self._schedule_gdrive_upload(saved_path)
         message = self.window.tr("Realtime %s: %s") % (
             event_name,
             status.get("recording_state", status.get("message", "")),
         )
         self.window.statusBar().showMessage(message)
         self.realtime_control_widget.set_status_text(message)
+
+    def _check_google_auth_status(self) -> None:
+        try:
+            cfg = load_config()
+            credentials_file = str(cfg.tools.google_auth.credentials_file or "").strip()
+            token_file = str(cfg.tools.google_auth.token_file or "").strip()
+            ready, reason = GoogleOAuthHelper.preflight(
+                credentials_file=credentials_file,
+                token_file=token_file,
+                allow_interactive_auth=True,
+            )
+            if ready:
+                self.realtime_control_widget.set_google_auth_status(
+                    "Google auth: ready"
+                )
+            else:
+                self.realtime_control_widget.set_google_auth_status(
+                    f"Google auth: not ready ({reason})"
+                )
+        except Exception as exc:
+            self.realtime_control_widget.set_google_auth_status(
+                f"Google auth: check failed ({exc})"
+            )
+
+    def _start_google_auth_login(self) -> None:
+        def _worker() -> None:
+            try:
+                cfg = load_config()
+                credentials_file = str(
+                    cfg.tools.google_auth.credentials_file or ""
+                ).strip()
+                token_file = str(cfg.tools.google_auth.token_file or "").strip()
+                scopes = ["https://www.googleapis.com/auth/drive"]
+                from google_auth_oauthlib.flow import InstalledAppFlow
+
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    str(Path(credentials_file).expanduser()),
+                    scopes,
+                )
+                creds = flow.run_local_server(port=0)
+                token_path = Path(token_file).expanduser()
+                GoogleOAuthHelper.ensure_private_parent(token_path)
+                token_path.write_text(creds.to_json(), encoding="utf-8")
+                GoogleOAuthHelper.ensure_private_file(token_path)
+                logger.info("Google auth login completed for realtime upload.")
+            except Exception as exc:
+                logger.error("Google auth login failed: %s", exc, exc_info=True)
+            finally:
+                QtCore.QTimer.singleShot(
+                    0,
+                    self._check_google_auth_status,
+                )
+
+        self.realtime_control_widget.set_google_auth_status(
+            "Google auth: login in progress…"
+        )
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+    def _schedule_gdrive_upload(self, saved_path: str) -> None:
+        key = str(saved_path).strip()
+        if not key or key in self._gdrive_pending_uploads:
+            return
+        self._gdrive_pending_uploads.add(key)
+        delay_ms = int(max(0.0, self._gdrive_auto_upload_delay_sec) * 1000.0)
+
+        def _run() -> None:
+            self._upload_segment_to_gdrive(key)
+
+        QtCore.QTimer.singleShot(delay_ms, _run)
+
+    def _upload_segment_to_gdrive(self, saved_path: str) -> None:
+        try:
+            cfg = load_config()
+            tool = GoogleDriveTool(
+                credentials_file=str(
+                    cfg.tools.google_auth.credentials_file or ""
+                ).strip(),
+                token_file=str(cfg.tools.google_auth.token_file or "").strip(),
+                allow_interactive_auth=bool(
+                    cfg.tools.google_auth.allow_interactive_auth
+                ),
+                allowed_local_roots=[Path(saved_path).expanduser().resolve().parent],
+            )
+            result = asyncio.run(
+                tool.execute(
+                    action="upload_file",
+                    local_path=saved_path,
+                    remote_folder_path=self._gdrive_auto_upload_remote_folder,
+                    skip_if_exists=self._gdrive_auto_upload_skip_if_exists,
+                )
+            )
+            logger.info("Realtime segment Drive upload result: %s", result)
+            self.window.statusBar().showMessage(
+                self.window.tr("Realtime upload result: %s") % (str(result)[:200],)
+            )
+        except Exception as exc:
+            logger.error("Realtime segment Drive upload failed: %s", exc, exc_info=True)
+            self.window.statusBar().showMessage(
+                self.window.tr("Realtime upload failed: %s") % str(exc)
+            )
+        finally:
+            self._gdrive_pending_uploads.discard(str(saved_path).strip())
 
     @QtCore.Slot(str)
     def _on_realtime_error(self, message: str):

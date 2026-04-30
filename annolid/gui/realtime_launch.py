@@ -173,6 +173,10 @@ def build_realtime_launch_payload(
     detection_segment_postbuffer_sec: float = 3.0,
     detection_segment_min_duration_sec: float = 1.0,
     detection_segment_max_duration_sec: float = 120.0,
+    gdrive_auto_upload_enabled: bool = False,
+    gdrive_auto_upload_delay_sec: float = 5.0,
+    gdrive_auto_upload_remote_folder: str = "annolid/realtime_detect",
+    gdrive_auto_upload_skip_if_exists: bool = True,
 ) -> Tuple[RealtimeConfig, dict]:
     model_weight = resolve_realtime_model_weight(model_name)
     camera_value = parse_camera_source(camera_source)
@@ -265,6 +269,14 @@ def build_realtime_launch_payload(
         "save_detection_segments": bool(save_detection_segments),
         "detection_segment_targets": list(config.detection_segment_targets or []),
         "detection_segment_output_dir": str(config.detection_segment_output_dir or ""),
+        "gdrive_auto_upload_enabled": bool(gdrive_auto_upload_enabled),
+        "gdrive_auto_upload_delay_sec": max(
+            0.0, float(gdrive_auto_upload_delay_sec or 0.0)
+        ),
+        "gdrive_auto_upload_remote_folder": str(
+            gdrive_auto_upload_remote_folder or "annolid/realtime_detect"
+        ).strip(),
+        "gdrive_auto_upload_skip_if_exists": bool(gdrive_auto_upload_skip_if_exists),
     }
     if blink_ear_threshold is not None:
         try:

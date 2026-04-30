@@ -124,3 +124,36 @@ def test_detection_segment_recorder_closes_on_repeated_write_failures(
 
     assert recorder._recording is False
     assert recorder._writer is None
+
+
+def test_detection_segment_recorder_reports_completed_segments(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr("annolid.realtime.perception.cv2.VideoWriter", _FakeVideoWriter)
+    monkeypatch.setattr(
+        "annolid.realtime.perception.cv2.VideoWriter_fourcc", lambda *_args: 0
+    )
+
+    cfg = Config(
+        save_detection_segments=True,
+        detection_segment_targets=["person"],
+        detection_segment_output_dir=str(tmp_path),
+        detection_segment_prebuffer_sec=0.0,
+        detection_segment_postbuffer_sec=0.1,
+        detection_segment_min_duration_sec=0.0,
+        detection_segment_max_duration_sec=10.0,
+        max_fps=5.0,
+    )
+    recorder = DetectionSegmentRecorder(cfg)
+    frame = np.zeros((32, 32, 3), dtype=np.uint8)
+
+    recorder.update(frame, 0.0, ["person"])
+    recorder.update(frame, 0.2, [])
+    recorder.update(frame, 0.4, [])
+    recorder.close()
+
+    completed = recorder.pop_completed_segments()
+    assert len(completed) == 1
+    assert completed[0]["path"].endswith(".mp4")
+    assert "duration_sec" in completed[0]
+    assert "labels" in completed[0]

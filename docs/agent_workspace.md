@@ -111,6 +111,65 @@ List my next 3 Google Calendar events
 - `Delete Google Drive file <file_id>`
 - `List my calendar events for this week`
 
+## Video Upload Workflows (Google Drive)
+
+Annolid Bot supports resumable, retry-safe video uploads to Google Drive.
+
+### Upload one video file
+
+Example prompt:
+
+```text
+Use google_drive upload_file for /path/to/video.mp4 into remote_folder_path annolid/saved_videos
+```
+
+Recommended fields:
+
+- `local_path`
+- `remote_folder_id` or `remote_folder_path`
+- `chunk_size_mb` (default 8)
+- `skip_if_exists` (default true, name+size dedupe)
+
+### Upload saved videos in bulk
+
+Example prompt:
+
+```text
+Upload saved videos from /path/to/project/output to Drive folder annolid/saved_videos
+```
+
+This uses `upload_saved_videos` and filters to recent non-realtime video files.
+
+### Upload realtime-detect videos in bulk
+
+Example prompt:
+
+```text
+Upload realtime detect videos from ~/.annolid/realtime to Drive folder annolid/realtime_detect
+```
+
+This uses `upload_realtime_videos` and focuses on realtime/detection-like paths and names.
+
+## Realtime GUI Auto-Upload
+
+In `Realtime Control` -> `Run & Output`:
+
+1. Enable `Save MP4 segments on detections`.
+2. Use `Check Auth` to verify Google OAuth readiness.
+3. Use `Login` to run browser auth if needed.
+4. Enable `Auto-upload saved segments to Google Drive`.
+5. Set `Upload Delay` and `Drive Folder Path` (for example `annolid/realtime_detect`).
+6. Start realtime inference.
+
+When a detection segment is saved to disk, Annolid schedules an automatic Drive upload after the configured delay.
+
+### Reliability behavior
+
+- resumable uploads with chunked transfer
+- retry on transient Drive errors (`429`, `500`, `502`, `503`, `504`)
+- optional skip when same name and size already exists in destination
+- batch result summary with uploaded/skipped/failed counts
+
 ## Troubleshooting
 
 ### Google tool not registered

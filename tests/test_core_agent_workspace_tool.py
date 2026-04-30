@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 from annolid.core.agent.config.schema import GoogleAuthConfig, ToolsConfig
 from annolid.core.agent.tools.google_drive import GoogleDriveTool
@@ -93,3 +94,94 @@ def test_google_drive_tool_list_files_happy_path(monkeypatch):
     result = asyncio.run(tool.execute(action="list_files", max_results=5))
     payload = json.loads(result)
     assert payload["files"][0]["name"] == "a.txt"
+
+
+def test_google_drive_tool_upload_saved_videos_batches_and_skips_realtime(
+    tmp_path: Path, monkeypatch
+):
+    saved_video = tmp_path / "session_saved.mp4"
+    saved_video.write_bytes(b"saved")
+    realtime_video = tmp_path / "realtime_detect_clip.mp4"
+    realtime_video.write_bytes(b"rt")
+
+    tool = GoogleDriveTool(allowed_local_roots=[tmp_path])
+    monkeypatch.setattr(tool, "_get_service", lambda: object())
+    monkeypatch.setattr(
+        tool,
+        "_find_existing_file_by_name_and_size",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tool,
+        "_upload_file_resumable",
+        lambda *args, **kwargs: {"id": "up-1", "name": kwargs["local_path"].name},
+    )
+
+    result = asyncio.run(
+        tool.execute(
+            action="upload_saved_videos",
+            source_dir=str(tmp_path),
+            max_files=10,
+            modified_within_hours=24,
+        )
+    )
+    payload = json.loads(result)
+    assert payload["action"] == "upload_saved_videos"
+    assert payload["uploaded_count"] == 1
+    assert payload["uploaded"][0]["local_path"].endswith("session_saved.mp4")
+
+
+def test_google_drive_tool_upload_realtime_videos_only_realtime(
+    tmp_path: Path, monkeypatch
+):
+    saved_video = tmp_path / "session_saved.mp4"
+    saved_video.write_bytes(b"saved")
+    realtime_dir = tmp_path / "realtime"
+    realtime_dir.mkdir()
+    realtime_video = realtime_dir / "clip.mp4"
+    realtime_video.write_bytes(b"rt")
+
+    tool = GoogleDriveTool(allowed_local_roots=[tmp_path])
+    monkeypatch.setattr(tool, "_get_service", lambda: object())
+    monkeypatch.setattr(
+        tool,
+        "_find_existing_file_by_name_and_size",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tool,
+        "_upload_file_resumable",
+        lambda *args, **kwargs: {"id": "up-2", "name": kwargs["local_path"].name},
+    )
+
+    result = asyncio.run(
+        tool.execute(
+            action="upload_realtime_videos",
+            source_dir=str(tmp_path),
+            max_files=10,
+            modified_within_hours=24,
+        )
+    )
+    payload = json.loads(result)
+    assert payload["action"] == "upload_realtime_videos"
+    assert payload["uploaded_count"] == 1
+    assert payload["uploaded"][0]["local_path"].endswith("realtime/clip.mp4")
+
+
+def test_google_drive_tool_upload_rejects_path_outside_allowed_roots(
+    tmp_path: Path, monkeypatch
+):
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    outside = tmp_path / "outside.mp4"
+    outside.write_bytes(b"x")
+    tool = GoogleDriveTool(allowed_local_roots=[allowed_root])
+    monkeypatch.setattr(tool, "_get_service", lambda: object())
+
+    result = asyncio.run(
+        tool.execute(
+            action="upload_file",
+            local_path=str(outside),
+        )
+    )
+    assert "outside allowed roots" in result.lower()
