@@ -115,7 +115,7 @@ nav:
       - MCP: mcp.md
       - Codex and ACP: codex_and_acp.md
       - Agent Calendar: agent_calendar.md
-      - Google Workspace: agent_workspace.md
+      - Google Integrations: agent_workspace.md
       - Agent Secrets: agent_secrets.md
       - Agent Security: agent_security.md
       - Memory Subsystem: memory.md

@@ -56,9 +56,8 @@ from .sandboxed_shell import SandboxedExecTool
 from .shell_sessions import ExecProcessTool, ExecStartTool
 from .email import EmailTool, ListEmailsTool, ReadEmailTool
 from .calendar import GoogleCalendarTool
+from .google_drive import GoogleDriveTool
 from .box import BoxTool
-from .workspace import GoogleWorkspaceTool
-from .gws_setup import GWSSetupTool
 from .camera import CameraSnapshotTool
 from .coding_harness import (
     CodingSessionCloseTool,
@@ -93,7 +92,7 @@ if TYPE_CHECKING:
         CalendarToolConfig,
         BoxToolConfig,
         EmailChannelConfig,
-        GWSToolConfig,
+        GoogleAuthConfig,
     )
     from annolid.core.agent.scheduler import TaskScheduler
 
@@ -110,8 +109,9 @@ async def register_nanobot_style_tools(
     stack: Any | None = None,
     email_cfg: EmailChannelConfig | None = None,
     calendar_cfg: CalendarToolConfig | None = None,
+    google_auth_cfg: "GoogleAuthConfig | None" = None,
+    google_drive_enabled: bool = False,
     box_cfg: BoxToolConfig | None = None,
-    gws_cfg: "GWSToolConfig | None" = None,
     task_scheduler: "TaskScheduler | None" = None,
     ignored_tools: Sequence[str] = (),
 ) -> None:
@@ -363,62 +363,56 @@ async def register_nanobot_style_tools(
         )
 
     if calendar_cfg and calendar_cfg.enabled:
-        provider_name = str(calendar_cfg.provider or "google").strip().lower()
-        if provider_name == "google":
-            try:
-                calendar_available = GoogleCalendarTool.is_available()
-            except Exception as exc:  # pragma: no cover - defensive guard
+        credentials_file = (
+            str(getattr(google_auth_cfg, "credentials_file", "") or "").strip()
+            or calendar_cfg.credentials_file
+        )
+        token_file = (
+            str(getattr(google_auth_cfg, "token_file", "") or "").strip()
+            or calendar_cfg.token_file
+        )
+        allow_interactive_auth = bool(
+            getattr(google_auth_cfg, "allow_interactive_auth", False)
+            or calendar_cfg.allow_interactive_auth
+        )
+        try:
+            calendar_available = GoogleCalendarTool.is_available()
+        except Exception as exc:  # pragma: no cover - defensive guard
+            calendar_available = False
+            logger.warning(
+                "Calendar tool availability check failed: %s. "
+                "Continuing without calendar tool.",
+                exc,
+            )
+        if calendar_available:
+            calendar_ready, calendar_reason = GoogleCalendarTool.preflight(
+                credentials_file=credentials_file,
+                token_file=token_file,
+                allow_interactive_auth=allow_interactive_auth,
+            )
+            if not calendar_ready:
+                logger.warning(
+                    "Calendar tool is enabled but not ready: %s "
+                    "Set a valid token, add credentials, or enable "
+                    "`allow_interactive_auth` for first-run authorization.",
+                    calendar_reason,
+                )
                 calendar_available = False
-                logger.warning(
-                    "Calendar tool availability check failed: %s. "
-                    "Continuing without calendar tool.",
-                    exc,
+        if calendar_available:
+            registry.register(
+                GoogleCalendarTool(
+                    credentials_file=credentials_file,
+                    token_file=token_file,
+                    allow_interactive_auth=allow_interactive_auth,
+                    calendar_id=calendar_cfg.calendar_id,
+                    timezone_name=calendar_cfg.timezone,
+                    default_event_duration_minutes=calendar_cfg.default_event_duration_minutes,
                 )
-            if calendar_available:
-                calendar_ready, calendar_reason = GoogleCalendarTool.preflight(
-                    credentials_file=calendar_cfg.credentials_file,
-                    token_file=calendar_cfg.token_file,
-                    allow_interactive_auth=bool(calendar_cfg.allow_interactive_auth),
-                )
-                if not calendar_ready:
-                    logger.warning(
-                        "Calendar tool is enabled but not ready: %s "
-                        "Set a valid token, add credentials, or enable "
-                        "`allow_interactive_auth` for first-run authorization.",
-                        calendar_reason,
-                    )
-                    calendar_available = False
-            if calendar_available:
-                registry.register(
-                    GoogleCalendarTool(
-                        credentials_file=calendar_cfg.credentials_file,
-                        token_file=calendar_cfg.token_file,
-                        allow_interactive_auth=bool(
-                            calendar_cfg.allow_interactive_auth
-                        ),
-                        calendar_id=calendar_cfg.calendar_id,
-                        timezone_name=calendar_cfg.timezone,
-                        default_event_duration_minutes=calendar_cfg.default_event_duration_minutes,
-                    )
-                )
-            else:
-                logger.warning(
-                    "Calendar tool is enabled but Google dependencies are missing. "
-                    'Install optional extras with `pip install "annolid[google_calendar]"`.'
-                )
-        elif provider_name == "gws":
-            if GoogleWorkspaceTool.is_available():
-                registry.register(GoogleWorkspaceTool(allowed_services=["calendar"]))
-                logger.info("Calendar tool using gws CLI backend.")
-            else:
-                logger.warning(
-                    "Calendar tool provider is gws but gws is not on PATH. "
-                    "Install with: npm install -g @googleworkspace/cli"
-                )
+            )
         else:
             logger.warning(
-                "Calendar tool provider %r is not supported. Supported providers: google, gws",
-                provider_name,
+                "Calendar tool is enabled but Google dependencies are missing. "
+                'Install optional extras with `pip install "annolid[google_calendar]"`.'
             )
 
     if box_cfg and box_cfg.enabled:
@@ -438,28 +432,51 @@ async def register_nanobot_style_tools(
             )
         )
 
-    # -- Google Workspace CLI tools --
-    if gws_cfg and gws_cfg.enabled:
-        if GoogleWorkspaceTool.is_available():
+    if getattr(calendar_cfg, "enabled", False) and registry.has("google_calendar"):
+        logger.info("Google Calendar tool registered with Google OAuth backend.")
+
+    if google_drive_enabled:
+        credentials_file = str(
+            getattr(google_auth_cfg, "credentials_file", "")
+            or "~/.annolid/agent/google_oauth_credentials.json"
+        ).strip()
+        token_file = str(
+            getattr(google_auth_cfg, "token_file", "")
+            or "~/.annolid/agent/google_oauth_token.json"
+        ).strip()
+        allow_interactive_auth = bool(
+            getattr(google_auth_cfg, "allow_interactive_auth", False)
+        )
+        try:
+            drive_available = GoogleDriveTool.is_available()
+        except Exception as exc:  # pragma: no cover
+            drive_available = False
+            logger.warning("Google Drive availability check failed: %s", exc)
+        if drive_available:
+            drive_ready, drive_reason = GoogleDriveTool.preflight(
+                credentials_file=credentials_file,
+                token_file=token_file,
+                allow_interactive_auth=allow_interactive_auth,
+            )
+            if not drive_ready:
+                logger.warning(
+                    "Google Drive tool is enabled but not ready: %s", drive_reason
+                )
+                drive_available = False
+        if drive_available:
             registry.register(
-                GoogleWorkspaceTool(
-                    allowed_services=gws_cfg.services or None,
+                GoogleDriveTool(
+                    credentials_file=credentials_file,
+                    token_file=token_file,
+                    allow_interactive_auth=allow_interactive_auth,
                 )
             )
-            registry.register(GWSSetupTool())
-            logger.info("Google Workspace CLI tools registered.")
         else:
-            if gws_cfg.auto_install:
-                logger.info(
-                    "gws CLI not found but auto_install is enabled. "
-                    "The gws_setup tool can install it at runtime."
-                )
-                registry.register(GWSSetupTool())
-            else:
-                logger.warning(
-                    "Google Workspace CLI tool is enabled but gws is not on PATH. "
-                    "Install with: npm install -g @googleworkspace/cli"
-                )
+            logger.warning(
+                "Google Drive tool is enabled but unavailable. "
+                'Install optional extras with `pip install "annolid[google_calendar]"` '
+                "and configure shared Google OAuth files."
+            )
 
     if mcp_servers and stack:
         await connect_mcp_servers(mcp_servers, registry, stack)

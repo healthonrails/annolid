@@ -31,6 +31,7 @@ _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "agent-secrets-set",
             "agent-secrets-remove",
             "agent-secrets-migrate",
+            "agent-config-migrate",
             "agent-box-auth-url",
             "agent-box-auth-exchange",
             "agent-box-token-refresh",
@@ -1142,6 +1143,17 @@ def _cmd_agent_secrets_migrate(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def _cmd_agent_config_migrate(args: argparse.Namespace) -> int:
+    from annolid.services.agent_admin import migrate_agent_config_integrations
+
+    payload, exit_code = migrate_agent_config_integrations(
+        config_path=getattr(args, "config", None),
+        apply=bool(getattr(args, "apply", False)),
+    )
+    print(json.dumps(payload, indent=2))
+    return exit_code
+
+
 def _cmd_agent_box_auth_url(args: argparse.Namespace) -> int:
     from annolid.services.agent_box import get_box_oauth_authorize_url
     import webbrowser
@@ -1725,6 +1737,19 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
         p.add_argument("--apply", action="store_true")
         args = p.parse_args(argv[3:])
         return _cmd_agent_secrets_migrate(args)
+
+    # annolid-run agent config migrate
+    if (
+        len(argv) >= 3
+        and argv[0] == "agent"
+        and argv[1] == "config"
+        and argv[2] == "migrate"
+    ):
+        p = argparse.ArgumentParser(prog="annolid-run agent config migrate")
+        p.add_argument("--config", default=None)
+        p.add_argument("--apply", action="store_true")
+        args = p.parse_args(argv[3:])
+        return _cmd_agent_config_migrate(args)
 
     # annolid-run agent security audit
     if (
@@ -2697,6 +2722,21 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Write local secret refs and scrub plaintext values.",
     )
     secrets_migrate_p.set_defaults(_handler=_cmd_agent_secrets_migrate)
+
+    config_migrate_p = sub.add_parser(
+        "agent-config-migrate",
+        help=(
+            "Migrate legacy Google integration settings "
+            "to the current googleAuth/googleDrive structure."
+        ),
+    )
+    config_migrate_p.add_argument("--config", default=None)
+    config_migrate_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write migrated config to disk.",
+    )
+    config_migrate_p.set_defaults(_handler=_cmd_agent_config_migrate)
 
     box_auth_url_p = sub.add_parser(
         "agent-box-auth-url",

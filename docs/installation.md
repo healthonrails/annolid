@@ -85,7 +85,7 @@ Useful extras currently defined in `pyproject.toml` include:
 - `qwen3_embedding`: embedding-related utilities
 - `mediapipe`: MediaPipe-based workflows
 - `cowtracker`: CowTracker backend dependency
-- `annolid_bot`: Annolid Bot integrations such as MCP, Playwright, WhatsApp bridge support, and Google Calendar dependencies
+- `annolid_bot`: Annolid Bot integrations such as MCP, Playwright, WhatsApp bridge support, and Google Drive/Calendar dependencies
 
 Example:
 

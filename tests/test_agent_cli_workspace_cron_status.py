@@ -999,6 +999,55 @@ def test_agent_secrets_migrate_and_audit(tmp_path: Path, monkeypatch, capsys) ->
     assert audit["resolved_ref_paths"] == ["tools.zulip.apiKey"]
 
 
+def test_agent_config_migrate_updates_legacy_gws(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import annolid.core.agent.utils as utils_mod
+    from annolid.core.agent import config as agent_config_mod
+
+    data_dir = tmp_path / "data"
+    config_path = data_dir / "config.json"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "tools": {
+                    "gws": {"enabled": True, "services": ["drive", "calendar"]},
+                    "calendar": {
+                        "credentialsFile": "~/legacy_creds.json",
+                        "tokenFile": "~/legacy_token.json",
+                        "allowInteractiveAuth": True,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(utils_mod, "get_agent_data_path", lambda: data_dir)
+    monkeypatch.setattr(agent_config_mod, "get_config_path", lambda: config_path)
+
+    rc_preview = annolid_run(["agent-config-migrate"])
+    assert rc_preview == 1
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["needs_migration"] is True
+    assert preview["has_legacy_google_workspace"] is True
+    assert preview["has_legacy_gws"] is True
+
+    rc_apply = annolid_run(["agent-config-migrate", "--apply"])
+    assert rc_apply == 0
+    migrated = json.loads(capsys.readouterr().out)
+    assert migrated["migrated"] is True
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    tools = persisted.get("tools") or {}
+    assert "gws" not in tools
+    assert (tools.get("googleDrive") or {}).get("enabled") is True
+    assert (tools.get("googleAuth") or {}).get(
+        "credentialsFile"
+    ) == "~/legacy_creds.json"
+
+
 def test_agent_security_audit_reports_risky_config(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

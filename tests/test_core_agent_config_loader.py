@@ -25,6 +25,8 @@ def test_agent_config_load_creates_default_template(tmp_path: Path) -> None:
     memory = payload.get("memory") or {}
     update = payload.get("update") or {}
     calendar = tools.get("calendar") or {}
+    google_auth = tools.get("googleAuth") or tools.get("google_auth") or {}
+    google_drive = tools.get("googleDrive") or tools.get("google_drive") or {}
     box = tools.get("box") or {}
     email = tools.get("email") or {}
     zulip = tools.get("zulip") or {}
@@ -32,6 +34,9 @@ def test_agent_config_load_creates_default_template(tmp_path: Path) -> None:
     update_auto = update.get("auto") or {}
     assert "enabled" in calendar
     assert "provider" in calendar
+    assert "credentialsFile" in google_auth or "credentials_file" in google_auth
+    assert "tokenFile" in google_auth or "token_file" in google_auth
+    assert "enabled" in google_drive
     assert box.get("enabled") is False
     assert email.get("polling_interval", email.get("pollingInterval")) == 300
     assert zulip.get("polling_interval", zulip.get("pollingInterval")) == 30
@@ -218,6 +223,40 @@ def test_agent_config_migrates_legacy_restrict_to_workspace(tmp_path: Path) -> N
     loaded = load_config(cfg_path)
     assert loaded.tools.exec.timeout == 10
     assert loaded.tools.restrict_to_workspace is True
+
+
+def test_agent_config_migrates_legacy_gws_to_google_integrations(
+    tmp_path: Path,
+) -> None:
+    cfg_path = tmp_path / "config.json"
+    legacy_payload = {
+        "tools": {
+            "gws": {
+                "enabled": True,
+                "services": ["drive", "gmail", "calendar"],
+                "autoInstall": True,
+            },
+            "calendar": {
+                "credentialsFile": "~/legacy_google_credentials.json",
+                "tokenFile": "~/legacy_google_token.json",
+                "allowInteractiveAuth": True,
+            },
+        }
+    }
+    cfg_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    loaded = load_config(cfg_path)
+    assert loaded.tools.google_drive_enabled is True
+    assert (
+        loaded.tools.google_auth.credentials_file == "~/legacy_google_credentials.json"
+    )
+    assert loaded.tools.google_auth.token_file == "~/legacy_google_token.json"
+    assert loaded.tools.google_auth.allow_interactive_auth is True
+
+    save_config(loaded, cfg_path)
+    persisted = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert "gws" not in (persisted.get("tools") or {})
+    assert persisted["tools"]["googleDrive"]["enabled"] is True
 
 
 def test_agent_config_loads_legacy_session_defaults(tmp_path: Path) -> None:

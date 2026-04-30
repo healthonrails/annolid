@@ -28,7 +28,7 @@ or running repeatable workflows through the agent stack.
   </article>
   <article class="ann-card">
     <h3>Workspace and Secrets</h3>
-    <p>Configure Google Workspace, local secret storage, and channel-safe credentials.</p>
+    <p>Configure Google Drive/Calendar integrations, local secret storage, and channel-safe credentials.</p>
     <a href="../agent_workspace/">Open workspace guide</a>
   </article>
   <article class="ann-card">
@@ -42,7 +42,7 @@ or running repeatable workflows through the agent stack.
 
 1. Start with [Annolid Agent and annolid-run](agent_annolid_run.md) for safe CLI execution.
 2. Configure [MCP](mcp.md) if you need external tools or browser/file bridges.
-3. Set up [Google Workspace](agent_workspace.md) and [Agent Secrets](agent_secrets.md) before enabling integrations.
+3. Set up [Google Integrations](agent_workspace.md) and [Agent Secrets](agent_secrets.md) before enabling integrations.
 4. Review [Agent Security](agent_security.md) and [Memory Subsystem](memory.md) before turning on broader automation.
 
 ## What Lives Here
@@ -51,7 +51,7 @@ or running repeatable workflows through the agent stack.
 - bot-assisted model discovery, training help, and background fine-tuning runs,
 - MCP connectivity,
 - Codex and ACP integration notes,
-- calendar and workspace integrations,
+- calendar and Google integrations,
 - secret handling,
 - memory-backed agent behavior,
 - security and operational guardrails.

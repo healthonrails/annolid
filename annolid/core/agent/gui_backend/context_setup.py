@@ -97,15 +97,19 @@ async def prepare_context_tools(
     if include_tools:
         calendar_cfg = getattr(agent_cfg.tools, "calendar", None)
         box_cfg = getattr(agent_cfg.tools, "box", None)
-        gws_cfg = getattr(agent_cfg.tools, "gws", None)
+        google_auth_cfg = getattr(agent_cfg.tools, "google_auth", None)
+        google_drive_enabled = bool(
+            getattr(agent_cfg.tools, "google_drive_enabled", False)
+        )
         await register_nanobot_style_tools(
             tools,
             allowed_dir=workspace,
             allowed_read_roots=allowed_read_roots,
             email_cfg=agent_cfg.tools.email,
             calendar_cfg=calendar_cfg,
+            google_auth_cfg=google_auth_cfg,
+            google_drive_enabled=google_drive_enabled,
             box_cfg=box_cfg,
-            gws_cfg=gws_cfg,
         )
         register_gui_tools(tools)
     t_after_register = time.perf_counter()

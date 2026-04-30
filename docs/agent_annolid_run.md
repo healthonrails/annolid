@@ -249,5 +249,5 @@ list.
 - [Workflows](workflows.md)
 - [Reference](reference.md)
 - [Agent Security](agent_security.md)
-- [Google Workspace](agent_workspace.md)
+- [Google Integrations](agent_workspace.md)
 - [Memory Subsystem](memory.md)

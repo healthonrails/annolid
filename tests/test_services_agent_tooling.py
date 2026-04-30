@@ -139,3 +139,54 @@ def test_describe_agent_capabilities_combines_tools_and_skills(monkeypatch) -> N
     assert payload["tool_pool"]["counts"]["registered"] == 4
     assert payload["skill_pool"]["skill_pool"]["counts"]["available"] == 2
     assert payload["summary"]["suggested_skills"] == 1
+
+
+def test_describe_agent_capabilities_filters_legacy_gws_entries(monkeypatch) -> None:
+    import annolid.services.agent_tooling as tooling_mod
+
+    monkeypatch.setattr(
+        tooling_mod,
+        "describe_agent_tool_pool",
+        lambda **kwargs: {
+            "workspace": str(kwargs.get("workspace") or "/tmp/ws"),
+            "provider": "ollama",
+            "model": "qwen3",
+            "counts": {"registered": 4, "allowed": 3, "denied": 1},
+            "allowed_tools": ["read_file", "gws_setup", "google_calendar"],
+            "denied_tools": ["gws"],
+        },
+    )
+    monkeypatch.setattr(
+        tooling_mod,
+        "describe_agent_skill_pool",
+        lambda **kwargs: {
+            "workspace": str(kwargs.get("workspace") or "/tmp/ws"),
+            "task_hint": str(kwargs.get("task_hint") or ""),
+            "skill_pool": {
+                "counts": {"total": 3, "available": 2, "unavailable": 1, "always": 1},
+                "preview": [
+                    {"name": "weather"},
+                    {"name": "gws-drive"},
+                ],
+                "unavailable_skills": [{"name": "gws-calendar"}],
+                "always_skills": ["weather", "gws-drive"],
+            },
+            "suggested_skills": [{"name": "gws-drive"}, {"name": "weather"}],
+        },
+    )
+
+    payload = tooling_mod.describe_agent_capabilities(
+        workspace="/tmp/ws",
+        provider="ollama",
+        model="qwen3",
+        task_hint="google drive",
+        top_k=3,
+    )
+    assert payload["tool_pool"]["allowed_tools"] == ["read_file", "google_calendar"]
+    assert payload["tool_pool"]["denied_tools"] == []
+    assert payload["tool_pool"]["counts"]["allowed"] == 2
+    assert payload["tool_pool"]["counts"]["denied"] == 0
+    assert payload["skill_pool"]["suggested_skills"] == [{"name": "weather"}]
+    assert payload["skill_pool"]["skill_pool"]["preview"] == [{"name": "weather"}]
+    assert payload["skill_pool"]["skill_pool"]["unavailable_skills"] == []
+    assert payload["skill_pool"]["skill_pool"]["always_skills"] == ["weather"]

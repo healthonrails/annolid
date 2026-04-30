@@ -5,7 +5,7 @@ per-user directories that are **not** on the PATH inherited by
 non-interactive Python processes (e.g. the annolid GUI or scheduled runs).
 
 ``resolve_command`` probes those locations so tools that depend on ``node``,
-``npx``, ``gws``, etc. still work regardless of how they were installed.
+``npx`` and related node tools still work regardless of how they were installed.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ def ensure_node_env() -> dict[str, str]:
     """Return a minimal env dict that includes the resolved node/npm bin dir.
 
     If ``node`` is found via probing, its parent directory is prepended to
-    ``PATH`` so that child processes (e.g. ``gws``, ``npx``) can also find
+    ``PATH`` so that child processes (e.g. ``npx``) can also find
     sibling binaries like ``npm``.
 
     Returns the current ``os.environ`` with the augmented PATH, or the

@@ -403,8 +403,65 @@ def migrate_agent_secrets(
     return payload, 0
 
 
+def migrate_agent_config_integrations(
+    *, config_path: str | Path | None = None, apply: bool = False
+) -> tuple[dict, int]:
+    from annolid.core.agent.config import get_config_path, load_config, save_config
+    from annolid.core.agent.config.secrets import read_raw_agent_config
+
+    resolved_config = (
+        Path(config_path).expanduser() if config_path else get_config_path()
+    )
+    raw_payload = read_raw_agent_config(resolved_config)
+    tools = raw_payload.get("tools")
+    has_legacy_google_workspace = bool(
+        isinstance(tools, dict) and isinstance(tools.get("gws"), dict)
+    )
+    google_auth_present = bool(
+        isinstance(tools, dict)
+        and isinstance(tools.get("googleAuth") or tools.get("google_auth"), dict)
+    )
+    google_drive_present = bool(
+        isinstance(tools, dict)
+        and (
+            isinstance(tools.get("googleDrive"), dict)
+            or isinstance(tools.get("google_drive"), dict)
+        )
+    )
+    needs_migration = has_legacy_google_workspace or not (
+        google_auth_present and google_drive_present
+    )
+    payload = {
+        "config_path": str(resolved_config),
+        "apply": bool(apply),
+        "needs_migration": bool(needs_migration),
+        "has_legacy_google_workspace": has_legacy_google_workspace,
+        # Compatibility alias for older automation that still reads this key.
+        "has_legacy_gws": has_legacy_google_workspace,
+        "google_auth_present": google_auth_present,
+        "google_drive_present": google_drive_present,
+        "actions": [],
+    }
+    if has_legacy_google_workspace:
+        payload["actions"].append(
+            "migrate legacy Google Workspace settings to tools.googleDrive"
+        )
+    if not google_auth_present:
+        payload["actions"].append("add tools.googleAuth defaults")
+    if not google_drive_present:
+        payload["actions"].append("add tools.googleDrive defaults")
+    if not apply:
+        return payload, (1 if needs_migration else 0)
+
+    cfg = load_config(resolved_config)
+    save_config(cfg, resolved_config)
+    payload["migrated"] = True
+    return payload, 0
+
+
 __all__ = [
     "audit_agent_secrets",
+    "migrate_agent_config_integrations",
     "migrate_agent_secrets",
     "remove_agent_secret",
     "run_agent_security_audit",

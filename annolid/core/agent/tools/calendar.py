@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from .function_base import FunctionTool
+from .google_auth import GoogleOAuthHelper
 
 
 class GoogleCalendarTool(FunctionTool):
@@ -26,8 +26,8 @@ class GoogleCalendarTool(FunctionTool):
     def __init__(
         self,
         *,
-        credentials_file: str = "~/.annolid/agent/google_calendar_credentials.json",
-        token_file: str = "~/.annolid/agent/google_calendar_token.json",
+        credentials_file: str = "~/.annolid/agent/google_oauth_credentials.json",
+        token_file: str = "~/.annolid/agent/google_oauth_token.json",
         allow_interactive_auth: bool = False,
         calendar_id: str = "primary",
         timezone_name: str = "",
@@ -135,34 +135,45 @@ class GoogleCalendarTool(FunctionTool):
         except Exception as exc:
             return f"Error: Failed to initialize Google Calendar service: {exc}"
 
-        if action_name == "list_events":
-            max_results = int(kwargs.get("max_results", 10) or 10)
-            return await asyncio.to_thread(self._list_events, service, max_results)
-        if action_name == "create_event":
-            return await asyncio.to_thread(
-                self._create_event,
-                service,
-                str(kwargs.get("summary", "") or "").strip(),
-                str(kwargs.get("start_time", "") or "").strip(),
-                str(kwargs.get("end_time", "") or "").strip(),
-                str(kwargs.get("description", "") or "").strip(),
-                str(kwargs.get("location", "") or "").strip(),
-                str(kwargs.get("recurrence_rule", "") or "").strip(),
-                kwargs.get("recurrence"),
-            )
-        if action_name == "update_event":
-            return await asyncio.to_thread(
-                self._update_event,
-                service,
-                str(kwargs.get("event_id", "") or "").strip(),
-                kwargs,
-            )
-        if action_name == "delete_event":
-            return await asyncio.to_thread(
-                self._delete_event,
-                service,
-                str(kwargs.get("event_id", "") or "").strip(),
-            )
+        try:
+            if action_name == "list_events":
+                max_results = int(kwargs.get("max_results", 10) or 10)
+                return await asyncio.to_thread(self._list_events, service, max_results)
+            if action_name == "create_event":
+                return await asyncio.to_thread(
+                    self._create_event,
+                    service,
+                    str(kwargs.get("summary", "") or "").strip(),
+                    str(kwargs.get("start_time", "") or "").strip(),
+                    str(kwargs.get("end_time", "") or "").strip(),
+                    str(kwargs.get("description", "") or "").strip(),
+                    str(kwargs.get("location", "") or "").strip(),
+                    str(kwargs.get("recurrence_rule", "") or "").strip(),
+                    kwargs.get("recurrence"),
+                )
+            if action_name == "update_event":
+                return await asyncio.to_thread(
+                    self._update_event,
+                    service,
+                    str(kwargs.get("event_id", "") or "").strip(),
+                    kwargs,
+                )
+            if action_name == "delete_event":
+                return await asyncio.to_thread(
+                    self._delete_event,
+                    service,
+                    str(kwargs.get("event_id", "") or "").strip(),
+                )
+        except Exception as exc:
+            message = str(exc or "")
+            if "insufficientpermissions" in message.lower() or "403" in message:
+                return (
+                    "Error: Google Calendar returned 403 insufficient permissions. "
+                    "Re-authorize Google OAuth with calendar scope by setting "
+                    "`tools.googleAuth.allowInteractiveAuth=true` and running a "
+                    "calendar action from an interactive Annolid session."
+                )
+            return f"Error: Google Calendar request failed: {exc}"
         return "Error: Unsupported action."
 
     @classmethod
@@ -197,22 +208,14 @@ class GoogleCalendarTool(FunctionTool):
         token_file: str,
         allow_interactive_auth: bool = False,
     ) -> tuple[bool, str]:
-        token_path = Path(str(token_file or "").strip()).expanduser()
-        credentials_path = Path(str(credentials_file or "").strip()).expanduser()
-        if token_path.exists():
-            return True, ""
-        if credentials_path.exists():
-            if bool(allow_interactive_auth):
-                return True, ""
-            return (
-                False,
-                "Google Calendar credentials exist but interactive auth is disabled "
-                "and no cached token is available.",
-            )
-        return (
-            False,
-            "Google Calendar token and credentials files are both missing.",
+        ready, reason = GoogleOAuthHelper.preflight(
+            credentials_file=credentials_file,
+            token_file=token_file,
+            allow_interactive_auth=allow_interactive_auth,
         )
+        if ready:
+            return (True, "")
+        return (False, f"Google Calendar preflight failed: {reason}")
 
     def _resolve_credentials_path(self) -> Path:
         return Path(self._credentials_file).expanduser()
@@ -240,79 +243,21 @@ class GoogleCalendarTool(FunctionTool):
         except OSError:
             return (True, None)
 
-    @staticmethod
-    def _ensure_private_parent(path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            path.parent.chmod(0o700)
-        except OSError:
-            pass
-
-    @staticmethod
-    def _ensure_private_file(path: Path) -> None:
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
-
-    @staticmethod
-    def _interactive_auth_possible() -> bool:
-        stdin = getattr(sys, "stdin", None)
-        stdout = getattr(sys, "stdout", None)
-        return bool(
-            stdin is not None
-            and stdout is not None
-            and hasattr(stdin, "isatty")
-            and hasattr(stdout, "isatty")
-            and stdin.isatty()
-            and stdout.isatty()
-        )
-
     def _get_service(self) -> Any:
         cache_key = self._service_files_key()
         if self._service_cache is not None and self._service_cache_key == cache_key:
             return self._service_cache
-        Request, Credentials, InstalledAppFlow, build = self._import_google_modules()
-        creds = None
-        token_path = self._resolve_token_path()
-        credentials_path = self._resolve_credentials_path()
-        self._ensure_private_parent(token_path)
-        if credentials_path.exists():
-            self._ensure_private_file(credentials_path)
-        if token_path.exists():
-            try:
-                creds = Credentials.from_authorized_user_file(
-                    str(token_path), self._SCOPES
-                )
-            except Exception:
-                creds = None
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                if not self._allow_interactive_auth:
-                    raise RuntimeError(
-                        "Google Calendar token is unavailable. Enable "
-                        "`allow_interactive_auth` to authorize once from an "
-                        "interactive session, or provide a valid cached token file."
-                    )
-                if not self._interactive_auth_possible():
-                    raise RuntimeError(
-                        "Google Calendar requires interactive OAuth, but no TTY is "
-                        "available for local authorization."
-                    )
-                if not credentials_path.exists():
-                    raise FileNotFoundError(
-                        "Google Calendar credentials file not found at "
-                        f"{credentials_path}"
-                    )
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    str(credentials_path), self._SCOPES
-                )
-                creds = flow.run_local_server(port=0)
-            token_path.write_text(creds.to_json(), encoding="utf-8")
-            self._ensure_private_file(token_path)
-        self._service_cache = build("calendar", "v3", credentials=creds)
+        _, _, _, build = self._import_google_modules()
+        creds = GoogleOAuthHelper.get_credentials(
+            credentials_file=self._credentials_file,
+            token_file=self._token_file,
+            scopes=self._SCOPES,
+            allow_interactive_auth=self._allow_interactive_auth,
+            service_label="Google Calendar",
+        )
+        self._service_cache = build(
+            "calendar", "v3", credentials=creds, cache_discovery=False
+        )
         self._service_cache_key = cache_key
         return self._service_cache
 

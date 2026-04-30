@@ -3,9 +3,93 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
+
+_LEGACY_GWS_NAME_RE = re.compile(
+    r"^(?:gws(?:$|[-_].*)|google_workspace(?:$|[-_].*))$",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_legacy_gws_name(name: str) -> bool:
+    return bool(_LEGACY_GWS_NAME_RE.match(str(name or "").strip()))
+
+
+def _sanitize_capability_payload(
+    tool_pool: dict[str, Any],
+    skill_pool: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    sanitized_tool_pool = dict(tool_pool or {})
+    allowed_tools = [
+        str(name)
+        for name in list(sanitized_tool_pool.get("allowed_tools") or [])
+        if str(name).strip() and not _is_legacy_gws_name(str(name))
+    ]
+    denied_tools = [
+        str(name)
+        for name in list(sanitized_tool_pool.get("denied_tools") or [])
+        if str(name).strip() and not _is_legacy_gws_name(str(name))
+    ]
+    counts = dict(sanitized_tool_pool.get("counts") or {})
+    sanitized_tool_pool["allowed_tools"] = allowed_tools
+    sanitized_tool_pool["denied_tools"] = denied_tools
+    counts["allowed"] = len(allowed_tools)
+    counts["denied"] = len(denied_tools)
+    counts["registered"] = counts.get(
+        "registered", len(allowed_tools) + len(denied_tools)
+    )
+    sanitized_tool_pool["counts"] = counts
+
+    sanitized_skill_pool = dict(skill_pool or {})
+    nested_pool = dict(sanitized_skill_pool.get("skill_pool") or {})
+    original_preview_rows = list(nested_pool.get("preview") or [])
+    original_unavailable_rows = list(nested_pool.get("unavailable_skills") or [])
+    preview_rows = [
+        row
+        for row in original_preview_rows
+        if not _is_legacy_gws_name(str((row or {}).get("name") or ""))
+    ]
+    unavailable_rows = [
+        row
+        for row in original_unavailable_rows
+        if not _is_legacy_gws_name(str((row or {}).get("name") or ""))
+    ]
+    always_skills = [
+        str(name)
+        for name in list(nested_pool.get("always_skills") or [])
+        if str(name).strip() and not _is_legacy_gws_name(str(name))
+    ]
+    suggested_skills = [
+        row
+        for row in list(sanitized_skill_pool.get("suggested_skills") or [])
+        if not _is_legacy_gws_name(str((row or {}).get("name") or ""))
+    ]
+    nested_counts = dict(nested_pool.get("counts") or {})
+    if nested_counts:
+        nested_counts["always"] = len(always_skills)
+        removed_available = max(0, len(original_preview_rows) - len(preview_rows))
+        removed_unavailable = max(
+            0, len(original_unavailable_rows) - len(unavailable_rows)
+        )
+        nested_counts["available"] = max(
+            0, int(nested_counts.get("available") or 0) - removed_available
+        )
+        nested_counts["unavailable"] = max(
+            0, int(nested_counts.get("unavailable") or 0) - removed_unavailable
+        )
+        nested_counts["total"] = (
+            nested_counts["available"] + nested_counts["unavailable"]
+        )
+    nested_pool["preview"] = preview_rows
+    nested_pool["unavailable_skills"] = unavailable_rows
+    nested_pool["always_skills"] = always_skills
+    nested_pool["counts"] = nested_counts
+    sanitized_skill_pool["skill_pool"] = nested_pool
+    sanitized_skill_pool["suggested_skills"] = suggested_skills
+    return sanitized_tool_pool, sanitized_skill_pool
 
 
 def validate_agent_tools() -> tuple[dict[str, object], int]:
@@ -132,8 +216,9 @@ def describe_agent_tool_pool(
             allowed_read_roots=cfg.tools.allowed_read_roots,
             email_cfg=cfg.tools.email,
             calendar_cfg=cfg.tools.calendar,
+            google_auth_cfg=cfg.tools.google_auth,
+            google_drive_enabled=bool(cfg.tools.google_drive_enabled),
             box_cfg=cfg.tools.box,
-            gws_cfg=cfg.tools.gws,
             mcp_servers=cfg.tools.mcp_servers,
             stack=None,
         )
@@ -220,6 +305,7 @@ def describe_agent_capabilities(
         task_hint=task_hint,
         top_k=top_k,
     )
+    tool_pool, skill_pool = _sanitize_capability_payload(tool_pool, skill_pool)
     return {
         "workspace": tool_pool["workspace"],
         "provider": tool_pool["provider"],

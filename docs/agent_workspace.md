@@ -1,251 +1,172 @@
-# Google Workspace Integration
+# Google Integrations
 
-Annolid Bot can interact with Google Workspace services (Drive, Gmail, Calendar, Sheets, Docs, Chat and more) through the [Google Workspace CLI (gws)](https://github.com/googleworkspace/cli).
+Annolid Bot now supports native Google API integrations with shared OAuth credentials.
+
+Current tools:
+
+- `google_drive` (optional, enabled by config)
+- `google_calendar` (optional, enabled by config)
+
+The Google OAuth token/credentials are shared so Drive and Calendar use one local auth setup. This also prepares a single auth surface for future Gmail tooling.
+
+## What Changed
+
+The legacy Google Workspace CLI (`gws`) path and `gws_setup` tool are removed.
+
+- no `gws` install step
+- no `tools.gws` config block
+- no `gws-*` skill symlinks
+
+Use the native `google_drive` and `google_calendar` tools instead.
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) 18 or later
-- npm (included with Node.js)
-
-## Quick Start
-
-### 1. Install the CLI
+Install Annolid with the bot integrations bundle:
 
 ```bash
-npm install -g @googleworkspace/cli
+pip install "annolid[annolid_bot]"
 ```
 
-### 2. Authenticate
+(Equivalent editable install works too: `pip install -e ".[annolid_bot]"`.)
 
-If you have `gcloud` installed:
+## Shared OAuth Files
 
-```bash
-gws auth setup
-```
+Default paths:
 
-If you do not have `gcloud`, use the manual OAuth flow and then:
+- OAuth client credentials: `~/.annolid/agent/google_oauth_credentials.json`
+- Cached OAuth token: `~/.annolid/agent/google_oauth_token.json`
 
-```bash
-gws auth login
-```
+`google_oauth_credentials.json` is your Google Cloud OAuth client JSON.
+`google_oauth_token.json` is generated locally after successful OAuth auth.
 
-Verify authentication:
+Annolid tries to keep them private:
 
-```bash
-gws auth status
-```
-
-### 3. Enable in Annolid Config
-
-Add the `gws` block to `~/.annolid/config.json`:
-
-```json
-{
-  "tools": {
-    "gws": {
-      "enabled": true,
-      "services": ["drive", "gmail", "calendar", "sheets", "slides"]
-    }
-  }
-}
-```
-
-### 4. Link Skills
-
-The agent can set up skills automatically. Ask the bot:
-
-```text
-Set up Google Workspace skills
-```
-
-This clones the [gws repo](https://github.com/googleworkspace/cli) to `~/.annolid/gws-cli/` and symlinks the `gws-*` skill directories into `~/.annolid/workspace/skills/`.
-
-You can also do it manually:
-
-```bash
-git clone --depth 1 https://github.com/googleworkspace/cli.git ~/.annolid/gws-cli
-mkdir -p ~/.annolid/workspace/skills
-ln -s ~/.annolid/gws-cli/skills/gws-shared ~/.annolid/workspace/skills/
-ln -s ~/.annolid/gws-cli/skills/gws-drive ~/.annolid/workspace/skills/
-ln -s ~/.annolid/gws-cli/skills/gws-gmail ~/.annolid/workspace/skills/
-ln -s ~/.annolid/gws-cli/skills/gws-calendar ~/.annolid/workspace/skills/
-ln -s ~/.annolid/gws-cli/skills/gws-sheets ~/.annolid/workspace/skills/
-ln -s ~/.annolid/gws-cli/skills/gws-slides ~/.annolid/workspace/skills/
-```
+- file mode: `0600`
+- parent dir mode: `0700`
 
 ## Config Reference
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `false` | Register the Google Workspace tool |
-| `auto_install` | bool | `false` | Register the setup tool even when `gws` is not on PATH |
-| `services` | list | `["drive", "gmail", "calendar", "sheets"]` | Workspace services to expose |
-
-Full example with all options:
+Configure in `~/.annolid/config.json`:
 
 ```json
 {
   "tools": {
-    "gws": {
-      "enabled": true,
-      "autoInstall": false,
-      "services": ["drive", "gmail", "calendar", "sheets", "docs", "chat"]
-    }
-  }
-}
-```
-
-## How It Works
-
-```
-Agent decides it needs a Google Workspace action
-  → Invokes a gws-* skill for guidance
-  → Calls the google_workspace tool
-  → Tool shells out to the gws CLI
-  → gws uses stored OAuth credentials
-  → Structured JSON result returned to agent
-```
-
-The `google_workspace` tool accepts:
-
-- **service** — which Workspace API (drive, gmail, calendar, sheets, docs, chat, etc.)
-- **resource** — API resource within the service (e.g. `files`, `users`, `events`)
-- **method** — method to invoke (e.g. `list`, `create`, `get`, `send`)
-- **params** — JSON-encoded query parameters
-- **json_body** — JSON-encoded request body
-- **extra_flags** — additional CLI flags like `--page-all` or `--dry-run`
-
-## Available Skills
-
-Recommended starter set:
-
-| Skill | Description |
-|-------|-------------|
-| `gws-shared` | Shared auth patterns, global flags, auto-install block |
-| `gws-drive` | List, upload, download, manage Drive files and folders |
-| `gws-gmail` | Send, read, list, and search email |
-| `gws-calendar` | List, create, and manage calendar events |
-| `gws-sheets` | Read, write, and append to spreadsheets |
-
-Additional skills available in the gws repo:
-
-| Skill | Description |
-|-------|-------------|
-| `gws-docs` | Read and write Google Docs |
-| `gws-slides` | Read and write presentations |
-| `gws-chat` | Manage Chat spaces and messages |
-| `gws-tasks` | Manage task lists and tasks |
-| `gws-people` | Manage contacts and profiles |
-| `gws-forms` | Read and write Google Forms |
-| `gws-meet` | Manage Google Meet conferences |
-
-To link all available skills at once:
-
-```bash
-ln -s ~/.annolid/gws-cli/skills/gws-* ~/.annolid/workspace/skills/
-```
-
-## GWS Setup Tool
-
-The `gws_setup` tool provides bootstrap actions:
-
-| Action | Description |
-|--------|-------------|
-| `check` | Verify gws is installed, npm is available, check linked skills |
-| `install` | Install gws via `npm install -g @googleworkspace/cli` |
-| `auth_status` | Run `gws auth status` to check authentication |
-| `link_skills` | Clone the gws repo and symlink skills into `~/.annolid/workspace/skills/` |
-| `update_skills` | Pull latest changes in the cloned repo |
-
-## Calendar with GWS Backend
-
-Instead of the OAuth-based `GoogleCalendarTool`, you can use `gws` as the calendar backend:
-
-```json
-{
-  "tools": {
+    "google_auth": {
+      "credentialsFile": "~/.annolid/agent/google_oauth_credentials.json",
+      "tokenFile": "~/.annolid/agent/google_oauth_token.json",
+      "allowInteractiveAuth": false
+    },
+    "google_drive": {
+      "enabled": true
+    },
     "calendar": {
       "enabled": true,
-      "provider": "gws"
+      "calendarId": "primary",
+      "timezone": "America/New_York",
+      "defaultEventDurationMinutes": 30
     }
   }
 }
 ```
 
-This delegates calendar operations to the `gws` CLI, using its own stored credentials instead of separate Google API OAuth tokens.
+Field summary:
+
+- `tools.google_auth.credentialsFile`: shared Google OAuth client file.
+- `tools.google_auth.tokenFile`: shared cached token file.
+- `tools.google_auth.allowInteractiveAuth`: allow browser OAuth when token is missing/invalid.
+- `tools.google_drive.enabled`: register `google_drive` tool.
+- `tools.calendar.enabled`: register `google_calendar` tool.
+
+## First-Time OAuth Setup
+
+1. Put your Google OAuth client JSON at `credentialsFile`.
+2. Set `tools.google_auth.allowInteractiveAuth=true`.
+3. Start Annolid from an interactive terminal:
+
+```bash
+annolid
+```
+
+4. Trigger a Drive or Calendar action in Annolid Bot, for example:
+
+```text
+List my latest 5 Google Drive files
+```
+
+or
+
+```text
+List my next 3 Google Calendar events
+```
+
+5. Complete browser OAuth.
+6. Confirm token is created at `tokenFile`.
+7. Optionally set `allowInteractiveAuth=false` again for safer background operation.
 
 ## Example Prompts
 
-Once set up, try these prompts with the agent:
-
-- *"List my latest 5 Drive files"*
-- *"Send an email to alice@example.com about the meeting tomorrow"*
-- *"Show my calendar events for this week"*
-- *"Read the first 10 rows from my Budget spreadsheet"*
-- *"Create a new Google Doc called Meeting Notes"*
-- *"Check my Google Workspace setup status"*
-
-## Updating Skills
-
-Skills are symlinked from the cloned repo, so updating is a single command:
-
-```bash
-git -C ~/.annolid/gws-cli pull
-```
-
-Or ask the agent:
-
-```text
-Update my Google Workspace skills
-```
+- `List my latest 5 Google Drive files`
+- `Show details for Google Drive file <file_id>`
+- `Create a Google Drive folder named Lab Notes`
+- `Delete Google Drive file <file_id>`
+- `List my calendar events for this week`
 
 ## Troubleshooting
 
-### gws command not found
+### Google tool not registered
 
-Install the CLI:
+Check:
 
-```bash
-npm install -g @googleworkspace/cli
+- `tools.google_drive.enabled=true` for Drive
+- `tools.calendar.enabled=true` for Calendar
+- required Python deps installed (`annolid[annolid_bot]`)
+
+Restart Annolid after config changes.
+
+### OAuth token missing and no browser prompt
+
+Set:
+
+```json
+{
+  "tools": {
+    "google_auth": {
+      "allowInteractiveAuth": true
+    }
+  }
+}
 ```
 
-Confirm it is on your PATH:
+Then relaunch Annolid from an interactive terminal and retry a Google action.
 
-```bash
-which gws
+### Access blocked (Error 403: access_denied)
+
+If Google shows:
+
+```text
+Access blocked: <your app> has not completed the Google verification process
+Error 403: access_denied
 ```
 
-### Authentication errors
+your OAuth app is usually in `Testing` mode and the signed-in Gmail account is not approved.
 
-Re-authenticate:
+Fix:
 
-```bash
-gws auth login
-```
+1. Open [Google Cloud Console](https://console.cloud.google.com/) for the same project as your OAuth client.
+2. Go to `APIs & Services` -> `OAuth consent screen`.
+3. Check `Publishing status`.
+4. If status is `Testing`, add your Gmail account under `Test users`.
+5. Save changes and retry Annolid auth.
+6. If you need broader user access, publish to `Production` and complete Google verification for sensitive/restricted scopes.
 
-Or set up from scratch:
+Notes:
 
-```bash
-gws auth setup
-```
+- `Internal` app type only allows users in the same Google Workspace organization.
+- Workspace org policies can block external OAuth clients until an admin approves them.
 
-### Skills not appearing
+### Credentials/token path issues
 
-Verify symlinks exist:
-
-```bash
-ls -la ~/.annolid/workspace/skills/gws-*
-```
-
-If empty, re-link:
-
-```bash
-ln -s ~/.annolid/gws-cli/skills/gws-* ~/.annolid/workspace/skills/
-```
-
-### Tool not registered
-
-Check that `tools.gws.enabled` is `true` in `~/.annolid/config.json` and restart Annolid.
+Verify configured paths in `~/.annolid/config.json` and ensure files are readable/writable.
 
 ## Related Docs
 

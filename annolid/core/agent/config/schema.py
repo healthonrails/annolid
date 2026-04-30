@@ -314,8 +314,8 @@ class ZulipChannelConfig:
 class CalendarToolConfig:
     enabled: bool = False
     provider: str = "google"
-    credentials_file: str = "~/.annolid/agent/google_calendar_credentials.json"
-    token_file: str = "~/.annolid/agent/google_calendar_token.json"
+    credentials_file: str = "~/.annolid/agent/google_oauth_credentials.json"
+    token_file: str = "~/.annolid/agent/google_oauth_token.json"
     allow_interactive_auth: bool = False
     calendar_id: str = "primary"
     timezone: str = ""
@@ -330,12 +330,12 @@ class CalendarToolConfig:
             credentials_file=str(
                 payload.get("credentials_file")
                 or payload.get("credentialsFile")
-                or "~/.annolid/agent/google_calendar_credentials.json"
+                or "~/.annolid/agent/google_oauth_credentials.json"
             ),
             token_file=str(
                 payload.get("token_file")
                 or payload.get("tokenFile")
-                or "~/.annolid/agent/google_calendar_token.json"
+                or "~/.annolid/agent/google_oauth_token.json"
             ),
             allow_interactive_auth=bool(
                 payload.get(
@@ -739,36 +739,38 @@ class ToolPolicyConfig:
 
 
 @dataclass
-class GWSToolConfig:
-    enabled: bool = False
-    auto_install: bool = False
-    services: list[str] = field(
-        default_factory=lambda: ["drive", "gmail", "calendar", "sheets"]
-    )
+class GoogleAuthConfig:
+    credentials_file: str = "~/.annolid/agent/google_oauth_credentials.json"
+    token_file: str = "~/.annolid/agent/google_oauth_token.json"
+    allow_interactive_auth: bool = False
 
     @classmethod
-    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GWSToolConfig":
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GoogleAuthConfig":
         payload = data or {}
-        services_raw = payload.get(
-            "services", ["drive", "gmail", "calendar", "sheets", "slides"]
-        )
-        if isinstance(services_raw, (list, tuple)):
-            services = [str(s).strip().lower() for s in services_raw if str(s).strip()]
-        else:
-            services = ["drive", "gmail", "calendar", "sheets", "slides"]
         return cls(
-            enabled=bool(payload.get("enabled", False)),
-            auto_install=bool(
-                payload.get("auto_install", payload.get("autoInstall", False))
+            credentials_file=str(
+                payload.get("credentials_file")
+                or payload.get("credentialsFile")
+                or "~/.annolid/agent/google_oauth_credentials.json"
             ),
-            services=services,
+            token_file=str(
+                payload.get("token_file")
+                or payload.get("tokenFile")
+                or "~/.annolid/agent/google_oauth_token.json"
+            ),
+            allow_interactive_auth=bool(
+                payload.get(
+                    "allow_interactive_auth",
+                    payload.get("allowInteractiveAuth", False),
+                )
+            ),
         )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "enabled": self.enabled,
-            "auto_install": self.auto_install,
-            "services": list(self.services),
+            "credentials_file": self.credentials_file,
+            "token_file": self.token_file,
+            "allow_interactive_auth": self.allow_interactive_auth,
         }
 
 
@@ -785,8 +787,9 @@ class ToolsConfig:
     whatsapp: WhatsAppChannelConfig = field(default_factory=WhatsAppChannelConfig)
     zulip: ZulipChannelConfig = field(default_factory=ZulipChannelConfig)
     calendar: CalendarToolConfig = field(default_factory=CalendarToolConfig)
+    google_auth: GoogleAuthConfig = field(default_factory=GoogleAuthConfig)
+    google_drive_enabled: bool = False
     box: BoxToolConfig = field(default_factory=BoxToolConfig)
-    gws: GWSToolConfig = field(default_factory=GWSToolConfig)
     by_provider: Dict[str, ToolPolicyConfig] = field(default_factory=dict)
 
     @classmethod
@@ -835,9 +838,15 @@ class ToolsConfig:
         whatsapp_cfg = WhatsAppChannelConfig.from_dict(payload.get("whatsapp"))
         zulip_cfg = ZulipChannelConfig.from_dict(payload.get("zulip"))
         calendar_cfg = CalendarToolConfig.from_dict(payload.get("calendar"))
+        google_auth_cfg = GoogleAuthConfig.from_dict(payload.get("google_auth"))
         box_cfg = BoxToolConfig.from_dict(payload.get("box"))
-        gws_cfg = GWSToolConfig.from_dict(payload.get("gws"))
         exec_cfg = ExecToolConfig.from_dict(payload.get("exec"))
+        drive_raw = payload.get("google_drive", {})
+        drive_enabled = False
+        if isinstance(drive_raw, dict):
+            drive_enabled = bool(drive_raw.get("enabled", False))
+        elif isinstance(drive_raw, bool):
+            drive_enabled = drive_raw
         return cls(
             exec=exec_cfg,
             restrict_to_workspace=bool(restrict_value),
@@ -850,8 +859,9 @@ class ToolsConfig:
             whatsapp=whatsapp_cfg,
             zulip=zulip_cfg,
             calendar=calendar_cfg,
+            google_auth=google_auth_cfg,
+            google_drive_enabled=drive_enabled,
             box=box_cfg,
-            gws=gws_cfg,
             by_provider=by_provider,
         )
 
@@ -867,8 +877,9 @@ class ToolsConfig:
             "whatsapp": self.whatsapp.to_dict(),
             "zulip": self.zulip.to_dict(),
             "calendar": self.calendar.to_dict(),
+            "google_auth": self.google_auth.to_dict(),
+            "google_drive": {"enabled": self.google_drive_enabled},
             "box": self.box.to_dict(),
-            "gws": self.gws.to_dict(),
             "mcp_servers": {
                 name: cfg.to_dict() for name, cfg in self.mcp_servers.items()
             },

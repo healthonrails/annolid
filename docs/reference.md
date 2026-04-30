@@ -64,10 +64,10 @@ annolid-run agent acp bridge --workspace /path/to/repo
   `~/.annolid/config.json`
 - Annolid agent local private secret store:
   `~/.annolid/agent_secrets.json`
-- Annolid agent Google Calendar credentials:
-  `~/.annolid/agent/google_calendar_credentials.json`
-- Annolid agent Google Calendar cached token:
-  `~/.annolid/agent/google_calendar_token.json`
+- Annolid agent shared Google OAuth credentials:
+  `~/.annolid/agent/google_oauth_credentials.json`
+- Annolid agent shared Google OAuth cached token:
+  `~/.annolid/agent/google_oauth_token.json`
 - Annolid agent sessions directory:
   `~/.annolid/sessions/`
 - LabelMe/GUI-style user config:

@@ -117,7 +117,7 @@ Current supported extras:
 | `image_editing` | diffusion-based image editing/generation dependencies | You are preparing augmented training images (inpainting/background edits) as part of annotation or data curation. |
 | `text_to_speech` | built-in narration/read-aloud features | You want captions/notes read aloud during review, accessibility workflows, or hands-free labeling sessions. |
 | `qwen3_embedding` | Qwen3-based embedding/multimodal utilities | You plan to run embedding-powered retrieval/comparison flows that rely on the Qwen3 stack. |
-| `annolid_bot` | bundled Annolid Bot integrations (WhatsApp + Google Calendar + MCP) | You want background services/integrations without installing each Bot extra individually. |
+| `annolid_bot` | bundled Annolid Bot integrations (WhatsApp + Google Drive/Calendar + MCP) | You want background services/integrations without installing each Bot extra individually. |
 
 ### Practical install suggestions
 

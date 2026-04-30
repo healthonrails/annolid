@@ -61,6 +61,50 @@ def _migrate_config(data: Dict[str, Any]) -> Dict[str, Any]:
                 tools[key] = bool(exec_cfg.pop(key))
             elif camel in exec_cfg and key not in tools and camel not in tools:
                 tools[key] = bool(exec_cfg.pop(camel))
+
+        # Legacy Google Workspace CLI migration:
+        # tools.gws -> tools.google_drive (+ shared tools.google_auth from calendar paths)
+        legacy_gws = tools.get("gws")
+        if isinstance(legacy_gws, dict):
+            if "google_drive" not in tools:
+                services = legacy_gws.get("services", [])
+                enabled = bool(legacy_gws.get("enabled", False))
+                drive_enabled = enabled
+                if isinstance(services, (list, tuple)):
+                    normalized = {str(item).strip().lower() for item in services}
+                    drive_enabled = enabled and (
+                        not normalized or "drive" in normalized
+                    )
+                tools["google_drive"] = {"enabled": bool(drive_enabled)}
+
+            if "google_auth" not in tools:
+                calendar_cfg = tools.get("calendar")
+                credentials_file = "~/.annolid/agent/google_oauth_credentials.json"
+                token_file = "~/.annolid/agent/google_oauth_token.json"
+                allow_interactive_auth = False
+                if isinstance(calendar_cfg, dict):
+                    credentials_file = str(
+                        calendar_cfg.get("credentials_file")
+                        or calendar_cfg.get("credentialsFile")
+                        or credentials_file
+                    )
+                    token_file = str(
+                        calendar_cfg.get("token_file")
+                        or calendar_cfg.get("tokenFile")
+                        or token_file
+                    )
+                    allow_interactive_auth = bool(
+                        calendar_cfg.get("allow_interactive_auth")
+                        if "allow_interactive_auth" in calendar_cfg
+                        else calendar_cfg.get("allowInteractiveAuth", False)
+                    )
+                tools["google_auth"] = {
+                    "credentials_file": credentials_file,
+                    "token_file": token_file,
+                    "allow_interactive_auth": allow_interactive_auth,
+                }
+
+            tools.pop("gws", None)
     return migrated
 
 

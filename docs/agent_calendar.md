@@ -1,17 +1,17 @@
 # Agent Calendar
 
-This page documents how Annolid Bot uses Google Calendar credentials, cached OAuth tokens, and token renewal.
+This page documents how Annolid Bot uses Google Calendar with shared Google OAuth credentials.
 
 ## Google Calendar Files
 
-Annolid reads Google Calendar settings from `~/.annolid/config.json`.
+Annolid reads settings from `~/.annolid/config.json`.
 
-Default paths:
+Default shared paths:
 
-- OAuth client credentials: `~/.annolid/agent/google_calendar_credentials.json`
-- Cached OAuth token: `~/.annolid/agent/google_calendar_token.json`
+- OAuth client credentials: `~/.annolid/agent/google_oauth_credentials.json`
+- Cached OAuth token: `~/.annolid/agent/google_oauth_token.json`
 
-The credentials file is the Google OAuth client JSON downloaded from Google Cloud. The token file is created locally after a successful interactive OAuth flow.
+These files are shared by Google Calendar and Google Drive tools.
 
 Annolid keeps these files private when possible:
 
@@ -25,15 +25,16 @@ Example config block:
 ```json
 {
   "tools": {
+    "google_auth": {
+      "credentialsFile": "~/.annolid/agent/google_oauth_credentials.json",
+      "tokenFile": "~/.annolid/agent/google_oauth_token.json",
+      "allowInteractiveAuth": false
+    },
     "calendar": {
       "enabled": true,
-      "provider": "google",
-      "credentialsFile": "~/.annolid/agent/google_calendar_credentials.json",
-      "tokenFile": "~/.annolid/agent/google_calendar_token.json",
       "calendarId": "primary",
       "timezone": "America/New_York",
-      "defaultEventDurationMinutes": 30,
-      "allowInteractiveAuth": false
+      "defaultEventDurationMinutes": 30
     }
   }
 }
@@ -41,134 +42,119 @@ Example config block:
 
 Important fields:
 
-- `enabled`: enables Google Calendar tool registration.
-- `credentialsFile`: path to the Google OAuth client JSON.
-- `tokenFile`: path to the locally cached OAuth token.
-- `allowInteractiveAuth`: allows Annolid to open the browser-based OAuth flow when no valid cached token is available.
+- `tools.calendar.enabled`: enables calendar tool registration.
+- `tools.google_auth.credentialsFile`: shared Google OAuth client JSON path.
+- `tools.google_auth.tokenFile`: shared cached token path.
+- `tools.google_auth.allowInteractiveAuth`: allows browser OAuth when no usable token exists.
 
 ## Default Behavior
 
-Annolid is cache-first by default:
+Annolid is cache-first:
 
-1. If the token file exists, Annolid uses it.
-2. If the token is expired but refreshable, Google auth refreshes it.
-3. If no usable token exists, Annolid only starts the OAuth browser flow when `allowInteractiveAuth=true`.
-4. If `allowInteractiveAuth=false` and no valid token exists, the Google Calendar tool is skipped or returns an actionable error instead of opening a browser unexpectedly.
+1. If token exists, Annolid uses it.
+2. If token is expired but refreshable, Google auth refreshes it.
+3. If no usable token exists, browser OAuth starts only when `allowInteractiveAuth=true`.
+4. If `allowInteractiveAuth=false` and no valid token exists, the tool is skipped or returns an actionable error.
 
-This is intentional so background agents do not trigger OAuth prompts.
+This prevents unexpected OAuth prompts in background sessions.
 
 ## First-Time Authentication
 
-Use this flow when `google_calendar_token.json` does not exist yet.
+Use this when `google_oauth_token.json` does not exist.
 
-1. Put your Google OAuth credentials JSON at the configured `credentialsFile` path.
-2. Set `tools.calendar.allowInteractiveAuth` to `true` in `~/.annolid/config.json`.
-3. Launch Annolid from an interactive terminal session:
+1. Put your Google OAuth credentials JSON at configured `credentialsFile`.
+2. Set `tools.google_auth.allowInteractiveAuth=true`.
+3. Launch Annolid from an interactive terminal:
 
 ```bash
 annolid
 ```
 
-4. Open a fresh Annolid Bot session.
-5. Ask the bot to perform a calendar action, for example:
+4. Ask the bot to perform a calendar action:
 
 ```text
 List my next 3 Google Calendar events
 ```
 
-6. Complete the browser-based Google OAuth flow.
-7. Confirm that the token file now exists at the configured `tokenFile` path.
-8. Set `allowInteractiveAuth` back to `false` if you want the safer background default.
+5. Complete browser OAuth.
+6. Confirm token file exists at configured `tokenFile`.
+7. Optionally set `allowInteractiveAuth=false` again.
 
 ## Token Renewal
 
-If the cached token has expired and can no longer be refreshed, re-authenticate:
+If token is expired and cannot refresh:
 
-1. Confirm that `credentialsFile` still points to a valid Google OAuth client JSON.
-2. Set `tools.calendar.allowInteractiveAuth=true`.
-3. Remove the stale token file at the configured `tokenFile` path.
-4. Launch Annolid from a terminal:
-
-```bash
-annolid
-```
-
+1. Confirm `credentialsFile` points to a valid OAuth client JSON.
+2. Set `tools.google_auth.allowInteractiveAuth=true`.
+3. Remove stale token file.
+4. Relaunch Annolid from terminal.
 5. Trigger a calendar action again.
-6. Complete the OAuth flow in the browser.
-7. Verify that a new token file was written.
-8. Optionally set `allowInteractiveAuth=false` again after renewal.
+6. Complete OAuth flow.
+7. Verify new token file.
+8. Optionally set `allowInteractiveAuth=false`.
 
 ## Common Failure Cases
 
 ### Token file is never created
 
-Check all of the following:
+Check:
 
 - `tools.calendar.enabled` is `true`
-- `provider` is `google`
-- `credentialsFile` exists
-- `allowInteractiveAuth` is `true`
-- Annolid was launched from an interactive terminal session
-- the Google Calendar tool is present in the current toolset
-
-If the bot can already list events, the tool is registered. In that case, a missing token file usually means the auth flow has not been triggered in the current process or the token path is not writable.
-
-### The bot says the token expired and needs to be refreshed
-
-That means the cached token is no longer usable. Use the token renewal flow above:
-
-1. enable `allowInteractiveAuth`
-2. remove the stale token file
-3. relaunch Annolid from a terminal
-4. trigger a calendar action
-5. complete OAuth again
+- `tools.google_auth.credentialsFile` exists
+- `tools.google_auth.allowInteractiveAuth` is `true`
+- Annolid was launched from an interactive terminal
+- Calendar tool is present in current toolset
 
 ### Annolid says interactive auth is disabled
 
-Set this in `~/.annolid/config.json`:
+Set:
 
 ```json
 {
   "tools": {
-    "calendar": {
+    "google_auth": {
       "allowInteractiveAuth": true
     }
   }
 }
 ```
 
-Restart Annolid after changing the config.
+Restart Annolid after config changes.
 
-### Annolid says credentials or token files are missing
+### Annolid says credentials/token files are missing
 
-Verify both paths in `~/.annolid/config.json` and confirm the files exist where configured.
-
-### The bot can list events but refuses to create one
-
-Use a current Annolid build and restart the app after calendar-related updates. A direct prompt such as this should trigger the calendar tool:
-
-```text
-Create a Google Calendar event tomorrow at 10 AM called Agent Coding Event
-```
+Verify paths in `~/.annolid/config.json` and confirm files exist where configured.
 
 ### Browser auth opens but renewal still fails
 
 Typical causes:
 
-- wrong Google OAuth client JSON
-- token file path not writable
+- wrong OAuth client JSON
+- token path not writable
 - Google OAuth app missing Calendar scope approval
-- running from a non-interactive environment
+- running from non-interactive environment
+
+### Access blocked (Error 403: access_denied)
+
+If Google shows an "app not completed verification process" 403 error:
+
+1. Open Google Cloud Console for your OAuth project.
+2. Go to `APIs & Services` -> `OAuth consent screen`.
+3. If `Publishing status` is `Testing`, add the Gmail account under `Test users`.
+4. Retry OAuth from Annolid.
+
+For non-test users, move the app to `Production` and complete Google verification as required by Google scopes and policy.
 
 ## Recommended Operating Pattern
 
-- Keep `allowInteractiveAuth=false` for normal background use.
-- Turn it on only for first-time setup or token renewal.
-- Launch Annolid from a terminal when you need OAuth.
-- Switch it back off after a fresh token is created.
+- keep `allowInteractiveAuth=false` for normal background use
+- turn it on only for first-time setup or renewal
+- launch Annolid from terminal when OAuth is needed
+- turn it off again after a fresh token is created
 
 ## Related Docs
 
+- [Google Integrations](agent_workspace.md)
 - [Workflows](workflows.md)
 - [Reference](reference.md)
 - [Agent Secrets](agent_secrets.md)

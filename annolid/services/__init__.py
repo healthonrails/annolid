@@ -127,6 +127,7 @@ _EXPORTS = {
     "remove_agent_secret": "annolid.services.agent_admin",
     "remove_agent_cron_job": "annolid.services.agent_cron",
     "migrate_agent_secrets": "annolid.services.agent_admin",
+    "migrate_agent_config_integrations": "annolid.services.agent_admin",
     "open_chat_in_browser_tool": "annolid.services.chat_web_pdf",
     "open_chat_pdf_tool": "annolid.services.chat_web_pdf",
     "open_chat_url_tool": "annolid.services.chat_web_pdf",
