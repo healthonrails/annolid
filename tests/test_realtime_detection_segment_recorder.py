@@ -27,6 +27,25 @@ class _FakeVideoWriter:
         self._open = False
 
 
+class _FlakyVideoWriter(_FakeVideoWriter):
+    def __init__(
+        self,
+        path: str,
+        fourcc: int,
+        fps: float,
+        size,
+        *,
+        fail_after_writes: int = 1,
+    ):
+        super().__init__(path, fourcc, fps, size)
+        self._fail_after_writes = int(fail_after_writes)
+
+    def write(self, frame) -> None:
+        if self.frames_written >= self._fail_after_writes:
+            raise OSError("simulated disk write failure")
+        super().write(frame)
+
+
 def test_detection_segment_recorder_matches_animal_alias() -> None:
     cfg = Config(
         save_detection_segments=True,
@@ -70,3 +89,38 @@ def test_detection_segment_recorder_writes_segment_on_event(
     assert len(saved) == 1
     assert "person" in saved[0].stem
     assert saved[0].read_bytes().startswith(b"frames=")
+
+
+def test_detection_segment_recorder_closes_on_repeated_write_failures(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(
+        "annolid.realtime.perception.cv2.VideoWriter",
+        lambda path, fourcc, fps, size: _FlakyVideoWriter(
+            path, fourcc, fps, size, fail_after_writes=0
+        ),
+    )
+    monkeypatch.setattr(
+        "annolid.realtime.perception.cv2.VideoWriter_fourcc", lambda *_args: 0
+    )
+
+    cfg = Config(
+        save_detection_segments=True,
+        detection_segment_targets=["person"],
+        detection_segment_output_dir=str(tmp_path),
+        detection_segment_prebuffer_sec=0.0,
+        detection_segment_postbuffer_sec=1.0,
+        detection_segment_min_duration_sec=0.0,
+        detection_segment_max_duration_sec=30.0,
+        max_fps=5.0,
+    )
+    recorder = DetectionSegmentRecorder(cfg)
+    recorder._max_consecutive_write_errors = 2
+    frame = np.zeros((24, 24, 3), dtype=np.uint8)
+
+    recorder.update(frame, 0.0, ["person"])
+    recorder.update(frame, 0.2, [])
+    recorder.update(frame, 0.4, [])
+
+    assert recorder._recording is False
+    assert recorder._writer is None

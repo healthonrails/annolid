@@ -52,6 +52,8 @@ class RealtimeManager(QtCore.QObject):
         self.realtime_log_enabled = False
         self.realtime_log_fp = None
         self.realtime_log_path = None
+        self._realtime_log_last_flush_ts = 0.0
+        self._realtime_log_flush_interval_sec = 1.0
         self._classify_eye_blinks = False
         self._blink_ear_threshold = 0.21
         self._blink_min_consecutive_frames = 2
@@ -224,6 +226,7 @@ class RealtimeManager(QtCore.QObject):
         self._realtime_shapes = []
         self.realtime_log_fp = None
         self.realtime_log_path = None
+        self._realtime_log_last_flush_ts = 0.0
         self.realtime_log_enabled = bool(extras.get("log_enabled", False))
         self._classify_eye_blinks = bool(extras.get("classify_eye_blinks", False))
         self._blink_ear_threshold = float(extras.get("blink_ear_threshold", 0.21))
@@ -969,14 +972,20 @@ class RealtimeManager(QtCore.QObject):
 
         if self.realtime_log_fp:
             try:
+                now_ts = time.time()
                 record = {
-                    "timestamp": time.time(),
+                    "timestamp": now_ts,
                     "frame_metadata": metadata,
                     "detections": effective_detections,
                 }
                 json.dump(record, self.realtime_log_fp)
                 self.realtime_log_fp.write("\n")
-                self.realtime_log_fp.flush()
+                if (
+                    now_ts - self._realtime_log_last_flush_ts
+                    >= self._realtime_log_flush_interval_sec
+                ):
+                    self.realtime_log_fp.flush()
+                    self._realtime_log_last_flush_ts = now_ts
             except Exception as exc:
                 logger.error(
                     "Failed to write realtime NDJSON record: %s", exc, exc_info=True
@@ -1104,6 +1113,7 @@ class RealtimeManager(QtCore.QObject):
                 self.realtime_log_fp.close()
             self.realtime_log_fp = None
             self.realtime_log_path = None
+        self._realtime_log_last_flush_ts = 0.0
         message = self.window.tr("Realtime inference stopped.")
         self.window.statusBar().showMessage(message)
         self.realtime_control_widget.set_status_text(message)

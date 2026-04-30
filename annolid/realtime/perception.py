@@ -1185,6 +1185,9 @@ class DetectionSegmentRecorder:
         self._recording = False
         self._segment_start_ts = 0.0
         self._last_trigger_ts = 0.0
+        self._consecutive_write_errors = 0
+        self._max_consecutive_write_errors = 10
+        self._last_write_error_log_ts = 0.0
 
     def _matches_target(self, class_name: str) -> bool:
         name = str(class_name or "").strip().lower()
@@ -1244,6 +1247,7 @@ class DetectionSegmentRecorder:
     def _open_writer(
         self, frame: np.ndarray, event_ts: float, labels: Optional[set[str]] = None
     ) -> bool:
+        writer = None
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             h, w = frame.shape[:2]
@@ -1267,11 +1271,52 @@ class DetectionSegmentRecorder:
             self._segment_start_ts = float(event_ts)
             self._last_trigger_ts = float(event_ts)
             for _ts, buffered in self._prebuffer:
-                writer.write(buffered)
+                if not self._safe_write_frame(buffered, event_ts):
+                    self._close_writer(event_ts)
+                    logger.error(
+                        "Aborting detection segment writer due to prebuffer write failures."
+                    )
+                    return False
             logger.info("Started detection segment recording: %s", segment_path)
             return True
         except Exception as exc:
             logger.error("Failed to start segment recording: %s", exc, exc_info=True)
+            if writer is not None:
+                try:
+                    writer.release()
+                except Exception:
+                    pass
+            return False
+
+    def _safe_write_frame(self, frame: np.ndarray, timestamp: float) -> bool:
+        writer = self._writer
+        if writer is None:
+            return False
+        try:
+            writer.write(frame)
+            self._consecutive_write_errors = 0
+            return True
+        except Exception as exc:
+            self._consecutive_write_errors += 1
+            now = time.time()
+            if (
+                self._consecutive_write_errors == 1
+                or self._consecutive_write_errors >= self._max_consecutive_write_errors
+                or (now - self._last_write_error_log_ts) >= 5.0
+            ):
+                logger.error(
+                    "Detection segment write failed (%d/%d): %s",
+                    self._consecutive_write_errors,
+                    self._max_consecutive_write_errors,
+                    exc,
+                    exc_info=self._consecutive_write_errors == 1,
+                )
+                self._last_write_error_log_ts = now
+            if self._consecutive_write_errors >= self._max_consecutive_write_errors:
+                logger.error(
+                    "Closing detection segment writer after repeated write failures."
+                )
+                self._close_writer(timestamp)
             return False
 
     def _close_writer(self, now_ts: float) -> None:
@@ -1285,6 +1330,7 @@ class DetectionSegmentRecorder:
         self._recording = False
         self._segment_start_ts = 0.0
         self._last_trigger_ts = 0.0
+        self._consecutive_write_errors = 0
 
         if writer is not None:
             try:
@@ -1336,7 +1382,8 @@ class DetectionSegmentRecorder:
             self._open_writer(frame, timestamp, labels=matched_labels)
 
         if self._recording and self._writer is not None:
-            self._writer.write(frame)
+            if not self._safe_write_frame(frame, timestamp):
+                return
             if event_detected:
                 self._last_trigger_ts = float(timestamp)
                 self._segment_labels.update(matched_labels)
